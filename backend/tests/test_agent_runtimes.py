@@ -789,6 +789,160 @@ class TestAgentRuntimes:
             assert updated is not None
             assert updated["resume_session_id"] == "session-second"
 
+    async def test_ai_thread_claude_transport_manages_print_mode_and_resume_without_user_args(self, sqlite_db):
+        app = _test_app(sqlite_db)
+        repo = pathlib.Path(sqlite_db).parent / "claude-provider-repo"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-claude-provider", repo_path=str(repo))
+        capture_file = pathlib.Path(sqlite_db).parent / "claude-argv.jsonl"
+        agent_script = pathlib.Path(sqlite_db).parent / "fake_claude_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import json, pathlib, sys",
+                    f"path = pathlib.Path({str(capture_file)!r})",
+                    "args = sys.argv[1:]",
+                    "path.write_text((path.read_text() if path.exists() else '') + json.dumps(args, ensure_ascii=False) + '\\n')",
+                    "resume = args[args.index('--resume') + 1] if '--resume' in args else ''",
+                    "sid = 'claude-second' if resume else 'claude-first'",
+                    "print(json.dumps({'type':'system','subtype':'init','session_id':sid}, ensure_ascii=False))",
+                    "print(json.dumps({'type':'assistant','message':{'content':[{'type':'text','text':('resumed:' + resume) if resume else 'fresh claude'}]}}, ensure_ascii=False))",
+                    "sys.stdout.flush()",
+                ]
+            )
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            runtime = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Managed Claude",
+                    "command": sys.executable,
+                    "args": [str(agent_script)],
+                    "prompt_transport": "claude_print_arg",
+                    "output_mode": "stream_json",
+                    "working_dir_mode": "project",
+                    "timeout_seconds": 10,
+                    "session_persistence": "resume_args",
+                },
+            )
+            assert runtime.status_code == 201, runtime.text
+            runtime_id = runtime.json()["id"]
+
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "title": "Managed Claude",
+                    "runtime_type": "agent_runtime",
+                    "agent_runtime_id": runtime_id,
+                },
+            )
+            assert created.status_code == 201
+            conversation = created.json()
+
+            for expected in ("fresh claude", "resumed:claude-first"):
+                posted = await client.post(
+                    f"/api/ai/conversations/{conversation['id']}/messages",
+                    json={"content": f"问：{expected}"},
+                )
+                assert posted.status_code == 202
+                for _ in range(30):
+                    messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                    items = messages.json()["items"]
+                    if items and items[-1]["role"] == "assistant" and expected in items[-1]["content"]:
+                        break
+                    await asyncio.sleep(0.1)
+                else:
+                    pytest.fail(f"managed Claude run did not produce {expected}")
+
+            captured = [json.loads(line) for line in capture_file.read_text().splitlines()]
+            assert "-p" in captured[0]
+            assert "--output-format" in captured[0]
+            assert "stream-json" in captured[0]
+            assert "--include-partial-messages" in captured[0]
+            assert "--verbose" in captured[0]
+            assert "--resume" not in captured[0]
+            assert captured[1][captured[1].index("--resume") + 1] == "claude-first"
+
+    async def test_ai_thread_codex_transport_builds_exec_json_resume_without_sentinel(self, sqlite_db):
+        app = _test_app(sqlite_db)
+        repo = pathlib.Path(sqlite_db).parent / "codex-provider-repo"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-codex-provider", repo_path=str(repo))
+        capture_file = pathlib.Path(sqlite_db).parent / "codex-argv.jsonl"
+        agent_script = pathlib.Path(sqlite_db).parent / "fake_codex_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import json, pathlib, sys",
+                    f"path = pathlib.Path({str(capture_file)!r})",
+                    "args = sys.argv[1:]",
+                    "path.write_text((path.read_text() if path.exists() else '') + json.dumps(args, ensure_ascii=False) + '\\n')",
+                    "resume = args[args.index('resume') + 1] if 'resume' in args else ''",
+                    "tid = 'codex-second' if resume else 'codex-first'",
+                    "print(json.dumps({'type':'thread.started','thread_id':tid}, ensure_ascii=False))",
+                    "print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':('resumed:' + resume) if resume else 'fresh codex'}}, ensure_ascii=False))",
+                    "sys.stdout.flush()",
+                ]
+            )
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            runtime = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Managed Codex",
+                    "command": sys.executable,
+                    "args": [str(agent_script)],
+                    "prompt_transport": "codex_exec_json",
+                    "output_mode": "stream_json",
+                    "working_dir_mode": "project",
+                    "timeout_seconds": 10,
+                    "session_persistence": "resume_args",
+                },
+            )
+            assert runtime.status_code == 201, runtime.text
+            runtime_id = runtime.json()["id"]
+
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "title": "Managed Codex",
+                    "runtime_type": "agent_runtime",
+                    "agent_runtime_id": runtime_id,
+                },
+            )
+            assert created.status_code == 201
+            conversation = created.json()
+
+            for expected in ("fresh codex", "resumed:codex-first"):
+                posted = await client.post(
+                    f"/api/ai/conversations/{conversation['id']}/messages",
+                    json={"content": f"问：{expected}"},
+                )
+                assert posted.status_code == 202
+                for _ in range(30):
+                    messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                    items = messages.json()["items"]
+                    if items and items[-1]["role"] == "assistant" and expected in items[-1]["content"]:
+                        break
+                    await asyncio.sleep(0.1)
+                else:
+                    pytest.fail(f"managed Codex run did not produce {expected}")
+
+            captured = [json.loads(line) for line in capture_file.read_text().splitlines()]
+            assert "--json" in captured[0]
+            assert "resume" not in captured[0]
+            assert "resume" in captured[1]
+            assert captured[1][captured[1].index("resume") + 1] == "codex-first"
+            assert "--json" in captured[1]
+
     async def test_ai_thread_agent_runtime_keeps_json_status_events_out_of_final_answer(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)

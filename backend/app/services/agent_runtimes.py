@@ -13,7 +13,8 @@ import aiosqlite
 
 from app.config import settings
 
-PROMPT_TRANSPORTS = {"stdin", "argv_last"}
+MANAGED_PROVIDER_PROMPT_TRANSPORTS = {"claude_print_arg", "codex_exec_json", "opencode_run_arg"}
+PROMPT_TRANSPORTS = {"stdin", "argv_last", *MANAGED_PROVIDER_PROMPT_TRANSPORTS}
 OUTPUT_MODES = {"plain", "ndjson", "stream_json", "auto"}
 WORKING_DIR_MODES = {"project", "fixed", "none"}
 COMPLETION_MODES = {"process_exit", "idle_after_output", "sentinel"}
@@ -244,7 +245,12 @@ class AgentRuntimeStore:
             if value not in SESSION_PERSISTENCE_MODES:
                 raise ValueError(f"不支持的 session_persistence: {value}")
             result["session_persistence"] = value
-        if result.get("session_persistence") == "resume_args" and not result.get("resume_args"):
+        provider_manages_resume = result.get("prompt_transport") in MANAGED_PROVIDER_PROMPT_TRANSPORTS
+        if (
+            result.get("session_persistence") == "resume_args"
+            and not result.get("resume_args")
+            and not provider_manages_resume
+        ):
             raise ValueError("resume_args 会话策略需要填写 resume_args")
         if result.get("resume_args"):
             joined = "\n".join(result["resume_args"])

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
-from app.services.agent_runtimes import validate_agent_command
+from app.services.agent_runtimes import MANAGED_PROVIDER_PROMPT_TRANSPORTS, validate_agent_command
 
 
 class AgentRuntimeError(RuntimeError):
@@ -77,6 +77,15 @@ async def stream_agent_runtime(
         stdin = asyncio.subprocess.DEVNULL
     elif prompt_transport == "stdin":
         stdin = asyncio.subprocess.PIPE
+    elif prompt_transport == "claude_print_arg":
+        args = _claude_print_args(args, prompt, resume_session_id=resume_session_id)
+        stdin = asyncio.subprocess.DEVNULL
+    elif prompt_transport == "codex_exec_json":
+        args = _codex_exec_json_args(args, prompt, resume_session_id=resume_session_id)
+        stdin = asyncio.subprocess.DEVNULL
+    elif prompt_transport == "opencode_run_arg":
+        args = _opencode_run_args(args, prompt)
+        stdin = asyncio.subprocess.DEVNULL
     else:
         raise AgentRuntimeError(f"不支持的 prompt_transport: {prompt_transport}")
 
@@ -185,6 +194,8 @@ def _runtime_args(runtime: dict[str, Any], *, resume_session_id: str | None = No
     base_args = [str(item) for item in (runtime.get("args") or [])]
     if str(runtime.get("session_persistence") or "none") != "resume_args":
         return base_args
+    if str(runtime.get("prompt_transport") or "") in MANAGED_PROVIDER_PROMPT_TRANSPORTS:
+        return base_args
     session_id = str(resume_session_id or "").strip()
     if not session_id:
         return base_args
@@ -195,6 +206,86 @@ def _runtime_args(runtime: dict[str, Any], *, resume_session_id: str | None = No
         item.replace("{session_id}", session_id).replace("{resume_session_id}", session_id)
         for item in resume_args
     ]
+
+
+def _claude_print_args(
+    base_args: list[str],
+    prompt: str,
+    *,
+    resume_session_id: str | None = None,
+) -> list[str]:
+    args = list(base_args)
+    args = _ensure_option_value(args, "--output-format", "stream-json", aliases=("--output-format",))
+    args = _ensure_flag(args, "--include-partial-messages")
+    args = _ensure_flag(args, "--verbose")
+    session_id = str(resume_session_id or "").strip()
+    if session_id and "--resume" not in args:
+        args.extend(["--resume", session_id])
+    return _insert_or_replace_prompt_value(args, prompt, flags=("-p", "--print"))
+
+
+def _codex_exec_json_args(
+    base_args: list[str],
+    prompt: str,
+    *,
+    resume_session_id: str | None = None,
+) -> list[str]:
+    args = list(base_args)
+    try:
+        exec_index = args.index("exec")
+    except ValueError:
+        args.append("exec")
+        exec_index = len(args) - 1
+    session_id = str(resume_session_id or "").strip()
+    if session_id and "resume" not in args[exec_index + 1 : exec_index + 3]:
+        args[exec_index + 1 : exec_index + 1] = ["resume", session_id]
+    args = _ensure_flag(args, "--json")
+    args.append(prompt)
+    return args
+
+
+def _opencode_run_args(base_args: list[str], prompt: str) -> list[str]:
+    args = list(base_args)
+    if "run" not in args:
+        args.append("run")
+    args.append(prompt)
+    return args
+
+
+def _insert_or_replace_prompt_value(args: list[str], prompt: str, *, flags: tuple[str, ...]) -> list[str]:
+    result = list(args)
+    for index, token in enumerate(result):
+        if token not in flags:
+            continue
+        if index + 1 < len(result) and not result[index + 1].startswith("-"):
+            result[index + 1] = prompt
+        else:
+            result.insert(index + 1, prompt)
+        return result
+    return [*result, flags[0], prompt]
+
+
+def _ensure_flag(args: list[str], flag: str) -> list[str]:
+    return list(args) if flag in args else [*args, flag]
+
+
+def _ensure_option_value(
+    args: list[str],
+    option: str,
+    value: str,
+    *,
+    aliases: tuple[str, ...],
+) -> list[str]:
+    result = list(args)
+    for index, token in enumerate(result):
+        if token not in aliases:
+            continue
+        if index + 1 < len(result):
+            result[index + 1] = value
+        else:
+            result.append(value)
+        return result
+    return [*result, option, value]
 
 
 async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
@@ -583,6 +674,8 @@ def _decode_strict_if_complete(value: bytes) -> str | None:
             decoded = _clean_agent_text(value.decode(encoding, "strict"))
         except UnicodeDecodeError:
             continue
+        if encoding.startswith("utf-8") and _is_printable_ascii_text(value):
+            return decoded
         if not _looks_like_mojibake(decoded):
             return decoded
         if best_text is None or _mojibake_score(decoded) < _mojibake_score(best_text):
@@ -595,6 +688,10 @@ def _decode_strict_if_complete(value: bytes) -> str | None:
     if best_text is not None:
         return best_text
     return None
+
+
+def _is_printable_ascii_text(value: bytes) -> bool:
+    return all(byte in {9, 10, 13} or 32 <= byte < 127 for byte in value)
 
 
 def _decode_mixed_terminal_bytes(value: bytes) -> str:

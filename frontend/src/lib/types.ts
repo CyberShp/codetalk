@@ -109,7 +109,12 @@ export interface GeneralSettings {
   active_embedding_model_id: string;
 }
 
-export type AgentRuntimePromptTransport = "stdin" | "argv_last";
+export type AgentRuntimePromptTransport =
+  | "stdin"
+  | "argv_last"
+  | "claude_print_arg"
+  | "codex_exec_json"
+  | "opencode_run_arg";
 export type AgentRuntimeOutputMode = "plain" | "ndjson" | "stream_json" | "auto";
 export type AgentRuntimeWorkingDirMode = "project" | "fixed" | "none";
 export type AgentRuntimeCompletionMode = "process_exit" | "idle_after_output" | "sentinel";

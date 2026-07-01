@@ -70,41 +70,84 @@ const EMPTY_AGENT_RUNTIME_FORM: AgentRuntimeCreate = {
   enabled: true,
 };
 
+const MANAGED_AGENT_TRANSPORTS = new Set<AgentRuntimeCreate["prompt_transport"]>([
+  "claude_print_arg",
+  "codex_exec_json",
+  "opencode_run_arg",
+]);
+
+const agentTransportLabel = (transport: AgentRuntimeCreate["prompt_transport"]) => {
+  switch (transport) {
+    case "claude_print_arg":
+      return "Claude 托管";
+    case "codex_exec_json":
+      return "Codex 托管";
+    case "opencode_run_arg":
+      return "OpenCode 托管";
+    case "stdin":
+      return "stdin 发送";
+    case "argv_last":
+      return "参数发送";
+    default:
+      return transport;
+  }
+};
+
 const AGENT_RUNTIME_PRESETS = [
   {
-    id: "claude-code-router",
-    label: "Claude Code Router",
-    description: "你平时输入 ccr code 打开 Claude Code，就选这个。",
-    commandPreview: "ccr code",
+    id: "claude-code",
+    label: "Claude Code",
+    description: "托管 Claude CLI 的 stream-json、续接和工具事件折叠。",
+    commandPreview: "claude -p ... --output-format stream-json",
     form: {
       ...EMPTY_AGENT_RUNTIME_FORM,
       name: "Claude Code",
-      command: "ccr",
-      args: ["code"],
-      prompt_transport: "stdin",
-      output_mode: "plain",
-      completion_mode: "idle_after_output",
-      idle_complete_seconds: 5,
+      command: "claude",
+      args: [],
+      prompt_transport: "claude_print_arg",
+      output_mode: "stream_json",
+      completion_mode: "process_exit",
+      timeout_seconds: 900,
+      session_persistence: "resume_args",
+    },
+  },
+  {
+    id: "codex",
+    label: "Codex CLI",
+    description: "托管 codex exec --json 与 exec resume，同一线程自动续接。",
+    commandPreview: "codex exec --json",
+    form: {
+      ...EMPTY_AGENT_RUNTIME_FORM,
+      name: "Codex",
+      command: "codex",
+      args: [],
+      prompt_transport: "codex_exec_json",
+      output_mode: "stream_json",
+      completion_mode: "process_exit",
+      timeout_seconds: 900,
+      session_persistence: "resume_args",
     },
   },
   {
     id: "opencode",
     label: "OpenCode",
-    description: "你平时输入 opencode run 执行任务，就选这个。",
+    description: "托管 opencode run 的 prompt 参数，不把启动噪声当正文。",
     commandPreview: "opencode run",
     form: {
       ...EMPTY_AGENT_RUNTIME_FORM,
       name: "OpenCode",
       command: "opencode",
-      args: ["run"],
-      prompt_transport: "argv_last",
+      args: [],
+      prompt_transport: "opencode_run_arg",
       output_mode: "auto",
+      completion_mode: "process_exit",
+      timeout_seconds: 900,
     },
   },
   {
     id: "nga",
     label: "NGA / CodeAgent",
-    description: "你平时输入 nga 打开内部 CodeAgent，就选这个。",
+    description: "兼容 raw CLI。若 NGA 支持 JSON 事件流，建议在高级选项改成自动识别。",
     commandPreview: "nga",
     form: {
       ...EMPTY_AGENT_RUNTIME_FORM,
@@ -112,9 +155,10 @@ const AGENT_RUNTIME_PRESETS = [
       command: "nga",
       args: [],
       prompt_transport: "stdin",
-      output_mode: "plain",
+      output_mode: "auto",
       completion_mode: "idle_after_output",
       idle_complete_seconds: 5,
+      timeout_seconds: 900,
     },
   },
   {
@@ -484,6 +528,8 @@ export default function SettingsPage() {
     }
   }, []);
 
+  const managedAgentRuntime = MANAGED_AGENT_TRANSPORTS.has(agentRuntimeForm.prompt_transport);
+
   if (loading) {
     return (
       <div className="flex items-center justify-center py-24 text-on-surface-variant">
@@ -652,6 +698,11 @@ export default function SettingsPage() {
 
             {showAgentAdvanced && (
               <div className="mt-3 grid gap-3 rounded-xl border border-outline-variant/15 bg-surface-container/60 p-3 lg:grid-cols-4">
+                {managedAgentRuntime && (
+                  <div className="lg:col-span-4 rounded-lg border border-primary/15 bg-primary/10 px-3 py-2 text-xs leading-5 text-on-surface-variant">
+                    当前是 {agentTransportLabel(agentRuntimeForm.prompt_transport)} 协议。CodeTalk 会自动拼接结构化输出参数、保存 CLI session，并把工具调用、思考和诊断信息默认折叠；无需配置结束标记或 resume 参数。
+                  </div>
+                )}
                 <div>
                   <label className="mb-1 block text-xs font-medium text-on-surface-variant">
                     问题发送方式
@@ -663,6 +714,9 @@ export default function SettingsPage() {
                   >
                     <option value="stdin">通过 stdin 发送</option>
                     <option value="argv_last">作为最后一个参数</option>
+                    <option value="claude_print_arg">Claude 托管协议</option>
+                    <option value="codex_exec_json">Codex 托管协议</option>
+                    <option value="opencode_run_arg">OpenCode 托管协议</option>
                   </select>
                 </div>
                 <div>
@@ -707,21 +761,23 @@ export default function SettingsPage() {
                     className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface focus:border-primary/50 focus:outline-none"
                   />
                 </div>
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-on-surface-variant">
-                    完成判据
-                  </label>
-                  <select
-                    value={agentRuntimeForm.completion_mode}
-                    onChange={(event) => updateAgentRuntimeForm("completion_mode", event.target.value as AgentRuntimeCreate["completion_mode"])}
-                    className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface focus:border-primary/50 focus:outline-none"
-                  >
-                    <option value="process_exit">进程退出</option>
-                    <option value="idle_after_output">输出空闲后结束</option>
-                    <option value="sentinel">看到结束标记</option>
-                  </select>
-                </div>
-                {agentRuntimeForm.completion_mode === "idle_after_output" && (
+                {!managedAgentRuntime && (
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                      完成判据
+                    </label>
+                    <select
+                      value={agentRuntimeForm.completion_mode}
+                      onChange={(event) => updateAgentRuntimeForm("completion_mode", event.target.value as AgentRuntimeCreate["completion_mode"])}
+                      className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface focus:border-primary/50 focus:outline-none"
+                    >
+                      <option value="process_exit">进程退出</option>
+                      <option value="idle_after_output">输出空闲后结束</option>
+                      <option value="sentinel">看到结束标记</option>
+                    </select>
+                  </div>
+                )}
+                {!managedAgentRuntime && agentRuntimeForm.completion_mode === "idle_after_output" && (
                   <div>
                     <label className="mb-1 block text-xs font-medium text-on-surface-variant">
                       空闲秒数
@@ -736,7 +792,7 @@ export default function SettingsPage() {
                     />
                   </div>
                 )}
-                {agentRuntimeForm.completion_mode === "sentinel" && (
+                {!managedAgentRuntime && agentRuntimeForm.completion_mode === "sentinel" && (
                   <div className="lg:col-span-2">
                     <label className="mb-1 block text-xs font-medium text-on-surface-variant">
                       结束标记
@@ -749,20 +805,22 @@ export default function SettingsPage() {
                     />
                   </div>
                 )}
-                <div>
-                  <label className="mb-1 block text-xs font-medium text-on-surface-variant">
-                    会话续接
-                  </label>
-                  <select
-                    value={agentRuntimeForm.session_persistence}
-                    onChange={(event) => updateAgentRuntimeForm("session_persistence", event.target.value as AgentRuntimeCreate["session_persistence"])}
-                    className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface focus:border-primary/50 focus:outline-none"
-                  >
-                    <option value="none">不续接</option>
-                    <option value="resume_args">使用 resume 参数</option>
-                  </select>
-                </div>
-                {agentRuntimeForm.session_persistence === "resume_args" && (
+                {!managedAgentRuntime && (
+                  <div>
+                    <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                      会话续接
+                    </label>
+                    <select
+                      value={agentRuntimeForm.session_persistence}
+                      onChange={(event) => updateAgentRuntimeForm("session_persistence", event.target.value as AgentRuntimeCreate["session_persistence"])}
+                      className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface focus:border-primary/50 focus:outline-none"
+                    >
+                      <option value="none">不续接</option>
+                      <option value="resume_args">使用 resume 参数</option>
+                    </select>
+                  </div>
+                )}
+                {!managedAgentRuntime && agentRuntimeForm.session_persistence === "resume_args" && (
                   <div className="lg:col-span-3">
                     <label className="mb-1 block text-xs font-medium text-on-surface-variant">
                       Resume 参数
@@ -824,7 +882,7 @@ export default function SettingsPage() {
                     <div className="flex flex-wrap items-center gap-2">
                       <strong className="text-sm text-on-surface">{runtime.name}</strong>
                       <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[11px] text-on-surface-variant">
-                        {runtime.prompt_transport === "stdin" ? "stdin 发送" : "参数发送"}
+                        {agentTransportLabel(runtime.prompt_transport)}
                       </span>
                       <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[11px] text-on-surface-variant">
                         {runtime.output_mode}
