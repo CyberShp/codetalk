@@ -526,6 +526,72 @@ test("AI conversation page skips decorative atmosphere layers for tool performan
   await expect(page.locator(".ct-atmosphere")).toHaveCount(0);
 });
 
+test("AI home avoids staggered list animations for large thread hubs", async ({ page }) => {
+  const workspaces = Array.from({ length: 24 }, (_, index) => ({
+    id: `ws-${index + 1}`,
+    name: `SPDK 项目 ${index + 1}`,
+    repo_path: `/Volumes/Media/dpdk/spdk-${index + 1}`,
+    indexed: 1,
+    index_job: null,
+    index_progress: 100,
+    analyze_status: null,
+    analyze_progress: 0,
+    last_index_error: null,
+    created_at: "2026-06-28T00:00:00Z",
+    updated_at: "2026-06-28T00:00:00Z",
+    materials: [],
+    reports: [],
+  }));
+  const threads = Array.from({ length: 50 }, (_, index) => ({
+    id: `conv-large-${index + 1}`,
+    scope_type: "workspace",
+    scope_id: "ws-1",
+    workspace_id: "ws-1",
+    memory_namespace: "workspace:ws-1",
+    title: `SPDK 长线程 ${index + 1}`,
+    status: index === 0 ? "running" : "idle",
+    initial_context: {},
+    created_at: "2026-06-28T00:00:00Z",
+    updated_at: `2026-06-28T00:${String(index).padStart(2, "0")}:00Z`,
+  }));
+
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: workspaces });
+  });
+  await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations?limit=100", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: threads } });
+  });
+  await page.route("**/api/ai/conversations?limit=3", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: threads.slice(0, 3) } });
+  });
+
+  await page.setViewportSize({ width: 1440, height: 920 });
+  await page.goto("/ai", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "按项目管理持续对话" })).toBeVisible();
+  await expect(page.locator(".ct-thread-card")).toHaveCount(50);
+
+  const listMotion = await page.locator(".ct-thread-project, .ct-thread-card").evaluateAll((nodes) =>
+    nodes.map((node) => {
+      const element = node as HTMLElement;
+      const styles = window.getComputedStyle(element);
+      return {
+        className: element.className,
+        inlineAnimationDelay: element.style.animationDelay,
+        animationName: styles.animationName,
+        animationDuration: styles.animationDuration,
+      };
+    }),
+  );
+
+  expect(
+    listMotion.filter((item) => item.inlineAnimationDelay || item.animationName !== "none"),
+    "large AI thread/project lists should not run staggered entry animations",
+  ).toEqual([]);
+});
+
 test("AI mini dock keeps idle background polling quiet on non-AI pages", async ({ page }) => {
   let dockListRequests = 0;
   await page.route("**/api/workspaces", async (route) => {
