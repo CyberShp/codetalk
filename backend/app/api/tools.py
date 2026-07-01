@@ -33,6 +33,11 @@ _HEALTH_TIMEOUT = 4.0  # seconds; adapters slower than this are reported as busy
 _MANAGED_STARTUP_PROBE_TOOL_NAMES = {"gitnexus"}
 
 
+def _require_current_managed_tool(tool_name: str) -> None:
+    if tool_name not in process_manager_module.TOOL_REGISTRY:
+        raise HTTPException(status_code=400, detail=f"Tool is not a managed process: {tool_name}")
+
+
 def _get_pm(request: Request) -> ProcessManager:
     """Retrieve the ProcessManager from app.state, or fall back to singleton."""
     pm: ProcessManager | None = getattr(request.app.state, "process_manager", None)
@@ -635,6 +640,7 @@ def _managed_tool_startup_diagnostics(
 @router.post("/{tool_name}/start")
 async def start_tool(tool_name: str, request: Request) -> dict[str, Any]:
     """Start a tool process by name."""
+    _require_current_managed_tool(tool_name)
     pm = _get_pm(request)
     existing_health = await _existing_healthy_managed_tool(pm, tool_name)
     if existing_health is not None:
@@ -673,6 +679,7 @@ async def _existing_healthy_managed_tool(pm: ProcessManager, tool_name: str) -> 
 @router.post("/{tool_name}/stop")
 async def stop_tool(tool_name: str, request: Request) -> dict[str, Any]:
     """Stop a tool process by name."""
+    _require_current_managed_tool(tool_name)
     pm = _get_pm(request)
     ok = await pm.stop(tool_name)
     if not ok:
@@ -683,6 +690,7 @@ async def stop_tool(tool_name: str, request: Request) -> dict[str, Any]:
 @router.post("/{tool_name}/restart")
 async def restart_tool(tool_name: str, request: Request) -> dict[str, Any]:
     """Restart a tool process by name."""
+    _require_current_managed_tool(tool_name)
     pm = _get_pm(request)
     ok = await pm.restart(tool_name)
     if not ok:
