@@ -601,7 +601,6 @@ function updateServiceUrls() {
     backend:     'http://localhost:' + (cfg.portBackend   || '3004'),
     gitnexus:    installGitnexus ? 'http://localhost:' + gitnexusPort   : null,
     cgc:         installCgc ? 'http://localhost:' + cgcPort : null,
-    joern:       null,
   };
 
   const COMPOSE_URLS = {
@@ -609,7 +608,6 @@ function updateServiceUrls() {
     backend:     'http://localhost:' + (cfg.portBackend  || '3004'),
     gitnexus:    installGitnexus ? 'http://localhost:' + gitnexusPort   : null,
     cgc:         installCgc ? 'http://localhost:' + cgcPort : null,
-    joern:       'http://localhost:8080',
   };
 
   const K8S_URLS = {
@@ -617,7 +615,6 @@ function updateServiceUrls() {
     backend:     'http://localhost/api',
     gitnexus:    null,
     cgc:         null,
-    joern:       null,
   };
 
   const urls = mode === 'native' ? NATIVE_URLS : mode === 'k8s' ? K8S_URLS : COMPOSE_URLS;
