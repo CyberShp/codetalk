@@ -625,6 +625,45 @@ async def test_workbench_deployment_probe_runs_agent_cli_startup_checks(
     assert latest["summary"]["failed_count"] == 1
 
 
+async def test_workbench_deployment_probe_redacts_repo_path_from_user_artifacts(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [])
+
+    seen_repo_paths = []
+
+    async def fake_probe(provider, repo_path=None):
+        seen_repo_paths.append(repo_path)
+        return {
+            "provider": provider,
+            "healthy": True,
+            "status": "ok",
+            "message": "startup_probe_ok",
+            "health": {"status": "available"},
+        }
+
+    monkeypatch.setattr(
+        "app.api.agent_workbench.probe_external_agent_startup",
+        fake_probe,
+        raising=False,
+    )
+
+    resp = await workbench_client.post(
+        "/api/workbench/deployment-probe",
+        json={"repo_path": str(tmp_path), "providers": ["claude-code"]},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert seen_repo_paths == [str(tmp_path)]
+    assert body["repo_path"] != str(tmp_path)
+    assert str(tmp_path) not in json.dumps(body, ensure_ascii=False)
+    latest = json.loads(_workbench_path(body["artifact"]["latest_path"]).read_text(encoding="utf-8"))
+    assert str(tmp_path) not in json.dumps(latest, ensure_ascii=False)
+
+
 async def test_workbench_deployment_probe_can_run_task_contract_probe(
     workbench_client,
     tmp_path,
@@ -706,6 +745,8 @@ async def test_workbench_deployment_probe_can_run_task_contract_probe(
     latest = json.loads(_workbench_path(body["artifact"]["latest_path"]).read_text(encoding="utf-8"))
     assert latest["providers"][0]["task_probe"]["task_run_id"] == provider["task_probe"]["task_run_id"]
     assert latest["evidence_ids"] == body["evidence_ids"]
+    assert str(tmp_path) not in json.dumps(body, ensure_ascii=False)
+    assert str(tmp_path) not in json.dumps(latest, ensure_ascii=False)
 
     memory = await workbench_client.get(
         "/api/workbench/memory/search",
