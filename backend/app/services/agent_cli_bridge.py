@@ -276,7 +276,15 @@ def _looks_like_protocol_noise(event: dict[str, Any]) -> bool:
     if keys <= {"id", "index", "created", "created_at", "model", "object", "type", "role", "finish_reason", "usage"}:
         return True
     event_type = str(event.get("type") or event.get("event") or "")
-    return event_type in {"message_start", "message_stop", "content_block_start", "content_block_stop", "done"}
+    if event_type in {"message_start", "message_stop", "content_block_start", "content_block_stop", "done"}:
+        return True
+    if event_type.startswith("response.") and event_type not in {
+        "response.output_text.delta",
+        "response.reasoning_text.delta",
+        "response.refusal.delta",
+    }:
+        return True
+    return False
 
 
 def _diagnostic_event_text(event: dict[str, Any]) -> str | None:
