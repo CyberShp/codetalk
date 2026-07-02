@@ -370,6 +370,49 @@ async function createStructuredCodexCaptureRuntime(
   return { id: runtime.id, name: runtimeName, captureFile };
 }
 
+async function createDiagnosticOnlySourceRuntime(
+  request: APIRequestContext,
+  label: string,
+): Promise<{ id: string; name: string; captureFile: string }> {
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-diagnostic-only-")));
+  const runtimeScript = path.join(runtimeDir, "diagnostic_only_agent.py");
+  const captureFile = path.join(runtimeDir, "diagnostic_only_invocations.jsonl");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, pathlib, sys",
+      `capture = pathlib.Path(${JSON.stringify(captureFile)})`,
+      "prompt = sys.stdin.read()",
+      "capture.write_text((capture.read_text(encoding='utf-8') if capture.exists() else '') + json.dumps({'prompt': prompt}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+      "print('TOOL: rg nvmf_ctrlr_connect lib/nvmf/ctrlr.c', flush=True)",
+      "print('lib/nvmf/ctrlr.c:1:int nvmf_ctrlr_connect(void) { return 0; }', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const runtimeName = `${label} ${Date.now()}`;
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 20,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+  return { id: runtime.id, name: runtimeName, captureFile };
+}
+
 async function createClaudeResumeRuntime(
   request: APIRequestContext,
   label: string,
@@ -1532,6 +1575,86 @@ test("agent runtime receives the complete multiline task from the real AI thread
         expect.objectContaining({ role: "assistant", content: expect.stringContaining("MULTILINE_PROMPT_CAPTURE_OK") }),
       ]),
     );
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
+  }
+});
+
+test("diagnostic-only source agent fails visibly instead of idling with a fake answer", async ({
+  page,
+  request,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-diagnostic-only-repo-")));
+  fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "lib", "nvmf", "ctrlr.c"), "int nvmf_ctrlr_connect(void) { return 0; }\n", "utf8");
+  const workspaceName = `ai-diagnostic-only-${Date.now()}`;
+  const threadTitle = `${workspaceName} diagnostic only`;
+  const runtime = await createDiagnosticOnlySourceRuntime(request, "Diagnostic only source runtime");
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtime.name });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill("请阅读工作区源码，总结 lib/nvmf/ctrlr.c 里的 connect 入口");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(page.locator("div[role='alert']").filter({ hasText: "Agent 返回内容不足" })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByRole("button", { name: "重试上一条" })).toBeVisible();
+    await expect(page.getByText("执行器没有返回有效内容")).toHaveCount(0);
+    await expect(page.locator(".ct-codex-message:not(.is-user)")).toHaveCount(0);
+
+    await page.getByText("生成诊断：默认折叠").click();
+    await expect(page.getByText("rg nvmf_ctrlr_connect lib/nvmf/ctrlr.c").first()).toBeVisible();
+
+    const captured = fs.readFileSync(runtime.captureFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { prompt: string });
+    expect(captured).toHaveLength(2);
+    expect(captured[1].prompt).toContain("上一次执行器输出过短");
+
+    const conversationResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`,
+    );
+    expect(conversationResp.ok()).toBeTruthy();
+    const conversation = (await conversationResp.json()) as {
+      status: string;
+      latest_run: { status: string; error: string | null } | null;
+    };
+    expect(conversation.status).toBe("error");
+    expect(conversation.latest_run?.status).toBe("failed");
+    expect(conversation.latest_run?.error).toContain("仍未产出可验收");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    expect(messageBody.items.map((item) => item.role)).toEqual(["user"]);
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
     await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);

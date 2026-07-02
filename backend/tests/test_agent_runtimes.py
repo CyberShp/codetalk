@@ -1837,6 +1837,93 @@ class TestAgentRuntimes:
         )
         assert "上一次执行器输出过短" in diagnostics
 
+    async def test_ai_thread_agent_runtime_fails_source_task_when_only_diagnostics_return(
+        self,
+        sqlite_db,
+        tmp_path,
+    ):
+        repo = tmp_path / "spdk"
+        (repo / "lib" / "nvmf").mkdir(parents=True)
+        (repo / "lib" / "nvmf" / "ctrlr.c").write_text(
+            "int nvmf_ctrlr_connect(void) { return 0; }\n",
+            encoding="utf-8",
+        )
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-diagnostic-only", repo_path=str(repo))
+        prompt_log = tmp_path / "diagnostic_only_prompts.jsonl"
+        agent_script = tmp_path / "diagnostic_only_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import json, pathlib, sys",
+                    f"prompt_log = pathlib.Path({str(prompt_log)!r})",
+                    "prompt = sys.stdin.read()",
+                    "prompt_log.write_text((prompt_log.read_text() if prompt_log.exists() else '') + json.dumps({'prompt': prompt}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+                    "print('TOOL: rg nvmf_ctrlr_connect lib/nvmf/ctrlr.c', flush=True)",
+                    "print('lib/nvmf/ctrlr.c:1:int nvmf_ctrlr_connect(void) { return 0; }', flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Diagnostic only source task",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-diagnostic-only",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="请阅读工作区源码，总结 lib/nvmf/ctrlr.c 里的 connect 入口",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-diagnostic-only",
+                "name": "Diagnostic Only Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+            },
+        )
+
+        prompts = [json.loads(line) for line in prompt_log.read_text(encoding="utf-8").splitlines()]
+        assert len(prompts) == 2
+        assert "上一次执行器输出过短" in prompts[1]["prompt"]
+
+        run = await store.get_run(run_id)
+        assert run["status"] == "failed"
+        assert "仍未产出可验收" in (run["error"] or "")
+
+        messages = await store.list_messages(conversation["id"])
+        assert [item["role"] for item in messages] == ["user"]
+
+        events = await store.list_events_after(conversation["id"])
+        diagnostics = "\n".join(
+            event["payload"].get("content", "")
+            for event in events
+            if event["event_type"] == "delta" and event["payload"].get("kind") == "diagnostic"
+        )
+        answer_events = [
+            event["payload"].get("content", "")
+            for event in events
+            if event["event_type"] == "delta" and event["payload"].get("kind") != "diagnostic"
+        ]
+        assert "rg nvmf_ctrlr_connect" in diagnostics
+        assert "执行器没有返回有效内容" not in "\n".join(answer_events)
+
     async def test_ai_thread_claude_partial_messages_do_not_pollute_answer_or_artifact(
         self,
         sqlite_db,

@@ -1473,6 +1473,8 @@ def _agent_answer_requires_repair(
         return False
     if _looks_like_agent_thin_help_answer(content):
         return True
+    if _looks_like_agent_no_final_answer_notice(content):
+        return True
     return _agent_task_requires_structured_delivery(user_message) and _agent_answer_too_thin_for_task(
         content,
         user_message=user_message,
@@ -1563,6 +1565,17 @@ def _looks_like_agent_thin_help_answer(content: str) -> bool:
         "completed",
     )
     return len(text) <= 24 and any(marker in text for marker in generic_done_markers)
+
+
+def _looks_like_agent_no_final_answer_notice(content: str) -> bool:
+    cleaned = clean_agent_output_text(str(content or "")).strip()
+    text = re.sub(r"\s+", "", cleaned.lower())
+    no_answer_markers = (
+        "执行器没有返回有效内容",
+        "agentdidnotreturnvalidcontent",
+        "novalidcontent",
+    )
+    return any(marker in text for marker in no_answer_markers)
 
 
 def _agent_answer_too_thin_for_task(content: str, *, user_message: str = "") -> bool:
