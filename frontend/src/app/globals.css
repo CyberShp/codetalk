@@ -2919,6 +2919,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   }
 
   .ct-codex-ai__main {
+    height: min(58vh, 490px);
     min-height: min(58vh, 490px);
   }
 
