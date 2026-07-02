@@ -84,12 +84,26 @@ async def stream_agent_runtime(
         args = _codex_exec_json_args(args, prompt, resume_session_id=resume_session_id)
         stdin = asyncio.subprocess.DEVNULL
     elif prompt_transport == "opencode_run_arg":
-        args = _opencode_run_args(args, prompt)
+        args = _opencode_run_args(args, prompt, resume_session_id=resume_session_id)
         stdin = asyncio.subprocess.DEVNULL
     else:
         raise AgentRuntimeError(f"不支持的 prompt_transport: {prompt_transport}")
 
     env = _build_env(runtime)
+    prompt_file_path: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            prefix="codetalk-agent-prompt-",
+            suffix=".md",
+            delete=False,
+        ) as prompt_file:
+            prompt_file.write(prompt)
+            prompt_file_path = prompt_file.name
+        env["CODETALK_AGENT_PROMPT_FILE"] = prompt_file_path
+    except Exception:
+        prompt_file_path = None
     timeout = int(runtime.get("timeout_seconds") or 120)
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -102,12 +116,28 @@ async def stream_agent_runtime(
             env=env,
         )
     except FileNotFoundError as exc:
+        if prompt_file_path:
+            try:
+                Path(prompt_file_path).unlink(missing_ok=True)
+            except Exception:
+                pass
         raise AgentRuntimeError(await _missing_command_message(command)) from exc
     except Exception as exc:
+        if prompt_file_path:
+            try:
+                Path(prompt_file_path).unlink(missing_ok=True)
+            except Exception:
+                pass
         raise AgentRuntimeError(f"启动执行器失败：{redact_agent_diagnostic_text(str(exc))}") from exc
 
     stderr_chunks: list[str] = []
     completed_by_policy = False
+    activity_queue: asyncio.Queue[None] = asyncio.Queue(maxsize=1)
+
+    def mark_activity() -> None:
+        if activity_queue.full():
+            return
+        activity_queue.put_nowait(None)
 
     async def _drain_stderr() -> None:
         if proc.stderr is None:
@@ -121,9 +151,11 @@ async def stream_agent_runtime(
             text = _decode_strict_if_complete(bytes(pending))
             if text is not None:
                 stderr_chunks.append(text)
+                mark_activity()
                 pending.clear()
         if pending:
             stderr_chunks.append(_decode(bytes(pending)))
+            mark_activity()
 
     stderr_task = asyncio.create_task(_drain_stderr())
     try:
@@ -138,6 +170,7 @@ async def stream_agent_runtime(
                 str(runtime.get("output_mode") or "plain"),
                 runtime=runtime,
                 session_update=session_update,
+                activity_queue=activity_queue,
             ):
                 if chunk:
                     yield chunk
@@ -155,6 +188,11 @@ async def stream_agent_runtime(
     finally:
         if not stderr_task.done():
             stderr_task.cancel()
+        if prompt_file_path:
+            try:
+                Path(prompt_file_path).unlink(missing_ok=True)
+            except Exception:
+                pass
 
     if return_code != 0 and not completed_by_policy:
         error = "".join(stderr_chunks).strip()
@@ -244,10 +282,20 @@ def _codex_exec_json_args(
     return args
 
 
-def _opencode_run_args(base_args: list[str], prompt: str) -> list[str]:
+def _opencode_run_args(
+    base_args: list[str],
+    prompt: str,
+    *,
+    resume_session_id: str | None = None,
+) -> list[str]:
     args = list(base_args)
     if "run" not in args:
         args.append("run")
+    session_id = str(resume_session_id or "").strip()
+    if session_id and "--session" not in args:
+        args.extend(["--session", session_id])
+    if "--format" not in args:
+        args.extend(["--format", "json"])
     args.append(prompt)
     return args
 
@@ -305,6 +353,7 @@ async def _read_stdout(
     *,
     runtime: dict[str, Any] | None = None,
     session_update: Callable[[dict[str, Any]], None] | None = None,
+    activity_queue: asyncio.Queue[None] | None = None,
 ) -> AsyncIterator[str]:
     if proc.stdout is None:
         return
@@ -314,14 +363,32 @@ async def _read_stdout(
     sentinel = str(runtime.get("sentinel_text") or "").strip()
     saw_output = False
 
-    async def read_with_idle(read_coro):
+    async def read_with_idle(read_coro_factory):
         nonlocal saw_output
         if completion_mode == "idle_after_output" and saw_output:
-            try:
-                return await asyncio.wait_for(read_coro, timeout=idle_seconds)
-            except TimeoutError:
-                return None
-        return await read_coro
+            read_task = asyncio.create_task(read_coro_factory())
+            while True:
+                wait_tasks: set[asyncio.Task[Any]] = {read_task}
+                timeout_task = asyncio.create_task(asyncio.sleep(idle_seconds))
+                wait_tasks.add(timeout_task)
+                activity_task: asyncio.Task[Any] | None = None
+                if activity_queue is not None:
+                    activity_task = asyncio.create_task(activity_queue.get())
+                    wait_tasks.add(activity_task)
+                done, pending = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+                if read_task in done:
+                    for task in pending:
+                        task.cancel()
+                    return read_task.result()
+                if timeout_task in done:
+                    read_task.cancel()
+                    if activity_task is not None:
+                        activity_task.cancel()
+                    return None
+                timeout_task.cancel()
+                if activity_task is not None and activity_task in done:
+                    continue
+        return await read_coro_factory()
 
     def apply_completion_policy(parsed: str) -> tuple[str, bool]:
         if completion_mode != "sentinel" or not sentinel:
@@ -333,7 +400,7 @@ async def _read_stdout(
     if output_mode in {"ndjson", "stream_json", "auto"}:
         buffer = ""
         while True:
-            raw = await read_with_idle(proc.stdout.readline())
+            raw = await read_with_idle(proc.stdout.readline)
             if raw is None:
                 break
             if not raw:
@@ -366,7 +433,7 @@ async def _read_stdout(
     else:
         pending = bytearray()
         while True:
-            raw = await read_with_idle(proc.stdout.read(4096))
+            raw = await read_with_idle(lambda: proc.stdout.read(4096))
             if raw is None:
                 break
             if not raw:
@@ -431,11 +498,11 @@ def _agent_session_update(event: dict[str, Any]) -> dict[str, Any] | None:
     event_type = str(event.get("type") or event.get("event") or event.get("kind") or "").strip()
     session_id = _first_event_string(
         event,
-        ("session_id", "sessionId", "thread_id", "threadId"),
+        ("session_id", "sessionId", "sessionID", "thread_id", "threadId"),
     )
     resume_session_id = _first_event_string(
         event,
-        ("resume_session_id", "resumeSessionId", "next_session_id", "nextSessionId"),
+        ("resume_session_id", "resumeSessionId", "next_session_id", "nextSessionId", "sessionID"),
     )
     state = event.get("state")
     if isinstance(state, dict):
@@ -492,6 +559,21 @@ def _sse_payload_text(text: str) -> str:
 
 
 def _event_text(event: dict[str, Any]) -> str | None:
+    if str(event.get("type") or "").strip() == "stream_event":
+        stream_event = event.get("event")
+        if isinstance(stream_event, dict):
+            stream_type = str(stream_event.get("type") or "").strip()
+            if stream_type == "content_block_delta":
+                delta = stream_event.get("delta")
+                if isinstance(delta, dict):
+                    delta_type = str(delta.get("type") or "").strip()
+                    if delta_type == "text_delta" and isinstance(delta.get("text"), str):
+                        return str(delta["text"])
+                    if delta_type == "thinking_delta" and isinstance(delta.get("thinking"), str):
+                        return f"THINKING: {delta['thinking']}"
+            if stream_type == "content_block_stop":
+                return ""
+        return None
     codex_item = event.get("item")
     if isinstance(codex_item, dict):
         if str(codex_item.get("type") or "").strip() == "agent_message":
@@ -585,7 +667,11 @@ def _content_parts(value: list[Any]) -> list[str]:
                     parts.append(cleaned)
             elif item_type in {"tool_use", "tool_result", "function_call", "function_result"}:
                 tool_name = str(item.get("name") or item.get("tool") or item.get("function") or item_type).strip()
-                parts.append(f"TOOL: {tool_name}\n")
+                tool_input = item.get("input") or item.get("arguments") or item.get("state")
+                suffix = ""
+                if isinstance(tool_input, dict) and tool_input:
+                    suffix = f" {json.dumps(tool_input, ensure_ascii=False)[:300]}"
+                parts.append(f"TOOL: {tool_name}{suffix}\n")
     return parts
 
 
@@ -596,6 +682,16 @@ def _looks_like_protocol_noise(event: dict[str, Any]) -> bool:
     if keys <= {"id", "index", "created", "created_at", "model", "object", "type", "role", "finish_reason", "usage"}:
         return True
     event_type = str(event.get("type") or event.get("event") or "")
+    if event_type == "assistant":
+        message = event.get("message")
+        if isinstance(message, dict):
+            content = message.get("content")
+            if isinstance(content, list):
+                return all(
+                    isinstance(item, dict)
+                    and str(item.get("type") or "").strip() in {"tool_use", "tool_result", "thinking"}
+                    for item in content
+                )
     if event_type in {
         "message_start",
         "message_stop",
@@ -624,23 +720,36 @@ def _looks_like_protocol_noise(event: dict[str, Any]) -> bool:
 def _diagnostic_event_text(event: dict[str, Any]) -> str | None:
     event_type = str(event.get("type") or event.get("event") or event.get("kind") or "").strip().lower()
     tool_event = event_type in {"tool_use", "tool_result", "function_call", "function_result"}
+    assistant_tool_event = False
+    if event_type == "assistant":
+        message = event.get("message")
+        content = message.get("content") if isinstance(message, dict) else None
+        assistant_tool_event = isinstance(content, list) and any(
+            isinstance(item, dict)
+            and str(item.get("type") or "").strip() in {"tool_use", "tool_result"}
+            for item in content
+        )
     response_reasoning_event = event_type in {"response.reasoning_text.delta", "response.refusal.delta"}
     if (
         event_type not in {"status", "diagnostic", "thinking", "reasoning", "trace", "error"}
         and not tool_event
+        and not assistant_tool_event
         and not response_reasoning_event
     ):
         return None
     text = _event_error_text(event) if event_type == "error" else _event_text(event)
     if not text:
         return ""
-    if tool_event:
+    if tool_event or assistant_tool_event:
         prefix = "TOOL"
     elif response_reasoning_event:
         prefix = "THINKING"
     else:
         prefix = "THINKING" if event_type == "reasoning" else event_type.upper()
-    return f"{prefix}: {_clean_agent_text(text)}"
+    cleaned = _clean_agent_text(text).strip()
+    if cleaned.lower().startswith(("tool:", "thinking:", "reasoning:", "trace:", "diagnostic:", "status:", "error:")):
+        return cleaned
+    return f"{prefix}: {cleaned}"
 
 
 def _event_error_text(event: dict[str, Any]) -> str | None:

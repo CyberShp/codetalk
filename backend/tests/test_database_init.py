@@ -167,6 +167,8 @@ class TestDefaultAgentRuntimes:
         assert rows["default-opencode"]["name"] == "OpenCode"
         assert rows["default-opencode"]["prompt_transport"] == "opencode_run_arg"
         assert rows["default-opencode"]["output_mode"] == "auto"
+        assert rows["default-opencode"]["session_persistence"] == "resume_args"
+        assert json.loads(rows["default-opencode"]["resume_args_json"]) == []
 
     @pytest.mark.asyncio
     async def test_init_db_migrates_legacy_claude_runtime_to_managed_defaults(self, fresh_db):

@@ -1819,7 +1819,8 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
 .ct-codex-ai__back,
 .ct-codex-ai__new,
-.ct-codex-ai__thread {
+.ct-codex-ai__thread,
+.ct-codex-ai__thread-delete {
   display: flex;
   align-items: center;
   gap: 8px;
@@ -1948,6 +1949,13 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   padding-right: 2px;
 }
 
+.ct-codex-ai__thread-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  align-items: center;
+  gap: 4px;
+}
+
 .ct-codex-ai__thread {
   min-height: 42px;
   padding: 10px;
@@ -1955,6 +1963,31 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     transform var(--motion-fast) var(--motion-spring),
     background var(--motion-fast) var(--motion-ease),
     box-shadow var(--motion-fast) var(--motion-ease);
+}
+
+.ct-codex-ai__thread-delete {
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: #94a3b8;
+  transition:
+    background var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease),
+    transform var(--motion-fast) var(--motion-spring);
+}
+
+.ct-codex-ai__thread-delete:hover {
+  transform: translateY(-1px);
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.ct-codex-ai__thread-delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 .ct-codex-ai__thread span {
@@ -2144,6 +2177,36 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   max-width: 100%;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.ct-codex-message__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  box-shadow: none;
+}
+
+.ct-codex-message__actions a {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 30px;
+  border: 1px solid rgba(14, 116, 144, 0.2);
+  border-radius: 10px;
+  background: #ecfeff;
+  padding: 6px 9px;
+  color: #155e75;
+  font-size: 12px;
+  font-weight: 760;
+}
+
+.ct-codex-message__actions a:hover {
+  background: #cffafe;
+  color: #164e63;
 }
 
 .ct-codex-message.is-user .ct-codex-message__content > div {

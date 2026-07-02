@@ -126,6 +126,23 @@ class BlockingStreamLLM:
         yield "最终结论。"
 
 
+class LongArtifactLLM:
+    async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
+        rows = [
+            "| failure mode | cause | effect | detection | RPN |",
+            "| --- | --- | --- | --- | --- |",
+        ]
+        rows.extend(
+            f"| SFMEA 风险 {index} | 资源不足 | IO 失败 | 日志和指标 | {200 + index} |"
+            for index in range(120)
+        )
+        yield "## SFMEA\n\n" + "\n".join(rows) + "\n\n## 黑盒测试用例\n\n"
+        yield "\n".join(
+            f"{index}. 前置条件：target 已启动。步骤：执行异常输入。预期结果：返回明确错误并记录日志。"
+            for index in range(120)
+        )
+
+
 async def test_agent_output_segments_strip_terminal_noise_before_diagnostic_detection():
     from app.services.ai_conversations import _agent_output_segments
 
@@ -256,6 +273,42 @@ class TestAIConversationsAPI:
             assert listed.status_code == 200
             items = listed.json()["items"]
             assert [item["id"] for item in items] == [body_a["id"]]
+
+    async def test_delete_conversation_removes_idle_thread_and_rejects_running_thread(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        store_path = sqlite_db
+        from app.services.ai_conversations import AIConversationStore
+
+        store = AIConversationStore(store_path)
+        idle = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="可删除线程",
+        )
+        running = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="运行中线程",
+        )
+        await store.create_user_message_and_run(
+            conversation_id=running["id"],
+            content="还在运行",
+            references=[],
+        )
+
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            blocked = await client.delete(f"/api/ai/conversations/{running['id']}")
+            assert blocked.status_code == 409
+            assert "仍在生成" in blocked.text
+
+            deleted = await client.delete(f"/api/ai/conversations/{idle['id']}")
+            assert deleted.status_code == 204
+
+            missing = await client.get(f"/api/ai/conversations/{idle['id']}")
+            assert missing.status_code == 404
 
     async def test_create_workbench_conversation_publicizes_artifact_context(self, sqlite_db):
         task_run_id = "task_run_public_context"
@@ -1662,3 +1715,57 @@ class TestAIConversationsAPI:
             assert fake_llm.complete_called is True
             assert [m["role"] for m in body["items"]] == ["user", "assistant"]
             assert "fallback 已完成" in body["items"][1]["content"]
+
+    async def test_long_sfmea_and_blackbox_output_materializes_downloadable_artifact(
+        self,
+        sqlite_db,
+        monkeypatch,
+    ):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.api import ai_conversations
+
+        monkeypatch.setattr(
+            ai_conversations,
+            "create_llm_client_from_active",
+            lambda: LongArtifactLLM(),
+        )
+
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "title": "长产物线程",
+                },
+            )
+            conversation = created.json()
+
+            posted = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "生成完整 SFMEA 和黑盒测试用例"},
+            )
+            assert posted.status_code == 202
+            for _ in range(60):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                body = messages.json()
+                if len(body["items"]) == 2:
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                pytest.fail("assistant message was not generated")
+
+            assistant = body["items"][1]
+            assert "内容较长，已折叠为下载产物" in assistant["content"]
+            assert len(assistant["content"]) < 4500
+            download_action = next(
+                action for action in assistant["actions"] if action["id"] == "download_run_artifact"
+            )
+            artifact = await client.get(download_action["href"])
+            assert artifact.status_code == 200
+            artifact_text = artifact.text
+            assert "# 长产物线程" in artifact_text
+            assert "SFMEA 风险 119" in artifact_text
+            assert "黑盒测试用例" in artifact_text

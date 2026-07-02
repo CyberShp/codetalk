@@ -682,6 +682,11 @@ export const api = {
         body: JSON.stringify(data),
       }),
 
+    delete: (id: string) =>
+      request<void>(`/api/ai/conversations/${encodeURIComponent(id)}`, {
+        method: "DELETE",
+      }),
+
     get: (id: string) =>
       request<AIConversation>(`/api/ai/conversations/${encodeURIComponent(id)}`),
 

@@ -23,6 +23,7 @@ import {
   Send,
   Sparkles,
   Square,
+  Trash2,
   User,
 } from "lucide-react";
 import { api } from "@/lib/api";
@@ -48,6 +49,21 @@ function eventDiagnosticText(event: AIRunEvent): string {
 
 function eventKind(event: AIRunEvent): string {
   const value = event.payload.kind ?? event.payload.channel ?? event.payload.type;
+  return typeof value === "string" ? value : "";
+}
+
+function actionLabel(action: AIMessage["actions"][number]): string {
+  const value = action.label;
+  return typeof value === "string" ? value : "";
+}
+
+function actionHref(action: AIMessage["actions"][number]): string {
+  const value = action.href;
+  return typeof value === "string" ? value : "";
+}
+
+function actionKind(action: AIMessage["actions"][number]): string {
+  const value = action.kind;
   return typeof value === "string" ? value : "";
 }
 
@@ -256,6 +272,7 @@ export default function AIThreadPage() {
   const [sending, setSending] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [creatingSiblingThread, setCreatingSiblingThread] = useState(false);
+  const [deletingThreadId, setDeletingThreadId] = useState<string | null>(null);
   const [streamingRunId, setStreamingRunId] = useState<string | null>(null);
   const [streamingContent, setStreamingContent] = useState("");
   const [streamingDiagnostics, setStreamingDiagnostics] = useState<string[]>([]);
@@ -265,6 +282,7 @@ export default function AIThreadPage() {
   const abortRef = useRef<AbortController | null>(null);
   const cancellingRef = useRef(false);
   const creatingSiblingThreadRef = useRef(false);
+  const deletingThreadRef = useRef<string | null>(null);
   const readerRef = useRef<HTMLElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
@@ -296,7 +314,7 @@ export default function AIThreadPage() {
   );
   const composerDisabled = sending || isActuallyRunning;
   const threadNavigationBusy =
-    savingRuntime || cancelling || creatingSiblingThread || isActuallyRunning;
+    savingRuntime || cancelling || creatingSiblingThread || Boolean(deletingThreadId) || isActuallyRunning;
   const lastUserMessage = useMemo(
     () => [...messages].reverse().find((message) => message.role === "user") ?? null,
     [messages],
@@ -681,6 +699,33 @@ export default function AIThreadPage() {
     }
   };
 
+  const deleteThread = async (thread: AIConversation) => {
+    if (thread.status === "running" || thread.latest_run?.status === "running" || thread.latest_run?.status === "queued") {
+      setError("当前线程仍在生成中，请先停止后再删除。");
+      return;
+    }
+    if (deletingThreadRef.current) return;
+    const confirmed = window.confirm(`删除线程“${thread.title}”？这会删除该线程的消息和运行记录。`);
+    if (!confirmed) return;
+    deletingThreadRef.current = thread.id;
+    setDeletingThreadId(thread.id);
+    setError(null);
+    try {
+      await api.aiConversations.delete(thread.id);
+      const nextThreads = threads.filter((item) => item.id !== thread.id);
+      setThreads(nextThreads);
+      if (thread.id === conversationId) {
+        const fallback = nextThreads.find((item) => threadWorkspaceId(item) === workspaceId);
+        router.push(fallback ? `/ai/${fallback.id}` : "/ai");
+      }
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "删除线程失败");
+    } finally {
+      deletingThreadRef.current = null;
+      setDeletingThreadId(null);
+    }
+  };
+
   if (loading) {
     return (
       <div className="flex min-h-[60vh] items-center justify-center">
@@ -763,18 +808,31 @@ export default function AIThreadPage() {
               </>
             );
             return threadNavigationBusy ? (
-              <span
-                key={thread.id}
-                className={`${threadClass} is-disabled`}
-                role="link"
-                aria-disabled="true"
-              >
-                {threadContent}
-              </span>
+              <div key={thread.id} className="ct-codex-ai__thread-row">
+                <span
+                  className={`${threadClass} is-disabled`}
+                  role="link"
+                  aria-disabled="true"
+                >
+                  {threadContent}
+                </span>
+              </div>
             ) : (
-              <Link key={thread.id} href={`/ai/${thread.id}`} className={threadClass}>
-                {threadContent}
-              </Link>
+              <div key={thread.id} className="ct-codex-ai__thread-row">
+                <Link href={`/ai/${thread.id}`} className={threadClass}>
+                  {threadContent}
+                </Link>
+                <button
+                  type="button"
+                  className="ct-codex-ai__thread-delete"
+                  onClick={() => void deleteThread(thread)}
+                  disabled={deletingThreadId === thread.id}
+                  title="删除线程"
+                  aria-label={`删除线程 ${thread.title}`}
+                >
+                  {deletingThreadId === thread.id ? <Loader2 size={13} className="animate-spin" /> : <Trash2 size={13} />}
+                </button>
+              </div>
             );
           })}
         </div>
@@ -854,6 +912,22 @@ export default function AIThreadPage() {
                       <p className="whitespace-pre-wrap">{redactDiagnosticText(message.content)}</p>
                     )}
                   </div>
+                  {message.actions?.some((action) => actionHref(action)) && (
+                    <div className="ct-codex-message__actions">
+                      {message.actions
+                        .filter((action) => actionHref(action))
+                        .map((action) => (
+                          <a
+                            key={`${message.id}-${action.id ?? actionHref(action)}`}
+                            href={actionHref(action)}
+                            download={actionKind(action) === "download" ? true : undefined}
+                          >
+                            <Download size={14} />
+                            {actionLabel(action) || "下载产物"}
+                          </a>
+                        ))}
+                    </div>
+                  )}
                 </div>
               </article>
             ))

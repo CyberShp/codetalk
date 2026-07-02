@@ -93,7 +93,7 @@ class TestAgentRuntimes:
                 VALUES (?, ?, ?, '[]', ?, ?, 'project', 900, 'process_exit', ?, '[]', 1, ?, ?)
                 """,
                 [
-                    ("default-opencode", "OpenCode", "opencode", "opencode_run_arg", "auto", "none", now, now),
+                    ("default-opencode", "OpenCode", "opencode", "opencode_run_arg", "auto", "resume_args", now, now),
                     ("custom-agent", "Custom Agent", "custom", "stdin", "plain", "none", now, now),
                     ("default-codex", "Codex", "codex", "codex_exec_json", "stream_json", "resume_args", now, now),
                     ("default-claude-code", "Claude Code", "claude", "claude_print_arg", "stream_json", "resume_args", now, now),
@@ -1618,6 +1618,55 @@ class TestAgentRuntimes:
             == "TOOL: 正在调用 rg 搜索源码"
         )
         assert _parse_event_text(json.dumps({"type": "message_start", "index": 0}), "stream_json") == ""
+        assert (
+            _parse_event_text(
+                json.dumps(
+                    {
+                        "type": "stream_event",
+                        "event": {
+                            "type": "content_block_delta",
+                            "delta": {"type": "thinking_delta", "thinking": "先搜索源码"},
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                "stream_json",
+            )
+            == "THINKING: 先搜索源码"
+        )
+        assert (
+            _parse_event_text(
+                json.dumps(
+                    {
+                        "type": "stream_event",
+                        "event": {
+                            "type": "content_block_delta",
+                            "delta": {"type": "text_delta", "text": "Claude 正文"},
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                "stream_json",
+            )
+            == "Claude 正文"
+        )
+        assert (
+            _parse_event_text(
+                json.dumps(
+                    {
+                        "type": "assistant",
+                        "message": {
+                            "content": [
+                                {"type": "tool_use", "name": "Read", "input": {"file": "lib/nvmf/connect.c"}}
+                            ]
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                "stream_json",
+            )
+            == 'TOOL: Read {"file": "lib/nvmf/connect.c"}'
+        )
 
     async def test_agent_runtime_stream_decodes_gbk_stdout(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
@@ -1674,6 +1723,85 @@ class TestAgentRuntimes:
         assert artifact_dir
         assert (tmp_path / "agent-cwd" / "result.json").exists() is False
         assert pathlib.Path(artifact_dir, "result.json").exists()
+
+    async def test_agent_runtime_exposes_full_multiline_prompt_file(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        prompt = "第一行任务\n第二行必须保留\n第三行包含 SFMEA 和黑盒测试"
+        agent_code = (
+            "import os, pathlib, sys; "
+            "path=pathlib.Path(os.environ['CODETALK_AGENT_PROMPT_FILE']); "
+            "sys.stdout.write(path.read_text(encoding='utf-8')); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "argv_last",
+                "output_mode": "plain",
+                "timeout_seconds": 10,
+            },
+            prompt=prompt,
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        assert "".join(chunks) == prompt
+
+    async def test_opencode_managed_transport_resumes_session_and_requests_json_format(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = "import json, sys; print(json.dumps(sys.argv[1:], ensure_ascii=False), flush=True)"
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "opencode_run_arg",
+                "output_mode": "plain",
+                "timeout_seconds": 10,
+            },
+            prompt="继续分析源码",
+            cwd=None,
+            resume_session_id="opencode-session-1",
+        ):
+            chunks.append(chunk)
+
+        args = json.loads("".join(chunks))
+        assert args[:5] == ["run", "--session", "opencode-session-1", "--format", "json"]
+        assert args[-1] == "继续分析源码"
+
+    async def test_agent_runtime_idle_completion_extends_while_stderr_is_active(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import sys, time; "
+            "print('首段源码分析。', flush=True); "
+            "\nfor i in range(5):\n"
+            "    sys.stderr.write(f'thinking: still reading source {i}\\n'); sys.stderr.flush(); time.sleep(0.35)\n"
+            "print('最终答案：stderr 活动期间不应被 idle 提前截断。', flush=True)"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "timeout_seconds": 10,
+                "completion_mode": "idle_after_output",
+                "idle_complete_seconds": 1,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        output = "".join(chunks)
+        assert "首段源码分析" in output
+        assert "最终答案：stderr 活动期间不应被 idle 提前截断。" in output
 
     async def test_agent_runtime_stream_decodes_utf16le_stdout_from_windows_shells(self):
         from app.services.agent_cli_bridge import stream_agent_runtime

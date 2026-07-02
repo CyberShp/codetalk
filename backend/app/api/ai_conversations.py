@@ -7,13 +7,14 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.llm.factory import create_llm_client_from_active
 from app.services.ai_conversations import (
     AI_SCOPE_TYPES,
     AIConversationStore,
+    ai_thread_artifact_path,
     build_context_references,
     maybe_await,
     run_agent_generation,
@@ -149,6 +150,18 @@ async def update_conversation(conversation_id: str, body: UpdateConversationRequ
     return conversation
 
 
+@router.delete("/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+async def delete_conversation(conversation_id: str) -> Response:
+    store = _store()
+    try:
+        await store.delete_conversation(conversation_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="AI conversation not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get("/{conversation_id}/messages")
 async def list_messages(conversation_id: str) -> dict[str, Any]:
     try:
@@ -212,6 +225,26 @@ async def stream_events(
                 idle_ticks = 0
 
     return StreamingResponse(_events(), media_type="text/event-stream")
+
+
+@router.get("/{conversation_id}/runs/{run_id}/artifact")
+async def download_run_artifact(conversation_id: str, run_id: str) -> FileResponse:
+    store = _store()
+    try:
+        await store.get_conversation(conversation_id)
+        run = await store.get_run(run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="AI conversation or run not found")
+    if run["conversation_id"] != conversation_id:
+        raise HTTPException(status_code=404, detail="AI conversation or run not found")
+    path = ai_thread_artifact_path(conversation_id, run_id)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail="AI run artifact not found")
+    return FileResponse(
+        path,
+        media_type="text/markdown; charset=utf-8",
+        filename=f"{conversation_id}-{run_id}-assistant-output.md",
+    )
 
 
 @router.post("/{conversation_id}/cancel")

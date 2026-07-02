@@ -348,7 +348,7 @@ _DEFAULT_AGENT_RUNTIMES = [
         "completion_mode": "process_exit",
         "idle_complete_seconds": 5,
         "sentinel_text": "",
-        "session_persistence": "none",
+        "session_persistence": "resume_args",
         "resume_args": [],
         "enabled": 1,
     },
@@ -450,6 +450,22 @@ async def _seed_default_agent_runtimes(db: aiosqlite.Connection) -> None:
 
 
 async def _migrate_legacy_agent_runtimes(db: aiosqlite.Connection) -> None:
+    await db.execute(
+        """
+        UPDATE agent_runtimes
+        SET
+            output_mode = 'auto',
+            timeout_seconds = MAX(timeout_seconds, 900),
+            completion_mode = 'process_exit',
+            idle_complete_seconds = 5,
+            sentinel_text = '',
+            session_persistence = 'resume_args',
+            resume_args_json = '[]',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = 'default-opencode'
+          AND prompt_transport = 'opencode_run_arg'
+        """
+    )
     await db.execute(
         """
         UPDATE agent_runtimes

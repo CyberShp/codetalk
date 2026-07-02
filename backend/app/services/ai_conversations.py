@@ -7,6 +7,7 @@ import inspect
 import json
 import logging
 import re
+import shutil
 import subprocess
 import uuid
 from contextlib import asynccontextmanager
@@ -37,6 +38,17 @@ AI_SCOPE_TYPES = {
 _MAX_REFERENCE_CHARS = 1200
 _MAX_CONTEXT_REFERENCES = 14
 _MAX_HISTORY_MESSAGES = 24
+_THREAD_INLINE_OUTPUT_LIMIT = 3600
+_THREAD_ARTIFACT_KEYWORDS = (
+    "sfmea",
+    "failure mode",
+    "黑盒",
+    "测试用例",
+    "测试设计",
+    "前置条件",
+    "预期结果",
+    "rpn",
+)
 _SOURCE_SUFFIXES = {
     ".c",
     ".cc",
@@ -144,6 +156,17 @@ def _clip(text: str, limit: int = _MAX_REFERENCE_CHARS) -> str:
     if len(compact) <= limit:
         return compact
     return compact[: limit - 1] + "…"
+
+
+def ai_thread_artifact_path(conversation_id: str, run_id: str) -> Path:
+    safe_conversation = re.sub(r"[^A-Za-z0-9_.-]+", "-", conversation_id).strip("-") or "conversation"
+    safe_run = re.sub(r"[^A-Za-z0-9_.-]+", "-", run_id).strip("-") or "run"
+    return settings.outputs_path / "ai_conversations" / safe_conversation / safe_run / "assistant-output.md"
+
+
+def _remove_tree_quietly(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path, ignore_errors=True)
 
 
 _SOURCE_DUMP_MIN_LINES = 30
@@ -426,6 +449,22 @@ class AIConversationStore:
             await db.commit()
         return await self.get_conversation(conversation_id)
 
+    async def delete_conversation(self, conversation_id: str) -> None:
+        conversation = await self.get_conversation(conversation_id)
+        latest = await self.latest_run(conversation_id)
+        if latest and latest["status"] in {"queued", "running"}:
+            raise ValueError("当前线程仍在生成中，请先停止后再删除")
+        async with self._connect() as db:
+            await db.execute("BEGIN")
+            await db.execute("DELETE FROM ai_run_events WHERE conversation_id = ?", (conversation_id,))
+            await db.execute("DELETE FROM ai_agent_runtime_sessions WHERE conversation_id = ?", (conversation_id,))
+            await db.execute("DELETE FROM ai_conversation_runs WHERE conversation_id = ?", (conversation_id,))
+            await db.execute("DELETE FROM ai_messages WHERE conversation_id = ?", (conversation_id,))
+            await db.execute("DELETE FROM ai_conversations WHERE id = ?", (conversation_id,))
+            await db.commit()
+        artifact_root = settings.outputs_path / "ai_conversations" / conversation["id"]
+        await _to_thread(_remove_tree_quietly, artifact_root)
+
     async def list_messages(self, conversation_id: str) -> list[dict[str, Any]]:
         async with self._connect() as db:
             async with db.execute(
@@ -601,6 +640,7 @@ class AIConversationStore:
         references: list[dict[str, Any]],
         model: str | None = None,
         token_usage: dict[str, Any] | None = None,
+        actions: list[dict[str, str]] | None = None,
     ) -> None:
         run = await self.get_run(run_id)
         now = _now()
@@ -619,7 +659,7 @@ class AIConversationStore:
                     run_id,
                     safe_content,
                     _json_dumps(references),
-                    _json_dumps(_default_actions()),
+                    _json_dumps(actions or _default_actions()),
                     now,
                 ),
             )
@@ -962,11 +1002,17 @@ async def run_generation(
             references,
         )
         model = str(getattr(llm, "_model", "") or "")
+        final_content, actions = await _prepare_assistant_delivery(
+            run_id=run_id,
+            conversation=conversation,
+            content=content,
+        )
         await store.complete_run(
             run_id=run_id,
-            content=content,
+            content=final_content,
             references=references,
             model=model or None,
+            actions=actions,
         )
     except Exception as exc:
         logger.exception("AI conversation run failed: %s", exc)
@@ -1085,11 +1131,17 @@ async def run_agent_generation(
                     "event_type": str(latest_session.get("event_type") or ""),
                 },
             )
+        final_content, actions = await _prepare_assistant_delivery(
+            run_id=run_id,
+            conversation=conversation,
+            content=content,
+        )
         await store.complete_run(
             run_id=run_id,
-            content=content,
+            content=final_content,
             references=references,
             model=f"agent:{runtime.get('name') or runtime.get('id')}",
+            actions=actions,
         )
     except Exception as exc:
         message = redact_agent_diagnostic_text(str(exc))
@@ -2027,6 +2079,63 @@ async def _to_thread(fn: Any, *args: Any, **kwargs: Any) -> Any:
 
 async def _read_text(path: Path) -> str:
     return await _to_thread(path.read_text, "utf-8", "ignore")
+
+
+async def _prepare_assistant_delivery(
+    *,
+    run_id: str,
+    conversation: dict[str, Any],
+    content: str,
+) -> tuple[str, list[dict[str, str]]]:
+    actions = _default_actions()
+    if not _should_materialize_thread_artifact(content):
+        return content, actions
+    artifact_path = ai_thread_artifact_path(str(conversation["id"]), run_id)
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    title = str(conversation.get("title") or "AI 调查线程")
+    artifact_body = "\n".join(
+        [
+            f"# {title}",
+            "",
+            f"- conversation_id: {conversation.get('id')}",
+            f"- run_id: {run_id}",
+            f"- exported_at: {_now()}",
+            "",
+            content.rstrip(),
+            "",
+        ]
+    )
+    await _to_thread(artifact_path.write_text, artifact_body, "utf-8")
+    artifact_url = f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifact"
+    actions = [
+        {
+            "id": "download_run_artifact",
+            "label": "下载完整产物",
+            "href": artifact_url,
+            "kind": "download",
+        },
+        *actions,
+    ]
+    if len(content) <= _THREAD_INLINE_OUTPUT_LIMIT:
+        return (
+            f"{content.rstrip()}\n\n---\n完整 Markdown 产物已保存，可通过“下载完整产物”获取。",
+            actions,
+        )
+    visible = content[:_THREAD_INLINE_OUTPUT_LIMIT].rstrip()
+    return (
+        f"{visible}\n\n---\n内容较长，已折叠为下载产物。请使用“下载完整产物”获取完整测试设计/SFMEA/黑盒用例。",
+        actions,
+    )
+
+
+def _should_materialize_thread_artifact(content: str) -> bool:
+    text = str(content or "")
+    if len(text) > _THREAD_INLINE_OUTPUT_LIMIT * 2:
+        return True
+    lowered = text.lower()
+    has_keyword = any(keyword in lowered for keyword in _THREAD_ARTIFACT_KEYWORDS)
+    has_table_or_many_steps = text.count("\n|") >= 4 or len(re.findall(r"(?m)^\s*\d+[\.)]\s+", text)) >= 8
+    return has_keyword and has_table_or_many_steps
 
 
 def _conversation_from_row(row: aiosqlite.Row) -> dict[str, Any]:
