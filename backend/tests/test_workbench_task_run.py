@@ -1287,10 +1287,12 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
     assert result.outputs[0]["status"] == "ok"
     assert result.outputs[0]["from"] == "collect_mr"
     assert result.outputs[0]["artifact"] == "report.md"
-    assert result.outputs[0]["sha256"] == hashlib.sha256(
-        Path(result.outputs[0]["path"]).read_bytes()
-    ).hexdigest()
     root = Path(task_run.artifact_dir)
+    output_path = root / result.outputs[0]["path"]
+    assert output_path.is_file()
+    assert result.outputs[0]["sha256"] == hashlib.sha256(
+        output_path.read_bytes()
+    ).hexdigest()
     assert (root / "workflow_execution.json").exists()
     workflow_outputs = json.loads((root / "workflow_outputs.json").read_text(encoding="utf-8"))
     assert workflow_outputs["outputs"][0]["id"] == "report"
@@ -2371,7 +2373,14 @@ def test_workbench_workflow_runner_injects_prior_step_artifacts_into_agent_task(
     parse_artifacts = seen["artifacts"]["parse_patch"]
     assert parse_artifacts["changed_files_json"].endswith("changed_files.json")
     changed = json.loads(Path(parse_artifacts["changed_files_json"]).read_text(encoding="utf-8"))
-    assert changed == [{"path": "src/tls.c", "old_path": "src/tls.c", "status": "modified"}]
+    assert changed == [
+        {
+            "path": "src/tls.c",
+            "old_path": "src/tls.c",
+            "status": "modified",
+            "hunk_start_lines": [1],
+        }
+    ]
 
 
 def test_workbench_workflow_runner_runs_second_agent_turn_for_source_slice_requests(
@@ -3200,7 +3209,14 @@ def test_patch_impact_review_preset_executes_with_local_diff_analysis(tmp_path):
     test_recommendations = json.loads(
         (root / "steps" / "analyze_impact" / "test_recommendations.json").read_text(encoding="utf-8")
     )
-    assert changed_files == [{"path": "lib/bdev/bdev.c", "old_path": "lib/bdev/bdev.c", "status": "modified"}]
+    assert changed_files == [
+        {
+            "path": "lib/bdev/bdev.c",
+            "old_path": "lib/bdev/bdev.c",
+            "status": "modified",
+            "hunk_start_lines": [1],
+        }
+    ]
     assert impact_scope[0]["file_path"] == "lib/bdev/bdev.c"
     assert impact_scope[0]["source"] == "local-patch-impact"
     assert flow_delta[0]["observable_change"]

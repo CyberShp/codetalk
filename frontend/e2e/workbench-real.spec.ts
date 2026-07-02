@@ -3,6 +3,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
+
 test("lists and installs every built-in workflow preset through the real workbench UI", async ({
   page,
 }) => {
@@ -26,6 +28,11 @@ test("lists and installs every built-in workflow preset through the real workben
     { id: "app_startup_shutdown_smoke_blackbox", label: "应用启动/关闭冒烟黑盒场景" },
     { id: "nvme_ctrlr_hotplug_reset_blackbox", label: "NVMe 控制器热插拔/reset 黑盒场景" },
     { id: "storage_capacity_enospc_recovery_blackbox", label: "容量/ENOSPC 恢复黑盒场景" },
+    { id: "nvmf_rdma_transport_blackbox", label: "NVMe/RDMA transport 黑盒场景" },
+    { id: "iscsi_digest_multi_connection_blackbox", label: "iSCSI digest/多连接黑盒场景" },
+    { id: "bdev_hotremove_io_error_blackbox", label: "bdev hotremove/IO 错误黑盒场景" },
+    { id: "blobstore_metadata_powerfail_blackbox", label: "blobstore 元数据/掉电恢复黑盒场景" },
+    { id: "rpc_security_authz_blackbox", label: "RPC 安全/权限黑盒场景" },
     { id: "fault_injection_timeout_recovery_blackbox", label: "故障注入/超时恢复黑盒场景" },
     { id: "concurrent_operations_stress_blackbox", label: "并发操作/压力黑盒场景" },
     { id: "observability_diagnostics_blackbox", label: "可观测性/诊断黑盒场景" },
@@ -48,9 +55,14 @@ test("lists and installs every built-in workflow preset through the real workben
   expect(scenarioValues).toEqual(
     expect.arrayContaining([
       "module_analysis",
-      "issue_hunt",
-      "mr_blackbox",
-      "patch_impact",
+      "resource_leak_hunt",
+      "mr_blackbox_test",
+      "patch_impact_review",
+      "nvmf_rdma_transport_blackbox",
+      "iscsi_digest_multi_connection_blackbox",
+      "bdev_hotremove_io_error_blackbox",
+      "blobstore_metadata_powerfail_blackbox",
+      "rpc_security_authz_blackbox",
       "fault_injection_timeout_recovery_blackbox",
       "concurrent_operations_stress_blackbox",
       "observability_diagnostics_blackbox",
@@ -630,72 +642,130 @@ test("prevents duplicate recent task restore requests from a real double click",
 
 test("locks sibling agent-run actions while a real step execution is in flight", async ({
   page,
+  request,
 }) => {
   test.setTimeout(60_000);
   const unique = Date.now();
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-step-busy-")));
   fs.writeFileSync(path.join(repo, "README.md"), "step busy e2e\n", "utf8");
+  const agentScript = path.join(repo, "slow-agent.cjs");
+  fs.writeFileSync(
+    agentScript,
+    [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "let stdin = '';",
+      "process.stdin.on('data', (chunk) => { stdin += chunk; });",
+      "process.stdin.on('end', () => {",
+      "  const artifactDir = process.env.CODETALK_AGENT_ARTIFACT_DIR;",
+      "  setTimeout(() => {",
+      "    fs.writeFileSync(path.join(artifactDir, 'result.json'), JSON.stringify({ status: 'ok', sawRunId: stdin.includes('run_id') }));",
+      "  }, 350);",
+      "});",
+    ].join("\n"),
+    "utf8",
+  );
   const workflowId = `step_busy_${unique}`;
-
-  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
-  await page.getByLabel("Workflow JSON").fill(
-    JSON.stringify(
-      {
-        id: workflowId,
-        name: "Step Busy E2E",
-        version: 1,
-        inputs: [{ id: "analysis_object", type: "free_text", required: true }],
-        steps: [
-          {
-            id: "slow_step",
-            type: "agent_task",
-            provider: "slow-agent",
-            required_artifacts: ["result.json"],
-            goal: "Write result.json after a short delay.",
-          },
-        ],
-        outputs: [{ id: "result", type: "json", artifact: "result.json" }],
-      },
-      null,
-      2,
+  const originalSettingsResp = await request.get(`${backendBase}/api/settings/agent-providers`);
+  expect(originalSettingsResp.ok()).toBeTruthy();
+  const originalSettings = await originalSettingsResp.json();
+  const customProviders = [
+    ...(originalSettings.external_agent_custom_providers ?? []).filter(
+      (provider: { id?: string }) => provider.id !== "slow-agent",
     ),
-  );
-  await page.getByRole("button", { name: "保存工作流" }).hover();
-  await page.getByRole("button", { name: "保存工作流" }).click();
-  await expect(page.getByText(`工作流已保存: ${workflowId}`)).toBeVisible({
-    timeout: 15_000,
+    {
+      id: "slow-agent",
+      command: `"${process.execPath}" "${agentScript}"`,
+      prompt_transport: "stdin",
+      supports_artifact_export: true,
+      supports_json_output: true,
+    },
+  ];
+  const settingsResp = await request.put(`${backendBase}/api/settings/agent-providers`, {
+    data: {
+      ...originalSettings,
+      external_agent_custom_providers: customProviders,
+    },
   });
+  expect(settingsResp.ok()).toBeTruthy();
 
-  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-  await page.getByRole("button", { name: "运行驾驶舱" }).click();
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf step busy");
-  await page.getByRole("button", { name: "准备运行" }).hover();
-  await page.getByRole("button", { name: "准备运行" }).click();
-  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText("slow-agent").first()).toBeVisible();
+  try {
+    await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: "工作流设计" }).hover();
+    await page.getByRole("button", { name: "工作流设计" }).click();
+    await page.getByLabel("Workflow JSON").fill(
+      JSON.stringify(
+        {
+          id: workflowId,
+          name: "Step Busy E2E",
+          version: 1,
+          inputs: [{ id: "analysis_object", type: "free_text", required: true }],
+          steps: [
+            {
+              id: "slow_step",
+              type: "agent_task",
+              provider: "slow-agent",
+              required_artifacts: ["result.json"],
+              goal: "Write result.json after a short delay.",
+            },
+          ],
+          outputs: [
+            {
+              id: "result",
+              type: "json",
+              artifact: "result.json",
+              schema: {
+                type: "object",
+                required: ["status"],
+                properties: { status: { type: "string" } },
+                additionalProperties: true,
+              },
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+    );
+    await page.getByRole("button", { name: "保存工作流" }).hover();
+    await page.getByRole("button", { name: "保存工作流" }).click();
+    await expect(page.getByText(`工作流已保存: ${workflowId}`)).toBeVisible({
+      timeout: 15_000,
+    });
 
-  const executeButton = page.getByRole("button", { name: "Execute" }).first();
-  await expect(executeButton).toBeEnabled({ timeout: 10_000 });
-  const executeResponse = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      response.url().includes("/api/workbench/task-runs/") &&
-      response.url().includes("/agent-runs/") &&
-      response.url().endsWith("/execute") &&
-      response.status() < 500,
-  );
-  await executeButton.hover();
-  await executeButton.click();
+    await page.getByRole("button", { name: "运行驾驶舱" }).hover();
+    await page.getByRole("button", { name: "运行驾驶舱" }).click();
+    await page.getByLabel("Repo path").fill(repo);
+    await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf step busy");
+    await page.getByRole("button", { name: "准备运行" }).hover();
+    await page.getByRole("button", { name: "准备运行" }).click();
+    await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("slow-agent").first()).toBeVisible();
 
-  await expect(executeButton).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Validate" }).first()).toBeDisabled();
-  await expect(page.getByRole("button", { name: "Materialize" }).first()).toBeDisabled();
+    const executeButton = page.getByRole("button", { name: "Execute" }).first();
+    await expect(executeButton).toBeEnabled({ timeout: 10_000 });
+    const executeResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().includes("/api/workbench/task-runs/") &&
+        response.url().includes("/agent-runs/") &&
+        response.url().endsWith("/execute") &&
+        response.status() < 500,
+    );
+    await executeButton.hover();
+    await executeButton.click();
 
-  await executeResponse;
-  await expect(page.getByText(/Agent run completed:/)).toBeVisible({ timeout: 20_000 });
+    await expect(executeButton).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Validate" }).first()).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Materialize" }).first()).toBeDisabled();
+
+    await executeResponse;
+    await expect(page.getByText(/Agent run completed:/)).toBeVisible({ timeout: 20_000 });
+  } finally {
+    await request.put(`${backendBase}/api/settings/agent-providers`, {
+      data: originalSettings,
+    });
+  }
 });
 
 test("opens a persisted AI review thread from a prepared workbench run through the real UI", async ({
