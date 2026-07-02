@@ -398,9 +398,11 @@ export const api = {
 
   // ── 覆盖率分析 ──
   coverage: {
-    list: () => request<CoverageAnalysis[]>("/api/coverage/list"),
+    list: () =>
+      request<CoverageAnalysis[]>("/api/coverage/list", { cache: "no-store" }),
 
-    get: (id: string) => request<CoverageDetail>(`/api/coverage/${id}`),
+    get: (id: string) =>
+      request<CoverageDetail>(`/api/coverage/${id}`, { cache: "no-store" }),
 
     upload: async (
       files: File[],

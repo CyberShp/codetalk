@@ -1109,14 +1109,44 @@ export default function CoveragePage() {
     [],
   );
   const [expandedModule, setExpandedModule] = useState<string | null>(null);
-  const [uploadName, setUploadName] = useState("");
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [selectedWorkspaceId, setSelectedWorkspaceId] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const uploadNameInputRef = useRef<HTMLInputElement>(null);
   const autoExpandedRef = useRef(false);
+  const uploadingRef = useRef(false);
+  const expandedIdRef = useRef<string | null>(null);
+  const fileSignatureRef = useRef("");
+
+  useEffect(() => {
+    expandedIdRef.current = expandedId;
+  }, [expandedId]);
+
+  const syncSelectedFiles = useCallback((fileList: FileList | File[] | null) => {
+    const files = fileList ? Array.from(fileList) : [];
+    fileSignatureRef.current = files
+      .map((file) => `${file.name}:${file.size}:${file.lastModified}`)
+      .join("|");
+    setSelectedFiles(files);
+  }, []);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      const files = Array.from(fileInputRef.current?.files ?? []);
+      const signature = files
+        .map((file) => `${file.name}:${file.size}:${file.lastModified}`)
+        .join("|");
+      if (signature !== fileSignatureRef.current) {
+        fileSignatureRef.current = signature;
+        setSelectedFiles(files);
+      }
+    }, 100);
+    return () => window.clearInterval(interval);
+  }, []);
 
   const applyDetail = useCallback((id: string, d: CoverageDetail) => {
+    expandedIdRef.current = id;
     setDetail(d);
     if (d.analysis_results_json) {
       try {
@@ -1128,6 +1158,27 @@ export default function CoveragePage() {
       setModuleResults([]);
     }
     setExpandedId(id);
+  }, []);
+
+  const syncAnalysisSummary = useCallback((d: CoverageDetail) => {
+    setAnalyses((current) =>
+      current.map((item) =>
+        item.id === d.id
+          ? {
+              ...item,
+              status: d.status,
+              overall_line_rate: d.overall_line_rate,
+              overall_branch_rate: d.overall_branch_rate,
+              overall_function_rate: d.overall_function_rate,
+              module_count: d.module_count,
+              source_format: d.source_format,
+              workspace_id: d.workspace_id,
+              repo_path: d.repo_path,
+              updated_at: d.updated_at,
+            }
+          : item,
+      ),
+    );
   }, []);
 
   const loadList = useCallback(async () => {
@@ -1171,41 +1222,58 @@ export default function CoveragePage() {
     autoExpandedRef.current = true;
     api.coverage
       .get(latest.id)
-      .then((d) => applyDetail(latest.id, d))
+      .then((d) => {
+        if (expandedIdRef.current && expandedIdRef.current !== latest.id) {
+          return;
+        }
+        applyDetail(latest.id, d);
+      })
       .catch(() => {
         autoExpandedRef.current = false;
       });
   }, [analyses, applyDetail, expandedId]);
 
-  const handleFileSelect = (fileList: FileList | null) => {
-    setSelectedFiles(fileList ? Array.from(fileList) : []);
-  };
-
   const handleUpload = async () => {
-    if (selectedFiles.length === 0) {
+    if (uploadingRef.current) {
+      return;
+    }
+    const files =
+      selectedFiles.length > 0
+        ? selectedFiles
+        : Array.from(fileInputRef.current?.files ?? []);
+    if (files.length === 0) {
       setError("请先选择覆盖率文件");
       return;
     }
+    uploadingRef.current = true;
     setUploading(true);
     setError("");
     try {
+      const currentUploadName =
+        uploadNameInputRef.current?.value.trim() || "";
       await api.coverage.upload(
-        selectedFiles,
-        uploadName || undefined,
+        files,
+        currentUploadName || undefined,
         selectedWorkspaceId || undefined,
       );
-      setUploadName("");
-      setSelectedFiles([]);
+      if (uploadNameInputRef.current) uploadNameInputRef.current.value = "";
+      syncSelectedFiles([]);
       if (fileInputRef.current) fileInputRef.current.value = "";
       await loadList();
     } catch (e) {
       setError(coverageUploadErrorMessage(e));
     } finally {
+      uploadingRef.current = false;
       setUploading(false);
     }
   };
 
   const handleAnalyze = async (id: string) => {
+    expandedIdRef.current = id;
+    setExpandedId(id);
+    setDetail(null);
+    setModuleResults([]);
+    setExpandedModule(null);
     setAnalyzing(id);
     setError("");
     try {
@@ -1223,6 +1291,7 @@ export default function CoveragePage() {
       } else {
         setModuleResults([]);
       }
+      syncAnalysisSummary(d);
       applyDetail(id, d);
       await loadList();
     } catch (e) {
@@ -1240,6 +1309,7 @@ export default function CoveragePage() {
     try {
       await api.coverage.delete(id);
       if (expandedId === id) {
+        expandedIdRef.current = null;
         setExpandedId(null);
         setDetail(null);
         setModuleResults([]);
@@ -1252,6 +1322,7 @@ export default function CoveragePage() {
 
   const handleExpand = async (id: string) => {
     if (expandedId === id) {
+      expandedIdRef.current = null;
       setExpandedId(null);
       setDetail(null);
       setModuleResults([]);
@@ -1291,10 +1362,9 @@ export default function CoveragePage() {
         </h2>
         <div className="space-y-3">
           <input
+            ref={uploadNameInputRef}
             type="text"
             placeholder="分析名称（可选）"
-            value={uploadName}
-            onChange={(e) => setUploadName(e.target.value)}
             className="w-full px-3 py-2 rounded-lg bg-surface-container border border-outline-variant/30 text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:ring-1 focus:ring-primary"
           />
           <select
@@ -1315,7 +1385,8 @@ export default function CoveragePage() {
               type="file"
               multiple
               accept=".xml,.html,.htm,.csv,.tsv,.txt,.xlsx,.xls"
-              onChange={(e) => handleFileSelect(e.target.files)}
+              onChange={(e) => syncSelectedFiles(e.target.files)}
+              onInput={(e) => syncSelectedFiles(e.currentTarget.files)}
               className="sr-only"
               disabled={uploading}
             />
