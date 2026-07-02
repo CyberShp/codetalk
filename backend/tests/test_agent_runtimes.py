@@ -1675,8 +1675,7 @@ class TestAgentRuntimes:
                     "events = [",
                     "  {'type':'system','subtype':'init','session_id':'claude-session'},",
                     "  {'type':'stream_event','event':{'type':'content_block_start','index':0,'content_block':{'type':'tool_result','tool_use_id':'toolu_1'}}},",
-                    "  {'type':'stream_event','event':{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':'1115:iscsi_conn_login_pdu_success_complete(void *arg)\\n'}}},",
-                    "  {'type':'stream_event','event':{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':'lib/iscsi/iscsi.c:1539:\\tAuthMethod=CHAP\\n'}}},",
+                    "  {'type':'stream_event','event':{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':'1115:iscsi_conn_login_pdu_success_complete(void *arg)\\n1125:iscsi_conn_login_pdu_success_complete(void *arg)\\nlib/iscsi/iscsi.c:1539:\\tAuthMethod=CHAP\\n'}}},",
                     "  {'type':'stream_event','event':{'type':'content_block_stop','index':0}},",
                     "  {'type':'stream_event','event':{'type':'content_block_start','index':1,'content_block':{'type':'text'}}},",
                     "  {'type':'stream_event','event':{'type':'content_block_delta','index':1,'delta':{'type':'text_delta','text':answer}}},",
@@ -1752,6 +1751,7 @@ class TestAgentRuntimes:
         assert not any("iscsi_conn_login_pdu_success_complete" in item for item in answer_events)
         assert not any("AuthMethod=CHAP" in item for item in answer_events)
         assert "iscsi_conn_login_pdu_success_complete" in diagnostics
+        assert "1125:iscsi_conn_login_pdu_success_complete" in diagnostics
         assert "AuthMethod=CHAP" in diagnostics
 
     async def test_ai_thread_claude_result_event_can_carry_final_answer_after_tool_use(
@@ -1956,6 +1956,47 @@ class TestAgentRuntimes:
                 "stream_json",
             )
             == "材料证据"
+        )
+        stream_state: dict[int, str] = {}
+        assert (
+            _parse_event_text(
+                json.dumps(
+                    {
+                        "type": "stream_event",
+                        "event": {
+                            "type": "content_block_start",
+                            "index": 0,
+                            "content_block": {"type": "tool_result"},
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                "stream_json",
+                stream_state=stream_state,
+            )
+            == ""
+        )
+        assert (
+            _parse_event_text(
+                json.dumps(
+                    {
+                        "type": "stream_event",
+                        "event": {
+                            "type": "content_block_delta",
+                            "index": 0,
+                            "delta": {
+                                "type": "text_delta",
+                                "text": "1115:iscsi_conn_login_pdu_success_complete(void *arg)\n1125:iscsi_conn_login_pdu_success_complete(void *arg)\n",
+                            },
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                "stream_json",
+                stream_state=stream_state,
+            )
+            == "TOOL: 1115:iscsi_conn_login_pdu_success_complete(void *arg)\n"
+            "TOOL: 1125:iscsi_conn_login_pdu_success_complete(void *arg)\n"
         )
         assert (
             _parse_event_text(

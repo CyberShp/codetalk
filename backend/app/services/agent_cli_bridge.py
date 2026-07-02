@@ -605,14 +605,14 @@ def _stream_content_block_event_text(
     delta_type = str(delta.get("type") or "").strip()
     active_block_type = (stream_state or {}).get(index, "")
     if delta_type == "thinking_delta" and isinstance(delta.get("thinking"), str):
-        return f"THINKING: {delta['thinking']}"
+        return _diagnostic_lines("THINKING", str(delta["thinking"]))
     if delta_type != "text_delta" or not isinstance(delta.get("text"), str):
         return None
     text = str(delta["text"])
     if active_block_type in {"tool_use", "tool_result", "function_call", "function_result"}:
-        return f"TOOL: {text}"
+        return _diagnostic_lines("TOOL", text)
     if active_block_type in {"thinking", "reasoning", "thought", "analysis"}:
-        return f"THINKING: {text}"
+        return _diagnostic_lines("THINKING", text)
     return text
 
 
@@ -776,9 +776,9 @@ def _content_parts(value: list[Any]) -> list[str]:
                 if not cleaned:
                     continue
                 if item_type in {"thinking", "reasoning", "thought", "analysis"}:
-                    parts.append(f"THINKING: {cleaned}\n")
+                    parts.append(_diagnostic_lines("THINKING", cleaned) + "\n")
                 elif item_type in {"tool_use", "tool_result", "function_call", "function_result"}:
-                    parts.append(f"TOOL: {cleaned}\n")
+                    parts.append(_diagnostic_lines("TOOL", cleaned) + "\n")
                 else:
                     parts.append(cleaned)
             elif item_type in {"tool_use", "tool_result", "function_call", "function_result"}:
@@ -865,7 +865,18 @@ def _diagnostic_event_text(event: dict[str, Any]) -> str | None:
     cleaned = _clean_agent_text(text).strip()
     if cleaned.lower().startswith(("tool:", "thinking:", "reasoning:", "trace:", "diagnostic:", "status:", "error:")):
         return cleaned
-    return f"{prefix}: {cleaned}"
+    return _diagnostic_lines(prefix, cleaned)
+
+
+def _diagnostic_lines(prefix: str, text: str) -> str:
+    cleaned = _clean_agent_text(str(text or ""))
+    if not cleaned:
+        return ""
+    lines = cleaned.splitlines()
+    if not lines:
+        return f"{prefix}: {cleaned}"
+    suffix = "\n" if cleaned.endswith(("\n", "\r")) else ""
+    return "\n".join(f"{prefix}: {line}" if line.strip() else "" for line in lines) + suffix
 
 
 def _event_error_text(event: dict[str, Any]) -> str | None:
