@@ -310,13 +310,30 @@ test.describe("Workspace smoke tests", () => {
     const workspaceName = `ai-bridge-${Date.now()}`;
 
     await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
-    await page.getByPlaceholder(/项目 A/).fill(workspaceName);
-    await page.getByPlaceholder(/本地文件夹路径/).fill(repo);
+    const nameInput = page.locator('input[name="name"]');
+    const repoPathInput = page.locator('input[name="repoPath"]');
+    await nameInput.fill(workspaceName);
+    await repoPathInput.fill(repo);
+    await expect(nameInput).toHaveValue(workspaceName);
+    await expect(repoPathInput).toHaveValue(repo);
     await page.getByRole("button", { name: "创建工作空间" }).hover();
     await page.getByRole("button", { name: "创建工作空间" }).click();
     await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 30_000 });
     const workspaceId = page.url().split("/").pop() ?? "";
     await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
+
+    const staleThreadResp = await request.post(`${backendBase}/api/ai/conversations`, {
+      data: {
+        scope_type: "workspace",
+        scope_id: workspaceId,
+        workspace_id: workspaceId,
+        memory_namespace: `workspace:${workspaceId}`,
+        title: `${workspaceName} · stale source dump`,
+        initial_context: { workspace_id: workspaceId, project_name: workspaceName },
+      },
+    });
+    expect(staleThreadResp.status()).toBe(201);
+    const staleThread = (await staleThreadResp.json()) as { id: string };
 
     await page.getByRole("button", { name: /AI线程/ }).hover();
     await page.getByRole("button", { name: /AI线程/ }).click();
@@ -329,9 +346,9 @@ test.describe("Workspace smoke tests", () => {
     await expect(page.getByRole("heading", { name: `${workspaceName} · AI 调查线程` })).toBeVisible({
       timeout: 15_000,
     });
+    expect(threadId).not.toBe(staleThread.id);
     await expect(page.getByText(`workspace / ${workspaceId}`)).toBeVisible();
-    await expect(page.getByText(`workspace:${workspaceId}`)).toBeVisible();
-    await expect(page.getByText(repo)).toBeVisible();
+    await expect(page.getByText(`workspace:${workspaceId}`).first()).toBeVisible();
 
     const threadResp = await request.get(`${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`);
     expect(threadResp.ok()).toBeTruthy();

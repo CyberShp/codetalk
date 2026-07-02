@@ -664,9 +664,13 @@ export const api = {
       const existing = await api.aiConversations.list({
         scope_type: data.scope_type,
         scope_id: data.scope_id,
-        limit: 1,
+        ...(data.workspace_id ? { workspace_id: data.workspace_id } : {}),
+        ...(data.memory_namespace ? { memory_namespace: data.memory_namespace } : {}),
+        limit: 50,
       });
-      return existing.items[0] ?? api.aiConversations.create(data);
+      const title = data.title.trim();
+      const matchingDefaultThread = existing.items.find((item) => item.title.trim() === title);
+      return matchingDefaultThread ?? api.aiConversations.create(data);
     },
 
     update: (id: string, data: { runtime_type: "builtin_llm" | "agent_runtime"; agent_runtime_id?: string | null }) =>
