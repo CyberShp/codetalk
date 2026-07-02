@@ -302,6 +302,60 @@ async function createCodexStdinRuntime(
   return { id: runtime.id, name: runtimeName, captureFile };
 }
 
+async function createClaudeResumeRuntime(
+  request: APIRequestContext,
+  label: string,
+): Promise<{ id: string; name: string; captureFile: string }> {
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-claude-resume-")));
+  const runtimeScript = path.join(runtimeDir, "fake_claude_resume_agent.py");
+  const captureFile = path.join(runtimeDir, "claude_invocations.jsonl");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, os, pathlib, sys, time",
+      `capture = pathlib.Path(${JSON.stringify(captureFile)})`,
+      "args = sys.argv[1:]",
+      "prompt = args[args.index('-p') + 1] if '-p' in args else ''",
+      "prompt_file = pathlib.Path(os.environ['CODETALK_AGENT_PROMPT_FILE']).read_text(encoding='utf-8')",
+      "capture.write_text((capture.read_text(encoding='utf-8') if capture.exists() else '') + json.dumps({'argv': args, 'prompt': prompt, 'prompt_file': prompt_file}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+      "resume = args[args.index('--resume') + 1] if '--resume' in args else ''",
+      "session_id = 'claude-e2e-second' if resume else 'claude-e2e-first'",
+      "answer = ('resumed claude:' + resume) if resume else 'fresh claude print'",
+      "events = [",
+      "  {'type':'system','subtype':'init','session_id':session_id},",
+      "  {'type':'assistant','message':{'role':'assistant','content':[{'type':'text','text':answer}]}},",
+      "  {'type':'result','status':'success','session_id':session_id},",
+      "]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.05)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const runtimeName = `${label} ${Date.now()}`;
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "claude_print_arg",
+      output_mode: "stream_json",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 20,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "resume_args",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+  return { id: runtime.id, name: runtimeName, captureFile };
+}
+
 test("creates an AI investigation thread from the project hub and restores it after refresh", async ({
   page,
   request,
@@ -1195,6 +1249,87 @@ test("Codex agent runtime reads prompts from stdin and resumes through the real 
       expect.arrayContaining([
         expect.objectContaining({ role: "assistant", content: "fresh codex stdin" }),
         expect.objectContaining({ role: "assistant", content: "resumed:codex-e2e-first" }),
+      ]),
+    );
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
+  }
+});
+
+test("Claude-style agent runtime resumes the previous CLI session through the real AI thread UI", async ({
+  page,
+  request,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-claude-resume-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "Claude resume transport e2e workspace\n", "utf8");
+  const workspaceName = `ai-claude-resume-e2e-${Date.now()}`;
+  const threadTitle = `${workspaceName} claude resume`;
+  const runtime = await createClaudeResumeRuntime(request, "Claude resume runtime");
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtime.name });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    const firstPrompt = "第一轮：请读取工作区源码并建立 Claude session";
+    const composer = page.getByPlaceholder(/像 Codex 一样继续追问/);
+    await composer.fill(firstPrompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "fresh claude print" })).toBeVisible({
+      timeout: 20_000,
+    });
+
+    const secondPrompt = "第二轮：沿用 Claude session，只输出 resume 证据";
+    await composer.fill(secondPrompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "resumed claude:claude-e2e-first" })).toBeVisible({
+      timeout: 20_000,
+    });
+
+    const captured = fs.readFileSync(runtime.captureFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { argv: string[]; prompt: string; prompt_file: string });
+    expect(captured).toHaveLength(2);
+    expect(captured[0].argv).toEqual(expect.arrayContaining(["--output-format", "stream-json", "--include-partial-messages", "--verbose"]));
+    expect(captured[0].argv).not.toContain("--resume");
+    expect(captured[0].prompt).toContain(firstPrompt);
+    expect(captured[0].prompt_file).toContain(firstPrompt);
+    expect(captured[1].argv).toEqual(expect.arrayContaining(["--resume", "claude-e2e-first", "-p"]));
+    expect(captured[1].prompt).toContain(secondPrompt);
+    expect(captured[1].prompt_file).toContain(secondPrompt);
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    expect(messageBody.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "assistant", content: "fresh claude print" }),
+        expect.objectContaining({ role: "assistant", content: "resumed claude:claude-e2e-first" }),
       ]),
     );
   } finally {
