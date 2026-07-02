@@ -227,6 +227,8 @@ async def create_message(conversation_id: str, body: CreateMessageRequest) -> di
         conversation = await store.get_conversation(conversation_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="AI conversation not found")
+    if conversation.get("runtime_type") == "agent_runtime":
+        await _require_enabled_agent_runtime(conversation.get("agent_runtime_id"))
     latest = await store.latest_run(conversation_id)
     if latest and latest["status"] in {"queued", "running"}:
         raise HTTPException(status_code=409, detail="当前线程仍在生成中")

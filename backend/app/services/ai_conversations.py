@@ -1516,7 +1516,7 @@ def _agent_task_requires_substantive_answer(
         "black-box",
         "blackbox",
     )
-    if any(marker in text for marker in markers):
+    if _text_has_any_task_marker(text, markers):
         return True
     evidence_types = {
         "workspace_source",
@@ -1543,7 +1543,7 @@ def _agent_task_requires_structured_delivery(user_message: str) -> bool:
         "black-box",
         "blackbox",
     )
-    return any(marker in text for marker in markers)
+    return _text_has_any_task_marker(text, markers)
 
 
 def _agent_task_requires_source_grounding(
@@ -1569,7 +1569,7 @@ def _agent_task_requires_source_grounding(
         ".c",
         ".h",
     )
-    if any(marker in text for marker in markers):
+    if _text_has_any_task_marker(text, markers):
         return True
     evidence_types = {
         "workspace_source",
@@ -1577,6 +1577,25 @@ def _agent_task_requires_source_grounding(
         "workbench_task_artifact",
     }
     return any(str(ref.get("source_type") or "") in evidence_types for ref in references)
+
+
+def _text_has_any_task_marker(text: str, markers: tuple[str, ...]) -> bool:
+    normalized = str(text or "").lower()
+    for marker in markers:
+        value = marker.lower()
+        if not value:
+            continue
+        if _task_marker_needs_word_boundary(value):
+            if re.search(rf"(?<![a-z0-9_]){re.escape(value)}(?![a-z0-9_])", normalized):
+                return True
+            continue
+        if value in normalized:
+            return True
+    return False
+
+
+def _task_marker_needs_word_boundary(marker: str) -> bool:
+    return bool(re.fullmatch(r"[a-z0-9_]+(?: [a-z0-9_]+)*", marker))
 
 
 def _looks_like_agent_thin_help_answer(content: str) -> bool:

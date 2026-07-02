@@ -172,6 +172,65 @@ class TestAgentRuntimes:
             assert rejected_update.status_code == 400
             assert "已停用" in rejected_update.text
 
+    async def test_ai_thread_rejects_disabled_agent_runtime_before_persisting_message(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db, "ws-disabled-runtime-message-api")
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            runtime_resp = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Soon Disabled Thin Agent",
+                    "command": sys.executable,
+                    "args": ["--version"],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "working_dir_mode": "project",
+                    "timeout_seconds": 30,
+                    "enabled": True,
+                },
+            )
+            assert runtime_resp.status_code == 201
+            runtime_id = runtime_resp.json()["id"]
+
+            conversation_resp = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "runtime_type": "agent_runtime",
+                    "agent_runtime_id": runtime_id,
+                    "title": "Runtime later disabled",
+                },
+            )
+            assert conversation_resp.status_code == 201
+            conversation_id = conversation_resp.json()["id"]
+
+            disabled = await client.put(
+                f"/api/settings/agent-runtimes/{runtime_id}",
+                json={"enabled": False},
+            )
+            assert disabled.status_code == 200
+
+            rejected_message = await client.post(
+                f"/api/ai/conversations/{conversation_id}/messages",
+                json={"content": "基于当前 SPDK 源码，输出代码证据、SFMEA 和黑盒测试用例。"},
+            )
+            assert rejected_message.status_code == 400
+            assert "已停用" in rejected_message.text
+
+        async with aiosqlite.connect(sqlite_db) as db:
+            async with db.execute(
+                "SELECT COUNT(*) FROM ai_messages WHERE conversation_id = ?",
+                (conversation_id,),
+            ) as cur:
+                assert (await cur.fetchone())[0] == 0
+            async with db.execute(
+                "SELECT COUNT(*) FROM ai_conversation_runs WHERE conversation_id = ?",
+                (conversation_id,),
+            ) as cur:
+                assert (await cur.fetchone())[0] == 0
+
     async def test_agent_runtime_rejects_shell_command_in_command_field(self, sqlite_db):
         app = _test_app(sqlite_db)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -413,7 +472,7 @@ class TestAgentRuntimes:
             "if 'workspace_source' not in prompt or 'lib/nvmf/connect.c' not in prompt:\n"
             "    print('prompt lacks selected workspace source reference', file=sys.stderr)\n"
             "    raise SystemExit(11)\n"
-            "print('AGENT_CWD_SOURCE_OK:' + os.getcwd())\n"
+            "print('## 结论\\nAGENT_CWD_SOURCE_OK:' + os.getcwd() + '\\n\\n## 代码证据\\n- `lib/nvmf/connect.c`: `spdk_nvmf_agent_cwd_probe` 已在当前 agent cwd 中读取。\\n- workspace_source 引用已进入 prompt。\\n\\n## 行为说明\\n1. Agent 以绑定 workspace 作为工作目录。\\n2. Agent 能直接读取选定源码文件并返回证据。')\n"
         )
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -527,7 +586,7 @@ class TestAgentRuntimes:
             "if 'nvmf_workbench_agent_cwd_probe' not in src.read_text(encoding='utf-8'):\n"
             "    print('source marker missing', file=sys.stderr)\n"
             "    raise SystemExit(10)\n"
-            "print('WORKBENCH_CWD_SOURCE_OK:' + os.getcwd())\n"
+            "print('## 结论\\nWORKBENCH_CWD_SOURCE_OK:' + os.getcwd() + '\\n\\n## 代码证据\\n- `lib/nvmf/connect.c`: `nvmf_workbench_agent_cwd_probe` 已从 task repo cwd 读取。\\n- workbench task repo_path 被解析为 Agent 工作目录。\\n\\n## 行为说明\\n1. Workbench 线程没有 workspace row 时回退到 task_run repo_path。\\n2. Agent 在该目录读取源码并返回证据。')\n"
         )
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -632,7 +691,7 @@ class TestAgentRuntimes:
             "if missing:\n"
             "    print('missing source-first contract fields: ' + ', '.join(missing), file=sys.stderr)\n"
             "    raise SystemExit(12)\n"
-            "print('AGENT_SOURCE_FIRST_CONTRACT_OK')\n"
+            "print('## 结论\\nAGENT_SOURCE_FIRST_CONTRACT_OK\\n\\n## 代码证据\\n- `lib/nvmf/connect.c`: `spdk_nvmf_source_first_contract_probe` 出现在 SOURCE_FIRST_CONTRACT。\\n- `requirements.md`: 输入材料包含 reconnect timeout 约束。\\n\\n## 行为说明\\n1. Prompt 同时携带 workspace_sources 与 workspace_materials。\\n2. Agent 可先按源码和输入材料回答。')\n"
         )
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -1751,6 +1810,11 @@ class TestAgentRuntimes:
         )
 
         assert _agent_answer_requires_repair(user_message, complete_answer, []) is False
+
+    async def test_ai_thread_agent_runtime_does_not_treat_codex_as_code_task(self):
+        from app.services.ai_conversations import _agent_answer_requires_repair
+
+        assert _agent_answer_requires_repair("问：fresh codex", "fresh codex", []) is False
 
     async def test_ai_thread_agent_runtime_repairs_one_line_source_answer(self, sqlite_db, tmp_path):
         repo = tmp_path / "spdk"
