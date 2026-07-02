@@ -441,6 +441,96 @@ test("AI conversation rail filters dense projects and thread histories", async (
   expect(layout.threadOverflowY).toBe("auto");
 });
 
+test("AI conversation mobile rail keeps dense project and thread lists contained", async ({ page }) => {
+  const workspaces = Array.from({ length: 36 }, (_, index) => ({
+    id: index === 0 ? "ws-1" : `ws-mobile-${index + 1}`,
+    name: index === 29 ? "SPDK mobile production target" : `Mobile project ${index + 1}`,
+    repo_path: `/repo/mobile-project-${index + 1}`,
+    indexed: 1,
+    index_job: null,
+    index_progress: 100,
+    analyze_status: null,
+    analyze_progress: 0,
+    last_index_error: null,
+    created_at: "2026-06-28T00:00:00Z",
+    updated_at: "2026-06-28T00:00:00Z",
+    materials: [],
+    reports: [],
+  }));
+  const threads = Array.from({ length: 42 }, (_, index) => ({
+    id: index === 0 ? "conv-mobile-dense" : `conv-mobile-dense-${index + 1}`,
+    scope_type: "workspace",
+    scope_id: "ws-1",
+    workspace_id: "ws-1",
+    memory_namespace: "workspace:ws-1",
+    title: index === 31 ? "rare mobile iSCSI login SFMEA" : `Mobile dense thread ${index + 1}`,
+    status: "idle",
+    initial_context: {},
+    created_at: "2026-06-28T00:00:00Z",
+    updated_at: `2026-06-28T00:${String(index).padStart(2, "0")}:00Z`,
+  }));
+
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: workspaces });
+  });
+  await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations?workspace_id=ws-1&limit=50", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: threads } });
+  });
+  await page.route("**/api/ai/conversations/conv-mobile-dense", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        ...threads[0],
+        latest_run: null,
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-mobile-dense/messages", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: { items: [] },
+    });
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/ai/conv-mobile-dense", { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByText("已收起 24 个项目")).toBeVisible();
+  await expect(page.getByText("已收起 30 条线程")).toBeVisible();
+
+  const layout = await page.locator(".ct-codex-ai").evaluate((element) => {
+    const rail = element.querySelector(".ct-codex-ai__rail") as HTMLElement | null;
+    const projectList = element.querySelector(".ct-codex-ai__project-list") as HTMLElement | null;
+    const threadList = element.querySelector(".ct-codex-ai__thread-list") as HTMLElement | null;
+    return {
+      documentScrollHeight: document.documentElement.scrollHeight,
+      viewportHeight: window.innerHeight,
+      railHeight: rail?.getBoundingClientRect().height ?? 0,
+      projectClientHeight: projectList?.clientHeight ?? 0,
+      projectScrollHeight: projectList?.scrollHeight ?? 0,
+      threadClientHeight: threadList?.clientHeight ?? 0,
+      threadScrollHeight: threadList?.scrollHeight ?? 0,
+      projectOverflowY: projectList ? window.getComputedStyle(projectList).overflowY : "",
+      threadOverflowY: threadList ? window.getComputedStyle(threadList).overflowY : "",
+    };
+  });
+
+  expect(layout.railHeight).toBeLessThanOrEqual(layout.viewportHeight * 0.72);
+  expect(layout.documentScrollHeight).toBeLessThanOrEqual(layout.viewportHeight * 1.75);
+  expect(layout.projectScrollHeight).toBeGreaterThan(layout.projectClientHeight + 80);
+  expect(layout.threadScrollHeight).toBeGreaterThan(layout.threadClientHeight + 80);
+  expect(layout.projectOverflowY).toBe("auto");
+  expect(layout.threadOverflowY).toBe("auto");
+
+  await page.getByLabel("搜索 AI 项目").fill("production");
+  await expect(page.getByText("SPDK mobile production target")).toBeVisible();
+  await page.getByLabel("搜索 AI 线程").fill("rare mobile");
+  await expect(page.getByText("rare mobile iSCSI login SFMEA")).toBeVisible();
+});
+
 test("AI conversation mobile layout keeps navigation and topbar controls within the viewport", async ({ page }) => {
   await mockReadableConversation(page, {
     assistantContent:

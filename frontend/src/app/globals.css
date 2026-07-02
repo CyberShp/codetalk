@@ -2901,6 +2901,21 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     height: auto;
   }
 
+  .ct-codex-ai__rail {
+    max-height: min(72vh, 620px);
+    overflow: hidden;
+  }
+
+  .ct-codex-ai__project-list {
+    max-height: min(156px, 20vh);
+  }
+
+  .ct-codex-ai__thread-list {
+    flex: 1 1 auto;
+    max-height: min(260px, 32vh);
+    min-height: 124px;
+  }
+
   .ct-codex-ai__context {
     display: none;
     opacity: 1;
