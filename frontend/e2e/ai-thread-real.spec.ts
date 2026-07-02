@@ -302,6 +302,74 @@ async function createCodexStdinRuntime(
   return { id: runtime.id, name: runtimeName, captureFile };
 }
 
+async function createStructuredCodexCaptureRuntime(
+  request: APIRequestContext,
+  label: string,
+): Promise<{ id: string; name: string; captureFile: string }> {
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-codex-structured-")));
+  const runtimeScript = path.join(runtimeDir, "fake_structured_codex_agent.py");
+  const captureFile = path.join(runtimeDir, "codex_invocations.jsonl");
+  const answer = [
+    "## 结论",
+    "MULTILINE_PROMPT_CAPTURE_OK：已基于 `lib/iscsi/iscsi.c` 输出 iSCSI login 分析。",
+    "",
+    "## 代码证据",
+    "- `lib/iscsi/iscsi.c`: login PDU 处理与阶段推进入口。",
+    "- `test/iscsi_tgt`: 可承载 login、CHAP、digest 的端到端测试。",
+    "",
+    "## 流程梳理",
+    "1. initiator 发起 Login Request。",
+    "2. target 校验参数、认证信息和协商选项。",
+    "3. 成功时进入 Full Feature Phase，失败时返回可观测 Login Response。",
+    "",
+    "## SFMEA",
+    "| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |",
+    "| login 参数越界 | 协商字段非法 | login 被拒绝或 session 异常 | 8 | 3 | 4 | 96 | 增加非法参数与日志观测测试 |",
+    "",
+    "## 黑盒测试用例",
+    "1. 用例：合法 login 成功；前置条件：target 已启动；步骤：initiator 发起合法 login；预期结果：进入 Full Feature Phase；观测点：状态、日志、连接数。",
+    "2. 用例：非法参数 login 失败；前置条件：target 已启动；步骤：提交越界参数；预期结果：返回失败状态且不中断其它 session；观测点：Login Response 与错误日志。",
+  ].join("\n");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "# -*- coding: utf-8 -*-",
+      "import json, pathlib, sys, time",
+      `capture = pathlib.Path(${JSON.stringify(captureFile)})`,
+      `answer = ${JSON.stringify(answer)}`,
+      "args = sys.argv[1:]",
+      "stdin = sys.stdin.read()",
+      "capture.write_text((capture.read_text(encoding='utf-8') if capture.exists() else '') + json.dumps({'argv': args, 'stdin': stdin}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+      "print(json.dumps({'type':'thread.started','thread_id':'codex-structured-capture'}, ensure_ascii=False), flush=True)",
+      "time.sleep(0.05)",
+      "print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':answer}}, ensure_ascii=False), flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const runtimeName = `${label} ${Date.now()}`;
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "codex_exec_json",
+      output_mode: "stream_json",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 20,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+  return { id: runtime.id, name: runtimeName, captureFile };
+}
+
 async function createClaudeResumeRuntime(
   request: APIRequestContext,
   label: string,
@@ -1383,6 +1451,85 @@ test("Codex agent runtime reads prompts from stdin and resumes through the real 
       expect.arrayContaining([
         expect.objectContaining({ role: "assistant", content: "fresh codex stdin" }),
         expect.objectContaining({ role: "assistant", content: "resumed:codex-e2e-first" }),
+      ]),
+    );
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
+  }
+});
+
+test("agent runtime receives the complete multiline task from the real AI thread composer", async ({
+  page,
+  request,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-multiline-prompt-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "Multiline prompt transport e2e workspace\n", "utf8");
+  const workspaceName = `ai-multiline-prompt-${Date.now()}`;
+  const threadTitle = `${workspaceName} multiline prompt`;
+  const runtime = await createStructuredCodexCaptureRuntime(request, "Multiline prompt runtime");
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtime.name });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    const multilinePrompt = [
+      "基于当前 SPDK 源码，分析 iSCSI login 流程。",
+      "必须输出：代码证据、流程梳理、SFMEA、黑盒测试用例。",
+      "不要只回复你好；不要在第一行后截断。",
+      "MULTILINE_SENTINEL_LAST_LINE_93217",
+    ].join("\n");
+
+    const composer = page.getByPlaceholder(/像 Codex 一样继续追问/);
+    await composer.fill(multilinePrompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(
+      page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "MULTILINE_PROMPT_CAPTURE_OK" }),
+    ).toBeVisible({ timeout: 20_000 });
+
+    const captured = fs.readFileSync(runtime.captureFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { argv: string[]; stdin: string });
+    expect(captured).toHaveLength(1);
+    expect(captured[0].argv.join(" ")).not.toContain("MULTILINE_SENTINEL_LAST_LINE_93217");
+    for (const line of multilinePrompt.split("\n")) {
+      expect(captured[0].stdin).toContain(line);
+    }
+    expect(captured[0].stdin.indexOf("基于当前 SPDK 源码")).toBeLessThan(
+      captured[0].stdin.indexOf("MULTILINE_SENTINEL_LAST_LINE_93217"),
+    );
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    expect(messageBody.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "user", content: multilinePrompt }),
+        expect.objectContaining({ role: "assistant", content: expect.stringContaining("MULTILINE_PROMPT_CAPTURE_OK") }),
       ]),
     );
   } finally {
