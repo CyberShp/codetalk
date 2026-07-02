@@ -6,13 +6,24 @@ import path from "node:path";
 
 const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
 
+function taskOutputDataDir(): string | null {
+  const configured = process.env.CODETALK_PLAYWRIGHT_DATA_DIR;
+  if (!configured) return null;
+  const reusesExistingBackend = process.env.CODETALK_REUSE_EXISTING_SERVER !== "0";
+  const usesAutoDataDir = process.env.CODETALK_PLAYWRIGHT_AUTO_DATA_DIR === "1";
+  if (reusesExistingBackend && usesAutoDataDir) {
+    return path.resolve(process.cwd(), "..", "backend", "data");
+  }
+  return configured;
+}
+
 test("task export download redacts completed markdown report secrets through the UI", async ({
   page,
   request,
 }, testInfo) => {
   test.setTimeout(60_000);
-  test.skip(!process.env.CODETALK_PLAYWRIGHT_DATA_DIR, "requires explicit Playwright data dir");
-  const dataDir = process.env.CODETALK_PLAYWRIGHT_DATA_DIR!;
+  const dataDir = taskOutputDataDir();
+  test.skip(!dataDir, "requires a writable backend data dir");
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-task-export-repo-")));
   fs.writeFileSync(path.join(repo, "README.md"), "task export redaction e2e\n", "utf8");
   const reportSecret = ["sk", "taskUiReportLeakValue1234567890"].join("-");
@@ -43,7 +54,7 @@ test("task export download redacts completed markdown report secrets through the
         "content = '\\n'.join(['# Task Report', 'task ui export complete', f'model key: {report_secret}', 'runtime ' + 'tok' + f'en={token_secret}', 'Authorization:' + f' Bearer {bearer_secret}'])",
         "(output_dir / 'task-redacted-report.md').write_text(content, encoding='utf-8')",
       ].join("\n"),
-      dataDir,
+      dataDir!,
       task.id,
       reportSecret,
       tokenSecret,
@@ -92,8 +103,8 @@ test("task export download redacts structured JSON and YAML secrets through the 
   request,
 }, testInfo) => {
   test.setTimeout(60_000);
-  test.skip(!process.env.CODETALK_PLAYWRIGHT_DATA_DIR, "requires explicit Playwright data dir");
-  const dataDir = process.env.CODETALK_PLAYWRIGHT_DATA_DIR!;
+  const dataDir = taskOutputDataDir();
+  test.skip(!dataDir, "requires a writable backend data dir");
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-task-structured-export-")));
   fs.writeFileSync(path.join(repo, "README.md"), "task structured export redaction e2e\n", "utf8");
   const jsonSecret = "taskUiStructuredJsonTokenLeakValue1234567890";
@@ -124,7 +135,7 @@ test("task export download redacts structured JSON and YAML secrets through the 
         "content = '\\n'.join(['# Structured Task Report', 'task ui structured export complete', json.dumps({'access_token': json_secret}), f'secret: {yaml_secret}', 'name,secret,status', f'agent,{csv_secret},failed'])",
         "(output_dir / 'task-structured-redacted-report.md').write_text(content, encoding='utf-8')",
       ].join("\n"),
-      dataDir,
+      dataDir!,
       task.id,
       jsonSecret,
       yamlSecret,
@@ -171,8 +182,8 @@ test("task export format selection downloads redacted XML through the UI", async
   request,
 }, testInfo) => {
   test.setTimeout(60_000);
-  test.skip(!process.env.CODETALK_PLAYWRIGHT_DATA_DIR, "requires explicit Playwright data dir");
-  const dataDir = process.env.CODETALK_PLAYWRIGHT_DATA_DIR!;
+  const dataDir = taskOutputDataDir();
+  test.skip(!dataDir, "requires a writable backend data dir");
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-task-xml-export-")));
   fs.writeFileSync(path.join(repo, "README.md"), "task xml export redaction e2e\n", "utf8");
   const reportSecret = ["sk", "taskXmlExportLeakValue1234567890"].join("-");
@@ -203,7 +214,7 @@ test("task export format selection downloads redacted XML through the UI", async
         "content = '\\n'.join(['# XML Task Report', 'task ui xml export complete', f'model key: {report_secret}', 'runtime ' + 'tok' + f'en={token_secret}', 'Authorization:' + f' Bearer {bearer_secret}'])",
         "(output_dir / 'xml-safe-report.md').write_text(content, encoding='utf-8')",
       ].join("\n"),
-      dataDir,
+      dataDir!,
       task.id,
       reportSecret,
       tokenSecret,
@@ -244,8 +255,8 @@ test("task export format selection downloads redacted Word document through the 
   request,
 }, testInfo) => {
   test.setTimeout(60_000);
-  test.skip(!process.env.CODETALK_PLAYWRIGHT_DATA_DIR, "requires explicit Playwright data dir");
-  const dataDir = process.env.CODETALK_PLAYWRIGHT_DATA_DIR!;
+  const dataDir = taskOutputDataDir();
+  test.skip(!dataDir, "requires a writable backend data dir");
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk_docx_export_")));
   fs.writeFileSync(path.join(repo, "README.md"), "task docx export redaction e2e\n", "utf8");
   const reportSecret = ["sk", "taskDocxExportLeakValue1234567890"].join("-");
@@ -276,7 +287,7 @@ test("task export format selection downloads redacted Word document through the 
         "content = '\\n'.join(['# DOCX Task Report', 'task ui docx export complete', f'model key: {report_secret}', 'runtime ' + 'tok' + f'en={token_secret}', 'Authorization:' + f' Bearer {bearer_secret}'])",
         "(output_dir / 'docx-safe-report.md').write_text(content, encoding='utf-8')",
       ].join("\n"),
-      dataDir,
+      dataDir!,
       task.id,
       reportSecret,
       tokenSecret,
@@ -331,8 +342,8 @@ test("task export prevents duplicate downloads from a real double click", async 
   request,
 }, testInfo) => {
   test.setTimeout(60_000);
-  test.skip(!process.env.CODETALK_PLAYWRIGHT_DATA_DIR, "requires explicit Playwright data dir");
-  const dataDir = process.env.CODETALK_PLAYWRIGHT_DATA_DIR!;
+  const dataDir = taskOutputDataDir();
+  test.skip(!dataDir, "requires a writable backend data dir");
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk_task_export_double_")));
   fs.writeFileSync(path.join(repo, "README.md"), "task export double click e2e\n", "utf8");
 
@@ -359,7 +370,7 @@ test("task export prevents duplicate downloads from a real double click", async 
         "output_dir.mkdir(parents=True, exist_ok=True)",
         "(output_dir / 'double-click-safe-report.md').write_text('# Double Export\\ntask export double click complete', encoding='utf-8')",
       ].join("\n"),
-      dataDir,
+      dataDir!,
       task.id,
     ],
     { stdio: "pipe" },
@@ -410,8 +421,8 @@ test("task report page redacts persisted markdown report secrets through the UI"
   request,
 }) => {
   test.setTimeout(60_000);
-  test.skip(!process.env.CODETALK_PLAYWRIGHT_DATA_DIR, "requires explicit Playwright data dir");
-  const dataDir = process.env.CODETALK_PLAYWRIGHT_DATA_DIR!;
+  const dataDir = taskOutputDataDir();
+  test.skip(!dataDir, "requires a writable backend data dir");
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-report-page-")));
   fs.writeFileSync(path.join(repo, "README.md"), "task report page redaction e2e\n", "utf8");
   const reportSecret = ["sk", "taskUiPageLeakValue1234567890"].join("-");
@@ -442,7 +453,7 @@ test("task report page redacts persisted markdown report secrets through the UI"
         "content = '\\n'.join(['# Browser Report', 'task ui report page complete', f'model key: {report_secret}', 'runtime ' + 'tok' + f'en={token_secret}', 'Authorization:' + f' Bearer {bearer_secret}'])",
         "(output_dir / 'report-page-redacted-report.md').write_text(content, encoding='utf-8')",
       ].join("\n"),
-      dataDir,
+      dataDir!,
       task.id,
       reportSecret,
       tokenSecret,
