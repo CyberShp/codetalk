@@ -485,6 +485,149 @@ test("creates, runs, previews, and downloads workflow artifacts through the real
   }
 });
 
+test("executes source-flow SFMEA black-box workflow through the real workbench UI", async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-source-flow-")));
+  fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "test", "nvmf"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "nvmf", "ctrlr.c"),
+    [
+      "int spdk_nvmf_ctrlr_connect(void) {",
+      "    return 0;",
+      "}",
+      "int spdk_nvmf_ctrlr_submit_io(void) {",
+      "    return 0;",
+      "}",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(repo, "test", "nvmf", "nvmf.sh"),
+    "# public nvmf connect to IO workflow\n",
+    "utf8",
+  );
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+  await page.getByLabel("工作流预设").selectOption("source_flow_sfmea_blackbox");
+  await page.getByRole("button", { name: "安装预设" }).hover();
+  await page.getByRole("button", { name: "安装预设" }).click();
+  await expect(page.getByText("预设已安装: 代码分析-流程-SFMEA-黑盒用例工作流")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
+  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await page.getByLabel("Repo path").fill(repo);
+  await page.getByLabel("Inputs JSON").fill(
+    JSON.stringify(
+      {
+        analysis_object: "lib/nvmf connect to IO submit flow",
+        repo_path: repo,
+      },
+      null,
+      2,
+    ),
+  );
+
+  await page.getByRole("button", { name: "准备运行" }).hover();
+  await page.getByRole("button", { name: "准备运行" }).click();
+  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "执行工作流" })).toBeEnabled({
+    timeout: 15_000,
+  });
+  await page.getByRole("button", { name: "执行工作流" }).hover();
+  await page.getByRole("button", { name: "执行工作流" }).click();
+  await expect(page.getByText(/Workflow execution completed:/)).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByText(/工作流: completed/)).toBeVisible();
+
+  const hiddenArtifactsToggle = page.getByText(/展开其余 \d+ 个产物/);
+  if (await hiddenArtifactsToggle.isVisible()) {
+    await hiddenArtifactsToggle.hover();
+    await hiddenArtifactsToggle.click();
+  }
+
+  for (const artifactName of [
+    "source_scope.json",
+    "evidence_cards.json",
+    "flow_map.md",
+    "sfmea.json",
+    "black_box_cases.json",
+  ]) {
+    await expect(
+      page.getByRole("button").filter({ hasText: new RegExp(artifactName.replace(".", "\\.")) }).first(),
+    ).toBeVisible({ timeout: 15_000 });
+  }
+
+  const flowArtifact = page.getByRole("button").filter({ hasText: /flow_map\.md/ }).first();
+  await flowArtifact.hover();
+  await flowArtifact.click();
+  await expect(page.getByText("flow_map.md").first()).toBeVisible();
+  await expect(page.locator("pre").filter({ hasText: "connect" }).first()).toBeVisible();
+  await expect(page.locator("pre").filter({ hasText: "IO" }).first()).toBeVisible();
+
+  const sfmeaArtifact = page.getByRole("button").filter({ hasText: /sfmea\.json/ }).first();
+  await sfmeaArtifact.hover();
+  await sfmeaArtifact.click();
+  await expect(page.getByText("sfmea.json").first()).toBeVisible();
+  const sfmeaDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "下载预览" }).hover();
+  await page.getByRole("button", { name: "下载预览" }).click();
+  const sfmeaDownload = await sfmeaDownloadPromise;
+  expect(sfmeaDownload.suggestedFilename()).toMatch(/sfmea\.json$/);
+  const sfmeaPath = testInfo.outputPath("source_flow_sfmea.json");
+  await sfmeaDownload.saveAs(sfmeaPath);
+  const sfmea = JSON.parse(fs.readFileSync(sfmeaPath, "utf8")) as Array<Record<string, unknown>>;
+  expect(sfmea.length).toBeGreaterThan(0);
+  for (const field of [
+    "failure_mode",
+    "cause",
+    "effect",
+    "detection",
+    "severity",
+    "occurrence",
+    "detection_score",
+    "rpn",
+    "mitigation",
+  ]) {
+    expect(sfmea[0][field], `SFMEA field ${field}`).toBeTruthy();
+  }
+
+  const casesArtifact = page.getByRole("button").filter({ hasText: /black_box_cases\.json/ }).first();
+  await casesArtifact.hover();
+  await casesArtifact.click();
+  await expect(page.getByText("black_box_cases.json").first()).toBeVisible();
+  const casesDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "下载预览" }).hover();
+  await page.getByRole("button", { name: "下载预览" }).click();
+  const casesDownload = await casesDownloadPromise;
+  expect(casesDownload.suggestedFilename()).toMatch(/black_box_cases\.json$/);
+  const casesPath = testInfo.outputPath("source_flow_black_box_cases.json");
+  await casesDownload.saveAs(casesPath);
+  const casesText = fs.readFileSync(casesPath, "utf8");
+  expect(casesText).toContain("black_box_ready");
+  expect(casesText).toContain("public workflow");
+  expect(casesText).not.toContain(repo);
+  const cases = JSON.parse(casesText) as Array<{ steps?: string[] }>;
+  expect(cases.length).toBeGreaterThan(0);
+  expect(cases[0].steps ?? []).not.toEqual(
+    expect.arrayContaining([expect.stringMatching(/spdk_nvmf_ctrlr_connect|spdk_nvmf_ctrlr_submit_io/)]),
+  );
+
+  await expect(page.getByText(/source_scope:accepted artifact:source_scope\.json/)).toBeVisible();
+  await expect(page.getByText(/sfmea:accepted artifact:sfmea\.json/)).toBeVisible();
+  await expect(page.getByText(/black_box_cases:ok/)).toBeVisible();
+  await expect(page.getByText(/Semantic import: ok \/ 1 imported/)).toBeVisible();
+  await expect(page.getByText(/source:task_run:task_run_[a-f0-9]+:black_box_cases/)).toBeVisible();
+});
+
 test("prevents duplicate workbench smoke E2E probes from a real double click", async ({
   page,
 }) => {
