@@ -269,7 +269,7 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
       json: {
         kind: "workbench_input_upload",
         upload_id: "input_patch_upload",
-        input_id: "patch_file",
+        input_id: "patch_diff",
         filename: "tls.patch",
         content_type: "text/x-patch",
         size: 24,
@@ -447,9 +447,9 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   expect(builderScenarioOptions).toEqual(
     expect.arrayContaining([
       "module_analysis",
-      "issue_hunt",
-      "mr_blackbox",
-      "patch_impact",
+      "resource_leak_hunt",
+      "mr_blackbox_test",
+      "patch_impact_review",
       "source_flow_sfmea_blackbox",
       "nvmf_connect_io_blackbox",
       "iscsi_login_session_blackbox",
@@ -467,6 +467,11 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
       "app_startup_shutdown_smoke_blackbox",
       "nvme_ctrlr_hotplug_reset_blackbox",
       "storage_capacity_enospc_recovery_blackbox",
+      "nvmf_rdma_transport_blackbox",
+      "iscsi_digest_multi_connection_blackbox",
+      "bdev_hotremove_io_error_blackbox",
+      "blobstore_metadata_powerfail_blackbox",
+      "rpc_security_authz_blackbox",
     ]),
   );
   await expect(page.getByRole("button", { name: "应用预设" })).toBeVisible();
@@ -492,16 +497,16 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"black_box_cases"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"artifact": "sfmea\.json"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"schema": \{\s+"type": "array"/);
-  await page.getByLabel("Workflow builder scenario").selectOption("patch_impact");
+  await page.getByLabel("Workflow builder scenario").selectOption("patch_impact_review");
   await page.getByRole("button", { name: "生成草稿" }).click();
   await expect(page.getByText("工作流草稿已生成: custom_mr_blackbox")).toBeVisible();
   await expect(page.getByText("Draft:ready")).toBeVisible();
   await expect(page.getByText("输出契约预览")).toBeVisible();
   await expect(page.getByText(/test_cases:test_cases/)).toBeVisible();
   await expect(page.getByText("semantic_import", { exact: true })).toBeVisible();
-  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"patch_file"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"patch_diff"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"provider": "corp-agent"/);
-  await expect(page.getByLabel("Workflow builder input schemas")).toHaveValue(/"patch_file"/);
+  await expect(page.getByLabel("Workflow builder input schemas")).toHaveValue(/"patch_diff"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"schema": \{\s+"type": "object"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"required": \[\s+"path"\s+\]/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"before_after_flow"/);
@@ -512,8 +517,8 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"path_field": "file_path"/);
   await openWorkbenchView(page, "运行驾驶舱");
   await expect(page.getByText("工作流输入")).toBeVisible();
-  await page.getByLabel("Workflow input patch_file").fill("E:/patches/tls.patch");
-  await page.getByLabel("Upload file for patch_file").setInputFiles({
+  await page.getByLabel("Workflow input patch_diff").fill("E:/patches/tls.patch");
+  await page.getByLabel("Upload file for patch_diff").setInputFiles({
     name: "tls.patch",
     mimeType: "text/x-patch",
     buffer: Buffer.from("diff --git a/tls.c b/tls.c\n"),
@@ -521,7 +526,7 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByText("Input file uploaded: tls.patch")).toBeVisible();
   await page.getByLabel("Workflow input design_doc").fill("E:/docs/tls-design.md");
   await page.getByLabel("Workflow input analysis_object").fill("nvme-tcp-tls");
-  await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"patch_file": \{\s+"path": "input_uploads\/input_patch_upload\/tls\.patch"\s+\}/);
+  await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"patch_diff": \{\s+"path": "input_uploads\/input_patch_upload\/tls\.patch"\s+\}/);
   await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"design_doc": \{\s+"path": "E:\/docs\/tls-design\.md"\s+\}/);
   await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"analysis_object": "nvme-tcp-tls"/);
   await expect(page.getByRole("button", { name: "准备运行" })).toBeDisabled();

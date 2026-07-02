@@ -205,6 +205,11 @@ const WORKFLOW_NAME_ZH: Record<string, string> = {
   config_compatibility_rollback_blackbox: "配置兼容/回滚黑盒场景",
   patch_impact: "补丁影响面计划工作流",
   patch_impact_review: "补丁影响面评审工作流",
+  nvmf_rdma_transport_blackbox: "NVMe/RDMA transport 黑盒场景",
+  iscsi_digest_multi_connection_blackbox: "iSCSI digest/多连接黑盒场景",
+  bdev_hotremove_io_error_blackbox: "bdev hotremove/IO 错误黑盒场景",
+  blobstore_metadata_powerfail_blackbox: "blobstore 元数据/掉电恢复黑盒场景",
+  rpc_security_authz_blackbox: "RPC 安全/权限黑盒场景",
 };
 
 function workflowDisplayName(workflow: Pick<WorkflowDefinition, "id" | "name"> | string): string {
@@ -223,26 +228,26 @@ const WORKFLOW_BUILDER_SCENARIOS = {
     goal: "分析指定模块，校验源码范围，识别风险路径，并生成面向黑盒验证的测试用例。",
     artifacts: "source_scope.json, risk_findings.json, black_box_cases.json",
   },
-  issue_hunt: {
+  resource_leak_hunt: {
     name: "资源/异常路径排查",
-    inputs: "analysis_object:free_text, issue_type:free_text, design_doc:file",
-    outputs: "issue_candidates:json, repro_paths:json, test_cases:test_cases",
-    goal: "围绕指定问题类型排查资源泄漏或异常分支缺陷，产出可核验源码证据和可观察测试。",
-    artifacts: "issue_candidates.json, repro_paths.json, black_box_cases.json",
+    inputs: "target_scope:free_text, risk_pattern:free_text, repo_path:directory@local, design_doc:file",
+    outputs: "risk_findings:json=risk_findings.json, code_evidence:json=evidence_cards.json, test_hooks:json=test_hooks.json, test_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物；除非用户明确不要基于源码，否则读取工作区源码，围绕指定资源、生命周期或异常分支排查泄漏和清理风险，产出证据、测试钩子和可观察测试。",
+    artifacts: "risk_findings.json, evidence_cards.json, test_hooks.json, black_box_cases.json",
   },
-  mr_blackbox: {
+  mr_blackbox_test: {
     name: "MR 黑盒测试",
-    inputs: "mr_link:mr_link, design_doc:file, coverage_report:coverage_report",
+    inputs: "mr_link:mr_link, patch_diff:patch, repo_path:directory@local, design_doc:file, coverage_report:coverage_report",
     outputs: "mr_scope:scope_report=mr_snapshot.json, changed_behavior:json, black_box_cases:test_cases=black_box_cases.json",
-    goal: "使用智能体自持 MCP 凭证读取 MR，识别变更行为和影响范围，并生成黑盒测试用例。",
+    goal: "优先检查 GitNexus 和 CGC 产物；使用智能体自持 MCP 凭证或本地 patch 输入读取变更，识别变更行为和影响范围，并生成黑盒测试用例。",
     artifacts: "mr_snapshot.json, diff.patch, changed_files.json, black_box_cases.json",
   },
-  patch_impact: {
-    name: "补丁影响面计划",
-    inputs: "patch_file:patch, design_doc:file, analysis_object:free_text",
-    outputs: "before_after_flow:markdown, impact_scope:scope_report=impact_scope.json, test_cases:test_cases=black_box_cases.json",
-    goal: "读取补丁方案，对比变更前后流程，校验影响范围，并生成实现与测试建议。",
-    artifacts: "patch_summary.json, before_after_flow.md, impact_scope.json, black_box_cases.json",
+  patch_impact_review: {
+    name: "补丁影响面评审",
+    inputs: "patch_diff:patch, patch_plan:file, repo_path:directory@local, design_doc:file, analysis_object:free_text",
+    outputs: "impact_scope:scope_report=impact_scope.json, before_after_flow:markdown=flow_delta.md, test_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物；读取补丁方案或 diff，对比变更前后流程，校验影响范围、兼容性风险和测试范围，并生成测试建议。",
+    artifacts: "impact_scope.json, flow_delta.md, test_recommendations.json, black_box_cases.json",
   },
   source_flow_sfmea_blackbox: {
     name: "代码分析-流程-SFMEA-黑盒用例",
@@ -361,6 +366,41 @@ const WORKFLOW_BUILDER_SCENARIOS = {
     inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
     outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
     goal: "优先检查 GitNexus 和 CGC 产物，然后分析 lib/bdev、lib/blob、lib/ftl 与相关测试的 capacity pressure、ENOSPC、allocation failure、metadata persistence、partial write、retry、cleanup 和 recovery，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  nvmf_rdma_transport_blackbox: {
+    name: "NVMe/RDMA transport",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 NVMe/RDMA transport 的连接建立、queue pair、RDMA CM 事件、内存注册、disconnect、retry、错误恢复和公开诊断，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  iscsi_digest_multi_connection_blackbox: {
+    name: "iSCSI digest/多连接",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 iSCSI header/data digest、多连接 session、连接漂移、校验失败、恢复和外部日志/状态，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  bdev_hotremove_io_error_blackbox: {
+    name: "bdev hotremove/IO 错误",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 bdev hotremove、底层设备丢失、IO 错误上报、reset、drain、重试和可观测状态变化，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  blobstore_metadata_powerfail_blackbox: {
+    name: "blobstore 元数据/掉电恢复",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 blobstore 元数据更新、异常关闭、掉电重启、super block/cluster 一致性、部分写入和恢复验证，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  rpc_security_authz_blackbox: {
+    name: "RPC 安全/权限",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 RPC 暴露面、认证/授权边界、非法命令、敏感参数、失败审计、重放和用户可见错误，输出代码证据、流程、SFMEA 和黑盒测试用例。",
     artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
   },
   fault_injection_timeout_recovery_blackbox: {
@@ -2112,22 +2152,22 @@ export default function AgentWorkbenchPage() {
   const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
   const [workflowJson, setWorkflowJson] = useState(pretty(DEFAULT_WORKFLOW));
   const [builderScenario, setBuilderScenario] =
-    useState<keyof typeof WORKFLOW_BUILDER_SCENARIOS>("mr_blackbox");
+    useState<keyof typeof WORKFLOW_BUILDER_SCENARIOS>("mr_blackbox_test");
   const [builderWorkflowId, setBuilderWorkflowId] = useState("custom_mr_blackbox");
   const [builderWorkflowName, setBuilderWorkflowName] = useState("自定义 MR 黑盒测试工作流");
   const [builderInputSpec, setBuilderInputSpec] = useState<string>(
-    WORKFLOW_BUILDER_SCENARIOS.mr_blackbox.inputs,
+    WORKFLOW_BUILDER_SCENARIOS.mr_blackbox_test.inputs,
   );
   const [builderOutputSpec, setBuilderOutputSpec] = useState<string>(
-    WORKFLOW_BUILDER_SCENARIOS.mr_blackbox.outputs,
+    WORKFLOW_BUILDER_SCENARIOS.mr_blackbox_test.outputs,
   );
   const [builderProvider, setBuilderProvider] = useState("claude-code");
   const [builderMcpProfile, setBuilderMcpProfile] = useState("codehub-mcp");
   const [builderGoal, setBuilderGoal] = useState<string>(
-    WORKFLOW_BUILDER_SCENARIOS.mr_blackbox.goal,
+    WORKFLOW_BUILDER_SCENARIOS.mr_blackbox_test.goal,
   );
   const [builderArtifacts, setBuilderArtifacts] = useState<string>(
-    WORKFLOW_BUILDER_SCENARIOS.mr_blackbox.artifacts,
+    WORKFLOW_BUILDER_SCENARIOS.mr_blackbox_test.artifacts,
   );
   const [builderOutputSchemas, setBuilderOutputSchemas] = useState(
     pretty(DEFAULT_BUILDER_OUTPUT_SCHEMAS),

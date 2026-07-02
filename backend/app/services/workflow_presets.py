@@ -636,6 +636,66 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
             ),
         ),
         _source_flow_scenario_preset(
+            preset_id="nvmf_rdma_transport_blackbox",
+            name="NVMe/RDMA Transport Black-box Scenario",
+            description=(
+                "Analyze NVMe/RDMA connection setup, queue pairs, RDMA CM events, memory "
+                "registration, disconnect, retry, error recovery, and public diagnostics."
+            ),
+            default_query=(
+                "lib/nvmf test/nvmf NVMe RDMA transport queue pair RDMA CM event memory "
+                "registration disconnect retry error recovery public diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="iscsi_digest_multi_connection_blackbox",
+            name="iSCSI Digest / Multi-connection Black-box Scenario",
+            description=(
+                "Analyze iSCSI header/data digest, multi-connection sessions, connection "
+                "migration, digest failure, recovery, and external log/status signals."
+            ),
+            default_query=(
+                "lib/iscsi test/iscsi_tgt iSCSI header digest data digest multi connection "
+                "session connection migration digest failure recovery external log status"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="bdev_hotremove_io_error_blackbox",
+            name="bdev Hotremove / IO Error Black-box Scenario",
+            description=(
+                "Analyze bdev hotremove, underlying device loss, IO error reporting, reset, "
+                "drain, retry, and externally visible state transitions."
+            ),
+            default_query=(
+                "lib/bdev module/bdev test/bdev bdev hotremove underlying device loss IO "
+                "error reporting reset drain retry observable state transition"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="blobstore_metadata_powerfail_blackbox",
+            name="Blobstore Metadata / Power-fail Recovery Black-box Scenario",
+            description=(
+                "Analyze blobstore metadata updates, abnormal shutdown, power-fail restart, "
+                "super block and cluster consistency, partial writes, and recovery validation."
+            ),
+            default_query=(
+                "lib/blob test/blobfs blobstore metadata update abnormal shutdown power fail "
+                "restart super block cluster consistency partial write recovery validation"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="rpc_security_authz_blackbox",
+            name="RPC Security / Authorization Black-box Scenario",
+            description=(
+                "Analyze RPC exposure, authentication and authorization boundaries, invalid "
+                "commands, sensitive parameters, failure audit, replay, and user-visible errors."
+            ),
+            default_query=(
+                "scripts/rpc.py lib/event test/json_config RPC exposure authentication "
+                "authorization invalid command sensitive parameter failure audit replay user visible error"
+            ),
+        ),
+        _source_flow_scenario_preset(
             preset_id="fault_injection_timeout_recovery_blackbox",
             name="Fault Injection / Timeout Recovery Black-box Scenario",
             description=(
