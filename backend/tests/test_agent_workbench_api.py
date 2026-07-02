@@ -2307,7 +2307,12 @@ async def test_builtin_common_scenario_preset_merges_default_query_with_user_sco
         encoding="utf-8",
     )
     nvme_file.write_text(
-        "int nvme_generic_reset_behavior(void) { return 0; }\n",
+        "\n".join([
+            "int nvme_generic_reset_behavior(void) { return 0; }",
+            "int nvme_qpair_disconnect_reset_reconnect(void) { return 0; }",
+            "int nvme_transport_error_recovery(void) { return 0; }",
+            "int nvme_timeout_controller_reset(void) { return 0; }",
+        ]),
         encoding="utf-8",
     )
 

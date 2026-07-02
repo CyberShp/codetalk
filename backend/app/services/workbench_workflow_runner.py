@@ -1329,7 +1329,12 @@ def _discover_local_source_files(repo: Path, query: str, *, limit: int = 16) -> 
     ranked = sorted(
         _dedupe_paths(candidates),
         key=lambda path: (
-            -_source_file_score(path, root=root, query_lower=query_lower),
+            -_source_file_score(
+                path,
+                root=root,
+                query_lower=query_lower,
+                preferred_roots=preferred_roots,
+            ),
             path.relative_to(root).as_posix(),
         ),
     )
@@ -1639,12 +1644,23 @@ def _dedupe_paths(paths: list[Path]) -> list[Path]:
     return result
 
 
-def _source_file_score(path: Path, *, root: Path, query_lower: str) -> int:
+def _source_file_score(
+    path: Path,
+    *,
+    root: Path,
+    query_lower: str,
+    preferred_roots: list[str] | None = None,
+) -> int:
     try:
         relative = path.relative_to(root).as_posix().lower()
     except ValueError:
         relative = path.as_posix().lower()
     score = 0
+    for index, preferred_root in enumerate(preferred_roots or []):
+        normalized_root = preferred_root.strip("/").lower()
+        if relative == normalized_root or relative.startswith(f"{normalized_root}/"):
+            score += max(40, 200 - index * 25)
+            break
     tokens = [
         token
         for token in re.split(r"[^a-z0-9_/-]+", query_lower)
@@ -1653,6 +1669,10 @@ def _source_file_score(path: Path, *, root: Path, query_lower: str) -> int:
     for token in tokens:
         if token in relative:
             score += 10
+            if "/" in token and (
+                relative == token.strip("/") or relative.startswith(f"{token.strip('/')}/")
+            ):
+                score += 80
     if "/test/" in f"/{relative}" or relative.startswith("test/"):
         score -= 1
     if path.suffix.lower() in {".c", ".h"}:
