@@ -36,6 +36,14 @@ cd deployer
 
 推荐始终使用 `start.bat` / `start.sh` 启动部署器。脚本会选择可用的 Python 3.10+，并自动创建或修复部署器 `.venv`，避免因为系统 `python` 命令不存在、版本过旧，或缺少 `psutil`、`uvicorn` 等包导致部署系统起不来。
 
+如果需要验证部署器自身，请同样在 `deployer` 目录使用测试入口：
+
+```bash
+./test.sh
+```
+
+不要直接使用系统 `python -m pytest`。部分 macOS 环境的系统 `python3` 仍是 3.9，且不包含部署器依赖；`test.sh` 会和启动脚本一样选择 Python 3.10+，准备 `.venv`，再用部署器虚拟环境执行测试。
+
 浏览器打开：
 
 ```text
