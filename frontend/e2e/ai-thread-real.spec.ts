@@ -57,7 +57,7 @@ async function createClaudeToolResultBlockRuntime(
       "prompt_file = os.environ.get('CODETALK_AGENT_PROMPT_FILE')",
       "if prompt_file:",
       "    open(prompt_file, encoding='utf-8').read()",
-      "answer = '## 黑盒测试用例\\n' + ''.join([f'{index}. TC-{index:02d} 正常登录变体：前置条件 target 已启动，步骤执行 iSCSI Login 场景 {index}，预期结果进入 Full Feature Phase 或返回明确 Login Response。\\n' for index in range(1, 9)])",
+      "answer = '## 结论\\n已生成结构化产物，正文只保留可交付测试设计。\\n\\n## 代码证据\\n- `lib/iscsi/iscsi.c`: 登录状态机源码文件用于约束测试范围。\\n- `test/iscsi_tgt`: 可承载登录黑盒场景回归。\\n\\n## 流程梳理\\n1. 发起 Login Request。\\n2. 校验认证与参数。\\n3. 返回 Login Response 并进入目标阶段。\\n\\n## 黑盒测试用例\\n' + ''.join([f'{index}. TC-{index:02d} 正常登录变体：前置条件 target 已启动，步骤执行 iSCSI Login 场景 {index}，预期结果进入 Full Feature Phase 或返回明确 Login Response，观测点为响应码、session 状态和日志。\\n' for index in range(1, 9)])",
       "events = [",
       "  {'type':'system','subtype':'init','session_id':'claude-session-e2e'},",
       "  {'type':'stream_event','event':{'type':'content_block_start','index':0,'content_block':{'type':'tool_result','tool_use_id':'toolu_1'}}},",
@@ -112,7 +112,7 @@ async function createClaudeResultFinalRuntime(
       "prompt_file = os.environ.get('CODETALK_AGENT_PROMPT_FILE')",
       "if prompt_file:",
       "    open(prompt_file, encoding='utf-8').read()",
-      "answer = '## 黑盒测试用例\\n' + ''.join([f'{index}. TC-{index:02d} Result 登录场景：前置条件 target 已启动，步骤执行 iSCSI Login 场景 {index}，预期结果可观测。\\n' for index in range(1, 9)])",
+      "answer = '## 结论\\n已生成结构化产物，最终 result 事件作为唯一正文来源。\\n\\n## 代码证据\\n- `lib/iscsi/iscsi.c`: 登录状态机源码文件用于约束测试范围。\\n- `test/iscsi_tgt`: 可映射黑盒登录回归。\\n\\n## 流程梳理\\n1. Agent 先执行源码查找。\\n2. 工具输出进入折叠过程。\\n3. result 字段产出最终测试设计。\\n\\n## 黑盒测试用例\\n' + ''.join([f'{index}. TC-{index:02d} Result 登录场景：前置条件 target 已启动，步骤执行 iSCSI Login 场景 {index}，预期结果可观测，观测点为 Login Response、session 状态和日志。\\n' for index in range(1, 9)])",
       "events = [",
       "  {'type':'system','subtype':'init','session_id':'claude-result-session-e2e'},",
       "  {'type':'assistant','message':{'content':[{'type':'tool_use','name':'Bash','input':{'command':'grep -n \"login\" lib/iscsi/iscsi.c'}}]}},",
@@ -773,11 +773,7 @@ test("keeps Claude tool-result stream blocks out of visible answer and artifact"
     await expect(processDisclosure.getByText("iscsi_conn_login_pdu_success_complete").first()).not.toBeVisible();
     await processDisclosure.getByText("Agent 过程").click();
     await expect(processDisclosure.getByText("iscsi_conn_login_pdu_success_complete").first()).toBeVisible();
-
-    const diagnosticsSummary = page.getByText("生成诊断：默认折叠");
-    await expect(diagnosticsSummary).toBeVisible({ timeout: 15_000 });
-    await diagnosticsSummary.click();
-    await expect(page.getByText("iscsi_conn_login_pdu_success_complete").first()).toBeVisible();
+    await expect(page.getByText("生成诊断：默认折叠")).toHaveCount(0);
 
     const downloadPromise = page.waitForEvent("download");
     await page.getByRole("link", { name: "下载完整产物" }).hover();
@@ -956,10 +952,11 @@ test("uses a Claude result event as the final answer after source lookup", async
     await expect(page.locator(".ct-codex-message").filter({ hasText: "执行器没有返回有效内容" })).toHaveCount(0);
     await expect(page.locator(".ct-codex-message").filter({ hasText: "iscsi_conn_login_pdu_success_complete" })).toHaveCount(0);
 
-    const diagnosticsSummary = page.getByText("生成诊断：默认折叠");
-    await expect(diagnosticsSummary).toBeVisible({ timeout: 15_000 });
-    await diagnosticsSummary.click();
-    await expect(page.getByText("iscsi_conn_login_pdu_success_complete").first()).toBeVisible();
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("iscsi_conn_login_pdu_success_complete").first()).toBeVisible();
+    await expect(page.getByText("生成诊断：默认折叠")).toHaveCount(0);
 
     const downloadPromise = page.waitForEvent("download");
     await page.getByRole("link", { name: "下载完整产物" }).hover();
@@ -1685,8 +1682,11 @@ test("diagnostic-only source agent fails visibly instead of idling with a fake a
     await expect(page.getByText("执行器没有返回有效内容")).toHaveCount(0);
     await expect(page.locator(".ct-codex-message:not(.is-user)")).toHaveCount(0);
 
-    await page.getByText("生成诊断：默认折叠").click();
-    await expect(page.getByText("rg nvmf_ctrlr_connect lib/nvmf/ctrlr.c").first()).toBeVisible();
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("rg nvmf_ctrlr_connect lib/nvmf/ctrlr.c").first()).toBeVisible();
+    await expect(page.getByText("生成诊断：默认折叠")).toHaveCount(0);
 
     const captured = fs.readFileSync(runtime.captureFile, "utf8")
       .trim()
@@ -1763,8 +1763,11 @@ test("one-line source agent answer is repaired before it becomes the visible ass
     await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "已完成源码分析。" })).toHaveCount(0);
     await expect(page.locator("div[role='alert']").filter({ hasText: "Agent 返回内容不足" })).toHaveCount(0);
 
-    await page.getByText("生成诊断：默认折叠").click();
-    await expect(page.getByText("上一次执行器输出过短")).toBeVisible();
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("上一次执行器输出过短")).toBeVisible();
+    await expect(page.getByText("生成诊断：默认折叠")).toHaveCount(0);
 
     const captured = fs.readFileSync(runtime.captureFile, "utf8")
       .trim()
@@ -1891,11 +1894,7 @@ test("real agent process keeps early and late diagnostics folded outside the ans
     });
     await expect(processDisclosure.getByText("PROCESS_STEP_20 reading workspace evidence").last()).toBeVisible();
 
-    const diagnosticsSummary = page.getByText("生成诊断：默认折叠");
-    await expect(diagnosticsSummary).toBeVisible();
-    await diagnosticsSummary.click();
-    await expect(page.getByText("PROCESS_STEP_01 reading workspace evidence").last()).toBeVisible();
-    await expect(page.getByText("PROCESS_STEP_20 reading workspace evidence").last()).toBeVisible();
+    await expect(page.getByText("生成诊断：默认折叠")).toHaveCount(0);
 
     let messageBody: { items: Array<{ role: string; content: string }> } = { items: [] };
     await expect
@@ -3758,7 +3757,7 @@ test("keeps real agent thinking diagnostics collapsed and out of the persisted a
       "print('  internal multiline note: select evidence cards before answering', flush=True)",
       "print('  internal multiline note: avoid exposing chain-of-thought', flush=True)",
       "print('diagnostic: provider emitted chain-of-thought-like internal note', flush=True)",
-      "print('FINAL_DIAGNOSTIC_ANSWER: black-box reconnect timeout should observe RPC error, log, and state recovery', flush=True)",
+      "print('## 结论\\nFINAL_DIAGNOSTIC_ANSWER: black-box reconnect timeout should observe RPC error, log, and state recovery.\\n\\n## 代码证据\\n- `README.md`: `AI diagnostic folding e2e workspace` 来自当前工作区。\\n- `lib/nvmf/connect.c`: 作为本轮 connect/reconnect 证据域，过程细节只进折叠 Agent 过程。\\n\\n## 黑盒测试用例\\n- 用例 1：前置条件为 NVMe-oF target 可连接；步骤为触发 reconnect timeout；预期结果为 RPC 返回超时错误、日志记录恢复动作、状态可重新连接；观测点为 RPC 响应、日志、连接状态。\\n- 用例 2：前置条件为已有队列；步骤为断开后重连；预期结果为 I/O 不重复提交，失败诊断线索包含连接状态变化。', flush=True)",
       "",
     ].join("\n"),
     "utf8",
@@ -3820,17 +3819,19 @@ test("keeps real agent thinking diagnostics collapsed and out of the persisted a
     await expect(reader).not.toContainText("reading workspace source evidence");
     await expect(reader).not.toContainText("internal multiline note");
     await expect(reader).not.toContainText("chain-of-thought-like internal note");
-    await expect(page.getByText("生成诊断：默认折叠")).toBeVisible();
-    await expect(page.getByText("reading workspace source evidence")).toBeHidden();
-    await expect(page.getByText("internal multiline note: select evidence cards")).toBeHidden();
-    await expect(page.getByText("internal multiline note: avoid exposing")).toBeHidden();
-    await expect(page.getByText("chain-of-thought-like internal note")).toBeHidden();
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.getByText("reading workspace source evidence")).toBeHidden();
+    await expect(processDisclosure.getByText("internal multiline note: select evidence cards")).toBeHidden();
+    await expect(processDisclosure.getByText("internal multiline note: avoid exposing")).toBeHidden();
+    await expect(processDisclosure.getByText("chain-of-thought-like internal note")).toBeHidden();
 
-    await page.getByText("生成诊断：默认折叠").click();
-    await expect(page.getByText("reading workspace source evidence")).toBeVisible();
-    await expect(page.getByText("internal multiline note: select evidence cards")).toBeVisible();
-    await expect(page.getByText("internal multiline note: avoid exposing")).toBeVisible();
-    await expect(page.getByText("chain-of-thought-like internal note")).toBeVisible();
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("reading workspace source evidence")).toBeVisible();
+    await expect(processDisclosure.getByText("internal multiline note: select evidence cards")).toBeVisible();
+    await expect(processDisclosure.getByText("internal multiline note: avoid exposing")).toBeVisible();
+    await expect(processDisclosure.getByText("chain-of-thought-like internal note")).toBeVisible();
+    await expect(page.getByText("生成诊断：默认折叠")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
 
     const messagesResp = await request.get(
@@ -4133,7 +4134,7 @@ test("folds mixed JSON agent tool and thinking parts while showing only the answ
       "  'content': [",
       "    {'type': 'thinking', 'text': '内部推理：先列出工具计划'},",
       "    {'type': 'tool_result', 'content': 'cat /secret/path returned internal-only trace'},",
-      "    {'type': 'text', 'text': 'FINAL_JSON_PARTS_ANSWER: 只展示源码分析结论。'},",
+      "    {'type': 'text', 'text': '## 结论\\nFINAL_JSON_PARTS_ANSWER: 只展示源码分析结论。\\n\\n## 代码证据\\n- `README.md`: `AI JSON part folding e2e workspace` 来自当前工作区。\\n- `lib/nvmf/connect.c`: 作为源码证据域，工具过程应折叠而不进入正文。\\n\\n## 流程梳理\\n1. Agent 先产生 thinking/tool_result 过程事件。\\n2. CodeTalk 只把最终 text 作为回答展示。\\n\\n## 黑盒测试用例\\n- 用例 1：前置条件为工作区已选择；步骤为让 Agent 输出混合 JSON part；预期结果为正文只展示最终答案，观测点为对话区文本。\\n- 用例 2：前置条件为 Agent 过程存在；步骤为展开 Agent 过程；预期结果为内部工具事件仅在折叠区可见，失败诊断线索为正文污染。'},",
       "  ],",
       "}",
       "print(json.dumps(event, ensure_ascii=False), flush=True)",
@@ -4196,13 +4197,15 @@ test("folds mixed JSON agent tool and thinking parts while showing only the answ
     const reader = page.getByLabel("AI 线程对话内容");
     await expect(reader).not.toContainText("内部推理：先列出工具计划");
     await expect(reader).not.toContainText("secret/path");
-    await expect(page.getByText("生成诊断：默认折叠")).toBeVisible();
-    await expect(page.getByText("内部推理：先列出工具计划")).toBeHidden();
-    await expect(page.getByText("cat /secret/path returned internal-only trace")).toBeHidden();
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.getByText("内部推理：先列出工具计划")).toBeHidden();
+    await expect(processDisclosure.getByText("cat /secret/path returned internal-only trace")).toBeHidden();
 
-    await page.getByText("生成诊断：默认折叠").click();
-    await expect(page.getByText("内部推理：先列出工具计划")).toBeVisible();
-    await expect(page.getByText("cat /secret/path returned internal-only trace")).toBeVisible();
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("内部推理：先列出工具计划")).toBeVisible();
+    await expect(processDisclosure.getByText("cat /secret/path returned internal-only trace")).toBeVisible();
+    await expect(page.getByText("生成诊断：默认折叠")).toHaveCount(0);
 
     const messagesResp = await request.get(
       `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
@@ -4554,8 +4557,11 @@ test("keeps an incomplete structured agent answer visible with folded quality di
     await expect(page.locator("div[role='alert']").filter({ hasText: "Agent 返回内容不足" })).toHaveCount(0);
     await expect(page.getByText("仍未完全满足本轮源码分析验收项")).toBeHidden();
 
-    await page.getByText("生成诊断：默认折叠").click();
-    await expect(page.getByText("仍未完全满足本轮源码分析验收项")).toBeVisible();
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("仍未完全满足本轮源码分析验收项")).toBeVisible();
+    await expect(page.getByText("生成诊断：默认折叠")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
 
     const conversationResp = await request.get(

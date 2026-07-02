@@ -365,7 +365,6 @@ export default function AIThreadPage() {
   const [streamingContent, setStreamingContent] = useState("");
   const [streamingDiagnostics, setStreamingDiagnostics] = useState<string[]>([]);
   const [contextOpen, setContextOpen] = useState(true);
-  const [generationDiagnosticsOpen, setGenerationDiagnosticsOpen] = useState(false);
   const [railProjectQuery, setRailProjectQuery] = useState("");
   const [railThreadQuery, setRailThreadQuery] = useState("");
   const [mobileRail, setMobileRail] = useState(false);
@@ -739,7 +738,6 @@ export default function AIThreadPage() {
     setInput("");
     setStreamingContent("");
     setStreamingDiagnostics([]);
-    setGenerationDiagnosticsOpen(false);
     autoScrollRef.current = true;
     setShowJumpToLatest(false);
     try {
@@ -1331,22 +1329,6 @@ export default function AIThreadPage() {
               )}
             </div>
           </details>
-          {streamingDiagnostics.length > 0 && (
-            <details
-              className="ct-ai-disclosure"
-              open={generationDiagnosticsOpen}
-              onToggle={(event) => setGenerationDiagnosticsOpen(event.currentTarget.open)}
-            >
-              <summary>生成诊断：默认折叠</summary>
-              {generationDiagnosticsOpen && (
-                <div className="ct-ai-diagnostic">
-                  {streamingDiagnostics.map((item, index) => (
-                    <p key={`${index}-${item}`}>{item}</p>
-                  ))}
-                </div>
-              )}
-            </details>
-          )}
         </section>
         <section>
           <h2>
