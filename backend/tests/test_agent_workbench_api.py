@@ -135,6 +135,10 @@ async def test_workbench_workflow_preset_api(workbench_client):
         "bdev_failover_resource_blackbox",
         "blobstore_ftl_recovery_blackbox",
         "vhost_vfio_user_lifecycle_blackbox",
+        "fault_injection_timeout_recovery_blackbox",
+        "concurrent_operations_stress_blackbox",
+        "observability_diagnostics_blackbox",
+        "config_compatibility_rollback_blackbox",
     }.issubset(preset_ids)
 
     listed = await workbench_client.get("/api/workbench/workflows")

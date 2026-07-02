@@ -26,6 +26,10 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         "app_startup_shutdown_smoke_blackbox",
         "nvme_ctrlr_hotplug_reset_blackbox",
         "storage_capacity_enospc_recovery_blackbox",
+        "fault_injection_timeout_recovery_blackbox",
+        "concurrent_operations_stress_blackbox",
+        "observability_diagnostics_blackbox",
+        "config_compatibility_rollback_blackbox",
     }.issubset({item["id"] for item in presets})
 
     for preset in presets:
@@ -154,6 +158,10 @@ def test_restore_builtin_workflow_presets_refreshes_stale_builtin_definitions(tm
         "app_startup_shutdown_smoke_blackbox",
         "nvme_ctrlr_hotplug_reset_blackbox",
         "storage_capacity_enospc_recovery_blackbox",
+        "fault_injection_timeout_recovery_blackbox",
+        "concurrent_operations_stress_blackbox",
+        "observability_diagnostics_blackbox",
+        "config_compatibility_rollback_blackbox",
         "custom_workflow",
     }.issubset(ids)
 

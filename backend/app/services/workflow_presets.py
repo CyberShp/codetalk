@@ -635,6 +635,54 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 "allocation failure metadata persistence partial write retry cleanup recovery"
             ),
         ),
+        _source_flow_scenario_preset(
+            preset_id="fault_injection_timeout_recovery_blackbox",
+            name="Fault Injection / Timeout Recovery Black-box Scenario",
+            description=(
+                "Analyze externally triggered fault injection, transport errors, timeout handling, "
+                "process restart, retry behavior, cleanup, and recovery diagnostics across storage workflows."
+            ),
+            default_query=(
+                "test/common test/nvmf test/bdev test/json_config lib/nvmf lib/bdev lib/thread "
+                "fault injection timeout transport error retry cleanup process restart recovery diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="concurrent_operations_stress_blackbox",
+            name="Concurrent Operations / Stress Black-box Scenario",
+            description=(
+                "Analyze concurrent public operations, create/delete races, connect/disconnect while IO runs, "
+                "queue pressure, idempotency, ordering, and externally observable stress failures."
+            ),
+            default_query=(
+                "test/nvmf test/bdev test/json_config lib/nvmf lib/bdev lib/thread rpc concurrency "
+                "stress create delete race connect disconnect IO queue pressure idempotency ordering"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="observability_diagnostics_blackbox",
+            name="Observability / Diagnostics Black-box Scenario",
+            description=(
+                "Analyze logs, counters, public status commands, diagnostic artifacts, warning paths, "
+                "and failure triage signals that a black-box tester can observe without reading internals."
+            ),
+            default_query=(
+                "lib/log lib/event scripts/rpc.py test/json_config test/common diagnostics logs counters "
+                "status command warning failure triage observable metrics artifact"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="config_compatibility_rollback_blackbox",
+            name="Config Compatibility / Rollback Black-box Scenario",
+            description=(
+                "Analyze configuration compatibility, invalid or mixed-version config input, partial apply, "
+                "rollback, restart persistence, idempotency, and user-visible diagnostics."
+            ),
+            default_query=(
+                "scripts/rpc.py test/json_config test/app lib/event app config compatibility invalid "
+                "mixed version partial apply rollback restart persistence idempotency diagnostics"
+            ),
+        ),
         {
             "id": "mr_blackbox_test",
             "name": "MR Black-box Test Design",

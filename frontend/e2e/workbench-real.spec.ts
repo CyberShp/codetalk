@@ -26,6 +26,10 @@ test("lists and installs every built-in workflow preset through the real workben
     { id: "app_startup_shutdown_smoke_blackbox", label: "应用启动/关闭冒烟黑盒场景" },
     { id: "nvme_ctrlr_hotplug_reset_blackbox", label: "NVMe 控制器热插拔/reset 黑盒场景" },
     { id: "storage_capacity_enospc_recovery_blackbox", label: "容量/ENOSPC 恢复黑盒场景" },
+    { id: "fault_injection_timeout_recovery_blackbox", label: "故障注入/超时恢复黑盒场景" },
+    { id: "concurrent_operations_stress_blackbox", label: "并发操作/压力黑盒场景" },
+    { id: "observability_diagnostics_blackbox", label: "可观测性/诊断黑盒场景" },
+    { id: "config_compatibility_rollback_blackbox", label: "配置兼容/回滚黑盒场景" },
     { id: "mr_blackbox_test", label: "MR 黑盒测试工作流" },
     { id: "patch_impact_review", label: "补丁影响面评审工作流" },
   ];
@@ -37,6 +41,22 @@ test("lists and installs every built-in workflow preset through the real workben
   const presetSelect = page.getByLabel("工作流预设");
   await expect(presetSelect).toBeVisible({ timeout: 15_000 });
   await expect(presetSelect.locator("option")).toHaveCount(presets.length);
+  const scenarioValues = await page
+    .getByLabel("Workflow builder scenario")
+    .locator("option")
+    .evaluateAll((options) => options.map((option) => option.getAttribute("value")));
+  expect(scenarioValues).toEqual(
+    expect.arrayContaining([
+      "module_analysis",
+      "issue_hunt",
+      "mr_blackbox",
+      "patch_impact",
+      "fault_injection_timeout_recovery_blackbox",
+      "concurrent_operations_stress_blackbox",
+      "observability_diagnostics_blackbox",
+      "config_compatibility_rollback_blackbox",
+    ]),
+  );
 
   for (const preset of presets) {
     await expect(
