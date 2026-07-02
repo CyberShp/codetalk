@@ -388,6 +388,7 @@ async def init_db() -> None:
         await _seed_default_agent_runtimes(db)
         await _migrate_legacy_agent_runtimes(db)
         await _quarantine_ephemeral_agent_runtimes(db)
+        await _quarantine_duplicate_managed_agent_runtimes(db)
 
         await db.commit()
 
@@ -505,6 +506,45 @@ async def _quarantine_ephemeral_agent_runtimes(db: aiosqlite.Connection) -> None
             OR lower(name) GLOB '* test runtime *'
             OR args_json LIKE '%/tmp/codetalk-agent-e2e/%'
             OR args_json LIKE '%codetalk-agent-probe-%'
+          )
+        """
+    )
+
+
+async def _quarantine_duplicate_managed_agent_runtimes(db: aiosqlite.Connection) -> None:
+    await db.execute(
+        """
+        UPDATE agent_runtimes
+        SET
+            enabled = 0,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE enabled = 1
+          AND id NOT IN ('default-claude-code', 'default-codex', 'default-opencode')
+          AND (
+            (
+              lower(name) = 'claude code'
+              AND command = 'claude'
+              AND args_json = '[]'
+              AND prompt_transport = 'claude_print_arg'
+              AND output_mode = 'stream_json'
+              AND session_persistence = 'resume_args'
+            )
+            OR (
+              lower(name) = 'codex'
+              AND command = 'codex'
+              AND args_json = '[]'
+              AND prompt_transport = 'codex_exec_json'
+              AND output_mode = 'stream_json'
+              AND session_persistence = 'resume_args'
+            )
+            OR (
+              lower(name) = 'opencode'
+              AND command = 'opencode'
+              AND args_json = '[]'
+              AND prompt_transport = 'opencode_run_arg'
+              AND output_mode = 'auto'
+              AND session_persistence = 'resume_args'
+            )
           )
         """
     )
