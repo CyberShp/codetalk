@@ -967,6 +967,68 @@ class TestAIConversationsAPI:
         assert "nvmf_connect_primary_flow" in source_refs[0].excerpt
         assert all(not ref.metadata["path"].endswith(".md") for ref in source_refs[:2])
 
+    async def test_workspace_source_refs_chinese_generic_blackbox_query_prefers_storage_core(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+    ):
+        repo = tmp_path / "repo"
+        (repo / "doc").mkdir(parents=True)
+        (repo / "go" / "rpc" / "client").mkdir(parents=True)
+        (repo / "lib" / "nvmf").mkdir(parents=True)
+        (repo / "lib" / "bdev").mkdir(parents=True)
+        (repo / "doc" / "two.min.js").write_text(
+            "function t(a){return a}/* minified doc helper */\n",
+            encoding="utf-8",
+        )
+        (repo / "go" / "rpc" / "client" / "client.go").write_text(
+            "package client\nfunc createRequest() {}\n",
+            encoding="utf-8",
+        )
+        (repo / "lib" / "nvmf" / "ctrlr.c").write_text(
+            "\n".join([
+                "int nvmf_ctrlr_blackbox_boundary_probe(void) {",
+                "    return 1;",
+                "}",
+            ]),
+            encoding="utf-8",
+        )
+        (repo / "lib" / "bdev" / "bdev.c").write_text(
+            "int bdev_boundary_probe(void) { return 2; }\n",
+            encoding="utf-8",
+        )
+        ws_id = "ws-chinese-blackbox-source"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'Chinese Blackbox WS', ?, 1, ?, ?)",
+                (ws_id, str(repo), now, now),
+            )
+            await db.commit()
+
+        from app.services.ai_conversations import build_context_references
+
+        refs = await build_context_references(
+            conversation={
+                "id": "conv-chinese-blackbox-source",
+                "scope_type": "workspace",
+                "scope_id": ws_id,
+                "workspace_id": ws_id,
+                "memory_namespace": f"workspace:{ws_id}",
+                "initial_context": {},
+            },
+            user_message="补充其中一个模块的黑盒边界条件和异常路径",
+            db_path=sqlite_db,
+        )
+        source_refs = [ref for ref in refs if ref.source_type == "workspace_source"]
+
+        assert source_refs
+        assert source_refs[0].metadata["path"] == "lib/nvmf/ctrlr.c"
+        assert "nvmf_ctrlr_blackbox_boundary_probe" in source_refs[0].excerpt
+        assert all(not ref.metadata["path"].startswith("doc/") for ref in source_refs[:2])
+        assert all(not ref.metadata["path"].startswith("go/rpc/") for ref in source_refs[:2])
+
     async def test_storage_domain_terms_prioritize_matching_workspace_module(
         self,
         sqlite_db,

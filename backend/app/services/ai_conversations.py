@@ -1474,29 +1474,63 @@ def _repo_file_candidates(repo_root: Path) -> list[str]:
         )
     except Exception:
         return []
-    implementation: list[str] = []
-    headers: list[str] = []
-    scripts: list[str] = []
-    docs: list[str] = []
-    rest: list[str] = []
-    for rel in result.stdout.splitlines()[:400]:
+    candidates: list[str] = []
+    for rel in result.stdout.splitlines():
         suffix = Path(rel).suffix.lower()
         if suffix not in _SOURCE_SUFFIXES:
             continue
-        if suffix in {
-            ".c", ".cc", ".cpp", ".cxx", ".rs", ".go", ".java",
-            ".py", ".js", ".jsx", ".ts", ".tsx",
-        }:
-            implementation.append(rel)
-        elif suffix in {".h", ".hh", ".hpp"}:
-            headers.append(rel)
-        elif suffix == ".sh":
-            scripts.append(rel)
-        elif suffix in {".md", ".rst", ".txt"}:
-            docs.append(rel)
-        else:
-            rest.append(rel)
-    return [*implementation, *headers, *scripts, *rest, *docs]
+        if _low_value_fallback_source(rel):
+            continue
+        candidates.append(rel)
+    return sorted(candidates, key=_fallback_source_rank)[:400]
+
+
+def _low_value_fallback_source(rel_path: str) -> bool:
+    normalized = rel_path.replace("\\", "/").lower()
+    name = Path(normalized).name
+    if ".min." in name or name.endswith(".bundle.js") or name.endswith(".map"):
+        return True
+    if normalized.startswith(("doc/", "docs/", "documentation/")):
+        return True
+    if "/vendor/" in normalized or "/third_party/" in normalized:
+        return True
+    return False
+
+
+def _fallback_source_rank(rel_path: str) -> tuple[int, int, str]:
+    normalized = rel_path.replace("\\", "/").lower()
+    suffix = Path(normalized).suffix.lower()
+    if normalized.startswith("lib/nvmf/"):
+        domain = 0
+    elif normalized.startswith("lib/bdev/"):
+        domain = 1
+    elif normalized.startswith("lib/iscsi/"):
+        domain = 2
+    elif normalized.startswith(("lib/blob/", "lib/ftl/", "module/bdev/ftl/")):
+        domain = 3
+    elif normalized.startswith(("lib/vhost/", "lib/vfio_user/", "lib/vfu_tgt/")):
+        domain = 4
+    elif normalized.startswith(("lib/thread/", "lib/event/")):
+        domain = 5
+    elif normalized.startswith(("lib/", "module/")):
+        domain = 6
+    elif normalized.startswith("test/"):
+        domain = 8
+    else:
+        domain = 9
+    if suffix in {".c", ".cc", ".cpp", ".cxx"}:
+        kind = 0
+    elif suffix in {".h", ".hh", ".hpp"}:
+        kind = 1
+    elif suffix in {".py", ".go", ".rs", ".java", ".ts", ".tsx", ".js", ".jsx"}:
+        kind = 2
+    elif suffix == ".sh":
+        kind = 3
+    elif suffix in {".md", ".rst", ".txt"}:
+        kind = 5
+    else:
+        kind = 4
+    return (domain, kind, normalized)
 
 
 def _safe_source_file(repo_root: Path, path: Path) -> bool:
