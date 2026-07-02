@@ -663,6 +663,21 @@ def _event_text(event: dict[str, Any]) -> str | None:
             value = codex_item.get("text") or codex_item.get("content")
             return value if isinstance(value, str) else None
         return None
+    if str(event.get("type") or "").strip() == "assistant":
+        message = event.get("message")
+        if isinstance(message, dict) and str(message.get("role") or "assistant").strip() == "assistant":
+            value = message.get("content")
+            if isinstance(value, str):
+                return f"{AGENT_FINAL_ANSWER_PREFIX}{value}"
+            if isinstance(value, list):
+                parts = _content_parts(value)
+                answer = "".join(parts)
+                if not answer:
+                    return ""
+                if _only_diagnostic_parts(answer):
+                    return answer
+                return f"{AGENT_FINAL_ANSWER_PREFIX}{answer}"
+        return None
     if str(event.get("type") or "").strip() == "message" and str(event.get("role") or "").strip() == "assistant":
         value = event.get("content")
         if isinstance(value, str):
@@ -736,6 +751,14 @@ def _event_result_text(event: dict[str, Any]) -> str:
         if isinstance(value, str) and value.strip():
             return _clean_agent_text(value).strip()
     return ""
+
+
+def _only_diagnostic_parts(text: str) -> bool:
+    lines = [line.strip().lower() for line in str(text or "").splitlines() if line.strip()]
+    return bool(lines) and all(
+        line.startswith(("tool:", "thinking:", "reasoning:", "trace:", "diagnostic:", "status:", "error:"))
+        for line in lines
+    )
 
 
 def _content_parts(value: list[Any]) -> list[str]:

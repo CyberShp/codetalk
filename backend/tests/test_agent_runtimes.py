@@ -1827,6 +1827,81 @@ class TestAgentRuntimes:
         assert "Bash" in diagnostics
         assert "iscsi_conn_login_pdu_success_complete" in diagnostics
 
+    async def test_ai_thread_claude_assistant_message_text_replaces_partial_answer(
+        self,
+        sqlite_db,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-claude-assistant-final", repo_path=str(repo))
+        monkeypatch.chdir(tmp_path)
+        agent_script = tmp_path / "claude_assistant_final_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import json, sys",
+                    "sys.stdin.read()",
+                    "final_text = '## 黑盒测试用例\\n' + ''.join([f'{index}. TC-{index:02d} Login：前置条件 target 已启动，预期结果可观测。\\n' for index in range(1, 9)])",
+                    "events = [",
+                    "  {'type':'system','subtype':'init','session_id':'claude-session'},",
+                    "  {'type':'stream_event','event':{'type':'content_block_delta','delta':{'type':'text_delta','text':'## 黑盒测试用例\\n### partial 应被最终 assistant 替换\\n'}}},",
+                    "  {'type':'assistant','message':{'role':'assistant','content':[{'type':'text','text':final_text}]}},",
+                    "  {'type':'result','status':'success','session_id':'claude-session'},",
+                    "]",
+                    "for event in events:",
+                    "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, ai_thread_artifact_path, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Claude assistant final thread",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-claude-assistant-final",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="针对 iscsi 登录写几个黑盒用例",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-claude-assistant-final",
+                "name": "Claude Assistant Final Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "stdin",
+                "output_mode": "stream_json",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+            },
+        )
+
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        assert assistant["content"].count("## 黑盒测试用例") == 1
+        assert "TC-08 Login" in assistant["content"]
+        assert "partial 应被最终 assistant 替换" not in assistant["content"]
+
+        artifact_text = ai_thread_artifact_path(conversation["id"], run_id).read_text(encoding="utf-8")
+        assert artifact_text.count("## 黑盒测试用例") == 1
+        assert "TC-08 Login" in artifact_text
+        assert "partial 应被最终 assistant 替换" not in artifact_text
+
     async def test_agent_runtime_output_parser_cleans_terminal_noise_and_unwraps_json(self):
         from app.services.agent_cli_bridge import _decode, _parse_event_text
 
