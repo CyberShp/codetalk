@@ -1692,6 +1692,18 @@ class TestAgentRuntimes:
 
         assert _agent_answer_requires_repair(user_message, complete_answer, []) is False
 
+    async def test_ai_thread_agent_runtime_does_not_repair_generic_generation_wording(self):
+        from app.services.ai_conversations import _agent_answer_requires_repair
+
+        assert (
+            _agent_answer_requires_repair(
+                "DIAGNOSTIC_FOLD_RUN 生成答案，并把思考过程默认折叠",
+                "FINAL_DIAGNOSTIC_ANSWER: black-box reconnect timeout should observe RPC error, log, and state recovery",
+                [],
+            )
+            is False
+        )
+
     async def test_ai_thread_agent_runtime_keeps_substantive_but_incomplete_answer_after_repair(
         self,
         sqlite_db,
@@ -1732,7 +1744,7 @@ class TestAgentRuntimes:
         )
         created = await store.create_user_message_and_run(
             conversation_id=conversation["id"],
-            content="分析 SPDK NVMe-oF target connect 到 IO 提交流程，并列出关键文件证据",
+            content="分析 SPDK NVMe-oF target connect，并输出代码证据、流程梳理、SFMEA 和黑盒测试用例",
             references=[],
         )
         run_id = created["run"]["id"]
