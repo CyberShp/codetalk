@@ -3272,7 +3272,7 @@ test("renders native OpenCode tool and error events as Agent process diagnostics
       "  {'type':'step_start','timestamp':1,'sessionID':'opencode-native-e2e'},",
       "  {'type':'tool_use','timestamp':2,'sessionID':'opencode-native-e2e','part':{'type':'tool_use','tool':'grep','state':{'input':{'pattern':'spdk_nvmf','path':'lib/nvmf'}}}},",
       "  {'type':'error','timestamp':3,'sessionID':'opencode-native-e2e','error':{'name':'OpenCodeToolWarning','data':{'message':'opencode grep warning while reading lib/nvmf'}}},",
-      "  {'type':'text','timestamp':4,'sessionID':'opencode-native-e2e','part':{'type':'text','text':'OPENCODE_NATIVE_FINAL: 已基于源码线索完成分析。'}},",
+      "  {'type':'text','timestamp':4,'sessionID':'opencode-native-e2e','part':{'type':'text','text':'## 结论\\nOPENCODE_NATIVE_FINAL: 已基于源码线索完成分析。\\n\\n## 代码证据\\n- `lib/nvmf/ctrlr.c`: `spdk_nvmf_connect` 是 connect 入口候选。\\n- `test/nvmf`: 可承载连接路径回归。\\n\\n## 黑盒测试用例\\n- 用例：正常 connect；前置条件：target 已启动；步骤：initiator 发起连接；预期结果：连接成功；观测点：RPC 状态、日志和连接状态。'}},",
       "  {'type':'step_finish','timestamp':5,'sessionID':'opencode-native-e2e'},",
       "]",
       "for event in events:",
@@ -3343,6 +3343,7 @@ test("renders native OpenCode tool and error events as Agent process diagnostics
     await processDisclosure.getByText("Agent 过程").click();
     await expect(processDisclosure.getByText(/grep .*spdk_nvmf/)).toBeVisible({ timeout: 15_000 });
     await expect(processDisclosure.getByText("opencode grep warning while reading lib/nvmf")).toBeVisible();
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
 
     const messagesResp = await request.get(
       `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
@@ -4005,6 +4006,116 @@ test("keeps real agent thinking diagnostics collapsed and out of the persisted a
     expect(exported).not.toContain("diagnostic:");
     expect(exported).not.toContain("internal multiline note");
     expect(exported).not.toContain("chain-of-thought-like internal note");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
+test("folds real agent log and progress JSON events out of the visible answer", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-log-progress-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI log progress folding e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-log-progress-")));
+  const runtimeScript = path.join(runtimeDir, "log_progress_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, sys, time",
+      "sys.stdin.read()",
+      "answer = '## 结论\\nFINAL_LOG_PROGRESS_ANSWER 已基于源码完成 connect 黑盒分析。\\n\\n## 代码证据\\n- `README.md`: `AI log progress folding e2e workspace` 来自当前工作区。\\n- `lib/nvmf/ctrlr.c`: connect 路径证据。\\n\\n## 黑盒测试用例\\n- 用例：正常连接；前置条件：target 已启动；步骤：发起 connect；预期结果：连接成功；观测点：RPC 状态、日志和连接状态。'",
+      "events = [",
+      "  {'type': 'log', 'message': '正在读取 lib/nvmf/ctrlr.c，已处理 12/100'},",
+      "  {'event': 'progress', 'data': {'message': '扫描 lib/bdev，命中 47 条候选'}},",
+      "  {'kind': 'warning', 'message': '工具返回了非关键告警'},",
+      "  {'type': 'result', 'status': 'success', 'result': answer},",
+      "]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.05)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-log-progress-e2e-${Date.now()}`;
+  const runtimeName = `Log progress runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} folded log progress`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "stream_json",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill("分析 SPDK connect 黑盒测试，不要把 agent 日志混入答案");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(page.getByText("FINAL_LOG_PROGRESS_ANSWER")).toBeVisible({ timeout: 30_000 });
+    const reader = page.getByLabel("AI 线程对话内容");
+    await expect(reader).not.toContainText("正在读取 lib/nvmf/ctrlr.c");
+    await expect(reader).not.toContainText("扫描 lib/bdev");
+    await expect(reader).not.toContainText("工具返回了非关键告警");
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.getByText("正在读取 lib/nvmf/ctrlr.c")).toBeHidden();
+    await expect(processDisclosure.getByText("扫描 lib/bdev")).toBeHidden();
+    await processDisclosure.getByText("Agent 过程").hover();
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("正在读取 lib/nvmf/ctrlr.c")).toBeVisible();
+    await expect(processDisclosure.getByText("扫描 lib/bdev")).toBeVisible();
+    await expect(processDisclosure.getByText("工具返回了非关键告警", { exact: true })).toBeVisible();
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("FINAL_LOG_PROGRESS_ANSWER");
+    expect(assistant?.content).not.toContain("正在读取 lib/nvmf/ctrlr.c");
+    expect(assistant?.content).not.toContain("扫描 lib/bdev");
+    expect(assistant?.content).not.toContain("工具返回了非关键告警");
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }

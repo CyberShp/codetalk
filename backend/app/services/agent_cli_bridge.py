@@ -992,8 +992,10 @@ def _diagnostic_event_text(event: dict[str, Any]) -> str | None:
             for item in content
         )
     response_reasoning_event = event_type in {"response.reasoning_text.delta", "response.refusal.delta"}
+    status_event = event_type in {"status", "log", "progress", "info", "debug", "warning", "warn"}
     if (
-        event_type not in {"status", "diagnostic", "thinking", "reasoning", "trace", "error"}
+        event_type not in {"diagnostic", "thinking", "reasoning", "trace", "error"}
+        and not status_event
         and not tool_event
         and not assistant_tool_event
         and not response_reasoning_event
@@ -1024,6 +1026,8 @@ def _diagnostic_event_text(event: dict[str, Any]) -> str | None:
         prefix = "TOOL"
     elif response_reasoning_event:
         prefix = "THINKING"
+    elif status_event:
+        prefix = "STATUS"
     else:
         prefix = "THINKING" if event_type == "reasoning" else event_type.upper()
     cleaned = _clean_agent_text(text).strip()

@@ -3257,6 +3257,27 @@ class TestAgentRuntimes:
         )
         assert (
             _parse_event_text(
+                json.dumps({"type": "log", "message": "正在读取 lib/nvmf/ctrlr.c，已处理 12/100"}, ensure_ascii=False),
+                "stream_json",
+            )
+            == "STATUS: 正在读取 lib/nvmf/ctrlr.c，已处理 12/100"
+        )
+        assert (
+            _parse_event_text(
+                json.dumps({"event": "progress", "data": {"message": "扫描 lib/bdev，命中 47 条候选"}}, ensure_ascii=False),
+                "stream_json",
+            )
+            == "STATUS: 扫描 lib/bdev，命中 47 条候选"
+        )
+        assert (
+            _parse_event_text(
+                json.dumps({"kind": "warning", "message": "工具返回了非关键告警"}, ensure_ascii=False),
+                "stream_json",
+            )
+            == "STATUS: 工具返回了非关键告警"
+        )
+        assert (
+            _parse_event_text(
                 json.dumps(
                     {
                         "type": "tool_use",
@@ -3398,6 +3419,99 @@ class TestAgentRuntimes:
             )
             == 'TOOL: Read {"file": "lib/nvmf/connect.c"}'
         )
+
+    async def test_ai_thread_agent_runtime_folds_log_progress_events_out_of_answer(
+        self,
+        sqlite_db,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-log-progress", repo_path=str(repo))
+        monkeypatch.chdir(tmp_path)
+        agent_script = tmp_path / "log_progress_agent.py"
+        final_answer = (
+            "## 结论\n"
+            "FINAL_LOG_EVENT_ANSWER 已基于源码完成 connect 黑盒分析。\n\n"
+            "## 代码证据\n"
+            "- `lib/nvmf/ctrlr.c`: connect 路径证据。\n"
+            "- `test/nvmf`: 可承载黑盒连接回归。\n\n"
+            "## 黑盒测试用例\n"
+            "- 用例：正常连接；前置条件：target 已启动；步骤：发起 connect；"
+            "预期结果：连接成功；观测点：RPC 状态、日志和连接状态。"
+        )
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import json, sys",
+                    "sys.stdin.read()",
+                    "events = [",
+                    "  {'type': 'log', 'message': '正在读取 lib/nvmf/ctrlr.c，已处理 12/100'},",
+                    "  {'event': 'progress', 'data': {'message': '扫描 lib/bdev，命中 47 条候选'}},",
+                    "  {'kind': 'warning', 'message': '工具返回了非关键告警'},",
+                    "  {'type': 'debug', 'message': \"argv=['nga','run','12345']\"},",
+                    f"  {{'type': 'result', 'status': 'success', 'result': {final_answer!r}}},",
+                    "]",
+                    "for event in events:",
+                    "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Log progress folding thread",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-log-progress",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="分析 SPDK connect 黑盒测试",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-log-progress",
+                "name": "Log Progress Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "stdin",
+                "output_mode": "stream_json",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+            },
+        )
+
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        assert "FINAL_LOG_EVENT_ANSWER" in assistant["content"]
+        assert "正在读取 lib/nvmf/ctrlr.c" not in assistant["content"]
+        assert "扫描 lib/bdev" not in assistant["content"]
+        assert "工具返回了非关键告警" not in assistant["content"]
+        assert "nga" not in assistant["content"]
+        assert "12345" not in assistant["content"]
+
+        events = await store.list_events_after(conversation["id"])
+        diagnostics = "\n".join(
+            event["payload"].get("content", "")
+            for event in events
+            if event["event_type"] == "delta" and event["payload"].get("kind") == "diagnostic"
+        )
+        assert "正在读取 lib/nvmf/ctrlr.c" in diagnostics
+        assert "扫描 lib/bdev" in diagnostics
+        assert "工具返回了非关键告警" in diagnostics
 
     async def test_agent_runtime_stream_decodes_gbk_stdout(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
