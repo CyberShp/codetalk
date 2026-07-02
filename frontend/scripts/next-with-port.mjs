@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { clearNextDevCache } from "./next-dev-cache.mjs";
+import { buildFrontendRuntimeEnv } from "./frontend-runtime-env.mjs";
 import { assertPortAvailable } from "./port-preflight.mjs";
 
 const mode = process.argv[2];
@@ -28,6 +29,7 @@ if (mode === "dev") {
 }
 
 const child = spawn(process.execPath, [nextBin, mode, "-H", host, "-p", port], {
+  env: buildFrontendRuntimeEnv(process.env),
   stdio: "inherit",
   shell: false,
 });
