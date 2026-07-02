@@ -492,6 +492,12 @@ export interface WorkflowPreset {
   definition: WorkflowDefinition;
 }
 
+export interface WorkflowRestoreBuiltinsResult {
+  status: string;
+  restored_count: number;
+  items: WorkflowDefinition[];
+}
+
 export interface SemanticCase {
   semantic_id: string;
   case_id: string;

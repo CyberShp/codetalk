@@ -27,6 +27,7 @@ import type {
   WorkbenchDeploymentProbeResult,
   WorkflowDefinition,
   WorkflowPreset,
+  WorkflowRestoreBuiltinsResult,
   SemanticCase,
   SemanticCaseImportResult,
   EvidenceMemoryItem,
@@ -786,6 +787,12 @@ export const api = {
         ),
 
       list: () => request<WorkflowDefinition[]>("/api/workbench/workflows"),
+
+      restoreBuiltins: () =>
+        request<WorkflowRestoreBuiltinsResult>(
+          "/api/workbench/workflows/restore-builtins",
+          { method: "POST" },
+        ),
 
       auditDraft: (data: WorkflowDefinition | Record<string, unknown>) =>
         request<import("./types").WorkflowDraftServerAudit>(

@@ -865,6 +865,10 @@ function outputSchemaForSpec(
   if (direct && typeof direct === "object" && !Array.isArray(direct)) {
     return direct as Record<string, unknown>;
   }
+  const builtin = (DEFAULT_BUILDER_OUTPUT_SCHEMAS as Record<string, unknown>)[outputId];
+  if (builtin && typeof builtin === "object" && !Array.isArray(builtin)) {
+    return builtin as Record<string, unknown>;
+  }
   const wildcard = allSchemas["*"];
   if (wildcard && typeof wildcard === "object" && !Array.isArray(wildcard)) {
     return wildcard as Record<string, unknown>;
@@ -2776,6 +2780,7 @@ export default function AgentWorkbenchPage() {
     setBuilderGoal(scenario.goal);
     setBuilderArtifacts(scenario.artifacts);
     setBuilderInputSchemas(pretty(DEFAULT_BUILDER_INPUT_SCHEMAS));
+    setBuilderOutputSchemas(pretty(DEFAULT_BUILDER_OUTPUT_SCHEMAS));
     setBuilderEvidenceMappings(pretty(DEFAULT_BUILDER_EVIDENCE_MAPPINGS));
     setBuilderSemanticImports(pretty(DEFAULT_BUILDER_SEMANTIC_IMPORTS));
   }
@@ -2924,6 +2929,22 @@ export default function AgentWorkbenchPage() {
       setWorkflowJson(pretty(workflow));
       setSelectedWorkflowId(workflow.id);
       setMessage(`预设已安装: ${workflowDisplayName(workflow)}`);
+      await loadWorkflows();
+    });
+
+  const restoreBuiltinPresets = () =>
+    runAction("restore-builtin-presets", async () => {
+      const result = await api.workbench.workflows.restoreBuiltins();
+      setWorkflows(result.items);
+      const preferred =
+        result.items.find((item) => item.id === selectedWorkflowId) ??
+        result.items.find((item) => item.id === "module_analysis") ??
+        result.items[0];
+      if (preferred) {
+        setSelectedWorkflowId(preferred.id);
+        setWorkflowJson(pretty(preferred));
+      }
+      setMessage(`已恢复内置工作流: ${result.restored_count} 个预设`);
       await loadWorkflows();
     });
 
@@ -4174,6 +4195,18 @@ export default function AgentWorkbenchPage() {
               安装预设
             </button>
             <button
+              onClick={restoreBuiltinPresets}
+              disabled={busyAction === "restore-builtin-presets"}
+              className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+            >
+              {busyAction === "restore-builtin-presets" ? (
+                <Loader2 size={14} className="animate-spin" />
+              ) : (
+                <RefreshCw size={14} />
+              )}
+              恢复内置预设
+            </button>
+            <button
               onClick={loadSelectedWorkflowDraft}
               disabled={!workflows.some((item) => item.id === selectedWorkflowId)}
               className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
@@ -4215,6 +4248,49 @@ export default function AgentWorkbenchPage() {
               {workflowPresets.length} 个内置预设，{workflows.length} 个已注册
             </span>
           </div>
+          {groupedWorkflowPresets.length > 0 && (
+            <div className="mb-3 grid gap-2 lg:grid-cols-2">
+              {groupedWorkflowPresets.map((group) => (
+                <div
+                  key={group.group}
+                  className="rounded-lg border border-outline-variant/30 bg-surface p-3"
+                >
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <p className="text-xs font-medium text-on-surface">{group.group}</p>
+                    <span className="text-[11px] text-on-surface-variant">
+                      {group.items.length} 个
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {group.items.slice(0, group.group === "核心工作流" ? 8 : 12).map((preset) => (
+                      <button
+                        key={preset.id}
+                        type="button"
+                        onClick={() => {
+                          setSelectedPresetId(preset.id);
+                          setWorkflowJson(pretty(preset.definition));
+                          setSelectedWorkflowId(preset.definition.id);
+                        }}
+                        className={`max-w-full rounded-md border px-2 py-1 text-left text-[11px] transition-colors ${
+                          selectedPresetId === preset.id
+                            ? "border-primary/40 bg-primary text-on-primary"
+                            : "border-outline-variant/30 bg-surface-container text-on-surface hover:bg-surface-container-high"
+                        }`}
+                        title={preset.description}
+                      >
+                        {workflowDisplayName(preset.definition)}
+                      </button>
+                    ))}
+                    {group.items.length > (group.group === "核心工作流" ? 8 : 12) && (
+                      <span className="rounded-md border border-outline-variant/20 px-2 py-1 text-[11px] text-on-surface-variant">
+                        +{group.items.length - (group.group === "核心工作流" ? 8 : 12)}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="mb-3 rounded-lg border border-outline-variant/30 bg-surface p-3">
             <div className="mb-3 flex flex-wrap items-end gap-2">
               <label className="min-w-48 flex-1">

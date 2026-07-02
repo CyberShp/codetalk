@@ -14,6 +14,28 @@ function corsHeaders(origin = frontendOrigin) {
 }
 
 async function routeWorkbenchShell(page: import("@playwright/test").Page) {
+  await page.route("**/api/workbench/workflows/audit-draft", async (route) => {
+    const body = route.request().postDataJSON() as {
+      outputs?: Array<Record<string, unknown>>;
+    };
+    const warnings = (body.outputs ?? [])
+      .filter((output) => output.type === "json" && typeof output.schema !== "object")
+      .map((output) => ({
+        severity: "warning",
+        code: "json_output_missing_schema",
+        path: `outputs.${String(output.id ?? "unknown")}.schema`,
+        message: "JSON output has no schema; structured validation will be limited.",
+      }));
+    await route.fulfill({
+      json: {
+        status: warnings.length ? "warning" : "ok",
+        valid: true,
+        error: "",
+        warnings,
+      },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
   await page.route("**/api/workbench/workflows", async (route) => {
     await route.fulfill({
       json: [],
@@ -404,6 +426,8 @@ test("workflow run selector falls back to built-in presets when registered workf
 
   await openWorkbenchView(page, "工作流设计");
   await expect(page.getByRole("heading", { name: "工作流编排" })).toBeVisible();
+  await expect(page.getByText("核心工作流", { exact: true })).toBeVisible();
+  await expect(page.getByText("常用测试场景", { exact: true })).toBeVisible();
   const presetGroups = await page
     .getByLabel("工作流预设")
     .locator("optgroup")
@@ -590,6 +614,7 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   );
   await expect(page.getByRole("button", { name: "应用预设" })).toBeVisible();
   await expect(page.getByRole("button", { name: "安装预设" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "恢复内置预设" })).toBeVisible();
   await expect(page.getByText("codehub-mcp")).toBeVisible();
   await expect(page.getByLabel("Workflow builder provider preset")).toBeVisible();
   await page.getByLabel("Workflow builder provider preset").selectOption("corp-agent");
@@ -617,6 +642,9 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"black_box_cases"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"artifact": "sfmea\.json"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"schema": \{\s+"type": "array"/);
+  await page.getByRole("button", { name: "审计草稿" }).click();
+  await expect(page.getByText("工作流草稿审计: ok (0 warning(s))")).toBeVisible();
+  await expect(page.getByText("Server audit:ok")).toBeVisible();
   await page.getByLabel("Workflow builder scenario").selectOption("patch_impact_review");
   await page.getByRole("button", { name: "生成草稿" }).click();
   await expect(page.getByText("工作流草稿已生成: custom_mr_blackbox")).toBeVisible();

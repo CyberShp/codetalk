@@ -394,6 +394,17 @@ async def list_workflows() -> list[dict[str, Any]]:
     return [_workflow_response(item.raw) for item in store.list_workflows()]
 
 
+@router.post("/workflows/restore-builtins")
+async def restore_builtin_workflows() -> dict[str, Any]:
+    store = _workflow_store()
+    restored = restore_builtin_workflow_presets(store)
+    return {
+        "status": "ok",
+        "restored_count": len(restored),
+        "items": [_workflow_response(item.raw) for item in store.list_workflows()],
+    }
+
+
 @router.get("/workflows/{workflow_id}")
 async def get_workflow(workflow_id: str) -> dict[str, Any]:
     try:
@@ -1664,6 +1675,7 @@ def _build_workbench_system_audit() -> dict[str, Any]:
         "resource_leak_hunt",
         "mr_blackbox_test",
         "patch_impact_review",
+        "source_flow_sfmea_blackbox",
     }
     checks = [
         _system_audit_check(

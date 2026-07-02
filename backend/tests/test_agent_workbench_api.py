@@ -163,6 +163,57 @@ async def test_workbench_workflow_preset_api(workbench_client):
     assert installed.json()["id"] == "mr_blackbox_test"
 
 
+async def test_restore_builtin_workflows_preserves_custom_and_restores_core_plus_scenarios(
+    workbench_client,
+):
+    custom = await workbench_client.post(
+        "/api/workbench/workflows",
+        json={
+            "id": "custom_keep_me",
+            "name": "Custom Keep Me",
+            "version": 1,
+            "inputs": [],
+            "steps": [{"id": "render", "type": "report_render"}],
+            "outputs": [{"id": "report", "type": "markdown", "from": "render"}],
+        },
+    )
+    assert custom.status_code == 201
+
+    restored = await workbench_client.post("/api/workbench/workflows/restore-builtins")
+
+    assert restored.status_code == 200
+    body = restored.json()
+    assert body["status"] == "ok"
+    assert body["restored_count"] >= 5
+    workflow_ids = [item["id"] for item in body["items"]]
+    assert workflow_ids[:5] == [
+        "module_analysis",
+        "resource_leak_hunt",
+        "mr_blackbox_test",
+        "patch_impact_review",
+        "source_flow_sfmea_blackbox",
+    ]
+    assert {
+        "custom_keep_me",
+        "basic_lifecycle_smoke_blackbox",
+        "io_stress_performance_blackbox",
+        "failure_recovery_soak_blackbox",
+        "transport_network_partition_blackbox",
+        "data_integrity_corruption_blackbox",
+        "upgrade_compatibility_persistence_blackbox",
+        "telemetry_metrics_regression_blackbox",
+    }.issubset(set(workflow_ids))
+    for item in body["items"]:
+        if item["id"] in {
+            "module_analysis",
+            "resource_leak_hunt",
+            "mr_blackbox_test",
+            "patch_impact_review",
+            "source_flow_sfmea_blackbox",
+        }:
+            assert item["audit"]["warnings"] == []
+
+
 async def test_workbench_workflow_capabilities_api_documents_custom_workflows(workbench_client):
     resp = await workbench_client.get("/api/workbench/workflow-capabilities")
 
