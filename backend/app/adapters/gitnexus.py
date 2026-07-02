@@ -409,7 +409,19 @@ class GitNexusAdapter(BaseToolAdapter):
                 self._schedule_embed_if_enabled()
                 return
 
-            resp = await self._post_analyze_with_busy_retry(tool_repo_path)
+            resp, resolved = await self._post_analyze_with_busy_retry_or_resolve(
+                tool_repo_path
+            )
+            if resolved:
+                self._adopt_resolved_repo(cache_key, resolved)
+                logger.info(
+                    "gitnexus: analyze busy for %s, but repo is now indexed as %s; "
+                    "recovering without another analyze retry",
+                    tool_repo_path,
+                    self._repo_name,
+                )
+                self._schedule_embed_if_enabled()
+                return
 
             if resp.status_code == 409:
                 body = resp.json() if resp.content else {}
@@ -504,16 +516,22 @@ class GitNexusAdapter(BaseToolAdapter):
 
             raise RuntimeError("GitNexus indexing timed out")
 
-    async def _post_analyze_with_busy_retry(self, tool_repo_path: str) -> httpx.Response:
+    async def _post_analyze_with_busy_retry_or_resolve(
+        self,
+        tool_repo_path: str,
+    ) -> tuple[httpx.Response, dict | None]:
         """Start a GitNexus analyze job, tolerating transient 429 busy replies."""
         payload = {"path": tool_repo_path}
         attempts = max(1, _ANALYZE_BUSY_RETRY_ATTEMPTS)
         for attempt in range(attempts):
             resp = await self.client.post("/api/analyze", json=payload)
             if resp.status_code != 429:
-                return resp
+                return resp, None
+            resolved = await self._resolve_repo_for_path(tool_repo_path)
+            if resolved:
+                return resp, resolved
             if attempt >= attempts - 1:
-                return resp
+                return resp, None
             logger.info(
                 "gitnexus: analyze busy for %s (HTTP 429), retrying %d/%d",
                 tool_repo_path,
@@ -521,7 +539,7 @@ class GitNexusAdapter(BaseToolAdapter):
                 attempts - 1,
             )
             await asyncio.sleep(_ANALYZE_BUSY_RETRY_INTERVAL)
-        return resp
+        return resp, None
 
     async def _repo_exists(self, repo_name: str) -> bool:
         """Lightweight existence check so fresh adapter instances can reuse indexed repos."""
