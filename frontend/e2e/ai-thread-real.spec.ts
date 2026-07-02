@@ -2365,6 +2365,116 @@ test("sends an AI thread message with Enter while Shift+Enter keeps a newline", 
   }
 });
 
+test("passes a full multiline prompt to a managed Claude-style agent runtime", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-managed-multiline-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI managed multiline e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-managed-multiline-")));
+  const runtimeScript = path.join(runtimeDir, "managed_multiline_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import os, pathlib, sys",
+      "argv = sys.argv[1:]",
+      "prompt_file = pathlib.Path(os.environ['CODETALK_AGENT_PROMPT_FILE']).read_text(encoding='utf-8')",
+      "prompt_arg = argv[argv.index('-p') + 1] if '-p' in argv else ''",
+      "expected = '第一行：分析 SPDK iSCSI login\\n第二行：输出流程梳理\\n第三行：生成 SFMEA 和黑盒测试用例'",
+      "print('MANAGED_MULTILINE_AGENT_REPLY')",
+      "print('argv_has_full_multiline=' + str(expected in prompt_arg).lower())",
+      "print('prompt_file_has_full_multiline=' + str(expected in prompt_file).lower())",
+      "print('argv_line_occurrences=' + str(prompt_arg.count('第一行：分析 SPDK iSCSI login')) + '/' + str(prompt_arg.count('第二行：输出流程梳理')) + '/' + str(prompt_arg.count('第三行：生成 SFMEA 和黑盒测试用例')))",
+      "print('prompt_file_line_occurrences=' + str(prompt_file.count('第一行：分析 SPDK iSCSI login')) + '/' + str(prompt_file.count('第二行：输出流程梳理')) + '/' + str(prompt_file.count('第三行：生成 SFMEA 和黑盒测试用例')))",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-managed-multiline-e2e-${Date.now()}`;
+  const runtimeName = `Managed multiline Claude runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} managed multiline prompt`;
+  const lines = [
+    "第一行：分析 SPDK iSCSI login",
+    "第二行：输出流程梳理",
+    "第三行：生成 SFMEA 和黑盒测试用例",
+  ];
+  const prompt = lines.join("\n");
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "claude_print_arg",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    const composer = page.getByLabel("AI 线程消息");
+    await composer.click();
+    await composer.pressSequentially(lines[0]);
+    await page.keyboard.press("Shift+Enter");
+    await composer.pressSequentially(lines[1]);
+    await page.keyboard.press("Shift+Enter");
+    await composer.pressSequentially(lines[2]);
+    await expect(composer).toHaveValue(prompt);
+
+    await page.keyboard.press("Enter");
+    for (const line of lines) {
+      await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: line })).toHaveCount(1);
+    }
+    await expect(page.getByText("MANAGED_MULTILINE_AGENT_REPLY")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("argv_has_full_multiline=true")).toBeVisible();
+    await expect(page.getByText("prompt_file_has_full_multiline=true")).toBeVisible();
+    await expect(page.getByText("argv_line_occurrences=1/1/1")).toBeVisible();
+    await expect(page.getByText("prompt_file_line_occurrences=1/1/1")).toBeVisible();
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    expect(messageBody.items.filter((item) => item.role === "user" && item.content === prompt)).toHaveLength(1);
+    expect(
+      messageBody.items.some((item) => item.role === "assistant" && item.content.includes("argv_has_full_multiline=true")),
+    ).toBeTruthy();
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("switches an idle AI thread executor through the real UI and persists it", async ({
   page,
   request,

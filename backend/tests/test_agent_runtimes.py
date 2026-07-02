@@ -1941,6 +1941,55 @@ class TestAgentRuntimes:
 
         assert "".join(chunks) == prompt
 
+    async def test_managed_agent_transports_preserve_full_multiline_prompt_argument_and_file(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        prompt = (
+            "第一行：分析 SPDK iSCSI login\n"
+            "第二行：输出流程梳理\n"
+            "第三行：生成 SFMEA 和黑盒测试用例"
+        )
+        agent_code = (
+            "import json, os, pathlib, sys; "
+            "prompt_file=pathlib.Path(os.environ['CODETALK_AGENT_PROMPT_FILE']).read_text(encoding='utf-8'); "
+            "print(json.dumps({'argv': sys.argv[1:], 'prompt_file': prompt_file}, ensure_ascii=False), flush=True)"
+        )
+        cases = [
+            ("claude_print_arg", lambda argv: argv[argv.index("-p") + 1]),
+            ("codex_exec_json", lambda argv: argv[-1]),
+            ("opencode_run_arg", lambda argv: argv[-1]),
+        ]
+
+        for transport, prompt_arg in cases:
+            chunks = []
+            async for chunk in stream_agent_runtime(
+                runtime={
+                    "command": sys.executable,
+                    "args": ["-c", agent_code],
+                    "prompt_transport": transport,
+                    "output_mode": "plain",
+                    "timeout_seconds": 10,
+                },
+                prompt=prompt,
+                cwd=None,
+            ):
+                chunks.append(chunk)
+
+            captured = json.loads("".join(chunks))
+            argv = captured["argv"]
+            assert captured["prompt_file"] == prompt
+            assert prompt_arg(argv) == prompt
+            if transport == "claude_print_arg":
+                assert "--output-format" in argv
+                assert "stream-json" in argv
+                assert "--include-partial-messages" in argv
+                assert "--verbose" in argv
+            elif transport == "codex_exec_json":
+                assert "exec" in argv
+                assert "--json" in argv
+            else:
+                assert argv[-4:-1] == ["run", "--format", "json"]
+
     async def test_opencode_managed_transport_resumes_session_and_requests_json_format(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
 
