@@ -270,6 +270,24 @@ async def test_agent_output_segments_fold_unindented_tool_result_source_lines():
     ]
 
 
+async def test_agent_output_segments_keep_final_answer_after_json_tool_parts():
+    from app.services.agent_cli_bridge import AGENT_FINAL_ANSWER_PREFIX
+    from app.services.ai_conversations import _agent_output_segments
+
+    segments = _agent_output_segments(
+        f"{AGENT_FINAL_ANSWER_PREFIX}"
+        "THINKING: 内部推理：先列出工具计划\n"
+        "TOOL: cat /secret/path returned internal-only trace\n"
+        "FINAL_JSON_PARTS_ANSWER: 只展示源码分析结论。\n"
+    )
+
+    assert segments == [
+        ("diagnostic", "内部推理：先列出工具计划"),
+        ("diagnostic", "cat /secret/path returned internal-only trace"),
+        ("answer", "FINAL_JSON_PARTS_ANSWER: 只展示源码分析结论。\n"),
+    ]
+
+
 async def test_agent_output_segments_fold_thinking_source_dump_without_hiding_answer_heading():
     from app.services.ai_conversations import _agent_output_segments
 

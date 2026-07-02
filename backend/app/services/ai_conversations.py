@@ -1341,6 +1341,7 @@ def _agent_output_segments(chunk: str) -> list[tuple[str, str]]:
     text = clean_agent_output_text(str(chunk or ""))
     if not text.strip():
         return []
+    final_answer_chunk = text.startswith(AGENT_FINAL_ANSWER_PREFIX)
     if text.startswith(AGENT_FINAL_ANSWER_PREFIX):
         text = text[len(AGENT_FINAL_ANSWER_PREFIX) :]
     segments: list[tuple[str, str]] = []
@@ -1364,7 +1365,12 @@ def _agent_output_segments(chunk: str) -> list[tuple[str, str]]:
             flush_diagnostic()
             diagnostic_buffer.append(diagnostic)
             diagnostic_prefix = _agent_diagnostic_prefix(content)
-        elif diagnostic_buffer and _agent_diagnostic_continuation(content, line, diagnostic_prefix):
+        elif diagnostic_buffer and _agent_diagnostic_continuation(
+            content,
+            line,
+            diagnostic_prefix,
+            final_answer_chunk=final_answer_chunk,
+        ):
             diagnostic_buffer.append(redact_agent_diagnostic_text(content))
         else:
             flush_diagnostic()
@@ -1398,13 +1404,21 @@ def _agent_diagnostic_prefix(text: str) -> str:
     return ""
 
 
-def _agent_diagnostic_continuation(content: str, raw_line: str, diagnostic_prefix: str) -> bool:
+def _agent_diagnostic_continuation(
+    content: str,
+    raw_line: str,
+    diagnostic_prefix: str,
+    *,
+    final_answer_chunk: bool = False,
+) -> bool:
     if _looks_like_agent_answer_boundary(content):
         return False
     if raw_line[:1].isspace():
         return True
     lowered_prefix = diagnostic_prefix.lower()
     if lowered_prefix.startswith(("tool:", "tool_use:", "tool_result:")):
+        if final_answer_chunk:
+            return _looks_like_agent_process_output_line(content)
         return True
     return _looks_like_agent_process_output_line(content)
 
