@@ -22,6 +22,16 @@ async function expectBrowserStorageNotToContain(page: Page, secret: string) {
   expect(storageText).not.toContain(secret);
 }
 
+function llmConfigRow(page: Page, configName: string, modelName?: string) {
+  let row = page
+    .locator("div.flex.items-center.gap-4.bg-surface-container")
+    .filter({ has: page.locator("p.text-sm", { hasText: configName }) });
+  if (modelName) {
+    row = row.filter({ hasText: modelName });
+  }
+  return row.first();
+}
+
 test("settings LLM key stays masked and is not rendered after save/edit", async ({ page }) => {
   const secret = `sk-settings-ui-${Date.now()}`;
   const configName = `ui-secret-hygiene-${Date.now()}`;
@@ -47,14 +57,14 @@ test("settings LLM key stays masked and is not rendered after save/edit", async 
   await form.getByRole("textbox", { name: "gpt-4o", exact: true }).fill("deepseek-chat");
   await form.getByRole("button", { name: "保存配置" }).click();
 
-  const savedRow = page.locator("div", { hasText: configName }).filter({ hasText: "deepseek-chat" }).first();
+  const savedRow = llmConfigRow(page, configName, "deepseek-chat");
   await expect(savedRow).toBeVisible();
   await expect(page.locator("body")).not.toContainText(secret);
   await expectBrowserStorageNotToContain(page, secret);
 
   await page.reload({ waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: /可选：内置模型与 RAG 检索/ }).click();
-  const reloadedRow = page.locator("div", { hasText: configName }).filter({ hasText: "deepseek-chat" }).first();
+  const reloadedRow = llmConfigRow(page, configName, "deepseek-chat");
   await expect(reloadedRow).toBeVisible();
   await expect(page.locator("body")).not.toContainText(secret);
   await expectBrowserStorageNotToContain(page, secret);
@@ -107,7 +117,7 @@ test("settings prevents duplicate LLM saves from a real double click", async ({ 
     await expect(saveButton).toBeDisabled();
   }
 
-  const savedRow = page.locator("div", { hasText: configName }).filter({ hasText: modelName }).first();
+  const savedRow = llmConfigRow(page, configName, modelName);
   await expect(savedRow).toBeVisible({ timeout: 15_000 });
   await expect.poll(() => createRequests.length).toBe(1);
   await expect(page.locator("body")).not.toContainText(secret);
@@ -137,7 +147,7 @@ test("settings active chat model selection persists after reload", async ({ page
   await expect(activeModelSelect).toHaveValue(/.+/);
   const selectedModelId = await activeModelSelect.inputValue();
 
-  const savedRow = page.locator("div", { hasText: configName }).filter({ hasText: modelName }).first();
+  const savedRow = llmConfigRow(page, configName, modelName);
   await expect(savedRow).toContainText("活跃", { timeout: 15_000 });
 
   await page.reload({ waitUntil: "domcontentloaded" });
@@ -146,7 +156,7 @@ test("settings active chat model selection persists after reload", async ({ page
     has: page.locator("option", { hasText: configName }),
   });
   await expect(reloadedSelect).toHaveValue(selectedModelId);
-  const reloadedRow = page.locator("div", { hasText: configName }).filter({ hasText: modelName }).first();
+  const reloadedRow = llmConfigRow(page, configName, modelName);
   await expect(reloadedRow).toContainText("活跃", { timeout: 15_000 });
 });
 
