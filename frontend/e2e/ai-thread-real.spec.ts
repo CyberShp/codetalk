@@ -2398,6 +2398,111 @@ test("renders Codex agent message deltas without dropping the final answer", asy
   }
 });
 
+test("renders OpenAI response output item done as the final agent answer", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-response-done-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "Responses API output item done e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-response-done-")));
+  const runtimeScript = path.join(runtimeDir, "response_output_item_done_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, sys, time",
+      "sys.stdin.read()",
+      "answer = 'RESPONSE_DONE_FINAL: 已基于源码输出最终回答。\\n\\n## 代码证据\\n- `lib/iscsi/iscsi.c`: login 状态机。\\n\\n## 黑盒测试用例\\n1. 前置条件 target 已启动；步骤执行 iSCSI Login；预期结果 Login Response 可观测。'",
+      "events = [",
+      "  {'type':'response.created','response':{'id':'resp_response_done_e2e'}},",
+      "  {'type':'response.output_item.added','item':{'id':'msg_1','type':'message','role':'assistant'}},",
+      "  {'type':'item.completed','item':{'type':'command_execution','command':'rg iscsi_op_login lib/iscsi/iscsi.c','status':'completed','exit_code':0,'aggregated_output':'lib/iscsi/iscsi.c:iscsi_op_login_check_target'}},",
+      "  {'type':'response.output_item.done','item':{'id':'msg_1','type':'message','role':'assistant','content':[{'type':'output_text','text':answer}]}},",
+      "  {'type':'response.completed','response':{'status':'completed'}},",
+      "]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.05)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-response-done-e2e-${Date.now()}`;
+  const runtimeName = `Responses output item runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} response done`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "auto",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByLabel("AI 线程消息").fill("请用 Responses API output_item.done 事件读取源码并输出最终回答");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const assistantAnswer = page.locator(".ct-codex-message:not(.is-user)");
+    await expect(assistantAnswer.filter({ hasText: "RESPONSE_DONE_FINAL" })).toBeVisible({ timeout: 20_000 });
+    await expect(assistantAnswer.filter({ hasText: "执行器没有返回有效内容" })).toHaveCount(0);
+    await expect(assistantAnswer.filter({ hasText: "response.output_item.done" })).toHaveCount(0);
+    await expect(assistantAnswer.filter({ hasText: "iscsi_op_login_check_target" })).toHaveCount(0);
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("command: rg iscsi_op_login lib/iscsi/iscsi.c")).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("RESPONSE_DONE_FINAL");
+    expect(assistant?.content).toContain("lib/iscsi/iscsi.c");
+    expect(assistant?.content).not.toContain("response.output_item.done");
+    expect(assistant?.content).not.toContain("iscsi_op_login_check_target");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("downloads a Markdown artifact written by the agent runtime", async ({
   page,
   request,

@@ -708,7 +708,8 @@ def _event_text(event: dict[str, Any]) -> str | None:
         return None
     codex_item = event.get("item")
     if isinstance(codex_item, dict):
-        if str(codex_item.get("type") or "").strip() == "agent_message":
+        item_type = str(codex_item.get("type") or "").strip()
+        if item_type == "agent_message":
             value = codex_item.get("text") or codex_item.get("content")
             if isinstance(value, str):
                 return f"{AGENT_FINAL_ANSWER_PREFIX}{value}"
@@ -718,6 +719,18 @@ def _event_text(event: dict[str, Any]) -> str | None:
                 or codex_item.get("content_delta")
             )
             return f"{AGENT_ANSWER_DELTA_PREFIX}{delta}" if isinstance(delta, str) else None
+        if item_type in {"message", "output_message"} and str(codex_item.get("role") or "assistant").strip() == "assistant":
+            value = codex_item.get("content")
+            if isinstance(value, str):
+                return f"{AGENT_FINAL_ANSWER_PREFIX}{value}"
+            if isinstance(value, list):
+                parts = _content_parts(value)
+                answer = "".join(parts)
+                if not answer:
+                    return ""
+                if _only_diagnostic_parts(answer):
+                    return answer
+                return f"{AGENT_FINAL_ANSWER_PREFIX}{answer}"
         process_text = _codex_item_process_text(codex_item)
         if process_text:
             return process_text
