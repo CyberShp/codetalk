@@ -3973,13 +3973,17 @@ test("cleans real external-agent terminal noise before display, persistence, and
       "import sys",
       "sys.stdin.read()",
       "sys.stdout.write('\\x1b[32m')",
+      "sys.stdout.write('Welcome to Claude Code\\n')",
+      "sys.stdout.write('Ready for your next task.\\n')",
+      "sys.stdout.write('Tip: press Ctrl+C to stop generation\\n')",
+      "sys.stdout.write('│ Session ready                │\\n')",
       "sys.stdout.write('47%\\n12/100\\n')",
       "sys.stdout.buffer.write(bytes([0x80, 0x81, 0x8D, 0x90, 0x9D]) + b'\\n')",
       "sys.stdout.flush()",
       "sys.stdout.write('\\r\\x1b[2K⠋ 12\\r\\x1b[2K⠙ 47\\r\\x1b[2K\\x1b(B')",
       "sys.stdout.flush()",
       "sys.stdout.buffer.write('源码证据：连接失败\\n'.encode('gbk'))",
-      "sys.stdout.write('FINAL_NOISE_CLEAN_ANSWER: 已完成源码分析。\\n')",
+      "sys.stdout.write('## 结论\\nFINAL_NOISE_CLEAN_ANSWER: 已完成源码分析。\\n\\n## 代码证据\\n- `README.md`: `AI terminal noise e2e workspace` 表明 Agent 读取了当前工作区。\\n- `lib/nvmf`: 可作为存储链路噪声清洗回归的源码域。\\n\\n## 流程梳理\\n1. 外部 Agent 启动时输出欢迎、ready、tip 和进度噪声。\\n2. CodeTalk 清洗终端噪声，仅保留用户需要看的源码分析结论。\\n')",
       "sys.stdout.write('\\x1b[0m')",
       "sys.stdout.flush()",
       "",
@@ -4046,6 +4050,10 @@ test("cleans real external-agent terminal noise before display, persistence, and
     await expect(page.locator("body")).not.toContainText("⠙");
     await expect(page.locator("body")).not.toContainText("�");
     await expect(page.locator("body")).not.toContainText("[32m");
+    await expect(page.locator("body")).not.toContainText("Welcome to Claude Code");
+    await expect(page.locator("body")).not.toContainText("Ready for your next task");
+    await expect(page.locator("body")).not.toContainText("Tip: press Ctrl+C");
+    await expect(page.locator("body")).not.toContainText("Session ready");
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
 
     await page.reload({ waitUntil: "domcontentloaded" });
@@ -4056,6 +4064,10 @@ test("cleans real external-agent terminal noise before display, persistence, and
     await expect(page.locator("body")).not.toContainText("12/100");
     await expect(page.locator("body")).not.toContainText("(B");
     await expect(page.locator("body")).not.toContainText("�");
+    await expect(page.locator("body")).not.toContainText("Welcome to Claude Code");
+    await expect(page.locator("body")).not.toContainText("Ready for your next task");
+    await expect(page.locator("body")).not.toContainText("Tip: press Ctrl+C");
+    await expect(page.locator("body")).not.toContainText("Session ready");
 
     const messagesResp = await request.get(
       `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
@@ -4072,6 +4084,10 @@ test("cleans real external-agent terminal noise before display, persistence, and
     expect(assistant?.content).not.toContain("(B");
     expect(assistant?.content).not.toContain("�");
     expect(assistant?.content).not.toContain("[32m");
+    expect(assistant?.content).not.toContain("Welcome to Claude Code");
+    expect(assistant?.content).not.toContain("Ready for your next task");
+    expect(assistant?.content).not.toContain("Tip: press Ctrl+C");
+    expect(assistant?.content).not.toContain("Session ready");
 
     const downloadPromise = page.waitForEvent("download");
     await page.getByRole("button", { name: "导出" }).hover();
@@ -4087,6 +4103,10 @@ test("cleans real external-agent terminal noise before display, persistence, and
     expect(exported).not.toContain("(B");
     expect(exported).not.toContain("�");
     expect(exported).not.toContain("[32m");
+    expect(exported).not.toContain("Welcome to Claude Code");
+    expect(exported).not.toContain("Ready for your next task");
+    expect(exported).not.toContain("Tip: press Ctrl+C");
+    expect(exported).not.toContain("Session ready");
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }

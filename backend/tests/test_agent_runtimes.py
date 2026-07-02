@@ -3923,8 +3923,12 @@ class TestAgentRuntimes:
             "import sys; "
             "sys.stdout.write('Claude Code v1.2.3\\n'); "
             "sys.stdout.write('cwd: /tmp/project\\n'); "
+            "sys.stdout.write('Welcome to Claude Code\\n'); "
+            "sys.stdout.write('Ready for your next task.\\n'); "
+            "sys.stdout.write('Tip: press Ctrl+C to stop generation\\n'); "
             "sys.stdout.write('╭──────────────────────────────╮\\n'); "
             "sys.stdout.write('│ Thinking…                    │\\n'); "
+            "sys.stdout.write('│ Session ready                │\\n'); "
             "sys.stdout.write('> 分析 SPDK 流程\\n'); "
             "sys.stdout.write('最终答案：只展示用户需要看的回答。\\n'); "
             "sys.stdout.write('╰──────────────────────────────╯\\n'); "
@@ -3949,6 +3953,10 @@ class TestAgentRuntimes:
         assert "Claude Code" not in output
         assert "cwd:" not in output
         assert "Thinking" not in output
+        assert "Welcome" not in output
+        assert "Ready" not in output
+        assert "Tip:" not in output
+        assert "Session ready" not in output
 
     async def test_agent_runtime_auto_mode_keeps_response_reasoning_out_of_answer(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
