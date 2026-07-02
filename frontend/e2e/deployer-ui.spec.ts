@@ -120,7 +120,7 @@ async function configureNativeDeployment(
     backendPort: number;
   },
 ) {
-  await page.goto("/deploy.html", { waitUntil: "domcontentloaded" });
+  await page.goto(`${deployerUrl}/deploy.html`, { waitUntil: "domcontentloaded" });
   await expect(page).toHaveTitle(/CodeTalk 部署系统/);
   await expect(page.getByText(/DeepWiki|deepwiki|Joern|joern/)).toHaveCount(0);
 
@@ -271,7 +271,7 @@ test("deployment wizard launches core services from real browser interactions", 
 
 test("start page keeps removed services hidden and exposes core controls", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/start.html", { waitUntil: "domcontentloaded" });
+  await page.goto(`${deployerUrl}/start.html`, { waitUntil: "domcontentloaded" });
   await expect(page).toHaveTitle(/CodeTalk 服务启动/);
   await expect(page.getByText(/DeepWiki|deepwiki|Joern|joern/)).toHaveCount(0);
   await expect(page.locator('.svc-card[data-svc="backend"]')).toBeVisible();

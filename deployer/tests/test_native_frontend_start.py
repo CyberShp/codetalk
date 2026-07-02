@@ -17,15 +17,72 @@ from deployers.native import NativeDeployer, _frontend_source_fingerprint  # noq
 
 class NativeFrontendStartTests(unittest.TestCase):
     def test_frontend_default_start_uses_next_start_script(self) -> None:
-        deployer = NativeDeployer({"frontend_port": 3003}, asyncio.Queue())
+        deployer = NativeDeployer({"backend_port": 3504, "frontend_port": 3503}, asyncio.Queue())
 
         args = deployer._default_start_args("frontend")
 
         self.assertIsNotNone(args)
         assert args is not None
         self.assertEqual(args["cmd"], ["npm", "run", "start"])
-        self.assertEqual(args["env_extra"], {"PORT": "3003"})
+        self.assertEqual(
+            args["env_extra"],
+            {
+                "PORT": "3503",
+                "CODETALK_FRONTEND_PORT": "3503",
+                "CODETALK_BACKEND_PORT": "3504",
+                "NEXT_PUBLIC_API_URL": "http://localhost:3504",
+            },
+        )
         self.assertNotIn("standalone", " ".join(args["cmd"]))
+
+    def test_step_start_services_passes_selected_frontend_and_backend_ports(self) -> None:
+        class RecordingDeployer(NativeDeployer):
+            def __init__(self) -> None:
+                super().__init__(
+                    {
+                        "backend_port": 3504,
+                        "frontend_port": 3503,
+                        "install_gitnexus": False,
+                        "install_cgc": False,
+                    },
+                    asyncio.Queue(),
+                )
+                self.started: list[tuple[str, dict | None]] = []
+
+            async def _release_ports(self, *args, **kwargs) -> None:
+                return None
+
+            async def _start_process(self, name, cmd, cwd, step_name, step_index, env_extra=None):
+                self.started.append((name, env_extra))
+
+        async def run() -> RecordingDeployer:
+            with TemporaryDirectory() as tmpdir:
+                project_root = Path(tmpdir)
+                (project_root / "backend").mkdir()
+                (project_root / "frontend" / ".next").mkdir(parents=True)
+                deployer = RecordingDeployer()
+                with patch("deployers.native.PROJECT_ROOT", project_root):
+                    await deployer._step_start_services()
+                return deployer
+
+        deployer = asyncio.run(run())
+        started = dict(deployer.started)
+        self.assertEqual(
+            started["backend"],
+            {
+                "CODETALK_BACKEND_PORT": "3504",
+                "CORS_ORIGINS": "http://localhost:3503,http://127.0.0.1:3503",
+            },
+        )
+        self.assertEqual(
+            started["frontend"],
+            {
+                "PORT": "3503",
+                "CODETALK_FRONTEND_PORT": "3503",
+                "CODETALK_BACKEND_PORT": "3504",
+                "NEXT_PUBLIC_API_URL": "http://localhost:3504",
+            },
+        )
 
     def test_start_service_spawns_frontend_once(self) -> None:
         class RecordingDeployer(NativeDeployer):
@@ -117,6 +174,7 @@ class NativeFrontendStartTests(unittest.TestCase):
 
             generated = env_path.read_text(encoding="utf-8")
             self.assertIn("KEEP_ME=1", generated)
+            self.assertIn("CODETALK_BACKEND_PORT=3004", generated)
             self.assertIn("GITNEXUS_BASE_URL=http://localhost:7100", generated)
             self.assertNotIn("DEEPWIKI", generated)
             self.assertNotIn("deepwiki", generated.lower())

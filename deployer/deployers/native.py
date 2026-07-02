@@ -468,6 +468,7 @@ class NativeDeployer:
         env_lines = [
             "DATA_DIR=data",
             "SQLITE_DB=data/codetalk.db",
+            f"CODETALK_BACKEND_PORT={backend_port}",
             f"REPOS_BASE_PATH={repos_dir}",
             f"GITNEXUS_BASE_URL=http://localhost:{gitnexus_port}",
             f"GITNEXUS_PORT={gitnexus_port}",
@@ -500,6 +501,24 @@ class NativeDeployer:
     # ------------------------------------------------------------------
     # Step 6: Start services
     # ------------------------------------------------------------------
+
+    def _backend_runtime_env(self) -> dict[str, str]:
+        backend_port = str(self._config.get("backend_port", 3004))
+        frontend_port = str(self._config.get("frontend_port", 3003))
+        return {
+            "CODETALK_BACKEND_PORT": backend_port,
+            "CORS_ORIGINS": f"http://localhost:{frontend_port},http://127.0.0.1:{frontend_port}",
+        }
+
+    def _frontend_runtime_env(self) -> dict[str, str]:
+        frontend_port = str(self._config.get("frontend_port", 3003))
+        backend_port = str(self._config.get("backend_port", 3004))
+        return {
+            "PORT": frontend_port,
+            "CODETALK_FRONTEND_PORT": frontend_port,
+            "CODETALK_BACKEND_PORT": backend_port,
+            "NEXT_PUBLIC_API_URL": f"http://localhost:{backend_port}",
+        }
 
     async def _scan_port_conflicts(self, ports: list[int]) -> list[dict]:
         """Scan ports for conflicts without killing anything.
@@ -737,6 +756,7 @@ class NativeDeployer:
             cwd=str(backend_dir),
             step_name="start_services",
             step_index=step,
+            env_extra=self._backend_runtime_env(),
         )
 
         if cfg.get("install_gitnexus", True):
@@ -805,7 +825,7 @@ class NativeDeployer:
             cwd=str(frontend_dir),
             step_name="start_services",
             step_index=step,
-            env_extra={"PORT": str(frontend_port)},
+            env_extra=self._frontend_runtime_env(),
         )
 
         await asyncio.sleep(3)
@@ -948,14 +968,14 @@ class NativeDeployer:
             return {
                 "cmd": [str(venv_python), "-m", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", str(cfg.get("backend_port", 3004))],
                 "cwd": str(backend_dir),
-                "env_extra": None,
+                "env_extra": self._backend_runtime_env(),
             }
         if name == "frontend":
             npm_cmd = "npm.cmd" if sys.platform == "win32" else "npm"
             return {
                 "cmd": [npm_cmd, "run", "start"],
                 "cwd": str(PROJECT_ROOT / "frontend"),
-                "env_extra": {"PORT": str(cfg.get("frontend_port", 3003))},
+                "env_extra": self._frontend_runtime_env(),
             }
         if name == "gitnexus":
             gn_cmd = self._resolve_gitnexus_cmd()
