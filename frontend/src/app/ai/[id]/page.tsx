@@ -26,7 +26,7 @@ import {
   Trash2,
   User,
 } from "lucide-react";
-import { api } from "@/lib/api";
+import { BASE as API_BASE, api } from "@/lib/api";
 import type { AgentRuntime, AIContextReference, AIConversation, AIMessage, AIRunEvent, Workspace } from "@/lib/types";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 
@@ -67,6 +67,12 @@ function actionLabel(action: AIMessage["actions"][number]): string {
 
 function actionHref(action: AIMessage["actions"][number]): string {
   return actionTextField(action, "href");
+}
+
+function resolvedActionHref(action: AIMessage["actions"][number]): string {
+  const href = actionHref(action);
+  if (href.startsWith("/api/")) return `${API_BASE}${href}`;
+  return href;
 }
 
 function actionKind(action: AIMessage["actions"][number]): string {
@@ -918,14 +924,14 @@ export default function AIThreadPage() {
                       <p className="whitespace-pre-wrap">{redactDiagnosticText(message.content)}</p>
                     )}
                   </div>
-                  {message.actions?.some((action) => actionHref(action)) && (
+                  {message.actions?.some((action) => resolvedActionHref(action)) && (
                     <div className="ct-codex-message__actions">
                       {message.actions
-                        .filter((action) => actionHref(action))
+                        .filter((action) => resolvedActionHref(action))
                         .map((action) => (
                           <a
-                            key={`${message.id}-${actionId(action) || actionHref(action)}`}
-                            href={actionHref(action)}
+                            key={`${message.id}-${actionId(action) || resolvedActionHref(action)}`}
+                            href={resolvedActionHref(action)}
                             download={actionKind(action) === "download" ? true : undefined}
                           >
                             <Download size={14} />
