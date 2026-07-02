@@ -1187,6 +1187,107 @@ class TestAgentRuntimes:
             assert any("内部推理：先搜索源码" in item for item in diagnostics)
             assert any("拒绝诊断：策略提示" in item for item in diagnostics)
 
+    async def test_ai_thread_agent_runtime_collapses_full_source_dump_from_visible_answer(
+        self,
+        sqlite_db,
+        tmp_path,
+    ):
+        repo = tmp_path / "spdk"
+        source = repo / "lib" / "nvmf" / "auth.c"
+        source.parent.mkdir(parents=True)
+        source.write_text(
+            "\n".join(
+                [
+                    "/* SPDX-License-Identifier: BSD-3-Clause */",
+                    '#include "spdk/stdinc.h"',
+                    '#include "spdk/nvmf.h"',
+                    '#include "nvmf_internal.h"',
+                    "",
+                    "static int spdk_nvmf_auth_probe_0(void) { return 0; }",
+                    *[
+                        f"static int spdk_nvmf_auth_probe_{index}(void) {{ return {index}; }}"
+                        for index in range(1, 70)
+                    ],
+                ]
+            ),
+            encoding="utf-8",
+        )
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-source-dump", repo_path=str(repo))
+        app = _test_app(sqlite_db)
+        agent_code = (
+            "from pathlib import Path\n"
+            "text = Path('lib/nvmf/auth.c').read_text(encoding='utf-8')\n"
+            "print(text)\n"
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            runtime = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Source Dump Agent",
+                    "command": sys.executable,
+                    "args": ["-c", agent_code],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "working_dir_mode": "project",
+                    "timeout_seconds": 10,
+                },
+            )
+            assert runtime.status_code == 201
+
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "title": "Agent 源码全文折叠",
+                    "runtime_type": "agent_runtime",
+                    "agent_runtime_id": runtime.json()["id"],
+                },
+            )
+            assert created.status_code == 201
+            conversation = created.json()
+
+            posted = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "基于 nvmf auth 源码总结黑盒边界，不要输出源码全文"},
+            )
+            assert posted.status_code == 202
+
+            for _ in range(40):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                items = messages.json()["items"]
+                if len(items) == 2:
+                    break
+                await asyncio.sleep(0.1)
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            body = messages.json()
+            assert [item["role"] for item in body["items"]] == ["user", "assistant"]
+            assistant = body["items"][1]["content"]
+            assert "源码全文" in assistant
+            assert "已折叠" in assistant
+            assert "lib/nvmf/auth.c" in assistant
+            assert '#include "spdk/stdinc.h"' not in assistant
+            assert "spdk_nvmf_auth_probe_69" not in assistant
+
+            stream = await client.get(f"/api/ai/conversations/{conversation['id']}/stream")
+            events = [
+                json.loads(line.removeprefix("data: "))
+                for line in stream.text.splitlines()
+                if line.startswith("data: ")
+            ]
+            answer_chunks = [
+                event["payload"].get("content", "")
+                for event in events
+                if event["event_type"] == "delta" and event["payload"].get("kind") != "diagnostic"
+            ]
+            visible_stream = "".join(answer_chunks)
+            assert "已折叠" in visible_stream
+            assert '#include "spdk/stdinc.h"' not in visible_stream
+            assert "spdk_nvmf_auth_probe_69" not in visible_stream
+
     async def test_ai_thread_agent_runtime_keeps_tool_events_out_of_final_answer(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)

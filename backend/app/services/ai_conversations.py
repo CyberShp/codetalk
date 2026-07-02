@@ -146,6 +146,87 @@ def _clip(text: str, limit: int = _MAX_REFERENCE_CHARS) -> str:
     return compact[: limit - 1] + "…"
 
 
+_SOURCE_DUMP_MIN_LINES = 30
+_SOURCE_DUMP_MIN_CODE_LINES = 18
+_SOURCE_DUMP_MIN_CHARS = 1800
+_SOURCE_CODE_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"#\s*(?:include|define|ifdef|ifndef|endif|pragma)\b"
+    r"|(?://|/\*|\*|#|--)"
+    r"|(?:static\s+)?(?:inline\s+)?(?:const\s+)?(?:int|void|bool|char|size_t|uint\d+_t|"
+    r"spdk_\w+|struct|enum|typedef|class|def|func|function|package|import|from)\b"
+    r"|(?:if|for|while|switch|case|return|goto|else|try|catch)\b"
+    r"|[{};]"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _govern_visible_assistant_content(
+    content: str,
+    references: list[dict[str, Any]],
+) -> str:
+    """Prevent raw source dumps from becoming the visible AI-thread answer."""
+    text = str(content or "").strip()
+    if not _looks_like_source_dump(text):
+        return text
+    paths = _source_reference_paths(references)
+    evidence_line = (
+        "证据文件：" + "、".join(f"`{path}`" for path in paths[:5])
+        if paths
+        else "证据文件：工作区源码引用"
+    )
+    return (
+        "CodeTalk 已折叠一段疑似源码全文输出，避免外部 agent 把大文件直接刷进 AI 线程。\n\n"
+        "可见状态：执行器读取了工作区源码，但返回内容主要是源码原文，不是面向用户的分析结论。"
+        "请基于证据文件继续追问“流程、风险、SFMEA、黑盒用例”，或重新要求只输出结论与证据摘要。\n\n"
+        f"{evidence_line}"
+    )
+
+
+def _looks_like_source_dump(text: str) -> bool:
+    if len(text) < _SOURCE_DUMP_MIN_CHARS:
+        return False
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) < _SOURCE_DUMP_MIN_LINES:
+        return False
+    code_like = sum(1 for line in lines if _SOURCE_CODE_LINE_RE.search(line))
+    if code_like < _SOURCE_DUMP_MIN_CODE_LINES:
+        return False
+    ratio = code_like / max(1, len(lines))
+    source_markers = (
+        "#include",
+        "SPDX-License-Identifier",
+        "static ",
+        "typedef ",
+        "struct ",
+        "return ",
+        "package ",
+        "import ",
+        "def ",
+        "class ",
+    )
+    marker_hits = sum(1 for marker in source_markers if marker in text)
+    return ratio >= 0.45 and marker_hits >= 2
+
+
+def _source_reference_paths(references: list[dict[str, Any]]) -> list[str]:
+    paths: list[str] = []
+    for ref in references:
+        if not isinstance(ref, dict):
+            continue
+        source_type = str(ref.get("source_type") or "")
+        metadata = ref.get("metadata") if isinstance(ref.get("metadata"), dict) else {}
+        candidate = str(metadata.get("path") or ref.get("title") or ref.get("source_id") or "").strip()
+        if not candidate:
+            continue
+        if source_type and source_type != "workspace_source" and "/" not in candidate:
+            continue
+        if candidate not in paths:
+            paths.append(candidate)
+    return paths
+
+
 @dataclass(frozen=True)
 class ContextReference:
     source_type: str
@@ -836,7 +917,10 @@ async def run_generation(
                     async with asyncio.timeout(settings.ai_conversation_stream_timeout_sec):
                         response = await llm.complete(prompt, max_tokens=max_tokens, temperature=temperature)
                     await append_delta(response.content)
-        content = "".join(chunks).strip() or "本轮没有生成有效内容，请换一种问法重试。"
+        content = _govern_visible_assistant_content(
+            "".join(chunks).strip() or "本轮没有生成有效内容，请换一种问法重试。",
+            references,
+        )
         model = str(getattr(llm, "_model", "") or "")
         await store.complete_run(
             run_id=run_id,
@@ -915,13 +999,16 @@ async def run_agent_generation(
                     )
                     continue
                 chunks.append(content)
-                await store.append_event(
-                    run_id=run_id,
-                    conversation_id=conversation["id"],
-                    event_type="delta",
-                    payload={"content": content},
-                )
-        content = "".join(chunks).strip() or "执行器没有返回有效内容，请检查命令输出模式。"
+        content = _govern_visible_assistant_content(
+            "".join(chunks).strip() or "执行器没有返回有效内容，请检查命令输出模式。",
+            references,
+        )
+        await store.append_event(
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            event_type="delta",
+            payload={"content": content},
+        )
         if runtime_id and session_updates:
             latest_session = session_updates[-1]
             await store.upsert_agent_runtime_session(
