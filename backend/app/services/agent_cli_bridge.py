@@ -663,7 +663,10 @@ def _event_text(event: dict[str, Any]) -> str | None:
     if isinstance(codex_item, dict):
         if str(codex_item.get("type") or "").strip() == "agent_message":
             value = codex_item.get("text") or codex_item.get("content")
-            return value if isinstance(value, str) else None
+            return f"{AGENT_FINAL_ANSWER_PREFIX}{value}" if isinstance(value, str) else None
+        process_text = _codex_item_process_text(codex_item)
+        if process_text:
+            return process_text
         return None
     if str(event.get("type") or "").strip() == "assistant":
         message = event.get("message")
@@ -810,6 +813,60 @@ def _opencode_part_tool_text(part: dict[str, Any]) -> str:
     return f"{tool_name or part_type}{suffix}".strip()
 
 
+def _codex_item_process_text(item: dict[str, Any]) -> str:
+    item_type = str(item.get("type") or "").strip()
+    if item_type == "todo_list":
+        tasks = item.get("todo_items") if isinstance(item.get("todo_items"), list) else item.get("items")
+        if not isinstance(tasks, list):
+            return ""
+        entries: list[str] = []
+        for index, task in enumerate(tasks):
+            if not isinstance(task, dict):
+                continue
+            task_id = str(task.get("id") or f"task-{index}").strip()
+            subject = str(task.get("content") or task.get("text") or "").strip()
+            status = str(task.get("status") or ("completed" if task.get("completed") is True else "pending")).strip()
+            if subject:
+                entries.append(f"{task_id}={status}: {subject[:120]}")
+        if not entries:
+            return ""
+        return f"task_progress {'; '.join(entries)}"
+    if item_type == "mcp_tool_call":
+        server = str(item.get("server") or "unknown").strip()
+        tool = str(item.get("tool") or "unknown").strip()
+        args = item.get("arguments")
+        suffix = f" {json.dumps(args, ensure_ascii=False)[:300]}" if isinstance(args, dict) and args else ""
+        return f"mcp:{server}/{tool}{suffix}"
+    if item_type == "command_execution":
+        sections: list[str] = []
+        command = str(item.get("command") or "").strip()
+        if command:
+            sections.append(f"command: {command}")
+        status = str(item.get("status") or "completed").strip()
+        sections.append(f"status: {status}")
+        exit_code = item.get("exit_code")
+        if isinstance(exit_code, int):
+            sections.append(f"exit_code: {exit_code}")
+        output = str(item.get("aggregated_output") or "").strip()
+        if output:
+            sections.append(output)
+        return "\n".join(sections)
+    if item_type == "file_change":
+        changes = item.get("changes")
+        change_count = len(changes) if isinstance(changes, list) else 0
+        status = str(item.get("status") or "completed").strip()
+        return f"file_change status={status} changes={change_count}"
+    if item_type == "web_search":
+        return "web_search count=1"
+    if item_type == "reasoning":
+        text = str(item.get("text") or "").strip()
+        return f"THINKING: {text}" if text else ""
+    if item_type == "error":
+        message = str(item.get("message") or "").strip()
+        return f"ERROR: {message}" if message else ""
+    return ""
+
+
 def _looks_like_protocol_noise(event: dict[str, Any]) -> bool:
     keys = set(event)
     if not keys:
@@ -840,9 +897,22 @@ def _looks_like_protocol_noise(event: dict[str, Any]) -> bool:
         "result",
     }:
         return True
-    if event_type == "item.completed":
+    if event_type in {"item.started", "item.updated", "item.completed"}:
         item = event.get("item")
-        return not (isinstance(item, dict) and str(item.get("type") or "") == "agent_message")
+        return not (
+            isinstance(item, dict)
+            and str(item.get("type") or "")
+            in {
+                "agent_message",
+                "todo_list",
+                "mcp_tool_call",
+                "command_execution",
+                "file_change",
+                "web_search",
+                "reasoning",
+                "error",
+            }
+        )
     if event_type.startswith("response.") and event_type not in {
         "response.output_text.delta",
         "response.reasoning_text.delta",
@@ -855,6 +925,9 @@ def _looks_like_protocol_noise(event: dict[str, Any]) -> bool:
 def _diagnostic_event_text(event: dict[str, Any]) -> str | None:
     event_type = str(event.get("type") or event.get("event") or event.get("kind") or "").strip().lower()
     tool_event = event_type in {"tool_use", "tool_result", "function_call", "function_result"}
+    codex_item_event = event_type in {"item.started", "item.updated", "item.completed"}
+    codex_item = event.get("item") if codex_item_event else None
+    codex_item_type = str(codex_item.get("type") or "").strip() if isinstance(codex_item, dict) else ""
     assistant_tool_event = False
     if event_type == "assistant":
         message = event.get("message")
@@ -870,12 +943,30 @@ def _diagnostic_event_text(event: dict[str, Any]) -> str | None:
         and not tool_event
         and not assistant_tool_event
         and not response_reasoning_event
+        and codex_item_type
+        not in {
+            "todo_list",
+            "mcp_tool_call",
+            "command_execution",
+            "file_change",
+            "web_search",
+            "reasoning",
+            "error",
+        }
     ):
         return None
     text = _event_error_text(event) if event_type == "error" else _event_text(event)
     if not text:
         return ""
-    if tool_event or assistant_tool_event:
+    if codex_item_type == "todo_list":
+        prefix = "STATUS"
+    elif codex_item_type == "reasoning":
+        prefix = "THINKING"
+    elif codex_item_type == "error":
+        prefix = "ERROR"
+    elif codex_item_type in {"mcp_tool_call", "command_execution", "file_change", "web_search"}:
+        prefix = "TOOL"
+    elif tool_event or assistant_tool_event:
         prefix = "TOOL"
     elif response_reasoning_event:
         prefix = "THINKING"

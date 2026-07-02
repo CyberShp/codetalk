@@ -2283,6 +2283,65 @@ class TestAgentRuntimes:
             )
             == "ERROR: opencode grep failed while reading lib/nvmf"
         )
+        assert (
+            _parse_event_text(
+                json.dumps(
+                    {
+                        "type": "item.updated",
+                        "item": {
+                            "type": "todo_list",
+                            "todo_items": [
+                                {"id": "read", "content": "读取 lib/nvmf 源码", "status": "completed"},
+                                {"id": "sfmea", "content": "生成 SFMEA", "status": "in_progress"},
+                            ],
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                "stream_json",
+            )
+            == "STATUS: task_progress read=completed: 读取 lib/nvmf 源码; sfmea=in_progress: 生成 SFMEA"
+        )
+        assert (
+            _parse_event_text(
+                json.dumps(
+                    {
+                        "type": "item.started",
+                        "item": {
+                            "type": "mcp_tool_call",
+                            "server": "gitnexus",
+                            "tool": "search",
+                            "arguments": {"query": "spdk_nvmf_connect"},
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                "stream_json",
+            )
+            == 'TOOL: mcp:gitnexus/search {"query": "spdk_nvmf_connect"}'
+        )
+        assert (
+            _parse_event_text(
+                json.dumps(
+                    {
+                        "type": "item.completed",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "rg spdk_nvmf_connect lib/nvmf",
+                            "status": "completed",
+                            "exit_code": 0,
+                            "aggregated_output": "lib/nvmf/ctrlr.c: spdk_nvmf_connect",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                "stream_json",
+            )
+            == "TOOL: command: rg spdk_nvmf_connect lib/nvmf\n"
+            "TOOL: status: completed\n"
+            "TOOL: exit_code: 0\n"
+            "TOOL: lib/nvmf/ctrlr.c: spdk_nvmf_connect"
+        )
         assert _parse_event_text(json.dumps({"type": "message_start", "index": 0}), "stream_json") == ""
         assert (
             _parse_event_text(

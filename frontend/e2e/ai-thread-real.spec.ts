@@ -1391,6 +1391,109 @@ test("Codex agent runtime reads prompts from stdin and resumes through the real 
   }
 });
 
+test("renders native Codex task and tool events as Agent process diagnostics", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-codex-native-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "Codex native event e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-codex-native-")));
+  const runtimeScript = path.join(runtimeDir, "codex_native_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, sys, time",
+      "sys.stdin.read()",
+      "events = [",
+      "  {'type':'thread.started','thread_id':'codex-native-e2e'},",
+      "  {'type':'item.updated','item':{'type':'todo_list','todo_items':[{'id':'read','content':'读取 lib/nvmf 源码','status':'completed'},{'id':'sfmea','content':'生成 SFMEA','status':'in_progress'}]}},",
+      "  {'type':'item.started','item':{'type':'mcp_tool_call','server':'gitnexus','tool':'search','arguments':{'query':'spdk_nvmf_connect'}}},",
+      "  {'type':'item.completed','item':{'type':'command_execution','command':'rg spdk_nvmf_connect lib/nvmf','status':'completed','exit_code':0,'aggregated_output':'lib/nvmf/ctrlr.c: spdk_nvmf_connect'}},",
+      "  {'type':'item.completed','item':{'type':'agent_message','text':'CODEX_NATIVE_FINAL: 已完成源码分析并保留过程诊断。'}},",
+      "]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.05)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-codex-native-e2e-${Date.now()}`;
+  const runtimeName = `Codex native runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} native events`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "codex_exec_json",
+      output_mode: "stream_json",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "resume_args",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByLabel("AI 线程消息").fill("请用 Codex 原生事件读取源码并只展示最终答案");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const assistantAnswer = page.locator(".ct-codex-message:not(.is-user)");
+    await expect(assistantAnswer.filter({ hasText: "CODEX_NATIVE_FINAL" })).toBeVisible({ timeout: 20_000 });
+    await expect(assistantAnswer.filter({ hasText: "task_progress" })).toHaveCount(0);
+    await expect(assistantAnswer.filter({ hasText: "spdk_nvmf_connect" })).toHaveCount(0);
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.getByText("task_progress")).toBeHidden();
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("task_progress read=completed")).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.getByText("mcp:gitnexus/search")).toBeVisible();
+    await expect(processDisclosure.getByText("rg spdk_nvmf_connect lib/nvmf")).toBeVisible();
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("CODEX_NATIVE_FINAL");
+    expect(assistant?.content).not.toContain("task_progress");
+    expect(assistant?.content).not.toContain("spdk_nvmf_connect");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("Claude-style agent runtime resumes the previous CLI session through the real AI thread UI", async ({
   page,
   request,
