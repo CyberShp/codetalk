@@ -248,7 +248,41 @@ def _legacy_clean_agent_answer_content(content: str) -> str:
         candidate = text[match.start() :].strip()
         if _legacy_cleaned_candidate_is_user_facing(candidate):
             return candidate
+    if _looks_like_legacy_agent_process_leak(text):
+        return (
+            "CodeTalk 已折叠旧版 Agent 过程输出，避免把工具调用、源码搜索结果或中间思考直接显示在回答区。\n\n"
+            "这条历史消息生成于过程/答案分离修复之前；请展开“Agent 过程”查看执行轨迹，"
+            "或使用“下载完整产物”获取已清理的 Markdown 结果。"
+        )
     return text
+
+
+def _looks_like_legacy_agent_process_leak(text: str) -> bool:
+    if not any(marker in text for marker in _LEGACY_AGENT_DIAGNOSTIC_MARKERS):
+        return False
+    lines = [line for line in str(text or "").splitlines() if line.strip()]
+    if len(lines) >= 8:
+        code_like = sum(
+            1
+            for line in lines[:80]
+            if not line.lstrip().startswith("#") and _SOURCE_CODE_LINE_RE.search(line)
+        )
+        if code_like >= 4:
+            return True
+    sourceish_markers = (
+        "grep -n",
+        "rg ",
+        "Bash {",
+        "lib/",
+        "struct ",
+        "rsph",
+        "reqh",
+        "AuthMethod",
+        "content_block",
+        "tool_use",
+        "tool_result",
+    )
+    return sum(1 for marker in sourceish_markers if marker in text) >= 2
 
 
 def _legacy_cleaned_candidate_is_user_facing(candidate: str) -> bool:

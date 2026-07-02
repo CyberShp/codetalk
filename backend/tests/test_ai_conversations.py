@@ -2017,3 +2017,52 @@ class TestAIConversationsAPI:
         assert "THINKING:" not in artifact_text
         assert "iscsi_conn_login_pdu_success_complete" not in artifact_text
         assert "旧版流式残片" not in artifact_text
+
+    async def test_truncated_legacy_agent_preview_falls_back_to_safe_placeholder(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        app = _test_app(sqlite_db)
+
+        from app.services.ai_conversations import AIConversationStore
+
+        truncated_preview = "\n".join(
+            [
+                "THINKING: 我先核对工作区 iSCSI 登录相关源码。",
+                "1125:iscsi_conn_login_pdu_success_complete(void *arg)",
+                "1149:iscsi_op_login_response(struct spdk_iscsi_conn *conn,",
+                "1153:\tstruct iscsi_bhs_login_rsp *rsph;",
+                "1539:\t\trc = iscsi_op_login_update_param(conn, \"AuthMethod\", \"CHAP\", \"CHAP\");",
+                "lib/iscsi/iscsi.c:1455:iscsi_op_login_check_session(struct spdk_iscsi_conn *conn,",
+                "",
+                "---",
+                "内容较长，已折叠为下载产物。",
+            ]
+        )
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="旧版截断预览线程",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="针对 iscsi 登录写几个黑盒用例",
+            references=[],
+        )
+        await store.complete_run(
+            run_id=created["run"]["id"],
+            content=truncated_preview,
+            references=[],
+            model="agent:legacy",
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+
+        assert messages.status_code == 200
+        assistant = messages.json()["items"][1]
+        assert "CodeTalk 已折叠旧版 Agent 过程输出" in assistant["content"]
+        assert "THINKING:" not in assistant["content"]
+        assert "iscsi_conn_login_pdu_success_complete" not in assistant["content"]
+        assert "AuthMethod" not in assistant["content"]
