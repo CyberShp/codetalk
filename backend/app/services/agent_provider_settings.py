@@ -32,6 +32,7 @@ AGENT_PROVIDER_JSON_KEYS = frozenset({
     "opencode_mcp_profiles",
     "external_agent_custom_providers",
 })
+DEFAULT_SQLITE_DB = "data/codetalk.db"
 
 
 async def apply_persisted_agent_provider_settings(
@@ -43,7 +44,7 @@ async def apply_persisted_agent_provider_settings(
     have saved provider settings yet.
     """
 
-    db_path = str(sqlite_db or settings.sqlite_db or "").strip()
+    db_path = _agent_provider_settings_db_path(sqlite_db)
     if not db_path:
         return {}
     if db_path != ":memory:":
@@ -68,6 +69,15 @@ async def apply_persisted_agent_provider_settings(
     payload = agent_provider_settings_payload_from_rows(rows)
     apply_agent_provider_settings(payload)
     return payload
+
+
+def _agent_provider_settings_db_path(sqlite_db: str | Path | None = None) -> str:
+    if sqlite_db is not None:
+        return str(sqlite_db).strip()
+    configured = str(settings.sqlite_db or "").strip()
+    if configured == DEFAULT_SQLITE_DB:
+        return str(settings.data_path / "codetalk.db")
+    return configured
 
 
 async def read_agent_provider_settings_from_db(db: aiosqlite.Connection) -> dict[str, Any]:
