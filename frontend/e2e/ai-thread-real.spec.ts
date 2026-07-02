@@ -287,7 +287,7 @@ test("keeps Claude tool-result stream blocks out of visible answer and artifact"
     const diagnosticsSummary = page.getByText("生成诊断：默认折叠");
     await expect(diagnosticsSummary).toBeVisible({ timeout: 15_000 });
     await diagnosticsSummary.click();
-    await expect(page.getByText("iscsi_conn_login_pdu_success_complete")).toBeVisible();
+    await expect(page.getByText("iscsi_conn_login_pdu_success_complete").first()).toBeVisible();
 
     const downloadPromise = page.waitForEvent("download");
     await page.getByRole("link", { name: "下载完整产物" }).hover();
