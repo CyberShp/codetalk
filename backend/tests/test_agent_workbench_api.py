@@ -2268,6 +2268,13 @@ async def test_builtin_rpc_config_scenario_prioritizes_source_over_test_helpers(
         not item["file_path"].startswith("test/")
         for item in sfmea[:2]
     )
+    bdev_case = next(
+        item
+        for item in cases
+        if item["file_path"] == "module/event/subsystems/bdev/bdev_rpc.c"
+    )
+    assert "test/bdev" in bdev_case["preconditions"][1]
+    assert "test/bdev" in bdev_case["diagnostics"][0]
 
 
 async def test_workbench_task_run_run_auto_imports_declared_semantic_outputs(

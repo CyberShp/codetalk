@@ -1554,15 +1554,20 @@ def _test_directory_for_source(file_path: str) -> str:
         return "/".join(parts[:2]) if len(parts) >= 2 else "test"
     mappings = [
         ("lib/nvmf", "test/nvmf"),
+        ("module/event/subsystems/nvmf", "test/nvmf"),
         ("lib/iscsi", "test/iscsi_tgt"),
+        ("module/event/subsystems/iscsi", "test/iscsi_tgt"),
         ("lib/bdev", "test/bdev"),
         ("module/bdev", "test/bdev"),
+        ("module/event/subsystems/bdev", "test/bdev"),
         ("lib/blob", "test/blobstore"),
         ("lib/ftl", "test/ftl"),
         ("lib/vhost", "test/vhost"),
         ("lib/vfio_user", "test/vfio_user"),
         ("lib/thread", "test/thread"),
         ("lib/event", "test/event"),
+        ("module/event/subsystems/vmd", "test/vmd"),
+        ("module/event", "test/event"),
     ]
     for prefix, directory in mappings:
         if file_path.startswith(prefix):
