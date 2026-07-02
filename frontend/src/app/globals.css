@@ -2907,13 +2907,19 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   }
 
   .ct-codex-ai__project-list {
-    max-height: min(156px, 20vh);
+    height: min(102px, 12vh);
+    max-height: none;
   }
 
   .ct-codex-ai__thread-list {
-    flex: 1 1 auto;
-    max-height: min(260px, 32vh);
-    min-height: 124px;
+    flex: 0 0 auto;
+    height: min(186px, 22vh);
+    max-height: none;
+    min-height: 118px;
+  }
+
+  .ct-codex-ai__main {
+    min-height: min(58vh, 490px);
   }
 
   .ct-codex-ai__context {
