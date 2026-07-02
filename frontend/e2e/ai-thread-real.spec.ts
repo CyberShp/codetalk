@@ -1318,6 +1318,8 @@ test("contains large real AI project and thread lists inside scroll panes", asyn
     const projectList = document.querySelector(".ct-ai-home__project-list") as HTMLElement | null;
     const threadTimeline = document.querySelector(".ct-thread-timeline") as HTMLElement | null;
     const home = document.querySelector(".ct-ai-home") as HTMLElement | null;
+    const projectsPanel = document.querySelector(".ct-ai-home__projects") as HTMLElement | null;
+    const threadsPanel = document.querySelector(".ct-ai-home__threads") as HTMLElement | null;
     return {
       windowScrollY: window.scrollY,
       documentScrollHeight: document.documentElement.scrollHeight,
@@ -1329,6 +1331,9 @@ test("contains large real AI project and thread lists inside scroll panes", asyn
       threadClientHeight: threadTimeline?.clientHeight ?? 0,
       threadScrollHeight: threadTimeline?.scrollHeight ?? 0,
       threadOverflowY: threadTimeline ? window.getComputedStyle(threadTimeline).overflowY : "",
+      projectsBackdropFilter: projectsPanel ? window.getComputedStyle(projectsPanel).backdropFilter : "",
+      threadsBackdropFilter: threadsPanel ? window.getComputedStyle(threadsPanel).backdropFilter : "",
+      threadsAnimationName: threadsPanel ? window.getComputedStyle(threadsPanel).animationName : "",
     };
   });
   expect(homeMetrics.documentScrollHeight).toBeLessThanOrEqual(homeMetrics.viewportHeight + 40);
@@ -1338,6 +1343,9 @@ test("contains large real AI project and thread lists inside scroll panes", asyn
   expect(homeMetrics.projectOverflowY).toBe("auto");
   expect(homeMetrics.threadOverflowY).toBe("auto");
   expect(homeMetrics.windowScrollY).toBe(0);
+  expect(homeMetrics.projectsBackdropFilter).toBe("none");
+  expect(homeMetrics.threadsBackdropFilter).toBe("none");
+  expect(homeMetrics.threadsAnimationName).toBe("none");
 
   const projectList = page.locator(".ct-ai-home__project-list");
   await projectList.hover();
@@ -1362,6 +1370,9 @@ test("contains large real AI project and thread lists inside scroll panes", asyn
   const threadPageMetrics = await page.evaluate(() => {
     const threadList = document.querySelector(".ct-codex-ai__thread-list") as HTMLElement | null;
     const shell = document.querySelector(".ct-codex-ai") as HTMLElement | null;
+    const rail = document.querySelector(".ct-codex-ai__rail") as HTMLElement | null;
+    const main = document.querySelector(".ct-codex-ai__main") as HTMLElement | null;
+    const context = document.querySelector(".ct-codex-ai__context") as HTMLElement | null;
     return {
       documentScrollHeight: document.documentElement.scrollHeight,
       viewportHeight: window.innerHeight,
@@ -1369,12 +1380,18 @@ test("contains large real AI project and thread lists inside scroll panes", asyn
       threadClientHeight: threadList?.clientHeight ?? 0,
       threadScrollHeight: threadList?.scrollHeight ?? 0,
       threadOverflowY: threadList ? window.getComputedStyle(threadList).overflowY : "",
+      railBackdropFilter: rail ? window.getComputedStyle(rail).backdropFilter : "",
+      mainBackdropFilter: main ? window.getComputedStyle(main).backdropFilter : "",
+      contextBackdropFilter: context ? window.getComputedStyle(context).backdropFilter : "",
     };
   });
   expect(threadPageMetrics.documentScrollHeight).toBeLessThanOrEqual(threadPageMetrics.viewportHeight + 40);
   expect(threadPageMetrics.shellHeight).toBeLessThanOrEqual(threadPageMetrics.viewportHeight);
   expect(threadPageMetrics.threadScrollHeight).toBeGreaterThan(threadPageMetrics.threadClientHeight + 120);
   expect(threadPageMetrics.threadOverflowY).toBe("auto");
+  expect(threadPageMetrics.railBackdropFilter).toBe("none");
+  expect(threadPageMetrics.mainBackdropFilter).toBe("none");
+  expect(threadPageMetrics.contextBackdropFilter).toBe("none");
 
   const sidebarThreadList = page.locator(".ct-codex-ai__thread-list");
   await sidebarThreadList.hover();

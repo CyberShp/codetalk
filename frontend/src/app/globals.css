@@ -1862,7 +1862,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   border-radius: 24px;
   background: rgba(255, 255, 255, 0.86);
   box-shadow: 0 22px 62px rgba(15, 23, 42, 0.09), inset 0 1px 0 rgba(255, 255, 255, 0.9);
-  backdrop-filter: blur(20px);
+  backdrop-filter: none;
 }
 
 .ct-ai-home__projects {
@@ -1883,7 +1883,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   flex-direction: column;
   overflow: hidden;
   padding: clamp(16px, 2vw, 24px);
-  animation: ct-thread-panel-in var(--motion-medium) var(--motion-ease) both;
+  animation: none;
 }
 
 .ct-ai-home__project-list {
@@ -1921,7 +1921,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   border: 1px solid rgba(216, 227, 239, 0.82);
   background: rgba(255, 255, 255, 0.86);
   box-shadow: 0 18px 44px rgba(15, 23, 42, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.92);
-  backdrop-filter: blur(22px);
+  backdrop-filter: none;
 }
 
 .ct-codex-ai__rail {
