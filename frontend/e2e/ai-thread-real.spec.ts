@@ -1213,6 +1213,111 @@ test("folds mixed JSON agent tool and thinking parts while showing only the answ
   }
 });
 
+test("contains long unbroken AI thread text without right-edge clipping", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-long-token-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI long token layout e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-long-token-")));
+  const runtimeScript = path.join(runtimeDir, "long_token_agent.py");
+  const longAnswerToken =
+    "lib/nvmf/" +
+    "connect_timeout_reconnect_controller_reset_evidence_path_segment_".repeat(8) +
+    "ctrlr.c";
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "sys.stdin.read()",
+      `print('FINAL_LONG_TOKEN_LAYOUT_ANSWER: ${longAnswerToken}', flush=True)`,
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-long-token-e2e-${Date.now()}`;
+  const runtimeName = `Long token layout runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} no right clipping`;
+  const longPromptToken = "USER_LONG_TOKEN_" + "spdk_nvmf_connect_io_timeout_reconnect_".repeat(9);
+  const prompt = `LONG_TOKEN_LAYOUT_RUN ${longPromptToken}`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.setViewportSize({ width: 1180, height: 820 });
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    await page.getByLabel("AI 线程消息").fill(prompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByText("FINAL_LONG_TOKEN_LAYOUT_ANSWER")).toBeVisible({ timeout: 30_000 });
+
+    const layout = await page.locator(".ct-codex-ai__reader").evaluate((reader) => {
+      const readerRect = reader.getBoundingClientRect();
+      const nodes = Array.from(reader.querySelectorAll(".ct-codex-message__content, .ct-codex-message__content > div, .ct-codex-message__content p, .ct-codex-message__content code"));
+      return nodes.map((node) => {
+        const rect = node.getBoundingClientRect();
+        return {
+          text: (node.textContent ?? "").slice(0, 120),
+          left: rect.left,
+          right: rect.right,
+          width: rect.width,
+          scrollWidth: (node as HTMLElement).scrollWidth,
+          clientWidth: (node as HTMLElement).clientWidth,
+          readerLeft: readerRect.left,
+          readerRight: readerRect.right,
+        };
+      });
+    });
+    const overflowing = layout.filter(
+      (box) =>
+        box.width > 1 &&
+        (box.left < box.readerLeft - 1 ||
+          box.right > box.readerRight + 1 ||
+          box.scrollWidth > box.clientWidth + 1),
+    );
+    expect(overflowing).toEqual([]);
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("completes an agent-runtime AI thread and exports the persisted answer", async ({
   page,
   request,

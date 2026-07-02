@@ -2136,6 +2136,14 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   font-size: 14px;
   line-height: 1.55;
   box-shadow: 0 8px 18px rgba(15, 23, 42, 0.045);
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.ct-codex-message__content > div * {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .ct-codex-message.is-user .ct-codex-message__content > div {
