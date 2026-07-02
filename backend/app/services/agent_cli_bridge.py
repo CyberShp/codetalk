@@ -7,6 +7,7 @@ import json
 import locale
 import os
 import re
+import signal
 import shutil
 import tempfile
 import unicodedata
@@ -112,6 +113,10 @@ async def stream_agent_runtime(
     except Exception:
         prompt_file_path = None
     timeout = int(runtime.get("timeout_seconds") or 120)
+    isolate_process_group = os.name != "nt"
+    process_kwargs: dict[str, Any] = {}
+    if isolate_process_group:
+        process_kwargs["start_new_session"] = True
     try:
         proc = await asyncio.create_subprocess_exec(
             command,
@@ -121,6 +126,7 @@ async def stream_agent_runtime(
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=env,
+            **process_kwargs,
         )
     except FileNotFoundError as exc:
         if prompt_file_path:
@@ -178,7 +184,7 @@ async def stream_agent_runtime(
                         result = await result
                     if result:
                         cancelled_by_request = True
-                        await _terminate_process(proc)
+                        await _terminate_process(proc, process_group=isolate_process_group)
                         return
                 except Exception:
                     return
@@ -204,17 +210,16 @@ async def stream_agent_runtime(
             if proc.returncode is None:
                 completed_by_policy = _completion_mode(runtime) in {"idle_after_output", "sentinel"}
                 if completed_by_policy:
-                    await _terminate_process(proc)
+                    await _terminate_process(proc, process_group=isolate_process_group)
             return_code = await proc.wait()
             await stderr_task
     except TimeoutError as exc:
-        proc.kill()
-        await proc.wait()
+        await _terminate_process(proc, process_group=isolate_process_group)
         stderr_task.cancel()
         raise AgentRuntimeError(f"执行器超时（{timeout}s）") from exc
     finally:
         if proc.returncode is None:
-            await _terminate_process(proc)
+            await _terminate_process(proc, process_group=isolate_process_group)
         if not stderr_task.done():
             stderr_task.cancel()
         if cancel_task is not None and not cancel_task.done():
@@ -366,14 +371,30 @@ def _ensure_option_value(
     return [*result, option, value]
 
 
-async def _terminate_process(proc: asyncio.subprocess.Process) -> None:
+async def _terminate_process(
+    proc: asyncio.subprocess.Process,
+    *,
+    process_group: bool = False,
+) -> None:
     if proc.returncode is not None:
         return
-    proc.terminate()
+    if process_group and os.name != "nt":
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+    else:
+        proc.terminate()
     try:
         await asyncio.wait_for(proc.wait(), timeout=2)
     except TimeoutError:
-        proc.kill()
+        if process_group and os.name != "nt":
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                return
+        else:
+            proc.kill()
         await proc.wait()
 
 

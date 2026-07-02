@@ -2662,6 +2662,105 @@ class TestAgentRuntimes:
                 with pytest.raises(asyncio.CancelledError):
                     await task
 
+    async def test_ai_thread_agent_runtime_cancel_terminates_child_processes(
+        self,
+        sqlite_db,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-cancel-child", repo_path=str(repo))
+        monkeypatch.chdir(tmp_path)
+        child_marker = tmp_path / "agent-child-survived-cancel.txt"
+        child_script = tmp_path / "child_agent_worker.py"
+        child_script.write_text(
+            "\n".join(
+                [
+                    "import pathlib, sys, time",
+                    "time.sleep(1.5)",
+                    "pathlib.Path(sys.argv[1]).write_text('child survived cancellation', encoding='utf-8')",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        agent_script = tmp_path / "parent_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import subprocess, sys, time",
+                    "sys.stdin.read()",
+                    f"subprocess.Popen([sys.executable, {str(child_script)!r}, {str(child_marker)!r}])",
+                    "print('cancel-child-first-delta', flush=True)",
+                    "time.sleep(5)",
+                    "print('cancel-child-after-sleep', flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Cancel child thread",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-cancel-child",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="启动一个会再拉子进程的 agent",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        task = asyncio.create_task(
+            run_agent_generation(
+                store=store,
+                run_id=run_id,
+                runtime={
+                    "id": "runtime-cancel-child",
+                    "name": "Cancel Child Agent",
+                    "command": sys.executable,
+                    "args": [str(agent_script)],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "working_dir_mode": "project",
+                    "timeout_seconds": 10,
+                },
+            )
+        )
+        try:
+            for _ in range(40):
+                events = await store.list_events_after(conversation["id"])
+                if any("cancel-child-first-delta" in event["payload"].get("content", "") for event in events):
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                pytest.fail("agent runtime did not emit its first child-process delta")
+
+            cancelled = await store.cancel_run(conversation["id"])
+            assert cancelled and cancelled["status"] == "cancelled"
+
+            await asyncio.wait_for(task, timeout=0.8)
+            await asyncio.sleep(2)
+
+            latest = await store.latest_run(conversation["id"])
+            messages = await store.list_messages(conversation["id"])
+            assert latest and latest["status"] == "cancelled"
+            assert [item["role"] for item in messages] == ["user"]
+            assert not child_marker.exists()
+        finally:
+            if not task.done():
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
     async def test_agent_runtime_output_parser_cleans_terminal_noise_and_unwraps_json(self):
         from app.services.agent_cli_bridge import _decode, _parse_event_text
 

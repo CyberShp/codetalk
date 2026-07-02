@@ -2487,13 +2487,29 @@ test("cancels a running agent-runtime AI thread through the real UI", async ({
   const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-runtime-")));
   const runtimeScript = path.join(runtimeDir, "slow_agent.py");
   const cancelledMarker = path.join(runtimeDir, "agent-survived-cancel.txt");
+  const childRuntimeScript = path.join(runtimeDir, "slow_agent_child.py");
+  const childCancelledMarker = path.join(runtimeDir, "agent-child-survived-cancel.txt");
   fs.writeFileSync(
-    runtimeScript,
+    childRuntimeScript,
     [
       "import pathlib",
       "import sys",
       "import time",
+      "time.sleep(1.5)",
+      "pathlib.Path(sys.argv[1]).write_text('agent child survived cancellation', encoding='utf-8')",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import pathlib",
+      "import subprocess",
+      "import sys",
+      "import time",
       "sys.stdin.read()",
+      `subprocess.Popen([sys.executable, ${JSON.stringify(childRuntimeScript)}, ${JSON.stringify(childCancelledMarker)}])`,
       "print('agent-runtime-first-delta', flush=True)",
       "time.sleep(20)",
       `pathlib.Path(${JSON.stringify(cancelledMarker)}).write_text('agent survived cancellation', encoding='utf-8')`,
@@ -2603,8 +2619,9 @@ test("cancels a running agent-runtime AI thread through the real UI", async ({
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
     await expect(page.getByText("agent-runtime-after-cancel")).toHaveCount(0);
     await expect.poll(() => cancelRequests.length).toBe(1);
-    await page.waitForTimeout(750);
+    await page.waitForTimeout(2_000);
     expect(fs.existsSync(cancelledMarker)).toBe(false);
+    expect(fs.existsSync(childCancelledMarker)).toBe(false);
 
     const conversationResp = await request.get(
       `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`,
