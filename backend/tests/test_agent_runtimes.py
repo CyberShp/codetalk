@@ -1692,6 +1692,81 @@ class TestAgentRuntimes:
 
         assert _agent_answer_requires_repair(user_message, complete_answer, []) is False
 
+    async def test_ai_thread_agent_runtime_keeps_substantive_but_incomplete_answer_after_repair(
+        self,
+        sqlite_db,
+        tmp_path,
+    ):
+        repo = tmp_path / "spdk"
+        (repo / "lib" / "nvmf").mkdir(parents=True)
+        (repo / "lib" / "nvmf" / "ctrlr.c").write_text(
+            "int nvmf_ctrlr_connect(void) { return 0; }\n",
+            encoding="utf-8",
+        )
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-soft-warning", repo_path=str(repo))
+        agent_script = tmp_path / "soft_warning_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import sys",
+                    "sys.stdin.read()",
+                    "print('SPDK agent completed analysis', flush=True)",
+                    "print('Evidence: lib/nvmf/ctrlr.c nvmf_ctrlr_connect', flush=True)",
+                    "print('Flow: connect request -> controller setup -> IO queue ready', flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Substantive incomplete answer",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-soft-warning",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="分析 SPDK NVMe-oF target connect 到 IO 提交流程，并列出关键文件证据",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-soft-warning",
+                "name": "Soft Warning Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+            },
+        )
+
+        run = await store.get_run(run_id)
+        assert run["status"] == "completed"
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        assert "SPDK agent completed analysis" in assistant["content"]
+        assert "lib/nvmf/ctrlr.c" in assistant["content"]
+        events = await store.list_events_after(conversation["id"])
+        diagnostics = "\n".join(
+            event["payload"].get("content", "")
+            for event in events
+            if event["event_type"] == "delta" and event["payload"].get("kind") == "diagnostic"
+        )
+        assert "上一次执行器输出过短" in diagnostics
+        assert "仍未完全满足" in diagnostics
+
     async def test_ai_thread_claude_partial_messages_do_not_pollute_answer_or_artifact(
         self,
         sqlite_db,

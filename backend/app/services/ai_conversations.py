@@ -1345,11 +1345,24 @@ async def run_agent_generation(
                 references,
             )
             if _agent_answer_requires_repair(user_message["content"], content, references):
-                await store.fail_run(
-                    run_id,
-                    "Agent 返回内容不足：已自动续跑一次，但仍未产出可验收的源码分析结论。",
+                if _agent_answer_unusable_after_repair(content):
+                    await store.fail_run(
+                        run_id,
+                        "Agent 返回内容不足：已自动续跑一次，但仍未产出可验收的源码分析结论。",
+                    )
+                    return
+                await store.append_event(
+                    run_id=run_id,
+                    conversation_id=conversation["id"],
+                    event_type="delta",
+                    payload={
+                        "kind": "diagnostic",
+                        "content": (
+                            "Agent 返回内容仍未完全满足本轮源码分析验收项，"
+                            "CodeTalk 已保留可见答案；建议继续追问缺失的证据、SFMEA 或测试用例。"
+                        ),
+                    },
                 )
-                return
         live_content = "".join(live_chunks)
         if not live_content:
             await append_live_answer_delta(content)
@@ -1562,6 +1575,15 @@ def _agent_answer_too_thin_for_task(content: str, *, user_message: str = "") -> 
             return True
     lines = [line for line in text.splitlines() if line.strip()]
     return len(lines) <= 2 and len(text) < 220
+
+
+def _agent_answer_unusable_after_repair(content: str) -> bool:
+    text = clean_agent_output_text(str(content or "")).strip()
+    if not text:
+        return True
+    if _looks_like_agent_thin_help_answer(text):
+        return True
+    return text == "执行器没有返回有效内容，请检查命令输出模式。"
 
 
 def _agent_output_segments(chunk: str) -> list[tuple[str, str]]:
