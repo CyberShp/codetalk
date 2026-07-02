@@ -15,7 +15,7 @@ function jsonHeaders(origin = frontendOrigin) {
 }
 
 test("report AI assistant preserves reading position while streaming", async ({ page }) => {
-  let releaseSecondChunk: (() => void) | null = null;
+  let releaseSecondChunk = () => {};
   const secondChunkGate = new Promise<void>((resolve) => {
     releaseSecondChunk = resolve;
   });
@@ -129,7 +129,7 @@ test("report AI assistant preserves reading position while streaming", async ({ 
     const userScrollTop = await reader.evaluate((element) => element.scrollTop);
     await expect(page.getByRole("button", { name: "跳到最新回复" })).toBeVisible();
 
-    releaseSecondChunk?.();
+    releaseSecondChunk();
     await expect(page.getByText("第二段到达时不应把阅读位置拉到底部。")).toBeVisible();
     await page.waitForTimeout(100);
 
@@ -165,7 +165,7 @@ test("report AI assistant preserves reading position while streaming", async ({ 
 });
 
 test("report AI assistant avoids continuous decorative loading animations", async ({ page }) => {
-  let releaseStream: (() => void) | null = null;
+  let releaseStream = () => {};
   const streamGate = new Promise<void>((resolve) => {
     releaseStream = resolve;
   });
@@ -276,7 +276,7 @@ test("report AI assistant avoids continuous decorative loading animations", asyn
     );
     expect(runningDecorativeAnimations, JSON.stringify(runningDecorativeAnimations, null, 2)).toEqual([]);
 
-    releaseStream?.();
+    releaseStream();
     persistedMessages.push({
       id: 2,
       task_id: "report-animation",

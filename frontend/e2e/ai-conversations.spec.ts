@@ -994,8 +994,8 @@ test("AI conversation avoids per-message entry animations in long histories", as
 test("AI conversation preserves the reader position when the user scrolls up during streaming", async ({
   page,
 }) => {
-  let releaseSecondChunk: (() => void) | null = null;
-  let releaseThirdChunk: (() => void) | null = null;
+  let releaseSecondChunk = () => {};
+  let releaseThirdChunk = () => {};
   let streamRequestedResolve: (() => void) | null = null;
   const streamRequested = new Promise<void>((resolve) => {
     streamRequestedResolve = resolve;
@@ -1185,7 +1185,7 @@ test("AI conversation preserves the reader position when the user scrolls up dur
     const userScrollTop = await reader.evaluate((element) => element.scrollTop);
     await expect(page.getByRole("button", { name: "跳到最新回复" })).toBeVisible();
 
-    releaseSecondChunk?.();
+    releaseSecondChunk();
     await expect(page.getByText("第二段流式回答到达时")).toHaveCount(1);
     await page.waitForTimeout(100);
 
@@ -1203,7 +1203,7 @@ test("AI conversation preserves the reader position when the user scrolls up dur
         reader.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop),
       )
       .toBeLessThan(120);
-    releaseThirdChunk?.();
+    releaseThirdChunk();
     await expect(page.getByText("第三段流式回答到达时")).toHaveCount(1);
     await expect
       .poll(() =>
