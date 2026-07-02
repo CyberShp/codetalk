@@ -2516,6 +2516,22 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 }
 
 @media (max-width: 900px) {
+  .ct-app-sidebar__nav {
+    flex-wrap: wrap;
+    overflow-x: visible;
+    padding-inline: 10px;
+  }
+
+  .ct-app-sidebar__link {
+    flex: 1 1 calc(50% - 4px);
+    min-width: 0;
+  }
+
+  .ct-app-sidebar__label {
+    max-width: 100%;
+    text-overflow: ellipsis;
+  }
+
   .ct-ai-home__header,
   .ct-ai-home__grid {
     grid-template-columns: 1fr;
@@ -2525,7 +2541,13 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   .ct-codex-ai__topbar,
   .ct-codex-composer__footer {
     align-items: stretch;
+    flex-wrap: nowrap;
     flex-direction: column;
+    justify-content: flex-start;
+  }
+
+  .ct-codex-ai.is-context-open .ct-codex-ai__topbar {
+    align-items: stretch;
   }
 
   .ct-ai-home__projects {
@@ -2565,7 +2587,20 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   }
 
   .ct-codex-ai__main {
+    width: 100%;
     min-height: 70vh;
+  }
+
+  .ct-codex-ai__topbar > div,
+  .ct-codex-ai__topbar select,
+  .ct-codex-ai__topbar button {
+    align-self: stretch;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .ct-codex-ai__topbar button {
+    justify-content: center;
   }
 
   .ct-codex-composer {

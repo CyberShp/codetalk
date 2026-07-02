@@ -321,6 +321,81 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   expect(exported).toContain("时间: 2026-06-28T00:00:01Z");
 });
 
+test("AI conversation mobile layout keeps navigation and topbar controls within the viewport", async ({ page }) => {
+  await mockReadableConversation(page, {
+    assistantContent:
+      "CodeTalk 已折叠一段疑似源码全文输出，避免外部 agent 把大文件直接刷进 AI 线程。\n\n" +
+      "证据文件：`lib/nvmf/auth.c`、`lib/nvmf/ctrlr.c`、`lib/nvmf/ctrlr_bdev.c`、`lib/nvmf/ctrlr_discovery.c`",
+  });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/ai/conv-1", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "登录模块 AI 调查线程" })).toBeVisible();
+
+  const metrics = await page.evaluate(() => {
+    const viewportRight = window.innerWidth;
+    const topbar = document.querySelector(".ct-codex-ai__topbar");
+    const main = document.querySelector(".ct-codex-ai__main");
+    const topbarRect = topbar?.getBoundingClientRect();
+    const topbarStyle = topbar ? window.getComputedStyle(topbar) : null;
+    const topbarControls = Array.from(
+      document.querySelectorAll(".ct-codex-ai__topbar select, .ct-codex-ai__topbar button"),
+    ).map((node) => {
+      const rect = node.getBoundingClientRect();
+      const parentTopbar = node.closest(".ct-codex-ai__topbar");
+      const parentRect = parentTopbar?.getBoundingClientRect();
+      return {
+        text: (node.textContent ?? "").trim(),
+        left: rect.left,
+        right: rect.right,
+        width: rect.width,
+        parentLeft: parentRect?.left ?? 0,
+        parentRight: parentRect?.right ?? 0,
+      };
+    });
+    const rightOverflow = Array.from(document.querySelectorAll("body *"))
+      .map((node) => {
+        const rect = node.getBoundingClientRect();
+        return {
+          tag: node.nodeName,
+          className: String((node as HTMLElement).className || "").slice(0, 80),
+          text: (node.textContent ?? "").trim().slice(0, 80),
+          left: rect.left,
+          right: rect.right,
+          width: rect.width,
+        };
+      })
+      .filter((box) => box.width > 2 && box.right > viewportRight + 1);
+    return {
+      viewportRight,
+      documentScrollWidth: document.documentElement.scrollWidth,
+      mainRight: main?.getBoundingClientRect().right ?? 0,
+      topbar: {
+        count: document.querySelectorAll(".ct-codex-ai__topbar").length,
+        left: topbarRect?.left ?? 0,
+        right: topbarRect?.right ?? 0,
+        width: topbarRect?.width ?? 0,
+        flexDirection: topbarStyle?.flexDirection ?? "",
+        flexWrap: topbarStyle?.flexWrap ?? "",
+        display: topbarStyle?.display ?? "",
+        alignItems: topbarStyle?.alignItems ?? "",
+      },
+      topbarControls,
+      rightOverflow,
+    };
+  });
+
+  expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.viewportRight);
+  expect(metrics.mainRight).toBeLessThanOrEqual(metrics.viewportRight);
+  expect(metrics.topbarControls.length).toBeGreaterThanOrEqual(3);
+  expect(
+    metrics.topbarControls.every(
+      (box) => box.left >= -1 && box.right <= metrics.viewportRight + 1,
+    ),
+    JSON.stringify({ topbar: metrics.topbar, controls: metrics.topbarControls }, null, 2),
+  ).toBe(true);
+  expect(metrics.rightOverflow).toEqual([]);
+});
+
 test("AI conversation degrades unsafe source and artifact references without links", async ({ page }, testInfo) => {
   await mockReadableConversation(page, {
     extraReferences: [
