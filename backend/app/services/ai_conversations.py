@@ -210,6 +210,38 @@ def _looks_like_source_dump(text: str) -> bool:
     return ratio >= 0.45 and marker_hits >= 2
 
 
+def _agent_answer_chunk_safe_for_live_stream(content: str) -> bool:
+    text = str(content or "")
+    if not text.strip():
+        return False
+    if len(text) > 1200:
+        return False
+    lines = [line for line in text.splitlines() if line.strip()]
+    if len(lines) > 24:
+        return False
+    if _looks_like_source_dump(text):
+        return False
+    code_like = sum(1 for line in lines if _SOURCE_CODE_LINE_RE.search(line))
+    if code_like >= 4:
+        return False
+    source_markers = (
+        "#include",
+        "SPDX-License-Identifier",
+        "typedef ",
+        "struct ",
+        "static ",
+        "return ",
+        "package ",
+        "import ",
+        "def ",
+        "class ",
+    )
+    marker_hits = sum(1 for marker in source_markers if marker in text)
+    if code_like >= 1 and marker_hits >= 1:
+        return False
+    return marker_hits < 2
+
+
 def _source_reference_paths(references: list[dict[str, Any]]) -> list[str]:
     paths: list[str] = []
     for ref in references:
@@ -977,7 +1009,18 @@ async def run_agent_generation(
         repo_path=repo_path,
     )
     chunks: list[str] = []
+    live_chunks: list[str] = []
     session_updates: list[dict[str, Any]] = []
+
+    async def append_live_answer_delta(content: str) -> None:
+        await store.append_event(
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            event_type="delta",
+            payload={"content": content},
+        )
+        live_chunks.append(content)
+
     try:
         async for delta in stream_agent_runtime(
             runtime=runtime,
@@ -999,16 +1042,29 @@ async def run_agent_generation(
                     )
                     continue
                 chunks.append(content)
+                if _agent_answer_chunk_safe_for_live_stream(content):
+                    await append_live_answer_delta(content)
         content = _govern_visible_assistant_content(
             "".join(chunks).strip() or "执行器没有返回有效内容，请检查命令输出模式。",
             references,
         )
-        await store.append_event(
-            run_id=run_id,
-            conversation_id=conversation["id"],
-            event_type="delta",
-            payload={"content": content},
-        )
+        live_content = "".join(live_chunks)
+        if not live_content:
+            await append_live_answer_delta(content)
+        elif content.startswith(live_content):
+            suffix = content[len(live_content) :]
+            if suffix:
+                await append_live_answer_delta(suffix)
+        elif content != live_content.strip():
+            await store.append_event(
+                run_id=run_id,
+                conversation_id=conversation["id"],
+                event_type="delta",
+                payload={
+                    "kind": "diagnostic",
+                    "content": "CodeTalk 已在完成时整理执行器输出，最终回答以线程消息为准。",
+                },
+            )
         if runtime_id and session_updates:
             latest_session = session_updates[-1]
             await store.upsert_agent_runtime_session(

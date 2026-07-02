@@ -1,9 +1,48 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type APIRequestContext } from "@playwright/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
+
+async function createDeterministicFailingRuntime(
+  request: APIRequestContext,
+  label: string,
+): Promise<{ id: string; name: string }> {
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-failure-")));
+  const runtimeScript = path.join(runtimeDir, "failing_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "sys.stdin.read()",
+      "sys.stderr.write('deterministic AI thread failure\\n')",
+      "sys.stderr.flush()",
+      "raise SystemExit(7)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const runtimeName = `${label} ${Date.now()}`;
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 10,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+  return { id: runtime.id, name: runtimeName };
+}
 
 test("creates an AI investigation thread from the project hub and restores it after refresh", async ({
   page,
@@ -19,6 +58,7 @@ test("creates an AI investigation thread from the project hub and restores it af
   });
   expect(workspaceResp.status()).toBe(201);
   const workspace = (await workspaceResp.json()) as { id: string };
+  const failingRuntime = await createDeterministicFailingRuntime(request, "AI thread failure runtime");
 
   await page.goto("/ai", { waitUntil: "domcontentloaded" });
   const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
@@ -43,6 +83,7 @@ test("creates an AI investigation thread from the project hub and restores it af
       request.method() === "POST" &&
       request.url().endsWith("/api/ai/conversations"),
   );
+  await page.getByLabel("AI 线程执行器").selectOption({ label: failingRuntime.name });
   await page.getByPlaceholder(/线程名称/).fill(threadTitle);
   await page.getByRole("button", { name: "新建线程" }).hover();
   await page.getByRole("button", { name: "新建线程" }).dblclick();
@@ -67,10 +108,8 @@ test("creates an AI investigation thread from the project hub and restores it af
   await page.getByRole("button", { name: "发送" }).click();
   await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: prompt })).toHaveCount(1);
 
-  const alert = page.locator('div[role="alert"]').filter({ hasText: "未配置活跃的聊天模型" });
+  const alert = page.locator('div[role="alert"]').filter({ hasText: "deterministic AI thread failure" });
   await expect(alert).toBeVisible({ timeout: 20_000 });
-  await expect(alert).toContainText("LLM 不可用");
-  await expect(page.getByRole("link", { name: "去设置执行器" })).toHaveAttribute("href", "/settings");
   const retryButton = page.getByRole("button", { name: "重试上一条" });
   await expect(retryButton).toBeVisible();
   const retryRequests: string[] = [];
@@ -104,8 +143,7 @@ test("creates an AI investigation thread from the project hub and restores it af
   const exported = fs.readFileSync(exportPath, "utf8");
   expect(exported).toContain(`# ${threadTitle}`);
   expect(exported).toContain("## 最近失败");
-  expect(exported).toContain("LLM 不可用");
-  expect(exported).toContain("未配置活跃的聊天模型");
+  expect(exported).toContain("deterministic AI thread failure");
   expect(exported).toContain(prompt);
   expect(exported.match(/## 用户/g)?.length).toBe(2);
   expect(exported).not.toMatch(/sk-[A-Za-z0-9_-]{12,}/);
@@ -137,6 +175,8 @@ test("creates an AI investigation thread from the project hub and restores it af
   const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
   expect(messageBody.items.filter((item) => item.role === "user" && item.content === prompt)).toHaveLength(2);
   expect(messageBody.items.filter((item) => item.role === "assistant")).toHaveLength(0);
+
+  await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(failingRuntime.id)}`);
 });
 
 test("prevents duplicate sibling AI thread creation from a real double click", async ({
@@ -215,12 +255,14 @@ test("sends quick actions and memory actions through the real AI thread composer
   });
   expect(workspaceResp.status()).toBe(201);
   const workspace = (await workspaceResp.json()) as { id: string };
+  const failingRuntime = await createDeterministicFailingRuntime(request, "AI action failure runtime");
 
   await page.goto("/ai", { waitUntil: "domcontentloaded" });
   const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
   await expect(projectButton).toBeVisible({ timeout: 15_000 });
   await projectButton.hover();
   await projectButton.click();
+  await page.getByLabel("AI 线程执行器").selectOption({ label: failingRuntime.name });
   await page.getByPlaceholder(/线程名称/).fill(threadTitle);
   await page.getByRole("button", { name: "新建线程" }).hover();
   await page.getByRole("button", { name: "新建线程" }).click();
@@ -254,7 +296,7 @@ test("sends quick actions and memory actions through the real AI thread composer
   await page.keyboard.press("Enter");
   await quickRequest;
   await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: quickPrompt })).toHaveCount(1);
-  await expect(page.locator('div[role="alert"]').filter({ hasText: "未配置活跃的聊天模型" })).toBeVisible({
+  await expect(page.locator('div[role="alert"]').filter({ hasText: "deterministic AI thread failure" })).toBeVisible({
     timeout: 20_000,
   });
 
@@ -286,6 +328,8 @@ test("sends quick actions and memory actions through the real AI thread composer
   expect(conversations.items).toEqual(
     expect.arrayContaining([expect.objectContaining({ id: threadId, workspace_id: workspace.id })]),
   );
+
+  await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(failingRuntime.id)}`);
 });
 
 test("cancels a running agent-runtime AI thread through the real UI", async ({
@@ -2058,7 +2102,7 @@ test("creates a sibling AI thread from the existing thread sidebar through the r
     timeout: 15_000,
   });
   await expect(page.getByText(`workspace / ${workspace.id}`)).toBeVisible();
-  await expect(page.getByText(`workspace:${workspace.id}`)).toBeVisible();
+  await expect(page.locator(".ct-codex-ai__context code").filter({ hasText: `workspace:${workspace.id}` })).toBeVisible();
   await expect(page.locator(".ct-codex-ai__thread-list").getByText(firstThreadTitle)).toBeVisible();
   await expect(page.locator(".ct-codex-ai__thread-list").getByText(`${workspaceName} · 新调查`)).toBeVisible();
 
@@ -2127,7 +2171,7 @@ test("collapses and restores the AI thread context panel through the real UI", a
   await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
     timeout: 15_000,
   });
-  await expect(page.getByText(`workspace:${workspace.id}`)).toBeVisible();
+  await expect(page.locator(".ct-codex-ai__context code").filter({ hasText: `workspace:${workspace.id}` })).toBeVisible();
 
   const shell = page.locator(".ct-codex-ai");
   const contextPanel = page.locator(".ct-codex-ai__context");
@@ -2150,5 +2194,5 @@ test("collapses and restores the AI thread context panel through the real UI", a
   await expect
     .poll(() => contextPanel.evaluate((node) => node.getBoundingClientRect().width))
     .toBeGreaterThan(240);
-  await expect(page.getByText(`workspace:${workspace.id}`)).toBeVisible();
+  await expect(page.locator(".ct-codex-ai__context code").filter({ hasText: `workspace:${workspace.id}` })).toBeVisible();
 });

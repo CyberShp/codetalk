@@ -1358,6 +1358,88 @@ class TestAgentRuntimes:
             ]
             assert any("正在调用 rg 搜索源码" in item for item in diagnostics)
 
+    async def test_ai_thread_agent_runtime_streams_safe_answer_before_process_exit(self, sqlite_db, tmp_path):
+        repo = tmp_path / "live-repo"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-live-stream", repo_path=str(repo))
+        agent_script = tmp_path / "slow_live_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import sys",
+                    "import time",
+                    "sys.stdin.read()",
+                    "print('agent-runtime-live-first-delta', flush=True)",
+                    "time.sleep(2)",
+                    "print('agent-runtime-live-final-delta', flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Agent live stream",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-live-stream",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="开始一个长时间运行的 agent 调查",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+        task = asyncio.create_task(
+            run_agent_generation(
+                store=store,
+                run_id=run_id,
+                runtime={
+                    "id": "runtime-live-stream",
+                    "name": "Live Stream Agent",
+                    "command": sys.executable,
+                    "args": [str(agent_script)],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "working_dir_mode": "project",
+                    "timeout_seconds": 10,
+                },
+            )
+        )
+        try:
+            for _ in range(40):
+                events = await store.list_events_after(conversation["id"])
+                live_answer_seen = any(
+                    event["event_type"] == "delta"
+                    and event["payload"].get("kind") != "diagnostic"
+                    and "agent-runtime-live-first-delta" in event["payload"].get("content", "")
+                    for event in events
+                )
+                if live_answer_seen:
+                    latest = await store.latest_run(conversation["id"])
+                    assert latest and latest["status"] == "running"
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                pytest.fail("agent runtime answer delta was not visible while the process was still running")
+
+            await task
+        finally:
+            if not task.done():
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        assert "agent-runtime-live-first-delta" in assistant["content"]
+        assert "agent-runtime-live-final-delta" in assistant["content"]
+
     async def test_agent_runtime_output_parser_cleans_terminal_noise_and_unwraps_json(self):
         from app.services.agent_cli_bridge import _decode, _parse_event_text
 
