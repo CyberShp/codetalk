@@ -39,6 +39,11 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         "raid_degraded_rebuild_blackbox",
         "nvme_multipath_failover_blackbox",
         "env_hugepage_memory_blackbox",
+        "spdk_cli_rpc_smoke_blackbox",
+        "transport_network_partition_blackbox",
+        "data_integrity_corruption_blackbox",
+        "upgrade_compatibility_persistence_blackbox",
+        "telemetry_metrics_regression_blackbox",
     }.issubset({item["id"] for item in presets})
     assert [item["id"] for item in presets[:5]] == [
         "module_analysis",
@@ -187,6 +192,11 @@ def test_restore_builtin_workflow_presets_refreshes_stale_builtin_definitions(tm
         "raid_degraded_rebuild_blackbox",
         "nvme_multipath_failover_blackbox",
         "env_hugepage_memory_blackbox",
+        "spdk_cli_rpc_smoke_blackbox",
+        "transport_network_partition_blackbox",
+        "data_integrity_corruption_blackbox",
+        "upgrade_compatibility_persistence_blackbox",
+        "telemetry_metrics_regression_blackbox",
         "custom_workflow",
     }.issubset(ids)
 

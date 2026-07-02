@@ -887,6 +887,66 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 "hugepage memory allocation pressure invalid parameter cleanup restart diagnostics"
             ),
         ),
+        _source_flow_scenario_preset(
+            preset_id="spdk_cli_rpc_smoke_blackbox",
+            name="SPDK CLI / RPC Smoke Black-box Scenario",
+            description=(
+                "Analyze SPDK public CLI and RPC smoke paths, target startup readiness, "
+                "basic create/list/delete operations, invalid commands, and diagnostic output."
+            ),
+            default_query=(
+                "scripts/rpc.py scripts/spdkcli.py test/json_config test/app app lib/event "
+                "CLI RPC smoke startup readiness create list delete invalid command diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="transport_network_partition_blackbox",
+            name="Transport Network Partition Black-box Scenario",
+            description=(
+                "Analyze transport-level packet loss, network partition, reconnect, timeout, "
+                "keep-alive, IO continuity, and externally visible recovery behavior."
+            ),
+            default_query=(
+                "lib/nvmf test/nvmf lib/iscsi test/iscsi_tgt transport packet loss network "
+                "partition reconnect timeout keep alive IO continuity recovery diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="data_integrity_corruption_blackbox",
+            name="Data Integrity / Corruption Black-box Scenario",
+            description=(
+                "Analyze externally observable data integrity checks, checksum or digest mismatch, "
+                "partial write, read-after-write validation, metadata corruption, and recovery signals."
+            ),
+            default_query=(
+                "lib/bdev lib/blob lib/iscsi lib/nvmf test/bdev test/blobfs data integrity "
+                "checksum digest mismatch partial write read after write metadata corruption recovery"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="upgrade_compatibility_persistence_blackbox",
+            name="Upgrade Compatibility / Persistence Black-box Scenario",
+            description=(
+                "Analyze upgrade, downgrade, restart persistence, saved configuration compatibility, "
+                "metadata versioning, rollback, and user-visible migration diagnostics."
+            ),
+            default_query=(
+                "app lib/event lib/blob lib/ftl scripts/rpc.py test/json_config upgrade downgrade "
+                "restart persistence saved configuration compatibility metadata version rollback migration"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="telemetry_metrics_regression_blackbox",
+            name="Telemetry / Metrics Regression Black-box Scenario",
+            description=(
+                "Analyze telemetry, counters, logs, status commands, metric regressions, alertability, "
+                "and failure triage signals available to black-box storage testers."
+            ),
+            default_query=(
+                "lib/trace lib/log lib/event scripts/rpc.py test/common telemetry counters logs "
+                "status metrics regression alert diagnostics failure triage observable"
+            ),
+        ),
     ]
     for preset in presets:
         validate_workflow_definition(preset["definition"])

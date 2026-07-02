@@ -347,6 +347,14 @@ test("workflow presets stay visible when non-core diagnostics fail", async ({ pa
     minimalWorkflowDefinition("raid_degraded_rebuild_blackbox", "RAID Degraded / Rebuild Black-box Scenario"),
     minimalWorkflowDefinition("nvme_multipath_failover_blackbox", "NVMe Multipath / Failover Black-box Scenario"),
     minimalWorkflowDefinition("env_hugepage_memory_blackbox", "Environment / Hugepage Memory Black-box Scenario"),
+    minimalWorkflowDefinition("spdk_cli_rpc_smoke_blackbox", "SPDK CLI / RPC Smoke Black-box Scenario"),
+    minimalWorkflowDefinition("transport_network_partition_blackbox", "Transport Network Partition Black-box Scenario"),
+    minimalWorkflowDefinition("data_integrity_corruption_blackbox", "Data Integrity / Corruption Black-box Scenario"),
+    minimalWorkflowDefinition(
+      "upgrade_compatibility_persistence_blackbox",
+      "Upgrade Compatibility / Persistence Black-box Scenario",
+    ),
+    minimalWorkflowDefinition("telemetry_metrics_regression_blackbox", "Telemetry / Metrics Regression Black-box Scenario"),
   ];
 
   await page.route("**/api/workbench/workflows", async (route) => {
@@ -399,7 +407,7 @@ test("workflow presets stay visible when non-core diagnostics fail", async ({ pa
     .locator("option")
     .evaluateAll((options) => options.map((option) => option.getAttribute("value")));
   expect(presetValues).toEqual(expect.arrayContaining(definitions.map((item) => item.id)));
-  await expect(page.getByText("15 个已注册")).toBeVisible();
+  await expect(page.getByText("20 个内置预设，20 个已注册")).toBeVisible();
 });
 
 test("agent workbench renders workflow and task-run controls", async ({ page }) => {
@@ -480,6 +488,11 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
       "raid_degraded_rebuild_blackbox",
       "nvme_multipath_failover_blackbox",
       "env_hugepage_memory_blackbox",
+      "spdk_cli_rpc_smoke_blackbox",
+      "transport_network_partition_blackbox",
+      "data_integrity_corruption_blackbox",
+      "upgrade_compatibility_persistence_blackbox",
+      "telemetry_metrics_regression_blackbox",
     ]),
   );
   await expect(page.getByRole("button", { name: "应用预设" })).toBeVisible();

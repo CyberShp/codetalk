@@ -214,6 +214,11 @@ const WORKFLOW_NAME_ZH: Record<string, string> = {
   bdev_hotremove_io_error_blackbox: "bdev hotremove/IO 错误黑盒场景",
   blobstore_metadata_powerfail_blackbox: "blobstore 元数据/掉电恢复黑盒场景",
   rpc_security_authz_blackbox: "RPC 安全/权限黑盒场景",
+  spdk_cli_rpc_smoke_blackbox: "SPDK CLI/RPC 冒烟黑盒场景",
+  transport_network_partition_blackbox: "transport 网络分区黑盒场景",
+  data_integrity_corruption_blackbox: "数据完整性/损坏黑盒场景",
+  upgrade_compatibility_persistence_blackbox: "升级兼容/持久化黑盒场景",
+  telemetry_metrics_regression_blackbox: "遥测/指标回归黑盒场景",
 };
 
 function workflowDisplayName(workflow: Pick<WorkflowDefinition, "id" | "name"> | string): string {
@@ -461,6 +466,41 @@ const WORKFLOW_BUILDER_SCENARIOS = {
     inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
     outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
     goal: "优先检查 GitNexus 和 CGC 产物，然后分析 env 初始化、hugepage 分配、memory pressure、非法启动参数、cleanup、restart 和可观测诊断，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  spdk_cli_rpc_smoke_blackbox: {
+    name: "SPDK CLI/RPC 冒烟",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 scripts/rpc.py、spdkcli、test/json_config 与 app 启动路径的 RPC ready、create/list/delete、非法命令和诊断输出，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  transport_network_partition_blackbox: {
+    name: "transport 网络分区",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 NVMe-oF/iSCSI transport 的 packet loss、network partition、reconnect、timeout、keep-alive、IO continuity 和恢复诊断，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  data_integrity_corruption_blackbox: {
+    name: "数据完整性/损坏",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析数据完整性、checksum/digest mismatch、partial write、read-after-write、metadata corruption 和恢复信号，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  upgrade_compatibility_persistence_blackbox: {
+    name: "升级兼容/持久化",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 upgrade/downgrade、restart persistence、saved config compatibility、metadata version、rollback 和迁移诊断，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  telemetry_metrics_regression_blackbox: {
+    name: "遥测/指标回归",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 telemetry、counters、logs、status commands、metric regression、alertability 和 failure triage 信号，输出代码证据、流程、SFMEA 和黑盒测试用例。",
     artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
   },
 } as const;
@@ -3353,9 +3393,9 @@ export default function AgentWorkbenchPage() {
             </p>
           </div>
           <div className="ct-workbench-stat rounded-xl border border-outline-variant/25 bg-surface-container/75 p-4">
-            <p className="text-xs text-on-surface-variant">工作流</p>
+            <p className="text-xs text-on-surface-variant">预设库 / 已注册</p>
             <p className="mt-2 font-display text-2xl font-semibold text-on-surface">
-              {workflows.length}
+              {workflowPresets.length} / {workflows.length}
             </p>
           </div>
           <div className="ct-workbench-stat rounded-xl border border-outline-variant/25 bg-surface-container/75 p-4">
@@ -3394,7 +3434,7 @@ export default function AgentWorkbenchPage() {
                 ? "已准备"
                 : `${taskRuns.length} 任务`
               : view.id === "workflow"
-                ? `${workflows.length} 工作流`
+                ? `${workflowPresets.length} 预设 / ${workflows.length} 已注册`
                 : view.id === "knowledge"
                   ? `${semanticResults.length + memoryResults.length} 结果`
                   : `${providerMatrix?.providers.length ?? 0} 执行器`;
@@ -3977,11 +4017,11 @@ export default function AgentWorkbenchPage() {
       {activeWorkbenchView === "workflow" && (
         <Panel title="工作流编排" icon={<ClipboardList size={16} />}>
           <div className="mb-3 flex flex-wrap items-center gap-2">
-            {workflowPresets.length > 0 && (
+            {workflowPresets.length > 0 ? (
               <select
                 value={selectedPresetId}
                 onChange={(event) => setSelectedPresetId(event.target.value)}
-                className="min-w-0 rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                className="min-w-0 max-w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary sm:min-w-72"
                 aria-label="工作流预设"
               >
                 {workflowPresets.map((preset) => (
@@ -3990,6 +4030,10 @@ export default function AgentWorkbenchPage() {
                   </option>
                 ))}
               </select>
+            ) : (
+              <span className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
+                预设库暂未加载
+              </span>
             )}
             <button
               onClick={applyPreset}
@@ -4049,7 +4093,7 @@ export default function AgentWorkbenchPage() {
               审计草稿
             </button>
             <span className="text-xs text-on-surface-variant">
-              {workflows.length} 个已注册
+              {workflowPresets.length} 个内置预设，{workflows.length} 个已注册
             </span>
           </div>
           <div className="mb-3 rounded-lg border border-outline-variant/30 bg-surface p-3">

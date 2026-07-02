@@ -42,6 +42,11 @@ test("lists and installs every built-in workflow preset through the real workben
     { id: "raid_degraded_rebuild_blackbox", label: "RAID 降级/rebuild 黑盒场景" },
     { id: "nvme_multipath_failover_blackbox", label: "NVMe multipath/failover 黑盒场景" },
     { id: "env_hugepage_memory_blackbox", label: "环境/hugepage 内存黑盒场景" },
+    { id: "spdk_cli_rpc_smoke_blackbox", label: "SPDK CLI/RPC 冒烟黑盒场景" },
+    { id: "transport_network_partition_blackbox", label: "transport 网络分区黑盒场景" },
+    { id: "data_integrity_corruption_blackbox", label: "数据完整性/损坏黑盒场景" },
+    { id: "upgrade_compatibility_persistence_blackbox", label: "升级兼容/持久化黑盒场景" },
+    { id: "telemetry_metrics_regression_blackbox", label: "遥测/指标回归黑盒场景" },
     { id: "mr_blackbox_test", label: "MR 黑盒测试工作流" },
     { id: "patch_impact_review", label: "补丁影响面评审工作流" },
   ];
@@ -79,6 +84,11 @@ test("lists and installs every built-in workflow preset through the real workben
       "raid_degraded_rebuild_blackbox",
       "nvme_multipath_failover_blackbox",
       "env_hugepage_memory_blackbox",
+      "spdk_cli_rpc_smoke_blackbox",
+      "transport_network_partition_blackbox",
+      "data_integrity_corruption_blackbox",
+      "upgrade_compatibility_persistence_blackbox",
+      "telemetry_metrics_regression_blackbox",
     ]),
   );
 
