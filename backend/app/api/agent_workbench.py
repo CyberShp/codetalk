@@ -255,6 +255,7 @@ def _redact_public_repo_paths(payload: Any, repo_path: Any) -> Any:
 def _public_task_run_payload(task_run: Any) -> dict[str, Any]:
     payload = asdict(task_run)
     task_root = Path(str(payload.get("artifact_dir") or "")).resolve()
+    payload.update(_public_task_run_runtime_summary(task_root))
     if "repo_path" in payload:
         payload["repo_path"] = _public_repo_path_label(payload.get("repo_path"))
     if "artifact_dir" in payload:
@@ -281,6 +282,57 @@ def _public_task_run_payload(task_run: Any) -> dict[str, Any]:
             public_agent_runs.append(public_item)
         payload["agent_runs"] = public_agent_runs
     return payload
+
+
+def _public_task_run_runtime_summary(task_root: Path) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    execution = _read_json(task_root / "workflow_execution.json")
+    if isinstance(execution, dict):
+        status = str(execution.get("status") or "").strip()
+        if status:
+            summary["status"] = status
+        outputs = execution.get("outputs")
+        if isinstance(outputs, list):
+            summary["outputs"] = _public_workflow_output_summaries(outputs)
+        summary["execution"] = {
+            "status": status or "unknown",
+            "step_count": len(execution.get("steps") or []),
+            "output_count": len(outputs) if isinstance(outputs, list) else 0,
+        }
+
+    acceptance = _read_json(task_root / "task_acceptance_audit.json")
+    if isinstance(acceptance, dict):
+        summary["acceptance_audit"] = {
+            "status": str(acceptance.get("status") or "unknown"),
+            "summary": acceptance.get("summary") or {},
+        }
+
+    manifest = _read_json(task_root / "task_artifact_manifest.json")
+    if isinstance(manifest, dict):
+        summary["artifact_summary"] = {
+            "artifact_count": int(manifest.get("artifact_count") or 0),
+            "manifest_path": "task_artifact_manifest.json",
+        }
+    return summary
+
+
+def _public_workflow_output_summaries(outputs: list[Any]) -> list[dict[str, Any]]:
+    summaries: list[dict[str, Any]] = []
+    public_keys = {
+        "artifact",
+        "from",
+        "id",
+        "path",
+        "sha256",
+        "size_bytes",
+        "status",
+        "type",
+    }
+    for item in outputs:
+        if not isinstance(item, dict):
+            continue
+        summaries.append({key: item[key] for key in public_keys if key in item})
+    return summaries
 
 
 def _agent_run_dir(run_id: str) -> Path:

@@ -1957,6 +1957,29 @@ async def test_workbench_task_run_run_api_prepares_executes_and_audits(
     assert (task_dir / "workflow_output_materialization.json").exists()
     assert (task_dir / "task_acceptance_audit.json").exists()
     assert (task_dir / "task_artifact_manifest.json").exists()
+
+    loaded = await workbench_client.get(
+        f"/api/workbench/task-runs/{body['task_run']['task_run_id']}"
+    )
+    assert loaded.status_code == 200
+    loaded_body = loaded.json()
+    assert loaded_body["status"] == "completed"
+    assert loaded_body["execution"]["status"] == "completed"
+    assert loaded_body["outputs"][0]["id"] == "cases"
+    assert loaded_body["artifact_summary"]["artifact_count"] >= 4
+    assert loaded_body["acceptance_audit"]["status"] == "ready"
+
+    listed = await workbench_client.get(
+        "/api/workbench/task-runs",
+        params={"workspace_id": "ws-one-click-run"},
+    )
+    assert listed.status_code == 200
+    listed_item = listed.json()["items"][0]
+    assert listed_item["task_run_id"] == body["task_run"]["task_run_id"]
+    assert listed_item["status"] == "completed"
+    assert listed_item["outputs"][0]["status"] == "ok"
+    assert listed_item["artifact_summary"]["artifact_count"] >= 4
+
     search = await workbench_client.get(
         "/api/workbench/memory/search",
         params={"q": "one-click", "workspace_id": "ws-one-click-run"},
