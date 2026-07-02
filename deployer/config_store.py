@@ -160,6 +160,29 @@ def _summarize_api_key_for_frontend(cfg: dict) -> dict:
 _PORT_KEYS = {"backend_port", "frontend_port", "gitnexus_port", "postgres_port", "cgc_port"}
 
 
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        return default
+    return value if 1024 <= value <= 65535 else default
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return default
+
+
 def _validate_ports(cfg: dict) -> dict:
     for key in _PORT_KEYS:
         if key in cfg:
@@ -197,6 +220,10 @@ def save_config(config: dict) -> None:
 
 def get_default_config(mode: str) -> dict:
     """Return a default config dict for the given deployment mode."""
+    frontend_port = _env_int("CODETALK_DEPLOYER_FRONTEND_PORT", 3003)
+    backend_port = _env_int("CODETALK_DEPLOYER_BACKEND_PORT", 3004)
+    gitnexus_port = _env_int("CODETALK_DEPLOYER_GITNEXUS_PORT", 7100)
+    cgc_port = _env_int("CODETALK_DEPLOYER_CGC_PORT", 7072)
     base = {
         "mode": mode,
         "workspace_path": "./workspace",
@@ -205,17 +232,18 @@ def get_default_config(mode: str) -> dict:
         "anthropic_api_key": "",
         "google_api_key": "",
         "repos_path": "./workspace/repos",
-        "frontend_port": 3003,
-        "gitnexus_port": 7100,
-        "cgc_port": 7072,
-        "install_cgc": True,
-        "cors_origins": "http://localhost:3003,http://127.0.0.1:3003",
+        "frontend_port": frontend_port,
+        "gitnexus_port": gitnexus_port,
+        "cgc_port": cgc_port,
+        "install_gitnexus": _env_bool("CODETALK_DEPLOYER_INSTALL_GITNEXUS", True),
+        "install_cgc": _env_bool("CODETALK_DEPLOYER_INSTALL_CGC", True),
+        "cors_origins": f"http://localhost:{frontend_port},http://127.0.0.1:{frontend_port}",
     }
     if mode == "native":
-        base["backend_port"] = 3004
+        base["backend_port"] = backend_port
         base["ollama_base_url"] = "http://localhost:11434"
     else:
-        base["backend_port"] = 3004
+        base["backend_port"] = backend_port
         base["ollama_base_url"] = "http://host.docker.internal:11434"
         base["postgres_user"] = "codetalks"
         base["postgres_password"] = "changeme"

@@ -83,6 +83,25 @@ def test_load_config_returns_native_default_when_no_file(isolated_config):
     assert "frontend_port" in cfg
 
 
+def test_load_config_uses_deployer_environment_defaults(monkeypatch, isolated_config):
+    monkeypatch.setenv("CODETALK_DEPLOYER_FRONTEND_PORT", "3503")
+    monkeypatch.setenv("CODETALK_DEPLOYER_BACKEND_PORT", "3504")
+    monkeypatch.setenv("CODETALK_DEPLOYER_GITNEXUS_PORT", "7500")
+    monkeypatch.setenv("CODETALK_DEPLOYER_CGC_PORT", "7572")
+    monkeypatch.setenv("CODETALK_DEPLOYER_INSTALL_GITNEXUS", "0")
+    monkeypatch.setenv("CODETALK_DEPLOYER_INSTALL_CGC", "false")
+
+    cfg = config_store.load_config()
+
+    assert cfg["frontend_port"] == 3503
+    assert cfg["backend_port"] == 3504
+    assert cfg["gitnexus_port"] == 7500
+    assert cfg["cgc_port"] == 7572
+    assert cfg["install_gitnexus"] is False
+    assert cfg["install_cgc"] is False
+    assert cfg["cors_origins"] == "http://localhost:3503,http://127.0.0.1:3503"
+
+
 def test_load_config_reads_existing_file(isolated_config):
     isolated_config.write_text(
         json.dumps(

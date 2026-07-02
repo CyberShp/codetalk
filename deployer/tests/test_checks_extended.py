@@ -7,6 +7,7 @@ of the functions not reached by the existing mode-based check tests.
 import socket
 
 import checks
+import config_store
 
 
 def test_check_disk_returns_valid_result():
@@ -71,6 +72,41 @@ async def test_run_checks_native_mode_returns_list_of_dicts():
         assert "name" in item
         assert "status" in item
         assert "message" in item
+
+
+async def test_run_checks_native_skips_disabled_gitnexus_port(monkeypatch):
+    async def pass_result(name):
+        return {"name": name, "status": "pass", "message": "ok"}
+
+    seen_ports = []
+
+    monkeypatch.setattr(checks, "_check_python", lambda: pass_result("Python 3.10+"))
+    monkeypatch.setattr(checks, "_check_node", lambda: pass_result("Node.js 18+"))
+    monkeypatch.setattr(checks, "_check_git", lambda: pass_result("Git"))
+    monkeypatch.setattr(checks, "_detect_own_running_ports", lambda ports: set())
+    monkeypatch.setattr(checks, "_check_disk", lambda: {"name": "Disk Space", "status": "pass", "message": "ok"})
+    monkeypatch.setattr(checks, "_check_memory", lambda: {"name": "Memory", "status": "pass", "message": "ok"})
+    monkeypatch.setattr(
+        config_store,
+        "load_config",
+        lambda: {
+            "frontend_port": 3503,
+            "backend_port": 3504,
+            "gitnexus_port": 7100,
+            "install_gitnexus": False,
+        },
+    )
+    monkeypatch.setattr(
+        checks,
+        "_check_ports",
+        lambda ports, mode, own_ports: seen_ports.extend(ports) or [
+            {"name": f"Port {port}", "status": "pass", "message": "ok"} for port in ports
+        ],
+    )
+
+    await checks.run_checks("native")
+
+    assert seen_ports == [3503, 3504]
 
 
 async def test_run_checks_k8s_mode_returns_list_with_disk_and_memory():
