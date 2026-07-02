@@ -1071,7 +1071,16 @@ def _local_patch_impact_payloads(
     for index, item in enumerate(changed_files[:24], start=1):
         file_path = str(item.get("path") or item.get("old_path") or "").strip()
         status = str(item.get("status") or "modified")
-        source_summary = _source_summary_for_patch_path(repo=repo, file_path=file_path)
+        hunk_start_lines = [
+            int(value)
+            for value in item.get("hunk_start_lines", [])
+            if isinstance(value, int)
+        ]
+        source_summary = _source_summary_for_patch_path(
+            repo=repo,
+            file_path=file_path,
+            hunk_start_lines=hunk_start_lines,
+        )
         module = _module_label_for_path(file_path)
         impact_id = f"local_patch_impact_{index:03d}"
         summary = f"{status} {file_path} affects {module} behavior and should be checked through external workflows."
@@ -2686,7 +2695,12 @@ def _changed_files_from_prior_diff(prior_step_results: list[dict[str, Any]]) -> 
     return []
 
 
-def _source_summary_for_patch_path(*, repo: Path, file_path: str) -> dict[str, Any]:
+def _source_summary_for_patch_path(
+    *,
+    repo: Path,
+    file_path: str,
+    hunk_start_lines: list[int] | None = None,
+) -> dict[str, Any]:
     path = repo / file_path
     try:
         data = path.read_bytes()
@@ -2700,14 +2714,52 @@ def _source_summary_for_patch_path(*, repo: Path, file_path: str) -> dict[str, A
             "line_count": 0,
         }
     symbols = _extract_local_symbols(text)
+    primary_symbol = _nearest_symbol_for_lines(text, hunk_start_lines or []) or (
+        symbols[0] if symbols else ""
+    )
     return {
         "exists": True,
         "file_path": file_path,
-        "primary_symbol": symbols[0] if symbols else "",
+        "primary_symbol": primary_symbol,
         "symbols": symbols[:12],
         "sha256": hashlib.sha256(data).hexdigest(),
         "line_count": len(text.splitlines()),
     }
+
+
+def _nearest_symbol_for_lines(text: str, hunk_start_lines: list[int]) -> str:
+    target_lines = [line for line in hunk_start_lines if line > 0]
+    if not target_lines:
+        return ""
+    target_line = min(target_lines)
+    best_symbol = ""
+    best_line = 0
+    for item in _extract_local_symbol_locations(text):
+        line_no = int(item.get("line") or 0)
+        if line_no <= target_line and line_no >= best_line:
+            best_symbol = str(item.get("symbol") or "")
+            best_line = line_no
+    return best_symbol
+
+
+def _extract_local_symbol_locations(text: str, *, limit: int = 200) -> list[dict[str, Any]]:
+    locations: list[dict[str, Any]] = []
+    patterns = [
+        re.compile(r"^\s*(?:static\s+)?(?:inline\s+)?[A-Za-z_][\w\s\*]*\s+([A-Za-z_]\w*)\s*\([^;]*\)\s*\{", re.MULTILINE),
+        re.compile(r"^\s*(?:int|void|bool|static)\s+([A-Za-z_]\w*)\s*\(", re.MULTILINE),
+    ]
+    seen: set[str] = set()
+    for pattern in patterns:
+        for match in pattern.finditer(text):
+            symbol = match.group(1)
+            if symbol in seen:
+                continue
+            seen.add(symbol)
+            line_no = text.count("\n", 0, match.start()) + 1
+            locations.append({"symbol": symbol, "line": line_no})
+            if len(locations) >= limit:
+                return sorted(locations, key=lambda item: int(item["line"]))
+    return sorted(locations, key=lambda item: int(item["line"]))
 
 
 def _module_label_for_path(file_path: str) -> str:
@@ -2834,25 +2886,46 @@ def _looks_like_unified_diff(value: str) -> bool:
     return "diff --git " in text or ("\n--- " in text and "\n+++ " in text)
 
 
-def _changed_files_from_unified_diff(diff_text: str) -> list[dict[str, str]]:
-    changed: list[dict[str, str]] = []
+def _changed_files_from_unified_diff(diff_text: str) -> list[dict[str, Any]]:
+    changed: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
     for line in diff_text.splitlines():
-        if not line.startswith("diff --git "):
+        if line.startswith("diff --git "):
+            current = None
+            parts = line.split()
+            if len(parts) < 4:
+                continue
+            old_path = _clean_diff_path(parts[-2])
+            new_path = _clean_diff_path(parts[-1])
+            path = new_path or old_path
+            if not path:
+                continue
+            current = {
+                "path": path,
+                "old_path": old_path or path,
+                "status": _diff_file_status(old_path, new_path),
+            }
+            changed.append(current)
             continue
-        parts = line.split()
-        if len(parts) < 4:
+        if current is None or not line.startswith("@@ "):
             continue
-        old_path = _clean_diff_path(parts[-2])
-        new_path = _clean_diff_path(parts[-1])
-        path = new_path or old_path
-        if not path:
+        hunk_line = _new_file_hunk_start_line(line)
+        if hunk_line <= 0:
             continue
-        changed.append({
-            "path": path,
-            "old_path": old_path or path,
-            "status": _diff_file_status(old_path, new_path),
-        })
+        starts = current.setdefault("hunk_start_lines", [])
+        if hunk_line not in starts:
+            starts.append(hunk_line)
     return changed
+
+
+def _new_file_hunk_start_line(line: str) -> int:
+    match = re.search(r"@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@", line)
+    if not match:
+        return 0
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return 0
 
 
 def _clean_diff_path(value: str) -> str:
@@ -2874,7 +2947,7 @@ def _diff_file_status(old_path: str, new_path: str) -> str:
     return "deleted"
 
 
-def _dedupe_changed_files(items: list[dict[str, str]]) -> list[dict[str, str]]:
+def _dedupe_changed_files(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     seen: set[tuple[str, str, str]] = set()
     result: list[dict[str, str]] = []
     for item in items:
@@ -2884,6 +2957,19 @@ def _dedupe_changed_files(items: list[dict[str, str]]) -> list[dict[str, str]]:
             str(item.get("status") or ""),
         )
         if key in seen:
+            for existing in result:
+                existing_key = (
+                    str(existing.get("path") or ""),
+                    str(existing.get("old_path") or ""),
+                    str(existing.get("status") or ""),
+                )
+                if existing_key != key:
+                    continue
+                existing_lines = existing.setdefault("hunk_start_lines", [])
+                for line in item.get("hunk_start_lines", []) or []:
+                    if line not in existing_lines:
+                        existing_lines.append(line)
+                break
             continue
         seen.add(key)
         result.append(item)

@@ -2070,6 +2070,70 @@ async def test_builtin_mr_blackbox_run_produces_executable_black_box_case_contra
     assert imported["result"]["source_ref"] == f"task_run:{body['task_run_id']}:black_box_cases"
 
 
+async def test_patch_impact_uses_hunk_nearest_symbol_for_source_evidence(
+    workbench_client,
+    tmp_path,
+):
+    repo = tmp_path / "spdk-like"
+    source_file = repo / "lib" / "nvmf" / "ctrlr.c"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text(
+        "int nvmf_invalid_connect_response(void) { return 0; }\n"
+        "\n"
+        "int nvmf_ctrlr_keep_alive_poll(void *ctx) {\n"
+        "    return ctx == 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    diff_text = (
+        "diff --git a/lib/nvmf/ctrlr.c b/lib/nvmf/ctrlr.c\n"
+        "--- a/lib/nvmf/ctrlr.c\n"
+        "+++ b/lib/nvmf/ctrlr.c\n"
+        "@@ -3,3 +3,4 @@ int nvmf_ctrlr_keep_alive_poll(void *ctx) {\n"
+        " int nvmf_ctrlr_keep_alive_poll(void *ctx) {\n"
+        "+    /* timeout path diagnostic */\n"
+        "     return ctx == 0;\n"
+        " }\n"
+    )
+
+    installed = await workbench_client.post(
+        "/api/workbench/workflow-presets/patch_impact_review/install"
+    )
+    assert installed.status_code == 201
+
+    response = await workbench_client.post(
+        "/api/workbench/task-runs/run",
+        json={
+            "workflow_id": "patch_impact_review",
+            "workspace_id": "ws-patch-hunk-symbol",
+            "repo_path": str(repo),
+            "inputs": {
+                "patch_diff": diff_text,
+                "repo_path": str(repo),
+            },
+            "timeout_sec": 10,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "completed"
+    task_dir = _task_run_dir(body["task_run"]["task_run_id"])
+    changed_files = json.loads(
+        (task_dir / "steps" / "parse_patch" / "changed_files.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    impacts = json.loads(
+        (task_dir / "steps" / "analyze_impact" / "impact_scope.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert changed_files[0]["hunk_start_lines"] == [3]
+    assert impacts[0]["symbol"] == "nvmf_ctrlr_keep_alive_poll"
+    assert impacts[0]["evidence"]["primary_symbol"] == "nvmf_ctrlr_keep_alive_poll"
+
+
 async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
     workbench_client,
     tmp_path,
