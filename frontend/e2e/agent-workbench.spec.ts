@@ -412,6 +412,7 @@ test("workflow run selector falls back to built-in presets when registered workf
 
   await gotoWorkbench(page);
   await expect(page.getByRole("heading", { name: "任务运行" })).toBeVisible();
+  await expect(page.locator('select[aria-label="工作流"]')).toBeVisible();
   await expect(
     page.getByLabel("工作流").locator('option[value="module_analysis"]'),
   ).toHaveCount(1);

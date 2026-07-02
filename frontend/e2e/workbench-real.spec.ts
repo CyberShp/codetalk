@@ -61,6 +61,12 @@ test("lists and installs every built-in workflow preset through the real workben
     { id: "bdev_crypto_integrity_blackbox", label: "bdev crypto/完整性黑盒场景" },
     { id: "scheduler_qos_fairness_blackbox", label: "scheduler QoS/公平性黑盒场景" },
     { id: "backup_restore_integrity_blackbox", label: "备份/恢复完整性黑盒场景" },
+    { id: "nvme_discovery_log_blackbox", label: "NVMe discovery/log 黑盒场景" },
+    { id: "iscsi_portal_failover_blackbox", label: "iSCSI portal/failover 黑盒场景" },
+    { id: "bdev_zone_append_blackbox", label: "bdev zone append 黑盒场景" },
+    { id: "jsonrpc_partial_rollback_blackbox", label: "JSON-RPC 部分失败/回滚黑盒场景" },
+    { id: "vfio_user_hotplug_reconnect_blackbox", label: "vfio-user hotplug/reconnect 黑盒场景" },
+    { id: "lvol_thin_snapshot_blackbox", label: "lvol thin/snapshot 黑盒场景" },
     { id: "mr_blackbox_test", label: "MR 黑盒测试工作流" },
     { id: "patch_impact_review", label: "补丁影响面评审工作流" },
   ];
@@ -117,6 +123,12 @@ test("lists and installs every built-in workflow preset through the real workben
       "bdev_crypto_integrity_blackbox",
       "scheduler_qos_fairness_blackbox",
       "backup_restore_integrity_blackbox",
+      "nvme_discovery_log_blackbox",
+      "iscsi_portal_failover_blackbox",
+      "bdev_zone_append_blackbox",
+      "jsonrpc_partial_rollback_blackbox",
+      "vfio_user_hotplug_reconnect_blackbox",
+      "lvol_thin_snapshot_blackbox",
     ]),
   );
 

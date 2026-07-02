@@ -227,6 +227,12 @@ COMMON_TEST_SCENARIO_PRESET_IDS = (
     "bdev_crypto_integrity_blackbox",
     "scheduler_qos_fairness_blackbox",
     "backup_restore_integrity_blackbox",
+    "nvme_discovery_log_blackbox",
+    "iscsi_portal_failover_blackbox",
+    "bdev_zone_append_blackbox",
+    "jsonrpc_partial_rollback_blackbox",
+    "vfio_user_hotplug_reconnect_blackbox",
+    "lvol_thin_snapshot_blackbox",
 )
 
 
@@ -1172,6 +1178,78 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
             default_query=(
                 "scripts/rpc.py test/json_config lib/blob lib/bdev backup restore export import save "
                 "checksum validation partial restore corrupted input restart persistence diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="nvme_discovery_log_blackbox",
+            name="NVMe Discovery / Log Black-box Scenario",
+            description=(
+                "Analyze discovery log pages, identify/controller data, log retrieval, changed "
+                "subsystem visibility, malformed requests, transport loss, and externally visible diagnostics."
+            ),
+            default_query=(
+                "lib/nvme lib/nvmf test/nvme test/nvmf scripts/rpc.py discovery log page identify "
+                "controller data subsystem visibility malformed request transport loss diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="iscsi_portal_failover_blackbox",
+            name="iSCSI Portal / Failover Black-box Scenario",
+            description=(
+                "Analyze portal group changes, target discovery, failover, reconnect, stale sessions, "
+                "network partition behavior, and operator-visible recovery signals."
+            ),
+            default_query=(
+                "lib/iscsi test/iscsi_tgt scripts/rpc.py portal group discovery failover reconnect "
+                "stale session network partition recovery diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="bdev_zone_append_blackbox",
+            name="bdev Zone Append Black-box Scenario",
+            description=(
+                "Analyze zoned bdev write pointer handling, zone append, reset/open/finish, boundary "
+                "errors, concurrent writers, capacity pressure, and observable completion behavior."
+            ),
+            default_query=(
+                "lib/bdev module/bdev test/bdev zone append write pointer reset open finish boundary "
+                "concurrent writer capacity pressure completion error diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="jsonrpc_partial_rollback_blackbox",
+            name="JSON-RPC Partial Failure / Rollback Black-box Scenario",
+            description=(
+                "Analyze multi-step RPC changes, duplicate calls, partial success, rollback or cleanup, "
+                "idempotency, invalid ordering, and client-visible error payloads."
+            ),
+            default_query=(
+                "lib/rpc scripts/rpc.py test/json_config test/rpc JSON-RPC multi step partial success "
+                "rollback cleanup idempotency duplicate invalid ordering error payload"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="vfio_user_hotplug_reconnect_blackbox",
+            name="vfio-user Hotplug / Reconnect Black-box Scenario",
+            description=(
+                "Analyze vfio-user device hotplug, guest detach, reconnect, queue reconfiguration, "
+                "socket loss, lifecycle recovery, and user-visible state transitions."
+            ),
+            default_query=(
+                "lib/vfio_user lib/vhost test/vfio_user test/vhost vfio-user hotplug guest detach "
+                "reconnect queue reconfiguration socket loss lifecycle recovery state transition"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="lvol_thin_snapshot_blackbox",
+            name="lvol Thin Provisioning / Snapshot Black-box Scenario",
+            description=(
+                "Analyze thin provisioning, snapshot and clone lifecycle, ENOSPC handling, delete order, "
+                "metadata persistence, restart recovery, and externally observable integrity checks."
+            ),
+            default_query=(
+                "lib/lvol test/lvol scripts/rpc.py thin provisioning snapshot clone ENOSPC delete order "
+                "metadata persistence restart recovery integrity check diagnostics"
             ),
         ),
     ]

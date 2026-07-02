@@ -241,6 +241,12 @@ const WORKFLOW_NAME_ZH: Record<string, string> = {
   bdev_crypto_integrity_blackbox: "bdev crypto/完整性黑盒场景",
   scheduler_qos_fairness_blackbox: "scheduler QoS/公平性黑盒场景",
   backup_restore_integrity_blackbox: "备份/恢复完整性黑盒场景",
+  nvme_discovery_log_blackbox: "NVMe discovery/log 黑盒场景",
+  iscsi_portal_failover_blackbox: "iSCSI portal/failover 黑盒场景",
+  bdev_zone_append_blackbox: "bdev zone append 黑盒场景",
+  jsonrpc_partial_rollback_blackbox: "JSON-RPC 部分失败/回滚黑盒场景",
+  vfio_user_hotplug_reconnect_blackbox: "vfio-user hotplug/reconnect 黑盒场景",
+  lvol_thin_snapshot_blackbox: "lvol thin/snapshot 黑盒场景",
 };
 
 function workflowDisplayName(workflow: Pick<WorkflowDefinition, "id" | "name"> | string): string {
@@ -627,6 +633,48 @@ const WORKFLOW_BUILDER_SCENARIOS = {
     inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
     outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
     goal: "优先检查 GitNexus 和 CGC 产物，然后分析 export/import、save/restore、备份式快照、checksum validation、partial restore、corrupted input、restart persistence 和诊断输出，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  nvme_discovery_log_blackbox: {
+    name: "NVMe discovery/log",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 discovery log page、identify/controller data、log retrieval、subsystem 可见性变化、非法请求、transport loss 和诊断输出，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  iscsi_portal_failover_blackbox: {
+    name: "iSCSI portal/failover",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 portal group 变更、target discovery、failover、reconnect、stale session、network partition 和恢复诊断输出，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  bdev_zone_append_blackbox: {
+    name: "bdev zone append",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 zoned bdev write pointer、zone append、reset/open/finish、边界错误、并发写、容量压力和 completion 行为，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  jsonrpc_partial_rollback_blackbox: {
+    name: "JSON-RPC 部分失败/回滚",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析多步骤 RPC、重复调用、部分成功、rollback/cleanup、幂等性、顺序错误和客户端可见错误 payload，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  vfio_user_hotplug_reconnect_blackbox: {
+    name: "vfio-user hotplug/reconnect",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 vfio-user device hotplug、guest detach、reconnect、queue reconfiguration、socket loss、生命周期恢复和状态转移，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  lvol_thin_snapshot_blackbox: {
+    name: "lvol thin/snapshot",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 thin provisioning、snapshot/clone 生命周期、ENOSPC、删除顺序、metadata persistence、restart recovery 和完整性观测点，输出代码证据、流程、SFMEA 和黑盒测试用例。",
     artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
   },
 } as const;
@@ -4632,6 +4680,7 @@ export default function AgentWorkbenchPage() {
             <label className="block">
               <span className="mb-1 block text-xs text-on-surface-variant">工作流</span>
               <select
+                aria-label="工作流"
                 value={selectedWorkflowId}
                 onChange={(event) => setSelectedWorkflowId(event.target.value)}
                 className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"

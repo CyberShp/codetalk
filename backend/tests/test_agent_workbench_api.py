@@ -151,11 +151,18 @@ async def test_workbench_workflow_preset_api(workbench_client):
         "bdev_crypto_integrity_blackbox",
         "scheduler_qos_fairness_blackbox",
         "backup_restore_integrity_blackbox",
+        "nvme_discovery_log_blackbox",
+        "iscsi_portal_failover_blackbox",
+        "bdev_zone_append_blackbox",
+        "jsonrpc_partial_rollback_blackbox",
+        "vfio_user_hotplug_reconnect_blackbox",
+        "lvol_thin_snapshot_blackbox",
     }.issubset(preset_ids)
     by_preset_id = {item["id"]: item for item in preset_items}
     assert by_preset_id["module_analysis"]["group"] == "core"
     assert by_preset_id["mr_blackbox_test"]["group"] == "core"
     assert by_preset_id["backup_restore_integrity_blackbox"]["group"] == "common_test_scenario"
+    assert by_preset_id["nvme_discovery_log_blackbox"]["group"] == "common_test_scenario"
 
     listed = await workbench_client.get("/api/workbench/workflows")
     listed_body = listed.json()
