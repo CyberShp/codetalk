@@ -1284,6 +1284,7 @@ async def run_agent_generation(
 
     async def consume_agent_turn(turn_prompt: str, turn_resume_session_id: str | None) -> list[str]:
         turn_chunks: list[str] = []
+        segment_state = _AgentOutputSegmentState()
         async for delta in stream_agent_runtime(
             runtime=runtime,
             prompt=turn_prompt,
@@ -1296,7 +1297,7 @@ async def run_agent_generation(
                 return turn_chunks
             is_final_answer = str(delta or "").startswith(AGENT_FINAL_ANSWER_PREFIX)
             final_answer_parts: list[str] = []
-            for kind, content in _agent_output_segments(delta):
+            for kind, content in _agent_output_segments(delta, state=segment_state):
                 if kind == "diagnostic":
                     await store.append_event(
                         run_id=run_id,
@@ -1581,7 +1582,17 @@ def _agent_answer_unusable_after_repair(content: str) -> bool:
     return text == "执行器没有返回有效内容，请检查命令输出模式。"
 
 
-def _agent_output_segments(chunk: str) -> list[tuple[str, str]]:
+@dataclass
+class _AgentOutputSegmentState:
+    diagnostic_active: bool = False
+    diagnostic_prefix: str = ""
+
+
+def _agent_output_segments(
+    chunk: str,
+    *,
+    state: _AgentOutputSegmentState | None = None,
+) -> list[tuple[str, str]]:
     text = clean_agent_output_text(str(chunk or ""))
     if not text.strip():
         return []
@@ -1590,26 +1601,30 @@ def _agent_output_segments(chunk: str) -> list[tuple[str, str]]:
         text = text[len(AGENT_FINAL_ANSWER_PREFIX) :]
     segments: list[tuple[str, str]] = []
     diagnostic_buffer: list[str] = []
-    diagnostic_prefix = ""
+    diagnostic_prefix = state.diagnostic_prefix if state and state.diagnostic_active else ""
 
     def flush_diagnostic() -> None:
-        nonlocal diagnostic_buffer, diagnostic_prefix
+        nonlocal diagnostic_buffer
         if diagnostic_buffer:
             segments.append(("diagnostic", "\n".join(diagnostic_buffer)))
             diagnostic_buffer = []
+
+    def close_diagnostic_context() -> None:
+        nonlocal diagnostic_prefix
+        flush_diagnostic()
         diagnostic_prefix = ""
 
     for line in text.splitlines(keepends=True):
         content = line.strip()
         if not content:
-            flush_diagnostic()
+            close_diagnostic_context()
             continue
         diagnostic = _agent_diagnostic_text(content)
         if diagnostic:
             flush_diagnostic()
             diagnostic_buffer.append(diagnostic)
             diagnostic_prefix = _agent_diagnostic_prefix(content)
-        elif diagnostic_buffer and _agent_diagnostic_continuation(
+        elif (diagnostic_buffer or diagnostic_prefix) and _agent_diagnostic_continuation(
             content,
             line,
             diagnostic_prefix,
@@ -1617,9 +1632,12 @@ def _agent_output_segments(chunk: str) -> list[tuple[str, str]]:
         ):
             diagnostic_buffer.append(redact_agent_diagnostic_text(content))
         else:
-            flush_diagnostic()
+            close_diagnostic_context()
             segments.append(("answer", line))
     flush_diagnostic()
+    if state is not None:
+        state.diagnostic_active = bool(diagnostic_prefix)
+        state.diagnostic_prefix = diagnostic_prefix
     return segments
 
 

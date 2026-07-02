@@ -246,6 +246,36 @@ async def test_agent_output_segments_fold_indented_diagnostic_continuations():
     ]
 
 
+async def test_agent_output_segments_keep_diagnostic_context_across_stream_chunks():
+    from app.services.ai_conversations import _AgentOutputSegmentState, _agent_output_segments
+
+    state = _AgentOutputSegmentState()
+
+    first_segments = _agent_output_segments(
+        "thinking: planning source read\n"
+        "  internal step 1: inspect lib/nvmf/connect.c\n",
+        state=state,
+    )
+    second_segments = _agent_output_segments(
+        "  internal step 2: decide risk scoring\n"
+        "FINAL_STREAM_DIAGNOSTIC_ANSWER: 已给出可见结论。\n",
+        state=state,
+    )
+
+    assert first_segments == [
+        (
+            "diagnostic",
+            "planning source read\ninternal step 1: inspect lib/nvmf/connect.c",
+        ),
+    ]
+    assert second_segments == [
+        ("diagnostic", "internal step 2: decide risk scoring"),
+        ("answer", "FINAL_STREAM_DIAGNOSTIC_ANSWER: 已给出可见结论。\n"),
+    ]
+    assert state.diagnostic_active is False
+    assert state.diagnostic_prefix == ""
+
+
 async def test_agent_output_segments_fold_unindented_tool_result_source_lines():
     from app.services.ai_conversations import _agent_output_segments
 
