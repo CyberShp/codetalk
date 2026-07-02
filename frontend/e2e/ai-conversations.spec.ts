@@ -1571,7 +1571,11 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
       body: [
         'data: {"event_id":1,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"status","payload":{"status":"running","message":"正在准备工作区源码上下文"},"created_at":"2026-06-28T00:00:01Z"}',
         "",
+        'data: {"event_id":101,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"status","payload":{"status":"running","message":"正在准备工作区源码上下文"},"created_at":"2026-06-28T00:00:01Z"}',
+        "",
         ...diagnostics,
+        'data: {"event_id":102,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"delta","payload":{"kind":"diagnostic","content":"诊断步骤 01：正在读取 lib/nvmf/connect.c"},"created_at":"2026-06-28T00:00:01Z"}',
+        "",
         'data: {"event_id":22,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"delta","payload":{"content":"最终答案：覆盖 reconnect timeout 的黑盒观察点。"},"created_at":"2026-06-28T00:00:02Z"}',
         "",
         'data: {"event_id":23,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"done","payload":{},"created_at":"2026-06-28T00:00:03Z"}',
@@ -1592,6 +1596,8 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
   await expect(page.getByText("正在准备工作区源码上下文")).toBeVisible();
   await expect(page.getByText("诊断步骤 01：正在读取 lib/nvmf/connect.c")).toBeVisible();
   await expect(page.getByText("诊断步骤 20：正在读取 lib/nvmf/connect.c")).toBeVisible();
+  await expect(page.locator(".ct-ai-diagnostic p").filter({ hasText: "正在准备工作区源码上下文" })).toHaveCount(1);
+  await expect(page.locator(".ct-ai-diagnostic p").filter({ hasText: "诊断步骤 01：正在读取 lib/nvmf/connect.c" })).toHaveCount(1);
 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出" }).click();

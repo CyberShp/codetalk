@@ -266,7 +266,15 @@ function AgentProcessDisclosure({ diagnostics }: { diagnostics: string[] }) {
 }
 
 function capAgentProcessDiagnostics(items: string[]): string[] {
-  return items.map(redactDiagnosticText).filter(Boolean).slice(-AGENT_PROCESS_DIAGNOSTIC_LIMIT);
+  const deduped: string[] = [];
+  const seen = new Set<string>();
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = redactDiagnosticText(items[index] ?? "").trim();
+    if (!item || seen.has(item)) continue;
+    seen.add(item);
+    deduped.push(item);
+  }
+  return deduped.reverse().slice(-AGENT_PROCESS_DIAGNOSTIC_LIMIT);
 }
 
 function safeFilename(value: string): string {
