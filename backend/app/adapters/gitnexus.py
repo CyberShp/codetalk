@@ -8,6 +8,7 @@ No analysis logic (AST traversal, graph building, community detection).
 
 import asyncio
 import logging
+import time
 from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
@@ -31,6 +32,7 @@ _POLL_INTERVAL = 2  # seconds between job status polls
 _POLL_TIMEOUT = 1800  # max seconds to wait for analysis (30 min for large repos)
 _ANALYZE_BUSY_RETRY_ATTEMPTS = 45
 _ANALYZE_BUSY_RETRY_INTERVAL = 1.0
+_ANALYZE_START_COOLDOWN = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -249,6 +251,8 @@ def resolve_indexed_repo_name(payload: object, tool_repo_path: str) -> str | Non
 class GitNexusAdapter(BaseToolAdapter):
     _indexed_repo_by_path: dict[tuple[str, str], str] = {}
     _prepare_locks: dict[tuple[str, str, int], asyncio.Lock] = {}
+    _analyze_locks: dict[tuple[str, int], asyncio.Lock] = {}
+    _next_analyze_start_at: dict[tuple[str, int], float] = {}
 
     def __init__(self, base_url: str | None = None):
         self.base_url = base_url or settings.gitnexus_base_url
@@ -267,6 +271,33 @@ class GitNexusAdapter(BaseToolAdapter):
             lock = asyncio.Lock()
             cls._prepare_locks[key] = lock
         return lock
+
+    @classmethod
+    def _analyze_lock_for(cls, base_url: str) -> asyncio.Lock:
+        loop = asyncio.get_running_loop()
+        key = (base_url, id(loop))
+        lock = cls._analyze_locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            cls._analyze_locks[key] = lock
+        return lock
+
+    @classmethod
+    async def _wait_for_analyze_cooldown(cls, base_url: str) -> None:
+        loop = asyncio.get_running_loop()
+        key = (base_url, id(loop))
+        delay = cls._next_analyze_start_at.get(key, 0.0) - time.monotonic()
+        if delay > 0:
+            await asyncio.sleep(delay)
+
+    @classmethod
+    def _mark_analyze_cooldown(cls, base_url: str) -> None:
+        if _ANALYZE_START_COOLDOWN <= 0:
+            return
+        loop = asyncio.get_running_loop()
+        cls._next_analyze_start_at[(base_url, id(loop))] = (
+            time.monotonic() + _ANALYZE_START_COOLDOWN
+        )
 
     @classmethod
     def clear_cached_repo(cls, base_url: str, tool_repo_path: str | None = None) -> None:
@@ -409,9 +440,42 @@ class GitNexusAdapter(BaseToolAdapter):
                 self._schedule_embed_if_enabled()
                 return
 
-            resp, resolved = await self._post_analyze_with_busy_retry_or_resolve(
-                tool_repo_path
-            )
+            analyze_lock = self._analyze_lock_for(self.base_url)
+            queued_for_analyze = analyze_lock.locked()
+            async with analyze_lock:
+                if queued_for_analyze:
+                    # Another path may have completed while this prepare waited
+                    # for GitNexus's single analyze worker. Re-check before POSTing.
+                    resolved = await self._resolve_repo_for_path(tool_repo_path)
+                    if resolved:
+                        self._adopt_resolved_repo(cache_key, resolved)
+                        logger.info(
+                            "gitnexus: repo already indexed as %s after queue wait "
+                            "(resolved by path %s), skipping analyze",
+                            self._repo_name,
+                            resolved.get("path"),
+                        )
+                        self._schedule_embed_if_enabled()
+                        return
+                await self._wait_for_analyze_cooldown(self.base_url)
+                await self._prepare_via_analyze_job(
+                    tool_repo_path,
+                    cache_key,
+                    on_progress=on_progress,
+                )
+                return
+
+    async def _prepare_via_analyze_job(
+        self,
+        tool_repo_path: str,
+        cache_key: tuple[str, str],
+        *,
+        on_progress: Callable[[int], Awaitable[None]] | None = None,
+    ) -> None:
+        resp, resolved = await self._post_analyze_with_busy_retry_or_resolve(
+            tool_repo_path
+        )
+        try:
             if resolved:
                 self._adopt_resolved_repo(cache_key, resolved)
                 logger.info(
@@ -515,6 +579,8 @@ class GitNexusAdapter(BaseToolAdapter):
                     )
 
             raise RuntimeError("GitNexus indexing timed out")
+        finally:
+            self._mark_analyze_cooldown(self.base_url)
 
     async def _post_analyze_with_busy_retry_or_resolve(
         self,

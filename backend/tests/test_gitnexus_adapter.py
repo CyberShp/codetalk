@@ -46,6 +46,33 @@ class _FakeAsyncClient:
         return self.post_responses.pop(0)
 
 
+class _ConcurrentAnalyzeClient:
+    active_jobs = 0
+    max_active_jobs = 0
+    post_order: list[str] = []
+
+    def __init__(self, repo_name: str):
+        self.repo_name = repo_name
+        self.is_closed = False
+
+    async def get(self, path: str, params: dict | None = None, timeout: int | None = None):
+        if path == "/api/repos":
+            return _FakeResponse(200, {"repos": []})
+        if path.startswith("/api/analyze/"):
+            await asyncio.sleep(0.02)
+            type(self).active_jobs -= 1
+            return _FakeResponse(200, {"status": "complete", "repoName": self.repo_name})
+        raise AssertionError(f"unexpected GET {path}")
+
+    async def post(self, path: str, json: dict | None = None, **kwargs):
+        if path != "/api/analyze":
+            raise AssertionError(f"unexpected POST {path}")
+        type(self).post_order.append(str(json.get("path") if json else ""))
+        type(self).active_jobs += 1
+        type(self).max_active_jobs = max(type(self).max_active_jobs, type(self).active_jobs)
+        return _FakeResponse(200, {"jobId": f"job-{self.repo_name}"})
+
+
 class GitNexusAdapterConfigTests(unittest.TestCase):
     def test_default_base_url_uses_runtime_settings(self) -> None:
         with patch.object(settings, "gitnexus_base_url", "http://127.0.0.1:7100"):
@@ -58,10 +85,17 @@ class GitNexusAdapterPrepareTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         GitNexusAdapter._indexed_repo_by_path.clear()
         GitNexusAdapter._prepare_locks.clear()
+        GitNexusAdapter._analyze_locks.clear()
+        GitNexusAdapter._next_analyze_start_at.clear()
+        _ConcurrentAnalyzeClient.active_jobs = 0
+        _ConcurrentAnalyzeClient.max_active_jobs = 0
+        _ConcurrentAnalyzeClient.post_order = []
 
     def tearDown(self) -> None:
         GitNexusAdapter._indexed_repo_by_path.clear()
         GitNexusAdapter._prepare_locks.clear()
+        GitNexusAdapter._analyze_locks.clear()
+        GitNexusAdapter._next_analyze_start_at.clear()
 
     async def test_prepare_reuses_indexed_repo_across_fresh_instances(self) -> None:
         request = AnalysisRequest(repo_local_path="/tmp/repos/open-iscsi")
@@ -163,6 +197,28 @@ class GitNexusAdapterPrepareTests(unittest.IsolatedAsyncioTestCase):
         ])
         self.assertEqual(adapter.current_repo_name, "spdk")
 
+    async def test_prepare_serializes_analyze_jobs_for_different_paths(self) -> None:
+        first = GitNexusAdapter(base_url="http://gitnexus:7100")
+        first._client = _ConcurrentAnalyzeClient("alpha")
+        second = GitNexusAdapter(base_url="http://gitnexus:7100")
+        second._client = _ConcurrentAnalyzeClient("beta")
+
+        with (
+            patch("app.adapters.gitnexus.to_tool_repo_path", side_effect=lambda repo_local_path, **_: repo_local_path),
+            patch("app.adapters.gitnexus._POLL_INTERVAL", 0),
+            patch("app.adapters.gitnexus._ANALYZE_START_COOLDOWN", 0),
+        ):
+            await asyncio.gather(
+                first.prepare(AnalysisRequest(repo_local_path="/tmp/repos/alpha")),
+                second.prepare(AnalysisRequest(repo_local_path="/tmp/repos/beta")),
+            )
+
+        self.assertEqual(_ConcurrentAnalyzeClient.max_active_jobs, 1)
+        self.assertCountEqual(
+            _ConcurrentAnalyzeClient.post_order,
+            ["/tmp/repos/alpha", "/tmp/repos/beta"],
+        )
+
     async def test_prepare_recovers_immediately_when_busy_analyze_finishes_existing_repo(self) -> None:
         request = AnalysisRequest(repo_local_path="/tmp/repos/spdk")
         adapter = GitNexusAdapter(base_url="http://gitnexus:7100")
@@ -259,6 +315,8 @@ class GitNexusAdapterProgressParsingTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self) -> None:
         GitNexusAdapter._indexed_repo_by_path.clear()
         GitNexusAdapter._prepare_locks.clear()
+        GitNexusAdapter._analyze_locks.clear()
+        GitNexusAdapter._next_analyze_start_at.clear()
 
     tearDown = setUp
 
@@ -325,9 +383,13 @@ class GitNexusHealthIndexedReposTests(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self) -> None:
         GitNexusAdapter._indexed_repo_by_path.clear()
+        GitNexusAdapter._analyze_locks.clear()
+        GitNexusAdapter._next_analyze_start_at.clear()
 
     def tearDown(self) -> None:
         GitNexusAdapter._indexed_repo_by_path.clear()
+        GitNexusAdapter._analyze_locks.clear()
+        GitNexusAdapter._next_analyze_start_at.clear()
 
     async def test_health_check_reports_zero_when_nothing_indexed(self) -> None:
         adapter = GitNexusAdapter(base_url="http://gitnexus:7100")
