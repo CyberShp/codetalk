@@ -456,6 +456,10 @@ const DEFAULT_BUILDER_OUTPUT_SCHEMAS = {
     type: "array",
     items: { type: "object" },
   },
+  test_hooks: {
+    type: "array",
+    items: { type: "object" },
+  },
   code_evidence: {
     type: "array",
     items: { type: "object" },

@@ -488,6 +488,12 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow builder semantic imports")).toHaveValue(
     /"black_box_cases"/,
   );
+  await page.getByLabel("Workflow builder scenario").selectOption("resource_leak_hunt");
+  await page.getByRole("button", { name: "生成草稿" }).click();
+  await expect(page.getByText("工作流草稿已生成: custom_mr_blackbox")).toBeVisible();
+  await expect(page.getByText("Draft:ready")).toBeVisible();
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"test_hooks"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"schema": \{\s+"type": "array"/);
   await page.getByLabel("Workflow builder scenario").selectOption("source_flow_sfmea_blackbox");
   await page.getByRole("button", { name: "生成草稿" }).click();
   await expect(page.getByText("工作流草稿已生成: custom_mr_blackbox")).toBeVisible();
