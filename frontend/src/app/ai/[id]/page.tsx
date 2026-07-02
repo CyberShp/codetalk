@@ -400,7 +400,7 @@ export default function AIThreadPage() {
     setThreads(threadResult.items);
     if (conv.latest_run?.id) {
       const eventResult = await api.aiConversations
-        .events(conversationId, { run_id: conv.latest_run.id, limit: 200 })
+        .events(conversationId, { run_id: conv.latest_run.id, limit: 200, process_only: true })
         .catch(() => ({ items: [] as AIRunEvent[] }));
       setStreamingDiagnostics(agentProcessDiagnosticsFromEvents(eventResult.items));
     } else {

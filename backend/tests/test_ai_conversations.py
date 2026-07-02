@@ -1923,6 +1923,67 @@ class TestAIConversationsAPI:
             )
         assert missing.status_code == 404
 
+    async def test_process_only_run_events_keep_diagnostics_when_answer_stream_is_long(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        app = _test_app(sqlite_db)
+
+        from app.services.ai_conversations import AIConversationStore
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="长线程过程恢复",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="分析源码并生成大量用例",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+        await store.append_event(
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            event_type="status",
+            payload={"status": "running", "message": "正在读取工作区源码上下文。"},
+        )
+        await store.append_event(
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            event_type="delta",
+            payload={"kind": "diagnostic", "content": "TOOL: rg iscsi_login lib/iscsi"},
+        )
+        for index in range(260):
+            await store.append_event(
+                run_id=run_id,
+                conversation_id=conversation["id"],
+                event_type="delta",
+                payload={"content": f"answer chunk {index}\n"},
+            )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            normal = await client.get(
+                f"/api/ai/conversations/{conversation['id']}/events",
+                params={"run_id": run_id, "limit": 200},
+            )
+            process = await client.get(
+                f"/api/ai/conversations/{conversation['id']}/events",
+                params={"run_id": run_id, "limit": 200, "process_only": True},
+            )
+
+        assert normal.status_code == 200
+        assert not any(
+            item["payload"].get("kind") == "diagnostic"
+            for item in normal.json()["items"]
+        )
+        assert process.status_code == 200
+        process_items = process.json()["items"]
+        assert [item["event_type"] for item in process_items] == ["status", "status", "delta"]
+        assert process_items[0]["payload"]["message"] == "已进入生成队列，正在准备上下文。"
+        assert process_items[1]["payload"]["message"] == "正在读取工作区源码上下文。"
+        assert process_items[2]["payload"]["content"] == "TOOL: rg iscsi_login lib/iscsi"
+
     async def test_legacy_agent_process_leak_is_hidden_from_messages_and_artifact(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)

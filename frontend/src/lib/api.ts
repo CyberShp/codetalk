@@ -703,12 +703,14 @@ export const api = {
         cursor?: number;
         limit?: number;
         run_id?: string;
+        process_only?: boolean;
       },
     ) => {
       const query = new URLSearchParams({
         ...(params?.cursor !== undefined ? { cursor: String(params.cursor) } : {}),
         ...(params?.limit !== undefined ? { limit: String(params.limit) } : {}),
         ...(params?.run_id ? { run_id: params.run_id } : {}),
+        ...(params?.process_only !== undefined ? { process_only: String(params.process_only) } : {}),
       });
       const suffix = query.toString() ? `?${query.toString()}` : "";
       return request<{ items: AIRunEvent[] }>(

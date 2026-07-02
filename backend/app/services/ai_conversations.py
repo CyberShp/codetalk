@@ -757,16 +757,29 @@ class AIConversationStore:
         run_id: str,
         *,
         limit: int = 200,
+        process_only: bool = False,
     ) -> list[dict[str, Any]]:
         capped_limit = max(1, min(limit, 500))
+        process_clause = ""
+        if process_only:
+            process_clause = """
+                    AND (
+                        event_type IN ('status', 'error')
+                        OR (
+                            event_type = 'delta'
+                            AND json_extract(payload_json, '$.kind') IN ('diagnostic', 'thinking', 'reasoning', 'trace')
+                        )
+                    )
+            """
         async with self._connect() as db:
             async with db.execute(
-                """
+                f"""
                 SELECT *
                 FROM (
                     SELECT *
                     FROM ai_run_events
                     WHERE conversation_id = ? AND run_id = ?
+                    {process_clause}
                     ORDER BY event_id DESC
                     LIMIT ?
                 )
