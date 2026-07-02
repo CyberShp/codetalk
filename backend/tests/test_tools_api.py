@@ -34,7 +34,15 @@ def _make_app(mock_pm) -> FastAPI:
 
 
 @pytest.fixture
-async def tools_client():
+async def tools_client(tmp_path, monkeypatch):
+    from app.config import settings
+
+    isolated_data = tmp_path / "data"
+    isolated_data.mkdir()
+    monkeypatch.setattr(settings, "data_dir", str(isolated_data))
+    monkeypatch.setattr(settings, "sqlite_db", "data/codetalk.db")
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [])
+
     mock_pm = MagicMock()
     mock_pm.get_all_status = AsyncMock(return_value=[{"name": "gitnexus", "status": "stopped"}])
     mock_pm.start = AsyncMock(return_value=True)

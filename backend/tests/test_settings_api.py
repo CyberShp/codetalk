@@ -607,7 +607,7 @@ async def test_settings_backend_port_defaults_to_public_local_api_port(monkeypat
 
     monkeypatch.delenv("CODETALK_BACKEND_PORT", raising=False)
 
-    assert Settings().backend_port == 3004
+    assert Settings(_env_file=None).backend_port == 3004
 
 
 async def test_settings_backend_port_can_be_overridden_for_isolated_runs(monkeypatch):
@@ -615,7 +615,7 @@ async def test_settings_backend_port_can_be_overridden_for_isolated_runs(monkeyp
 
     monkeypatch.setenv("CODETALK_BACKEND_PORT", "39104")
 
-    assert Settings().backend_port == 39104
+    assert Settings(_env_file=None).backend_port == 39104
 
 
 # ---------------------------------------------------------------------------
