@@ -303,6 +303,10 @@ async function openWorkbenchView(
   name: "运行驾驶舱" | "工作流设计" | "证据与语义" | "执行器体检",
 ) {
   await page.getByRole("button", { name: new RegExp(name) }).click();
+  await expect(page.getByRole("button", { name: new RegExp(name) })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
 }
 
 test("agent workbench renders workflow and task-run controls", async ({ page }) => {
@@ -347,6 +351,24 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await openWorkbenchView(page, "工作流设计");
   await expect(page.getByRole("heading", { name: "工作流编排" })).toBeVisible();
   await expect(page.getByLabel("Workflow builder scenario")).toBeVisible();
+  const builderScenarioOptions = await page
+    .getByLabel("Workflow builder scenario")
+    .locator("option")
+    .evaluateAll((options) => options.map((option) => option.getAttribute("value")));
+  expect(builderScenarioOptions).toEqual(
+    expect.arrayContaining([
+      "module_analysis",
+      "issue_hunt",
+      "mr_blackbox",
+      "patch_impact",
+      "source_flow_sfmea_blackbox",
+      "nvmf_connect_io_blackbox",
+      "iscsi_login_session_blackbox",
+      "bdev_io_reset_blackbox",
+      "rpc_config_negative_blackbox",
+      "reactor_thread_poller_blackbox",
+    ]),
+  );
   await expect(page.getByRole("button", { name: "应用预设" })).toBeVisible();
   await expect(page.getByRole("button", { name: "安装预设" })).toBeVisible();
   await expect(page.getByText("codehub-mcp")).toBeVisible();
@@ -361,9 +383,19 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow builder semantic imports")).toHaveValue(
     /"black_box_cases"/,
   );
+  await page.getByLabel("Workflow builder scenario").selectOption("source_flow_sfmea_blackbox");
+  await page.getByRole("button", { name: "生成草稿" }).click();
+  await expect(page.getByText("工作流草稿已生成: custom_mr_blackbox")).toBeVisible();
+  await expect(page.getByText("Draft:ready")).toBeVisible();
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/GitNexus 和 CGC/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"sfmea"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"black_box_cases"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"artifact": "sfmea\.json"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"schema": \{\s+"type": "array"/);
   await page.getByLabel("Workflow builder scenario").selectOption("patch_impact");
   await page.getByRole("button", { name: "生成草稿" }).click();
   await expect(page.getByText("工作流草稿已生成: custom_mr_blackbox")).toBeVisible();
+  await expect(page.getByText("Draft:ready")).toBeVisible();
   await expect(page.getByText("输出契约预览")).toBeVisible();
   await expect(page.getByText(/test_cases:test_cases/)).toBeVisible();
   await expect(page.getByText("semantic_import", { exact: true })).toBeVisible();

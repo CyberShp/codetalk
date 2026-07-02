@@ -209,7 +209,7 @@ const WORKFLOW_BUILDER_SCENARIOS = {
   module_analysis: {
     name: "模块分析",
     inputs: "analysis_object:free_text, design_doc:file, coverage_report:coverage_report",
-    outputs: "source_scope:scope_report, risk_findings:json, test_cases:test_cases",
+    outputs: "source_scope:scope_report=source_scope.json, risk_findings:json, test_cases:test_cases=black_box_cases.json",
     goal: "分析指定模块，校验源码范围，识别风险路径，并生成面向黑盒验证的测试用例。",
     artifacts: "source_scope.json, risk_findings.json, black_box_cases.json",
   },
@@ -223,20 +223,88 @@ const WORKFLOW_BUILDER_SCENARIOS = {
   mr_blackbox: {
     name: "MR 黑盒测试",
     inputs: "mr_link:mr_link, design_doc:file, coverage_report:coverage_report",
-    outputs: "mr_scope:scope_report, changed_behavior:json, black_box_cases:test_cases",
+    outputs: "mr_scope:scope_report=mr_snapshot.json, changed_behavior:json, black_box_cases:test_cases=black_box_cases.json",
     goal: "使用智能体自持 MCP 凭证读取 MR，识别变更行为和影响范围，并生成黑盒测试用例。",
     artifacts: "mr_snapshot.json, diff.patch, changed_files.json, black_box_cases.json",
   },
   patch_impact: {
     name: "补丁影响面计划",
     inputs: "patch_file:patch, design_doc:file, analysis_object:free_text",
-    outputs: "before_after_flow:markdown, impact_scope:scope_report, test_cases:test_cases",
+    outputs: "before_after_flow:markdown, impact_scope:scope_report=impact_scope.json, test_cases:test_cases=black_box_cases.json",
     goal: "读取补丁方案，对比变更前后流程，校验影响范围，并生成实现与测试建议。",
     artifacts: "patch_summary.json, before_after_flow.md, impact_scope.json, black_box_cases.json",
+  },
+  source_flow_sfmea_blackbox: {
+    name: "代码分析-流程-SFMEA-黑盒用例",
+    inputs: "analysis_object:free_text, repo_path:directory@local, design_doc:file, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物；除非用户明确不要基于源码，否则读取工作区源码，产出代码证据、流程梳理、SFMEA 和外部可执行黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  nvmf_connect_io_blackbox: {
+    name: "NVMe-oF connect/IO",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 lib/nvmf 与 test/nvmf 的 connect、认证、queue 建立、IO 提交、timeout、disconnect/reconnect、controller reset，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  iscsi_login_session_blackbox: {
+    name: "iSCSI login/session",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 lib/iscsi 与 test/iscsi_tgt 的 login、CHAP、digest、多连接、认证失败、重定向、session reset 和 initiator 断开，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  bdev_io_reset_blackbox: {
+    name: "bdev IO/reset/failover",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 lib/bdev、module/bdev 与 test/bdev 的 open、submit、complete、错误返回、pending reset、I/O drain、reconnect、failover 和资源压力，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  rpc_config_negative_blackbox: {
+    name: "RPC/config 负例",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 RPC/config 的非法参数、重复调用、顺序错误、部分成功回滚、幂等性和诊断信号，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  reactor_thread_poller_blackbox: {
+    name: "reactor/thread/poller",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 lib/thread、lib/event 与 scheduler/poller 相关代码的跨线程消息、poller 阻塞、长任务调度、并发恢复和性能退化，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
   },
 } as const;
 
 const DEFAULT_BUILDER_OUTPUT_SCHEMAS = {
+  source_scope: {
+    type: "object",
+    required: ["scope_id", "query", "files"],
+    properties: {
+      scope_id: { type: "string" },
+      query: { type: "string" },
+      files: { type: "array" },
+      entry_points: { type: "array" },
+    },
+  },
+  risk_findings: {
+    type: "array",
+    items: { type: "object" },
+  },
+  issue_candidates: {
+    type: "array",
+    items: { type: "object" },
+  },
+  repro_paths: {
+    type: "array",
+    items: { type: "object" },
+  },
+  code_evidence: {
+    type: "array",
+    items: { type: "object" },
+  },
   changed_behavior: {
     type: "object",
     required: ["summary"],
@@ -244,6 +312,10 @@ const DEFAULT_BUILDER_OUTPUT_SCHEMAS = {
       summary: { type: "string" },
       affected_files: { type: "array" },
     },
+  },
+  sfmea: {
+    type: "array",
+    items: { type: "object" },
   },
   black_box_cases: {
     type: "object",
