@@ -2144,14 +2144,9 @@ async def _prepare_assistant_delivery(
         },
         *actions,
     ]
-    if len(content) <= _THREAD_INLINE_OUTPUT_LIMIT:
-        return (
-            f"{content.rstrip()}\n\n---\n完整 Markdown 产物已保存，可通过“下载完整产物”获取。",
-            actions,
-        )
-    visible = content[:_THREAD_INLINE_OUTPUT_LIMIT].rstrip()
+    visible = _compact_thread_artifact_preview(content)
     return (
-        f"{visible}\n\n---\n内容较长，已折叠为下载产物。请使用“下载完整产物”获取完整测试设计/SFMEA/黑盒用例。",
+        f"{visible}\n\n---\n完整测试设计/SFMEA/黑盒用例已保存为下载产物。请使用“下载完整产物”获取完整 Markdown。",
         actions,
     )
 
@@ -2164,6 +2159,26 @@ def _should_materialize_thread_artifact(content: str) -> bool:
     has_keyword = any(keyword in lowered for keyword in _THREAD_ARTIFACT_KEYWORDS)
     has_table_or_many_steps = text.count("\n|") >= 4 or len(re.findall(r"(?m)^\s*\d+[\.)]\s+", text)) >= 8
     return has_keyword and has_table_or_many_steps
+
+
+def _compact_thread_artifact_preview(content: str) -> str:
+    title_match = re.search(r"(?m)^#{1,3}\s+(.+?)\s*$", str(content or ""))
+    title = title_match.group(1).strip() if title_match else "Agent 产物"
+    step_count = len(re.findall(r"(?m)^\s*\d+[\.)]\s+", str(content or "")))
+    table_rows = max(0, str(content or "").count("\n|") - 1)
+    facts = []
+    if table_rows:
+        facts.append(f"{table_rows} 行表格")
+    if step_count:
+        facts.append(f"{step_count} 条步骤/用例")
+    detail = "，".join(facts) if facts else "完整 Markdown 内容"
+    return "\n".join(
+        [
+            f"## {title}",
+            "",
+            f"已生成结构化产物（{detail}）。为避免长表格和完整用例挤占对话区，正文已收起到下载文件。",
+        ]
+    )
 
 
 def _conversation_from_row(row: aiosqlite.Row) -> dict[str, Any]:

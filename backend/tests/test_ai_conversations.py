@@ -143,6 +143,22 @@ class LongArtifactLLM:
         )
 
 
+class MediumArtifactLLM:
+    async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
+        rows = [
+            "| failure mode | cause | effect | detection | RPN |",
+            "| --- | --- | --- | --- | --- |",
+            "| SFMEA 风险 1 | reconnect timeout | I/O 暂停 | 日志和指标 | 180 |",
+            "| SFMEA 风险 2 | reset race | session stale | RPC 状态 | 160 |",
+            "| SFMEA 风险 3 | queue drain | request lost | poller latency | 144 |",
+        ]
+        cases = "\n".join(
+            f"{index}. TC-{index:02d} 前置条件：target 已启动。步骤：执行异常输入 {index}。预期结果：返回明确错误并记录日志。"
+            for index in range(1, 10)
+        )
+        yield "## SFMEA\n\n" + "\n".join(rows) + "\n\n## 黑盒测试用例\n\n" + cases
+
+
 async def test_agent_output_segments_strip_terminal_noise_before_diagnostic_detection():
     from app.services.ai_conversations import _agent_output_segments
 
@@ -1786,7 +1802,7 @@ class TestAIConversationsAPI:
                 pytest.fail("assistant message was not generated")
 
             assistant = body["items"][1]
-            assert "内容较长，已折叠为下载产物" in assistant["content"]
+            assert "完整测试设计/SFMEA/黑盒用例已保存为下载产物" in assistant["content"]
             assert len(assistant["content"]) < 4500
             download_action = next(
                 action for action in assistant["actions"] if action["id"] == "download_run_artifact"
@@ -1797,3 +1813,58 @@ class TestAIConversationsAPI:
             assert "# 长产物线程" in artifact_text
             assert "SFMEA 风险 119" in artifact_text
             assert "黑盒测试用例" in artifact_text
+
+    async def test_structured_sfmea_and_blackbox_output_prefers_compact_download_delivery(
+        self,
+        sqlite_db,
+        monkeypatch,
+    ):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.api import ai_conversations
+
+        monkeypatch.setattr(
+            ai_conversations,
+            "create_llm_client_from_active",
+            lambda: MediumArtifactLLM(),
+        )
+
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "title": "结构化产物线程",
+                },
+            )
+            conversation = created.json()
+
+            posted = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "生成完整 SFMEA 和黑盒测试用例"},
+            )
+            assert posted.status_code == 202
+            for _ in range(60):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                body = messages.json()
+                if len(body["items"]) == 2:
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                pytest.fail("assistant message was not generated")
+
+            assistant = body["items"][1]
+            assert "已保存为下载产物" in assistant["content"]
+            assert "TC-09" not in assistant["content"]
+            assert "SFMEA 风险 3" not in assistant["content"]
+            download_action = next(
+                action for action in assistant["actions"] if action["id"] == "download_run_artifact"
+            )
+            artifact = await client.get(download_action["href"])
+            assert artifact.status_code == 200
+            artifact_text = artifact.text
+            assert "# 结构化产物线程" in artifact_text
+            assert "SFMEA 风险 3" in artifact_text
+            assert "TC-09" in artifact_text

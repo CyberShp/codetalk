@@ -428,9 +428,10 @@ test("keeps Claude tool-result stream blocks out of visible answer and artifact"
     await page.getByRole("button", { name: "发送" }).hover();
     await page.getByRole("button", { name: "发送" }).click();
 
-    await expect(page.locator(".ct-codex-message").filter({ hasText: "TC-08 正常登录变体" })).toBeVisible({
+    await expect(page.locator(".ct-codex-message").filter({ hasText: "已生成结构化产物" })).toBeVisible({
       timeout: 30_000,
     });
+    await expect(page.locator(".ct-codex-message").filter({ hasText: "TC-08 正常登录变体" })).toHaveCount(0);
     await expect(page.locator(".ct-codex-message").filter({ hasText: "iscsi_conn_login_pdu_success_complete" })).toHaveCount(0);
     await expect(page.locator(".ct-codex-message").filter({ hasText: "AuthMethod=CHAP" })).toHaveCount(0);
 
@@ -457,7 +458,8 @@ test("keeps Claude tool-result stream blocks out of visible answer and artifact"
     expect(messagesResp.ok()).toBeTruthy();
     const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
     const assistant = messageBody.items.find((item) => item.role === "assistant");
-    expect(assistant?.content).toContain("TC-08 正常登录变体");
+    expect(assistant?.content).toContain("已生成结构化产物");
+    expect(assistant?.content).not.toContain("TC-08 正常登录变体");
     expect(assistant?.content).not.toContain("iscsi_conn_login_pdu_success_complete");
     expect(assistant?.content).not.toContain("AuthMethod=CHAP");
   } finally {
@@ -509,9 +511,10 @@ test("uses a Claude result event as the final answer after source lookup", async
     await page.getByRole("button", { name: "发送" }).hover();
     await page.getByRole("button", { name: "发送" }).click();
 
-    await expect(page.locator(".ct-codex-message").filter({ hasText: "TC-08 Result 登录场景" })).toBeVisible({
+    await expect(page.locator(".ct-codex-message").filter({ hasText: "已生成结构化产物" })).toBeVisible({
       timeout: 30_000,
     });
+    await expect(page.locator(".ct-codex-message").filter({ hasText: "TC-08 Result 登录场景" })).toHaveCount(0);
     await expect(page.locator(".ct-codex-message").filter({ hasText: "执行器没有返回有效内容" })).toHaveCount(0);
     await expect(page.locator(".ct-codex-message").filter({ hasText: "iscsi_conn_login_pdu_success_complete" })).toHaveCount(0);
 
@@ -538,7 +541,8 @@ test("uses a Claude result event as the final answer after source lookup", async
     expect(messagesResp.ok()).toBeTruthy();
     const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
     const assistant = messageBody.items.find((item) => item.role === "assistant");
-    expect(assistant?.content).toContain("TC-08 Result 登录场景");
+    expect(assistant?.content).toContain("已生成结构化产物");
+    expect(assistant?.content).not.toContain("TC-08 Result 登录场景");
     expect(assistant?.content).not.toContain("iscsi_conn_login_pdu_success_complete");
     expect(assistant?.content).not.toContain("执行器没有返回有效内容");
   } finally {
@@ -585,9 +589,10 @@ test("uses a Claude assistant message as the final answer instead of keeping par
     await page.getByRole("button", { name: "发送" }).hover();
     await page.getByRole("button", { name: "发送" }).click();
 
-    await expect(page.locator(".ct-codex-message").filter({ hasText: "TC-08 Assistant 登录场景" })).toBeVisible({
+    await expect(page.locator(".ct-codex-message").filter({ hasText: "已生成结构化产物" })).toBeVisible({
       timeout: 30_000,
     });
+    await expect(page.locator(".ct-codex-message").filter({ hasText: "TC-08 Assistant 登录场景" })).toHaveCount(0);
     await expect(page.locator(".ct-codex-message").filter({ hasText: "partial 应被最终 assistant 替换" })).toHaveCount(0);
     await expect(
       page.locator(".ct-codex-message:not(.is-user)").getByRole("heading", { name: "黑盒测试用例" }),
@@ -611,7 +616,8 @@ test("uses a Claude assistant message as the final answer instead of keeping par
     const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
     const assistant = messageBody.items.find((item) => item.role === "assistant");
     expect(assistant?.content.match(/## 黑盒测试用例/g)?.length).toBe(1);
-    expect(assistant?.content).toContain("TC-08 Assistant 登录场景");
+    expect(assistant?.content).toContain("已生成结构化产物");
+    expect(assistant?.content).not.toContain("TC-08 Assistant 登录场景");
     expect(assistant?.content).not.toContain("partial 应被最终 assistant 替换");
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);

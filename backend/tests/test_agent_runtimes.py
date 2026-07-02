@@ -1630,7 +1630,8 @@ class TestAgentRuntimes:
         content = assistant["content"]
         assert "## 黑盒测试用例" in content
         assert content.count("## 黑盒测试用例") == 1
-        assert "TC-02 CHAP 失败" in content
+        assert "已生成结构化产物" in content
+        assert "TC-02 CHAP 失败" not in content
         assert "THINKING" not in content
         assert "我先搜索源码" not in content
         assert "tool_use" not in content
@@ -1641,6 +1642,7 @@ class TestAgentRuntimes:
         artifact_text = artifact.read_text(encoding="utf-8")
         assert "## 黑盒测试用例" in artifact_text
         assert artifact_text.count("## 黑盒测试用例") == 1
+        assert "TC-02 CHAP 失败" in artifact_text
         assert "THINKING" not in artifact_text
         assert "grep -n" not in artifact_text
 
@@ -1725,12 +1727,14 @@ class TestAgentRuntimes:
         messages = await store.list_messages(conversation["id"])
         assistant = [item for item in messages if item["role"] == "assistant"][-1]
         assert "## 黑盒测试用例" in assistant["content"]
-        assert "TC-01 正常登录变体" in assistant["content"]
+        assert "已生成结构化产物" in assistant["content"]
+        assert "TC-01 正常登录变体" not in assistant["content"]
         assert "iscsi_conn_login_pdu_success_complete" not in assistant["content"]
         assert "AuthMethod=CHAP" not in assistant["content"]
 
         artifact_text = ai_thread_artifact_path(conversation["id"], run_id).read_text(encoding="utf-8")
         assert "## 黑盒测试用例" in artifact_text
+        assert "TC-01 正常登录变体" in artifact_text
         assert "iscsi_conn_login_pdu_success_complete" not in artifact_text
         assert "AuthMethod=CHAP" not in artifact_text
 
@@ -1819,7 +1823,8 @@ class TestAgentRuntimes:
         messages = await store.list_messages(conversation["id"])
         assistant = [item for item in messages if item["role"] == "assistant"][-1]
         assert "## 黑盒测试用例" in assistant["content"]
-        assert "TC-08 登录场景" in assistant["content"]
+        assert "已生成结构化产物" in assistant["content"]
+        assert "TC-08 登录场景" not in assistant["content"]
         assert "iscsi_conn_login_pdu_success_complete" not in assistant["content"]
         assert "grep -n" not in assistant["content"]
 
@@ -1905,7 +1910,8 @@ class TestAgentRuntimes:
         messages = await store.list_messages(conversation["id"])
         assistant = [item for item in messages if item["role"] == "assistant"][-1]
         assert assistant["content"].count("## 黑盒测试用例") == 1
-        assert "TC-08 Login" in assistant["content"]
+        assert "已生成结构化产物" in assistant["content"]
+        assert "TC-08 Login" not in assistant["content"]
         assert "partial 应被最终 assistant 替换" not in assistant["content"]
 
         artifact_text = ai_thread_artifact_path(conversation["id"], run_id).read_text(encoding="utf-8")
