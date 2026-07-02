@@ -2156,8 +2156,10 @@ class TestAIConversationsAPI:
 
         assert messages.status_code == 200
         assistant = messages.json()["items"][1]
-        assert "## 结论" in assistant["content"]
-        assert "TC-01 正常会话登录成功" in assistant["content"]
+        assert "已生成结构化产物" in assistant["content"]
+        assert "下载完整产物" in assistant["content"]
+        assert "旧版 Agent 过程输出" not in assistant["content"]
+        assert "TC-01 正常会话登录成功" not in assistant["content"]
         assert "THINKING:" not in assistant["content"]
         assert "iscsi_conn_login_pdu_success_complete" not in assistant["content"]
         assert "旧版流式残片" not in assistant["content"]

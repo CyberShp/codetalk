@@ -2698,11 +2698,53 @@ def _message_from_row(row: aiosqlite.Row) -> dict[str, Any]:
 def _public_message_from_row(row: aiosqlite.Row) -> dict[str, Any]:
     data = _message_from_row(row)
     if data.get("role") == "assistant":
-        data["content"] = _govern_visible_assistant_content(
-            str(data.get("content") or ""),
+        raw_content = str(data.get("content") or "")
+        governed_content = _govern_visible_assistant_content(
+            raw_content,
             data.get("references") if isinstance(data.get("references"), list) else [],
         )
+        data["content"] = _legacy_artifact_preview_for_message(data, governed_content, raw_content)
     return data
+
+
+def _legacy_artifact_preview_for_message(
+    message: dict[str, Any],
+    content: str,
+    raw_content: str,
+) -> str:
+    has_legacy_process_output = any(
+        marker in str(raw_content or "") for marker in _LEGACY_AGENT_DIAGNOSTIC_MARKERS
+    )
+    if not has_legacy_process_output:
+        return content
+    actions = message.get("actions") if isinstance(message.get("actions"), list) else []
+    has_artifact_action = any(
+        isinstance(action, dict) and action.get("id") == "download_run_artifact"
+        for action in actions
+    )
+    if not has_artifact_action:
+        return content
+    conversation_id = str(message.get("conversation_id") or "").strip()
+    run_id = str(message.get("run_id") or "").strip()
+    if not conversation_id or not run_id:
+        return content
+    path = ai_thread_artifact_path(conversation_id, run_id)
+    if not path.exists() or not path.is_file():
+        return content
+    try:
+        artifact_text = sanitize_ai_thread_artifact_file(path)
+        if artifact_text is None:
+            artifact_text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return content
+    _header, body = _split_ai_thread_artifact_markdown(artifact_text)
+    preview_source = body if body is not None else artifact_text
+    if not str(preview_source or "").strip():
+        return content
+    return (
+        f"{_compact_thread_artifact_preview(preview_source)}\n\n---\n"
+        "这条历史消息的原始 Agent 过程输出已清理；请使用“下载完整产物”查看完整 Markdown。"
+    )
 
 
 def _run_from_row(row: aiosqlite.Row) -> dict[str, Any]:
