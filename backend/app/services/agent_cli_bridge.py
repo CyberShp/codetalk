@@ -146,6 +146,7 @@ async def stream_agent_runtime(
     stderr_chunks: list[str] = []
     completed_by_policy = False
     cancelled_by_request = False
+    saw_stdout_output = False
     activity_queue: asyncio.Queue[None] = asyncio.Queue(maxsize=1)
 
     def mark_activity() -> None:
@@ -206,9 +207,14 @@ async def stream_agent_runtime(
                 activity_queue=activity_queue,
             ):
                 if chunk:
+                    saw_stdout_output = True
                     yield chunk
             if proc.returncode is None:
-                completed_by_policy = _completion_mode(runtime) in {"idle_after_output", "sentinel"}
+                completion_mode = _completion_mode(runtime)
+                completed_by_policy = (
+                    completion_mode == "sentinel"
+                    or (completion_mode == "idle_after_output" and saw_stdout_output)
+                )
                 if completed_by_policy:
                     await _terminate_process(proc, process_group=isolate_process_group)
             return_code = await proc.wait()
