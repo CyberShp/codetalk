@@ -2643,6 +2643,25 @@ _AI_THREAD_AGENT_ARTIFACT_SUFFIX_PRIORITY = {
     ".jsonl": 3,
 }
 
+_AI_THREAD_AGENT_AUDIT_ARTIFACT_NAMES = {
+    "agent_replay_plan",
+    "diagnostic",
+    "diagnostics",
+    "execution_input",
+    "execution_result",
+    "failure_retry_context",
+    "raw_output",
+    "stderr",
+    "stdout",
+    "trace",
+}
+
+
+def _is_agent_audit_artifact_path(path: Path) -> bool:
+    parts = [path.stem.lower(), *(part.lower() for part in path.parts[:-1])]
+    normalized = {re.sub(r"[^a-z0-9]+", "_", part).strip("_") for part in parts}
+    return any(part in _AI_THREAD_AGENT_AUDIT_ARTIFACT_NAMES for part in normalized)
+
 
 async def _agent_thread_artifact_content(artifact_dir: Path) -> str:
     if not artifact_dir.exists() or not artifact_dir.is_dir():
@@ -2662,6 +2681,8 @@ async def _agent_thread_artifact_content(artifact_dir: Path) -> str:
             except OSError:
                 continue
             if root not in (resolved, *resolved.parents):
+                continue
+            if _is_agent_audit_artifact_path(path.relative_to(artifact_dir)):
                 continue
             if path.stat().st_size <= 0 or path.stat().st_size > 2_000_000:
                 continue

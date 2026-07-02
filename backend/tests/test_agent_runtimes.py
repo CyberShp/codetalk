@@ -2507,6 +2507,74 @@ class TestAgentRuntimes:
         assert leaked_key not in artifact_text
         assert "<redacted>" in artifact_text
 
+    async def test_ai_thread_agent_runtime_ignores_audit_artifacts_from_download_package(
+        self,
+        sqlite_db,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-audit-artifacts", repo_path=str(repo))
+        monkeypatch.chdir(tmp_path)
+        agent_script = tmp_path / "audit_artifact_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import os, pathlib, sys",
+                    "sys.stdin.read()",
+                    "artifact_dir = pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])",
+                    "artifact_dir.mkdir(parents=True, exist_ok=True)",
+                    "(artifact_dir / 'report.md').write_text('# 用户结果\\n\\nVISIBLE_REPORT_RESULT\\n', encoding='utf-8')",
+                    "(artifact_dir / 'raw_output.jsonl').write_text('{\"event\":\"RAW_AGENT_TRACE_SHOULD_NOT_DOWNLOAD\"}\\n', encoding='utf-8')",
+                    "(artifact_dir / 'diagnostics.txt').write_text('DIAGNOSTIC_TRACE_SHOULD_NOT_DOWNLOAD\\n', encoding='utf-8')",
+                    "print('已生成文件：report.md raw_output.jsonl diagnostics.txt', flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, ai_thread_artifact_path, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Audit artifact thread",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-audit-artifact",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="保存最终报告，同时保留内部执行日志",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-audit-artifact",
+                "name": "Audit Artifact Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+            },
+        )
+
+        artifact_text = ai_thread_artifact_path(conversation["id"], run_id).read_text(encoding="utf-8")
+        assert "VISIBLE_REPORT_RESULT" in artifact_text
+        assert "RAW_AGENT_TRACE_SHOULD_NOT_DOWNLOAD" not in artifact_text
+        assert "DIAGNOSTIC_TRACE_SHOULD_NOT_DOWNLOAD" not in artifact_text
+        assert "raw_output.jsonl" not in artifact_text
+        assert "diagnostics.txt" not in artifact_text
+
     async def test_agent_runtime_output_parser_cleans_terminal_noise_and_unwraps_json(self):
         from app.services.agent_cli_bridge import _decode, _parse_event_text
 
