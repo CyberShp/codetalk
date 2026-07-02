@@ -900,6 +900,42 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
             ),
         ),
         _source_flow_scenario_preset(
+            preset_id="basic_lifecycle_smoke_blackbox",
+            name="Basic Lifecycle Smoke Black-box Scenario",
+            description=(
+                "Analyze common create, list, update, delete, restart, and cleanup flows that "
+                "black-box testers run before deeper storage validation."
+            ),
+            default_query=(
+                "scripts/rpc.py test/json_config test/app test/bdev app lib/event basic lifecycle "
+                "smoke create list update delete restart cleanup readiness diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="io_stress_performance_blackbox",
+            name="I/O Stress / Performance Baseline Black-box Scenario",
+            description=(
+                "Analyze sustained I/O, mixed read/write load, queue depth pressure, latency "
+                "regression, throughput baseline, and externally visible degradation signals."
+            ),
+            default_query=(
+                "lib/bdev module/bdev test/bdev test/nvmf scripts/perf.py fio IO stress "
+                "performance latency throughput queue depth mixed read write regression baseline"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="failure_recovery_soak_blackbox",
+            name="Failure Recovery / Soak Black-box Scenario",
+            description=(
+                "Analyze long-running reliability scenarios with restart, disconnect, reconnect, "
+                "resource pressure, cleanup, and recovery evidence visible to operators."
+            ),
+            default_query=(
+                "test/common test/nvmf test/bdev lib/thread lib/bdev lib/nvmf soak reliability "
+                "restart disconnect reconnect resource pressure cleanup recovery long running"
+            ),
+        ),
+        _source_flow_scenario_preset(
             preset_id="transport_network_partition_blackbox",
             name="Transport Network Partition Black-box Scenario",
             description=(
@@ -969,6 +1005,9 @@ def restore_builtin_workflow_presets(store: WorkflowStore) -> list[WorkflowDefin
     """Install or refresh built-in workflows while preserving custom workflow ids."""
 
     restored: list[WorkflowDefinition] = []
-    for preset in builtin_workflow_presets():
-        restored.append(store.save_workflow(deepcopy(preset["definition"])))
+    presets = builtin_workflow_presets()
+    for preset in reversed(presets):
+        store.save_workflow(deepcopy(preset["definition"]))
+    for preset in presets:
+        restored.append(store.get_workflow(str(preset["definition"]["id"])))
     return restored

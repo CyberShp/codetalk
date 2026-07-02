@@ -40,6 +40,9 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         "nvme_multipath_failover_blackbox",
         "env_hugepage_memory_blackbox",
         "spdk_cli_rpc_smoke_blackbox",
+        "basic_lifecycle_smoke_blackbox",
+        "io_stress_performance_blackbox",
+        "failure_recovery_soak_blackbox",
         "transport_network_partition_blackbox",
         "data_integrity_corruption_blackbox",
         "upgrade_compatibility_persistence_blackbox",
@@ -160,6 +163,14 @@ def test_restore_builtin_workflow_presets_refreshes_stale_builtin_definitions(tm
 
     restore_builtin_workflow_presets(store)
 
+    assert [item.id for item in store.list_workflows()[:5]] == [
+        "module_analysis",
+        "resource_leak_hunt",
+        "mr_blackbox_test",
+        "patch_impact_review",
+        "source_flow_sfmea_blackbox",
+    ]
+
     restored = store.get_workflow("module_analysis")
     assert restored.name == "Module Analysis"
     assert audit_workflow_definition(restored.raw)["warnings"] == []
@@ -193,6 +204,9 @@ def test_restore_builtin_workflow_presets_refreshes_stale_builtin_definitions(tm
         "nvme_multipath_failover_blackbox",
         "env_hugepage_memory_blackbox",
         "spdk_cli_rpc_smoke_blackbox",
+        "basic_lifecycle_smoke_blackbox",
+        "io_stress_performance_blackbox",
+        "failure_recovery_soak_blackbox",
         "transport_network_partition_blackbox",
         "data_integrity_corruption_blackbox",
         "upgrade_compatibility_persistence_blackbox",
