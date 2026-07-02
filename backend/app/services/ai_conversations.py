@@ -1284,7 +1284,11 @@ async def run_agent_generation(
         nonlocal artifact_stream_notice_sent
         live_content = content
         live_kind = ""
-        if _should_compact_live_thread_delta(content, content):
+        accumulated_live_content = "".join(live_chunks) + content
+        if _should_compact_live_thread_delta(content, accumulated_live_content) or _agent_task_requests_downloadable_artifact(
+            user_message["content"],
+            accumulated_live_content,
+        ):
             if artifact_stream_notice_sent:
                 return
             artifact_stream_notice_sent = True
@@ -1417,7 +1421,8 @@ async def run_agent_generation(
             run_id=run_id,
             conversation=conversation,
             content=content,
-            force_artifact=adopted_agent_artifact,
+            force_artifact=adopted_agent_artifact
+            or _agent_task_requests_downloadable_artifact(user_message["content"], content),
         )
         await store.complete_run(
             run_id=run_id,
@@ -1625,11 +1630,12 @@ def _agent_answer_too_thin_for_task(content: str, *, user_message: str = "") -> 
     ):
         return True
     if any(marker in requested for marker in ("黑盒", "测试用例", "测试设计", "black-box", "blackbox", "test case")):
-        if not any(marker in lowered for marker in ("黑盒", "测试用例", "test case", "前置条件", "预期结果")):
+        has_black_box_json = any(marker in lowered for marker in ("black_box_cases", "blackbox_cases", "test_cases"))
+        if not has_black_box_json and not any(marker in lowered for marker in ("黑盒", "测试用例", "test case", "前置条件", "预期结果")):
             return True
         case_markers = len(re.findall(r"(?:^|\n)\s*(?:[-*]|\d+[.)、])\s*(?:\*\*)?(?:用例|case|前置条件|步骤)", text, re.I))
         expectation_markers = sum(1 for marker in ("前置", "步骤", "预期", "观测", "失败诊断", "expected") if marker in lowered)
-        if case_markers < 2 and expectation_markers < 3:
+        if not has_black_box_json and case_markers < 2 and expectation_markers < 3:
             return True
     if any(marker in requested for marker in ("流程", "梳理", "workflow")) and not any(
         marker in lowered for marker in ("流程", "步骤", "阶段", "workflow")
@@ -2853,6 +2859,40 @@ def _should_materialize_thread_artifact(content: str) -> bool:
         or len(re.findall(r"(?m)^\s*\d+[\.)]\s+", text)) >= 8
     )
     return len(text) > _THREAD_INLINE_OUTPUT_LIMIT * 2 or has_table_or_many_steps
+
+
+def _agent_task_requests_downloadable_artifact(user_message: str, content: str) -> bool:
+    requested = str(user_message or "").lower()
+    output = str(content or "").lower()
+    complete_markers = (
+        "完整",
+        "全部",
+        "全量",
+        "详细",
+        "详尽",
+        "完整的",
+        "full",
+        "complete",
+        "comprehensive",
+        "detailed",
+    )
+    artifact_markers = (
+        "sfmea",
+        "failure mode",
+        "黑盒",
+        "测试用例",
+        "测试设计",
+        "流程梳理",
+        "代码分析",
+        "black-box",
+        "blackbox",
+        "test case",
+        "test design",
+    )
+    has_complete_intent = any(marker in requested for marker in complete_markers)
+    has_artifact_intent = any(marker in requested for marker in artifact_markers)
+    has_structured_output = sum(1 for marker in artifact_markers if marker in output) >= 2
+    return has_complete_intent and (has_artifact_intent or has_structured_output)
 
 
 def _should_compact_live_thread_delta(content: str, accumulated: str) -> bool:

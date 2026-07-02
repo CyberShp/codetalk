@@ -2104,6 +2104,94 @@ test("downloads a Markdown artifact written by the agent runtime", async ({
   }
 });
 
+test("downloads complete inline SFMEA and black-box output from the agent runtime", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-inline-complete-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "Inline complete artifact e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-inline-complete-")));
+  const runtimeScript = path.join(runtimeDir, "inline_complete_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "sys.stdin.read()",
+      "print('## 结论\\n已完成 SPDK connect 完整测试设计。\\n\\n## 代码证据\\n- `lib/nvmf/ctrlr.c`: `nvmf_ctrlr_connect`。\\n- `test/nvmf`: 可承载连接测试。\\n\\n## 流程梳理\\n1. initiator 发起连接。\\n2. target 建立 controller。\\n\\n## SFMEA\\n| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |\\n| connect timeout | 网络抖动 | 连接失败 | 8 | 3 | 4 | 96 | 增加超时与重试观测 |\\n\\n## 黑盒测试用例\\n1. 用例：正常连接；前置条件：target 已启动；步骤：发起连接；预期结果：连接成功；观测点：日志和状态。\\n2. 用例：连接超时；前置条件：注入网络延迟；步骤：发起连接；预期结果：超时失败且可重试；观测点：错误码和日志。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-inline-complete-e2e-${Date.now()}`;
+  const runtimeName = `Inline complete runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} inline complete`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill("请输出完整的代码分析、流程梳理、SFMEA 和黑盒测试用例");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const assistantAnswer = page.locator(".ct-codex-message:not(.is-user)");
+    await expect(assistantAnswer.filter({ hasText: "已生成结构化产物" })).toBeVisible({ timeout: 30_000 });
+    await expect(assistantAnswer.filter({ hasText: "connect timeout" })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "下载完整产物" })).toBeVisible({ timeout: 15_000 });
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("link", { name: "下载完整产物" }).hover();
+    await page.getByRole("link", { name: "下载完整产物" }).click();
+    const download = await downloadPromise;
+    const artifactPath = testInfo.outputPath("inline-complete-artifact.md");
+    await download.saveAs(artifactPath);
+    const artifact = fs.readFileSync(artifactPath, "utf8");
+    expect(artifact).toContain("## SFMEA");
+    expect(artifact).toContain("connect timeout");
+    expect(artifact).toContain("## 黑盒测试用例");
+    expect(artifact).toContain("用例：连接超时");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("downloads a concise Markdown artifact written by the agent runtime", async ({
   page,
   request,

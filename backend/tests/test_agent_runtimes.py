@@ -2429,6 +2429,73 @@ class TestAgentRuntimes:
         assert "TC-08" in artifact_text
         assert "已生成文件：spdk-blackbox.md" not in artifact_text
 
+    async def test_ai_thread_agent_runtime_downloads_complete_inline_test_design(
+        self,
+        sqlite_db,
+        tmp_path,
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-inline-complete-artifact", repo_path=str(repo))
+        agent_script = tmp_path / "inline_complete_design_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import sys",
+                    "sys.stdin.read()",
+                    "print('## 结论\\n已完成 SPDK connect 完整测试设计。\\n\\n## 代码证据\\n- `lib/nvmf/ctrlr.c`: `nvmf_ctrlr_connect`。\\n- `test/nvmf`: 可承载连接测试。\\n\\n## 流程梳理\\n1. initiator 发起连接。\\n2. target 建立 controller。\\n\\n## SFMEA\\n| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |\\n| connect timeout | 网络抖动 | 连接失败 | 8 | 3 | 4 | 96 | 增加超时与重试观测 |\\n\\n## 黑盒测试用例\\n1. 用例：正常连接；前置条件：target 已启动；步骤：发起连接；预期结果：连接成功；观测点：日志和状态。\\n2. 用例：连接超时；前置条件：注入网络延迟；步骤：发起连接；预期结果：超时失败且可重试；观测点：错误码和日志。', flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, ai_thread_artifact_path, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Inline complete test design",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-inline-complete-design",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="请输出完整的代码分析、流程梳理、SFMEA 和黑盒测试用例",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-inline-complete-design",
+                "name": "Inline Complete Design Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+            },
+        )
+
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        assert "已生成结构化产物" in assistant["content"]
+        assert "下载完整产物" in assistant["content"]
+        assert "connect timeout" not in assistant["content"]
+        assert any(action["id"] == "download_run_artifact" for action in assistant["actions"])
+
+        artifact_text = ai_thread_artifact_path(conversation["id"], run_id).read_text(encoding="utf-8")
+        assert "## SFMEA" in artifact_text
+        assert "connect timeout" in artifact_text
+        assert "## 黑盒测试用例" in artifact_text
+        assert "用例：连接超时" in artifact_text
+
     async def test_ai_thread_agent_runtime_always_downloads_adopted_short_artifact(
         self,
         sqlite_db,
