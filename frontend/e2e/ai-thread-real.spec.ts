@@ -542,7 +542,7 @@ test("uses a Claude assistant message as the final answer instead of keeping par
     });
     await expect(page.locator(".ct-codex-message").filter({ hasText: "partial 应被最终 assistant 替换" })).toHaveCount(0);
     await expect(
-      page.locator(".ct-codex-message.is-assistant").getByRole("heading", { name: "黑盒测试用例" }),
+      page.locator(".ct-codex-message:not(.is-user)").getByRole("heading", { name: "黑盒测试用例" }),
     ).toHaveCount(1);
 
     const downloadPromise = page.waitForEvent("download");
