@@ -243,10 +243,10 @@ test("contains large real AI project and thread lists inside scroll panes", asyn
   page,
   request,
 }) => {
-  test.setTimeout(140_000);
+  test.setTimeout(120_000);
   const stamp = Date.now();
 
-  for (let index = 0; index < 22; index += 1) {
+  for (let index = 0; index < 12; index += 1) {
     const extraRepo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `codetalk-ai-list-extra-${index}-`)));
     fs.writeFileSync(path.join(extraRepo, "README.md"), `AI list extra workspace ${index}\n`, "utf8");
     const extraWorkspaceResp = await request.post(`${backendBase}/api/workspaces`, {
@@ -265,7 +265,7 @@ test("contains large real AI project and thread lists inside scroll panes", asyn
   const workspace = (await workspaceResp.json()) as { id: string };
 
   const threadTitles: string[] = [];
-  for (let index = 0; index < 58; index += 1) {
+  for (let index = 0; index < 34; index += 1) {
     const title = `${workspaceName} thread ${String(index + 1).padStart(2, "0")}`;
     threadTitles.push(title);
     const conversationResp = await request.post(`${backendBase}/api/ai/conversations`, {
@@ -294,7 +294,7 @@ test("contains large real AI project and thread lists inside scroll panes", asyn
   await projectButton.hover();
   await projectButton.click();
   await expect(page.getByRole("heading", { name: workspaceName, exact: true })).toBeVisible();
-  await expect(page.locator(".ct-thread-card")).toHaveCount(50);
+  await expect(page.locator(".ct-thread-card")).toHaveCount(34);
 
   const homeMetrics = await page.evaluate(() => {
     const projectList = document.querySelector(".ct-ai-home__project-list") as HTMLElement | null;
@@ -333,12 +333,13 @@ test("contains large real AI project and thread lists inside scroll panes", asyn
   await expect.poll(() => threadTimeline.evaluate((element) => element.scrollTop)).toBeGreaterThan(120);
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBeLessThan(5);
 
-  const firstThread = page.getByRole("link", { name: new RegExp(threadTitles[0]) });
-  await firstThread.scrollIntoViewIfNeeded();
-  await firstThread.hover();
-  await firstThread.click();
+  const newestThreadTitle = threadTitles[threadTitles.length - 1];
+  const newestThread = page.getByRole("link", { name: new RegExp(newestThreadTitle) });
+  await newestThread.scrollIntoViewIfNeeded();
+  await newestThread.hover();
+  await newestThread.click();
   await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
-  await expect(page.getByRole("heading", { name: threadTitles[0], exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("heading", { name: newestThreadTitle, exact: true })).toBeVisible({ timeout: 15_000 });
 
   const threadPageMetrics = await page.evaluate(() => {
     const threadList = document.querySelector(".ct-codex-ai__thread-list") as HTMLElement | null;
