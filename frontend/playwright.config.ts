@@ -2,11 +2,13 @@ import { defineConfig, devices } from "@playwright/test";
 import os from "node:os";
 import path from "node:path";
 
+import { resolveReuseExistingServer } from "./scripts/playwright-runtime-policy.mjs";
+
 const frontendPort = Number(process.env.CODETALK_FRONTEND_PORT ?? "3003");
 const backendPort = Number(process.env.CODETALK_BACKEND_PORT ?? "3004");
 const gitnexusPort = Number(process.env.GITNEXUS_PORT ?? process.env.CODETALK_GITNEXUS_PORT ?? "7100");
 const browserHost = process.env.CODETALK_BROWSER_HOST ?? "localhost";
-const reuseExistingServer = process.env.CODETALK_REUSE_EXISTING_SERVER !== "0";
+const reuseExistingServer = resolveReuseExistingServer(process.env);
 const startGitNexus = process.env.CODETALK_PLAYWRIGHT_GITNEXUS === "1";
 const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 const runId =

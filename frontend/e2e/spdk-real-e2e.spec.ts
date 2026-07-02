@@ -7,6 +7,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { readSecretValue } from "./support/e2e-secrets.mjs";
+import { assertCanMutatePublicRuntime } from "../scripts/playwright-runtime-policy.mjs";
 
 const SPDK_REPO = process.env.CODETALK_E2E_REPO ?? "";
 const BAD_SPDK_REPO = "/Volums/Media/dpdk/spdk";
@@ -29,6 +30,13 @@ const API_BASE_OVERRIDE_STORAGE_KEY = "codetalk.apiBaseOverride";
 const L01_SOAK_MIN_MS = 30 * 60 * 1000;
 const L01_SOAK_MS = Number(process.env.CODETALK_E2E_LONG_SOAK_MS ?? String(L01_SOAK_MIN_MS));
 const L01_SOAK_ENABLED = process.env.CODETALK_E2E_LONG_SOAK === "1";
+
+assertCanMutatePublicRuntime({
+  env: process.env,
+  flowName: "SPDK real E2E",
+  frontendPort: FRONTEND_PORT,
+  backendPort: BACKEND_PORT,
+});
 
 type CaseStatus = "pass" | "fail" | "blocked" | "not_run";
 
