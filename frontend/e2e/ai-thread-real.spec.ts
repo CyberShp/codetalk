@@ -2020,7 +2020,19 @@ test("real agent process keeps early and late diagnostics folded outside the ans
 
     const processDisclosure = page.getByTestId("agent-process-disclosure");
     await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.getByText("最新：PROCESS_STEP_20 reading workspace evidence")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect
+      .poll(async () =>
+        processDisclosure.locator("summary").evaluate((node) => {
+          const element = node as HTMLElement;
+          return element.scrollWidth <= element.clientWidth + 1;
+        }),
+      )
+      .toBe(true);
     await expect(processDisclosure.getByText("PROCESS_STEP_01")).toBeHidden();
+    await expect(processDisclosure.getByText("PROCESS_STEP_10 reading workspace evidence")).toBeHidden();
     await processDisclosure.getByText("Agent 过程").click();
     await expect(processDisclosure.getByText("PROCESS_STEP_01 reading workspace evidence").first()).toBeVisible({
       timeout: 15_000,

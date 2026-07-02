@@ -2393,12 +2393,12 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 }
 
 .ct-agent-process summary {
-  display: flex;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
   min-height: 38px;
   cursor: pointer;
   list-style: none;
   align-items: center;
-  justify-content: space-between;
   gap: 12px;
   padding: 8px 11px;
 }
@@ -2422,6 +2422,18 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 .ct-agent-process summary span {
   color: #334155;
   font-weight: 760;
+  white-space: nowrap;
+}
+
+.ct-agent-process summary strong {
+  min-width: 0;
+  color: #475569;
+  font-family: var(--font-data);
+  font-size: 11px;
+  font-weight: 640;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ct-agent-process summary em {

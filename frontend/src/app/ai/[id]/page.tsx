@@ -243,6 +243,7 @@ function AgentProcessDisclosure({ diagnostics }: { diagnostics: string[] }) {
   const [open, setOpen] = useState(false);
   const visibleDiagnostics = capAgentProcessDiagnostics(diagnostics);
   if (visibleDiagnostics.length === 0) return null;
+  const latestDiagnostic = visibleDiagnostics[visibleDiagnostics.length - 1] ?? "";
   return (
     <details
       className="ct-agent-process"
@@ -252,6 +253,7 @@ function AgentProcessDisclosure({ diagnostics }: { diagnostics: string[] }) {
     >
       <summary>
         <span>Agent 过程</span>
+        <strong title={latestDiagnostic}>最新：{latestDiagnostic}</strong>
         <em>默认折叠 · {visibleDiagnostics.length} 条</em>
       </summary>
       {open && (
