@@ -239,6 +239,131 @@ test("prevents duplicate sibling AI thread creation from a real double click", a
   expect(conversations.items.filter((item) => item.title === siblingTitle)).toHaveLength(1);
 });
 
+test("contains large real AI project and thread lists inside scroll panes", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(140_000);
+  const stamp = Date.now();
+
+  for (let index = 0; index < 22; index += 1) {
+    const extraRepo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `codetalk-ai-list-extra-${index}-`)));
+    fs.writeFileSync(path.join(extraRepo, "README.md"), `AI list extra workspace ${index}\n`, "utf8");
+    const extraWorkspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+      data: { name: `ai-list-extra-${stamp}-${index}`, repo_path: extraRepo },
+    });
+    expect(extraWorkspaceResp.status()).toBe(201);
+  }
+
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-list-target-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI list containment target workspace\n", "utf8");
+  const workspaceName = `ai-list-target-${stamp}`;
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  const threadTitles: string[] = [];
+  for (let index = 0; index < 58; index += 1) {
+    const title = `${workspaceName} thread ${String(index + 1).padStart(2, "0")}`;
+    threadTitles.push(title);
+    const conversationResp = await request.post(`${backendBase}/api/ai/conversations`, {
+      data: {
+        scope_type: "workspace",
+        scope_id: workspace.id,
+        workspace_id: workspace.id,
+        memory_namespace: `workspace:${workspace.id}`,
+        runtime_type: "builtin_llm",
+        agent_runtime_id: null,
+        title,
+        initial_context: {
+          workspace_id: workspace.id,
+          project_name: workspaceName,
+          memory_namespace: `workspace:${workspace.id}`,
+        },
+      },
+    });
+    expect(conversationResp.status()).toBe(201);
+  }
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/ai", { waitUntil: "domcontentloaded" });
+  const projectButton = page.locator("button.ct-thread-project").filter({ hasText: workspaceName }).first();
+  await expect(projectButton).toBeVisible({ timeout: 20_000 });
+  await projectButton.hover();
+  await projectButton.click();
+  await expect(page.getByRole("heading", { name: workspaceName, exact: true })).toBeVisible();
+  await expect(page.locator(".ct-thread-card")).toHaveCount(50);
+
+  const homeMetrics = await page.evaluate(() => {
+    const projectList = document.querySelector(".ct-ai-home__project-list") as HTMLElement | null;
+    const threadTimeline = document.querySelector(".ct-thread-timeline") as HTMLElement | null;
+    const home = document.querySelector(".ct-ai-home") as HTMLElement | null;
+    return {
+      windowScrollY: window.scrollY,
+      documentScrollHeight: document.documentElement.scrollHeight,
+      viewportHeight: window.innerHeight,
+      homeHeight: home?.getBoundingClientRect().height ?? 0,
+      projectClientHeight: projectList?.clientHeight ?? 0,
+      projectScrollHeight: projectList?.scrollHeight ?? 0,
+      projectOverflowY: projectList ? window.getComputedStyle(projectList).overflowY : "",
+      threadClientHeight: threadTimeline?.clientHeight ?? 0,
+      threadScrollHeight: threadTimeline?.scrollHeight ?? 0,
+      threadOverflowY: threadTimeline ? window.getComputedStyle(threadTimeline).overflowY : "",
+    };
+  });
+  expect(homeMetrics.documentScrollHeight).toBeLessThanOrEqual(homeMetrics.viewportHeight + 40);
+  expect(homeMetrics.homeHeight).toBeLessThanOrEqual(homeMetrics.viewportHeight);
+  expect(homeMetrics.projectScrollHeight).toBeGreaterThan(homeMetrics.projectClientHeight + 120);
+  expect(homeMetrics.threadScrollHeight).toBeGreaterThan(homeMetrics.threadClientHeight + 120);
+  expect(homeMetrics.projectOverflowY).toBe("auto");
+  expect(homeMetrics.threadOverflowY).toBe("auto");
+  expect(homeMetrics.windowScrollY).toBe(0);
+
+  const projectList = page.locator(".ct-ai-home__project-list");
+  await projectList.hover();
+  await page.mouse.wheel(0, 900);
+  await expect.poll(() => projectList.evaluate((element) => element.scrollTop)).toBeGreaterThan(80);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeLessThan(5);
+
+  const threadTimeline = page.locator(".ct-thread-timeline");
+  await threadTimeline.hover();
+  await page.mouse.wheel(0, 1200);
+  await expect.poll(() => threadTimeline.evaluate((element) => element.scrollTop)).toBeGreaterThan(120);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeLessThan(5);
+
+  const firstThread = page.getByRole("link", { name: new RegExp(threadTitles[0]) });
+  await firstThread.scrollIntoViewIfNeeded();
+  await firstThread.hover();
+  await firstThread.click();
+  await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+  await expect(page.getByRole("heading", { name: threadTitles[0], exact: true })).toBeVisible({ timeout: 15_000 });
+
+  const threadPageMetrics = await page.evaluate(() => {
+    const threadList = document.querySelector(".ct-codex-ai__thread-list") as HTMLElement | null;
+    const shell = document.querySelector(".ct-codex-ai") as HTMLElement | null;
+    return {
+      documentScrollHeight: document.documentElement.scrollHeight,
+      viewportHeight: window.innerHeight,
+      shellHeight: shell?.getBoundingClientRect().height ?? 0,
+      threadClientHeight: threadList?.clientHeight ?? 0,
+      threadScrollHeight: threadList?.scrollHeight ?? 0,
+      threadOverflowY: threadList ? window.getComputedStyle(threadList).overflowY : "",
+    };
+  });
+  expect(threadPageMetrics.documentScrollHeight).toBeLessThanOrEqual(threadPageMetrics.viewportHeight + 40);
+  expect(threadPageMetrics.shellHeight).toBeLessThanOrEqual(threadPageMetrics.viewportHeight);
+  expect(threadPageMetrics.threadScrollHeight).toBeGreaterThan(threadPageMetrics.threadClientHeight + 120);
+  expect(threadPageMetrics.threadOverflowY).toBe("auto");
+
+  const sidebarThreadList = page.locator(".ct-codex-ai__thread-list");
+  await sidebarThreadList.hover();
+  await page.mouse.wheel(0, 1200);
+  await expect.poll(() => sidebarThreadList.evaluate((element) => element.scrollTop)).toBeGreaterThan(120);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeLessThan(5);
+});
+
 test("sends quick actions and memory actions through the real AI thread composer", async ({
   page,
   request,

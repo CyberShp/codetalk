@@ -1561,6 +1561,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
 .ct-thread-timeline {
   display: grid;
+  align-content: start;
   flex: 1 1 0;
   min-height: 0;
   gap: 10px;
@@ -1697,6 +1698,11 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 }
 
 .ct-ai-home {
+  display: grid;
+  height: calc(100vh - 48px);
+  min-height: 0;
+  grid-template-rows: auto minmax(0, 1fr);
+  overflow: hidden;
   animation: ct-page-in var(--motion-slow) var(--motion-ease) both;
 }
 
@@ -1763,8 +1769,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
   gap: 18px;
   align-items: stretch;
-  height: min(720px, calc(100vh - 214px));
-  min-height: 420px;
+  min-height: 0;
 }
 
 .ct-ai-home__projects,
@@ -2644,6 +2649,20 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   .ct-ai-home__header,
   .ct-ai-home__grid {
     grid-template-columns: 1fr;
+  }
+
+  .ct-ai-home {
+    height: auto;
+    overflow: visible;
+  }
+
+  .ct-ai-home__grid {
+    min-height: 0;
+  }
+
+  .ct-ai-home__project-list,
+  .ct-thread-timeline {
+    max-height: min(420px, 58vh);
   }
 
   .ct-ai-home__header,
