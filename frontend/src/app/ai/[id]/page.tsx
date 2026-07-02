@@ -476,7 +476,11 @@ export default function AIThreadPage() {
 
   useEffect(() => {
     const query = window.matchMedia("(max-width: 760px)");
-    const syncRailDensity = () => setMobileRail(query.matches);
+    const syncRailDensity = () => {
+      const isMobile = query.matches;
+      setMobileRail(isMobile);
+      setContextOpen(!isMobile);
+    };
     syncRailDensity();
     query.addEventListener("change", syncRailDensity);
     return () => query.removeEventListener("change", syncRailDensity);
