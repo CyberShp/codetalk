@@ -1494,6 +1494,106 @@ test("renders native Codex task and tool events as Agent process diagnostics", a
   }
 });
 
+test("renders Codex agent message deltas without dropping the final answer", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-codex-delta-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "Codex delta event e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-codex-delta-")));
+  const runtimeScript = path.join(runtimeDir, "codex_delta_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, sys, time",
+      "sys.stdin.read()",
+      "events = [",
+      "  {'type':'thread.started','thread_id':'codex-delta-e2e'},",
+      "  {'type':'item.completed','item':{'type':'command_execution','command':'rg nvmf_connect lib/nvmf','status':'completed','exit_code':0,'aggregated_output':'lib/nvmf/ctrlr.c: nvmf_connect'}},",
+      "  {'type':'item.updated','item':{'type':'agent_message','delta':'CODEX_DELTA_FINAL: '}},",
+      "  {'type':'item.updated','item':{'type':'agent_message','delta':'已基于源码完成增量回答。'}},",
+      "  {'type':'item.completed','item':{'type':'agent_message'}},",
+      "]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.05)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-codex-delta-e2e-${Date.now()}`;
+  const runtimeName = `Codex delta runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} delta events`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "codex_exec_json",
+      output_mode: "stream_json",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "resume_args",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByLabel("AI 线程消息").fill("请用 Codex delta 事件读取源码并输出最终回答");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const assistantAnswer = page.locator(".ct-codex-message:not(.is-user)");
+    await expect(assistantAnswer.filter({ hasText: "CODEX_DELTA_FINAL" })).toBeVisible({ timeout: 20_000 });
+    await expect(assistantAnswer.filter({ hasText: "执行器没有返回有效内容" })).toHaveCount(0);
+    await expect(assistantAnswer.filter({ hasText: "nvmf_connect" })).toHaveCount(0);
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("command: rg nvmf_connect lib/nvmf")).toBeVisible({ timeout: 15_000 });
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("CODEX_DELTA_FINAL: 已基于源码完成增量回答。");
+    expect(assistant?.content).not.toContain("nvmf_connect");
+    expect(assistant?.content).not.toContain("执行器没有返回有效内容");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("Claude-style agent runtime resumes the previous CLI session through the real AI thread UI", async ({
   page,
   request,

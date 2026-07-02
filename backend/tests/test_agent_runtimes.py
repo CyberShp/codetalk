@@ -3000,6 +3000,43 @@ class TestAgentRuntimes:
         assert any("内部推理：先搜索源码。" in item for item in diagnostics)
         assert any("拒绝诊断：策略提示。" in item for item in diagnostics)
 
+    async def test_agent_runtime_codex_agent_message_delta_chunks_surface_as_answer(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+        from app.services.ai_conversations import _agent_output_segments
+
+        agent_code = (
+            "import json, sys; "
+            "events=["
+            "{'type':'thread.started','thread_id':'codex-delta-session'},"
+            "{'type':'item.started','item':{'type':'command_execution','command':'rg nvmf_connect lib/nvmf'}},"
+            "{'type':'item.updated','item':{'type':'agent_message','delta':'最终答案：'}},"
+            "{'type':'item.updated','item':{'type':'agent_message','delta':'已基于源码完成分析。'}},"
+            "{'type':'item.completed','item':{'type':'agent_message'}}"
+            "]; "
+            "[print(json.dumps(event, ensure_ascii=False), flush=True) for event in events]; "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "stream_json",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码后回答",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        segments = [segment for chunk in chunks for segment in _agent_output_segments(chunk)]
+        answer = "".join(content for kind, content in segments if kind == "answer")
+        diagnostics = "\n".join(content for kind, content in segments if kind == "diagnostic")
+        assert answer == "最终答案：已基于源码完成分析。"
+        assert "command: rg nvmf_connect lib/nvmf" in diagnostics
+        assert "thread.started" not in answer + diagnostics
+
     async def test_agent_runtime_auto_mode_cleans_plain_fallback_chunks(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
 

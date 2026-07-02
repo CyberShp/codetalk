@@ -20,6 +20,7 @@ import aiosqlite
 
 from app.config import settings
 from app.services.agent_cli_bridge import (
+    AGENT_ANSWER_DELTA_PREFIX,
     AGENT_FINAL_ANSWER_PREFIX,
     clean_agent_output_text,
     resolve_agent_cwd,
@@ -1596,9 +1597,12 @@ def _agent_output_segments(
     text = clean_agent_output_text(str(chunk or ""))
     if not text.strip():
         return []
+    answer_delta_chunk = text.startswith(AGENT_ANSWER_DELTA_PREFIX)
     final_answer_chunk = text.startswith(AGENT_FINAL_ANSWER_PREFIX)
     if text.startswith(AGENT_FINAL_ANSWER_PREFIX):
         text = text[len(AGENT_FINAL_ANSWER_PREFIX) :]
+    elif text.startswith(AGENT_ANSWER_DELTA_PREFIX):
+        text = text[len(AGENT_ANSWER_DELTA_PREFIX) :]
     segments: list[tuple[str, str]] = []
     diagnostic_buffer: list[str] = []
     diagnostic_prefix = state.diagnostic_prefix if state and state.diagnostic_active else ""
@@ -1628,7 +1632,7 @@ def _agent_output_segments(
             content,
             line,
             diagnostic_prefix,
-            final_answer_chunk=final_answer_chunk,
+            final_answer_chunk=final_answer_chunk or answer_delta_chunk,
         ):
             diagnostic_buffer.append(redact_agent_diagnostic_text(content))
         else:

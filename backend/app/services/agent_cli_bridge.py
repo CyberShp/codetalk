@@ -18,6 +18,7 @@ from app.services.external_agent_discovery import redact_agent_diagnostic_text
 from app.services.agent_runtimes import MANAGED_PROVIDER_PROMPT_TRANSPORTS, validate_agent_command
 
 AGENT_FINAL_ANSWER_PREFIX = "__CODETALK_AGENT_FINAL_ANSWER__:"
+AGENT_ANSWER_DELTA_PREFIX = "__CODETALK_AGENT_ANSWER_DELTA__:"
 
 
 class AgentRuntimeError(RuntimeError):
@@ -663,7 +664,14 @@ def _event_text(event: dict[str, Any]) -> str | None:
     if isinstance(codex_item, dict):
         if str(codex_item.get("type") or "").strip() == "agent_message":
             value = codex_item.get("text") or codex_item.get("content")
-            return f"{AGENT_FINAL_ANSWER_PREFIX}{value}" if isinstance(value, str) else None
+            if isinstance(value, str):
+                return f"{AGENT_FINAL_ANSWER_PREFIX}{value}"
+            delta = (
+                codex_item.get("delta")
+                or codex_item.get("text_delta")
+                or codex_item.get("content_delta")
+            )
+            return f"{AGENT_ANSWER_DELTA_PREFIX}{delta}" if isinstance(delta, str) else None
         process_text = _codex_item_process_text(codex_item)
         if process_text:
             return process_text
