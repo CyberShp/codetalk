@@ -1094,6 +1094,125 @@ test("cleans real external-agent terminal noise before display, persistence, and
   }
 });
 
+test("folds mixed JSON agent tool and thinking parts while showing only the answer", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-json-parts-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI JSON part folding e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-json-parts-")));
+  const runtimeScript = path.join(runtimeDir, "json_parts_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json",
+      "import sys",
+      "sys.stdin.read()",
+      "event = {",
+      "  'type': 'message',",
+      "  'role': 'assistant',",
+      "  'content': [",
+      "    {'type': 'thinking', 'text': '内部推理：先列出工具计划'},",
+      "    {'type': 'tool_result', 'content': 'cat /secret/path returned internal-only trace'},",
+      "    {'type': 'text', 'text': 'FINAL_JSON_PARTS_ANSWER: 只展示源码分析结论。'},",
+      "  ],",
+      "}",
+      "print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-json-parts-e2e-${Date.now()}`;
+  const runtimeName = `JSON parts runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} folded json parts`;
+  const prompt = "JSON_PARTS_RUN 请运行 agent，但不要把工具过程混进最终回答";
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "auto",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill(prompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByText("FINAL_JSON_PARTS_ANSWER")).toBeVisible({ timeout: 30_000 });
+    const reader = page.getByLabel("AI 线程对话内容");
+    await expect(reader).not.toContainText("内部推理：先列出工具计划");
+    await expect(reader).not.toContainText("secret/path");
+    await expect(page.getByText("生成诊断：默认折叠")).toBeVisible();
+    await expect(page.getByText("内部推理：先列出工具计划")).toBeHidden();
+    await expect(page.getByText("cat /secret/path returned internal-only trace")).toBeHidden();
+
+    await page.getByText("生成诊断：默认折叠").click();
+    await expect(page.getByText("内部推理：先列出工具计划")).toBeVisible();
+    await expect(page.getByText("cat /secret/path returned internal-only trace")).toBeVisible();
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("FINAL_JSON_PARTS_ANSWER");
+    expect(assistant?.content).not.toContain("内部推理");
+    expect(assistant?.content).not.toContain("secret/path");
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出" }).hover();
+    await page.getByRole("button", { name: "导出" }).click();
+    const download = await downloadPromise;
+    const exportPath = testInfo.outputPath("real-ai-thread-json-parts-export.md");
+    await download.saveAs(exportPath);
+    const exported = fs.readFileSync(exportPath, "utf8");
+    expect(exported).toContain("FINAL_JSON_PARTS_ANSWER");
+    expect(exported).not.toContain("内部推理");
+    expect(exported).not.toContain("secret/path");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("completes an agent-runtime AI thread and exports the persisted answer", async ({
   page,
   request,

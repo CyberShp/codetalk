@@ -1985,6 +1985,49 @@ class TestAgentRuntimes:
         assert "tool_result" not in answer
         assert "internal result" in diagnostics
 
+    async def test_agent_runtime_auto_mode_folds_mixed_assistant_content_parts(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+        from app.services.ai_conversations import _agent_output_segments
+
+        agent_code = (
+            "import json, sys; "
+            "event={"
+            "'type':'message',"
+            "'role':'assistant',"
+            "'content':["
+            "{'type':'thinking','text':'内部推理：先列出工具计划'},"
+            "{'type':'tool_result','content':'cat /secret/path returned internal-only trace'},"
+            "{'type':'text','text':'最终答案：只展示源码分析结论。'}"
+            "]"
+            "}; "
+            "print(json.dumps(event, ensure_ascii=False)); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "auto",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        segments = [segment for chunk in chunks for segment in _agent_output_segments(chunk)]
+        answer = "".join(content for kind, content in segments if kind == "answer")
+        diagnostics = "\n".join(content for kind, content in segments if kind == "diagnostic")
+
+        assert answer == "最终答案：只展示源码分析结论。"
+        assert "内部推理" not in answer
+        assert "tool_result" not in answer
+        assert "secret/path" not in answer
+        assert "内部推理：先列出工具计划" in diagnostics
+        assert "cat /secret/path returned internal-only trace" in diagnostics
+
     async def test_agent_runtime_plain_mode_drops_cli_banner_without_hiding_answer(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
 

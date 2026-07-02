@@ -500,7 +500,12 @@ def _event_text(event: dict[str, Any]) -> str | None:
         return None
     if str(event.get("type") or "").strip() == "message" and str(event.get("role") or "").strip() == "assistant":
         value = event.get("content")
-        return value if isinstance(value, str) else None
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            parts = _content_parts(value)
+            return "".join(parts) if parts else ""
+        return None
     for key in ("delta", "text", "content", "message"):
         value = event.get(key)
         if isinstance(value, str):
@@ -566,9 +571,21 @@ def _content_parts(value: list[Any]) -> list[str]:
         if isinstance(item, str):
             parts.append(item)
         elif isinstance(item, dict):
+            item_type = str(item.get("type") or item.get("kind") or "").strip().lower()
             text = item.get("text") or item.get("content")
             if isinstance(text, str):
-                parts.append(text)
+                cleaned = _clean_agent_text(text)
+                if not cleaned:
+                    continue
+                if item_type in {"thinking", "reasoning", "thought", "analysis"}:
+                    parts.append(f"THINKING: {cleaned}\n")
+                elif item_type in {"tool_use", "tool_result", "function_call", "function_result"}:
+                    parts.append(f"TOOL: {cleaned}\n")
+                else:
+                    parts.append(cleaned)
+            elif item_type in {"tool_use", "tool_result", "function_call", "function_result"}:
+                tool_name = str(item.get("name") or item.get("tool") or item.get("function") or item_type).strip()
+                parts.append(f"TOOL: {tool_name}\n")
     return parts
 
 
