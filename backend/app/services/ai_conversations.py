@@ -19,7 +19,12 @@ from typing import Any
 import aiosqlite
 
 from app.config import settings
-from app.services.agent_cli_bridge import clean_agent_output_text, resolve_agent_cwd, stream_agent_runtime
+from app.services.agent_cli_bridge import (
+    AGENT_FINAL_ANSWER_PREFIX,
+    clean_agent_output_text,
+    resolve_agent_cwd,
+    stream_agent_runtime,
+)
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
 
 logger = logging.getLogger(__name__)
@@ -1086,6 +1091,8 @@ async def run_agent_generation(
             current = await store.get_run(run_id)
             if current["status"] == "cancelled":
                 return
+            is_final_answer = str(delta or "").startswith(AGENT_FINAL_ANSWER_PREFIX)
+            final_answer_parts: list[str] = []
             for kind, content in _agent_output_segments(delta):
                 if kind == "diagnostic":
                     await store.append_event(
@@ -1095,9 +1102,14 @@ async def run_agent_generation(
                         payload={"kind": "diagnostic", "content": content},
                     )
                     continue
-                chunks.append(content)
+                if is_final_answer:
+                    final_answer_parts.append(content)
+                else:
+                    chunks.append(content)
                 if _agent_answer_chunk_safe_for_live_stream(content):
                     await append_live_answer_delta(content)
+            if is_final_answer and final_answer_parts:
+                chunks = final_answer_parts
         content = _govern_visible_assistant_content(
             "".join(chunks).strip() or "执行器没有返回有效内容，请检查命令输出模式。",
             references,
@@ -1177,6 +1189,8 @@ def _agent_output_segments(chunk: str) -> list[tuple[str, str]]:
     text = clean_agent_output_text(str(chunk or ""))
     if not text.strip():
         return []
+    if text.startswith(AGENT_FINAL_ANSWER_PREFIX):
+        text = text[len(AGENT_FINAL_ANSWER_PREFIX) :]
     segments: list[tuple[str, str]] = []
     diagnostic_buffer: list[str] = []
 

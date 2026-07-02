@@ -1548,6 +1548,100 @@ class TestAgentRuntimes:
         assert "agent-runtime-live-first-delta" in assistant["content"]
         assert "agent-runtime-live-final-delta" in assistant["content"]
 
+    async def test_ai_thread_claude_partial_messages_do_not_pollute_answer_or_artifact(
+        self,
+        sqlite_db,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-claude-partials", repo_path=str(repo))
+        monkeypatch.chdir(tmp_path)
+        agent_script = tmp_path / "claude_partial_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import json, sys",
+                    "sys.stdin.read()",
+                    "final_text = '## 黑盒测试用例\\n' + '\\n'.join([f'{index}. 前置条件：target 已启动。步骤：执行 iSCSI 登录场景 {index}。预期结果：Login Response 可观测。' for index in range(1, 9)]) + '\\n### TC-02 CHAP 失败\\n预期结果：Login Response 拒绝。\\n'",
+                    "events = [",
+                    "  {'type':'system','subtype':'init','session_id':'claude-session'},",
+                    "  {'type':'stream_event','event':{'type':'content_block_delta','delta':{'type':'thinking_delta','thinking':'我先搜索源码'}}},",
+                    "  {'type':'assistant','message':{'content':[{'type':'tool_use','name':'Bash','input':{'command':'grep -n \"login\" lib/iscsi/iscsi.c'}}]}},",
+                    "  {'type':'stream_event','event':{'type':'content_block_delta','delta':{'type':'text_delta','text':'## 黑盒测试用例\\n### TC-01 正常登录\\n前置条件：target 已启动。\\n'}}},",
+                    "  {'type':'message','role':'assistant','content':[{'type':'text','text':final_text}]},",
+                    "  {'type':'result','status':'success','session_id':'claude-session'},",
+                    "]",
+                    "for event in events:",
+                    "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, ai_thread_artifact_path, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Claude partial thread",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-claude-partials",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="针对 iscsi 登录写几个黑盒用例",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-claude-partials",
+                "name": "Claude Partial Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "stdin",
+                "output_mode": "stream_json",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+            },
+        )
+
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        content = assistant["content"]
+        assert "## 黑盒测试用例" in content
+        assert content.count("## 黑盒测试用例") == 1
+        assert "TC-02 CHAP 失败" in content
+        assert "THINKING" not in content
+        assert "我先搜索源码" not in content
+        assert "tool_use" not in content
+        assert "grep -n" not in content
+
+        artifact = ai_thread_artifact_path(conversation["id"], run_id)
+        assert artifact.exists()
+        artifact_text = artifact.read_text(encoding="utf-8")
+        assert "## 黑盒测试用例" in artifact_text
+        assert artifact_text.count("## 黑盒测试用例") == 1
+        assert "THINKING" not in artifact_text
+        assert "grep -n" not in artifact_text
+
+        events = await store.list_events_after(conversation["id"])
+        diagnostics = "\n".join(
+            event["payload"].get("content", "")
+            for event in events
+            if event["event_type"] == "delta" and event["payload"].get("kind") == "diagnostic"
+        )
+        assert "我先搜索源码" in diagnostics
+        assert "Bash" in diagnostics
+
     async def test_agent_runtime_output_parser_cleans_terminal_noise_and_unwraps_json(self):
         from app.services.agent_cli_bridge import _decode, _parse_event_text
 

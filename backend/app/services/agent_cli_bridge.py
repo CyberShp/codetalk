@@ -17,6 +17,8 @@ from typing import Any, Callable
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
 from app.services.agent_runtimes import MANAGED_PROVIDER_PROMPT_TRANSPORTS, validate_agent_command
 
+AGENT_FINAL_ANSWER_PREFIX = "__CODETALK_AGENT_FINAL_ANSWER__:"
+
 
 class AgentRuntimeError(RuntimeError):
     pass
@@ -583,10 +585,10 @@ def _event_text(event: dict[str, Any]) -> str | None:
     if str(event.get("type") or "").strip() == "message" and str(event.get("role") or "").strip() == "assistant":
         value = event.get("content")
         if isinstance(value, str):
-            return value
+            return f"{AGENT_FINAL_ANSWER_PREFIX}{value}"
         if isinstance(value, list):
             parts = _content_parts(value)
-            return "".join(parts) if parts else ""
+            return f"{AGENT_FINAL_ANSWER_PREFIX}{''.join(parts)}" if parts else ""
         return None
     for key in ("delta", "text", "content", "message"):
         value = event.get(key)
