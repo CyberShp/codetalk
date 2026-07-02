@@ -2126,6 +2126,10 @@ class TestAIConversationsAPI:
         assert "THINKING:" not in artifact_text
         assert "iscsi_conn_login_pdu_success_complete" not in artifact_text
         assert "旧版流式残片" not in artifact_text
+        rewritten_text = artifact_path.read_text(encoding="utf-8")
+        assert rewritten_text == artifact_text
+        assert "THINKING:" not in rewritten_text
+        assert "iscsi_conn_login_pdu_success_complete" not in rewritten_text
 
     async def test_truncated_legacy_agent_preview_falls_back_to_safe_placeholder(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)

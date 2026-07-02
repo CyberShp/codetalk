@@ -19,7 +19,7 @@ from app.services.ai_conversations import (
     maybe_await,
     run_agent_generation,
     run_generation,
-    sanitize_ai_thread_artifact_markdown,
+    sanitize_ai_thread_artifact_file,
 )
 from app.services.agent_runtimes import AgentRuntimeStore
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
@@ -275,7 +275,7 @@ async def download_run_artifact(conversation_id: str, run_id: str) -> FileRespon
     path = ai_thread_artifact_path(conversation_id, run_id)
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail="AI run artifact not found")
-    artifact_text = sanitize_ai_thread_artifact_markdown(path.read_text(encoding="utf-8", errors="ignore"))
+    artifact_text = sanitize_ai_thread_artifact_file(path)
     if artifact_text is not None:
         return Response(
             content=artifact_text,

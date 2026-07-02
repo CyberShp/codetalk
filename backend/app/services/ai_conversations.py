@@ -2351,6 +2351,15 @@ def sanitize_ai_thread_artifact_markdown(markdown: str) -> str | None:
     return f"{header}{cleaned_body.rstrip()}\n"
 
 
+def sanitize_ai_thread_artifact_file(path: Path) -> str | None:
+    artifact_text = path.read_text(encoding="utf-8", errors="ignore")
+    cleaned = sanitize_ai_thread_artifact_markdown(artifact_text)
+    if cleaned is None:
+        return None
+    path.write_text(cleaned, encoding="utf-8")
+    return cleaned
+
+
 def _split_ai_thread_artifact_markdown(markdown: str) -> tuple[str, str | None]:
     text = str(markdown or "")
     if not text.startswith("# "):
