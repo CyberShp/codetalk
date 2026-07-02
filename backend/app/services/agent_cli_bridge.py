@@ -639,6 +639,9 @@ def _stream_content_block_type(block: Any) -> str:
 
 
 def _event_text(event: dict[str, Any]) -> str | None:
+    if str(event.get("type") or "").strip() == "result":
+        value = _event_result_text(event)
+        return f"{AGENT_FINAL_ANSWER_PREFIX}{value}" if value else None
     if str(event.get("type") or "").strip() == "stream_event":
         stream_event = event.get("event")
         if isinstance(stream_event, dict):
@@ -725,6 +728,14 @@ def _event_text(event: dict[str, Any]) -> str | None:
         if parts:
             return "".join(parts)
     return None
+
+
+def _event_result_text(event: dict[str, Any]) -> str:
+    for key in ("result", "summary", "final", "final_answer", "output"):
+        value = event.get(key)
+        if isinstance(value, str) and value.strip():
+            return _clean_agent_text(value).strip()
+    return ""
 
 
 def _content_parts(value: list[Any]) -> list[str]:

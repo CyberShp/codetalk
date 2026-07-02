@@ -99,6 +99,58 @@ async function createClaudeToolResultBlockRuntime(
   return { id: runtime.id, name: runtimeName };
 }
 
+async function createClaudeResultFinalRuntime(
+  request: APIRequestContext,
+  label: string,
+): Promise<{ id: string; name: string }> {
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-claude-result-")));
+  const runtimeScript = path.join(runtimeDir, "claude_result_final_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, os, sys, time",
+      "prompt_file = os.environ.get('CODETALK_AGENT_PROMPT_FILE')",
+      "if prompt_file:",
+      "    open(prompt_file, encoding='utf-8').read()",
+      "answer = '## 黑盒测试用例\\n' + ''.join([f'{index}. TC-{index:02d} Result 登录场景：前置条件 target 已启动，步骤执行 iSCSI Login 场景 {index}，预期结果可观测。\\n' for index in range(1, 9)])",
+      "events = [",
+      "  {'type':'system','subtype':'init','session_id':'claude-result-session-e2e'},",
+      "  {'type':'assistant','message':{'content':[{'type':'tool_use','name':'Bash','input':{'command':'grep -n \"login\" lib/iscsi/iscsi.c'}}]}},",
+      "  {'type':'stream_event','event':{'type':'content_block_start','index':0,'content_block':{'type':'tool_result','tool_use_id':'toolu_1'}}},",
+      "  {'type':'stream_event','event':{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':'1115:iscsi_conn_login_pdu_success_complete(void *arg)\\n'}}},",
+      "  {'type':'stream_event','event':{'type':'content_block_stop','index':0}},",
+      "  {'type':'result','subtype':'success','status':'success','session_id':'claude-result-session-e2e','result':answer},",
+      "]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.05)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const runtimeName = `${label} ${Date.now()}`;
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "claude_print_arg",
+      output_mode: "stream_json",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 20,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+  return { id: runtime.id, name: runtimeName };
+}
+
 test("creates an AI investigation thread from the project hub and restores it after refresh", async ({
   page,
   request,
@@ -310,6 +362,87 @@ test("keeps Claude tool-result stream blocks out of visible answer and artifact"
     expect(assistant?.content).toContain("TC-08 正常登录变体");
     expect(assistant?.content).not.toContain("iscsi_conn_login_pdu_success_complete");
     expect(assistant?.content).not.toContain("AuthMethod=CHAP");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
+test("uses a Claude result event as the final answer after source lookup", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-claude-result-")));
+  fs.mkdirSync(path.join(repo, "lib", "iscsi"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "iscsi", "iscsi.c"),
+    "int iscsi_conn_login_pdu_success_complete(void *arg) { return 0; }\n",
+    "utf8",
+  );
+  const workspaceName = `ai-claude-result-e2e-${Date.now()}`;
+  const threadTitle = `${workspaceName} result final answer`;
+
+  const runtime = await createClaudeResultFinalRuntime(request, "Claude result final runtime");
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtime.name });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    const composer = page.getByLabel("AI 线程消息");
+    await composer.click();
+    await composer.pressSequentially("针对 iSCSI 登录生成黑盒测试用例");
+    await page.keyboard.press("Shift+Enter");
+    await composer.pressSequentially("先查源码，再把正式答案作为最终结果输出");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(page.locator(".ct-codex-message").filter({ hasText: "TC-08 Result 登录场景" })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.locator(".ct-codex-message").filter({ hasText: "执行器没有返回有效内容" })).toHaveCount(0);
+    await expect(page.locator(".ct-codex-message").filter({ hasText: "iscsi_conn_login_pdu_success_complete" })).toHaveCount(0);
+
+    const diagnosticsSummary = page.getByText("生成诊断：默认折叠");
+    await expect(diagnosticsSummary).toBeVisible({ timeout: 15_000 });
+    await diagnosticsSummary.click();
+    await expect(page.getByText("iscsi_conn_login_pdu_success_complete").first()).toBeVisible();
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("link", { name: "下载完整产物" }).hover();
+    await page.getByRole("link", { name: "下载完整产物" }).click();
+    const download = await downloadPromise;
+    const artifactPath = testInfo.outputPath("claude-result-final-artifact.md");
+    await download.saveAs(artifactPath);
+    const artifact = fs.readFileSync(artifactPath, "utf8");
+    expect(artifact).toContain("## 黑盒测试用例");
+    expect(artifact).toContain("TC-08 Result 登录场景");
+    expect(artifact).not.toContain("iscsi_conn_login_pdu_success_complete");
+    expect(artifact).not.toContain("执行器没有返回有效内容");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("TC-08 Result 登录场景");
+    expect(assistant?.content).not.toContain("iscsi_conn_login_pdu_success_complete");
+    expect(assistant?.content).not.toContain("执行器没有返回有效内容");
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }
