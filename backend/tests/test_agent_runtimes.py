@@ -2249,6 +2249,40 @@ class TestAgentRuntimes:
             )
             == "TOOL: 正在调用 rg 搜索源码"
         )
+        assert (
+            _parse_event_text(
+                json.dumps(
+                    {
+                        "type": "tool_use",
+                        "sessionID": "opencode-session-1",
+                        "part": {
+                            "type": "tool_use",
+                            "tool": "grep",
+                            "state": {"input": {"pattern": "spdk_nvmf", "path": "lib/nvmf"}},
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                "stream_json",
+            )
+            == 'TOOL: grep {"pattern": "spdk_nvmf", "path": "lib/nvmf"}'
+        )
+        assert (
+            _parse_event_text(
+                json.dumps(
+                    {
+                        "type": "error",
+                        "error": {
+                            "name": "OpenCodeToolError",
+                            "data": {"message": "opencode grep failed while reading lib/nvmf"},
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                "stream_json",
+            )
+            == "ERROR: opencode grep failed while reading lib/nvmf"
+        )
         assert _parse_event_text(json.dumps({"type": "message_start", "index": 0}), "stream_json") == ""
         assert (
             _parse_event_text(

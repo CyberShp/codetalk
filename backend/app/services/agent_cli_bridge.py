@@ -702,6 +702,9 @@ def _event_text(event: dict[str, Any]) -> str | None:
                 return "".join(parts)
     part = event.get("part")
     if isinstance(part, dict):
+        tool_text = _opencode_part_tool_text(part)
+        if tool_text:
+            return tool_text
         value = part.get("text") or part.get("content")
         if isinstance(value, str):
             return value
@@ -789,6 +792,22 @@ def _content_parts(value: list[Any]) -> list[str]:
                     suffix = f" {json.dumps(tool_input, ensure_ascii=False)[:300]}"
                 parts.append(f"TOOL: {tool_name}{suffix}\n")
     return parts
+
+
+def _opencode_part_tool_text(part: dict[str, Any]) -> str:
+    part_type = str(part.get("type") or part.get("kind") or "").strip().lower()
+    if part_type not in {"tool_use", "tool_result", "function_call", "function_result"}:
+        return ""
+    tool_name = str(part.get("tool") or part.get("name") or part.get("function") or part_type).strip()
+    state = part.get("state")
+    tool_input = None
+    if isinstance(state, dict):
+        tool_input = state.get("input") or state.get("arguments")
+    tool_input = tool_input or part.get("input") or part.get("arguments")
+    suffix = ""
+    if isinstance(tool_input, dict) and tool_input:
+        suffix = f" {json.dumps(tool_input, ensure_ascii=False)[:300]}"
+    return f"{tool_name or part_type}{suffix}".strip()
 
 
 def _looks_like_protocol_noise(event: dict[str, Any]) -> bool:
@@ -888,6 +907,15 @@ def _event_error_text(event: dict[str, Any]) -> str | None:
             value = error.get(key)
             if isinstance(value, str):
                 return value
+        data = error.get("data")
+        if isinstance(data, dict):
+            for key in ("message", "detail", "content", "text"):
+                value = data.get(key)
+                if isinstance(value, str):
+                    return value
+        name = error.get("name")
+        if isinstance(name, str):
+            return name
     return _event_text(event)
 
 

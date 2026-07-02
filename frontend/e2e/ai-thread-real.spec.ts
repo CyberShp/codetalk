@@ -1551,6 +1551,110 @@ test("OpenCode agent runtime resumes the previous CLI session through the real A
   }
 });
 
+test("renders native OpenCode tool and error events as Agent process diagnostics", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-opencode-native-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "OpenCode native event e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-opencode-native-")));
+  const runtimeScript = path.join(runtimeDir, "opencode_native_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, sys, time",
+      "prompt = sys.argv[-1] if sys.argv else ''",
+      "events = [",
+      "  {'type':'step_start','timestamp':1,'sessionID':'opencode-native-e2e'},",
+      "  {'type':'tool_use','timestamp':2,'sessionID':'opencode-native-e2e','part':{'type':'tool_use','tool':'grep','state':{'input':{'pattern':'spdk_nvmf','path':'lib/nvmf'}}}},",
+      "  {'type':'error','timestamp':3,'sessionID':'opencode-native-e2e','error':{'name':'OpenCodeToolWarning','data':{'message':'opencode grep warning while reading lib/nvmf'}}},",
+      "  {'type':'text','timestamp':4,'sessionID':'opencode-native-e2e','part':{'type':'text','text':'OPENCODE_NATIVE_FINAL: 已基于源码线索完成分析。'}},",
+      "  {'type':'step_finish','timestamp':5,'sessionID':'opencode-native-e2e'},",
+      "]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.05)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-opencode-native-e2e-${Date.now()}`;
+  const runtimeName = `OpenCode native runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} native events`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "opencode_run_arg",
+      output_mode: "auto",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "resume_args",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByLabel("AI 线程消息").fill("请用 OpenCode 原生事件读取源码并只展示最终答案");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "OPENCODE_NATIVE_FINAL" })).toBeVisible({
+      timeout: 20_000,
+    });
+    const answer = page.locator(".ct-codex-message:not(.is-user)");
+    await expect(answer.filter({ hasText: "TOOL:" })).toHaveCount(0);
+    await expect(answer.filter({ hasText: "opencode grep warning" })).toHaveCount(0);
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.getByText("grep")).toBeHidden();
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText(/grep .*spdk_nvmf/)).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.getByText("opencode grep warning while reading lib/nvmf")).toBeVisible();
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("OPENCODE_NATIVE_FINAL");
+    expect(assistant?.content).not.toContain("opencode grep warning");
+    expect(assistant?.content).not.toContain("TOOL:");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("cancels a running agent-runtime AI thread through the real UI", async ({
   page,
   request,
