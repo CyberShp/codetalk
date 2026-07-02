@@ -2179,6 +2179,100 @@ test("keeps real agent thinking diagnostics collapsed and out of the persisted a
   }
 });
 
+test("keeps an expanded Agent process disclosure open while diagnostics continue streaming", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-process-open-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI process disclosure streaming e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-process-open-agent-")));
+  const runtimeScript = path.join(runtimeDir, "process_open_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys, time",
+      "sys.stdin.read()",
+      "for index in range(1, 5):",
+      "    print(f'thinking: PROCESS_OPEN_DIAG_{index:02d} reading workspace evidence', flush=True)",
+      "    time.sleep(0.18)",
+      "print('## 结论', flush=True)",
+      "print('PROCESS_OPEN_FINAL_ANSWER 已完成源码分析。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-process-open-e2e-${Date.now()}`;
+  const runtimeName = `Process disclosure runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} process open`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    await page.getByLabel("AI 线程消息").fill("PROCESS_OPEN_RUN 请分析源码并持续展示 agent 过程");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect
+      .poll(async () => processDisclosure.evaluate((node) => (node as HTMLDetailsElement).open))
+      .toBe(false);
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect
+      .poll(async () => processDisclosure.evaluate((node) => (node as HTMLDetailsElement).open))
+      .toBe(true);
+
+    await expect(processDisclosure.getByText("PROCESS_OPEN_DIAG_04")).toBeVisible({ timeout: 20_000 });
+    await expect
+      .poll(async () => processDisclosure.evaluate((node) => (node as HTMLDetailsElement).open))
+      .toBe(true);
+
+    await expect(page.getByText("PROCESS_OPEN_FINAL_ANSWER")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "PROCESS_OPEN_DIAG_04" })).toHaveCount(0);
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("cleans real external-agent terminal noise before display, persistence, and export", async ({
   page,
   request,
