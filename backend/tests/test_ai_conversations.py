@@ -1922,3 +1922,98 @@ class TestAIConversationsAPI:
                 params={"run_id": "run_missing"},
             )
         assert missing.status_code == 404
+
+    async def test_legacy_agent_process_leak_is_hidden_from_messages_and_artifact(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        app = _test_app(sqlite_db)
+
+        from app.services.ai_conversations import (
+            AIConversationStore,
+            ai_thread_artifact_path,
+        )
+
+        legacy_content = "\n".join(
+            [
+                "THINKING: 我先核对工作区 iSCSI 登录相关源码。",
+                "1125:iscsi_conn_login_pdu_success_complete(void *arg)",
+                "1149:iscsi_op_login_response(struct spdk_iscsi_conn *conn,",
+                "1539:\t\trc = iscsi_op_login_update_param(conn, \"AuthMethod\", \"CHAP\", \"CHAP\");",
+                "THINKING: 我已掌握登录处理链的关键分支。",
+                "## 结论",
+                "这是一段旧版流式残片，格式已被工具输出打断。",
+                "我已掌握登录处理链的关键分支。下面基于 `lib/iscsi/iscsi.c` 给出黑盒用例。",
+                "## 结论",
+                "SPDK iSCSI 登录处理应覆盖正常登录、目标不存在、访问控制、CHAP 失败和异常 PDU。",
+                "## 黑盒测试用例",
+                "### TC-01 正常会话登录成功",
+                "前置条件：target 已启动；步骤：initiator 发起 Normal 登录；预期：进入 Full Feature Phase。",
+            ]
+        )
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="旧版污染线程",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="针对 iscsi 登录写几个黑盒用例",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+        await store.complete_run(
+            run_id=run_id,
+            content=legacy_content,
+            references=[],
+            model="agent:legacy",
+            actions=[
+                {
+                    "id": "download_run_artifact",
+                    "label": "下载完整产物",
+                    "href": f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifact",
+                    "kind": "download",
+                }
+            ],
+        )
+        artifact_path = ai_thread_artifact_path(conversation["id"], run_id)
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(
+            "\n".join(
+                [
+                    "# 旧版污染线程",
+                    "",
+                    f"- conversation_id: {conversation['id']}",
+                    f"- run_id: {run_id}",
+                    "- exported_at: 2026-07-02T00:00:00+00:00",
+                    "",
+                    legacy_content,
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            artifact = await client.get(
+                f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifact"
+            )
+
+        assert messages.status_code == 200
+        assistant = messages.json()["items"][1]
+        assert "## 结论" in assistant["content"]
+        assert "TC-01 正常会话登录成功" in assistant["content"]
+        assert "THINKING:" not in assistant["content"]
+        assert "iscsi_conn_login_pdu_success_complete" not in assistant["content"]
+        assert "旧版流式残片" not in assistant["content"]
+
+        assert artifact.status_code == 200
+        artifact_text = artifact.text
+        assert "# 旧版污染线程" in artifact_text
+        assert "## 黑盒测试用例" in artifact_text
+        assert "TC-01 正常会话登录成功" in artifact_text
+        assert "THINKING:" not in artifact_text
+        assert "iscsi_conn_login_pdu_success_complete" not in artifact_text
+        assert "旧版流式残片" not in artifact_text

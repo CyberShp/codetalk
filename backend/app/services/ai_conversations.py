@@ -195,7 +195,7 @@ def _govern_visible_assistant_content(
     references: list[dict[str, Any]],
 ) -> str:
     """Prevent raw source dumps from becoming the visible AI-thread answer."""
-    text = str(content or "").strip()
+    text = _legacy_clean_agent_answer_content(content)
     if not _looks_like_source_dump(text):
         return text
     paths = _source_reference_paths(references)
@@ -210,6 +210,72 @@ def _govern_visible_assistant_content(
         "请基于证据文件继续追问“流程、风险、SFMEA、黑盒用例”，或重新要求只输出结论与证据摘要。\n\n"
         f"{evidence_line}"
     )
+
+
+_LEGACY_AGENT_DIAGNOSTIC_MARKERS = (
+    "THINKING:",
+    "TOOL:",
+    "TOOL_USE:",
+    "TOOL_RESULT:",
+    "REASONING:",
+    "TRACE:",
+    "DIAGNOSTIC:",
+    "STATUS:",
+)
+_LEGACY_AGENT_REPORT_INTRO_RE = re.compile(
+    r"(?m)^(?:我已掌握|下面基于|基于\s*`)",
+)
+_LEGACY_AGENT_REPORT_HEADING_RE = re.compile(
+    r"(?m)^#{1,3}\s+(?:结论|摘要|代码证据|流程|流程梳理|SFMEA|黑盒测试用例|测试用例|风险|用例设计依据)",
+)
+
+
+def _legacy_clean_agent_answer_content(content: str) -> str:
+    """Hide legacy agent process leakage that was persisted before diagnostics were split."""
+    text = clean_agent_output_text(str(content or "")).strip()
+    if not text:
+        return ""
+    has_diagnostic_marker = any(marker in text for marker in _LEGACY_AGENT_DIAGNOSTIC_MARKERS)
+    if not has_diagnostic_marker and not _looks_like_source_dump(text):
+        return text
+    intro_matches = list(_LEGACY_AGENT_REPORT_INTRO_RE.finditer(text))
+    for match in reversed(intro_matches):
+        candidate = text[match.start() :].strip()
+        if _legacy_cleaned_candidate_is_user_facing(candidate):
+            return candidate
+    heading_matches = list(_LEGACY_AGENT_REPORT_HEADING_RE.finditer(text))
+    for match in reversed(heading_matches):
+        candidate = text[match.start() :].strip()
+        if _legacy_cleaned_candidate_is_user_facing(candidate):
+            return candidate
+    return text
+
+
+def _legacy_cleaned_candidate_is_user_facing(candidate: str) -> bool:
+    if not candidate:
+        return False
+    if any(candidate.startswith(marker) for marker in _LEGACY_AGENT_DIAGNOSTIC_MARKERS):
+        return False
+    lowered = candidate.lower()
+    useful_markers = (
+        "## 结论",
+        "## 摘要",
+        "## 代码证据",
+        "## 流程",
+        "## sfmea",
+        "## 黑盒测试用例",
+        "## 测试用例",
+        "### tc-",
+        "tc-01",
+    )
+    if not any(marker in lowered for marker in useful_markers):
+        return False
+    lines = [line for line in candidate.splitlines() if line.strip()]
+    if not lines:
+        return False
+    scored_lines = [line for line in lines[:80] if not line.lstrip().startswith("#")]
+    code_like = sum(1 for line in scored_lines if _SOURCE_CODE_LINE_RE.search(line))
+    return code_like / max(1, len(scored_lines)) < 0.5
 
 
 def _looks_like_source_dump(text: str) -> bool:
@@ -481,7 +547,7 @@ class AIConversationStore:
                 """,
                 (conversation_id,),
             ) as cur:
-                return [_message_from_row(row) for row in await cur.fetchall()]
+                return [_public_message_from_row(row) for row in await cur.fetchall()]
 
     async def create_user_message_and_run(
         self,
@@ -2176,6 +2242,33 @@ async def _prepare_assistant_delivery(
     )
 
 
+def sanitize_ai_thread_artifact_markdown(markdown: str) -> str | None:
+    text = str(markdown or "")
+    header, body = _split_ai_thread_artifact_markdown(text)
+    if body is None:
+        cleaned = _legacy_clean_agent_answer_content(text)
+        return cleaned if cleaned != text.strip() else None
+    cleaned_body = _legacy_clean_agent_answer_content(body)
+    if cleaned_body == body.strip():
+        return None
+    return f"{header}{cleaned_body.rstrip()}\n"
+
+
+def _split_ai_thread_artifact_markdown(markdown: str) -> tuple[str, str | None]:
+    text = str(markdown or "")
+    if not text.startswith("# "):
+        return "", None
+    first_break = text.find("\n\n")
+    if first_break < 0:
+        return "", None
+    body_break = text.find("\n\n", first_break + 2)
+    if body_break < 0:
+        return "", None
+    header = text[: body_break + 2]
+    body = text[body_break + 2 :]
+    return header, body
+
+
 def _should_materialize_thread_artifact(content: str) -> bool:
     text = str(content or "")
     if len(text) > _THREAD_INLINE_OUTPUT_LIMIT * 2:
@@ -2236,6 +2329,16 @@ def _message_from_row(row: aiosqlite.Row) -> dict[str, Any]:
     data = dict(row)
     data["references"] = _json_loads(data.pop("references_json", "[]"), [])
     data["actions"] = _json_loads(data.pop("actions_json", "[]"), [])
+    return data
+
+
+def _public_message_from_row(row: aiosqlite.Row) -> dict[str, Any]:
+    data = _message_from_row(row)
+    if data.get("role") == "assistant":
+        data["content"] = _govern_visible_assistant_content(
+            str(data.get("content") or ""),
+            data.get("references") if isinstance(data.get("references"), list) else [],
+        )
     return data
 
 
