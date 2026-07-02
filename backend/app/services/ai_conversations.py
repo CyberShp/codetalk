@@ -342,6 +342,8 @@ def _agent_answer_chunk_safe_for_live_stream(content: str) -> bool:
     text = str(content or "")
     if not text.strip():
         return False
+    if _looks_like_agent_thin_help_answer(text):
+        return False
     if len(text) > 1200:
         return False
     lines = [line for line in text.splitlines() if line.strip()]
@@ -1232,17 +1234,18 @@ async def run_agent_generation(
         )
         live_chunks.append(content)
 
-    try:
+    async def consume_agent_turn(turn_prompt: str, turn_resume_session_id: str | None) -> list[str]:
+        turn_chunks: list[str] = []
         async for delta in stream_agent_runtime(
             runtime=runtime,
-            prompt=prompt,
+            prompt=turn_prompt,
             cwd=cwd,
-            resume_session_id=resume_session_id,
+            resume_session_id=turn_resume_session_id,
             session_update=session_updates.append,
         ):
             current = await store.get_run(run_id)
             if current["status"] == "cancelled":
-                return
+                return turn_chunks
             is_final_answer = str(delta or "").startswith(AGENT_FINAL_ANSWER_PREFIX)
             final_answer_parts: list[str] = []
             for kind, content in _agent_output_segments(delta):
@@ -1257,15 +1260,48 @@ async def run_agent_generation(
                 if is_final_answer:
                     final_answer_parts.append(content)
                 else:
-                    chunks.append(content)
+                    turn_chunks.append(content)
                 if _agent_answer_chunk_safe_for_live_stream(content):
                     await append_live_answer_delta(content)
             if is_final_answer and final_answer_parts:
-                chunks = final_answer_parts
+                turn_chunks = final_answer_parts
+        return turn_chunks
+
+    try:
+        chunks = await consume_agent_turn(prompt, resume_session_id)
         content = _govern_visible_assistant_content(
             "".join(chunks).strip() or "执行器没有返回有效内容，请检查命令输出模式。",
             references,
         )
+        if _agent_answer_requires_repair(user_message["content"], content, references):
+            await store.append_event(
+                run_id=run_id,
+                conversation_id=conversation["id"],
+                event_type="delta",
+                payload={
+                    "kind": "diagnostic",
+                    "content": "上一次执行器输出过短，CodeTalk 正在自动续跑以完成原始任务。",
+                },
+            )
+            latest_session_id = _latest_resume_session_id(session_updates) or resume_session_id
+            repair_prompt = _build_agent_repair_prompt(
+                conversation=conversation,
+                references=references,
+                user_message=user_message["content"],
+                previous_answer=content,
+                runtime=runtime,
+            )
+            chunks = await consume_agent_turn(repair_prompt, latest_session_id)
+            content = _govern_visible_assistant_content(
+                "".join(chunks).strip() or "执行器没有返回有效内容，请检查命令输出模式。",
+                references,
+            )
+            if _agent_answer_requires_repair(user_message["content"], content, references):
+                await store.fail_run(
+                    run_id,
+                    "Agent 返回内容不足：已自动续跑一次，但仍未产出可验收的源码分析结论。",
+                )
+                return
         live_content = "".join(live_chunks)
         if not live_content:
             await append_live_answer_delta(content)
@@ -1335,6 +1371,146 @@ def _context_status_message(references: list[dict[str, Any]]) -> str:
     if not parts:
         return "正在准备可用上下文；未找到直接匹配的工作区源码或输入材料。"
     return f"正在读取{'、'.join(parts)}上下文。"
+
+
+def _latest_resume_session_id(session_updates: list[dict[str, Any]]) -> str:
+    for item in reversed(session_updates):
+        value = str(item.get("resume_session_id") or item.get("session_id") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _agent_answer_requires_repair(
+    user_message: str,
+    content: str,
+    references: list[dict[str, Any]],
+) -> bool:
+    if not _agent_task_requires_substantive_answer(user_message, references):
+        return False
+    if _looks_like_agent_thin_help_answer(content):
+        return True
+    return _agent_task_requires_structured_delivery(user_message) and _agent_answer_too_thin_for_task(content)
+
+
+def _agent_task_requires_substantive_answer(
+    user_message: str,
+    references: list[dict[str, Any]],
+) -> bool:
+    text = str(user_message or "").lower()
+    markers = (
+        "源码",
+        "代码",
+        "工作区",
+        "分析",
+        "流程",
+        "梳理",
+        "sfmea",
+        "failure mode",
+        "黑盒",
+        "测试用例",
+        "测试设计",
+        "风险",
+        "证据",
+        "spdk",
+        "source",
+        "code",
+        "workflow",
+        "test case",
+        "black-box",
+        "blackbox",
+    )
+    if any(marker in text for marker in markers):
+        return True
+    evidence_types = {
+        "workspace_source",
+        "workspace_material",
+        "workspace_report",
+        "workbench_task_artifact",
+        "semantic_case",
+    }
+    return any(str(ref.get("source_type") or "") in evidence_types for ref in references)
+
+
+def _agent_task_requires_structured_delivery(user_message: str) -> bool:
+    text = str(user_message or "").lower()
+    markers = (
+        "sfmea",
+        "failure mode",
+        "黑盒",
+        "测试用例",
+        "测试设计",
+        "流程梳理",
+        "代码证据",
+        "源码证据",
+        "生成",
+        "输出",
+        "列出",
+        "产出",
+        "交付",
+        "test case",
+        "black-box",
+        "blackbox",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _looks_like_agent_thin_help_answer(content: str) -> bool:
+    cleaned = clean_agent_output_text(str(content or "")).strip()
+    lowered = cleaned.lower()
+    if lowered.startswith(("最终答案", "final answer", "final_answer")):
+        return False
+    text = re.sub(r"\s+", "", lowered)
+    if not text:
+        return True
+    help_markers = (
+        "你好有什么需要帮助",
+        "您好有什么需要帮助",
+        "请问有什么可以帮",
+        "有什么可以帮助",
+        "howcanihelp",
+        "whatcanido",
+        "howmayihelp",
+    )
+    if any(marker in text for marker in help_markers):
+        return True
+    generic_done_markers = (
+        "已完成",
+        "完成了",
+        "分析完成",
+        "done",
+        "completed",
+    )
+    return len(text) <= 24 and any(marker in text for marker in generic_done_markers)
+
+
+def _agent_answer_too_thin_for_task(content: str) -> bool:
+    text = clean_agent_output_text(str(content or "")).strip()
+    lowered = text.lower()
+    substantive_markers = (
+        "最终答案",
+        "final answer",
+        "##",
+        "代码证据",
+        "源码证据",
+        "流程",
+        "sfmea",
+        "failure mode",
+        "黑盒测试",
+        "测试用例",
+        "前置条件",
+        "预期结果",
+        "lib/",
+        "test/",
+        ".c",
+        ".h",
+    )
+    if any(marker in lowered for marker in substantive_markers):
+        return False
+    if len(text) < 80:
+        return True
+    lines = [line for line in text.splitlines() if line.strip()]
+    return len(lines) <= 2 and len(text) < 220
 
 
 def _agent_output_segments(chunk: str) -> list[tuple[str, str]]:
@@ -1539,6 +1715,44 @@ def _build_agent_prompt(
             lines.append("用户问题：")
         lines.append(content)
         lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _build_agent_repair_prompt(
+    *,
+    conversation: dict[str, Any],
+    references: list[dict[str, Any]],
+    user_message: str,
+    previous_answer: str,
+    runtime: dict[str, Any],
+) -> str:
+    lines = [
+        "你仍在同一个 CodeTalks AI 线程中。",
+        f"执行器：{runtime.get('name') or runtime.get('id')}",
+        f"线程：{conversation.get('title')} ({conversation.get('id')})",
+        f"项目/工作区：{conversation.get('workspace_id')}",
+        f"源码工作区：{_public_workspace_label(conversation)}",
+        "",
+        "上一次执行器输出过短，CodeTalk 判定它不能满足用户的源码分析任务。",
+        "不要只问候用户，不要询问“有什么需要帮助”，不要只说已完成。",
+        "请继续完成原始任务，并直接输出用户可见的最终答案。",
+        "如果前一轮已经查过源码，请复用已有发现；如果没有，请先核对工作区源码和输入材料。",
+        "",
+        _codex_style_answer_instruction(),
+        _source_first_contract(references, user_message),
+        "",
+        "原始用户任务：",
+        user_message.strip(),
+        "",
+        "上一轮可见输出：",
+        _clip(previous_answer, 1000) or "（空）",
+        "",
+        "本轮必须至少包含：",
+        "- `## 结论`",
+        "- `## 代码证据`，列出文件路径/函数/关键状态或配置",
+        "- `## 流程梳理` 或与原始任务等价的步骤说明",
+        "- 如果原始任务要求 SFMEA、黑盒测试或测试设计，必须输出对应章节；长表格/大量用例可以交给 CodeTalk 文件化。",
+    ]
     return "\n".join(lines).strip()
 
 

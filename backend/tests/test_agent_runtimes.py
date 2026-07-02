@@ -1559,6 +1559,93 @@ class TestAgentRuntimes:
         assert "agent-runtime-live-first-delta" in assistant["content"]
         assert "agent-runtime-live-final-delta" in assistant["content"]
 
+    async def test_ai_thread_agent_runtime_repairs_thin_greeting_answer(self, sqlite_db, tmp_path):
+        repo = tmp_path / "spdk"
+        (repo / "lib" / "iscsi").mkdir(parents=True)
+        (repo / "lib" / "iscsi" / "iscsi.c").write_text(
+            "int iscsi_login_probe(void) { return 0; }\n",
+            encoding="utf-8",
+        )
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-thin-answer", repo_path=str(repo))
+        state_file = tmp_path / "thin-agent-state.txt"
+        prompt_log = tmp_path / "thin-agent-prompts.jsonl"
+        agent_script = tmp_path / "thin_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import json, pathlib, sys",
+                    f"state = pathlib.Path({str(state_file)!r})",
+                    f"prompt_log = pathlib.Path({str(prompt_log)!r})",
+                    "prompt = sys.stdin.read()",
+                    "previous = int(state.read_text() or '0') if state.exists() else 0",
+                    "prompt_log.write_text((prompt_log.read_text() if prompt_log.exists() else '') + json.dumps({'turn': previous + 1, 'prompt': prompt}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+                    "state.write_text(str(previous + 1), encoding='utf-8')",
+                    "if previous == 0:",
+                    "    print('thinking: 已检查 lib/iscsi/iscsi.c', flush=True)",
+                    "    print('你好，有什么需要帮助？', flush=True)",
+                    "else:",
+                    "    print('## 结论\\n已基于 `lib/iscsi/iscsi.c` 输出 iSCSI login 黑盒测试设计。\\n\\n## 代码证据\\n- `lib/iscsi/iscsi.c`: `iscsi_login_probe`。\\n\\n## 黑盒测试用例\\n1. 前置条件：target 已启动。步骤：发起 login。预期结果：返回明确状态并记录日志。', flush=True)",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Thin answer repair",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-thin-answer",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content=(
+                "基于当前 SPDK 源码，分析 iSCSI login 流程，"
+                "输出代码证据、流程梳理、SFMEA 和黑盒测试用例。"
+            ),
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-thin-answer",
+                "name": "Thin Answer Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+            },
+        )
+
+        prompts = [json.loads(line) for line in prompt_log.read_text(encoding="utf-8").splitlines()]
+        assert [item["turn"] for item in prompts] == [1, 2]
+        assert "上一次执行器输出过短" in prompts[1]["prompt"]
+        assert "不要只问候用户" in prompts[1]["prompt"]
+
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        assert "你好，有什么需要帮助" not in assistant["content"]
+        assert "## 结论" in assistant["content"]
+        assert "lib/iscsi/iscsi.c" in assistant["content"]
+        assert "黑盒测试用例" in assistant["content"]
+
+        events = await store.list_events_after(conversation["id"])
+        diagnostics = "\n".join(
+            event["payload"].get("content", "")
+            for event in events
+            if event["event_type"] == "delta" and event["payload"].get("kind") == "diagnostic"
+        )
+        assert "输出过短" in diagnostics
+
     async def test_ai_thread_claude_partial_messages_do_not_pollute_answer_or_artifact(
         self,
         sqlite_db,
