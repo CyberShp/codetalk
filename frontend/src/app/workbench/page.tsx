@@ -169,6 +169,14 @@ const WORKBENCH_VIEWS: Array<{
   },
 ];
 
+const CORE_WORKFLOW_PRESET_IDS = new Set([
+  "module_analysis",
+  "resource_leak_hunt",
+  "mr_blackbox_test",
+  "patch_impact_review",
+  "source_flow_sfmea_blackbox",
+]);
+
 const WORKFLOW_NAME_ZH: Record<string, string> = {
   "MR Black-box Test Workflow": "MR 黑盒测试工作流",
   "MR Black-box Test Design": "MR 黑盒测试工作流",
@@ -215,6 +223,12 @@ const WORKFLOW_NAME_ZH: Record<string, string> = {
   blobstore_metadata_powerfail_blackbox: "blobstore 元数据/掉电恢复黑盒场景",
   rpc_security_authz_blackbox: "RPC 安全/权限黑盒场景",
   spdk_cli_rpc_smoke_blackbox: "SPDK CLI/RPC 冒烟黑盒场景",
+  target_crash_restart_blackbox: "target 崩溃/重启恢复黑盒场景",
+  multi_client_isolation_blackbox: "多客户端隔离黑盒场景",
+  queue_depth_backpressure_blackbox: "队列深度/反压黑盒场景",
+  io_error_injection_retry_blackbox: "IO 错误注入/重试黑盒场景",
+  config_reload_persistence_blackbox: "配置重载/持久化黑盒场景",
+  long_running_resource_leak_blackbox: "长跑资源泄漏黑盒场景",
   basic_lifecycle_smoke_blackbox: "基础生命周期冒烟黑盒场景",
   io_stress_performance_blackbox: "IO 压力/性能基线黑盒场景",
   failure_recovery_soak_blackbox: "故障恢复/soak 黑盒场景",
@@ -230,6 +244,10 @@ function workflowDisplayName(workflow: Pick<WorkflowDefinition, "id" | "name"> |
   const normalizedName = WORKFLOW_NAME_ZH[name] ?? name;
   if (normalizedName && !/[A-Za-z]{4,}/.test(normalizedName)) return normalizedName;
   return WORKFLOW_NAME_ZH[id] || normalizedName || id;
+}
+
+function workflowPresetGroup(presetId: string): "核心工作流" | "常用测试场景" {
+  return CORE_WORKFLOW_PRESET_IDS.has(presetId) ? "核心工作流" : "常用测试场景";
 }
 
 const WORKFLOW_BUILDER_SCENARIOS = {
@@ -476,6 +494,48 @@ const WORKFLOW_BUILDER_SCENARIOS = {
     inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
     outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
     goal: "优先检查 GitNexus 和 CGC 产物，然后分析 scripts/rpc.py、spdkcli、test/json_config 与 app 启动路径的 RPC ready、create/list/delete、非法命令和诊断输出，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  target_crash_restart_blackbox: {
+    name: "target 崩溃/重启恢复",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 target 进程崩溃、signal 终止、重启 readiness、客户端重连、状态清理、运行中 IO 可观测性和操作者诊断，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  multi_client_isolation_blackbox: {
+    name: "多客户端隔离",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析多 initiator/多客户端隔离、namespace 可见性、访问边界、共享资源压力、跨 session 泄漏症状和公开诊断，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  queue_depth_backpressure_blackbox: {
+    name: "队列深度/反压",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 queue depth 限制、outstanding IO 饱和、反压、时延尖刺、超时报告、限流和压力解除后的恢复，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  io_error_injection_retry_blackbox: {
+    name: "IO 错误注入/重试",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析外部可触发的 IO 错误注入、retry、部分完成、transport failure、fail-fast 行为和错误后的数据路径恢复，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  config_reload_persistence_blackbox: {
+    name: "配置重载/持久化",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 config reload、保存配置持久化、重启恢复、部分应用、回滚、重复命令和外部状态校验，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  long_running_resource_leak_blackbox: {
+    name: "长跑资源泄漏",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析长时间 create/delete、connect/disconnect、持续 IO、资源增长、清理、指标、日志和 soak 测试失败诊断，输出代码证据、流程、SFMEA 和黑盒测试用例。",
     artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
   },
   basic_lifecycle_smoke_blackbox: {
@@ -2378,12 +2438,30 @@ export default function AgentWorkbenchPage() {
   const [openingConversation, setOpeningConversation] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const workflowOptions = useMemo(
-    () => workflows.map((workflow) => ({
-      id: workflow.id,
-      label: workflowDisplayName(workflow),
-    })),
-    [workflows],
+  const workflowOptions = useMemo(() => {
+    const seen = new Set<string>();
+    return [
+      ...workflows,
+      ...workflowPresets
+        .map((preset) => preset.definition)
+        .filter((definition) => !workflows.some((workflow) => workflow.id === definition.id)),
+    ].flatMap((workflow) => {
+      if (seen.has(workflow.id)) return [];
+      seen.add(workflow.id);
+      return [{
+        id: workflow.id,
+        label: workflowDisplayName(workflow),
+      }];
+    });
+  }, [workflowPresets, workflows]);
+
+  const groupedWorkflowPresets = useMemo(
+    () =>
+      (["核心工作流", "常用测试场景"] as const).map((group) => ({
+        group,
+        items: workflowPresets.filter((preset) => workflowPresetGroup(preset.id) === group),
+      })).filter((group) => group.items.length > 0),
+    [workflowPresets],
   );
 
   useEffect(() => {
@@ -2394,6 +2472,17 @@ export default function AgentWorkbenchPage() {
     query.addEventListener("change", updatePreference);
     return () => query.removeEventListener("change", updatePreference);
   }, []);
+  useEffect(() => {
+    if (selectedWorkflowId !== DEFAULT_WORKFLOW.id || workflowPresets.length === 0) return;
+    const preferredPreset =
+      workflowPresets.find((preset) => preset.id === "module_analysis") ?? workflowPresets[0];
+    setSelectedWorkflowId(preferredPreset.definition.id);
+    setWorkflowJson((currentJson) => {
+      const currentId = workflowIdFromJson(currentJson);
+      if (currentId && currentId !== DEFAULT_WORKFLOW.id) return currentJson;
+      return pretty(preferredPreset.definition);
+    });
+  }, [selectedWorkflowId, workflowPresets]);
   const builderProviderOptions = useMemo(() => {
     const providers = (providerMatrix?.providers ?? [])
       .filter((provider) => provider.agent_owned || provider.command.length > 0)
@@ -2430,8 +2519,10 @@ export default function AgentWorkbenchPage() {
   const selectedWorkflowInputs = useMemo(() => {
     const registered = workflows.find((workflow) => workflow.id === selectedWorkflowId);
     if (registered?.inputs?.length) return registered.inputs;
+    const preset = workflowPresets.find((item) => item.definition.id === selectedWorkflowId);
+    if (preset?.definition.inputs?.length) return preset.definition.inputs;
     return workflowInputsFromJson(workflowJson);
-  }, [selectedWorkflowId, workflowJson, workflows]);
+  }, [selectedWorkflowId, workflowJson, workflowPresets, workflows]);
   const selectedWorkflowAudit = useMemo(
     () => workflows.find((workflow) => workflow.id === selectedWorkflowId)?.audit,
     [selectedWorkflowId, workflows],
@@ -4048,10 +4139,14 @@ export default function AgentWorkbenchPage() {
                 className="min-w-0 max-w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary sm:min-w-72"
                 aria-label="工作流预设"
               >
-                {workflowPresets.map((preset) => (
-                  <option key={preset.id} value={preset.id}>
-                    {workflowDisplayName(preset.definition)}
-                  </option>
+                {groupedWorkflowPresets.map((group) => (
+                  <optgroup key={group.group} label={group.group}>
+                    {group.items.map((preset) => (
+                      <option key={preset.id} value={preset.id}>
+                        {workflowDisplayName(preset.definition)}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             ) : (

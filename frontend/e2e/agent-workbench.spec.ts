@@ -324,6 +324,99 @@ function minimalWorkflowDefinition(id: string, name: string) {
   };
 }
 
+test("workflow run selector falls back to built-in presets when registered workflows are empty", async ({
+  page,
+}) => {
+  const definitions = [
+    minimalWorkflowDefinition("module_analysis", "Module Analysis"),
+    minimalWorkflowDefinition("resource_leak_hunt", "Resource Leak and Error Branch Hunt"),
+    minimalWorkflowDefinition("mr_blackbox_test", "MR Black-box Test Design"),
+    minimalWorkflowDefinition("patch_impact_review", "Patch Impact Review"),
+    minimalWorkflowDefinition(
+      "source_flow_sfmea_blackbox",
+      "Code Analysis -> Flow -> SFMEA -> Black-box Cases",
+    ),
+    minimalWorkflowDefinition(
+      "target_crash_restart_blackbox",
+      "Target Crash / Restart Recovery Black-box Scenario",
+    ),
+    minimalWorkflowDefinition(
+      "multi_client_isolation_blackbox",
+      "Multi-client Isolation Black-box Scenario",
+    ),
+    minimalWorkflowDefinition(
+      "queue_depth_backpressure_blackbox",
+      "Queue Depth / Backpressure Black-box Scenario",
+    ),
+  ];
+
+  await page.route("**/api/workbench/workflows", async (route) => {
+    await route.fulfill({
+      json: [],
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+  await page.route("**/api/workbench/workflow-presets", async (route) => {
+    await route.fulfill({
+      json: {
+        items: definitions.map((definition) => ({
+          id: definition.id,
+          name: definition.name,
+          description: `${definition.name} preset`,
+          definition,
+        })),
+      },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+  await page.route("**/api/workbench/task-runs*", async (route) => {
+    await route.fulfill({
+      json: { items: [] },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+  await page.route("**/api/workbench/provider-capabilities", async (route) => {
+    await route.fulfill({
+      json: { status: "ok", providers: [], notes: [] },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+  await page.route("**/api/workbench/system-audit", async (route) => {
+    await route.fulfill({
+      json: { status: "ok", checks: [], summary: {} },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+
+  await gotoWorkbench(page);
+  await expect(page.getByRole("heading", { name: "任务运行" })).toBeVisible();
+  await expect(
+    page.getByLabel("工作流").locator('option[value="module_analysis"]'),
+  ).toHaveCount(1);
+
+  const runOptions = await page
+    .getByLabel("工作流")
+    .locator("option")
+    .evaluateAll((options) => options.map((option) => option.textContent?.trim() ?? ""));
+  expect(runOptions).toContain("模块分析工作流");
+  expect(runOptions).toContain("target 崩溃/重启恢复黑盒场景");
+  expect(runOptions).not.toContain("mr-blackbox-workflow");
+
+  await openWorkbenchView(page, "工作流设计");
+  await expect(page.getByRole("heading", { name: "工作流编排" })).toBeVisible();
+  const presetGroups = await page
+    .getByLabel("工作流预设")
+    .locator("optgroup")
+    .evaluateAll((groups) => groups.map((group) => group.getAttribute("label")));
+  expect(presetGroups).toEqual(["核心工作流", "常用测试场景"]);
+  await expect(
+    page.locator('select[aria-label="工作流预设"] option[value="module_analysis"]'),
+  ).toHaveCount(1);
+  await expect(
+    page.locator('select[aria-label="工作流预设"] option[value="target_crash_restart_blackbox"]'),
+  ).toHaveCount(1);
+});
+
 test("workflow presets stay visible when non-core diagnostics fail", async ({ page }) => {
   const definitions = [
     minimalWorkflowDefinition("module_analysis", "Module Analysis"),

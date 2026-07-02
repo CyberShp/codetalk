@@ -900,6 +900,78 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
             ),
         ),
         _source_flow_scenario_preset(
+            preset_id="target_crash_restart_blackbox",
+            name="Target Crash / Restart Recovery Black-box Scenario",
+            description=(
+                "Analyze target process crash, signal termination, restart readiness, reconnect, "
+                "state cleanup, in-flight IO visibility, and operator diagnostics."
+            ),
+            default_query=(
+                "app lib/event lib/thread test/app test/nvmf test/iscsi_tgt target process crash "
+                "signal termination restart readiness reconnect state cleanup inflight IO diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="multi_client_isolation_blackbox",
+            name="Multi-client Isolation Black-box Scenario",
+            description=(
+                "Analyze multi-initiator or multi-client isolation, namespace visibility, access "
+                "boundaries, shared resource pressure, and cross-session leakage symptoms."
+            ),
+            default_query=(
+                "lib/nvmf lib/iscsi module/bdev test/nvmf test/iscsi_tgt multi client initiator "
+                "namespace isolation access boundary session leakage shared resource pressure"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="queue_depth_backpressure_blackbox",
+            name="Queue Depth / Backpressure Black-box Scenario",
+            description=(
+                "Analyze queue depth limits, outstanding IO saturation, backpressure behavior, "
+                "latency spikes, timeout reporting, throttling, and recovery after pressure is removed."
+            ),
+            default_query=(
+                "lib/bdev lib/nvmf lib/iscsi lib/thread test/bdev queue depth outstanding IO "
+                "saturation backpressure latency timeout throttling recovery pressure removed"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="io_error_injection_retry_blackbox",
+            name="IO Error Injection / Retry Black-box Scenario",
+            description=(
+                "Analyze externally visible IO error injection, retry, partial completion, "
+                "transport failures, fail-fast behavior, and post-error data-path recovery."
+            ),
+            default_query=(
+                "lib/bdev lib/nvmf lib/iscsi test/bdev test/nvmf IO error injection retry "
+                "partial completion transport failure fail fast data path recovery diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="config_reload_persistence_blackbox",
+            name="Config Reload / Persistence Black-box Scenario",
+            description=(
+                "Analyze config reload, saved configuration persistence, restart restore, "
+                "partial apply, rollback, duplicate commands, and external state verification."
+            ),
+            default_query=(
+                "app scripts/rpc.py test/json_config config reload saved configuration persistence "
+                "restart restore partial apply rollback duplicate command external state verification"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="long_running_resource_leak_blackbox",
+            name="Long-running Resource Leak Black-box Scenario",
+            description=(
+                "Analyze long-running create/delete, connect/disconnect, sustained IO, resource "
+                "growth, cleanup, metrics, logs, and soak-test failure diagnostics."
+            ),
+            default_query=(
+                "lib/bdev lib/nvmf lib/iscsi lib/thread test/common long running soak create "
+                "delete connect disconnect sustained IO resource leak cleanup metrics logs diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
             preset_id="basic_lifecycle_smoke_blackbox",
             name="Basic Lifecycle Smoke Black-box Scenario",
             description=(

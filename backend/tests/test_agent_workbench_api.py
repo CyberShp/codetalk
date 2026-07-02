@@ -139,6 +139,12 @@ async def test_workbench_workflow_preset_api(workbench_client):
         "concurrent_operations_stress_blackbox",
         "observability_diagnostics_blackbox",
         "config_compatibility_rollback_blackbox",
+        "target_crash_restart_blackbox",
+        "multi_client_isolation_blackbox",
+        "queue_depth_backpressure_blackbox",
+        "io_error_injection_retry_blackbox",
+        "config_reload_persistence_blackbox",
+        "long_running_resource_leak_blackbox",
     }.issubset(preset_ids)
 
     listed = await workbench_client.get("/api/workbench/workflows")
