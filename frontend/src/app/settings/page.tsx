@@ -147,7 +147,7 @@ const AGENT_RUNTIME_PRESETS = [
   {
     id: "nga",
     label: "NGA / CodeAgent",
-    description: "兼容 raw CLI。若 NGA 支持 JSON 事件流，建议在高级选项改成自动识别。",
+    description: "兼容 raw CLI。若 NGA 支持 JSON 事件流，建议在下方更多设置里改成自动识别。",
     commandPreview: "nga",
     form: {
       ...EMPTY_AGENT_RUNTIME_FORM,

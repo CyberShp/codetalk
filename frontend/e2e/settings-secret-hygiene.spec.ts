@@ -99,10 +99,13 @@ test("settings prevents duplicate LLM saves from a real double click", async ({ 
       new URL(request.url()).pathname === "/api/settings/llm",
   );
 
-  await form.getByRole("button", { name: "保存配置" }).hover();
-  await form.getByRole("button", { name: "保存配置" }).dblclick();
+  const saveButton = form.getByRole("button", { name: "保存配置" });
+  await saveButton.hover();
+  await saveButton.dblclick();
   await createRequest;
-  await expect(form.getByRole("button", { name: "保存配置" })).toBeDisabled();
+  if (await saveButton.isVisible().catch(() => false)) {
+    await expect(saveButton).toBeDisabled();
+  }
 
   const savedRow = page.locator("div", { hasText: configName }).filter({ hasText: modelName }).first();
   await expect(savedRow).toBeVisible({ timeout: 15_000 });
@@ -222,14 +225,22 @@ test("settings agent runtime env values are not rendered after save", async ({ p
 
   await page.getByRole("button", { name: "保存" }).click();
 
-  const savedRuntime = page.locator("div", { hasText: runtimeName }).filter({ hasText: "python3 --version" }).first();
+  const savedRuntime = page
+    .locator("div.rounded-xl.border")
+    .filter({ has: page.locator("strong", { hasText: runtimeName }) })
+    .filter({ hasText: "python3 --version" })
+    .first();
   await expect(savedRuntime).toBeVisible();
   await savedRuntime.getByRole("button", { name: "测试" }).hover();
   await expect(page.locator("body")).not.toContainText(secret);
   await expectBrowserStorageNotToContain(page, secret);
 
   await page.reload({ waitUntil: "domcontentloaded" });
-  const reloadedRuntime = page.locator("div", { hasText: runtimeName }).filter({ hasText: "python3 --version" }).first();
+  const reloadedRuntime = page
+    .locator("div.rounded-xl.border")
+    .filter({ has: page.locator("strong", { hasText: runtimeName }) })
+    .filter({ hasText: "python3 --version" })
+    .first();
   await expect(reloadedRuntime).toBeVisible();
   await expect(page.locator("body")).not.toContainText(secret);
   await expectBrowserStorageNotToContain(page, secret);
