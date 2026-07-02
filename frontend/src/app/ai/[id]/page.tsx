@@ -419,7 +419,9 @@ export default function AIThreadPage() {
       latestRun?.id === streamingRunId &&
       ["queued", "running"].includes(latestRun?.status ?? ""),
   );
-  const composerDisabled = sending || isActuallyRunning;
+  const activeAgentRuntimeDisabled =
+    conversation?.runtime_type === "agent_runtime" && activeRuntime ? !activeRuntime.enabled : false;
+  const composerDisabled = sending || isActuallyRunning || activeAgentRuntimeDisabled;
   const threadNavigationBusy =
     savingRuntime || cancelling || creatingSiblingThread || Boolean(deletingThreadId) || isActuallyRunning;
   const lastUserMessage = useMemo(
@@ -1149,7 +1151,7 @@ export default function AIThreadPage() {
                 停止
               </button>
             ) : (
-              <button className="ct-codex-send" type="button" onClick={send} disabled={!input.trim() || sending}>
+              <button className="ct-codex-send" type="button" onClick={send} disabled={!input.trim() || composerDisabled}>
                 {sending ? <Loader2 size={15} className="animate-spin" /> : <Send size={15} />}
                 发送
               </button>

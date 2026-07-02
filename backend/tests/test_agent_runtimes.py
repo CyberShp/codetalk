@@ -112,6 +112,66 @@ class TestAgentRuntimes:
             "default-opencode",
         ]
 
+    async def test_ai_thread_rejects_disabled_agent_runtime_on_create_and_update(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db, "ws-disabled-runtime-api")
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            runtime_resp = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Disabled Thin Agent",
+                    "command": sys.executable,
+                    "args": ["--version"],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "working_dir_mode": "project",
+                    "fixed_working_dir": "",
+                    "env": {},
+                    "health_command": "",
+                    "timeout_seconds": 30,
+                    "enabled": False,
+                },
+            )
+            assert runtime_resp.status_code == 201
+            runtime_id = runtime_resp.json()["id"]
+
+            rejected_create = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "runtime_type": "agent_runtime",
+                    "agent_runtime_id": runtime_id,
+                    "title": "Disabled runtime create",
+                },
+            )
+            assert rejected_create.status_code == 400
+            assert "已停用" in rejected_create.text
+
+            conversation_resp = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "runtime_type": "builtin_llm",
+                    "title": "Builtin first",
+                },
+            )
+            assert conversation_resp.status_code == 201
+            conversation_id = conversation_resp.json()["id"]
+
+            rejected_update = await client.patch(
+                f"/api/ai/conversations/{conversation_id}",
+                json={
+                    "runtime_type": "agent_runtime",
+                    "agent_runtime_id": runtime_id,
+                },
+            )
+            assert rejected_update.status_code == 400
+            assert "已停用" in rejected_update.text
+
     async def test_agent_runtime_rejects_shell_command_in_command_field(self, sqlite_db):
         app = _test_app(sqlite_db)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -1704,7 +1764,7 @@ class TestAgentRuntimes:
             is False
         )
 
-    async def test_ai_thread_agent_runtime_keeps_substantive_but_incomplete_answer_after_repair(
+    async def test_ai_thread_agent_runtime_fails_structured_task_when_repair_stays_incomplete(
         self,
         sqlite_db,
         tmp_path,
@@ -1738,7 +1798,7 @@ class TestAgentRuntimes:
             scope_type="workspace",
             scope_id=ws_id,
             workspace_id=ws_id,
-            title="Substantive incomplete answer",
+            title="Incomplete structured answer",
             runtime_type="agent_runtime",
             agent_runtime_id="runtime-soft-warning",
         )
@@ -1765,11 +1825,10 @@ class TestAgentRuntimes:
         )
 
         run = await store.get_run(run_id)
-        assert run["status"] == "completed"
+        assert run["status"] == "failed"
+        assert "仍未产出可验收" in (run["error"] or "")
         messages = await store.list_messages(conversation["id"])
-        assistant = [item for item in messages if item["role"] == "assistant"][-1]
-        assert "SPDK agent completed analysis" in assistant["content"]
-        assert "lib/nvmf/ctrlr.c" in assistant["content"]
+        assert [item["role"] for item in messages] == ["user"]
         events = await store.list_events_after(conversation["id"])
         diagnostics = "\n".join(
             event["payload"].get("content", "")
@@ -1777,7 +1836,6 @@ class TestAgentRuntimes:
             if event["event_type"] == "delta" and event["payload"].get("kind") == "diagnostic"
         )
         assert "上一次执行器输出过短" in diagnostics
-        assert "仍未完全满足" in diagnostics
 
     async def test_ai_thread_claude_partial_messages_do_not_pollute_answer_or_artifact(
         self,

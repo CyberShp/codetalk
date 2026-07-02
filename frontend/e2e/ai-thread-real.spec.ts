@@ -4754,6 +4754,9 @@ test("shows the thread-bound executor even after that runtime is disabled", asyn
     await expect(threadRuntimeSelect.locator(`option[value="${runtime.id}"]`)).toBeDisabled();
     await expect(page.locator(".ct-ai-env-card").filter({ hasText: "执行器" })).toContainText(runtimeName);
     await expect(page.locator(".ct-ai-env-card").filter({ hasText: "执行器" })).toContainText("已停用");
+    await expect(page.getByLabel("AI 线程消息")).toBeDisabled();
+    await expect(page.getByRole("button", { name: "解释这个测试设计背后的风险判断" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "发送" })).toBeDisabled();
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }

@@ -61,6 +61,19 @@ def _redact_payload(value: Any) -> Any:
     return value
 
 
+async def _require_enabled_agent_runtime(runtime_id: str | None) -> dict[str, Any]:
+    value = str(runtime_id or "").strip()
+    if not value:
+        raise HTTPException(status_code=400, detail="Agent 执行器不能为空")
+    try:
+        runtime = await AgentRuntimeStore().get_runtime(value)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Agent runtime not found")
+    if not runtime.get("enabled", True):
+        raise HTTPException(status_code=400, detail="Agent 执行器已停用，请切换到可用执行器后再继续")
+    return runtime
+
+
 def schedule_conversation_run(run_id: str) -> None:
     async def _job() -> None:
         store = _store()
@@ -92,6 +105,8 @@ def schedule_conversation_run(run_id: str) -> None:
 async def create_conversation(body: CreateConversationRequest) -> dict[str, Any]:
     if body.scope_type not in AI_SCOPE_TYPES:
         raise HTTPException(status_code=400, detail=f"Unsupported scope_type: {body.scope_type}")
+    if body.runtime_type == "agent_runtime":
+        await _require_enabled_agent_runtime(body.agent_runtime_id)
     return await _store().create_conversation(
         scope_type=body.scope_type,
         scope_id=body.scope_id,
@@ -138,6 +153,8 @@ async def get_conversation(conversation_id: str) -> dict[str, Any]:
 async def update_conversation(conversation_id: str, body: UpdateConversationRequest) -> dict[str, Any]:
     store = _store()
     try:
+        if body.runtime_type == "agent_runtime":
+            await _require_enabled_agent_runtime(body.agent_runtime_id)
         conversation = await store.update_conversation_runtime(
             conversation_id,
             runtime_type=body.runtime_type,
