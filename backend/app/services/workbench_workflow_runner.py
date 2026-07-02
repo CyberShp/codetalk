@@ -808,7 +808,7 @@ def _local_source_flow_sfmea_blackbox_payloads(
     evidence_cards = scope_payloads["evidence_cards.json"]
     files = [str(item) for item in scope.get("files") or []]
     query = str(scope.get("query") or _public_local_scope_query(task_run))
-    selected_files = files[:8]
+    selected_files = _prioritize_source_files_for_analysis(files)[:8]
     sfmea = [
         _source_flow_sfmea_item(
             task_run=task_run,
@@ -841,6 +841,16 @@ def _local_source_flow_sfmea_blackbox_payloads(
         "sfmea.json": sfmea,
         "black_box_cases.json": cases,
     }
+
+
+def _prioritize_source_files_for_analysis(files: list[str]) -> list[str]:
+    source_files = [file_path for file_path in files if not _is_test_source_path(file_path)]
+    test_files = [file_path for file_path in files if _is_test_source_path(file_path)]
+    return source_files + test_files
+
+
+def _is_test_source_path(file_path: str) -> bool:
+    return file_path.startswith("test/")
 
 
 def _evidence_card_for_file(evidence_cards: list[dict[str, Any]], file_path: str) -> dict[str, Any]:
@@ -1539,6 +1549,9 @@ def _local_fallback_resource_finding(
 
 
 def _test_directory_for_source(file_path: str) -> str:
+    if file_path.startswith("test/"):
+        parts = file_path.split("/")
+        return "/".join(parts[:2]) if len(parts) >= 2 else "test"
     mappings = [
         ("lib/nvmf", "test/nvmf"),
         ("lib/iscsi", "test/iscsi_tgt"),

@@ -2206,6 +2206,70 @@ async def test_builtin_common_scenario_preset_uses_default_query_when_scope_is_e
     assert scope["files"][0].startswith("lib/nvmf/")
 
 
+async def test_builtin_rpc_config_scenario_prioritizes_source_over_test_helpers(
+    workbench_client,
+    tmp_path,
+):
+    repo = tmp_path / "spdk-like"
+    test_file = repo / "test" / "json_config" / "config_filter.py"
+    rpc_file = repo / "lib" / "rpc" / "rpc.c"
+    subsystem_file = repo / "module" / "event" / "subsystems" / "bdev" / "bdev_rpc.c"
+    test_file.parent.mkdir(parents=True)
+    rpc_file.parent.mkdir(parents=True)
+    subsystem_file.parent.mkdir(parents=True)
+    test_file.write_text(
+        "def clear_config_filter():\n    return 'rpc config helper'\n",
+        encoding="utf-8",
+    )
+    rpc_file.write_text(
+        "int spdk_rpc_config_negative_path(void) { return -1; }\n",
+        encoding="utf-8",
+    )
+    subsystem_file.write_text(
+        "int rpc_bdev_config_ordering_probe(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+
+    installed = await workbench_client.post(
+        "/api/workbench/workflow-presets/rpc_config_negative_blackbox/install"
+    )
+    assert installed.status_code == 201
+
+    response = await workbench_client.post(
+        "/api/workbench/task-runs/run",
+        json={
+            "workflow_id": "rpc_config_negative_blackbox",
+            "workspace_id": "ws-rpc-source-priority",
+            "repo_path": str(repo),
+            "inputs": {"repo_path": str(repo)},
+            "timeout_sec": 10,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "completed"
+
+    task_dir = _task_run_dir(body["task_run"]["task_run_id"])
+    sfmea = json.loads(
+        (task_dir / "steps" / "analyze_source_flow" / "sfmea.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    cases = json.loads(
+        (task_dir / "steps" / "analyze_source_flow" / "black_box_cases.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert not sfmea[0]["file_path"].startswith("test/")
+    assert not cases[0]["file_path"].startswith("test/")
+    assert "lib/rpc/rpc.c" in [item["file_path"] for item in sfmea[:2]]
+    assert all(
+        not item["file_path"].startswith("test/")
+        for item in sfmea[:2]
+    )
+
+
 async def test_workbench_task_run_run_auto_imports_declared_semantic_outputs(
     workbench_client,
     tmp_path,
