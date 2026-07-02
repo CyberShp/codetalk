@@ -1241,7 +1241,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   border: 1px solid rgba(216, 227, 239, 0.82);
   border-radius: 16px;
   background: #ffffff;
-  padding: 13px;
+  padding: 10px;
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.06);
 }
 
@@ -1265,7 +1265,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 }
 
 .ct-ai-ref__meta {
-  margin-top: 8px;
+  margin-top: 6px;
   display: flex;
   min-width: 0;
   align-items: center;
@@ -1289,14 +1289,61 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 }
 
 .ct-ai-ref p {
-  margin-top: 9px;
+  margin-top: 6px;
   display: -webkit-box;
   overflow: hidden;
   color: #64748b;
   font-size: 12px;
-  line-height: 1.6;
+  line-height: 1.5;
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 5;
+  -webkit-line-clamp: 2;
+}
+
+.ct-ai-ref__excerpt {
+  margin-top: 6px;
+  border-radius: 11px;
+  background: #f8fafc;
+}
+
+.ct-ai-ref__excerpt summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 6px 8px;
+  color: #475569;
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.ct-ai-ref__excerpt summary::-webkit-details-marker {
+  display: none;
+}
+
+.ct-ai-ref__excerpt summary::after {
+  content: "+";
+  float: right;
+  color: #64748b;
+  font-weight: 820;
+}
+
+.ct-ai-ref__excerpt[open] summary {
+  border-bottom: 1px solid rgba(226, 232, 240, 0.9);
+}
+
+.ct-ai-ref__excerpt[open] summary::after {
+  content: "-";
+}
+
+.ct-ai-ref__excerpt p {
+  display: block;
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  padding: 9px;
+  color: #475569;
+  font-family: var(--font-data);
+  font-size: 11px;
+  line-height: 1.55;
+  -webkit-line-clamp: unset;
 }
 
 .ct-thread-hub {
@@ -2005,6 +2052,41 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   font-weight: 760;
 }
 
+.ct-codex-ai__rail-search {
+  width: 100%;
+  min-height: 34px;
+  margin-bottom: 7px;
+  border: 1px solid rgba(203, 213, 225, 0.86);
+  border-radius: 11px;
+  background: rgba(255, 255, 255, 0.86);
+  padding: 7px 9px;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 650;
+  outline: none;
+}
+
+.ct-codex-ai__rail-search::placeholder {
+  color: #94a3b8;
+}
+
+.ct-codex-ai__rail-search:focus {
+  border-color: rgba(15, 23, 42, 0.24);
+  box-shadow: 0 0 0 3px rgba(15, 23, 42, 0.06);
+}
+
+.ct-codex-ai__rail-more {
+  display: block;
+  border: 1px dashed rgba(203, 213, 225, 0.9);
+  border-radius: 11px;
+  background: rgba(248, 250, 252, 0.78);
+  padding: 8px 9px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 680;
+  line-height: 1.35;
+}
+
 .ct-codex-ai__new {
   width: 100%;
   justify-content: center;
@@ -2185,6 +2267,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 .ct-codex-ai__new:focus-visible,
 .ct-codex-ai__thread:focus-visible,
 .ct-codex-ai__project-row:focus-visible,
+.ct-codex-ai__rail-search:focus-visible,
 .ct-codex-ai__back:focus-visible,
 .ct-codex-composer button:focus-visible,
 .ct-ai-action:focus-visible {

@@ -20,13 +20,14 @@ async function mockReadableConversation(
   page: Page,
   options: {
     assistantContent?: string;
+    references?: Array<Record<string, unknown>>;
     extraReferences?: Array<Record<string, unknown>>;
     extraMessages?: Array<Record<string, unknown>>;
   } = {},
 ) {
   const assistantContent =
     options.assistantContent ?? "建议补充登录失败、权限失效、弱网重试和审计日志验证。";
-  const references = [
+  const references = options.references ?? [
     {
       source_type: "workspace_report",
       source_id: "report-1",
@@ -319,6 +320,125 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   );
   expect(exported).toContain("时间: 2026-06-28T00:00:00Z");
   expect(exported).toContain("时间: 2026-06-28T00:00:01Z");
+});
+
+test("AI conversation evidence cards keep long source excerpts folded", async ({ page }) => {
+  const longSourceExcerpt = Array.from({ length: 26 }, (_, index) =>
+    `${index + 1}: if (login_phase_${index} && chap_state_${index}) { return iscsi_login_error_${index}; }`,
+  ).join("\n");
+  await mockReadableConversation(page, {
+    references: [
+      {
+        source_type: "workspace_source",
+        source_id: "src-long",
+        title: "lib/iscsi/iscsi.c:1262",
+        excerpt: longSourceExcerpt,
+        metadata: {
+          workspace_id: "ws-1",
+          path: "lib/iscsi/iscsi.c",
+          start_line: 1262,
+          end_line: 1443,
+        },
+      },
+    ],
+  });
+  await page.setViewportSize({ width: 1440, height: 920 });
+  await page.goto("/ai/conv-1", { waitUntil: "domcontentloaded" });
+
+  const card = page.locator(".ct-ai-ref").first();
+  await expect(card).toContainText("lib/iscsi/iscsi.c:L1262-L1443");
+  await expect(card.getByText("展开证据片段")).toBeVisible();
+  await expect(card.getByText("iscsi_login_error_25")).toBeHidden();
+
+  const compactHeight = await card.evaluate((element) => element.getBoundingClientRect().height);
+  expect(compactHeight).toBeLessThan(220);
+
+  await card.getByText("展开证据片段").click();
+  await expect(card.getByText("iscsi_login_error_25")).toBeVisible();
+});
+
+test("AI conversation rail filters dense projects and thread histories", async ({ page }) => {
+  const workspaces = Array.from({ length: 36 }, (_, index) => ({
+    id: index === 0 ? "ws-1" : `ws-${index + 1}`,
+    name: index === 29 ? "SPDK production target" : `Large project ${index + 1}`,
+    repo_path: `/repo/project-${index + 1}`,
+    indexed: 1,
+    index_job: null,
+    index_progress: 100,
+    analyze_status: null,
+    analyze_progress: 0,
+    last_index_error: null,
+    created_at: "2026-06-28T00:00:00Z",
+    updated_at: "2026-06-28T00:00:00Z",
+    materials: [],
+    reports: [],
+  }));
+  const threads = Array.from({ length: 42 }, (_, index) => ({
+    id: index === 0 ? "conv-dense" : `conv-dense-${index + 1}`,
+    scope_type: "workspace",
+    scope_id: "ws-1",
+    workspace_id: "ws-1",
+    memory_namespace: "workspace:ws-1",
+    title: index === 31 ? "rare-thread iSCSI login SFMEA" : `Dense thread ${index + 1}`,
+    status: "idle",
+    initial_context: {},
+    created_at: "2026-06-28T00:00:00Z",
+    updated_at: `2026-06-28T00:${String(index).padStart(2, "0")}:00Z`,
+  }));
+
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: workspaces });
+  });
+  await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations?workspace_id=ws-1&limit=50", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: threads } });
+  });
+  await page.route("**/api/ai/conversations/conv-dense", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        ...threads[0],
+        latest_run: null,
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-dense/messages", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: { items: [] },
+    });
+  });
+
+  await page.setViewportSize({ width: 1440, height: 920 });
+  await page.goto("/ai/conv-dense", { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByText("已收起 12 个项目")).toBeVisible();
+  await expect(page.getByText("已收起 18 条线程")).toBeVisible();
+  await expect(page.getByText("SPDK production target")).toBeHidden();
+
+  await page.getByLabel("搜索 AI 项目").fill("production");
+  await expect(page.getByText("SPDK production target")).toBeVisible();
+  await expect(page.getByText("Large project 2")).toBeHidden();
+
+  await page.getByLabel("搜索 AI 线程").fill("rare-thread");
+  await expect(page.getByText("rare-thread iSCSI login SFMEA")).toBeVisible();
+  await expect(page.getByText("Dense thread 2")).toBeHidden();
+
+  const layout = await page.locator(".ct-codex-ai").evaluate((element) => {
+    const projectList = element.querySelector(".ct-codex-ai__project-list") as HTMLElement | null;
+    const threadList = element.querySelector(".ct-codex-ai__thread-list") as HTMLElement | null;
+    return {
+      documentScrollHeight: document.documentElement.scrollHeight,
+      viewportHeight: window.innerHeight,
+      projectOverflowY: projectList ? window.getComputedStyle(projectList).overflowY : "",
+      threadOverflowY: threadList ? window.getComputedStyle(threadList).overflowY : "",
+    };
+  });
+  expect(layout.documentScrollHeight).toBeLessThanOrEqual(layout.viewportHeight + 24);
+  expect(layout.projectOverflowY).toBe("auto");
+  expect(layout.threadOverflowY).toBe("auto");
 });
 
 test("AI conversation mobile layout keeps navigation and topbar controls within the viewport", async ({ page }) => {

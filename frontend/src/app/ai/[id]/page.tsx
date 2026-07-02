@@ -36,6 +36,8 @@ const QUICK_ACTIONS = [
   "把结论整理成可执行测试用例",
   "生成下一轮复跑计划",
 ];
+const RAIL_VISIBLE_LIMIT = 24;
+const EVIDENCE_EXCERPT_PREVIEW_CHARS = 120;
 
 function eventContent(event: AIRunEvent): string {
   const value = event.payload.content;
@@ -186,10 +188,20 @@ function artifactReferenceHref(ref: AIContextReference): string {
   return `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/artifacts/content/${encodedPath}`;
 }
 
+function compactEvidenceExcerpt(excerpt: string): { preview: string; remainder: string } {
+  const text = redactDiagnosticText(String(excerpt || "")).replace(/\s+/g, " ").trim();
+  if (text.length <= EVIDENCE_EXCERPT_PREVIEW_CHARS) return { preview: text, remainder: "" };
+  return {
+    preview: `${text.slice(0, EVIDENCE_EXCERPT_PREVIEW_CHARS - 1).trimEnd()}…`,
+    remainder: text.slice(EVIDENCE_EXCERPT_PREVIEW_CHARS).trim(),
+  };
+}
+
 function EvidenceReferenceCard({ refItem }: { refItem: AIContextReference }) {
   const sourceLocation = sourceLocationLabel(refItem);
   const sourceHref = sourceReferenceHref(refItem);
   const artifactHref = artifactReferenceHref(refItem);
+  const excerpt = compactEvidenceExcerpt(refItem.excerpt ?? "");
   return (
     <div className="ct-ai-ref">
       <div className="flex items-center justify-between gap-2">
@@ -210,7 +222,17 @@ function EvidenceReferenceCard({ refItem }: { refItem: AIContextReference }) {
           {artifactHref && <Link href={artifactHref}>打开产物</Link>}
         </div>
       )}
-      <p>{refItem.excerpt}</p>
+      {excerpt.preview && (
+        <>
+          <p>{excerpt.preview}</p>
+          {excerpt.remainder && (
+            <details className="ct-ai-ref__excerpt">
+              <summary>展开证据片段</summary>
+              <p>{excerpt.remainder}</p>
+            </details>
+          )}
+        </>
+      )}
     </div>
   );
 }
@@ -330,6 +352,8 @@ export default function AIThreadPage() {
   const [streamingDiagnostics, setStreamingDiagnostics] = useState<string[]>([]);
   const [contextOpen, setContextOpen] = useState(true);
   const [generationDiagnosticsOpen, setGenerationDiagnosticsOpen] = useState(false);
+  const [railProjectQuery, setRailProjectQuery] = useState("");
+  const [railThreadQuery, setRailThreadQuery] = useState("");
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -347,11 +371,32 @@ export default function AIThreadPage() {
   const workspaceId = threadWorkspaceId(conversation);
   const workspace = workspaces.find((item) => item.id === workspaceId) ?? null;
   const activeRuntime = agentRuntimes.find((item) => item.id === conversation?.agent_runtime_id) ?? null;
-  const railProjects = useMemo(() => workspaces.slice(0, 8), [workspaces]);
-  const visibleThreads = useMemo(
-    () => threads.filter((thread) => threadWorkspaceId(thread) === workspaceId).slice(0, 50),
+  const normalizedProjectQuery = railProjectQuery.trim().toLowerCase();
+  const normalizedThreadQuery = railThreadQuery.trim().toLowerCase();
+  const matchingRailProjects = useMemo(
+    () =>
+      workspaces.filter((project) => {
+        if (!normalizedProjectQuery) return true;
+        return `${project.name} ${project.id} ${project.repo_path}`.toLowerCase().includes(normalizedProjectQuery);
+      }),
+    [normalizedProjectQuery, workspaces],
+  );
+  const railProjects = useMemo(() => matchingRailProjects.slice(0, RAIL_VISIBLE_LIMIT), [matchingRailProjects]);
+  const workspaceThreads = useMemo(
+    () => threads.filter((thread) => threadWorkspaceId(thread) === workspaceId),
     [threads, workspaceId],
   );
+  const matchingThreads = useMemo(
+    () =>
+      workspaceThreads.filter((thread) => {
+        if (!normalizedThreadQuery) return true;
+        return `${thread.title} ${thread.id} ${thread.status}`.toLowerCase().includes(normalizedThreadQuery);
+      }),
+    [normalizedThreadQuery, workspaceThreads],
+  );
+  const visibleThreads = useMemo(() => matchingThreads.slice(0, RAIL_VISIBLE_LIMIT), [matchingThreads]);
+  const hiddenProjectCount = Math.max(0, matchingRailProjects.length - railProjects.length);
+  const hiddenThreadCount = Math.max(0, matchingThreads.length - visibleThreads.length);
   const materialCount = workspace?.materials?.length ?? 0;
   const reportCount = workspace?.reports?.length ?? 0;
   const latestRun = conversation?.latest_run ?? null;
@@ -820,6 +865,14 @@ export default function AIThreadPage() {
             <FolderOpen size={13} />
             项目
           </div>
+          <input
+            className="ct-codex-ai__rail-search"
+            value={railProjectQuery}
+            onChange={(event) => setRailProjectQuery(event.target.value)}
+            placeholder="搜索项目"
+            aria-label="搜索 AI 项目"
+            disabled={threadNavigationBusy}
+          />
           <div className="ct-codex-ai__project-list">
             {railProjects.map((project) => {
               const projectRowClass = `ct-codex-ai__project-row ${project.id === workspace?.id ? "is-active" : ""}`;
@@ -844,6 +897,11 @@ export default function AIThreadPage() {
                 </Link>
               );
             })}
+            {hiddenProjectCount > 0 && (
+              <span className="ct-codex-ai__rail-more">
+                已收起 {hiddenProjectCount} 个项目，输入关键字筛选
+              </span>
+            )}
           </div>
         </div>
         <button
@@ -859,6 +917,14 @@ export default function AIThreadPage() {
           <MessageSquareText size={13} />
           对话
         </div>
+        <input
+          className="ct-codex-ai__rail-search"
+          value={railThreadQuery}
+          onChange={(event) => setRailThreadQuery(event.target.value)}
+          placeholder="搜索线程"
+          aria-label="搜索 AI 线程"
+          disabled={threadNavigationBusy}
+        />
         <div className="ct-codex-ai__thread-list">
           {visibleThreads.map((thread) => {
             const threadClass = `ct-codex-ai__thread ${thread.id === conversationId ? "is-active" : ""}`;
@@ -897,6 +963,11 @@ export default function AIThreadPage() {
               </div>
             );
           })}
+          {hiddenThreadCount > 0 && (
+            <span className="ct-codex-ai__rail-more">
+              已收起 {hiddenThreadCount} 条线程，输入关键字筛选
+            </span>
+          )}
         </div>
       </aside>
 
