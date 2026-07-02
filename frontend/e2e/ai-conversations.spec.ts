@@ -498,8 +498,8 @@ test("AI conversation mobile rail keeps dense project and thread lists contained
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/ai/conv-mobile-dense", { waitUntil: "domcontentloaded" });
 
-  await expect(page.getByText("已收起 24 个项目")).toBeVisible();
-  await expect(page.getByText("已收起 30 条线程")).toBeVisible();
+  await expect(page.getByText("已收起 28 个项目")).toBeVisible();
+  await expect(page.getByText("已收起 34 条线程")).toBeVisible();
 
   const layout = await page.locator(".ct-codex-ai").evaluate((element) => {
     const rail = element.querySelector(".ct-codex-ai__rail") as HTMLElement | null;

@@ -37,6 +37,7 @@ const QUICK_ACTIONS = [
   "生成下一轮复跑计划",
 ];
 const RAIL_VISIBLE_LIMIT = 24;
+const MOBILE_RAIL_VISIBLE_LIMIT = 8;
 const EVIDENCE_EXCERPT_PREVIEW_CHARS = 120;
 
 function eventContent(event: AIRunEvent): string {
@@ -354,6 +355,7 @@ export default function AIThreadPage() {
   const [generationDiagnosticsOpen, setGenerationDiagnosticsOpen] = useState(false);
   const [railProjectQuery, setRailProjectQuery] = useState("");
   const [railThreadQuery, setRailThreadQuery] = useState("");
+  const [mobileRail, setMobileRail] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -381,7 +383,11 @@ export default function AIThreadPage() {
       }),
     [normalizedProjectQuery, workspaces],
   );
-  const railProjects = useMemo(() => matchingRailProjects.slice(0, RAIL_VISIBLE_LIMIT), [matchingRailProjects]);
+  const railVisibleLimit = mobileRail ? MOBILE_RAIL_VISIBLE_LIMIT : RAIL_VISIBLE_LIMIT;
+  const railProjects = useMemo(
+    () => matchingRailProjects.slice(0, railVisibleLimit),
+    [matchingRailProjects, railVisibleLimit],
+  );
   const workspaceThreads = useMemo(
     () => threads.filter((thread) => threadWorkspaceId(thread) === workspaceId),
     [threads, workspaceId],
@@ -394,7 +400,10 @@ export default function AIThreadPage() {
       }),
     [normalizedThreadQuery, workspaceThreads],
   );
-  const visibleThreads = useMemo(() => matchingThreads.slice(0, RAIL_VISIBLE_LIMIT), [matchingThreads]);
+  const visibleThreads = useMemo(
+    () => matchingThreads.slice(0, railVisibleLimit),
+    [matchingThreads, railVisibleLimit],
+  );
   const hiddenProjectCount = Math.max(0, matchingRailProjects.length - railProjects.length);
   const hiddenThreadCount = Math.max(0, matchingThreads.length - visibleThreads.length);
   const materialCount = workspace?.materials?.length ?? 0;
@@ -464,6 +473,14 @@ export default function AIThreadPage() {
       setStreamingRunId(conv.latest_run.id);
     }
   }, [conversationId]);
+
+  useEffect(() => {
+    const query = window.matchMedia("(max-width: 760px)");
+    const syncRailDensity = () => setMobileRail(query.matches);
+    syncRailDensity();
+    query.addEventListener("change", syncRailDensity);
+    return () => query.removeEventListener("change", syncRailDensity);
+  }, []);
 
   const refreshRunStatus = useCallback(async () => {
     const nextConversation = await api.aiConversations.get(conversationId);
