@@ -969,21 +969,22 @@ def _source_flow_black_box_case(
 
 
 def _local_scope_query(input_snapshot: dict[str, Any], *, default_query: str = "") -> str:
-    preferred_keys = (
+    explicit_scope_keys = (
         "analysis_object",
         "target_scope",
         "module",
         "patch_diff",
         "patch_plan",
-        "mr_link",
     )
     parts = [
         str(input_snapshot.get(key) or "").strip()
-        for key in preferred_keys
+        for key in explicit_scope_keys
         if str(input_snapshot.get(key) or "").strip()
     ]
     if not parts and default_query.strip():
         parts = [default_query.strip()]
+    if not parts and str(input_snapshot.get("mr_link") or "").strip():
+        parts = [str(input_snapshot.get("mr_link") or "").strip()]
     if not parts and str(input_snapshot.get("repo_path") or "").strip():
         parts = [str(input_snapshot.get("repo_path") or "").strip()]
     if not parts:

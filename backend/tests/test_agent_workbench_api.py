@@ -2184,6 +2184,7 @@ async def test_builtin_common_scenario_preset_uses_default_query_when_scope_is_e
             "workspace_id": "ws-nvmf-default-query",
             "repo_path": str(repo),
             "inputs": {
+                "mr_link": "https://codehub.example.local/group/project/-/merge_requests/1",
                 "repo_path": str(repo),
             },
             "timeout_sec": 10,
