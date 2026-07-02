@@ -1556,6 +1556,13 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
   });
   await page.route("**/api/ai/conversations/conv-diag/stream?cursor=0", async (route) => {
     completed = true;
+    const diagnostics = Array.from({ length: 20 }, (_, index) => {
+      const step = String(index + 1).padStart(2, "0");
+      return [
+        `data: {"event_id":${index + 2},"run_id":"run-diag","conversation_id":"conv-diag","event_type":"delta","payload":{"kind":"diagnostic","content":"诊断步骤 ${step}：正在读取 lib/nvmf/connect.c"},"created_at":"2026-06-28T00:00:01Z"}`,
+        "",
+      ].join("\n");
+    });
     await route.fulfill({
       headers: {
         ...jsonHeaders(route.request().headers().origin),
@@ -1564,11 +1571,10 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
       body: [
         'data: {"event_id":1,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"status","payload":{"status":"running","message":"正在准备工作区源码上下文"},"created_at":"2026-06-28T00:00:01Z"}',
         "",
-        'data: {"event_id":2,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"delta","payload":{"kind":"diagnostic","content":"正在读取 lib/nvmf/connect.c"},"created_at":"2026-06-28T00:00:01Z"}',
+        ...diagnostics,
+        'data: {"event_id":22,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"delta","payload":{"content":"最终答案：覆盖 reconnect timeout 的黑盒观察点。"},"created_at":"2026-06-28T00:00:02Z"}',
         "",
-        'data: {"event_id":3,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"delta","payload":{"content":"最终答案：覆盖 reconnect timeout 的黑盒观察点。"},"created_at":"2026-06-28T00:00:02Z"}',
-        "",
-        'data: {"event_id":4,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"done","payload":{},"created_at":"2026-06-28T00:00:03Z"}',
+        'data: {"event_id":23,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"done","payload":{},"created_at":"2026-06-28T00:00:03Z"}',
         "",
       ].join("\n"),
     });
@@ -1578,13 +1584,14 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
 
   await expect(page.getByText("最终答案：覆盖 reconnect timeout 的黑盒观察点。")).toBeVisible();
   await expect(page.locator(".ct-codex-ai__reader")).not.toContainText("正在准备工作区源码上下文");
-  await expect(page.locator(".ct-codex-ai__reader")).not.toContainText("正在读取 lib/nvmf/connect.c");
+  await expect(page.locator(".ct-codex-ai__reader")).not.toContainText("诊断步骤 01");
   await expect(page.getByText("生成诊断：默认折叠")).toBeVisible();
   await expect(page.getByText("正在准备工作区源码上下文")).toBeHidden();
-  await expect(page.getByText("正在读取 lib/nvmf/connect.c")).toBeHidden();
+  await expect(page.getByText("诊断步骤 01：正在读取 lib/nvmf/connect.c")).toBeHidden();
   await page.getByText("生成诊断：默认折叠").click();
   await expect(page.getByText("正在准备工作区源码上下文")).toBeVisible();
-  await expect(page.getByText("正在读取 lib/nvmf/connect.c")).toBeVisible();
+  await expect(page.getByText("诊断步骤 01：正在读取 lib/nvmf/connect.c")).toBeVisible();
+  await expect(page.getByText("诊断步骤 20：正在读取 lib/nvmf/connect.c")).toBeVisible();
 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出" }).click();
@@ -1594,7 +1601,7 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
   const exported = fs.readFileSync(exportPath, "utf8");
   expect(exported).toContain("最终答案：覆盖 reconnect timeout 的黑盒观察点。");
   expect(exported).not.toContain("正在准备工作区源码上下文");
-  expect(exported).not.toContain("正在读取 lib/nvmf/connect.c");
+  expect(exported).not.toContain("诊断步骤 01");
 });
 
 test("AI conversation keeps long structured artifacts compact while streaming", async ({ page }) => {

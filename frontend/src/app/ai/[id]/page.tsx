@@ -39,6 +39,7 @@ const QUICK_ACTIONS = [
 const RAIL_VISIBLE_LIMIT = 24;
 const MOBILE_RAIL_VISIBLE_LIMIT = 8;
 const EVIDENCE_EXCERPT_PREVIEW_CHARS = 120;
+const AGENT_PROCESS_DIAGNOSTIC_LIMIT = 200;
 
 function eventContent(event: AIRunEvent): string {
   const value = event.payload.content;
@@ -97,7 +98,7 @@ function agentProcessDiagnosticsFromEvents(events: AIRunEvent[]): string[] {
       diagnostics.push(eventError(event));
     }
   }
-  return diagnostics.map(redactDiagnosticText).filter(Boolean).slice(-12);
+  return capAgentProcessDiagnostics(diagnostics);
 }
 
 function eventError(event: AIRunEvent): string {
@@ -240,7 +241,7 @@ function EvidenceReferenceCard({ refItem }: { refItem: AIContextReference }) {
 
 function AgentProcessDisclosure({ diagnostics }: { diagnostics: string[] }) {
   const [open, setOpen] = useState(false);
-  const visibleDiagnostics = diagnostics.map(redactDiagnosticText).filter(Boolean).slice(-12);
+  const visibleDiagnostics = capAgentProcessDiagnostics(diagnostics);
   if (visibleDiagnostics.length === 0) return null;
   return (
     <details
@@ -262,6 +263,10 @@ function AgentProcessDisclosure({ diagnostics }: { diagnostics: string[] }) {
       )}
     </details>
   );
+}
+
+function capAgentProcessDiagnostics(items: string[]): string[] {
+  return items.map(redactDiagnosticText).filter(Boolean).slice(-AGENT_PROCESS_DIAGNOSTIC_LIMIT);
 }
 
 function safeFilename(value: string): string {
@@ -528,13 +533,13 @@ export default function AIThreadPage() {
             if (event.run_id !== runId) continue;
             if (event.event_type === "status") {
               const content = eventDiagnosticText(event);
-              setStreamingDiagnostics((prev) => [...prev, redactDiagnosticText(content)].filter(Boolean).slice(-12));
+              setStreamingDiagnostics((prev) => capAgentProcessDiagnostics([...prev, content]));
             }
             if (event.event_type === "delta") {
               const content = eventContent(event);
               if (isDiagnosticEvent(event)) {
                 const diagnostic = eventDiagnosticText(event);
-                setStreamingDiagnostics((prev) => [...prev, redactDiagnosticText(diagnostic)].filter(Boolean).slice(-12));
+                setStreamingDiagnostics((prev) => capAgentProcessDiagnostics([...prev, diagnostic]));
               } else {
                 setStreamingContent((prev) => prev + content);
               }
