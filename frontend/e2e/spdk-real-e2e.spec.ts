@@ -6,6 +6,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 
+import { readSecretValue } from "./support/e2e-secrets.mjs";
+
 const SPDK_REPO = process.env.CODETALK_E2E_REPO ?? "";
 const BAD_SPDK_REPO = "/Volums/Media/dpdk/spdk";
 const FRONTEND_PORT = process.env.CODETALK_FRONTEND_PORT ?? "3003";
@@ -792,7 +794,7 @@ function verifyTextArtifactExtensionScanner() {
 }
 
 function expectNoSecretLeak(serialized = "") {
-  const secret = process.env.CODETALK_E2E_LLM_API_KEY;
+  const secret = readSecretValue("CODETALK_E2E_LLM_API_KEY");
   if (!secret) return;
   expect(serialized).not.toContain(secret);
   expect(textArtifactSecretLeaks(secret)).toEqual([]);
@@ -1093,10 +1095,10 @@ async function selectActiveChatModelAndWait(page: Page, select: Locator, modelId
 }
 
 async function configureLlmIfAvailable(page: Page) {
-  const apiKey = process.env.CODETALK_E2E_LLM_API_KEY;
+  const apiKey = readSecretValue("CODETALK_E2E_LLM_API_KEY");
   if (!apiKey) {
     if (results.get("A02")?.status !== "pass") {
-      record("A02", "blocked", "CODETALK_E2E_LLM_API_KEY is not set");
+      record("A02", "blocked", "CODETALK_E2E_LLM_API_KEY or CODETALK_E2E_LLM_API_KEY_FILE is not set");
     }
     if (results.get("A03")?.status !== "pass") {
       record("A03", "blocked", "secret-mask path not exercised without test key");
@@ -1496,7 +1498,7 @@ test("A04: health probes are triggerable from the UI", async ({ page }) => {
 test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async ({ page, context }) => {
   test.setTimeout(SPDK_INDEX_WAIT_MS + 480_000);
 
-  if (!e2eLlmConfigId && process.env.CODETALK_E2E_LLM_API_KEY) {
+  if (!e2eLlmConfigId && readSecretValue("CODETALK_E2E_LLM_API_KEY")) {
     await configureLlmIfAvailable(page);
   } else if (e2eLlmConfigId) {
     await restorePrimaryLlmIfAvailable(page);
