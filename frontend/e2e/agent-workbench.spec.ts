@@ -309,6 +309,95 @@ async function openWorkbenchView(
   );
 }
 
+function minimalWorkflowDefinition(id: string, name: string) {
+  return {
+    id,
+    name,
+    version: 1,
+    inputs: [
+      { id: "analysis_object", type: "free_text", required: false, role: "target scope" },
+      { id: "repo_path", type: "directory", required: true, resolver: "local" },
+    ],
+    steps: [{ id: "render_report", type: "report_render" }],
+    outputs: [{ id: "report", type: "markdown", from: "render_report" }],
+    audit: { status: "ok", warnings: [] },
+  };
+}
+
+test("workflow presets stay visible when non-core diagnostics fail", async ({ page }) => {
+  const definitions = [
+    minimalWorkflowDefinition("module_analysis", "Module Analysis"),
+    minimalWorkflowDefinition("resource_leak_hunt", "Resource Leak and Error Branch Hunt"),
+    minimalWorkflowDefinition("mr_blackbox_test", "MR Black-box Test Design"),
+    minimalWorkflowDefinition("patch_impact_review", "Patch Impact Review"),
+    minimalWorkflowDefinition(
+      "source_flow_sfmea_blackbox",
+      "Code Analysis -> Flow -> SFMEA -> Black-box Cases",
+    ),
+    minimalWorkflowDefinition("nvmf_connect_io_blackbox", "NVMe-oF Connect / IO Black-box Scenario"),
+    minimalWorkflowDefinition("iscsi_login_session_blackbox", "iSCSI Login / Session Black-box Scenario"),
+    minimalWorkflowDefinition("bdev_io_reset_blackbox", "bdev IO / Reset Black-box Scenario"),
+    minimalWorkflowDefinition("nvmf_tcp_tls_auth_blackbox", "NVMe/TCP TLS / Authentication Black-box Scenario"),
+    minimalWorkflowDefinition("bdev_qos_latency_blackbox", "bdev QoS / Latency Degradation Black-box Scenario"),
+    minimalWorkflowDefinition(
+      "jsonrpc_concurrency_idempotency_blackbox",
+      "JSON-RPC Concurrency / Idempotency Black-box Scenario",
+    ),
+  ];
+
+  await page.route("**/api/workbench/workflows", async (route) => {
+    await route.fulfill({
+      json: definitions,
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+  await page.route("**/api/workbench/workflow-presets", async (route) => {
+    await route.fulfill({
+      json: {
+        items: definitions.map((definition) => ({
+          id: definition.id,
+          name: definition.name,
+          description: `${definition.name} preset`,
+          definition,
+        })),
+      },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+  await page.route("**/api/workbench/task-runs*", async (route) => {
+    await route.fulfill({
+      json: { items: [] },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+  await page.route("**/api/workbench/provider-capabilities", async (route) => {
+    await route.fulfill({
+      status: 500,
+      json: { detail: "provider probe failed" },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+  await page.route("**/api/workbench/system-audit", async (route) => {
+    await route.fulfill({
+      status: 500,
+      json: { detail: "system audit failed" },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+
+  await gotoWorkbench(page);
+  await openWorkbenchView(page, "工作流设计");
+
+  await expect(page.getByRole("heading", { name: "工作流编排" })).toBeVisible();
+  await expect(page.getByText("工作流已加载，部分诊断数据加载失败")).toBeVisible();
+  const presetValues = await page
+    .getByLabel("工作流预设")
+    .locator("option")
+    .evaluateAll((options) => options.map((option) => option.getAttribute("value")));
+  expect(presetValues).toEqual(expect.arrayContaining(definitions.map((item) => item.id)));
+  await expect(page.getByText("11 个已注册")).toBeVisible();
+});
+
 test("agent workbench renders workflow and task-run controls", async ({ page }) => {
   test.setTimeout(60_000);
   await routeWorkbenchShell(page);
@@ -367,6 +456,9 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
       "bdev_io_reset_blackbox",
       "rpc_config_negative_blackbox",
       "reactor_thread_poller_blackbox",
+      "nvmf_tcp_tls_auth_blackbox",
+      "bdev_qos_latency_blackbox",
+      "jsonrpc_concurrency_idempotency_blackbox",
     ]),
   );
   await expect(page.getByRole("button", { name: "应用预设" })).toBeVisible();

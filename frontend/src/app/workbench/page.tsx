@@ -193,6 +193,9 @@ const WORKFLOW_NAME_ZH: Record<string, string> = {
   bdev_failover_resource_blackbox: "bdev failover/资源压力黑盒场景",
   blobstore_ftl_recovery_blackbox: "blobstore/FTL 恢复黑盒场景",
   vhost_vfio_user_lifecycle_blackbox: "vhost/vfio-user 生命周期黑盒场景",
+  nvmf_tcp_tls_auth_blackbox: "NVMe/TCP TLS/认证黑盒场景",
+  bdev_qos_latency_blackbox: "bdev QoS/时延退化黑盒场景",
+  jsonrpc_concurrency_idempotency_blackbox: "JSON-RPC 并发/幂等黑盒场景",
   patch_impact: "补丁影响面计划工作流",
   patch_impact_review: "补丁影响面评审工作流",
 };
@@ -274,6 +277,27 @@ const WORKFLOW_BUILDER_SCENARIOS = {
     inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
     outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
     goal: "优先检查 GitNexus 和 CGC 产物，然后分析 lib/thread、lib/event 与 scheduler/poller 相关代码的跨线程消息、poller 阻塞、长任务调度、并发恢复和性能退化，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  nvmf_tcp_tls_auth_blackbox: {
+    name: "NVMe/TCP TLS/认证",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 NVMe/TCP TLS 与认证配置、证书/密钥不匹配、安全连接协商、fallback 拒绝、重连和诊断信号，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  bdev_qos_latency_blackbox: {
+    name: "bdev QoS/时延退化",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 bdev QoS、限速、队列深度压力、时延尖刺、超时报告、公平性和持续 IO 压力下恢复，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  jsonrpc_concurrency_idempotency_blackbox: {
+    name: "JSON-RPC 并发/幂等",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 JSON-RPC 并发调用、重复 create/delete、幂等性、部分成功、顺序竞争、回滚和外部可观测错误，输出代码证据、流程、SFMEA 和黑盒测试用例。",
     artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
   },
 } as const;
@@ -2212,31 +2236,70 @@ export default function AgentWorkbenchPage() {
     setLoading(true);
     setError(null);
     try {
-      const [
-        workflowData,
-        taskRunData,
-        providerData,
-        systemAuditData,
-      ] = await Promise.all([
+      const [workflowResult, presetResult] = await Promise.allSettled([
         api.workbench.workflows.list(),
+        api.workbench.workflows.presets(),
+      ]);
+
+      const coreErrors: string[] = [];
+      if (workflowResult.status === "fulfilled") {
+        const nextWorkflowData = workflowResult.value;
+        setWorkflows(nextWorkflowData);
+        if (
+          nextWorkflowData.length > 0 &&
+          !nextWorkflowData.some((item) => item.id === selectedWorkflowId)
+        ) {
+          setSelectedWorkflowId(nextWorkflowData[0].id);
+        }
+      } else {
+        coreErrors.push(
+          workflowResult.reason instanceof Error
+            ? workflowResult.reason.message
+            : "Failed to load workflows",
+        );
+      }
+
+      if (presetResult.status === "fulfilled") {
+        const presetData = presetResult.value;
+        setWorkflowPresets(presetData.items);
+        if (!selectedPresetId && presetData.items.length > 0) {
+          setSelectedPresetId(presetData.items[0].id);
+        }
+      } else {
+        coreErrors.push(
+          presetResult.reason instanceof Error
+            ? presetResult.reason.message
+            : "Failed to load workflow presets",
+        );
+      }
+
+      const [taskRunResult, providerResult, systemAuditResult] = await Promise.allSettled([
         api.workbench.taskRuns.list({ limit: 10 }),
         api.workbench.providerCapabilities(),
         api.workbench.systemAudit(),
       ]);
-      const presetData = await api.workbench.workflows.presets();
-      setWorkflows(workflowData);
-      setWorkflowPresets(presetData.items);
-      setProviderMatrix(providerData);
-      setSystemAudit(systemAuditData);
-      if (!selectedPresetId && presetData.items.length > 0) {
-        setSelectedPresetId(presetData.items[0].id);
+
+      const diagnosticErrors: string[] = [];
+      if (taskRunResult.status === "fulfilled") {
+        setTaskRuns(taskRunResult.value.items);
+      } else {
+        diagnosticErrors.push("最近任务");
       }
-      setTaskRuns(taskRunData.items);
-      if (
-        workflowData.length > 0 &&
-        !workflowData.some((item) => item.id === selectedWorkflowId)
-      ) {
-        setSelectedWorkflowId(workflowData[0].id);
+      if (providerResult.status === "fulfilled") {
+        setProviderMatrix(providerResult.value);
+      } else {
+        diagnosticErrors.push("执行器矩阵");
+      }
+      if (systemAuditResult.status === "fulfilled") {
+        setSystemAudit(systemAuditResult.value);
+      } else {
+        diagnosticErrors.push("系统审计");
+      }
+
+      if (coreErrors.length > 0) {
+        setError(coreErrors.join("; "));
+      } else if (diagnosticErrors.length > 0) {
+        setError(`工作流已加载，部分诊断数据加载失败: ${diagnosticErrors.join("、")}`);
       }
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Failed to load workbench data");

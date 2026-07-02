@@ -563,6 +563,42 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 "lifecycle queue configuration guest attach detach socket cleanup reset recovery"
             ),
         ),
+        _source_flow_scenario_preset(
+            preset_id="nvmf_tcp_tls_auth_blackbox",
+            name="NVMe/TCP TLS / Authentication Black-box Scenario",
+            description=(
+                "Analyze SPDK NVMe/TCP TLS and authentication setup, certificate/key mismatch, "
+                "secure connection negotiation, fallback denial, reconnect, and public diagnostics."
+            ),
+            default_query=(
+                "lib/nvmf test/nvmf NVMe TCP TLS authentication certificate key mismatch "
+                "secure connection negotiation fallback denial reconnect diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="bdev_qos_latency_blackbox",
+            name="bdev QoS / Latency Degradation Black-box Scenario",
+            description=(
+                "Analyze SPDK bdev QoS, rate limiting, queue depth pressure, latency spikes, "
+                "timeout reporting, fairness, and recovery under sustained IO load."
+            ),
+            default_query=(
+                "lib/bdev module/bdev test/bdev bdev QoS rate limit queue depth latency "
+                "timeout fairness sustained IO load performance degradation recovery"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="jsonrpc_concurrency_idempotency_blackbox",
+            name="JSON-RPC Concurrency / Idempotency Black-box Scenario",
+            description=(
+                "Analyze SPDK public JSON-RPC concurrency, repeated create/delete calls, "
+                "idempotency, partial success, ordering races, rollback, and observable errors."
+            ),
+            default_query=(
+                "rpc app test/json_config scripts/rpc.py JSON-RPC concurrency repeated "
+                "create delete idempotency partial success ordering race rollback observable error"
+            ),
+        ),
         {
             "id": "mr_blackbox_test",
             "name": "MR Black-box Test Design",

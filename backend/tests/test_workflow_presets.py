@@ -20,6 +20,9 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         "bdev_failover_resource_blackbox",
         "blobstore_ftl_recovery_blackbox",
         "vhost_vfio_user_lifecycle_blackbox",
+        "nvmf_tcp_tls_auth_blackbox",
+        "bdev_qos_latency_blackbox",
+        "jsonrpc_concurrency_idempotency_blackbox",
     }.issubset({item["id"] for item in presets})
 
     for preset in presets:
@@ -142,6 +145,9 @@ def test_restore_builtin_workflow_presets_refreshes_stale_builtin_definitions(tm
         "source_flow_sfmea_blackbox",
         "blobstore_ftl_recovery_blackbox",
         "vhost_vfio_user_lifecycle_blackbox",
+        "nvmf_tcp_tls_auth_blackbox",
+        "bdev_qos_latency_blackbox",
+        "jsonrpc_concurrency_idempotency_blackbox",
         "custom_workflow",
     }.issubset(ids)
 
