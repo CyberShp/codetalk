@@ -2139,6 +2139,78 @@ class TestAgentRuntimes:
         assert "TC-08 Login" in artifact_text
         assert "partial 应被最终 assistant 替换" not in artifact_text
 
+    async def test_ai_thread_agent_runtime_adopts_markdown_file_from_agent_artifact_dir(
+        self,
+        sqlite_db,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-artifact-file", repo_path=str(repo))
+        monkeypatch.chdir(tmp_path)
+        agent_script = tmp_path / "artifact_file_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import os, pathlib, sys",
+                    "sys.stdin.read()",
+                    "artifact_dir = pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])",
+                    "artifact_dir.mkdir(parents=True, exist_ok=True)",
+                    "report = '# Agent 生成报告\\n\\n## 黑盒测试用例\\n' + ''.join([f'{index}. TC-{index:02d}：前置条件 target 已启动。步骤执行 SPDK 登录场景。预期结果可观测。\\n' for index in range(1, 9)])",
+                    "(artifact_dir / 'spdk-blackbox.md').write_text(report, encoding='utf-8')",
+                    "print('已生成文件：spdk-blackbox.md', flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, ai_thread_artifact_path, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Agent artifact file thread",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-artifact-file",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="生成完整黑盒测试用例并保存为文件",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-artifact-file",
+                "name": "Artifact File Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+            },
+        )
+
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        assert "已生成结构化产物" in assistant["content"]
+        assert "下载完整产物" in assistant["content"]
+        assert "TC-08" not in assistant["content"]
+        assert any(action["id"] == "download_run_artifact" for action in assistant["actions"])
+
+        artifact_text = ai_thread_artifact_path(conversation["id"], run_id).read_text(encoding="utf-8")
+        assert "## 黑盒测试用例" in artifact_text
+        assert "TC-08" in artifact_text
+        assert "已生成文件：spdk-blackbox.md" not in artifact_text
+
     async def test_agent_runtime_output_parser_cleans_terminal_noise_and_unwraps_json(self):
         from app.services.agent_cli_bridge import _decode, _parse_event_text
 

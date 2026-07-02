@@ -171,6 +171,10 @@ def ai_thread_artifact_path(conversation_id: str, run_id: str) -> Path:
     return settings.outputs_path / "ai_conversations" / safe_conversation / safe_run / "assistant-output.md"
 
 
+def ai_thread_agent_artifact_dir(conversation_id: str, run_id: str) -> Path:
+    return ai_thread_artifact_path(conversation_id, run_id).parent / "agent-artifacts"
+
+
 def _remove_tree_quietly(path: Path) -> None:
     if path.exists():
         shutil.rmtree(path, ignore_errors=True)
@@ -1264,6 +1268,12 @@ async def run_agent_generation(
     live_chunks: list[str] = []
     session_updates: list[dict[str, Any]] = []
     artifact_stream_notice_sent = False
+    agent_artifact_dir = ai_thread_agent_artifact_dir(conversation["id"], run_id)
+    await _to_thread(agent_artifact_dir.mkdir, parents=True, exist_ok=True)
+    runtime_for_turn = dict(runtime)
+    runtime_env = dict(runtime_for_turn.get("env") or {})
+    runtime_env["CODETALK_AGENT_ARTIFACT_DIR"] = str(agent_artifact_dir)
+    runtime_for_turn["env"] = runtime_env
 
     async def append_live_answer_delta(content: str) -> None:
         nonlocal artifact_stream_notice_sent
@@ -1287,7 +1297,7 @@ async def run_agent_generation(
         turn_chunks: list[str] = []
         segment_state = _AgentOutputSegmentState()
         async for delta in stream_agent_runtime(
-            runtime=runtime,
+            runtime=runtime_for_turn,
             prompt=turn_prompt,
             cwd=cwd,
             resume_session_id=turn_resume_session_id,
@@ -1323,6 +1333,9 @@ async def run_agent_generation(
             "".join(chunks).strip() or "执行器没有返回有效内容，请检查命令输出模式。",
             references,
         )
+        agent_artifact_content = await _agent_thread_artifact_content(agent_artifact_dir)
+        if agent_artifact_content:
+            content = agent_artifact_content
         if _agent_answer_requires_repair(user_message["content"], content, references):
             await store.append_event(
                 run_id=run_id,
@@ -1365,6 +1378,9 @@ async def run_agent_generation(
                         ),
                     },
                 )
+        agent_artifact_content = await _agent_thread_artifact_content(agent_artifact_dir)
+        if agent_artifact_content:
+            content = agent_artifact_content
         live_content = "".join(live_chunks)
         if not live_content:
             await append_live_answer_delta(content)
@@ -2613,6 +2629,62 @@ async def _to_thread(fn: Any, *args: Any, **kwargs: Any) -> Any:
 
 async def _read_text(path: Path) -> str:
     return await _to_thread(path.read_text, "utf-8", "ignore")
+
+
+_AI_THREAD_AGENT_ARTIFACT_SUFFIX_PRIORITY = {
+    ".md": 0,
+    ".markdown": 0,
+    ".txt": 1,
+    ".json": 2,
+    ".jsonl": 3,
+}
+
+
+async def _agent_thread_artifact_content(artifact_dir: Path) -> str:
+    if not artifact_dir.exists() or not artifact_dir.is_dir():
+        return ""
+
+    def collect_candidates() -> list[Path]:
+        root = artifact_dir.resolve()
+        candidates: list[Path] = []
+        for path in artifact_dir.rglob("*"):
+            if not path.is_file():
+                continue
+            suffix = path.suffix.lower()
+            if suffix not in _AI_THREAD_AGENT_ARTIFACT_SUFFIX_PRIORITY:
+                continue
+            try:
+                resolved = path.resolve()
+            except OSError:
+                continue
+            if root not in (resolved, *resolved.parents):
+                continue
+            if path.stat().st_size <= 0 or path.stat().st_size > 2_000_000:
+                continue
+            candidates.append(path)
+        return sorted(
+            candidates,
+            key=lambda item: (
+                _AI_THREAD_AGENT_ARTIFACT_SUFFIX_PRIORITY.get(item.suffix.lower(), 99),
+                -item.stat().st_size,
+                str(item.relative_to(artifact_dir)),
+            ),
+        )
+
+    candidates = await _to_thread(collect_candidates)
+    for path in candidates:
+        text = (await _read_text(path)).strip()
+        if not text:
+            continue
+        if path.suffix.lower() == ".json":
+            try:
+                parsed = json.loads(text)
+            except json.JSONDecodeError:
+                pass
+            else:
+                text = json.dumps(parsed, ensure_ascii=False, indent=2)
+        return text
+    return ""
 
 
 async def _prepare_assistant_delivery(
