@@ -236,6 +236,11 @@ const WORKFLOW_NAME_ZH: Record<string, string> = {
   data_integrity_corruption_blackbox: "数据完整性/损坏黑盒场景",
   upgrade_compatibility_persistence_blackbox: "升级兼容/持久化黑盒场景",
   telemetry_metrics_regression_blackbox: "遥测/指标回归黑盒场景",
+  nvmf_subsystem_namespace_acl_blackbox: "NVMe-oF subsystem/namespace ACL 黑盒场景",
+  iscsi_lun_resize_hotplug_blackbox: "iSCSI LUN resize/hotplug 黑盒场景",
+  bdev_crypto_integrity_blackbox: "bdev crypto/完整性黑盒场景",
+  scheduler_qos_fairness_blackbox: "scheduler QoS/公平性黑盒场景",
+  backup_restore_integrity_blackbox: "备份/恢复完整性黑盒场景",
 };
 
 function workflowDisplayName(workflow: Pick<WorkflowDefinition, "id" | "name"> | string): string {
@@ -246,8 +251,10 @@ function workflowDisplayName(workflow: Pick<WorkflowDefinition, "id" | "name"> |
   return WORKFLOW_NAME_ZH[id] || normalizedName || id;
 }
 
-function workflowPresetGroup(presetId: string): "核心工作流" | "常用测试场景" {
-  return CORE_WORKFLOW_PRESET_IDS.has(presetId) ? "核心工作流" : "常用测试场景";
+function workflowPresetGroup(preset: WorkflowPreset): "核心工作流" | "常用测试场景" {
+  if (preset.group === "core") return "核心工作流";
+  if (preset.group === "common_test_scenario") return "常用测试场景";
+  return CORE_WORKFLOW_PRESET_IDS.has(preset.id) ? "核心工作流" : "常用测试场景";
 }
 
 const WORKFLOW_BUILDER_SCENARIOS = {
@@ -585,6 +592,41 @@ const WORKFLOW_BUILDER_SCENARIOS = {
     inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
     outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
     goal: "优先检查 GitNexus 和 CGC 产物，然后分析 telemetry、counters、logs、status commands、metric regression、alertability 和 failure triage 信号，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  nvmf_subsystem_namespace_acl_blackbox: {
+    name: "NVMe-oF subsystem/namespace ACL",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 subsystem/namespace 生命周期、host allow-list、ANA 可见性、namespace attach/detach、reconnect 和 access denied 诊断，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  iscsi_lun_resize_hotplug_blackbox: {
+    name: "iSCSI LUN resize/hotplug",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 iSCSI target LUN add/remove、resize、hotplug visibility、initiator rescan、active IO、session recovery 和诊断输出，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  bdev_crypto_integrity_blackbox: {
+    name: "bdev crypto/完整性",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 crypto/integrity bdev 配置、key mismatch、data verification、非法参数、失败上报、性能影响和恢复路径，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  scheduler_qos_fairness_blackbox: {
+    name: "scheduler QoS/公平性",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 scheduler/poller/reactor、queue depth、QoS、公平性、starvation、latency regression 和竞争负载恢复，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  backup_restore_integrity_blackbox: {
+    name: "备份/恢复完整性",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 export/import、save/restore、备份式快照、checksum validation、partial restore、corrupted input、restart persistence 和诊断输出，输出代码证据、流程、SFMEA 和黑盒测试用例。",
     artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
   },
 } as const;
@@ -2463,7 +2505,7 @@ export default function AgentWorkbenchPage() {
     () =>
       (["核心工作流", "常用测试场景"] as const).map((group) => ({
         group,
-        items: workflowPresets.filter((preset) => workflowPresetGroup(preset.id) === group),
+        items: workflowPresets.filter((preset) => workflowPresetGroup(preset) === group),
       })).filter((group) => group.items.length > 0),
     [workflowPresets],
   );

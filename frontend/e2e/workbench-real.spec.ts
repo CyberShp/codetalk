@@ -56,6 +56,11 @@ test("lists and installs every built-in workflow preset through the real workben
     { id: "data_integrity_corruption_blackbox", label: "数据完整性/损坏黑盒场景" },
     { id: "upgrade_compatibility_persistence_blackbox", label: "升级兼容/持久化黑盒场景" },
     { id: "telemetry_metrics_regression_blackbox", label: "遥测/指标回归黑盒场景" },
+    { id: "nvmf_subsystem_namespace_acl_blackbox", label: "NVMe-oF subsystem/namespace ACL 黑盒场景" },
+    { id: "iscsi_lun_resize_hotplug_blackbox", label: "iSCSI LUN resize/hotplug 黑盒场景" },
+    { id: "bdev_crypto_integrity_blackbox", label: "bdev crypto/完整性黑盒场景" },
+    { id: "scheduler_qos_fairness_blackbox", label: "scheduler QoS/公平性黑盒场景" },
+    { id: "backup_restore_integrity_blackbox", label: "备份/恢复完整性黑盒场景" },
     { id: "mr_blackbox_test", label: "MR 黑盒测试工作流" },
     { id: "patch_impact_review", label: "补丁影响面评审工作流" },
   ];
@@ -107,6 +112,11 @@ test("lists and installs every built-in workflow preset through the real workben
       "data_integrity_corruption_blackbox",
       "upgrade_compatibility_persistence_blackbox",
       "telemetry_metrics_regression_blackbox",
+      "nvmf_subsystem_namespace_acl_blackbox",
+      "iscsi_lun_resize_hotplug_blackbox",
+      "bdev_crypto_integrity_blackbox",
+      "scheduler_qos_fairness_blackbox",
+      "backup_restore_integrity_blackbox",
     ]),
   );
 

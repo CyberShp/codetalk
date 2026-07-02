@@ -489,6 +489,7 @@ export interface WorkflowPreset {
   id: string;
   name: string;
   description: string;
+  group?: "core" | "common_test_scenario" | string;
   definition: WorkflowDefinition;
 }
 

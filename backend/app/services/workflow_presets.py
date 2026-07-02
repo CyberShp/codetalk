@@ -170,6 +170,65 @@ SOURCE_FLOW_REQUIRED_ARTIFACTS = [
     "black_box_cases.json",
 ]
 
+CORE_WORKFLOW_PRESET_IDS = (
+    "module_analysis",
+    "resource_leak_hunt",
+    "mr_blackbox_test",
+    "patch_impact_review",
+    "source_flow_sfmea_blackbox",
+)
+
+COMMON_TEST_SCENARIO_PRESET_IDS = (
+    "nvmf_connect_io_blackbox",
+    "iscsi_login_session_blackbox",
+    "bdev_io_reset_blackbox",
+    "rpc_config_negative_blackbox",
+    "reactor_thread_poller_blackbox",
+    "nvmf_disconnect_reconnect_blackbox",
+    "iscsi_auth_failure_blackbox",
+    "bdev_failover_resource_blackbox",
+    "blobstore_ftl_recovery_blackbox",
+    "vhost_vfio_user_lifecycle_blackbox",
+    "nvmf_tcp_tls_auth_blackbox",
+    "bdev_qos_latency_blackbox",
+    "jsonrpc_concurrency_idempotency_blackbox",
+    "app_startup_shutdown_smoke_blackbox",
+    "nvme_ctrlr_hotplug_reset_blackbox",
+    "storage_capacity_enospc_recovery_blackbox",
+    "nvmf_rdma_transport_blackbox",
+    "iscsi_digest_multi_connection_blackbox",
+    "bdev_hotremove_io_error_blackbox",
+    "blobstore_metadata_powerfail_blackbox",
+    "rpc_security_authz_blackbox",
+    "fault_injection_timeout_recovery_blackbox",
+    "concurrent_operations_stress_blackbox",
+    "observability_diagnostics_blackbox",
+    "config_compatibility_rollback_blackbox",
+    "lvol_snapshot_clone_blackbox",
+    "raid_degraded_rebuild_blackbox",
+    "nvme_multipath_failover_blackbox",
+    "env_hugepage_memory_blackbox",
+    "spdk_cli_rpc_smoke_blackbox",
+    "target_crash_restart_blackbox",
+    "multi_client_isolation_blackbox",
+    "queue_depth_backpressure_blackbox",
+    "io_error_injection_retry_blackbox",
+    "config_reload_persistence_blackbox",
+    "long_running_resource_leak_blackbox",
+    "basic_lifecycle_smoke_blackbox",
+    "io_stress_performance_blackbox",
+    "failure_recovery_soak_blackbox",
+    "transport_network_partition_blackbox",
+    "data_integrity_corruption_blackbox",
+    "upgrade_compatibility_persistence_blackbox",
+    "telemetry_metrics_regression_blackbox",
+    "nvmf_subsystem_namespace_acl_blackbox",
+    "iscsi_lun_resize_hotplug_blackbox",
+    "bdev_crypto_integrity_blackbox",
+    "scheduler_qos_fairness_blackbox",
+    "backup_restore_integrity_blackbox",
+)
+
 
 def _source_flow_outputs(tag: str) -> list[dict[str, Any]]:
     return [
@@ -1055,9 +1114,80 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 "status metrics regression alert diagnostics failure triage observable"
             ),
         ),
+        _source_flow_scenario_preset(
+            preset_id="nvmf_subsystem_namespace_acl_blackbox",
+            name="NVMe-oF Subsystem / Namespace ACL Black-box Scenario",
+            description=(
+                "Analyze subsystem and namespace lifecycle, host allow-list changes, ANA visibility, "
+                "namespace attach/detach, reconnect, and externally visible access-denial behavior."
+            ),
+            default_query=(
+                "lib/nvmf test/nvmf scripts/rpc.py subsystem namespace host allow list ACL ANA "
+                "attach detach reconnect access denied visibility diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="iscsi_lun_resize_hotplug_blackbox",
+            name="iSCSI LUN Resize / Hotplug Black-box Scenario",
+            description=(
+                "Analyze iSCSI target LUN add/remove, resize, hotplug visibility, initiator rescan, "
+                "active IO behavior, session recovery, and public diagnostics."
+            ),
+            default_query=(
+                "lib/iscsi test/iscsi_tgt scripts/rpc.py iSCSI LUN add remove resize hotplug "
+                "initiator rescan active IO session recovery diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="bdev_crypto_integrity_blackbox",
+            name="bdev Crypto / Integrity Black-box Scenario",
+            description=(
+                "Analyze crypto or integrity bdev configuration, key mismatch, data verification, "
+                "invalid parameters, failure reporting, performance impact, and recovery."
+            ),
+            default_query=(
+                "module/bdev/crypto module/bdev test/bdev scripts/rpc.py bdev crypto integrity "
+                "key mismatch data verification invalid parameter failure reporting performance recovery"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="scheduler_qos_fairness_blackbox",
+            name="Scheduler QoS / Fairness Black-box Scenario",
+            description=(
+                "Analyze scheduler, poller, reactor, queue depth, QoS, fairness, starvation, "
+                "latency regression, and externally observable recovery under competing workloads."
+            ),
+            default_query=(
+                "lib/scheduler lib/thread lib/event test/scheduler test/thread scheduler poller reactor "
+                "QoS fairness starvation latency regression competing workloads recovery"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="backup_restore_integrity_blackbox",
+            name="Backup / Restore Integrity Black-box Scenario",
+            description=(
+                "Analyze export/import, save/restore, snapshot-like backup flows, checksum validation, "
+                "partial restore, corrupted input, restart persistence, and operator diagnostics."
+            ),
+            default_query=(
+                "scripts/rpc.py test/json_config lib/blob lib/bdev backup restore export import save "
+                "checksum validation partial restore corrupted input restart persistence diagnostics"
+            ),
+        ),
     ]
     for preset in presets:
+        preset_id = str(preset["id"])
+        if preset_id in CORE_WORKFLOW_PRESET_IDS:
+            preset["group"] = "core"
+        elif preset_id in COMMON_TEST_SCENARIO_PRESET_IDS:
+            preset["group"] = "common_test_scenario"
         validate_workflow_definition(preset["definition"])
+    preset_ids = [str(preset["id"]) for preset in presets]
+    if preset_ids[: len(CORE_WORKFLOW_PRESET_IDS)] != list(CORE_WORKFLOW_PRESET_IDS):
+        raise AssertionError("core workflow presets must stay first and complete")
+    missing_scenarios = set(COMMON_TEST_SCENARIO_PRESET_IDS).difference(preset_ids)
+    if missing_scenarios:
+        raise AssertionError(f"missing common test scenario presets: {sorted(missing_scenarios)}")
     return deepcopy(presets)
 
 

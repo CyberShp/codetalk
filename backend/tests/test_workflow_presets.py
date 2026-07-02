@@ -1,8 +1,13 @@
 def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
     from app.services.workflow_dsl import audit_workflow_definition, validate_workflow_definition
-    from app.services.workflow_presets import builtin_workflow_presets
+    from app.services.workflow_presets import (
+        COMMON_TEST_SCENARIO_PRESET_IDS,
+        CORE_WORKFLOW_PRESET_IDS,
+        builtin_workflow_presets,
+    )
 
     presets = builtin_workflow_presets()
+    preset_ids = [item["id"] for item in presets]
 
     assert {
         "module_analysis",
@@ -53,16 +58,28 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         "data_integrity_corruption_blackbox",
         "upgrade_compatibility_persistence_blackbox",
         "telemetry_metrics_regression_blackbox",
-    }.issubset({item["id"] for item in presets})
-    assert [item["id"] for item in presets[:5]] == [
+        "nvmf_subsystem_namespace_acl_blackbox",
+        "iscsi_lun_resize_hotplug_blackbox",
+        "bdev_crypto_integrity_blackbox",
+        "scheduler_qos_fairness_blackbox",
+        "backup_restore_integrity_blackbox",
+    }.issubset(set(preset_ids))
+    assert CORE_WORKFLOW_PRESET_IDS == (
         "module_analysis",
         "resource_leak_hunt",
         "mr_blackbox_test",
         "patch_impact_review",
         "source_flow_sfmea_blackbox",
-    ]
+    )
+    assert preset_ids[: len(CORE_WORKFLOW_PRESET_IDS)] == list(CORE_WORKFLOW_PRESET_IDS)
+    assert set(CORE_WORKFLOW_PRESET_IDS).isdisjoint(COMMON_TEST_SCENARIO_PRESET_IDS)
+    assert set(COMMON_TEST_SCENARIO_PRESET_IDS).issubset(set(preset_ids))
 
     for preset in presets:
+        if preset["id"] in CORE_WORKFLOW_PRESET_IDS:
+            assert preset.get("group") == "core"
+        elif preset["id"] in COMMON_TEST_SCENARIO_PRESET_IDS:
+            assert preset.get("group") == "common_test_scenario"
         workflow = validate_workflow_definition(preset["definition"])
         assert workflow.id == preset["definition"]["id"]
         assert workflow.steps
@@ -141,7 +158,11 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
 
 def test_restore_builtin_workflow_presets_refreshes_stale_builtin_definitions(tmp_path):
     from app.services.workflow_dsl import WorkflowStore, audit_workflow_definition
-    from app.services.workflow_presets import restore_builtin_workflow_presets
+    from app.services.workflow_presets import (
+        COMMON_TEST_SCENARIO_PRESET_IDS,
+        CORE_WORKFLOW_PRESET_IDS,
+        restore_builtin_workflow_presets,
+    )
 
     store = WorkflowStore(tmp_path / "workflows.db")
     store.save_workflow({
@@ -169,62 +190,16 @@ def test_restore_builtin_workflow_presets_refreshes_stale_builtin_definitions(tm
 
     restore_builtin_workflow_presets(store)
 
-    assert [item.id for item in store.list_workflows()[:5]] == [
-        "module_analysis",
-        "resource_leak_hunt",
-        "mr_blackbox_test",
-        "patch_impact_review",
-        "source_flow_sfmea_blackbox",
-    ]
+    assert [item.id for item in store.list_workflows()[:5]] == list(CORE_WORKFLOW_PRESET_IDS)
 
     restored = store.get_workflow("module_analysis")
     assert restored.name == "Module Analysis"
     assert audit_workflow_definition(restored.raw)["warnings"] == []
     assert store.get_workflow("custom_workflow").name == "Custom Workflow"
     ids = {item.id for item in store.list_workflows()}
-    assert {
-        "module_analysis",
-        "resource_leak_hunt",
-        "mr_blackbox_test",
-        "patch_impact_review",
-        "source_flow_sfmea_blackbox",
-        "blobstore_ftl_recovery_blackbox",
-        "vhost_vfio_user_lifecycle_blackbox",
-        "nvmf_tcp_tls_auth_blackbox",
-        "bdev_qos_latency_blackbox",
-        "jsonrpc_concurrency_idempotency_blackbox",
-        "app_startup_shutdown_smoke_blackbox",
-        "nvme_ctrlr_hotplug_reset_blackbox",
-        "storage_capacity_enospc_recovery_blackbox",
-        "nvmf_rdma_transport_blackbox",
-        "iscsi_digest_multi_connection_blackbox",
-        "bdev_hotremove_io_error_blackbox",
-        "blobstore_metadata_powerfail_blackbox",
-        "rpc_security_authz_blackbox",
-        "fault_injection_timeout_recovery_blackbox",
-        "concurrent_operations_stress_blackbox",
-        "observability_diagnostics_blackbox",
-        "config_compatibility_rollback_blackbox",
-        "lvol_snapshot_clone_blackbox",
-        "raid_degraded_rebuild_blackbox",
-        "nvme_multipath_failover_blackbox",
-        "env_hugepage_memory_blackbox",
-        "spdk_cli_rpc_smoke_blackbox",
-        "target_crash_restart_blackbox",
-        "multi_client_isolation_blackbox",
-        "queue_depth_backpressure_blackbox",
-        "io_error_injection_retry_blackbox",
-        "config_reload_persistence_blackbox",
-        "long_running_resource_leak_blackbox",
-        "basic_lifecycle_smoke_blackbox",
-        "io_stress_performance_blackbox",
-        "failure_recovery_soak_blackbox",
-        "transport_network_partition_blackbox",
-        "data_integrity_corruption_blackbox",
-        "upgrade_compatibility_persistence_blackbox",
-        "telemetry_metrics_regression_blackbox",
-        "custom_workflow",
-    }.issubset(ids)
+    assert set(CORE_WORKFLOW_PRESET_IDS).issubset(ids)
+    assert set(COMMON_TEST_SCENARIO_PRESET_IDS).issubset(ids)
+    assert "custom_workflow" in ids
 
 
 def test_workflow_preset_can_be_installed_into_store(tmp_path):

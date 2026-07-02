@@ -120,7 +120,8 @@ async def test_workbench_workflow_draft_audit_api_reports_warnings_and_invalid(
 async def test_workbench_workflow_preset_api(workbench_client):
     presets = await workbench_client.get("/api/workbench/workflow-presets")
     assert presets.status_code == 200
-    preset_ids = {item["id"] for item in presets.json()["items"]}
+    preset_items = presets.json()["items"]
+    preset_ids = {item["id"] for item in preset_items}
     assert "mr_blackbox_test" in preset_ids
     assert "resource_leak_hunt" in preset_ids
     assert "source_flow_sfmea_blackbox" in preset_ids
@@ -145,7 +146,16 @@ async def test_workbench_workflow_preset_api(workbench_client):
         "io_error_injection_retry_blackbox",
         "config_reload_persistence_blackbox",
         "long_running_resource_leak_blackbox",
+        "nvmf_subsystem_namespace_acl_blackbox",
+        "iscsi_lun_resize_hotplug_blackbox",
+        "bdev_crypto_integrity_blackbox",
+        "scheduler_qos_fairness_blackbox",
+        "backup_restore_integrity_blackbox",
     }.issubset(preset_ids)
+    by_preset_id = {item["id"]: item for item in preset_items}
+    assert by_preset_id["module_analysis"]["group"] == "core"
+    assert by_preset_id["mr_blackbox_test"]["group"] == "core"
+    assert by_preset_id["backup_restore_integrity_blackbox"]["group"] == "common_test_scenario"
 
     listed = await workbench_client.get("/api/workbench/workflows")
     listed_body = listed.json()
@@ -202,6 +212,11 @@ async def test_restore_builtin_workflows_preserves_custom_and_restores_core_plus
         "data_integrity_corruption_blackbox",
         "upgrade_compatibility_persistence_blackbox",
         "telemetry_metrics_regression_blackbox",
+        "nvmf_subsystem_namespace_acl_blackbox",
+        "iscsi_lun_resize_hotplug_blackbox",
+        "bdev_crypto_integrity_blackbox",
+        "scheduler_qos_fairness_blackbox",
+        "backup_restore_integrity_blackbox",
     }.issubset(set(workflow_ids))
     for item in body["items"]:
         if item["id"] in {
