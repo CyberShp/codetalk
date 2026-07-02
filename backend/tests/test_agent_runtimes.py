@@ -3227,6 +3227,19 @@ class TestAgentRuntimes:
             )
             == f"{AGENT_FINAL_ANSWER_PREFIX}最终答案：completed 事件里的完整正文。"
         )
+        assert (
+            _parse_event_text(
+                json.dumps(
+                    {
+                        "type": "response.output_text.done",
+                        "text": "最终答案：output_text.done 完整正文。",
+                    },
+                    ensure_ascii=False,
+                ),
+                "stream_json",
+            )
+            == f"{AGENT_FINAL_ANSWER_PREFIX}最终答案：output_text.done 完整正文。"
+        )
         stream_state: dict[int, str] = {}
         assert (
             _parse_event_text(
@@ -4064,6 +4077,35 @@ class TestAgentRuntimes:
         assert "completed.output 最终回答已保留" in output
         assert "lib/nvmf/ctrlr.c" in output
         assert "response.completed" not in output
+
+    async def test_agent_runtime_auto_mode_uses_openai_output_text_done_as_final_answer(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import json, sys; "
+            "print(json.dumps({'type':'response.created','response':{'id':'resp_1'}}, ensure_ascii=False)); "
+            "print(json.dumps({'type':'response.output_text.done','text':'## 结论\\noutput_text.done 最终回答已保留。\\n\\n## 代码证据\\n- lib/bdev/bdev.c: submit 路径。'}, ensure_ascii=False)); "
+            "print(json.dumps({'type':'response.completed','response':{'status':'completed'}}, ensure_ascii=False)); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "auto",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        output = "".join(chunks)
+        assert "output_text.done 最终回答已保留" in output
+        assert "lib/bdev/bdev.c" in output
+        assert "response.output_text.done" not in output
 
     async def test_agent_runtime_auto_mode_only_surfaces_clowder_style_agent_text_events(self):
         from app.services.agent_cli_bridge import stream_agent_runtime

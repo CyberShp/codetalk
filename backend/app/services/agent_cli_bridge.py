@@ -688,6 +688,9 @@ def _stream_content_block_type(block: Any) -> str:
 
 
 def _event_text(event: dict[str, Any]) -> str | None:
+    output_text_done = _response_output_text_done(event)
+    if output_text_done is not None:
+        return output_text_done
     response_text = _response_completed_text(event)
     if response_text is not None:
         return response_text
@@ -821,6 +824,18 @@ def _event_text(event: dict[str, Any]) -> str | None:
         if parts:
             return "".join(parts)
     return None
+
+
+def _response_output_text_done(event: dict[str, Any]) -> str | None:
+    if str(event.get("type") or "").strip() != "response.output_text.done":
+        return None
+    text = event.get("text") or event.get("content") or event.get("output_text")
+    if not isinstance(text, str):
+        return None
+    cleaned = _clean_agent_text(text).strip()
+    if not cleaned:
+        return ""
+    return f"{AGENT_FINAL_ANSWER_PREFIX}{cleaned}"
 
 
 def _response_completed_text(event: dict[str, Any]) -> str | None:
