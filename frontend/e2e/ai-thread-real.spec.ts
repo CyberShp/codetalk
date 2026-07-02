@@ -2000,6 +2000,116 @@ test("redacts secrets from a Markdown artifact written by the agent runtime", as
   }
 });
 
+test("downloads a JSON artifact written by the agent runtime without Markdown-only copy", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-json-artifact-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "JSON agent artifact e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-json-artifact-")));
+  const runtimeScript = path.join(runtimeDir, "json_artifact_agent.py");
+  const leakedKey = "sk-jsonArtifactE2ESecret1234567890";
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, os, pathlib, sys",
+      "sys.stdin.read()",
+      "artifact_dir = pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])",
+      "artifact_dir.mkdir(parents=True, exist_ok=True)",
+      "payload = {",
+      "  'sfmea': [{'failure_mode': 'connect timeout', 'rpn': 216}],",
+      "  'black_box_cases': [{'id': 'TC-NVMF-JSON-01', 'expected': 'observable timeout'}],",
+      `  'api_key': '${leakedKey}',`,
+      "}",
+      "(artifact_dir / 'sfmea_cases.json').write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')",
+      "print('已生成文件：sfmea_cases.json', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-json-artifact-e2e-${Date.now()}`;
+  const runtimeName = `JSON artifact runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} json artifact`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByLabel("AI 线程消息").fill("保存 SFMEA 和黑盒测试用例 JSON 文件");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const assistantAnswer = page.locator(".ct-codex-message:not(.is-user)");
+    await expect(assistantAnswer.filter({ hasText: "已生成结构化产物" })).toBeVisible({ timeout: 20_000 });
+    await expect(assistantAnswer.filter({ hasText: "完整 Markdown" })).toHaveCount(0);
+    await expect(assistantAnswer.filter({ hasText: "TC-NVMF-JSON-01" })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "下载完整产物" })).toBeVisible({ timeout: 15_000 });
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("link", { name: "下载完整产物" }).hover();
+    await page.getByRole("link", { name: "下载完整产物" }).click();
+    const download = await downloadPromise;
+    const artifactPath = testInfo.outputPath("json-agent-artifact.md");
+    await download.saveAs(artifactPath);
+    const artifact = fs.readFileSync(artifactPath, "utf8");
+    expect(artifact).toContain('"sfmea": [');
+    expect(artifact).toContain('"black_box_cases": [');
+    expect(artifact).toContain("TC-NVMF-JSON-01");
+    expect(artifact).toContain("<redacted>");
+    expect(artifact).not.toContain(leakedKey);
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("已生成结构化产物");
+    expect(assistant?.content).not.toContain("完整 Markdown");
+    expect(assistant?.content).not.toContain("TC-NVMF-JSON-01");
+    expect(assistant?.content).not.toContain(leakedKey);
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("Claude-style agent runtime resumes the previous CLI session through the real AI thread UI", async ({
   page,
   request,

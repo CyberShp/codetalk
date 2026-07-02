@@ -2740,7 +2740,7 @@ async def _prepare_assistant_delivery(
     ]
     visible = _compact_thread_artifact_preview(content)
     return (
-        f"{visible}\n\n---\n完整测试设计/SFMEA/黑盒用例已保存为下载产物。请使用“下载完整产物”获取完整 Markdown。",
+        f"{visible}\n\n---\n完整测试设计/SFMEA/黑盒用例已保存为下载产物。请使用“下载完整产物”获取完整产物。",
         actions,
     )
 
@@ -2809,7 +2809,7 @@ def _compact_thread_artifact_preview(content: str) -> str:
         facts.append(f"{table_rows} 行表格")
     if step_count:
         facts.append(f"{step_count} 条步骤/用例")
-    detail = "，".join(facts) if facts else "完整 Markdown 内容"
+    detail = "，".join(facts) if facts else "完整产物内容"
     return "\n".join(
         [
             f"## {title}",
@@ -2900,7 +2900,7 @@ def _legacy_artifact_preview_for_message(
         return content
     return (
         f"{_compact_thread_artifact_preview(preview_source)}\n\n---\n"
-        "这条历史消息的原始 Agent 过程输出已清理；请使用“下载完整产物”查看完整 Markdown。"
+        "这条历史消息的原始 Agent 过程输出已清理；请使用“下载完整产物”查看完整产物。"
     )
 
 
