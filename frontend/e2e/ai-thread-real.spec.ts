@@ -356,6 +356,59 @@ async function createClaudeResumeRuntime(
   return { id: runtime.id, name: runtimeName, captureFile };
 }
 
+async function createOpenCodeResumeRuntime(
+  request: APIRequestContext,
+  label: string,
+): Promise<{ id: string; name: string; captureFile: string }> {
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-opencode-resume-")));
+  const runtimeScript = path.join(runtimeDir, "fake_opencode_resume_agent.py");
+  const captureFile = path.join(runtimeDir, "opencode_invocations.jsonl");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, pathlib, sys, time",
+      `capture = pathlib.Path(${JSON.stringify(captureFile)})`,
+      "args = sys.argv[1:]",
+      "prompt = args[-1] if args else ''",
+      "capture.write_text((capture.read_text(encoding='utf-8') if capture.exists() else '') + json.dumps({'argv': args, 'prompt': prompt}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+      "session = args[args.index('--session') + 1] if '--session' in args else ''",
+      "thread_id = 'opencode-e2e-second' if session else 'opencode-e2e-first'",
+      "answer = ('resumed opencode:' + session) if session else 'fresh opencode run'",
+      "events = [",
+      "  {'type':'thread.started','thread_id':thread_id},",
+      "  {'type':'message','role':'assistant','content':answer},",
+      "  {'type':'result','status':'success','thread_id':thread_id},",
+      "]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.05)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const runtimeName = `${label} ${Date.now()}`;
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "opencode_run_arg",
+      output_mode: "auto",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 20,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "resume_args",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+  return { id: runtime.id, name: runtimeName, captureFile };
+}
+
 test("creates an AI investigation thread from the project hub and restores it after refresh", async ({
   page,
   request,
@@ -1330,6 +1383,85 @@ test("Claude-style agent runtime resumes the previous CLI session through the re
       expect.arrayContaining([
         expect.objectContaining({ role: "assistant", content: "fresh claude print" }),
         expect.objectContaining({ role: "assistant", content: "resumed claude:claude-e2e-first" }),
+      ]),
+    );
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
+  }
+});
+
+test("OpenCode agent runtime resumes the previous CLI session through the real AI thread UI", async ({
+  page,
+  request,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-opencode-resume-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "OpenCode resume transport e2e workspace\n", "utf8");
+  const workspaceName = `ai-opencode-resume-e2e-${Date.now()}`;
+  const threadTitle = `${workspaceName} opencode resume`;
+  const runtime = await createOpenCodeResumeRuntime(request, "OpenCode resume runtime");
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtime.name });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    const firstPrompt = "第一轮：请读取工作区源码并建立 OpenCode session";
+    const composer = page.getByPlaceholder(/像 Codex 一样继续追问/);
+    await composer.fill(firstPrompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "fresh opencode run" })).toBeVisible({
+      timeout: 20_000,
+    });
+
+    const secondPrompt = "第二轮：沿用 OpenCode session，只输出 resume 证据";
+    await composer.fill(secondPrompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "resumed opencode:opencode-e2e-first" })).toBeVisible({
+      timeout: 20_000,
+    });
+
+    const captured = fs.readFileSync(runtime.captureFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { argv: string[]; prompt: string });
+    expect(captured).toHaveLength(2);
+    expect(captured[0].argv.slice(0, 3)).toEqual(["run", "--format", "json"]);
+    expect(captured[0].argv).not.toContain("--session");
+    expect(captured[0].prompt).toContain(firstPrompt);
+    expect(captured[1].argv.slice(0, 5)).toEqual(["run", "--session", "opencode-e2e-first", "--format", "json"]);
+    expect(captured[1].prompt).toContain(secondPrompt);
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    expect(messageBody.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ role: "assistant", content: "fresh opencode run" }),
+        expect.objectContaining({ role: "assistant", content: "resumed opencode:opencode-e2e-first" }),
       ]),
     );
   } finally {
