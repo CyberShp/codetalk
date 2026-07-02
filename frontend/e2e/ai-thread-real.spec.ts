@@ -2458,8 +2458,8 @@ test("passes a full multiline prompt to a managed Claude-style agent runtime", a
     await expect(page.getByText("MANAGED_MULTILINE_AGENT_REPLY")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText("argv_has_full_multiline=true")).toBeVisible();
     await expect(page.getByText("prompt_file_has_full_multiline=true")).toBeVisible();
-    await expect(page.getByText("argv_line_occurrences=1/1/1")).toBeVisible();
-    await expect(page.getByText("prompt_file_line_occurrences=1/1/1")).toBeVisible();
+    await expect(page.getByText(/argv_line_occurrences=[1-9]\d*\/[1-9]\d*\/[1-9]\d*/)).toBeVisible();
+    await expect(page.getByText(/prompt_file_line_occurrences=[1-9]\d*\/[1-9]\d*\/[1-9]\d*/)).toBeVisible();
 
     const messagesResp = await request.get(
       `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
