@@ -23,9 +23,6 @@ from app.services.export_service import (
     export_workspace_reports,
 )
 
-pytestmark = [pytest.mark.asyncio]
-
-
 # ---------------------------------------------------------------------------
 # _export_md_zip — pure function
 # ---------------------------------------------------------------------------
@@ -57,6 +54,8 @@ class TestExportMdZip:
 
 
 class TestExportTaskReports:
+    pytestmark = pytest.mark.asyncio
+
     async def test_redacts_secret_values_from_task_report_export(self, tmp_path, monkeypatch):
         from app.config import settings
 
@@ -233,6 +232,8 @@ class TestDispatch:
 
 
 class TestExportWorkspaceReports:
+    pytestmark = pytest.mark.asyncio
+
     async def test_exports_completed_reports_only(self, sqlite_db):
         ws_id = "ws-exp"
         now = datetime.now(timezone.utc).isoformat()
@@ -418,6 +419,8 @@ class TestExportWorkspaceReports:
 
 
 class TestExportWorkspaceChat:
+    pytestmark = pytest.mark.asyncio
+
     async def test_exports_with_mode_and_role_labels(self, sqlite_db):
         ws_id = "ws-chat"
         now = datetime.now(timezone.utc).isoformat()
