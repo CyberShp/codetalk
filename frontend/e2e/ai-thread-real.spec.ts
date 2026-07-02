@@ -1010,6 +1010,87 @@ test("deletes an AI thread from the project thread hub", async ({
   );
 });
 
+test("deletes the current AI thread from the detail sidebar and falls back to a sibling thread", async ({
+  page,
+  request,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-delete-detail-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI thread deletion detail e2e workspace\n", "utf8");
+  const workspaceName = `ai-delete-detail-e2e-${Date.now()}`;
+  const keepThreadTitle = `${workspaceName} kept sibling`;
+  const deleteThreadTitle = `${workspaceName} delete current`;
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  const keepResp = await request.post(`${backendBase}/api/ai/conversations`, {
+    data: {
+      scope_type: "workspace",
+      scope_id: workspace.id,
+      workspace_id: workspace.id,
+      memory_namespace: `workspace:${workspace.id}`,
+      runtime_type: "builtin_llm",
+      agent_runtime_id: null,
+      title: keepThreadTitle,
+      initial_context: {
+        workspace_id: workspace.id,
+        project_name: workspaceName,
+        memory_namespace: `workspace:${workspace.id}`,
+      },
+    },
+  });
+  expect(keepResp.status()).toBe(201);
+  const keepThread = (await keepResp.json()) as { id: string };
+
+  const deleteResp = await request.post(`${backendBase}/api/ai/conversations`, {
+    data: {
+      scope_type: "workspace",
+      scope_id: workspace.id,
+      workspace_id: workspace.id,
+      memory_namespace: `workspace:${workspace.id}`,
+      runtime_type: "builtin_llm",
+      agent_runtime_id: null,
+      title: deleteThreadTitle,
+      initial_context: {
+        workspace_id: workspace.id,
+        project_name: workspaceName,
+        memory_namespace: `workspace:${workspace.id}`,
+      },
+    },
+  });
+  expect(deleteResp.status()).toBe(201);
+  const deletedThread = (await deleteResp.json()) as { id: string };
+
+  await page.goto(`/ai/${deletedThread.id}`, { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: deleteThreadTitle, exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByRole("link", { name: new RegExp(keepThreadTitle) })).toBeVisible({
+    timeout: 15_000,
+  });
+
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain(deleteThreadTitle);
+    await dialog.accept();
+  });
+  await page.getByRole("button", { name: `删除线程 ${deleteThreadTitle}` }).hover();
+  await page.getByRole("button", { name: `删除线程 ${deleteThreadTitle}` }).click();
+
+  await page.waitForURL(new RegExp(`/ai/${keepThread.id}$`), { timeout: 15_000 });
+  await expect(page.getByRole("heading", { name: keepThreadTitle, exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByRole("link", { name: new RegExp(deleteThreadTitle) })).toHaveCount(0);
+
+  const deletedGet = await request.get(
+    `${backendBase}/api/ai/conversations/${encodeURIComponent(deletedThread.id)}`,
+  );
+  expect(deletedGet.status()).toBe(404);
+});
+
 test("contains large real AI project and thread lists inside scroll panes", async ({
   page,
   request,
