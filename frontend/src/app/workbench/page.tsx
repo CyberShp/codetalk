@@ -4184,7 +4184,7 @@ export default function AgentWorkbenchPage() {
             </button>
             <button
               onClick={installPreset}
-              disabled={busyAction === "install-preset" || !selectedPresetId}
+              disabled={Boolean(busyAction) || !selectedPresetId}
               className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
             >
               {busyAction === "install-preset" ? (
@@ -4196,7 +4196,7 @@ export default function AgentWorkbenchPage() {
             </button>
             <button
               onClick={restoreBuiltinPresets}
-              disabled={busyAction === "restore-builtin-presets"}
+              disabled={Boolean(busyAction)}
               className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
             >
               {busyAction === "restore-builtin-presets" ? (
@@ -4222,7 +4222,7 @@ export default function AgentWorkbenchPage() {
             </button>
             <button
               onClick={saveWorkflow}
-              disabled={busyAction === "save-workflow"}
+              disabled={Boolean(busyAction)}
               className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
             >
               {busyAction === "save-workflow" ? (
@@ -4234,7 +4234,7 @@ export default function AgentWorkbenchPage() {
             </button>
             <button
               onClick={auditWorkflowDraft}
-              disabled={busyAction === "audit-workflow-draft"}
+              disabled={Boolean(busyAction)}
               className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
             >
               {busyAction === "audit-workflow-draft" ? (
@@ -4314,7 +4314,7 @@ export default function AgentWorkbenchPage() {
               </label>
               <button
                 onClick={generateWorkflowDraft}
-                disabled={busyAction === "generate-workflow"}
+                disabled={Boolean(busyAction)}
                 className="inline-flex items-center gap-2 rounded-lg bg-surface-container px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
               >
                 {busyAction === "generate-workflow" ? (

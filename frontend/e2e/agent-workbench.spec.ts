@@ -642,6 +642,7 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"black_box_cases"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"artifact": "sfmea\.json"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"schema": \{\s+"type": "array"/);
+  await expect(page.getByRole("button", { name: "审计草稿" })).toBeEnabled();
   await page.getByRole("button", { name: "审计草稿" }).click();
   await expect(page.getByText("工作流草稿审计: ok (0 warning(s))")).toBeVisible();
   await expect(page.getByText("Server audit:ok")).toBeVisible();
