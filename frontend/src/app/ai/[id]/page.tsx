@@ -216,19 +216,27 @@ function EvidenceReferenceCard({ refItem }: { refItem: AIContextReference }) {
 }
 
 function AgentProcessDisclosure({ diagnostics }: { diagnostics: string[] }) {
+  const [open, setOpen] = useState(false);
   const visibleDiagnostics = diagnostics.map(redactDiagnosticText).filter(Boolean).slice(-12);
   if (visibleDiagnostics.length === 0) return null;
   return (
-    <details className="ct-agent-process" data-testid="agent-process-disclosure">
+    <details
+      className="ct-agent-process"
+      data-testid="agent-process-disclosure"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
       <summary>
         <span>Agent 过程</span>
         <em>默认折叠 · {visibleDiagnostics.length} 条</em>
       </summary>
-      <div>
-        {visibleDiagnostics.map((item, index) => (
-          <p key={`${index}-${item}`}>{item}</p>
-        ))}
-      </div>
+      {open && (
+        <div>
+          {visibleDiagnostics.map((item, index) => (
+            <p key={`${index}-${item}`}>{item}</p>
+          ))}
+        </div>
+      )}
     </details>
   );
 }
@@ -321,6 +329,7 @@ export default function AIThreadPage() {
   const [streamingContent, setStreamingContent] = useState("");
   const [streamingDiagnostics, setStreamingDiagnostics] = useState<string[]>([]);
   const [contextOpen, setContextOpen] = useState(true);
+  const [generationDiagnosticsOpen, setGenerationDiagnosticsOpen] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -649,6 +658,7 @@ export default function AIThreadPage() {
     setInput("");
     setStreamingContent("");
     setStreamingDiagnostics([]);
+    setGenerationDiagnosticsOpen(false);
     autoScrollRef.current = true;
     setShowJumpToLatest(false);
     try {
@@ -935,74 +945,76 @@ export default function AIThreadPage() {
           </div>
         )}
 
-        <section
-          ref={readerRef}
-          className="ct-codex-ai__reader"
-          tabIndex={0}
-          onScroll={updateReaderStickiness}
-          onKeyDown={handleReaderKeyDown}
-          onTouchMove={detachAutoScroll}
-          aria-label="AI 线程对话内容"
-        >
-          {messages.length === 0 && !streamingContent ? (
-            <div className="ct-codex-ai__empty">
-              <Sparkles size={32} />
-              <p>直接提问。这个线程会持续保存，并只围绕当前项目命名空间召回记忆。</p>
-            </div>
-          ) : (
-            messages.map((message) => (
-              <article key={message.id} className={`ct-codex-message ${message.role === "user" ? "is-user" : ""}`}>
-                <div className="ct-codex-message__avatar">
-                  {message.role === "user" ? <User size={15} /> : <Bot size={15} />}
-                </div>
-                <div className="ct-codex-message__content">
-                  <span>{message.role === "user" ? "你" : "CodeTalk AI"}</span>
-                  <div>
-                    {message.role === "assistant" ? (
-                      <MarkdownRenderer content={redactDiagnosticText(message.content)} enableNumericCitations={false} variant="ai" />
-                    ) : (
-                      <p className="whitespace-pre-wrap">{redactDiagnosticText(message.content)}</p>
+        <div className="ct-codex-ai__reader-shell">
+          <section
+            ref={readerRef}
+            className="ct-codex-ai__reader"
+            tabIndex={0}
+            onScroll={updateReaderStickiness}
+            onKeyDown={handleReaderKeyDown}
+            onTouchMove={detachAutoScroll}
+            aria-label="AI 线程对话内容"
+          >
+            {messages.length === 0 && !streamingContent ? (
+              <div className="ct-codex-ai__empty">
+                <Sparkles size={32} />
+                <p>直接提问。这个线程会持续保存，并只围绕当前项目命名空间召回记忆。</p>
+              </div>
+            ) : (
+              messages.map((message) => (
+                <article key={message.id} className={`ct-codex-message ${message.role === "user" ? "is-user" : ""}`}>
+                  <div className="ct-codex-message__avatar">
+                    {message.role === "user" ? <User size={15} /> : <Bot size={15} />}
+                  </div>
+                  <div className="ct-codex-message__content">
+                    <span>{message.role === "user" ? "你" : "CodeTalk AI"}</span>
+                    <div>
+                      {message.role === "assistant" ? (
+                        <MarkdownRenderer content={redactDiagnosticText(message.content)} enableNumericCitations={false} variant="ai" />
+                      ) : (
+                        <p className="whitespace-pre-wrap">{redactDiagnosticText(message.content)}</p>
+                      )}
+                    </div>
+                    {message.actions?.some((action) => resolvedActionHref(action)) && (
+                      <div className="ct-codex-message__actions">
+                        {message.actions
+                          .filter((action) => resolvedActionHref(action))
+                          .map((action) => (
+                            <a
+                              key={`${message.id}-${actionId(action) || resolvedActionHref(action)}`}
+                              href={resolvedActionHref(action)}
+                              download={actionKind(action) === "download" ? true : undefined}
+                            >
+                              <Download size={14} />
+                              {actionLabel(action) || "下载产物"}
+                            </a>
+                          ))}
+                      </div>
                     )}
                   </div>
-                  {message.actions?.some((action) => resolvedActionHref(action)) && (
-                    <div className="ct-codex-message__actions">
-                      {message.actions
-                        .filter((action) => resolvedActionHref(action))
-                        .map((action) => (
-                          <a
-                            key={`${message.id}-${actionId(action) || resolvedActionHref(action)}`}
-                            href={resolvedActionHref(action)}
-                            download={actionKind(action) === "download" ? true : undefined}
-                          >
-                            <Download size={14} />
-                            {actionLabel(action) || "下载产物"}
-                          </a>
-                        ))}
-                    </div>
-                  )}
+                </article>
+              ))
+            )}
+
+            {streamingContent && (
+              <article className="ct-codex-message">
+                <div className="ct-codex-message__avatar">
+                  <Bot size={15} />
+                </div>
+                <div className="ct-codex-message__content">
+                  <span className="inline-flex items-center gap-2">
+                    CodeTalk AI <Loader2 size={12} className="animate-spin" />
+                  </span>
+                  <div>
+                    <MarkdownRenderer content={redactDiagnosticText(streamingContent)} enableNumericCitations={false} variant="ai" />
+                  </div>
                 </div>
               </article>
-            ))
-          )}
-
-          {streamingContent && (
-            <article className="ct-codex-message">
-              <div className="ct-codex-message__avatar">
-                <Bot size={15} />
-              </div>
-              <div className="ct-codex-message__content">
-                <span className="inline-flex items-center gap-2">
-                  CodeTalk AI <Loader2 size={12} className="animate-spin" />
-                </span>
-                <div>
-                  <MarkdownRenderer content={redactDiagnosticText(streamingContent)} enableNumericCitations={false} variant="ai" />
-                </div>
-              </div>
-            </article>
-          )}
+            )}
+            <div ref={bottomRef} />
+          </section>
           <AgentProcessDisclosure diagnostics={streamingDiagnostics} />
-          <div ref={bottomRef} />
-        </section>
+        </div>
         {showJumpToLatest && (
           <button type="button" className="ct-codex-ai__jump" onClick={() => jumpToLatest("auto", true)}>
             跳到最新回复
@@ -1213,13 +1225,19 @@ export default function AIThreadPage() {
             </div>
           </details>
           {streamingDiagnostics.length > 0 && (
-            <details className="ct-ai-disclosure">
+            <details
+              className="ct-ai-disclosure"
+              open={generationDiagnosticsOpen}
+              onToggle={(event) => setGenerationDiagnosticsOpen(event.currentTarget.open)}
+            >
               <summary>生成诊断：默认折叠</summary>
-              <div className="ct-ai-diagnostic">
-                {streamingDiagnostics.map((item, index) => (
-                  <p key={`${index}-${item}`}>{item}</p>
-                ))}
-              </div>
+              {generationDiagnosticsOpen && (
+                <div className="ct-ai-diagnostic">
+                  {streamingDiagnostics.map((item, index) => (
+                    <p key={`${index}-${item}`}>{item}</p>
+                  ))}
+                </div>
+              )}
             </details>
           )}
         </section>

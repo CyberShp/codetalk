@@ -2192,8 +2192,16 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   outline-offset: 2px;
 }
 
+.ct-codex-ai__reader-shell {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .ct-codex-ai__reader {
-  height: 100%;
+  flex: 1 1 auto;
+  height: auto;
   min-height: 0;
   overflow: auto;
   overflow-anchor: none;
@@ -2290,8 +2298,10 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 }
 
 .ct-agent-process {
+  flex: 0 0 auto;
   max-width: 820px;
-  margin: -2px auto 14px;
+  width: calc(100% - clamp(28px, 4.8vw, 56px));
+  margin: -2px auto 10px;
   border: 1px solid rgba(203, 213, 225, 0.78);
   border-radius: 12px;
   background: rgba(248, 250, 252, 0.78);

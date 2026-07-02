@@ -2377,12 +2377,15 @@ def _split_ai_thread_artifact_markdown(markdown: str) -> tuple[str, str | None]:
 
 def _should_materialize_thread_artifact(content: str) -> bool:
     text = str(content or "")
-    if len(text) > _THREAD_INLINE_OUTPUT_LIMIT * 2:
-        return True
     lowered = text.lower()
     has_keyword = any(keyword in lowered for keyword in _THREAD_ARTIFACT_KEYWORDS)
-    has_table_or_many_steps = text.count("\n|") >= 4 or len(re.findall(r"(?m)^\s*\d+[\.)]\s+", text)) >= 8
-    return has_keyword and has_table_or_many_steps
+    if not has_keyword:
+        return False
+    has_table_or_many_steps = (
+        text.count("\n|") >= 4
+        or len(re.findall(r"(?m)^\s*\d+[\.)]\s+", text)) >= 8
+    )
+    return len(text) > _THREAD_INLINE_OUTPUT_LIMIT * 2 or has_table_or_many_steps
 
 
 def _compact_thread_artifact_preview(content: str) -> str:

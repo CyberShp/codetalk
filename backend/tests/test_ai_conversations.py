@@ -215,6 +215,18 @@ async def test_agent_output_segments_apply_backspace_repaints_before_filtering_p
     ]
 
 
+async def test_plain_long_agent_answer_stays_inline_in_thread_reader():
+    from app.services.ai_conversations import _should_materialize_thread_artifact
+
+    plain_long_answer = "\n".join(
+        f"HISTORY-LINE-{index:02d} earlier evidence and reasoning that remains readable during generation"
+        for index in range(1, 140)
+    )
+
+    assert len(plain_long_answer) > 7200
+    assert _should_materialize_thread_artifact(plain_long_answer) is False
+
+
 async def test_agent_output_segments_fold_indented_diagnostic_continuations():
     from app.services.ai_conversations import _agent_output_segments
 
