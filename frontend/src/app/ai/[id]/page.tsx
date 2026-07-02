@@ -485,6 +485,7 @@ export default function AIThreadPage() {
     if (!reader) return;
     const distanceFromBottom = reader.scrollHeight - reader.scrollTop - reader.clientHeight;
     const nearBottom = distanceFromBottom < 96;
+    const hasReadableContent = messages.length > 0 || Boolean(streamingContent);
     if (programmaticScrollRef.current) {
       autoScrollRef.current = true;
       setShowJumpToLatest(false);
@@ -494,8 +495,8 @@ export default function AIThreadPage() {
     if (!nearBottom) {
       detachedScrollTopRef.current = reader.scrollTop;
     }
-    setShowJumpToLatest(!nearBottom && Boolean(streamingRunId || streamingContent));
-  }, [streamingContent, streamingRunId]);
+    setShowJumpToLatest(!nearBottom && hasReadableContent);
+  }, [messages.length, streamingContent]);
 
   const detachAutoScroll = useCallback(() => {
     const reader = readerRef.current;
@@ -553,19 +554,18 @@ export default function AIThreadPage() {
     const reader = readerRef.current;
     if (autoScrollRef.current) {
       jumpToLatest(streamingRunId || streamingContent ? "auto" : "smooth");
-    } else if (streamingRunId || streamingContent) {
-      if (reader) {
-        const targetScrollTop = detachedScrollTopRef.current;
-        reader.scrollTop = targetScrollTop;
-        window.requestAnimationFrame(() => {
-          if (!autoScrollRef.current && readerRef.current === reader) {
-            reader.scrollTop = targetScrollTop;
-          }
-        });
-      }
-      setShowJumpToLatest(true);
+    } else if (reader && (messages.length > 0 || streamingContent)) {
+      const targetScrollTop = detachedScrollTopRef.current;
+      reader.scrollTop = targetScrollTop;
+      window.requestAnimationFrame(() => {
+        if (!autoScrollRef.current && readerRef.current === reader) {
+          reader.scrollTop = targetScrollTop;
+          const distanceFromBottom = reader.scrollHeight - reader.scrollTop - reader.clientHeight;
+          setShowJumpToLatest(distanceFromBottom >= 96);
+        }
+      });
     }
-  }, [jumpToLatest, messages, streamingContent, streamingRunId]);
+  }, [jumpToLatest, messages.length, streamingContent, streamingRunId]);
 
   const send = async () => {
     const text = input.trim();
