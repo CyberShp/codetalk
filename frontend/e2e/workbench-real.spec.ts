@@ -67,6 +67,11 @@ test("lists and installs every built-in workflow preset through the real workben
     { id: "jsonrpc_partial_rollback_blackbox", label: "JSON-RPC 部分失败/回滚黑盒场景" },
     { id: "vfio_user_hotplug_reconnect_blackbox", label: "vfio-user hotplug/reconnect 黑盒场景" },
     { id: "lvol_thin_snapshot_blackbox", label: "lvol thin/snapshot 黑盒场景" },
+    { id: "api_contract_negative_blackbox", label: "API 契约负例黑盒场景" },
+    { id: "state_persistence_restart_blackbox", label: "状态持久化/重启黑盒场景" },
+    { id: "concurrency_isolation_race_blackbox", label: "并发隔离/race 黑盒场景" },
+    { id: "performance_capacity_regression_blackbox", label: "性能容量回归黑盒场景" },
+    { id: "security_access_control_blackbox", label: "安全访问控制黑盒场景" },
     { id: "mr_blackbox_test", label: "MR 黑盒测试工作流" },
     { id: "patch_impact_review", label: "补丁影响面评审工作流" },
   ];
