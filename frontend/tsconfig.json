@@ -37,7 +37,9 @@
     "**/*.mts",
     ".next/dev/dev/types/**/*.ts",
     ".next-coverage-e2e/types/**/*.ts",
-    ".next-coverage-e2e/dev/types/**/*.ts"
+    ".next-coverage-e2e/dev/types/**/*.ts",
+    ".next-playwright-e2e/types/**/*.ts",
+    ".next-playwright-e2e/dev/types/**/*.ts"
   ],
   "exclude": [
     "node_modules"

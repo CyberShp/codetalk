@@ -8,6 +8,8 @@ const browserHost = process.env.CODETALK_BROWSER_HOST ?? "localhost";
 const backendPort = process.env.CODETALK_BACKEND_PORT ?? "3004";
 const nextPublicApiUrl =
   process.env.NEXT_PUBLIC_API_URL ?? `http://${browserHost}:${backendPort}`;
+const nextPlaywrightDistDir =
+  process.env.CODETALK_NEXT_DIST_DIR ?? ".next-playwright-e2e";
 const npxCommand = process.platform === "win32" ? "npx.cmd" : "npx";
 
 await assertPortAvailable({
@@ -18,12 +20,15 @@ await assertPortAvailable({
   clientHost: browserHost,
 });
 
+process.env.CODETALK_NEXT_DIST_DIR = nextPlaywrightDistDir;
+
 await clearNextDevCache({ reason: "before Playwright next dev" });
 
 const child = spawn(npxCommand, ["next", "dev", "-H", frontendHost, "-p", frontendPort], {
   env: {
     ...process.env,
     NEXT_PUBLIC_API_URL: nextPublicApiUrl,
+    CODETALK_NEXT_DIST_DIR: nextPlaywrightDistDir,
   },
   stdio: "inherit",
 });
