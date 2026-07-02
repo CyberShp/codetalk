@@ -805,9 +805,11 @@ def _event_text(event: dict[str, Any]) -> str | None:
     choices = event.get("choices")
     if isinstance(choices, list):
         parts: list[str] = []
+        saw_choice_protocol = False
         for choice in choices:
             if not isinstance(choice, dict):
                 continue
+            saw_choice_protocol = True
             for key in ("delta", "message"):
                 value = choice.get(key)
                 if isinstance(value, dict):
@@ -819,6 +821,8 @@ def _event_text(event: dict[str, Any]) -> str | None:
                 parts.append(direct)
         if parts:
             return "".join(parts)
+        if saw_choice_protocol:
+            return ""
     candidates = event.get("candidates")
     if isinstance(candidates, list):
         parts = []

@@ -4310,6 +4310,46 @@ class TestAgentRuntimes:
         assert "command: rg nvmf_connect lib/nvmf" in diagnostics
         assert "thread.started" not in answer + diagnostics
 
+    async def test_agent_runtime_chat_choice_delta_chunks_surface_as_answer(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+        from app.services.ai_conversations import _agent_output_segments
+
+        agent_code = (
+            "import json, sys; "
+            "events=["
+            "{'choices':[{'delta':{'role':'assistant'}}]},"
+            "{'choices':[{'delta':{'content':'CHAT_CHOICE_FINAL: 已基于源码完成分析。\\n\\n## 代码证据\\n- `lib/bdev/bdev.c`: submit 路径。\\n- `test/bdev`: 可承载回归。\\n\\n'}}]},"
+            "{'type':'item.completed','item':{'type':'command_execution','command':'rg bdev_submit lib/bdev','status':'completed','exit_code':0,'aggregated_output':'lib/bdev/bdev.c:bdev_submit'}},"
+            "{'choices':[{'delta':{'content':'## 流程梳理\\n1. 读取 bdev submit 证据。\\n2. 输出外部可见结论。'}}]},"
+            "{'choices':[{'finish_reason':'stop'}]}"
+            "]; "
+            "[print(json.dumps(event, ensure_ascii=False), flush=True) for event in events]; "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "auto",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码后回答",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        segments = [segment for chunk in chunks for segment in _agent_output_segments(chunk)]
+        answer = "".join(content for kind, content in segments if kind == "answer")
+        diagnostics = "\n".join(content for kind, content in segments if kind == "diagnostic")
+        assert "CHAT_CHOICE_FINAL" in answer
+        assert "lib/bdev/bdev.c" in answer
+        assert "## 流程梳理" in answer
+        assert "command: rg bdev_submit lib/bdev" in diagnostics
+        assert "bdev_submit" not in answer
+        assert "finish_reason" not in answer + diagnostics
+
     async def test_agent_runtime_auto_mode_cleans_plain_fallback_chunks(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
 
