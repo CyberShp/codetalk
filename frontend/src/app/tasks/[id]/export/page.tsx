@@ -54,7 +54,14 @@ export default function ExportPage() {
     downloadingRef.current = true;
     setDownloading(true);
     const url = api.tasks.exportUrl(taskId, selectedFormat);
-    window.open(url, "_blank");
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "";
+    anchor.rel = "noopener";
+    anchor.style.display = "none";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
     window.setTimeout(() => {
       downloadingRef.current = false;
       setDownloading(false);
