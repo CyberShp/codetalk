@@ -212,6 +212,46 @@ class TestDefaultAgentRuntimes:
         assert row["timeout_seconds"] == 900
 
     @pytest.mark.asyncio
+    async def test_init_db_migrates_legacy_raw_agent_runtime_to_clowder_like_defaults(self, fresh_db):
+        async with aiosqlite.connect(fresh_db) as db:
+            await db.executescript(_SCHEMA)
+            await db.execute(
+                """
+                INSERT INTO agent_runtimes
+                    (id, name, command, args_json, prompt_transport, output_mode,
+                     working_dir_mode, timeout_seconds, completion_mode, idle_complete_seconds,
+                     sentinel_text, session_persistence, resume_args_json, enabled, created_at, updated_at)
+                VALUES
+                    ('legacy-nga', 'NGA CodeAgent', 'nga', '[]', 'stdin', 'plain',
+                     'project', 120, 'process_exit', 5, '', 'none', '[]', 1,
+                     '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+                """
+            )
+            await db.commit()
+
+        with patch("app.config.settings.sqlite_db", fresh_db), \
+             patch("app.api.prompts.seed_default_template", return_value=None):
+            await init_db()
+
+        async with aiosqlite.connect(fresh_db) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT output_mode, timeout_seconds, completion_mode, idle_complete_seconds, "
+                "sentinel_text, session_persistence, resume_args_json "
+                "FROM agent_runtimes WHERE id = 'legacy-nga'"
+            ) as cur:
+                row = await cur.fetchone()
+
+        assert row is not None
+        assert row["output_mode"] == "auto"
+        assert row["timeout_seconds"] == 900
+        assert row["completion_mode"] == "idle_after_output"
+        assert row["idle_complete_seconds"] == 5
+        assert row["sentinel_text"] == ""
+        assert row["session_persistence"] == "none"
+        assert json.loads(row["resume_args_json"]) == []
+
+    @pytest.mark.asyncio
     async def test_init_db_quarantines_ephemeral_e2e_agent_runtimes(self, fresh_db):
         async with aiosqlite.connect(fresh_db) as db:
             await db.executescript(_SCHEMA)

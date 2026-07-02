@@ -223,7 +223,7 @@ class AgentRuntimeStore:
                 raise ValueError(f"不支持的 prompt_transport: {value}")
             result["prompt_transport"] = value
         if not partial or "output_mode" in result:
-            value = str(result.get("output_mode") or "plain").strip()
+            value = str(result.get("output_mode") or "auto").strip()
             if value not in OUTPUT_MODES:
                 raise ValueError(f"不支持的 output_mode: {value}")
             result["output_mode"] = value
@@ -237,10 +237,10 @@ class AgentRuntimeStore:
         if not partial or "health_command" in result:
             result["health_command"] = str(result.get("health_command") or "").strip()
         if not partial or "timeout_seconds" in result:
-            seconds = int(result.get("timeout_seconds") or 120)
+            seconds = int(result.get("timeout_seconds") or 900)
             result["timeout_seconds"] = max(1, min(seconds, 3600))
         if not partial or "completion_mode" in result:
-            value = str(result.get("completion_mode") or "process_exit").strip()
+            value = str(result.get("completion_mode") or "idle_after_output").strip()
             if value not in COMPLETION_MODES:
                 raise ValueError(f"不支持的 completion_mode: {value}")
             result["completion_mode"] = value
@@ -287,7 +287,9 @@ def _runtime_from_row(row: aiosqlite.Row) -> dict[str, Any]:
     data["args"] = _json_loads(data.pop("args_json", "[]"), [])
     data["resume_args"] = _json_loads(data.pop("resume_args_json", "[]"), [])
     data["env"] = _json_loads(data.pop("env_json", "{}"), {})
-    data["completion_mode"] = data.get("completion_mode") or "process_exit"
+    data["output_mode"] = data.get("output_mode") or "auto"
+    data["timeout_seconds"] = int(data.get("timeout_seconds") or 900)
+    data["completion_mode"] = data.get("completion_mode") or "idle_after_output"
     data["idle_complete_seconds"] = int(data.get("idle_complete_seconds") or 5)
     data["sentinel_text"] = data.get("sentinel_text") or ""
     data["session_persistence"] = data.get("session_persistence") or "none"

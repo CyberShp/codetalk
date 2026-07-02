@@ -56,13 +56,13 @@ const EMPTY_AGENT_RUNTIME_FORM: AgentRuntimeCreate = {
   command: "",
   args: [],
   prompt_transport: "stdin",
-  output_mode: "plain",
+  output_mode: "auto",
   working_dir_mode: "project",
   fixed_working_dir: "",
   env: {},
   health_command: "",
-  timeout_seconds: 120,
-  completion_mode: "process_exit",
+  timeout_seconds: 900,
+  completion_mode: "idle_after_output",
   idle_complete_seconds: 5,
   sentinel_text: "",
   session_persistence: "none",
@@ -172,7 +172,6 @@ const AGENT_RUNTIME_PRESETS = [
       command: "",
       args: [],
       prompt_transport: "stdin",
-      output_mode: "plain",
     },
   },
 ] satisfies Array<{
@@ -757,7 +756,7 @@ export default function SettingsPage() {
                     min={1}
                     max={3600}
                     value={agentRuntimeForm.timeout_seconds}
-                    onChange={(event) => updateAgentRuntimeForm("timeout_seconds", Number(event.target.value) || 120)}
+                    onChange={(event) => updateAgentRuntimeForm("timeout_seconds", Number(event.target.value) || 900)}
                     className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface focus:border-primary/50 focus:outline-none"
                   />
                 </div>

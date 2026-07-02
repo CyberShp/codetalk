@@ -74,13 +74,13 @@ CREATE TABLE IF NOT EXISTS agent_runtimes (
     command TEXT NOT NULL,
     args_json TEXT DEFAULT '[]',
     prompt_transport TEXT NOT NULL DEFAULT 'stdin',
-    output_mode TEXT NOT NULL DEFAULT 'plain',
+    output_mode TEXT NOT NULL DEFAULT 'auto',
     working_dir_mode TEXT NOT NULL DEFAULT 'project',
     fixed_working_dir TEXT DEFAULT '',
     env_json TEXT DEFAULT '{}',
     health_command TEXT DEFAULT '',
-    timeout_seconds INTEGER DEFAULT 120,
-    completion_mode TEXT NOT NULL DEFAULT 'process_exit',
+    timeout_seconds INTEGER DEFAULT 900,
+    completion_mode TEXT NOT NULL DEFAULT 'idle_after_output',
     idle_complete_seconds INTEGER DEFAULT 5,
     sentinel_text TEXT DEFAULT '',
     session_persistence TEXT NOT NULL DEFAULT 'none',
@@ -277,7 +277,7 @@ _MIGRATIONS = [
     "ALTER TABLE ai_conversations ADD COLUMN memory_namespace TEXT NOT NULL DEFAULT 'global'",
     "ALTER TABLE ai_conversations ADD COLUMN runtime_type TEXT NOT NULL DEFAULT 'builtin_llm'",
     "ALTER TABLE ai_conversations ADD COLUMN agent_runtime_id TEXT",
-    "ALTER TABLE agent_runtimes ADD COLUMN completion_mode TEXT NOT NULL DEFAULT 'process_exit'",
+    "ALTER TABLE agent_runtimes ADD COLUMN completion_mode TEXT NOT NULL DEFAULT 'idle_after_output'",
     "ALTER TABLE agent_runtimes ADD COLUMN idle_complete_seconds INTEGER DEFAULT 5",
     "ALTER TABLE agent_runtimes ADD COLUMN sentinel_text TEXT DEFAULT ''",
     "ALTER TABLE agent_runtimes ADD COLUMN session_persistence TEXT NOT NULL DEFAULT 'none'",
@@ -452,6 +452,23 @@ async def _seed_default_agent_runtimes(db: aiosqlite.Connection) -> None:
 
 
 async def _migrate_legacy_agent_runtimes(db: aiosqlite.Connection) -> None:
+    await db.execute(
+        """
+        UPDATE agent_runtimes
+        SET
+            output_mode = 'auto',
+            timeout_seconds = MAX(timeout_seconds, 900),
+            completion_mode = 'idle_after_output',
+            idle_complete_seconds = 5,
+            sentinel_text = '',
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id NOT IN ('default-claude-code', 'default-codex', 'default-opencode')
+          AND prompt_transport IN ('stdin', 'argv_last')
+          AND output_mode = 'plain'
+          AND completion_mode = 'process_exit'
+          AND session_persistence = 'none'
+        """
+    )
     await db.execute(
         """
         UPDATE agent_runtimes

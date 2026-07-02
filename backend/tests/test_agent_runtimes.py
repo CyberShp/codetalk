@@ -81,6 +81,28 @@ class TestAgentRuntimes:
             assert listed.status_code == 200
             assert listed.json()["items"][0]["name"] == "Windows Claude Code"
 
+    async def test_custom_agent_runtime_defaults_to_clowder_like_long_task_capture(self, sqlite_db):
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Corp Agent",
+                    "command": sys.executable,
+                },
+            )
+
+        assert created.status_code == 201
+        body = created.json()
+        assert body["prompt_transport"] == "stdin"
+        assert body["output_mode"] == "auto"
+        assert body["completion_mode"] == "idle_after_output"
+        assert body["idle_complete_seconds"] == 5
+        assert body["sentinel_text"] == ""
+        assert body["session_persistence"] == "none"
+        assert body["resume_args"] == []
+        assert body["timeout_seconds"] == 900
+
     async def test_agent_runtime_list_orders_managed_defaults_for_thread_default(self, sqlite_db):
         now = datetime.now(timezone.utc).isoformat()
         async with aiosqlite.connect(sqlite_db) as db:

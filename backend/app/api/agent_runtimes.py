@@ -25,13 +25,13 @@ class AgentRuntimeBase(BaseModel):
     command: str = Field(min_length=1, max_length=500)
     args: list[str] = Field(default_factory=list)
     prompt_transport: str = "stdin"
-    output_mode: str = "plain"
+    output_mode: str = "auto"
     working_dir_mode: str = "project"
     fixed_working_dir: str = ""
     env: dict[str, str] = Field(default_factory=dict)
     health_command: str = ""
-    timeout_seconds: int = Field(default=120, ge=1, le=3600)
-    completion_mode: str = "process_exit"
+    timeout_seconds: int = Field(default=900, ge=1, le=3600)
+    completion_mode: str = "idle_after_output"
     idle_complete_seconds: int = Field(default=5, ge=1, le=300)
     sentinel_text: str = ""
     session_persistence: str = "none"

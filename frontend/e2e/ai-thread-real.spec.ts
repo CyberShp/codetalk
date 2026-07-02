@@ -713,6 +713,122 @@ test("creates an AI investigation thread from the project hub and restores it af
   await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(failingRuntime.id)}`);
 });
 
+test("custom agent created from settings completes by default after output idle", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-custom-defaults-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "custom default idle workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-custom-defaults-")));
+  const runtimeScript = path.join(runtimeDir, "custom_idle_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import os, sys, time",
+      "prompt = sys.stdin.read()",
+      "prompt_file = os.environ.get('CODETALK_AGENT_PROMPT_FILE')",
+      "file_prompt = open(prompt_file, encoding='utf-8').read() if prompt_file else ''",
+      "assert '分析工作区源码' in prompt or '分析工作区源码' in file_prompt",
+      "print('\\n'.join([",
+      "  '## 结论',",
+      "  '默认自定义 Agent 已完成源码分析，并且输出后保持进程存活以验证 idle 收敛。',",
+      "  '## 代码证据',",
+      "  '- `README.md`: 工作区入口文件，证明 Agent 以项目目录为上下文读取源码材料。',",
+      "  '- `lib/example.c`: 示例源码证据占位，用于满足源码分析答案的文件引用结构。',",
+      "  '## 流程',",
+      "  '1. 接收 AI 线程中的用户任务。',",
+      "  '2. 读取 stdin 与 CODETALK_AGENT_PROMPT_FILE 中的完整 prompt。',",
+      "  '3. 输出最终分析并继续保持进程存活。',",
+      "]), flush=True)",
+      "time.sleep(30)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-custom-defaults-${Date.now()}`;
+  const threadTitle = `${workspaceName} default idle`;
+  const runtimeName = `UI custom idle runtime ${Date.now()}`;
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  let runtimeId = "";
+  try {
+    await page.goto("/settings", { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: /自定义命令/ }).hover();
+    await page.getByRole("button", { name: /自定义命令/ }).click();
+    await page.getByPlaceholder("例如 Claude Code").fill(runtimeName);
+    await page.getByPlaceholder("ccr / opencode / nga").fill("python3");
+    await page.getByPlaceholder("code 或 run").fill(runtimeScript);
+    await page.getByRole("button", { name: "保存" }).hover();
+    await page.getByRole("button", { name: "保存" }).click();
+
+    const savedRuntime = page
+      .locator("div.rounded-xl.border")
+      .filter({ has: page.locator("strong", { hasText: runtimeName }) })
+      .filter({ hasText: "python3" })
+      .first();
+    await expect(savedRuntime).toBeVisible({ timeout: 15_000 });
+
+    const runtimesResp = await request.get(`${backendBase}/api/settings/agent-runtimes`);
+    expect(runtimesResp.ok()).toBeTruthy();
+    const runtimes = (await runtimesResp.json()) as {
+      items: Array<{
+        id: string;
+        name: string;
+        output_mode: string;
+        completion_mode: string;
+        timeout_seconds: number;
+      }>;
+    };
+    const runtime = runtimes.items.find((item) => item.name === runtimeName);
+    expect(runtime).toBeTruthy();
+    runtimeId = runtime?.id ?? "";
+    expect(runtime?.output_mode).toBe("auto");
+    expect(runtime?.completion_mode).toBe("idle_after_output");
+    expect(runtime?.timeout_seconds).toBe(900);
+
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    const composer = page.getByLabel("AI 线程消息");
+    await composer.click();
+    await composer.pressSequentially("分析工作区源码，并给出一句最终答案");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(
+      page.locator(".ct-codex-message").filter({ hasText: "默认自定义 Agent 已完成源码分析" }),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(async () => {
+        const resp = await request.get(`${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`);
+        if (!resp.ok()) return "missing";
+        const body = (await resp.json()) as { status?: string; latest_run?: { status?: string } | null };
+        return `${body.status ?? ""}:${body.latest_run?.status ?? ""}`;
+      }, { timeout: 15_000 })
+      .toBe("idle:completed");
+  } finally {
+    if (runtimeId) {
+      await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtimeId)}`);
+    }
+  }
+});
+
 test("keeps Claude tool-result stream blocks out of visible answer and artifact", async ({
   page,
   request,
