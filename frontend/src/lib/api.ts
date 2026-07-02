@@ -59,6 +59,7 @@ import type {
   AIConversation,
   AIConversationRun,
   AIMessage,
+  AIRunEvent,
   AIThreadScope,
   AIContextReference,
 } from "./types";
@@ -695,6 +696,26 @@ export const api = {
         `/api/ai/conversations/${encodeURIComponent(id)}/messages`,
         { cache: "no-store" },
       ),
+
+    events: (
+      id: string,
+      params?: {
+        cursor?: number;
+        limit?: number;
+        run_id?: string;
+      },
+    ) => {
+      const query = new URLSearchParams({
+        ...(params?.cursor !== undefined ? { cursor: String(params.cursor) } : {}),
+        ...(params?.limit !== undefined ? { limit: String(params.limit) } : {}),
+        ...(params?.run_id ? { run_id: params.run_id } : {}),
+      });
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      return request<{ items: AIRunEvent[] }>(
+        `/api/ai/conversations/${encodeURIComponent(id)}/events${suffix}`,
+        { cache: "no-store" },
+      );
+    },
 
     send: (id: string, content: string) =>
       request<{

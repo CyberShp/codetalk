@@ -171,6 +171,31 @@ async def list_messages(conversation_id: str) -> dict[str, Any]:
     return {"items": _redact_payload(await _store().list_messages(conversation_id))}
 
 
+@router.get("/{conversation_id}/events")
+async def list_events(
+    conversation_id: str,
+    cursor: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=500),
+    run_id: str | None = Query(default=None, max_length=200),
+) -> dict[str, Any]:
+    store = _store()
+    try:
+        await store.get_conversation(conversation_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="AI conversation not found")
+    if run_id:
+        try:
+            run = await store.get_run(run_id)
+        except KeyError:
+            raise HTTPException(status_code=404, detail="AI run not found")
+        if run["conversation_id"] != conversation_id:
+            raise HTTPException(status_code=404, detail="AI run not found")
+        events = await store.list_events_for_run(conversation_id, run_id, limit=limit)
+    else:
+        events = await store.list_events_after(conversation_id, cursor=cursor, limit=limit)
+    return {"items": _redact_payload(events)}
+
+
 @router.post("/{conversation_id}/messages", status_code=status.HTTP_202_ACCEPTED)
 async def create_message(conversation_id: str, body: CreateMessageRequest) -> dict[str, Any]:
     store = _store()

@@ -83,6 +83,20 @@ function isDiagnosticEvent(event: AIRunEvent): boolean {
   return ["diagnostic", "thinking", "reasoning", "trace"].includes(eventKind(event));
 }
 
+function agentProcessDiagnosticsFromEvents(events: AIRunEvent[]): string[] {
+  const diagnostics: string[] = [];
+  for (const event of events) {
+    if (event.event_type === "status") {
+      diagnostics.push(eventDiagnosticText(event));
+    } else if (event.event_type === "delta" && isDiagnosticEvent(event)) {
+      diagnostics.push(eventDiagnosticText(event));
+    } else if (event.event_type === "error") {
+      diagnostics.push(eventError(event));
+    }
+  }
+  return diagnostics.map(redactDiagnosticText).filter(Boolean).slice(-12);
+}
+
 function eventError(event: AIRunEvent): string {
   const value = event.payload.error;
   return typeof value === "string" ? redactDiagnosticText(value) : "";
@@ -384,6 +398,14 @@ export default function AIThreadPage() {
       projectId === "global" ? { limit: 50 } : { workspace_id: projectId, limit: 50 },
     );
     setThreads(threadResult.items);
+    if (conv.latest_run?.id) {
+      const eventResult = await api.aiConversations
+        .events(conversationId, { run_id: conv.latest_run.id, limit: 200 })
+        .catch(() => ({ items: [] as AIRunEvent[] }));
+      setStreamingDiagnostics(agentProcessDiagnosticsFromEvents(eventResult.items));
+    } else {
+      setStreamingDiagnostics([]);
+    }
     if (conv.latest_run?.status === "queued" || conv.latest_run?.status === "running") {
       setStreamingRunId(conv.latest_run.id);
     }

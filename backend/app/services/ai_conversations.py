@@ -651,6 +651,31 @@ class AIConversationStore:
             ) as cur:
                 return [_event_from_row(row) for row in await cur.fetchall()]
 
+    async def list_events_for_run(
+        self,
+        conversation_id: str,
+        run_id: str,
+        *,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        capped_limit = max(1, min(limit, 500))
+        async with self._connect() as db:
+            async with db.execute(
+                """
+                SELECT *
+                FROM (
+                    SELECT *
+                    FROM ai_run_events
+                    WHERE conversation_id = ? AND run_id = ?
+                    ORDER BY event_id DESC
+                    LIMIT ?
+                )
+                ORDER BY event_id ASC
+                """,
+                (conversation_id, run_id, capped_limit),
+            ) as cur:
+                return [_event_from_row(row) for row in await cur.fetchall()]
+
     async def complete_run(
         self,
         *,

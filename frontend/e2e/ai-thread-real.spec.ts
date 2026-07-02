@@ -525,6 +525,18 @@ test("keeps Claude tool-result stream blocks out of visible answer and artifact"
     expect(assistant?.content).not.toContain("TC-08 正常登录变体");
     expect(assistant?.content).not.toContain("iscsi_conn_login_pdu_success_complete");
     expect(assistant?.content).not.toContain("AuthMethod=CHAP");
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    const restoredProcessDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(restoredProcessDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(restoredProcessDisclosure.getByText(/默认折叠/)).toBeVisible();
+    await expect
+      .poll(async () => restoredProcessDisclosure.evaluate((node) => (node as HTMLDetailsElement).open))
+      .toBe(false);
+    await expect(restoredProcessDisclosure.getByText("iscsi_conn_login_pdu_success_complete").first()).not.toBeVisible();
+    await restoredProcessDisclosure.getByText("Agent 过程").click();
+    await expect(restoredProcessDisclosure.getByText("iscsi_conn_login_pdu_success_complete").first()).toBeVisible();
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }

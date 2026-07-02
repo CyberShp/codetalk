@@ -1868,3 +1868,57 @@ class TestAIConversationsAPI:
             assert "# 结构化产物线程" in artifact_text
             assert "SFMEA 风险 3" in artifact_text
             assert "TC-09" in artifact_text
+
+    async def test_list_run_events_returns_recent_redacted_agent_process(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        app = _test_app(sqlite_db)
+
+        from app.services.ai_conversations import AIConversationStore
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Agent 过程恢复线程",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="分析源码",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+        await store.append_event(
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            event_type="delta",
+            payload={"kind": "diagnostic", "content": "TOOL: rg login sk-test-secret-123456"},
+        )
+        await store.append_event(
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            event_type="delta",
+            payload={"content": "最终回答。"},
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                f"/api/ai/conversations/{conversation['id']}/events",
+                params={"run_id": run_id, "limit": 10},
+            )
+
+        assert response.status_code == 200
+        body = response.json()
+        assert [item["run_id"] for item in body["items"]]
+        diagnostic = next(
+            item for item in body["items"] if item["payload"].get("kind") == "diagnostic"
+        )
+        assert "TOOL: rg login" in diagnostic["payload"]["content"]
+        assert "sk-test-secret-123456" not in diagnostic["payload"]["content"]
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            missing = await client.get(
+                f"/api/ai/conversations/{conversation['id']}/events",
+                params={"run_id": "run_missing"},
+            )
+        assert missing.status_code == 404
