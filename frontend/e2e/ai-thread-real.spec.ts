@@ -1800,6 +1800,126 @@ test("one-line source agent answer is repaired before it becomes the visible ass
   }
 });
 
+test("real agent process keeps early and late diagnostics folded outside the answer", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-process-history-repo-")));
+  fs.writeFileSync(
+    path.join(repo, "README.md"),
+    "Agent process history e2e workspace\nprocess_history_marker=ready\n",
+    "utf8",
+  );
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-process-history-")));
+  const runtimeScript = path.join(runtimeDir, "process_history_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys, time",
+      "sys.stdin.read()",
+      "for index in range(1, 21):",
+      "    print(f'thinking: PROCESS_STEP_{index:02d} reading workspace evidence', flush=True)",
+      "    time.sleep(0.02)",
+      "print('## 结论\\nAGENT_PROCESS_HISTORY_FINAL: 最终答案保持简洁，过程默认折叠。\\n\\n## 代码证据\\n- `README.md`: `process_history_marker` 表明 Agent 已读取工作区材料。\\n- `test/process-history`: 过程诊断由 thinking 通道输出，不进入最终答案。\\n\\n## 行为说明\\n1. Agent 连续输出 20 条过程诊断。\\n2. CodeTalk 只把最终答案展示在正文，把过程保留在默认折叠区。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-process-history-e2e-${Date.now()}`;
+  const runtimeName = `Process history runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} folded process`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill("请执行 Agent 过程历史验证，只展示最终答案");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const assistantAnswer = page.locator(".ct-codex-message:not(.is-user)");
+    await expect(assistantAnswer.filter({ hasText: "AGENT_PROCESS_HISTORY_FINAL" })).toBeVisible({ timeout: 30_000 });
+    await expect(assistantAnswer.filter({ hasText: "PROCESS_STEP_01" })).toHaveCount(0);
+    await expect(assistantAnswer.filter({ hasText: "PROCESS_STEP_20" })).toHaveCount(0);
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.getByText("PROCESS_STEP_01")).toBeHidden();
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("PROCESS_STEP_01 reading workspace evidence").first()).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(processDisclosure.getByText("PROCESS_STEP_20 reading workspace evidence").last()).toBeVisible();
+
+    const diagnosticsSummary = page.getByText("生成诊断：默认折叠");
+    await expect(diagnosticsSummary).toBeVisible();
+    await diagnosticsSummary.click();
+    await expect(page.getByText("PROCESS_STEP_01 reading workspace evidence").last()).toBeVisible();
+    await expect(page.getByText("PROCESS_STEP_20 reading workspace evidence").last()).toBeVisible();
+
+    let messageBody: { items: Array<{ role: string; content: string }> } = { items: [] };
+    await expect
+      .poll(async () => {
+        const messagesResp = await request.get(
+          `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+        );
+        expect(messagesResp.ok()).toBeTruthy();
+        messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+        return messageBody.items.some(
+          (item) => item.role === "assistant" && item.content.includes("AGENT_PROCESS_HISTORY_FINAL"),
+        );
+      }, { timeout: 15_000 })
+      .toBe(true);
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("AGENT_PROCESS_HISTORY_FINAL");
+    expect(assistant?.content).not.toContain("PROCESS_STEP_01");
+    expect(assistant?.content).not.toContain("PROCESS_STEP_20");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
+  }
+});
+
 test("renders native Codex task and tool events as Agent process diagnostics", async ({
   page,
   request,
@@ -1819,7 +1939,7 @@ test("renders native Codex task and tool events as Agent process diagnostics", a
       "  {'type':'item.updated','item':{'type':'todo_list','todo_items':[{'id':'read','content':'读取 lib/nvmf 源码','status':'completed'},{'id':'sfmea','content':'生成 SFMEA','status':'in_progress'}]}},",
       "  {'type':'item.started','item':{'type':'mcp_tool_call','server':'gitnexus','tool':'search','arguments':{'query':'spdk_nvmf_connect'}}},",
       "  {'type':'item.completed','item':{'type':'command_execution','command':'rg spdk_nvmf_connect lib/nvmf','status':'completed','exit_code':0,'aggregated_output':'lib/nvmf/ctrlr.c: spdk_nvmf_connect'}},",
-      "  {'type':'item.completed','item':{'type':'agent_message','text':'CODEX_NATIVE_FINAL: 已完成源码分析并保留过程诊断。'}},",
+      "  {'type':'item.completed','item':{'type':'agent_message','text':'## 结论\\nCODEX_NATIVE_FINAL: 已完成源码分析并保留过程诊断。\\n\\n## 代码证据\\n- `lib/nvmf/ctrlr.c`: `nvmf_ctrlr_connect` 是 connect 入口候选。\\n- `test/nvmf`: 可承载连接路径回归。\\n\\n## 行为说明\\n1. Codex 原生任务和工具事件进入默认折叠的 Agent 过程。\\n2. 正文只展示最终分析结论。'}},",
       "]",
       "for event in events:",
       "    print(json.dumps(event, ensure_ascii=False), flush=True)",
@@ -1885,15 +2005,23 @@ test("renders native Codex task and tool events as Agent process diagnostics", a
     await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
     await expect(processDisclosure.getByText("task_progress")).toBeHidden();
     await processDisclosure.getByText("Agent 过程").click();
-    await expect(processDisclosure.getByText("task_progress read=completed")).toBeVisible({ timeout: 15_000 });
-    await expect(processDisclosure.getByText("mcp:gitnexus/search")).toBeVisible();
-    await expect(processDisclosure.getByText("rg spdk_nvmf_connect lib/nvmf")).toBeVisible();
+    await expect(processDisclosure.getByText("task_progress read=completed").first()).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.getByText("mcp:gitnexus/search").first()).toBeVisible();
+    await expect(processDisclosure.getByText("rg spdk_nvmf_connect lib/nvmf").last()).toBeVisible();
 
-    const messagesResp = await request.get(
-      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
-    );
-    expect(messagesResp.ok()).toBeTruthy();
-    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    let messageBody: { items: Array<{ role: string; content: string }> } = { items: [] };
+    await expect
+      .poll(async () => {
+        const messagesResp = await request.get(
+          `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+        );
+        expect(messagesResp.ok()).toBeTruthy();
+        messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+        return messageBody.items.some(
+          (item) => item.role === "assistant" && item.content.includes("CODEX_NATIVE_FINAL"),
+        );
+      }, { timeout: 15_000 })
+      .toBe(true);
     const assistant = messageBody.items.find((item) => item.role === "assistant");
     expect(assistant?.content).toContain("CODEX_NATIVE_FINAL");
     expect(assistant?.content).not.toContain("task_progress");
