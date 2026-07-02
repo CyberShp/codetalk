@@ -17,9 +17,6 @@ from app.services.workspace_pipeline import (
     _read_material_file,
 )
 
-pytestmark = [pytest.mark.asyncio]
-
-
 # ---------------------------------------------------------------------------
 # _read_material_file — pure function tests
 # ---------------------------------------------------------------------------
@@ -70,6 +67,8 @@ class TestReadMaterialFile:
 
 
 class TestHarvestReports:
+    pytestmark = pytest.mark.asyncio
+
     async def test_ingests_existing_report_files(self, sqlite_db):
         ws_id = "ws-harv"
         task_id = str(uuid.uuid4())
@@ -193,6 +192,8 @@ class TestHarvestReports:
 
 
 class TestPipelineRun:
+    pytestmark = pytest.mark.asyncio
+
     async def test_shadow_task_lifecycle(self, sqlite_db):
         ws_id = "ws-run"
         now = datetime.now(timezone.utc).isoformat()
@@ -461,6 +462,8 @@ class TestPipelineRun:
 
 class TestApplyCoverageTestDesign:
     """WorkspacePipeline folds analyzed coverage into the test_design report."""
+
+    pytestmark = pytest.mark.asyncio
 
     @staticmethod
     def _make_repo(tmp_path):

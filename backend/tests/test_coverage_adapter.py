@@ -13,9 +13,6 @@ from app.adapters.coverage import (
     parse_jacoco_xml,
 )
 
-pytestmark = [pytest.mark.asyncio]
-
-
 # ---------------------------------------------------------------------------
 # IntranetCoverageAdapter — lines 80-81, 84
 # ---------------------------------------------------------------------------
@@ -33,6 +30,7 @@ class TestIntranetCoverageAdapter:
         assert adapter.base_url == ""
         assert adapter.api_key == ""
 
+    @pytest.mark.asyncio
     async def test_fetch_report_raises_not_implemented(self):
         """Line 84: fetch_report raises NotImplementedError."""
         adapter = IntranetCoverageAdapter()

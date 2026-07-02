@@ -14,7 +14,7 @@ import aiosqlite
 import pytest
 from app.adapters.base import ToolHealth
 
-pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
+pytestmark = [pytest.mark.integration]
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +84,8 @@ async def _seed_material(
 
 
 class TestWorkspaceCRUD:
+    pytestmark = pytest.mark.asyncio
+
     async def test_list_empty(self, client_v2):
         resp = await client_v2.get("/api/workspaces")
         assert resp.status_code == 200
@@ -230,6 +232,8 @@ class TestWorkspaceCRUD:
 
 
 class TestWorkspaceSourceSearch:
+    pytestmark = pytest.mark.asyncio
+
     async def test_source_search_finds_path_and_source_file_opens(
         self, client_v2, sqlite_db, tmp_path
     ):
@@ -358,6 +362,8 @@ class TestWorkspaceSourceSearch:
 
 
 class TestIndexAndAnalyze:
+    pytestmark = pytest.mark.asyncio
+
     async def test_index_status(self, client_v2, sqlite_db):
         await _seed_ws(sqlite_db, "ws-idx", indexed=1)
         resp = await client_v2.get("/api/workspaces/ws-idx/index-status")
@@ -577,6 +583,8 @@ class TestIndexAndAnalyze:
 
 
 class TestMaterials:
+    pytestmark = pytest.mark.asyncio
+
     async def test_upload(self, client_v2, sqlite_db, background_tasks, tmp_path):
         await _seed_ws(sqlite_db, "ws-up")
         f = tmp_path / "requirements.md"
@@ -726,6 +734,8 @@ class TestMaterials:
 
 
 class TestEmbeddingStatus:
+    pytestmark = pytest.mark.asyncio
+
     async def test_no_model_configured(self, client_v2, sqlite_db):
         await _seed_ws(sqlite_db, "ws-e0")
         resp = await client_v2.get("/api/workspaces/ws-e0/materials/embedding-status")
@@ -806,6 +816,8 @@ class TestEmbeddingStatus:
 
 
 class TestChatEndpoints:
+    pytestmark = pytest.mark.asyncio
+
     async def test_stream_requires_indexed(self, client_v2, sqlite_db):
         await _seed_ws(sqlite_db, "ws-ch0", indexed=0)
         resp = await client_v2.post(
@@ -919,6 +931,8 @@ class TestClassifyIndexError:
 
 
 class TestBackgroundTasks:
+    pytestmark = pytest.mark.asyncio
+
     async def test_index_workspace_success(self, sqlite_db):
         """_index_workspace: healthy adapter + prepare() succeeds → indexed=1."""
         ws_id = "ws-bg-ok"
@@ -1122,6 +1136,8 @@ class TestBackgroundTasks:
 
 
 class TestChatStream:
+    pytestmark = pytest.mark.asyncio
+
     async def test_stream_prepends_visible_evidence_status(self, client_v2, sqlite_db):
         """workspace_chat_stream: evidence status in the system prompt is user-visible and persisted."""
         ws_id = "ws-stream-evidence-status"
@@ -1349,6 +1365,8 @@ class TestChatStream:
 class TestAnalyzeCoverageGapFlags:
     """AnalyzeRequest forwards the coverage gap test-design selection."""
 
+    pytestmark = pytest.mark.asyncio
+
     async def test_forwards_explicit_coverage_flags(self, client_v2, sqlite_db):
         from app.api import workspaces as wsmod
 
@@ -1378,6 +1396,8 @@ class TestAnalyzeCoverageGapFlags:
 
 
 class TestWorkspaceScopePreviewFallback:
+    pytestmark = pytest.mark.asyncio
+
     async def test_preview_allows_gitnexus_failed_when_local_repo_is_readable(
         self,
         client_v2,
