@@ -1276,6 +1276,10 @@ async def run_agent_generation(
     runtime_env["CODETALK_AGENT_ARTIFACT_DIR"] = str(agent_artifact_dir)
     runtime_for_turn["env"] = runtime_env
 
+    async def run_cancelled() -> bool:
+        current = await store.get_run(run_id)
+        return current["status"] == "cancelled"
+
     async def append_live_answer_delta(content: str) -> None:
         nonlocal artifact_stream_notice_sent
         live_content = content
@@ -1303,9 +1307,9 @@ async def run_agent_generation(
             cwd=cwd,
             resume_session_id=turn_resume_session_id,
             session_update=session_updates.append,
+            is_cancelled=run_cancelled,
         ):
-            current = await store.get_run(run_id)
-            if current["status"] == "cancelled":
+            if await run_cancelled():
                 return turn_chunks
             is_final_answer = str(delta or "").startswith(AGENT_FINAL_ANSWER_PREFIX)
             final_answer_parts: list[str] = []
@@ -1330,6 +1334,8 @@ async def run_agent_generation(
 
     try:
         chunks = await consume_agent_turn(prompt, resume_session_id)
+        if await run_cancelled():
+            return
         content = _govern_visible_assistant_content(
             "".join(chunks).strip() or "执行器没有返回有效内容，请检查命令输出模式。",
             references,
@@ -1357,6 +1363,8 @@ async def run_agent_generation(
                 runtime=runtime,
             )
             chunks = await consume_agent_turn(repair_prompt, latest_session_id)
+            if await run_cancelled():
+                return
             content = _govern_visible_assistant_content(
                 "".join(chunks).strip() or "执行器没有返回有效内容，请检查命令输出模式。",
                 references,
@@ -1381,6 +1389,8 @@ async def run_agent_generation(
                     },
                 )
         agent_artifact_content = await _agent_thread_artifact_content(agent_artifact_dir)
+        if await run_cancelled():
+            return
         if agent_artifact_content:
             content = agent_artifact_content
             adopted_agent_artifact = True

@@ -67,6 +67,7 @@ async def stream_agent_runtime(
     cwd: str | None,
     resume_session_id: str | None = None,
     session_update: Callable[[dict[str, Any]], None] | None = None,
+    is_cancelled: Callable[[], Any] | None = None,
 ) -> AsyncIterator[str]:
     command = str(runtime.get("command") or "").strip()
     try:
@@ -138,6 +139,7 @@ async def stream_agent_runtime(
 
     stderr_chunks: list[str] = []
     completed_by_policy = False
+    cancelled_by_request = False
     activity_queue: asyncio.Queue[None] = asyncio.Queue(maxsize=1)
 
     def mark_activity() -> None:
@@ -164,6 +166,25 @@ async def stream_agent_runtime(
             mark_activity()
 
     stderr_task = asyncio.create_task(_drain_stderr())
+    cancel_task: asyncio.Task[None] | None = None
+    if is_cancelled is not None:
+
+        async def _watch_cancel() -> None:
+            nonlocal cancelled_by_request
+            while proc.returncode is None:
+                try:
+                    result = is_cancelled()
+                    if asyncio.iscoroutine(result):
+                        result = await result
+                    if result:
+                        cancelled_by_request = True
+                        await _terminate_process(proc)
+                        return
+                except Exception:
+                    return
+                await asyncio.sleep(0.1)
+
+        cancel_task = asyncio.create_task(_watch_cancel())
     try:
         if write_prompt_to_stdin and proc.stdin is not None:
             proc.stdin.write(prompt.encode("utf-8"))
@@ -192,15 +213,19 @@ async def stream_agent_runtime(
         stderr_task.cancel()
         raise AgentRuntimeError(f"执行器超时（{timeout}s）") from exc
     finally:
+        if proc.returncode is None:
+            await _terminate_process(proc)
         if not stderr_task.done():
             stderr_task.cancel()
+        if cancel_task is not None and not cancel_task.done():
+            cancel_task.cancel()
         if prompt_file_path:
             try:
                 Path(prompt_file_path).unlink(missing_ok=True)
             except Exception:
                 pass
 
-    if return_code != 0 and not completed_by_policy:
+    if return_code != 0 and not completed_by_policy and not cancelled_by_request:
         error = "".join(stderr_chunks).strip()
         raise AgentRuntimeError(redact_agent_diagnostic_text(error or f"执行器退出码：{return_code}"))
 
