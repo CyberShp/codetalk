@@ -234,6 +234,54 @@ async def test_agent_output_segments_fold_indented_diagnostic_continuations():
     ]
 
 
+async def test_agent_output_segments_fold_unindented_tool_result_source_lines():
+    from app.services.ai_conversations import _agent_output_segments
+
+    segments = _agent_output_segments(
+        "TOOL: 1115:iscsi_conn_login_pdu_err_complete(void *arg)\n"
+        "1125:iscsi_conn_login_pdu_success_complete(void *arg)\n"
+        "lib/iscsi/iscsi.c:1539:\t\trc = iscsi_op_login_update_param(conn, \"AuthMethod\", \"CHAP\", \"CHAP\");\n"
+        "\n"
+        "## 黑盒测试用例\n"
+        "### TC-01 正常登录\n"
+    )
+
+    assert segments == [
+        (
+            "diagnostic",
+            "1115:iscsi_conn_login_pdu_err_complete(void *arg)\n"
+            "1125:iscsi_conn_login_pdu_success_complete(void *arg)\n"
+            "lib/iscsi/iscsi.c:1539:\t\trc = iscsi_op_login_update_param(conn, \"AuthMethod\", \"CHAP\", \"CHAP\");",
+        ),
+        ("answer", "## 黑盒测试用例\n"),
+        ("answer", "### TC-01 正常登录\n"),
+    ]
+
+
+async def test_agent_output_segments_fold_thinking_source_dump_without_hiding_answer_heading():
+    from app.services.ai_conversations import _agent_output_segments
+
+    segments = _agent_output_segments(
+        "THINKING: 我先核对工作区 iSCSI 登录相关源码。\n"
+        "1125:iscsi_conn_login_pdu_success_complete(void *arg)\n"
+        "1149:iscsi_op_login_response(struct spdk_iscsi_conn *conn,\n"
+        "\n"
+        "## 结论\n"
+        "已基于源码整理黑盒测试思路。\n"
+    )
+
+    assert segments == [
+        (
+            "diagnostic",
+            "我先核对工作区 iSCSI 登录相关源码。\n"
+            "1125:iscsi_conn_login_pdu_success_complete(void *arg)\n"
+            "1149:iscsi_op_login_response(struct spdk_iscsi_conn *conn,",
+        ),
+        ("answer", "## 结论\n"),
+        ("answer", "已基于源码整理黑盒测试思路。\n"),
+    ]
+
+
 async def test_context_status_message_names_workbench_task_artifacts():
     from app.services.ai_conversations import _context_status_message
 

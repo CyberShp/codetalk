@@ -1345,12 +1345,14 @@ def _agent_output_segments(chunk: str) -> list[tuple[str, str]]:
         text = text[len(AGENT_FINAL_ANSWER_PREFIX) :]
     segments: list[tuple[str, str]] = []
     diagnostic_buffer: list[str] = []
+    diagnostic_prefix = ""
 
     def flush_diagnostic() -> None:
-        nonlocal diagnostic_buffer
+        nonlocal diagnostic_buffer, diagnostic_prefix
         if diagnostic_buffer:
             segments.append(("diagnostic", "\n".join(diagnostic_buffer)))
             diagnostic_buffer = []
+        diagnostic_prefix = ""
 
     for line in text.splitlines(keepends=True):
         content = line.strip()
@@ -1361,7 +1363,8 @@ def _agent_output_segments(chunk: str) -> list[tuple[str, str]]:
         if diagnostic:
             flush_diagnostic()
             diagnostic_buffer.append(diagnostic)
-        elif diagnostic_buffer and line[:1].isspace():
+            diagnostic_prefix = _agent_diagnostic_prefix(content)
+        elif diagnostic_buffer and _agent_diagnostic_continuation(content, line, diagnostic_prefix):
             diagnostic_buffer.append(redact_agent_diagnostic_text(content))
         else:
             flush_diagnostic()
@@ -1371,6 +1374,13 @@ def _agent_output_segments(chunk: str) -> list[tuple[str, str]]:
 
 
 def _agent_diagnostic_text(text: str) -> str:
+    prefix = _agent_diagnostic_prefix(text)
+    if prefix:
+        return redact_agent_diagnostic_text(text[len(prefix):].strip())
+    return ""
+
+
+def _agent_diagnostic_prefix(text: str) -> str:
     lowered = text.lower()
     for prefix in (
         "status:",
@@ -1384,8 +1394,48 @@ def _agent_diagnostic_text(text: str) -> str:
         "tool_result:",
     ):
         if lowered.startswith(prefix):
-            return redact_agent_diagnostic_text(text[len(prefix):].strip())
+            return prefix
     return ""
+
+
+def _agent_diagnostic_continuation(content: str, raw_line: str, diagnostic_prefix: str) -> bool:
+    if _looks_like_agent_answer_boundary(content):
+        return False
+    if raw_line[:1].isspace():
+        return True
+    lowered_prefix = diagnostic_prefix.lower()
+    if lowered_prefix.startswith(("tool:", "tool_use:", "tool_result:")):
+        return True
+    return _looks_like_agent_process_output_line(content)
+
+
+def _looks_like_agent_process_output_line(content: str) -> bool:
+    text = str(content or "").strip()
+    if not text:
+        return False
+    if re.match(r"^\d{1,7}[:\t]", text):
+        return True
+    if re.match(r"^[^\s:]+\.(?:c|h|cc|cpp|cxx|hpp|py|go|rs|ts|tsx|js|java|sh|md):\d+:", text):
+        return True
+    if _SOURCE_CODE_LINE_RE.search(text):
+        return True
+    return False
+
+
+def _looks_like_agent_answer_boundary(content: str) -> bool:
+    text = str(content or "").strip()
+    if not text:
+        return False
+    lowered = text.lower()
+    if lowered.startswith((AGENT_FINAL_ANSWER_PREFIX.lower(), "final answer:", "final_answer:", "最终答案：", "最终答案:")):
+        return True
+    return bool(
+        re.match(
+            r"^#{1,3}\s*(?:结论|摘要|代码证据|流程|流程梳理|SFMEA|黑盒测试用例|测试用例|风险|用例设计依据|下一步建议)\b",
+            text,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _codex_style_answer_instruction() -> str:
