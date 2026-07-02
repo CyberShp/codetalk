@@ -850,9 +850,17 @@ async def build_context_references(
         db.row_factory = aiosqlite.Row
         if workspace_id != "global":
             source_query = _source_query_for_conversation(conversation, user_message)
+            workbench_repo_path = await _workbench_task_repo_path(scope_type, scope_id)
             append_refs(await _workspace_material_refs(db, workspace_id))
             if not source_analysis_declined:
-                append_refs(await _workspace_source_refs(db, workspace_id, source_query))
+                append_refs(
+                    await _workspace_source_refs(
+                        db,
+                        workspace_id,
+                        source_query,
+                        fallback_repo_path=workbench_repo_path,
+                    )
+                )
                 append_refs(await _workspace_refs(db, workspace_id))
             append_refs(await _workspace_chat_refs(db, workspace_id))
         if scope_type == "report":
@@ -1399,14 +1407,19 @@ def repo_path_hint(conversation: dict[str, Any]) -> str:
 
 async def _conversation_repo_path(conversation: dict[str, Any]) -> str | None:
     workspace_id = _conversation_workspace_id(conversation)
-    if workspace_id == "global":
-        return None
-    async with aiosqlite.connect(settings.sqlite_db) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute("SELECT repo_path FROM workspaces WHERE id = ?", (workspace_id,)) as cur:
-            row = await cur.fetchone()
-    if row and row["repo_path"]:
-        return str(row["repo_path"])
+    if workspace_id != "global":
+        async with aiosqlite.connect(settings.sqlite_db) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT repo_path FROM workspaces WHERE id = ?", (workspace_id,)) as cur:
+                row = await cur.fetchone()
+        if row and row["repo_path"]:
+            return str(row["repo_path"])
+    workbench_repo = await _workbench_task_repo_path(
+        str(conversation.get("scope_type") or ""),
+        str(conversation.get("scope_id") or ""),
+    )
+    if workbench_repo:
+        return workbench_repo
     return None
 
 
@@ -1451,12 +1464,15 @@ async def _workspace_source_refs(
     db: aiosqlite.Connection,
     workspace_id: str,
     query: str,
+    *,
+    fallback_repo_path: str | None = None,
 ) -> list[ContextReference]:
     async with db.execute("SELECT repo_path FROM workspaces WHERE id = ?", (workspace_id,)) as cur:
         row = await cur.fetchone()
-    if not row or not row["repo_path"]:
+    repo_path = str(row["repo_path"]) if row and row["repo_path"] else str(fallback_repo_path or "")
+    if not repo_path:
         return []
-    repo = Path(str(row["repo_path"])).expanduser()
+    repo = Path(repo_path).expanduser()
     if not repo.exists() or not repo.is_dir():
         return []
     return await _to_thread(_collect_source_refs_sync, repo, workspace_id, query)
@@ -1978,6 +1994,29 @@ async def _semantic_case_refs(scope_id: str, query: str) -> list[ContextReferenc
             )
         )
     return refs
+
+
+async def _workbench_task_repo_path(scope_type: str, scope_id: str) -> str | None:
+    if scope_type != "workbench_task_run":
+        return None
+    safe = scope_id.strip()
+    if not safe or "/" in safe or "\\" in safe or ".." in safe:
+        return None
+    task_dir = settings.data_path / "workbench" / "task_runs" / safe
+    for name in ("task_run.json", "task_bundle.json"):
+        path = task_dir / name
+        if not path.exists():
+            continue
+        try:
+            payload = json.loads(await _read_text(path))
+        except Exception:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        repo_path = str(payload.get("repo_path") or "").strip()
+        if repo_path:
+            return repo_path
+    return None
 
 
 async def _to_thread(fn: Any, *args: Any, **kwargs: Any) -> Any:

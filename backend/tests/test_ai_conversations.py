@@ -906,6 +906,63 @@ class TestAIConversationsAPI:
         assert not Path(str(manifest_refs[0].metadata["path"])).is_absolute()
         assert "task_bundle.json" in manifest_refs[0].excerpt
 
+    async def test_workbench_task_thread_uses_task_repo_for_source_refs_when_workspace_row_is_missing(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        from app.config import settings
+        from app.services.ai_conversations import build_context_references
+
+        repo = tmp_path / "spdk"
+        source = repo / "lib" / "nvmf" / "connect.c"
+        source.parent.mkdir(parents=True)
+        source.write_text(
+            "int nvmf_workbench_review_source_probe(void) { return 7; }\n",
+            encoding="utf-8",
+        )
+        data_root = tmp_path / "data"
+        task_run_id = "task_run_source_fallback"
+        task_dir = data_root / "workbench" / "task_runs" / task_run_id
+        task_dir.mkdir(parents=True)
+        (task_dir / "task_run.json").write_text(
+            json.dumps(
+                {
+                    "task_run_id": task_run_id,
+                    "workflow_id": "module_analysis",
+                    "workspace_id": "ws-workbench-missing-row",
+                    "repo_path": str(repo),
+                    "artifact_dir": str(task_dir),
+                    "agent_runs": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(settings, "data_dir", str(data_root))
+
+        refs = await build_context_references(
+            conversation={
+                "id": "conv-workbench-source-fallback",
+                "scope_type": "workbench_task_run",
+                "scope_id": task_run_id,
+                "workspace_id": "ws-workbench-missing-row",
+                "memory_namespace": "workspace:ws-workbench-missing-row",
+                "initial_context": {
+                    "workspace_id": "ws-workbench-missing-row",
+                    "repo_path": f"repo:{repo.name}",
+                },
+            },
+            user_message="读取 lib/nvmf/connect.c 并复盘源码证据",
+            db_path=sqlite_db,
+        )
+
+        source_refs = [ref for ref in refs if ref.source_type == "workspace_source"]
+        assert source_refs
+        assert source_refs[0].metadata["path"] == "lib/nvmf/connect.c"
+        assert "nvmf_workbench_review_source_probe" in source_refs[0].excerpt
+        assert "repo_path" not in source_refs[0].metadata
+
     async def test_workspace_source_refs_fallback_prefers_implementation_source(
         self,
         sqlite_db,

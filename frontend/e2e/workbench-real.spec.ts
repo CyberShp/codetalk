@@ -704,6 +704,7 @@ test("opens a persisted AI review thread from a prepared workbench run through t
 }) => {
   test.setTimeout(60_000);
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-review-run-")));
+  const publicRepoLabel = `repo:${path.basename(repo)}`;
   fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
   fs.writeFileSync(
     path.join(repo, "lib", "nvmf", "connect.c"),
@@ -754,6 +755,7 @@ test("opens a persisted AI review thread from a prepared workbench run through t
     memory_namespace: string;
     initial_context: Record<string, unknown>;
   };
+  expect(conversationFromCreate.initial_context.repo_path).toBe(publicRepoLabel);
 
   await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
   await expect(page.getByRole("heading", { name: "模块分析工作流 · AI 复盘" })).toBeVisible({
@@ -785,7 +787,7 @@ test("opens a persisted AI review thread from a prepared workbench run through t
     task_run_id: taskRunId,
     workspace_id: workspaceId,
     memory_namespace: `workspace:${workspaceId}`,
-    repo_path: repo,
+    repo_path: publicRepoLabel,
     artifact_dir: ".",
     agent_runs_count: 0,
     agent_runs: [],

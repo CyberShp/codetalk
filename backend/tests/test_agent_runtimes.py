@@ -414,6 +414,114 @@ class TestAgentRuntimes:
                 for evt in events
             )
 
+    async def test_workbench_ai_review_agent_runtime_uses_task_repo_as_cwd_without_workspace_row(
+        self,
+        sqlite_db,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo = tmp_path / "spdk"
+        source = repo / "lib" / "nvmf" / "connect.c"
+        source.parent.mkdir(parents=True)
+        source.write_text(
+            "int nvmf_workbench_agent_cwd_probe(void) { return 17; }\n",
+            encoding="utf-8",
+        )
+        data_root = tmp_path / "data"
+        task_run_id = "task_run_agent_cwd_fallback"
+        task_dir = data_root / "workbench" / "task_runs" / task_run_id
+        task_dir.mkdir(parents=True)
+        (task_dir / "task_run.json").write_text(
+            json.dumps(
+                {
+                    "task_run_id": task_run_id,
+                    "workflow_id": "module_analysis",
+                    "workspace_id": "ws-workbench-agent-cwd",
+                    "repo_path": str(repo),
+                    "artifact_dir": str(task_dir),
+                    "agent_runs": [],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        from app.config import settings
+        from app.api import ai_conversations
+
+        monkeypatch.setattr(settings, "data_dir", str(data_root))
+
+        async def fail_if_llm_is_used():
+            raise AssertionError("agent runtime conversations must not call the builtin LLM")
+
+        monkeypatch.setattr(ai_conversations, "create_llm_client_from_active", fail_if_llm_is_used)
+        app = _test_app(sqlite_db)
+        agent_code = (
+            "from pathlib import Path\n"
+            "import os\n"
+            "import sys\n"
+            "sys.stdin.read()\n"
+            "src = Path('lib/nvmf/connect.c')\n"
+            "if not src.exists():\n"
+            "    print('missing workbench task source in cwd=' + os.getcwd(), file=sys.stderr)\n"
+            "    raise SystemExit(9)\n"
+            "if 'nvmf_workbench_agent_cwd_probe' not in src.read_text(encoding='utf-8'):\n"
+            "    print('source marker missing', file=sys.stderr)\n"
+            "    raise SystemExit(10)\n"
+            "print('WORKBENCH_CWD_SOURCE_OK:' + os.getcwd())\n"
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            runtime = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Workbench CWD Agent",
+                    "command": sys.executable,
+                    "args": ["-c", agent_code],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "working_dir_mode": "project",
+                    "timeout_seconds": 10,
+                },
+            )
+            assert runtime.status_code == 201
+
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workbench_task_run",
+                    "scope_id": task_run_id,
+                    "workspace_id": "ws-workbench-agent-cwd",
+                    "memory_namespace": "workspace:ws-workbench-agent-cwd",
+                    "title": "Workbench Agent CWD",
+                    "runtime_type": "agent_runtime",
+                    "agent_runtime_id": runtime.json()["id"],
+                    "initial_context": {
+                        "workspace_id": "ws-workbench-agent-cwd",
+                        "repo_path": f"repo:{repo.name}",
+                    },
+                },
+            )
+            assert created.status_code == 201
+            conversation = created.json()
+
+            posted = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "读取 lib/nvmf/connect.c 并确认 workbench cwd"},
+            )
+            assert posted.status_code == 202
+
+            for _ in range(40):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                items = messages.json()["items"]
+                if len(items) == 2:
+                    break
+                await asyncio.sleep(0.1)
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            body = messages.json()
+            assert [item["role"] for item in body["items"]] == ["user", "assistant"]
+            assert f"WORKBENCH_CWD_SOURCE_OK:{repo}" in body["items"][1]["content"]
+
     async def test_ai_thread_agent_runtime_prompt_has_machine_readable_source_first_contract(
         self,
         sqlite_db,
