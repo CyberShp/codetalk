@@ -1507,6 +1507,181 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
   expect(exported).not.toContain("正在读取 lib/nvmf/connect.c");
 });
 
+test("AI conversation keeps long structured artifacts compact while streaming", async ({ page }) => {
+  let completed = false;
+  let releaseDone = () => {};
+  let streamRequestedResolve: (() => void) | null = null;
+  const streamRequested = new Promise<void>((resolve) => {
+    streamRequestedResolve = resolve;
+  });
+  const doneGate = new Promise<void>((resolve) => {
+    releaseDone = resolve;
+  });
+  const server = http.createServer(async (_req, res) => {
+    streamRequestedResolve?.();
+    res.writeHead(200, {
+      "Access-Control-Allow-Origin": frontendOrigin,
+      "Access-Control-Allow-Credentials": "true",
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    res.write(
+      [
+        'data: {"event_id":1,"run_id":"run-artifact","conversation_id":"conv-artifact","event_type":"delta","payload":{"kind":"artifact_progress","content":"正在生成结构化产物，完成后会提供下载文件。"},"created_at":"2026-06-28T00:00:02Z"}',
+        "",
+        "",
+      ].join("\n"),
+    );
+    await doneGate;
+    completed = true;
+    res.write(
+      [
+        'data: {"event_id":2,"run_id":"run-artifact","conversation_id":"conv-artifact","event_type":"done","payload":{},"created_at":"2026-06-28T00:00:03Z"}',
+        "",
+        "",
+      ].join("\n"),
+    );
+    res.end();
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: [
+        {
+          id: "ws-artifact",
+          name: "SPDK 产物项目",
+          repo_path: "/Volumes/Media/dpdk/spdk",
+          indexed: 1,
+          index_job: null,
+          index_progress: 100,
+          analyze_status: null,
+          analyze_progress: 0,
+          last_index_error: null,
+          created_at: "2026-06-28T00:00:00Z",
+          updated_at: "2026-06-28T00:00:00Z",
+          materials: [],
+          reports: [],
+        },
+      ],
+    });
+  });
+  await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations?workspace_id=ws-artifact&limit=50", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations/conv-artifact", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        id: "conv-artifact",
+        scope_type: "workspace",
+        scope_id: "ws-artifact",
+        workspace_id: "ws-artifact",
+        memory_namespace: "workspace:ws-artifact",
+        title: "SPDK SFMEA 线程",
+        status: completed ? "idle" : "running",
+        initial_context: {},
+        created_at: "2026-06-28T00:00:00Z",
+        updated_at: "2026-06-28T00:00:00Z",
+        latest_run: {
+          id: "run-artifact",
+          conversation_id: "conv-artifact",
+          status: completed ? "completed" : "running",
+          cursor: completed ? 2 : 0,
+          error: null,
+          model: "test",
+          token_usage: {},
+          created_at: "2026-06-28T00:00:01Z",
+          started_at: "2026-06-28T00:00:01Z",
+          completed_at: completed ? "2026-06-28T00:00:03Z" : null,
+        },
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-artifact/messages", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        items: [
+          {
+            id: "msg-artifact-user",
+            conversation_id: "conv-artifact",
+            run_id: "run-artifact",
+            role: "user",
+            content: "生成完整 SFMEA 和黑盒测试用例",
+            references: [],
+            actions: [],
+            created_at: "2026-06-28T00:00:01Z",
+          },
+          ...(completed
+            ? [
+                {
+                  id: "msg-artifact-assistant",
+                  conversation_id: "conv-artifact",
+                  run_id: "run-artifact",
+                  role: "assistant",
+                  content: "已生成完整结构化产物，可下载查看 SFMEA 和黑盒测试用例。",
+                  references: [],
+                  actions: [
+                    {
+                      id: "download_run_artifact",
+                      label: "下载完整产物",
+                      href: "/api/ai/conversations/conv-artifact/runs/run-artifact/artifact",
+                      kind: "download",
+                    },
+                  ],
+                  created_at: "2026-06-28T00:00:03Z",
+                },
+              ]
+            : []),
+        ],
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-artifact/stream?cursor=0", async (route) => {
+    await route.continue({ url: `http://127.0.0.1:${port}/stream` });
+  });
+
+  try {
+    await page.goto("/ai/conv-artifact", { waitUntil: "domcontentloaded" });
+    await streamRequested;
+
+    const reader = page.getByLabel("AI 线程对话内容");
+    await expect(page.getByText("正在生成结构化产物，完成后会提供下载文件。")).toBeVisible();
+    await expect(reader).not.toContainText("TC-09");
+    await expect(reader).not.toContainText("SFMEA 风险 3");
+
+    releaseDone();
+    await expect(page.getByText("已生成完整结构化产物，可下载查看 SFMEA 和黑盒测试用例。")).toBeVisible();
+    await expect(page.getByRole("link", { name: "下载完整产物" })).toBeVisible();
+    await expect(reader).not.toContainText("TC-09");
+    await expect(reader).not.toContainText("SFMEA 风险 3");
+  } finally {
+    (
+      server as http.Server & {
+        closeAllConnections?: () => void;
+        closeIdleConnections?: () => void;
+      }
+    ).closeAllConnections?.();
+    (
+      server as http.Server & {
+        closeAllConnections?: () => void;
+        closeIdleConnections?: () => void;
+      }
+    ).closeIdleConnections?.();
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+});
+
 test("AI conversation remains usable on a narrow mobile viewport", async ({ page }) => {
   await mockReadableConversation(page);
   await page.setViewportSize({ width: 390, height: 844 });

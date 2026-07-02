@@ -54,6 +54,7 @@ _THREAD_ARTIFACT_KEYWORDS = (
     "预期结果",
     "rpn",
 )
+_THREAD_ARTIFACT_STREAM_NOTICE = "正在生成结构化产物，完成后会提供下载文件。"
 _SOURCE_SUFFIXES = {
     ".c",
     ".cc",
@@ -1109,16 +1110,26 @@ async def run_generation(
     )
     prompt = _build_prompt(conversation, messages, references, user_message["content"])
     chunks: list[str] = []
+    artifact_stream_notice_sent = False
     max_tokens = min(settings.ai_conversation_max_output_tokens, settings.llm_max_output_tokens)
     temperature = 0.5
 
     async def append_delta(content: str) -> None:
+        nonlocal artifact_stream_notice_sent
         chunks.append(content)
+        live_content = content
+        live_kind = ""
+        if _should_compact_live_thread_delta(content, "".join(chunks)):
+            if artifact_stream_notice_sent:
+                return
+            artifact_stream_notice_sent = True
+            live_content = _THREAD_ARTIFACT_STREAM_NOTICE
+            live_kind = "artifact_progress"
         await store.append_event(
             run_id=run_id,
             conversation_id=conversation["id"],
             event_type="delta",
-            payload={"content": content},
+            payload={"content": live_content, **({"kind": live_kind} if live_kind else {})},
         )
 
     try:
@@ -1224,15 +1235,25 @@ async def run_agent_generation(
     chunks: list[str] = []
     live_chunks: list[str] = []
     session_updates: list[dict[str, Any]] = []
+    artifact_stream_notice_sent = False
 
     async def append_live_answer_delta(content: str) -> None:
+        nonlocal artifact_stream_notice_sent
+        live_content = content
+        live_kind = ""
+        if _should_compact_live_thread_delta(content, content):
+            if artifact_stream_notice_sent:
+                return
+            artifact_stream_notice_sent = True
+            live_content = _THREAD_ARTIFACT_STREAM_NOTICE
+            live_kind = "artifact_progress"
         await store.append_event(
             run_id=run_id,
             conversation_id=conversation["id"],
             event_type="delta",
-            payload={"content": content},
+            payload={"content": live_content, **({"kind": live_kind} if live_kind else {})},
         )
-        live_chunks.append(content)
+        live_chunks.append(live_content)
 
     async def consume_agent_turn(turn_prompt: str, turn_resume_session_id: str | None) -> list[str]:
         turn_chunks: list[str] = []
@@ -2614,6 +2635,11 @@ def _should_materialize_thread_artifact(content: str) -> bool:
         or len(re.findall(r"(?m)^\s*\d+[\.)]\s+", text)) >= 8
     )
     return len(text) > _THREAD_INLINE_OUTPUT_LIMIT * 2 or has_table_or_many_steps
+
+
+def _should_compact_live_thread_delta(content: str, accumulated: str) -> bool:
+    """Keep full structured artifacts out of the live reader while preserving final files."""
+    return _should_materialize_thread_artifact(accumulated) or _should_materialize_thread_artifact(content)
 
 
 def _compact_thread_artifact_preview(content: str) -> str:

@@ -1937,6 +1937,20 @@ class TestAIConversationsAPI:
             assert "已保存为下载产物" in assistant["content"]
             assert "TC-09" not in assistant["content"]
             assert "SFMEA 风险 3" not in assistant["content"]
+            events = await client.get(
+                f"/api/ai/conversations/{conversation['id']}/events",
+                params={"run_id": assistant["run_id"], "limit": 200},
+            )
+            assert events.status_code == 200
+            live_answer = "\n".join(
+                event["payload"].get("content", "")
+                for event in events.json()["items"]
+                if event["event_type"] == "delta"
+                and event["payload"].get("kind") not in {"diagnostic", "thinking", "reasoning", "trace"}
+            )
+            assert "正在生成结构化产物" in live_answer
+            assert "TC-09" not in live_answer
+            assert "SFMEA 风险 3" not in live_answer
             download_action = next(
                 action for action in assistant["actions"] if action["id"] == "download_run_artifact"
             )
