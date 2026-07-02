@@ -640,7 +640,7 @@ test("executes source-flow SFMEA black-box workflow through the real workbench U
   await expect(page.getByText(/source_scope:accepted artifact:source_scope\.json/)).toBeVisible();
   await expect(page.getByText(/sfmea:accepted artifact:sfmea\.json/)).toBeVisible();
   await expect(page.getByText(/black_box_cases:ok/)).toBeVisible();
-  await expect(page.getByText(/Semantic import: ok \/ 1 imported/)).toBeVisible();
+  await expect(page.getByText(new RegExp(`Semantic import: ok / ${cases.length} imported`))).toBeVisible();
   await expect(page.getByText(/source:task_run:task_run_[a-f0-9]+:black_box_cases/)).toBeVisible();
 });
 
