@@ -113,13 +113,17 @@ test("settings prevents duplicate LLM saves from a real double click", async ({ 
   await saveButton.hover();
   await saveButton.dblclick();
   await createRequest;
-  if (await saveButton.isVisible().catch(() => false)) {
-    await expect(saveButton).toBeDisabled();
-  }
 
   const savedRow = llmConfigRow(page, configName, modelName);
   await expect(savedRow).toBeVisible({ timeout: 15_000 });
-  await expect.poll(() => createRequests.length).toBe(1);
+  await expect(page.locator("p.text-sm", { hasText: configName })).toHaveCount(1);
+  expect(createRequests).toHaveLength(1);
+  const listResp = await page.request.get(`${backendBase}/api/settings/llm`);
+  expect(listResp.ok()).toBeTruthy();
+  const configs = (await listResp.json()) as Array<{ name: string; model: string }>;
+  expect(
+    configs.filter((item) => item.name === configName && item.model === modelName),
+  ).toHaveLength(1);
   await expect(page.locator("body")).not.toContainText(secret);
   await expectBrowserStorageNotToContain(page, secret);
 });
