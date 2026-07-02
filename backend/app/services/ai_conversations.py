@@ -2676,6 +2676,7 @@ async def _agent_thread_artifact_content(artifact_dir: Path) -> str:
         )
 
     candidates = await _to_thread(collect_candidates)
+    rendered: list[tuple[str, str]] = []
     for path in candidates:
         text = (await _read_text(path)).strip()
         if not text:
@@ -2687,8 +2688,15 @@ async def _agent_thread_artifact_content(artifact_dir: Path) -> str:
                 pass
             else:
                 text = json.dumps(parsed, ensure_ascii=False, indent=2)
-        return text
-    return ""
+        rendered.append((str(path.relative_to(artifact_dir)), text))
+    if not rendered:
+        return ""
+    if len(rendered) == 1:
+        return rendered[0][1]
+    sections = ["# Agent 输出文件包", ""]
+    for relative_path, text in rendered:
+        sections.extend([f"## {relative_path}", "", text.rstrip(), ""])
+    return "\n".join(sections).rstrip() + "\n"
 
 
 async def _prepare_assistant_delivery(
