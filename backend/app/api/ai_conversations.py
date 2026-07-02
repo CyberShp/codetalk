@@ -185,11 +185,14 @@ async def create_message(conversation_id: str, body: CreateMessageRequest) -> di
         conversation=conversation,
         user_message=body.content,
     )
-    result = await store.create_user_message_and_run(
-        conversation_id=conversation_id,
-        content=body.content,
-        references=refs,
-    )
+    try:
+        result = await store.create_user_message_and_run(
+            conversation_id=conversation_id,
+            content=body.content,
+            references=refs,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
     schedule_conversation_run(result["run"]["id"])
     return _redact_payload(result)
 

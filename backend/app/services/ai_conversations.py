@@ -495,7 +495,21 @@ class AIConversationStore:
         run_id = _new_id("run")
         refs = [item.to_dict() for item in references]
         async with self._connect() as db:
-            await db.execute("BEGIN")
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                """
+                SELECT id
+                FROM ai_conversation_runs
+                WHERE conversation_id = ? AND status IN ('queued', 'running')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (conversation_id,),
+            ) as cur:
+                active = await cur.fetchone()
+            if active is not None:
+                await db.rollback()
+                raise ValueError("当前线程仍在生成中")
             await db.execute(
                 """
                 INSERT INTO ai_messages

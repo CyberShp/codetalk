@@ -310,6 +310,34 @@ class TestAIConversationsAPI:
             missing = await client.get(f"/api/ai/conversations/{idle['id']}")
             assert missing.status_code == 404
 
+    async def test_store_rejects_new_run_when_conversation_already_has_active_run(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        from app.services.ai_conversations import AIConversationStore
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Agent session chain guard",
+        )
+        first = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="第一轮：启动 agent 分析源码",
+            references=[],
+        )
+        assert first["run"]["status"] == "queued"
+
+        with pytest.raises(ValueError, match="当前线程仍在生成中"):
+            await store.create_user_message_and_run(
+                conversation_id=conversation["id"],
+                content="第二轮：不应绕过 SessionChain 串行保护",
+                references=[],
+            )
+
+        messages = await store.list_messages(conversation["id"])
+        assert [item["content"] for item in messages] == ["第一轮：启动 agent 分析源码"]
+
     async def test_create_workbench_conversation_publicizes_artifact_context(self, sqlite_db):
         task_run_id = "task_run_public_context"
         app = _test_app(sqlite_db)
