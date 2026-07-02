@@ -541,7 +541,9 @@ test("uses a Claude assistant message as the final answer instead of keeping par
       timeout: 30_000,
     });
     await expect(page.locator(".ct-codex-message").filter({ hasText: "partial 应被最终 assistant 替换" })).toHaveCount(0);
-    await expect(page.locator(".ct-codex-message").filter({ hasText: "## 黑盒测试用例" })).toHaveCount(1);
+    await expect(
+      page.locator(".ct-codex-message.is-assistant").getByRole("heading", { name: "黑盒测试用例" }),
+    ).toHaveCount(1);
 
     const downloadPromise = page.waitForEvent("download");
     await page.getByRole("link", { name: "下载完整产物" }).hover();
