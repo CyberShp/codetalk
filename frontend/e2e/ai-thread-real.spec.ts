@@ -413,6 +413,64 @@ async function createDiagnosticOnlySourceRuntime(
   return { id: runtime.id, name: runtimeName, captureFile };
 }
 
+async function createOneLineSourceRepairRuntime(
+  request: APIRequestContext,
+  label: string,
+): Promise<{ id: string; name: string; captureFile: string }> {
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-one-line-source-")));
+  const runtimeScript = path.join(runtimeDir, "one_line_source_agent.py");
+  const captureFile = path.join(runtimeDir, "one_line_source_invocations.jsonl");
+  const answer = [
+    "## 结论",
+    "ONE_LINE_SOURCE_REPAIRED：已基于 `lib/nvmf/ctrlr.c` 总结 connect 入口。",
+    "",
+    "## 代码证据",
+    "- `lib/nvmf/ctrlr.c`: `nvmf_ctrlr_connect` 是本轮入口候选。",
+    "",
+    "## 行为总结",
+    "1. 外部连接请求进入 target connect 处理。",
+    "2. 入口负责校验连接上下文并进入控制器建立路径。",
+  ].join("\n");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, pathlib, sys",
+      `capture = pathlib.Path(${JSON.stringify(captureFile)})`,
+      `answer = ${JSON.stringify(answer)}`,
+      "prompt = sys.stdin.read()",
+      "previous = sum(1 for _ in capture.open(encoding='utf-8')) if capture.exists() else 0",
+      "capture.write_text((capture.read_text(encoding='utf-8') if capture.exists() else '') + json.dumps({'turn': previous + 1, 'prompt': prompt}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+      "if previous == 0:",
+      "    print('最终答案：已完成源码分析。', flush=True)",
+      "else:",
+      "    print(answer, flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const runtimeName = `${label} ${Date.now()}`;
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 20,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+  return { id: runtime.id, name: runtimeName, captureFile };
+}
+
 async function createClaudeResumeRuntime(
   request: APIRequestContext,
   label: string,
@@ -1655,6 +1713,87 @@ test("diagnostic-only source agent fails visibly instead of idling with a fake a
     expect(messagesResp.ok()).toBeTruthy();
     const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
     expect(messageBody.items.map((item) => item.role)).toEqual(["user"]);
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
+  }
+});
+
+test("one-line source agent answer is repaired before it becomes the visible assistant reply", async ({
+  page,
+  request,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-one-line-source-repo-")));
+  fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "lib", "nvmf", "ctrlr.c"), "int nvmf_ctrlr_connect(void) { return 0; }\n", "utf8");
+  const workspaceName = `ai-one-line-source-${Date.now()}`;
+  const threadTitle = `${workspaceName} source repair`;
+  const runtime = await createOneLineSourceRepairRuntime(request, "One-line source repair runtime");
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtime.name });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill("请阅读工作区源码，总结 lib/nvmf/ctrlr.c 里的 connect 入口");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(page.getByText("ONE_LINE_SOURCE_REPAIRED")).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "nvmf_ctrlr_connect" })).toBeVisible();
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "已完成源码分析。" })).toHaveCount(0);
+    await expect(page.locator("div[role='alert']").filter({ hasText: "Agent 返回内容不足" })).toHaveCount(0);
+
+    await page.getByText("生成诊断：默认折叠").click();
+    await expect(page.getByText("上一次执行器输出过短")).toBeVisible();
+
+    const captured = fs.readFileSync(runtime.captureFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { turn: number; prompt: string });
+    expect(captured.map((item) => item.turn)).toEqual([1, 2]);
+    expect(captured[1].prompt).toContain("不要只说已完成");
+
+    const conversationResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`,
+    );
+    expect(conversationResp.ok()).toBeTruthy();
+    const conversation = (await conversationResp.json()) as {
+      status: string;
+      latest_run: { status: string; error: string | null } | null;
+    };
+    expect(conversation.status).toBe("idle");
+    expect(conversation.latest_run?.status).toBe("completed");
+    expect(conversation.latest_run?.error ?? "").toBe("");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    const assistantMessages = messageBody.items.filter((item) => item.role === "assistant");
+    expect(assistantMessages).toHaveLength(1);
+    expect(assistantMessages[0].content).toContain("ONE_LINE_SOURCE_REPAIRED");
+    expect(assistantMessages[0].content).not.toContain("最终答案：已完成源码分析。");
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
     await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);

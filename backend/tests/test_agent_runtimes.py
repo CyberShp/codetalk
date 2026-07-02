@@ -1752,6 +1752,79 @@ class TestAgentRuntimes:
 
         assert _agent_answer_requires_repair(user_message, complete_answer, []) is False
 
+    async def test_ai_thread_agent_runtime_repairs_one_line_source_answer(self, sqlite_db, tmp_path):
+        repo = tmp_path / "spdk"
+        (repo / "lib" / "nvmf").mkdir(parents=True)
+        (repo / "lib" / "nvmf" / "ctrlr.c").write_text(
+            "int nvmf_ctrlr_connect(void) { return 0; }\n",
+            encoding="utf-8",
+        )
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-one-line-source", repo_path=str(repo))
+        state_file = tmp_path / "one-line-agent-state.txt"
+        prompt_log = tmp_path / "one-line-agent-prompts.jsonl"
+        agent_script = tmp_path / "one_line_source_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import json, pathlib, sys",
+                    f"state = pathlib.Path({str(state_file)!r})",
+                    f"prompt_log = pathlib.Path({str(prompt_log)!r})",
+                    "prompt = sys.stdin.read()",
+                    "previous = int(state.read_text() or '0') if state.exists() else 0",
+                    "prompt_log.write_text((prompt_log.read_text() if prompt_log.exists() else '') + json.dumps({'turn': previous + 1, 'prompt': prompt}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+                    "state.write_text(str(previous + 1), encoding='utf-8')",
+                    "if previous == 0:",
+                    "    print('最终答案：已完成源码分析。', flush=True)",
+                    "else:",
+                    "    print('## 结论\\n已基于 `lib/nvmf/ctrlr.c` 总结 connect 入口。\\n\\n## 代码证据\\n- `lib/nvmf/ctrlr.c`: `nvmf_ctrlr_connect` 是本轮入口候选。\\n\\n## 行为总结\\n1. 外部连接请求进入 target connect 处理。\\n2. 入口负责校验连接上下文并进入控制器建立路径。', flush=True)",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="One-line source answer repair",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-one-line-source",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="请阅读工作区源码，总结 lib/nvmf/ctrlr.c 里的 connect 入口",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-one-line-source",
+                "name": "One-line Source Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+            },
+        )
+
+        prompts = [json.loads(line) for line in prompt_log.read_text(encoding="utf-8").splitlines()]
+        assert [item["turn"] for item in prompts] == [1, 2]
+        assert "上一次执行器输出过短" in prompts[1]["prompt"]
+
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        assert "已完成源码分析。" not in assistant["content"]
+        assert "lib/nvmf/ctrlr.c" in assistant["content"]
+        assert "nvmf_ctrlr_connect" in assistant["content"]
+
     async def test_ai_thread_agent_runtime_does_not_repair_generic_generation_wording(self):
         from app.services.ai_conversations import _agent_answer_requires_repair
 

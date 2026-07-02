@@ -1475,7 +1475,10 @@ def _agent_answer_requires_repair(
         return True
     if _looks_like_agent_no_final_answer_notice(content):
         return True
-    return _agent_task_requires_structured_delivery(user_message) and _agent_answer_too_thin_for_task(
+    return (
+        _agent_task_requires_structured_delivery(user_message)
+        or _agent_task_requires_source_grounding(user_message, references)
+    ) and _agent_answer_too_thin_for_task(
         content,
         user_message=user_message,
     )
@@ -1536,6 +1539,39 @@ def _agent_task_requires_structured_delivery(user_message: str) -> bool:
         "blackbox",
     )
     return any(marker in text for marker in markers)
+
+
+def _agent_task_requires_source_grounding(
+    user_message: str,
+    references: list[dict[str, Any]],
+) -> bool:
+    text = str(user_message or "").lower()
+    markers = (
+        "源码",
+        "代码",
+        "工作区",
+        "仓库",
+        "文件",
+        "spdk",
+        "source",
+        "code",
+        "repo",
+        "repository",
+        "workspace",
+        "file",
+        "lib/",
+        "test/",
+        ".c",
+        ".h",
+    )
+    if any(marker in text for marker in markers):
+        return True
+    evidence_types = {
+        "workspace_source",
+        "workspace_material",
+        "workbench_task_artifact",
+    }
+    return any(str(ref.get("source_type") or "") in evidence_types for ref in references)
 
 
 def _looks_like_agent_thin_help_answer(content: str) -> bool:
