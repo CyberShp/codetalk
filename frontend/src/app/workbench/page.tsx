@@ -247,6 +247,11 @@ const WORKFLOW_NAME_ZH: Record<string, string> = {
   jsonrpc_partial_rollback_blackbox: "JSON-RPC 部分失败/回滚黑盒场景",
   vfio_user_hotplug_reconnect_blackbox: "vfio-user hotplug/reconnect 黑盒场景",
   lvol_thin_snapshot_blackbox: "lvol thin/snapshot 黑盒场景",
+  api_contract_negative_blackbox: "API 契约负例黑盒场景",
+  state_persistence_restart_blackbox: "状态持久化/重启黑盒场景",
+  concurrency_isolation_race_blackbox: "并发隔离/race 黑盒场景",
+  performance_capacity_regression_blackbox: "性能容量回归黑盒场景",
+  security_access_control_blackbox: "安全访问控制黑盒场景",
 };
 
 function workflowDisplayName(workflow: Pick<WorkflowDefinition, "id" | "name"> | string): string {

@@ -157,12 +157,18 @@ async def test_workbench_workflow_preset_api(workbench_client):
         "jsonrpc_partial_rollback_blackbox",
         "vfio_user_hotplug_reconnect_blackbox",
         "lvol_thin_snapshot_blackbox",
+        "api_contract_negative_blackbox",
+        "state_persistence_restart_blackbox",
+        "concurrency_isolation_race_blackbox",
+        "performance_capacity_regression_blackbox",
+        "security_access_control_blackbox",
     }.issubset(preset_ids)
     by_preset_id = {item["id"]: item for item in preset_items}
     assert by_preset_id["module_analysis"]["group"] == "core"
     assert by_preset_id["mr_blackbox_test"]["group"] == "core"
     assert by_preset_id["backup_restore_integrity_blackbox"]["group"] == "common_test_scenario"
     assert by_preset_id["nvme_discovery_log_blackbox"]["group"] == "common_test_scenario"
+    assert by_preset_id["api_contract_negative_blackbox"]["group"] == "common_test_scenario"
 
     listed = await workbench_client.get("/api/workbench/workflows")
     listed_body = listed.json()
@@ -224,6 +230,11 @@ async def test_restore_builtin_workflows_preserves_custom_and_restores_core_plus
         "bdev_crypto_integrity_blackbox",
         "scheduler_qos_fairness_blackbox",
         "backup_restore_integrity_blackbox",
+        "api_contract_negative_blackbox",
+        "state_persistence_restart_blackbox",
+        "concurrency_isolation_race_blackbox",
+        "performance_capacity_regression_blackbox",
+        "security_access_control_blackbox",
     }.issubset(set(workflow_ids))
     for item in body["items"]:
         if item["id"] in {

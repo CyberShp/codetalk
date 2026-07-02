@@ -3,6 +3,7 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
     from app.services.workflow_presets import (
         COMMON_TEST_SCENARIO_PRESET_IDS,
         CORE_WORKFLOW_PRESET_IDS,
+        ORIGINAL_CORE_WORKFLOW_PRESET_IDS,
         builtin_workflow_presets,
     )
 
@@ -63,13 +64,24 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         "bdev_crypto_integrity_blackbox",
         "scheduler_qos_fairness_blackbox",
         "backup_restore_integrity_blackbox",
+        "api_contract_negative_blackbox",
+        "state_persistence_restart_blackbox",
+        "concurrency_isolation_race_blackbox",
+        "performance_capacity_regression_blackbox",
+        "security_access_control_blackbox",
     }.issubset(set(preset_ids))
-    assert CORE_WORKFLOW_PRESET_IDS == (
+    assert ORIGINAL_CORE_WORKFLOW_PRESET_IDS == (
         "module_analysis",
         "resource_leak_hunt",
         "mr_blackbox_test",
         "patch_impact_review",
+    )
+    assert CORE_WORKFLOW_PRESET_IDS == (
+        *ORIGINAL_CORE_WORKFLOW_PRESET_IDS,
         "source_flow_sfmea_blackbox",
+    )
+    assert preset_ids[: len(ORIGINAL_CORE_WORKFLOW_PRESET_IDS)] == list(
+        ORIGINAL_CORE_WORKFLOW_PRESET_IDS
     )
     assert preset_ids[: len(CORE_WORKFLOW_PRESET_IDS)] == list(CORE_WORKFLOW_PRESET_IDS)
     assert set(CORE_WORKFLOW_PRESET_IDS).isdisjoint(COMMON_TEST_SCENARIO_PRESET_IDS)
@@ -161,6 +173,7 @@ def test_restore_builtin_workflow_presets_refreshes_stale_builtin_definitions(tm
     from app.services.workflow_presets import (
         COMMON_TEST_SCENARIO_PRESET_IDS,
         CORE_WORKFLOW_PRESET_IDS,
+        ORIGINAL_CORE_WORKFLOW_PRESET_IDS,
         restore_builtin_workflow_presets,
     )
 
@@ -190,6 +203,9 @@ def test_restore_builtin_workflow_presets_refreshes_stale_builtin_definitions(tm
 
     restore_builtin_workflow_presets(store)
 
+    assert [item.id for item in store.list_workflows()[:4]] == list(
+        ORIGINAL_CORE_WORKFLOW_PRESET_IDS
+    )
     assert [item.id for item in store.list_workflows()[:5]] == list(CORE_WORKFLOW_PRESET_IDS)
 
     restored = store.get_workflow("module_analysis")

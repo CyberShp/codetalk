@@ -170,11 +170,15 @@ SOURCE_FLOW_REQUIRED_ARTIFACTS = [
     "black_box_cases.json",
 ]
 
-CORE_WORKFLOW_PRESET_IDS = (
+ORIGINAL_CORE_WORKFLOW_PRESET_IDS = (
     "module_analysis",
     "resource_leak_hunt",
     "mr_blackbox_test",
     "patch_impact_review",
+)
+
+CORE_WORKFLOW_PRESET_IDS = (
+    *ORIGINAL_CORE_WORKFLOW_PRESET_IDS,
     "source_flow_sfmea_blackbox",
 )
 
@@ -233,6 +237,11 @@ COMMON_TEST_SCENARIO_PRESET_IDS = (
     "jsonrpc_partial_rollback_blackbox",
     "vfio_user_hotplug_reconnect_blackbox",
     "lvol_thin_snapshot_blackbox",
+    "api_contract_negative_blackbox",
+    "state_persistence_restart_blackbox",
+    "concurrency_isolation_race_blackbox",
+    "performance_capacity_regression_blackbox",
+    "security_access_control_blackbox",
 )
 
 
@@ -1252,6 +1261,66 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 "metadata persistence restart recovery integrity check diagnostics"
             ),
         ),
+        _source_flow_scenario_preset(
+            preset_id="api_contract_negative_blackbox",
+            name="API Contract Negative Black-box Scenario",
+            description=(
+                "Analyze public API/RPC contract behavior for malformed input, unknown fields, "
+                "version mismatch, duplicate requests, error payload stability, and operator diagnostics."
+            ),
+            default_query=(
+                "api rpc cli scripts malformed input unknown field version mismatch duplicate request "
+                "error payload compatibility diagnostics negative test"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="state_persistence_restart_blackbox",
+            name="State Persistence / Restart Black-box Scenario",
+            description=(
+                "Analyze saved configuration, restart recovery, partially applied state, rollback, "
+                "idempotent replay, stale state cleanup, and externally observable consistency checks."
+            ),
+            default_query=(
+                "state persistence restart saved config replay rollback partial apply stale state cleanup "
+                "idempotent recovery consistency diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="concurrency_isolation_race_blackbox",
+            name="Concurrency / Isolation Race Black-box Scenario",
+            description=(
+                "Analyze concurrent create/delete/update, multi-client isolation, ordering races, "
+                "shared resource pressure, starvation, and externally visible state leaks."
+            ),
+            default_query=(
+                "concurrency isolation race multi client create delete update ordering shared resource "
+                "starvation state leak stress diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="performance_capacity_regression_blackbox",
+            name="Performance / Capacity Regression Black-box Scenario",
+            description=(
+                "Analyze throughput, latency, queue depth, capacity limits, backpressure, slow "
+                "operation diagnostics, degradation thresholds, and recovery after pressure is removed."
+            ),
+            default_query=(
+                "performance capacity regression throughput latency queue depth backpressure slow operation "
+                "limit degradation recovery metrics diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="security_access_control_blackbox",
+            name="Security / Access Control Black-box Scenario",
+            description=(
+                "Analyze authentication, authorization, tenant or host isolation, denied operations, "
+                "sensitive data exposure, audit logs, replay attempts, and public failure responses."
+            ),
+            default_query=(
+                "security access control authentication authorization isolation denied operation sensitive "
+                "data exposure audit log replay failure response diagnostics"
+            ),
+        ),
     ]
     for preset in presets:
         preset_id = str(preset["id"])
@@ -1261,6 +1330,8 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
             preset["group"] = "common_test_scenario"
         validate_workflow_definition(preset["definition"])
     preset_ids = [str(preset["id"]) for preset in presets]
+    if preset_ids[: len(ORIGINAL_CORE_WORKFLOW_PRESET_IDS)] != list(ORIGINAL_CORE_WORKFLOW_PRESET_IDS):
+        raise AssertionError("original core workflow presets must stay first and complete")
     if preset_ids[: len(CORE_WORKFLOW_PRESET_IDS)] != list(CORE_WORKFLOW_PRESET_IDS):
         raise AssertionError("core workflow presets must stay first and complete")
     missing_scenarios = set(COMMON_TEST_SCENARIO_PRESET_IDS).difference(preset_ids)
