@@ -2503,6 +2503,119 @@ test("renders OpenAI response output item done as the final agent answer", async
   }
 });
 
+test("renders OpenAI response completed output as the final agent answer", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-response-completed-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "Responses API completed output e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-response-completed-")));
+  const runtimeScript = path.join(runtimeDir, "response_completed_output_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, sys, time",
+      "sys.stdin.read()",
+      "answer = 'RESPONSE_COMPLETED_FINAL: 已从 completed.output 提取最终回答。\\n\\n## 代码证据\\n- `lib/nvmf/ctrlr.c`: connect 路径。\\n\\n## 黑盒测试用例\\n1. 前置条件 NVMe-oF target 已启动；步骤发起 connect；预期结果连接状态可观测。'",
+      "events = [",
+      "  {'type':'response.created','response':{'id':'resp_completed_output_e2e'}},",
+      "  {'type':'item.completed','item':{'type':'command_execution','command':'rg nvmf_connect lib/nvmf/ctrlr.c','status':'completed','exit_code':0,'aggregated_output':'lib/nvmf/ctrlr.c:nvmf_connect'}},",
+      "  {'type':'response.completed','response':{'status':'completed','output':[{'type':'message','role':'assistant','content':[{'type':'output_text','text':answer}]}]}},",
+      "]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.05)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-response-completed-e2e-${Date.now()}`;
+  const runtimeName = `Responses completed output runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} response completed`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "auto",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByLabel("AI 线程消息").fill("请用 Responses API response.completed output 读取源码并输出最终回答");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const assistantAnswer = page.locator(".ct-codex-message:not(.is-user)");
+    await expect(assistantAnswer.filter({ hasText: "下载完整产物" })).toBeVisible({ timeout: 20_000 });
+    await expect(assistantAnswer.filter({ hasText: "执行器没有返回有效内容" })).toHaveCount(0);
+    await expect(assistantAnswer.filter({ hasText: "response.completed" })).toHaveCount(0);
+    await expect(assistantAnswer.filter({ hasText: "nvmf_connect" })).toHaveCount(0);
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("link", { name: "下载完整产物" }).hover();
+    await page.getByRole("link", { name: "下载完整产物" }).click();
+    const download = await downloadPromise;
+    const artifactPath = testInfo.outputPath("response-completed-output-artifact.md");
+    await download.saveAs(artifactPath);
+    const artifact = fs.readFileSync(artifactPath, "utf8");
+    expect(artifact).toContain("RESPONSE_COMPLETED_FINAL");
+    expect(artifact).toContain("lib/nvmf/ctrlr.c");
+    expect(artifact).not.toContain("response.completed");
+    expect(artifact).not.toContain("command: rg nvmf_connect");
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("command: rg nvmf_connect lib/nvmf/ctrlr.c")).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("下载完整产物");
+    expect(assistant?.content).not.toContain("response.completed");
+    expect(assistant?.content).not.toContain("nvmf_connect");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("downloads a Markdown artifact written by the agent runtime", async ({
   page,
   request,

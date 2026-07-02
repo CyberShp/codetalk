@@ -3200,6 +3200,33 @@ class TestAgentRuntimes:
             )
             == f"{AGENT_FINAL_ANSWER_PREFIX}最终答案：Responses API 最终正文。"
         )
+        assert (
+            _parse_event_text(
+                json.dumps(
+                    {
+                        "type": "response.completed",
+                        "response": {
+                            "status": "completed",
+                            "output": [
+                                {
+                                    "type": "message",
+                                    "role": "assistant",
+                                    "content": [
+                                        {
+                                            "type": "output_text",
+                                            "text": "最终答案：completed 事件里的完整正文。",
+                                        }
+                                    ],
+                                }
+                            ],
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                "stream_json",
+            )
+            == f"{AGENT_FINAL_ANSWER_PREFIX}最终答案：completed 事件里的完整正文。"
+        )
         stream_state: dict[int, str] = {}
         assert (
             _parse_event_text(
@@ -4008,6 +4035,34 @@ class TestAgentRuntimes:
         assert "Responses API 最终回答已保留" in output
         assert "lib/iscsi/iscsi.c" in output
         assert "response.output_item.done" not in output
+        assert "response.completed" not in output
+
+    async def test_agent_runtime_auto_mode_uses_openai_response_completed_output_as_final_answer(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import json, sys; "
+            "print(json.dumps({'type':'response.created','response':{'id':'resp_1'}}, ensure_ascii=False)); "
+            "print(json.dumps({'type':'response.completed','response':{'status':'completed','output':[{'type':'message','role':'assistant','content':[{'type':'output_text','text':'## 结论\\ncompleted.output 最终回答已保留。\\n\\n## 代码证据\\n- lib/nvmf/ctrlr.c: connect 路径。'}]}]}}, ensure_ascii=False)); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "auto",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        output = "".join(chunks)
+        assert "completed.output 最终回答已保留" in output
+        assert "lib/nvmf/ctrlr.c" in output
         assert "response.completed" not in output
 
     async def test_agent_runtime_auto_mode_only_surfaces_clowder_style_agent_text_events(self):

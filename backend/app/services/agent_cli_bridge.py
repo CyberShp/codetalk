@@ -688,6 +688,9 @@ def _stream_content_block_type(block: Any) -> str:
 
 
 def _event_text(event: dict[str, Any]) -> str | None:
+    response_text = _response_completed_text(event)
+    if response_text is not None:
+        return response_text
     if str(event.get("type") or "").strip() == "result":
         value = _event_result_text(event)
         return f"{AGENT_FINAL_ANSWER_PREFIX}{value}" if value else None
@@ -818,6 +821,36 @@ def _event_text(event: dict[str, Any]) -> str | None:
         if parts:
             return "".join(parts)
     return None
+
+
+def _response_completed_text(event: dict[str, Any]) -> str | None:
+    if str(event.get("type") or "").strip() != "response.completed":
+        return None
+    response = event.get("response")
+    if not isinstance(response, dict):
+        return None
+    output = response.get("output")
+    if not isinstance(output, list):
+        return None
+    parts: list[str] = []
+    for item in output:
+        if not isinstance(item, dict):
+            continue
+        item_type = str(item.get("type") or "").strip()
+        role = str(item.get("role") or "assistant").strip()
+        if item_type not in {"message", "output_message"} or role != "assistant":
+            continue
+        content = item.get("content")
+        if isinstance(content, str):
+            parts.append(_clean_agent_text(content))
+        elif isinstance(content, list):
+            parts.extend(_content_parts(content))
+    answer = "".join(part for part in parts if part)
+    if not answer:
+        return None
+    if _only_diagnostic_parts(answer):
+        return answer
+    return f"{AGENT_FINAL_ANSWER_PREFIX}{answer}"
 
 
 def _event_result_text(event: dict[str, Any]) -> str:
