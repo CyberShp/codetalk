@@ -201,6 +201,59 @@ async function createClaudeAssistantFinalRuntime(
   return { id: runtime.id, name: runtimeName };
 }
 
+async function createSlowStreamingRuntime(
+  request: APIRequestContext,
+  label: string,
+): Promise<{ id: string; name: string }> {
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-slow-stream-")));
+  const runtimeScript = path.join(runtimeDir, "slow_stream_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, os, sys, time",
+      "prompt_file = os.environ.get('CODETALK_AGENT_PROMPT_FILE')",
+      "if prompt_file:",
+      "    open(prompt_file, encoding='utf-8').read()",
+      "print(json.dumps({'type':'system','subtype':'init','session_id':'slow-scroll-session'}, ensure_ascii=False), flush=True)",
+      "print(json.dumps({'type':'stream_event','event':{'type':'content_block_start','index':0,'content_block':{'type':'text'}}}, ensure_ascii=False), flush=True)",
+      "for index in range(1, 56):",
+      "    text = f'scroll-line-{index:02d}: 这是一段用于撑开 AI 线程 reader 的真实流式回答内容，覆盖长对话阅读体验。\\n\\n'",
+      "    print(json.dumps({'type':'stream_event','event':{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':text}}}, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.015)",
+      "time.sleep(0.75)",
+      "for index in range(1, 9):",
+      "    text = f'late-scroll-token-{index}: 用户上滑后仍在后台追加的内容。\\n\\n'",
+      "    print(json.dumps({'type':'stream_event','event':{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':text}}}, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.12)",
+      "print(json.dumps({'type':'stream_event','event':{'type':'content_block_stop','index':0}}, ensure_ascii=False), flush=True)",
+      "print(json.dumps({'type':'result','status':'success','session_id':'slow-scroll-session'}, ensure_ascii=False), flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const runtimeName = `${label} ${Date.now()}`;
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "stream_json",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 20,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+  return { id: runtime.id, name: runtimeName };
+}
+
 async function createCodexStdinRuntime(
   request: APIRequestContext,
   label: string,
@@ -462,6 +515,93 @@ test("keeps Claude tool-result stream blocks out of visible answer and artifact"
     expect(assistant?.content).not.toContain("TC-08 正常登录变体");
     expect(assistant?.content).not.toContain("iscsi_conn_login_pdu_success_complete");
     expect(assistant?.content).not.toContain("AuthMethod=CHAP");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
+test("does not pull the reader to the bottom while the user reviews earlier AI output", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-scroll-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI scroll containment workspace\n", "utf8");
+  const workspaceName = `ai-scroll-e2e-${Date.now()}`;
+  const threadTitle = `${workspaceName} scroll containment`;
+  const runtime = await createSlowStreamingRuntime(request, "Slow scroll runtime");
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtime.name });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    const composer = page.getByLabel("AI 线程消息");
+    await composer.click();
+    await composer.pressSequentially("生成一段很长的 iSCSI 登录测试设计说明，用于验证滚动行为");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const reader = page.getByLabel("AI 线程对话内容");
+    await expect(page.getByText("scroll-line-45")).toBeVisible({ timeout: 30_000 });
+    await expect
+      .poll(async () =>
+        reader.evaluate((node) => {
+          const element = node as HTMLElement;
+          return element.scrollHeight > element.clientHeight + 240;
+        }),
+      )
+      .toBeTruthy();
+
+    await reader.hover();
+    await page.mouse.wheel(0, -900);
+    const detachedMetrics = await reader.evaluate((node) => {
+      const element = node as HTMLElement;
+      return {
+        scrollTop: element.scrollTop,
+        distanceFromBottom: element.scrollHeight - element.scrollTop - element.clientHeight,
+      };
+    });
+    expect(detachedMetrics.distanceFromBottom).toBeGreaterThan(96);
+
+    await expect(page.getByText("late-scroll-token-8")).toBeAttached({ timeout: 30_000 });
+    const afterLateMetrics = await reader.evaluate((node) => {
+      const element = node as HTMLElement;
+      return {
+        scrollTop: element.scrollTop,
+        distanceFromBottom: element.scrollHeight - element.scrollTop - element.clientHeight,
+      };
+    });
+    expect(Math.abs(afterLateMetrics.scrollTop - detachedMetrics.scrollTop)).toBeLessThanOrEqual(4);
+    expect(afterLateMetrics.distanceFromBottom).toBeGreaterThan(96);
+
+    const jumpButton = page.getByRole("button", { name: "跳到最新回复" });
+    await expect(jumpButton).toBeVisible();
+    await jumpButton.hover();
+    await jumpButton.click();
+    await expect
+      .poll(async () =>
+        reader.evaluate((node) => {
+          const element = node as HTMLElement;
+          return element.scrollHeight - element.scrollTop - element.clientHeight;
+        }),
+      )
+      .toBeLessThan(24);
+    await expect(page.getByText("late-scroll-token-8")).toBeVisible();
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }

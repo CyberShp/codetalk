@@ -22,8 +22,8 @@ export default function WorkspacesPage() {
   }, []);
 
   return (
-    <div className="w-full px-4 xl:px-6">
-      <div className="ct-reveal ct-liquid-glass flex flex-col gap-4 mb-8 rounded-[26px] p-5 sm:flex-row sm:items-center sm:justify-between">
+    <div className="flex h-[calc(100vh-48px)] min-h-0 w-full flex-col overflow-hidden px-4 xl:px-6">
+      <div className="ct-reveal ct-liquid-glass mb-4 flex shrink-0 flex-col gap-4 rounded-[26px] p-5 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-on-surface">工作空间</h1>
           <p className="text-sm text-on-surface-variant mt-1">
@@ -40,7 +40,7 @@ export default function WorkspacesPage() {
       </div>
 
       {loading && (
-        <div className="flex justify-center py-16">
+        <div className="flex min-h-0 flex-1 justify-center overflow-auto py-16">
           <Loader2 size={24} className="animate-spin text-primary" />
         </div>
       )}
@@ -52,7 +52,7 @@ export default function WorkspacesPage() {
       )}
 
       {!loading && !error && workspaces.length === 0 && (
-        <div className="ct-premium-empty flex flex-col items-center justify-center h-64 rounded-[28px] gap-3">
+        <div className="ct-premium-empty flex min-h-0 flex-1 flex-col items-center justify-center rounded-[28px] gap-3">
           <FolderOpen size={40} className="text-on-surface-variant/40" />
           <p className="text-on-surface-variant text-sm">
             还没有工作空间，点击右上角新建
@@ -61,7 +61,10 @@ export default function WorkspacesPage() {
       )}
 
       {!loading && workspaces.length > 0 && (
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div
+          className="grid min-h-0 flex-1 grid-cols-1 content-start gap-4 overflow-y-auto overscroll-contain pb-6 pr-1 sm:grid-cols-2 lg:grid-cols-3"
+          data-testid="workspace-list"
+        >
           {workspaces.map((ws) => (
             <Link
               key={ws.id}

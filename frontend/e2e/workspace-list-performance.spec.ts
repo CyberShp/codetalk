@@ -43,6 +43,31 @@ test("workspace list renders large histories without staggered card animations",
 
   await expect(page.locator('a[href="/workspaces/ws-perf-0"]')).toBeVisible();
   await expect(page.locator('a[href="/workspaces/ws-perf-59"]')).toBeAttached();
+  await expect(page.locator('a[href="/workspaces/ws-perf-59"]')).not.toBeInViewport();
+
+  const pageMetrics = await page.evaluate(() => ({
+    bodyScrollHeight: document.documentElement.scrollHeight,
+    viewportHeight: window.innerHeight,
+  }));
+  expect(pageMetrics.bodyScrollHeight).toBeLessThanOrEqual(pageMetrics.viewportHeight + 8);
+
+  const workspaceList = page.getByTestId("workspace-list");
+  const listMetrics = await workspaceList.evaluate((node) => {
+    const element = node as HTMLElement;
+    return {
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      overflowY: window.getComputedStyle(element).overflowY,
+    };
+  });
+  expect(listMetrics.overflowY).toBe("auto");
+  expect(listMetrics.scrollHeight).toBeGreaterThan(listMetrics.clientHeight);
+
+  await workspaceList.evaluate((node) => {
+    const element = node as HTMLElement;
+    element.scrollTop = element.scrollHeight;
+  });
+  await expect(page.locator('a[href="/workspaces/ws-perf-59"]')).toBeInViewport();
 
   const cardMotion = await page.locator(".ct-interactive-card").evaluateAll((nodes) =>
     nodes.map((node) => {
