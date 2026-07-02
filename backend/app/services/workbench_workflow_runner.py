@@ -2757,6 +2757,10 @@ def _observable_change_for_path(file_path: str) -> str:
         return "RPC status, I/O completion, reset timing, error code, and bdev event logs"
     if "rpc" in path:
         return "RPC response code, JSON error body, idempotency, and config state"
+    if "lib/event" in path or "reactor" in path:
+        return "reactor load, poller latency, scheduler period, log timing, and process responsiveness"
+    if "lib/thread" in path or "/thread" in path:
+        return "thread message completion, poller latency, timeout behavior, and queue drain progress"
     return "public command result, logs, metrics, and persisted state"
 
 
@@ -2770,6 +2774,10 @@ def _black_box_focus_for_path(file_path: str) -> str:
         return "bdev RPC, I/O, reset, and failover workflows"
     if "rpc" in path:
         return "RPC parameter validation and repeated operation workflows"
+    if "lib/event" in path or "reactor" in path:
+        return "reactor scheduling, poller timing, and long-running task responsiveness workflows"
+    if "lib/thread" in path or "/thread" in path:
+        return "thread message, poller scheduling, timeout, and queue drain workflows"
     return "public workflow that exercises the changed file without internal function calls"
 
 

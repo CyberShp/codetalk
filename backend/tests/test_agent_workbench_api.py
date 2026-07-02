@@ -2277,6 +2277,66 @@ async def test_builtin_rpc_config_scenario_prioritizes_source_over_test_helpers(
     assert "test/bdev" in bdev_case["diagnostics"][0]
 
 
+async def test_builtin_reactor_thread_scenario_uses_scheduler_specific_wording(
+    workbench_client,
+    tmp_path,
+):
+    repo = tmp_path / "spdk-like"
+    reactor_file = repo / "lib" / "event" / "reactor.c"
+    thread_file = repo / "lib" / "thread" / "thread.c"
+    test_file = repo / "test" / "thread" / "poller_perf" / "poller_perf.c"
+    reactor_file.parent.mkdir(parents=True)
+    thread_file.parent.mkdir(parents=True)
+    test_file.parent.mkdir(parents=True)
+    reactor_file.write_text(
+        "int spdk_reactor_poller_scheduling_probe(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+    thread_file.write_text(
+        "int spdk_thread_message_poller_probe(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+    test_file.write_text(
+        "int poller_perf_helper(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+
+    installed = await workbench_client.post(
+        "/api/workbench/workflow-presets/reactor_thread_poller_blackbox/install"
+    )
+    assert installed.status_code == 201
+
+    response = await workbench_client.post(
+        "/api/workbench/task-runs/run",
+        json={
+            "workflow_id": "reactor_thread_poller_blackbox",
+            "workspace_id": "ws-reactor-wording",
+            "repo_path": str(repo),
+            "inputs": {"repo_path": str(repo)},
+            "timeout_sec": 10,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "completed"
+    task_dir = _task_run_dir(body["task_run"]["task_run_id"])
+    cases = json.loads(
+        (task_dir / "steps" / "analyze_source_flow" / "black_box_cases.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    event_case = next(item for item in cases if item["file_path"] == "lib/event/reactor.c")
+    thread_case = next(item for item in cases if item["file_path"] == "lib/thread/thread.c")
+    assert "reactor" in event_case["inputs"].lower()
+    assert "poller" in event_case["inputs"].lower()
+    assert "poller latency" in event_case["observable_signals"][0].lower()
+    assert "thread message" in thread_case["inputs"].lower()
+    assert "poller" in thread_case["observable_signals"][0].lower()
+    assert "changed file" not in event_case["inputs"].lower()
+    assert "changed file" not in thread_case["inputs"].lower()
+
+
 async def test_workbench_task_run_run_auto_imports_declared_semantic_outputs(
     workbench_client,
     tmp_path,
