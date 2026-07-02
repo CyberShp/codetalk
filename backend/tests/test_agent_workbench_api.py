@@ -2289,6 +2289,62 @@ async def test_builtin_common_scenario_preset_uses_default_query_when_scope_is_e
     assert scope["files"][0].startswith("lib/nvmf/")
 
 
+async def test_builtin_common_scenario_preset_merges_default_query_with_user_scope(
+    workbench_client,
+    tmp_path,
+):
+    repo = tmp_path / "spdk-like"
+    nvmf_file = repo / "lib" / "nvmf" / "ctrlr.c"
+    nvme_file = repo / "lib" / "nvme" / "nvme.c"
+    nvmf_file.parent.mkdir(parents=True)
+    nvme_file.parent.mkdir(parents=True)
+    nvmf_file.write_text(
+        "\n".join([
+            "int nvmf_ctrlr_keep_alive_poll(void) { return 0; }",
+            "int nvmf_ctrlr_disconnect_qpairs_done(void) { return 0; }",
+            "int spdk_nvmf_qpair_teardown_probe(void) { return 0; }",
+        ]),
+        encoding="utf-8",
+    )
+    nvme_file.write_text(
+        "int nvme_generic_reset_behavior(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+
+    installed = await workbench_client.post(
+        "/api/workbench/workflow-presets/nvmf_disconnect_reconnect_blackbox/install"
+    )
+    assert installed.status_code == 201
+
+    response = await workbench_client.post(
+        "/api/workbench/task-runs/run",
+        json={
+            "workflow_id": "nvmf_disconnect_reconnect_blackbox",
+            "workspace_id": "ws-nvmf-user-query-merge",
+            "repo_path": str(repo),
+            "inputs": {
+                "analysis_object": "generic NVMe reset behavior",
+                "repo_path": str(repo),
+            },
+            "timeout_sec": 10,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "completed"
+
+    task_dir = _task_run_dir(body["task_run"]["task_run_id"])
+    scope = json.loads(
+        (task_dir / "steps" / "analyze_source_flow" / "source_scope.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "generic NVMe reset behavior" in scope["query"]
+    assert "lib/nvmf" in scope["query"]
+    assert scope["files"][0] == "lib/nvmf/ctrlr.c"
+
+
 async def test_builtin_rpc_config_scenario_prioritizes_source_over_test_helpers(
     workbench_client,
     tmp_path,

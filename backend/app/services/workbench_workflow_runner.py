@@ -986,13 +986,12 @@ def _local_scope_query(input_snapshot: dict[str, Any], *, default_query: str = "
         "patch_diff",
         "patch_plan",
     )
-    parts = [
+    explicit_parts = [
         str(input_snapshot.get(key) or "").strip()
         for key in explicit_scope_keys
         if str(input_snapshot.get(key) or "").strip()
     ]
-    if not parts and default_query.strip():
-        parts = [default_query.strip()]
+    parts = _dedupe_strings([default_query.strip(), *explicit_parts])
     if not parts and str(input_snapshot.get("mr_link") or "").strip():
         parts = [str(input_snapshot.get("mr_link") or "").strip()]
     if not parts and str(input_snapshot.get("repo_path") or "").strip():
