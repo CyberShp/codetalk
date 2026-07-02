@@ -196,21 +196,48 @@ def _govern_visible_assistant_content(
     references: list[dict[str, Any]],
 ) -> str:
     """Prevent raw source dumps from becoming the visible AI-thread answer."""
-    text = _legacy_clean_agent_answer_content(content)
-    if not _looks_like_source_dump(text):
-        return text
+    raw_text = clean_agent_output_text(str(content or "")).strip()
+    if not raw_text:
+        return ""
     paths = _source_reference_paths(references)
     evidence_line = (
         "证据文件：" + "、".join(f"`{path}`" for path in paths[:5])
         if paths
         else "证据文件：工作区源码引用"
     )
+    if _looks_like_source_dump(raw_text):
+        report = _extract_user_facing_report_after_source_dump(raw_text)
+        if report:
+            return (
+                "CodeTalk 已折叠一段疑似源码全文输出，避免外部 agent 把大文件直接刷进 AI 线程。\n\n"
+                f"{evidence_line}\n\n"
+                f"{report}"
+            )
+    text = _legacy_clean_agent_answer_content(raw_text)
+    if not _looks_like_source_dump(text):
+        return text
+    report = _extract_user_facing_report_after_source_dump(text)
+    if report:
+        return (
+            "CodeTalk 已折叠一段疑似源码全文输出，避免外部 agent 把大文件直接刷进 AI 线程。\n\n"
+            f"{evidence_line}\n\n"
+            f"{report}"
+        )
     return (
         "CodeTalk 已折叠一段疑似源码全文输出，避免外部 agent 把大文件直接刷进 AI 线程。\n\n"
         "可见状态：执行器读取了工作区源码，但返回内容主要是源码原文，不是面向用户的分析结论。"
         "请基于证据文件继续追问“流程、风险、SFMEA、黑盒用例”，或重新要求只输出结论与证据摘要。\n\n"
         f"{evidence_line}"
     )
+
+
+def _extract_user_facing_report_after_source_dump(text: str) -> str:
+    matches = list(_LEGACY_AGENT_REPORT_HEADING_RE.finditer(str(text or "")))
+    for match in matches:
+        candidate = text[match.start() :].strip()
+        if _legacy_cleaned_candidate_is_user_facing(candidate):
+            return candidate
+    return ""
 
 
 _LEGACY_AGENT_DIAGNOSTIC_MARKERS = (
@@ -1411,7 +1438,10 @@ def _agent_answer_requires_repair(
         return False
     if _looks_like_agent_thin_help_answer(content):
         return True
-    return _agent_task_requires_structured_delivery(user_message) and _agent_answer_too_thin_for_task(content)
+    return _agent_task_requires_structured_delivery(user_message) and _agent_answer_too_thin_for_task(
+        content,
+        user_message=user_message,
+    )
 
 
 def _agent_task_requires_substantive_answer(
@@ -1505,31 +1535,31 @@ def _looks_like_agent_thin_help_answer(content: str) -> bool:
     return len(text) <= 24 and any(marker in text for marker in generic_done_markers)
 
 
-def _agent_answer_too_thin_for_task(content: str) -> bool:
+def _agent_answer_too_thin_for_task(content: str, *, user_message: str = "") -> bool:
     text = clean_agent_output_text(str(content or "")).strip()
     lowered = text.lower()
-    substantive_markers = (
-        "最终答案",
-        "final answer",
-        "##",
-        "代码证据",
-        "源码证据",
-        "流程",
-        "sfmea",
-        "failure mode",
-        "黑盒测试",
-        "测试用例",
-        "前置条件",
-        "预期结果",
-        "lib/",
-        "test/",
-        ".c",
-        ".h",
-    )
-    if any(marker in lowered for marker in substantive_markers):
-        return False
     if len(text) < 80:
         return True
+    requested = str(user_message or "").lower()
+    if any(marker in requested for marker in ("sfmea", "failure mode")) and not any(
+        marker in lowered for marker in ("sfmea", "failure mode", "rpn", "severity", "occurrence")
+    ):
+        return True
+    if any(marker in requested for marker in ("黑盒", "测试用例", "测试设计", "black-box", "blackbox", "test case")):
+        if not any(marker in lowered for marker in ("黑盒", "测试用例", "test case", "前置条件", "预期结果")):
+            return True
+        case_markers = len(re.findall(r"(?:^|\n)\s*(?:[-*]|\d+[.)、])\s*(?:\*\*)?(?:用例|case|前置条件|步骤)", text, re.I))
+        expectation_markers = sum(1 for marker in ("前置", "步骤", "预期", "观测", "失败诊断", "expected") if marker in lowered)
+        if case_markers < 2 and expectation_markers < 3:
+            return True
+    if any(marker in requested for marker in ("流程", "梳理", "workflow")) and not any(
+        marker in lowered for marker in ("流程", "步骤", "阶段", "workflow")
+    ):
+        return True
+    if any(marker in requested for marker in ("代码证据", "源码证据", "源码", "代码", "spdk", "source", "code")):
+        evidence_markers = ("代码证据", "源码证据", "lib/", "test/", ".c", ".h", "function", "函数")
+        if sum(1 for marker in evidence_markers if marker in lowered) < 2:
+            return True
     lines = [line for line in text.splitlines() if line.strip()]
     return len(lines) <= 2 and len(text) < 220
 

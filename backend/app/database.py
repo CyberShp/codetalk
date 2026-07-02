@@ -387,6 +387,7 @@ async def init_db() -> None:
         )
         await _seed_default_agent_runtimes(db)
         await _migrate_legacy_agent_runtimes(db)
+        await _quarantine_ephemeral_agent_runtimes(db)
 
         await db.commit()
 
@@ -485,6 +486,26 @@ async def _migrate_legacy_agent_runtimes(db: aiosqlite.Connection) -> None:
           AND lower(name) IN ('claude code', 'claude code router')
           AND prompt_transport IN ('stdin', 'argv_last')
           AND output_mode IN ('plain', 'auto')
+        """
+    )
+
+
+async def _quarantine_ephemeral_agent_runtimes(db: aiosqlite.Connection) -> None:
+    await db.execute(
+        """
+        UPDATE agent_runtimes
+        SET
+            enabled = 0,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE enabled = 1
+          AND id NOT IN ('default-claude-code', 'default-codex', 'default-opencode')
+          AND (
+            lower(name) GLOB 'e2e *'
+            OR lower(name) GLOB 'ui-agent-*'
+            OR lower(name) GLOB '* test runtime *'
+            OR args_json LIKE '%/tmp/codetalk-agent-e2e/%'
+            OR args_json LIKE '%codetalk-agent-probe-%'
+          )
         """
     )
 

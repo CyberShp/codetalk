@@ -694,7 +694,12 @@ class TestAgentRuntimes:
         app = _test_app(sqlite_db)
         agent_code = (
             "print('STATUS: 正在读取工作区源码 lib/nvmf/connect.c'); "
-            "print('最终答案：已经基于源码生成黑盒测试建议。')"
+            "print('最终答案：## 结论\\n已经基于源码生成黑盒测试建议。\\n\\n"
+            "## 代码证据\\n- lib/nvmf/connect.c: connect 状态检查。\\n"
+            "- test/nvmf: 可承载连接失败路径。\\n\\n"
+            "## 黑盒测试用例\\n"
+            "1. 用例：合法 connect 成功；前置条件：target 已启动；步骤：发起连接；预期结果：连接建立。\\n"
+            "2. 用例：非法参数 connect 失败；前置条件：target 已启动；步骤：提交非法参数；预期结果：返回失败状态。')"
         )
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -742,7 +747,9 @@ class TestAgentRuntimes:
             messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
             body = messages.json()
             assert [item["role"] for item in body["items"]] == ["user", "assistant"]
-            assert "最终答案：已经基于源码生成黑盒测试建议。" in body["items"][1]["content"]
+            assert "已经基于源码生成黑盒测试建议" in body["items"][1]["content"]
+            assert "## 代码证据" in body["items"][1]["content"]
+            assert "## 黑盒测试用例" in body["items"][1]["content"]
             assert "正在读取工作区源码" not in body["items"][1]["content"]
 
             stream = await client.get(f"/api/ai/conversations/{conversation['id']}/stream")
@@ -1239,7 +1246,7 @@ class TestAgentRuntimes:
         agent_code = (
             "import json; "
             "print(json.dumps({'type':'response.reasoning_text.delta','delta':'内部推理：先搜索源码'}, ensure_ascii=False)); "
-            "print(json.dumps({'type':'response.output_text.delta','delta':'最终答案：已完成可交付分析。'}, ensure_ascii=False)); "
+            "print(json.dumps({'type':'response.output_text.delta','delta':'最终答案：## 结论\\n已完成可交付分析。\\n\\n## 代码证据\\n- lib/nvmf/connect.c: 响应路径。\\n- test/nvmf: 回归入口。\\n\\n## 流程梳理\\n1. 读取输入。\\n2. 输出结论。'}, ensure_ascii=False)); "
             "print(json.dumps({'type':'response.refusal.delta','delta':'拒绝诊断：策略提示'}, ensure_ascii=False))"
         )
 
@@ -1288,7 +1295,9 @@ class TestAgentRuntimes:
             messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
             body = messages.json()
             assert [item["role"] for item in body["items"]] == ["user", "assistant"]
-            assert body["items"][1]["content"] == "最终答案：已完成可交付分析。"
+            assert "已完成可交付分析" in body["items"][1]["content"]
+            assert "## 代码证据" in body["items"][1]["content"]
+            assert "## 流程梳理" in body["items"][1]["content"]
             assert "内部推理" not in body["items"][1]["content"]
             assert "拒绝诊断" not in body["items"][1]["content"]
 
@@ -1337,6 +1346,7 @@ class TestAgentRuntimes:
             "from pathlib import Path\n"
             "text = Path('lib/nvmf/auth.c').read_text(encoding='utf-8')\n"
             "print(text)\n"
+            "print('## 结论\\n源码全文已读取，但最终只保留边界摘要。\\n\\n## 代码证据\\n- lib/nvmf/auth.c: auth probe。\\n- test/nvmf: auth 黑盒测试入口。\\n\\n## 黑盒测试用例\\n1. 用例：认证成功；前置条件：凭据有效；步骤：发起连接；预期结果：认证通过。\\n2. 用例：认证失败；前置条件：凭据无效；步骤：发起连接；预期结果：认证拒绝。')\n"
         )
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -1403,7 +1413,8 @@ class TestAgentRuntimes:
                 if event["event_type"] == "delta" and event["payload"].get("kind") != "diagnostic"
             ]
             visible_stream = "".join(answer_chunks)
-            assert "已折叠" in visible_stream
+            assert "## 黑盒测试用例" in visible_stream
+            assert "lib/nvmf/auth.c" in visible_stream
             assert '#include "spdk/stdinc.h"' not in visible_stream
             assert "spdk_nvmf_auth_probe_69" not in visible_stream
 
@@ -1584,7 +1595,7 @@ class TestAgentRuntimes:
                     "    print('thinking: 已检查 lib/iscsi/iscsi.c', flush=True)",
                     "    print('你好，有什么需要帮助？', flush=True)",
                     "else:",
-                    "    print('## 结论\\n已基于 `lib/iscsi/iscsi.c` 输出 iSCSI login 黑盒测试设计。\\n\\n## 代码证据\\n- `lib/iscsi/iscsi.c`: `iscsi_login_probe`。\\n\\n## 黑盒测试用例\\n1. 前置条件：target 已启动。步骤：发起 login。预期结果：返回明确状态并记录日志。', flush=True)",
+                    "    print('## 结论\\n已基于 `lib/iscsi/iscsi.c` 输出 iSCSI login 黑盒测试设计。\\n\\n## 代码证据\\n- `lib/iscsi/iscsi.c`: `iscsi_login_probe`。\\n- `test/iscsi_tgt`: 可承载 login 失败路径回归。\\n\\n## 流程梳理\\n1. initiator 发起 login。\\n2. target 校验参数并返回状态。\\n\\n## SFMEA\\n| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |\\n| login 参数越界 | 协商值非法 | login 被拒绝 | 8 | 3 | 4 | 96 | 增加边界 PDU 测试 |\\n\\n## 黑盒测试用例\\n1. 用例：合法 login 成功；前置条件：target 已启动；步骤：发起 login；预期结果：进入 full feature。\\n2. 用例：非法参数 login 失败；前置条件：target 已启动；步骤：提交越界参数；预期结果：返回失败状态并记录日志。', flush=True)",
                 ]
             ),
             encoding="utf-8",
@@ -1645,6 +1656,41 @@ class TestAgentRuntimes:
             if event["event_type"] == "delta" and event["payload"].get("kind") == "diagnostic"
         )
         assert "输出过短" in diagnostics
+
+    async def test_ai_thread_agent_runtime_rejects_structured_answer_missing_requested_sfmea(self):
+        from app.services.ai_conversations import _agent_answer_requires_repair
+
+        user_message = (
+            "基于当前 SPDK 源码，分析 iSCSI login 流程，"
+            "输出代码证据、流程梳理、SFMEA 和黑盒测试用例。"
+        )
+        thin_answer = "\n".join(
+            [
+                "## 结论",
+                "已基于 `lib/iscsi/iscsi.c` 输出 iSCSI login 黑盒测试设计。",
+                "## 代码证据",
+                "- `lib/iscsi/iscsi.c`: `iscsi_conn_login_do_work`。",
+                "## 流程梳理",
+                "1. initiator 发起 login。",
+                "2. target 校验参数并返回状态。",
+                "## 黑盒测试用例",
+                "1. 前置条件：target 已启动。步骤：发起 login。预期结果：返回明确状态并记录日志。",
+            ]
+        )
+
+        assert _agent_answer_requires_repair(user_message, thin_answer, []) is True
+
+        complete_answer = thin_answer + "\n".join(
+            [
+                "",
+                "## SFMEA",
+                "| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |",
+                "| login auth bypass | CHAP 配置错误 | 非授权 initiator 接入 | 9 | 3 | 4 | 108 | 增加拒绝路径测试 |",
+                "2. 用例：非法 InitiatorName 被拒绝；前置条件、步骤、预期结果、观测点完整。",
+            ]
+        )
+
+        assert _agent_answer_requires_repair(user_message, complete_answer, []) is False
 
     async def test_ai_thread_claude_partial_messages_do_not_pollute_answer_or_artifact(
         self,

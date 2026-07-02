@@ -211,6 +211,57 @@ class TestDefaultAgentRuntimes:
         assert json.loads(row["resume_args_json"]) == []
         assert row["timeout_seconds"] == 900
 
+    @pytest.mark.asyncio
+    async def test_init_db_quarantines_ephemeral_e2e_agent_runtimes(self, fresh_db):
+        async with aiosqlite.connect(fresh_db) as db:
+            await db.executescript(_SCHEMA)
+            await db.executemany(
+                """
+                INSERT INTO agent_runtimes
+                    (id, name, command, args_json, prompt_transport, output_mode,
+                     working_dir_mode, timeout_seconds, completion_mode, idle_complete_seconds,
+                     session_persistence, resume_args_json, enabled, created_at, updated_at)
+                VALUES
+                    (?, ?, ?, ?, 'stdin', 'plain', 'project', 120, 'process_exit', 5,
+                     'none', '[]', 1, '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')
+                """,
+                [
+                    (
+                        "agent-e2e-thin",
+                        "E2E Thin Repair Agent",
+                        "python3",
+                        json.dumps(["/tmp/codetalk-agent-e2e/thin_agent.py"]),
+                    ),
+                    (
+                        "agent-ui-probe",
+                        "ui-agent-probe-failure-123",
+                        "python3",
+                        json.dumps(["/tmp/codetalk-agent-probe-abc/probe.py"]),
+                    ),
+                    (
+                        "agent-real-custom",
+                        "Team Claude Router",
+                        "ccr",
+                        json.dumps(["code"]),
+                    ),
+                ],
+            )
+            await db.commit()
+
+        with patch("app.config.settings.sqlite_db", fresh_db), \
+             patch("app.api.prompts.seed_default_template", return_value=None):
+            await init_db()
+
+        async with aiosqlite.connect(fresh_db) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT id, enabled FROM agent_runtimes") as cur:
+                rows = {row["id"]: row["enabled"] for row in await cur.fetchall()}
+
+        assert rows["agent-e2e-thin"] == 0
+        assert rows["agent-ui-probe"] == 0
+        assert rows["agent-real-custom"] == 1
+        assert rows["default-claude-code"] == 1
+
 
 # ---------------------------------------------------------------------------
 # Legacy DB upgrade (real pre-#39 → current)
