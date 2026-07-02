@@ -204,6 +204,38 @@ class NativeFrontendStartTests(unittest.TestCase):
             self.assertIn("nogit", second)
             self.assertNotEqual(first, second)
 
+    def test_frontend_install_builds_with_stable_webpack_command(self) -> None:
+        class RecordingDeployer(NativeDeployer):
+            def __init__(self) -> None:
+                super().__init__({"frontend_port": 3503, "backend_port": 3504}, asyncio.Queue())
+                self.commands: list[tuple[str, ...]] = []
+
+            async def _run_stream(self, step_name, step_index, *cmd, cwd=None, env_extra=None):
+                self.commands.append(tuple(str(part) for part in cmd))
+                return 0
+
+        async def run() -> RecordingDeployer:
+            with TemporaryDirectory() as tmpdir:
+                project_root = Path(tmpdir)
+                frontend_dir = project_root / "frontend"
+                node_modules_dir = frontend_dir / "node_modules"
+                node_modules_dir.mkdir(parents=True)
+                (node_modules_dir / ".package-lock.json").write_text("{}", encoding="utf-8")
+                (frontend_dir / "package.json").write_text('{"scripts":{"build":"next build"}}\n', encoding="utf-8")
+
+                deployer = RecordingDeployer()
+                with patch("deployers.native.PROJECT_ROOT", project_root), patch.object(
+                    deployer,
+                    "_frontend_build_key",
+                    return_value="build-key",
+                ):
+                    await deployer._step_install_frontend()
+                return deployer
+
+        deployer = asyncio.run(run())
+        self.assertEqual(deployer.commands, [("npm", "exec", "--", "next", "build", "--webpack")])
+        self.assertNotIn(("npm", "run", "build"), deployer.commands)
+
     def test_frontend_source_fingerprint_ignores_next_build_outputs(self) -> None:
         with TemporaryDirectory() as tmpdir:
             frontend_dir = Path(tmpdir) / "frontend"

@@ -295,10 +295,20 @@ class NativeDeployer:
             )
             shutil.rmtree(next_build_dir, ignore_errors=True)
 
-        await self._emit("install_frontend", "running", "构建前端（npm run build）...", step)
-        rc = await self._run_stream("install_frontend", step, npm_cmd, "run", "build", cwd=str(frontend_dir))
+        await self._emit("install_frontend", "running", "构建前端（next build --webpack）...", step)
+        rc = await self._run_stream(
+            "install_frontend",
+            step,
+            npm_cmd,
+            "exec",
+            "--",
+            "next",
+            "build",
+            "--webpack",
+            cwd=str(frontend_dir),
+        )
         if rc != 0:
-            await self._emit("install_frontend", "error", "npm run build 失败", step)
+            await self._emit("install_frontend", "error", "next build --webpack 失败", step)
             raise RuntimeError("Frontend build failed")
 
         try:
