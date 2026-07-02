@@ -1011,7 +1011,7 @@ class TestAgentRuntimes:
         repo = pathlib.Path(sqlite_db).parent / "codex-provider-repo"
         repo.mkdir()
         ws_id = await _seed_workspace(sqlite_db, "ws-agent-codex-provider", repo_path=str(repo))
-        capture_file = pathlib.Path(sqlite_db).parent / "codex-argv.jsonl"
+        capture_file = pathlib.Path(sqlite_db).parent / "codex-invocations.jsonl"
         agent_script = pathlib.Path(sqlite_db).parent / "fake_codex_agent.py"
         agent_script.write_text(
             "\n".join(
@@ -1019,7 +1019,8 @@ class TestAgentRuntimes:
                     "import json, pathlib, sys",
                     f"path = pathlib.Path({str(capture_file)!r})",
                     "args = sys.argv[1:]",
-                    "path.write_text((path.read_text() if path.exists() else '') + json.dumps(args, ensure_ascii=False) + '\\n')",
+                    "stdin = sys.stdin.read()",
+                    "path.write_text((path.read_text() if path.exists() else '') + json.dumps({'argv': args, 'stdin': stdin}, ensure_ascii=False) + '\\n')",
                     "resume = args[args.index('resume') + 1] if 'resume' in args else ''",
                     "tid = 'codex-second' if resume else 'codex-first'",
                     "print(json.dumps({'type':'thread.started','thread_id':tid}, ensure_ascii=False))",
@@ -1060,10 +1061,14 @@ class TestAgentRuntimes:
             assert created.status_code == 201
             conversation = created.json()
 
-            for expected in ("fresh codex", "resumed:codex-first"):
+            prompts = [
+                ("fresh codex", "问：fresh codex"),
+                ("resumed:codex-first", "问：resumed:codex-first"),
+            ]
+            for expected, user_prompt in prompts:
                 posted = await client.post(
                     f"/api/ai/conversations/{conversation['id']}/messages",
-                    json={"content": f"问：{expected}"},
+                    json={"content": user_prompt},
                 )
                 assert posted.status_code == 202
                 for _ in range(30):
@@ -1076,11 +1081,17 @@ class TestAgentRuntimes:
                     pytest.fail(f"managed Codex run did not produce {expected}")
 
             captured = [json.loads(line) for line in capture_file.read_text().splitlines()]
-            assert "--json" in captured[0]
-            assert "resume" not in captured[0]
-            assert "resume" in captured[1]
-            assert captured[1][captured[1].index("resume") + 1] == "codex-first"
-            assert "--json" in captured[1]
+            first_argv = captured[0]["argv"]
+            second_argv = captured[1]["argv"]
+            assert "--json" in first_argv
+            assert "resume" not in first_argv
+            assert "fresh codex" not in " ".join(first_argv)
+            assert "问：fresh codex" in captured[0]["stdin"]
+            assert "resume" in second_argv
+            assert second_argv[second_argv.index("resume") + 1] == "codex-first"
+            assert "--json" in second_argv
+            assert "resumed:codex-first" not in " ".join(second_argv)
+            assert "问：resumed:codex-first" in captured[1]["stdin"]
 
     async def test_ai_thread_agent_runtime_keeps_json_status_events_out_of_final_answer(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
@@ -2115,12 +2126,13 @@ class TestAgentRuntimes:
         agent_code = (
             "import json, os, pathlib, sys; "
             "prompt_file=pathlib.Path(os.environ['CODETALK_AGENT_PROMPT_FILE']).read_text(encoding='utf-8'); "
-            "print(json.dumps({'argv': sys.argv[1:], 'prompt_file': prompt_file}, ensure_ascii=False), flush=True)"
+            "stdin=sys.stdin.read(); "
+            "print(json.dumps({'argv': sys.argv[1:], 'prompt_file': prompt_file, 'stdin': stdin}, ensure_ascii=False), flush=True)"
         )
         cases = [
-            ("claude_print_arg", lambda argv: argv[argv.index("-p") + 1]),
-            ("codex_exec_json", lambda argv: argv[-1]),
-            ("opencode_run_arg", lambda argv: argv[-1]),
+            ("claude_print_arg", lambda argv, captured: argv[argv.index("-p") + 1]),
+            ("codex_exec_json", lambda argv, captured: captured["stdin"]),
+            ("opencode_run_arg", lambda argv, captured: argv[-1]),
         ]
 
         for transport, prompt_arg in cases:
@@ -2141,7 +2153,7 @@ class TestAgentRuntimes:
             captured = json.loads("".join(chunks))
             argv = captured["argv"]
             assert captured["prompt_file"] == prompt
-            assert prompt_arg(argv) == prompt
+            assert prompt_arg(argv, captured) == prompt
             if transport == "claude_print_arg":
                 assert "--output-format" in argv
                 assert "stream-json" in argv
@@ -2150,6 +2162,7 @@ class TestAgentRuntimes:
             elif transport == "codex_exec_json":
                 assert "exec" in argv
                 assert "--json" in argv
+                assert prompt not in argv
             else:
                 assert argv[-4:-1] == ["run", "--format", "json"]
 

@@ -74,17 +74,20 @@ async def stream_agent_runtime(
         raise AgentRuntimeError(str(exc)) from exc
     args = _runtime_args(runtime, resume_session_id=resume_session_id)
     prompt_transport = str(runtime.get("prompt_transport") or "stdin")
+    write_prompt_to_stdin = False
     if prompt_transport == "argv_last":
         args = [*args, prompt]
         stdin = asyncio.subprocess.DEVNULL
     elif prompt_transport == "stdin":
         stdin = asyncio.subprocess.PIPE
+        write_prompt_to_stdin = True
     elif prompt_transport == "claude_print_arg":
         args = _claude_print_args(args, prompt, resume_session_id=resume_session_id)
         stdin = asyncio.subprocess.DEVNULL
     elif prompt_transport == "codex_exec_json":
         args = _codex_exec_json_args(args, prompt, resume_session_id=resume_session_id)
-        stdin = asyncio.subprocess.DEVNULL
+        stdin = asyncio.subprocess.PIPE
+        write_prompt_to_stdin = True
     elif prompt_transport == "opencode_run_arg":
         args = _opencode_run_args(args, prompt, resume_session_id=resume_session_id)
         stdin = asyncio.subprocess.DEVNULL
@@ -161,7 +164,7 @@ async def stream_agent_runtime(
 
     stderr_task = asyncio.create_task(_drain_stderr())
     try:
-        if prompt_transport == "stdin" and proc.stdin is not None:
+        if write_prompt_to_stdin and proc.stdin is not None:
             proc.stdin.write(prompt.encode("utf-8"))
             await proc.stdin.drain()
             proc.stdin.close()
@@ -280,7 +283,6 @@ def _codex_exec_json_args(
     if session_id and "resume" not in args[exec_index + 1 : exec_index + 3]:
         args[exec_index + 1 : exec_index + 1] = ["resume", session_id]
     args = _ensure_flag(args, "--json")
-    args.append(prompt)
     return args
 
 
