@@ -1,10 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   assertCanMutatePublicRuntime,
   isPublicLocalRuntime,
   resolveReuseExistingServer,
 } from "./playwright-runtime-policy.mjs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const e2eDir = path.resolve(__dirname, "../e2e");
 
 test("Playwright does not reuse an existing backend unless explicitly requested", () => {
   assert.equal(resolveReuseExistingServer({}), false);
@@ -42,4 +48,20 @@ test("mutating SPDK E2E refuses to reuse the public runtime without an explicit 
       flowName: "SPDK real E2E",
     }),
   );
+});
+
+test("E2E specs that create agent runtimes declare the public-runtime mutation guard", () => {
+  const violatingSpecs = fs
+    .readdirSync(e2eDir)
+    .filter((name) => name.endsWith(".spec.ts"))
+    .filter((name) => {
+      const source = fs.readFileSync(path.join(e2eDir, name), "utf8");
+      return (
+        source.includes("/api/settings/agent-runtimes") &&
+        source.includes("request.post") &&
+        !source.includes("assertCanMutatePublicRuntime")
+      );
+    });
+
+  assert.deepEqual(violatingSpecs, []);
 });
