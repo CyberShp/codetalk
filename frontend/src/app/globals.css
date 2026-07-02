@@ -2861,17 +2861,35 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   }
 
   .ct-ai-home {
-    height: auto;
-    overflow: visible;
+    height: calc(100vh - 48px);
+    overflow: hidden;
   }
 
   .ct-ai-home__grid {
+    grid-template-rows: minmax(116px, 18vh) minmax(0, 1fr);
     min-height: 0;
+    overflow: hidden;
   }
 
   .ct-ai-home__project-list,
   .ct-thread-timeline {
-    max-height: min(420px, 58vh);
+    max-height: none;
+  }
+
+  .ct-ai-home__header {
+    margin-bottom: 12px;
+    padding: 16px 18px;
+  }
+
+  .ct-ai-home__header h1 {
+    font-size: 28px;
+    line-height: 1.08;
+  }
+
+  .ct-ai-home__header p {
+    margin-top: 8px;
+    font-size: 14px;
+    line-height: 1.55;
   }
 
   .ct-ai-home__header,
@@ -2890,6 +2908,17 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   .ct-ai-home__projects {
     position: relative;
     top: auto;
+    height: 100%;
+    max-height: none;
+  }
+
+  .ct-ai-home__threads {
+    height: 100%;
+    min-height: 0;
+  }
+
+  .ct-ai-home__project-list {
+    height: auto;
   }
 
   .ct-ai-home__new-project,
@@ -2987,6 +3016,31 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   .ct-thread-create {
     min-width: 0;
     width: 100%;
+  }
+
+  .ct-thread-hub__thread-head {
+    gap: 12px;
+    margin-bottom: 12px;
+    padding-bottom: 12px;
+  }
+
+  .ct-thread-hub__thread-head h2 {
+    font-size: 22px;
+  }
+
+  .ct-thread-hub__thread-head p {
+    white-space: normal;
+  }
+
+  .ct-thread-create {
+    gap: 8px;
+  }
+
+  .ct-thread-create input,
+  .ct-thread-create select,
+  .ct-thread-create button {
+    flex: 0 0 auto;
+    min-height: 40px;
   }
 
   .ct-thread-create button,

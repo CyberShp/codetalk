@@ -1006,6 +1006,96 @@ test("AI home avoids staggered list animations for large thread hubs", async ({ 
   ).toEqual([]);
 });
 
+test("AI home mobile contains dense project and thread lists inside scroll panes", async ({ page }) => {
+  const workspaces = Array.from({ length: 24 }, (_, index) => ({
+    id: `ws-mobile-home-${index + 1}`,
+    name: `SPDK 移动项目 ${index + 1}`,
+    repo_path: `/Volumes/Media/dpdk/spdk-mobile-${index + 1}`,
+    indexed: 1,
+    index_job: null,
+    index_progress: 100,
+    analyze_status: null,
+    analyze_progress: 0,
+    last_index_error: null,
+    created_at: "2026-06-28T00:00:00Z",
+    updated_at: "2026-06-28T00:00:00Z",
+    materials: [],
+    reports: [],
+  }));
+  const threads = Array.from({ length: 50 }, (_, index) => ({
+    id: `conv-mobile-home-${index + 1}`,
+    scope_type: "workspace",
+    scope_id: "ws-mobile-home-1",
+    workspace_id: "ws-mobile-home-1",
+    memory_namespace: "workspace:ws-mobile-home-1",
+    title: `SPDK 移动长线程 ${index + 1}`,
+    status: index === 0 ? "running" : "idle",
+    initial_context: {},
+    created_at: "2026-06-28T00:00:00Z",
+    updated_at: `2026-06-28T00:${String(index).padStart(2, "0")}:00Z`,
+  }));
+
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: workspaces });
+  });
+  await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations?limit=100", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: threads } });
+  });
+  await page.route("**/api/ai/conversations?limit=3", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: threads.slice(0, 3) } });
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/ai", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "按项目管理持续对话" })).toBeVisible();
+  await expect(page.locator(".ct-thread-card")).toHaveCount(50);
+
+  const containment = await page.evaluate(() => {
+    const home = document.querySelector(".ct-ai-home") as HTMLElement | null;
+    const projectList = document.querySelector(".ct-ai-home__project-list") as HTMLElement | null;
+    const threadTimeline = document.querySelector(".ct-thread-timeline") as HTMLElement | null;
+    return {
+      documentScrollHeight: document.documentElement.scrollHeight,
+      viewportHeight: window.innerHeight,
+      homeHeight: home?.getBoundingClientRect().height ?? 0,
+      projectClientHeight: projectList?.clientHeight ?? 0,
+      projectScrollHeight: projectList?.scrollHeight ?? 0,
+      threadClientHeight: threadTimeline?.clientHeight ?? 0,
+      threadScrollHeight: threadTimeline?.scrollHeight ?? 0,
+      projectOverflowY: projectList ? window.getComputedStyle(projectList).overflowY : "",
+      threadOverflowY: threadTimeline ? window.getComputedStyle(threadTimeline).overflowY : "",
+    };
+  });
+
+  expect(containment.documentScrollHeight).toBeLessThanOrEqual(containment.viewportHeight * 1.75);
+  expect(containment.homeHeight).toBeLessThanOrEqual(containment.viewportHeight * 1.65);
+  expect(containment.projectScrollHeight).toBeGreaterThan(containment.projectClientHeight + 120);
+  expect(containment.threadScrollHeight).toBeGreaterThan(containment.threadClientHeight + 120);
+  expect(containment.projectOverflowY).toBe("auto");
+  expect(containment.threadOverflowY).toBe("auto");
+
+  const projectList = page.locator(".ct-ai-home__project-list");
+  await projectList.hover();
+  const windowScrollBeforeProjectWheel = await page.evaluate(() => window.scrollY);
+  await page.mouse.wheel(0, 900);
+  await expect.poll(() => projectList.evaluate((element) => element.scrollTop)).toBeGreaterThan(80);
+  await expect
+    .poll(() => page.evaluate((before) => Math.abs(window.scrollY - before), windowScrollBeforeProjectWheel))
+    .toBeLessThan(5);
+
+  const threadTimeline = page.locator(".ct-thread-timeline");
+  await threadTimeline.hover();
+  const windowScrollBeforeThreadWheel = await page.evaluate(() => window.scrollY);
+  await page.mouse.wheel(0, 1200);
+  await expect.poll(() => threadTimeline.evaluate((element) => element.scrollTop)).toBeGreaterThan(120);
+  await expect
+    .poll(() => page.evaluate((before) => Math.abs(window.scrollY - before), windowScrollBeforeThreadWheel))
+    .toBeLessThan(5);
+});
+
 test("AI mini dock keeps idle background polling quiet on non-AI pages", async ({ page }) => {
   let dockListRequests = 0;
   await page.route("**/api/workspaces", async (route) => {
