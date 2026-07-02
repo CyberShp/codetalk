@@ -1572,6 +1572,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
 .ct-thread-card {
   display: flex;
+  flex: 1 1 auto;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
@@ -1584,6 +1585,13 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     transform var(--motion-fast) var(--motion-spring),
     border-color var(--motion-fast) var(--motion-ease),
     box-shadow var(--motion-fast) var(--motion-ease);
+}
+
+.ct-thread-card-row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
 }
 
 .ct-thread-card:hover {
@@ -1645,6 +1653,35 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 .ct-thread-card__meta em.is-running {
   background: #ecfdf5;
   color: #047857;
+}
+
+.ct-thread-card__delete {
+  display: inline-flex;
+  flex: 0 0 42px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(216, 227, 239, 0.9);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.92);
+  color: #64748b;
+  transition:
+    transform var(--motion-fast) var(--motion-spring),
+    border-color var(--motion-fast) var(--motion-ease),
+    background var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease);
+}
+
+.ct-thread-card__delete:hover {
+  transform: translateY(-2px);
+  border-color: rgba(239, 68, 68, 0.36);
+  background: #fef2f2;
+  color: #b91c1c;
+}
+
+.ct-thread-card__delete:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+  transform: none;
 }
 
 .ct-thread-hub__empty {
@@ -2738,7 +2775,8 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   .ct-thread-hub__header,
   .ct-thread-hub__thread-head,
   .ct-thread-create,
-  .ct-thread-card {
+  .ct-thread-card,
+  .ct-thread-card-row {
     align-items: stretch;
     flex-direction: column;
   }
@@ -2765,6 +2803,11 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
   .ct-thread-card__meta {
     justify-content: space-between;
+    width: 100%;
+  }
+
+  .ct-thread-card__delete {
+    flex-basis: 40px;
     width: 100%;
   }
 

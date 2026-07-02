@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
@@ -12,6 +12,7 @@ import {
   MessageSquarePlus,
   MessageSquareText,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { AgentRuntime, AIConversation, Workspace } from "@/lib/types";
@@ -70,7 +71,9 @@ export default function AIHomePage() {
   const [title, setTitle] = useState("");
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [deletingThreadId, setDeletingThreadId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const deletingThreadRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -156,6 +159,28 @@ export default function AIHomePage() {
       setError(exc instanceof Error ? exc.message : "创建线程失败");
     } finally {
       setCreating(false);
+    }
+  };
+
+  const deleteThread = async (thread: AIConversation) => {
+    if (thread.status === "running" || thread.latest_run?.status === "running" || thread.latest_run?.status === "queued") {
+      setError("当前线程仍在生成中，请先停止后再删除。");
+      return;
+    }
+    if (deletingThreadRef.current) return;
+    const confirmed = window.confirm(`删除线程“${thread.title}”？这会删除该线程的消息和运行记录。`);
+    if (!confirmed) return;
+    deletingThreadRef.current = thread.id;
+    setDeletingThreadId(thread.id);
+    setError(null);
+    try {
+      await api.aiConversations.delete(thread.id);
+      setThreads((current) => current.filter((item) => item.id !== thread.id));
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "删除线程失败");
+    } finally {
+      deletingThreadRef.current = null;
+      setDeletingThreadId(null);
     }
   };
 
@@ -249,27 +274,38 @@ export default function AIHomePage() {
             ) : (
               <div className="ct-thread-timeline">
                 {visibleThreads.slice(0, 50).map((thread) => (
-                  <Link
-                    key={thread.id}
-                    href={`/ai/${thread.id}`}
-                    className="ct-thread-card"
-                  >
-                    <div>
-                      <span>{scopeLabel(thread)}</span>
-                      <h3>{thread.title}</h3>
-                      <p>{thread.scope_type} / {thread.scope_id}</p>
-                    </div>
-                    <div className="ct-thread-card__meta">
-                      <span>
-                        <CalendarClock size={13} />
-                        {formatTime(thread.updated_at)}
-                      </span>
-                      <em className={thread.status === "running" ? "is-running" : ""}>
-                        {thread.status === "running" ? "生成中" : "已保存"}
-                      </em>
-                      <ArrowRight size={16} />
-                    </div>
-                  </Link>
+                  <div key={thread.id} className="ct-thread-card-row">
+                    <Link
+                      href={`/ai/${thread.id}`}
+                      className="ct-thread-card"
+                    >
+                      <div>
+                        <span>{scopeLabel(thread)}</span>
+                        <h3>{thread.title}</h3>
+                        <p>{thread.scope_type} / {thread.scope_id}</p>
+                      </div>
+                      <div className="ct-thread-card__meta">
+                        <span>
+                          <CalendarClock size={13} />
+                          {formatTime(thread.updated_at)}
+                        </span>
+                        <em className={thread.status === "running" ? "is-running" : ""}>
+                          {thread.status === "running" ? "生成中" : "已保存"}
+                        </em>
+                        <ArrowRight size={16} />
+                      </div>
+                    </Link>
+                    <button
+                      type="button"
+                      className="ct-thread-card__delete"
+                      onClick={() => void deleteThread(thread)}
+                      disabled={deletingThreadId === thread.id}
+                      title="删除线程"
+                      aria-label={`删除线程 ${thread.title}`}
+                    >
+                      {deletingThreadId === thread.id ? <Loader2 size={15} className="animate-spin" /> : <Trash2 size={15} />}
+                    </button>
+                  </div>
                 ))}
               </div>
             )}

@@ -630,6 +630,63 @@ test("prevents duplicate sibling AI thread creation from a real double click", a
   expect(conversations.items.filter((item) => item.title === siblingTitle)).toHaveLength(1);
 });
 
+test("deletes an AI thread from the project thread hub", async ({
+  page,
+  request,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-delete-hub-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI thread deletion hub e2e workspace\n", "utf8");
+  const workspaceName = `ai-delete-hub-e2e-${Date.now()}`;
+  const threadTitle = `${workspaceName} removable thread`;
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+  const conversationResp = await request.post(`${backendBase}/api/ai/conversations`, {
+    data: {
+      scope_type: "workspace",
+      scope_id: workspace.id,
+      workspace_id: workspace.id,
+      memory_namespace: `workspace:${workspace.id}`,
+      runtime_type: "builtin_llm",
+      agent_runtime_id: null,
+      title: threadTitle,
+      initial_context: {
+        workspace_id: workspace.id,
+        project_name: workspaceName,
+        memory_namespace: `workspace:${workspace.id}`,
+      },
+    },
+  });
+  expect(conversationResp.status()).toBe(201);
+  const conversation = (await conversationResp.json()) as { id: string };
+
+  await page.goto("/ai", { waitUntil: "domcontentloaded" });
+  const projectButton = page.locator("button.ct-thread-project").filter({ hasText: workspaceName }).first();
+  await expect(projectButton).toBeVisible({ timeout: 20_000 });
+  await projectButton.hover();
+  await projectButton.click();
+
+  const threadCard = page.locator(".ct-thread-card").filter({ hasText: threadTitle });
+  await expect(threadCard).toBeVisible({ timeout: 15_000 });
+  page.once("dialog", async (dialog) => {
+    expect(dialog.message()).toContain(threadTitle);
+    await dialog.accept();
+  });
+  await threadCard.hover();
+  await page.getByRole("button", { name: `删除线程 ${threadTitle}` }).click();
+  await expect(threadCard).toHaveCount(0);
+
+  const listResp = await request.get(`${backendBase}/api/ai/conversations?workspace_id=${workspace.id}&limit=10`);
+  expect(listResp.ok()).toBeTruthy();
+  const conversations = (await listResp.json()) as { items: Array<{ id: string; title: string }> };
+  expect(conversations.items).not.toEqual(
+    expect.arrayContaining([expect.objectContaining({ id: conversation.id })]),
+  );
+});
+
 test("contains large real AI project and thread lists inside scroll panes", async ({
   page,
   request,
