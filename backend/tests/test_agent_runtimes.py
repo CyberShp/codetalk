@@ -1642,6 +1642,103 @@ class TestAgentRuntimes:
         assert "我先搜索源码" in diagnostics
         assert "Bash" in diagnostics
 
+    async def test_ai_thread_claude_tool_result_stream_block_is_diagnostic_not_answer(
+        self,
+        sqlite_db,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-claude-tool-result-block", repo_path=str(repo))
+        monkeypatch.chdir(tmp_path)
+        agent_script = tmp_path / "claude_tool_result_block_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import json, sys",
+                    "sys.stdin.read()",
+                    "answer = '## 黑盒测试用例\\n' + ''.join([f'{index}. TC-{index:02d} 正常登录变体：前置条件 target 已启动，步骤执行 iSCSI Login 场景 {index}，预期结果进入 Full Feature Phase 或返回明确 Login Response。\\n' for index in range(1, 9)])",
+                    "events = [",
+                    "  {'type':'system','subtype':'init','session_id':'claude-session'},",
+                    "  {'type':'stream_event','event':{'type':'content_block_start','index':0,'content_block':{'type':'tool_result','tool_use_id':'toolu_1'}}},",
+                    "  {'type':'stream_event','event':{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':'1115:iscsi_conn_login_pdu_success_complete(void *arg)\\n'}}},",
+                    "  {'type':'stream_event','event':{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':'lib/iscsi/iscsi.c:1539:\\tAuthMethod=CHAP\\n'}}},",
+                    "  {'type':'stream_event','event':{'type':'content_block_stop','index':0}},",
+                    "  {'type':'stream_event','event':{'type':'content_block_start','index':1,'content_block':{'type':'text'}}},",
+                    "  {'type':'stream_event','event':{'type':'content_block_delta','index':1,'delta':{'type':'text_delta','text':answer}}},",
+                    "  {'type':'stream_event','event':{'type':'content_block_stop','index':1}},",
+                    "  {'type':'result','status':'success','session_id':'claude-session'},",
+                    "]",
+                    "for event in events:",
+                    "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, ai_thread_artifact_path, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Claude tool result block thread",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-claude-tool-result-block",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="针对 iscsi 登录写几个黑盒用例",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-claude-tool-result-block",
+                "name": "Claude Tool Result Block Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "stdin",
+                "output_mode": "stream_json",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+            },
+        )
+
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        assert "## 黑盒测试用例" in assistant["content"]
+        assert "TC-01 正常登录变体" in assistant["content"]
+        assert "iscsi_conn_login_pdu_success_complete" not in assistant["content"]
+        assert "AuthMethod=CHAP" not in assistant["content"]
+
+        artifact_text = ai_thread_artifact_path(conversation["id"], run_id).read_text(encoding="utf-8")
+        assert "## 黑盒测试用例" in artifact_text
+        assert "iscsi_conn_login_pdu_success_complete" not in artifact_text
+        assert "AuthMethod=CHAP" not in artifact_text
+
+        events = await store.list_events_after(conversation["id"])
+        answer_events = [
+            event["payload"].get("content", "")
+            for event in events
+            if event["event_type"] == "delta" and event["payload"].get("kind") != "diagnostic"
+        ]
+        diagnostics = "\n".join(
+            event["payload"].get("content", "")
+            for event in events
+            if event["event_type"] == "delta" and event["payload"].get("kind") == "diagnostic"
+        )
+        assert not any("iscsi_conn_login_pdu_success_complete" in item for item in answer_events)
+        assert not any("AuthMethod=CHAP" in item for item in answer_events)
+        assert "iscsi_conn_login_pdu_success_complete" in diagnostics
+        assert "AuthMethod=CHAP" in diagnostics
+
     async def test_agent_runtime_output_parser_cleans_terminal_noise_and_unwraps_json(self):
         from app.services.agent_cli_bridge import _decode, _parse_event_text
 

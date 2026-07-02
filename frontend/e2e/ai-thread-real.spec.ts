@@ -44,6 +44,61 @@ async function createDeterministicFailingRuntime(
   return { id: runtime.id, name: runtimeName };
 }
 
+async function createClaudeToolResultBlockRuntime(
+  request: APIRequestContext,
+  label: string,
+): Promise<{ id: string; name: string }> {
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-claude-block-")));
+  const runtimeScript = path.join(runtimeDir, "claude_tool_result_block_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, os, sys, time",
+      "prompt_file = os.environ.get('CODETALK_AGENT_PROMPT_FILE')",
+      "if prompt_file:",
+      "    open(prompt_file, encoding='utf-8').read()",
+      "answer = '## 黑盒测试用例\\n' + ''.join([f'{index}. TC-{index:02d} 正常登录变体：前置条件 target 已启动，步骤执行 iSCSI Login 场景 {index}，预期结果进入 Full Feature Phase 或返回明确 Login Response。\\n' for index in range(1, 9)])",
+      "events = [",
+      "  {'type':'system','subtype':'init','session_id':'claude-session-e2e'},",
+      "  {'type':'stream_event','event':{'type':'content_block_start','index':0,'content_block':{'type':'tool_result','tool_use_id':'toolu_1'}}},",
+      "  {'type':'stream_event','event':{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':'1115:iscsi_conn_login_pdu_success_complete(void *arg)\\n'}}},",
+      "  {'type':'stream_event','event':{'type':'content_block_delta','index':0,'delta':{'type':'text_delta','text':'lib/iscsi/iscsi.c:1539:\\tAuthMethod=CHAP\\n'}}},",
+      "  {'type':'stream_event','event':{'type':'content_block_stop','index':0}},",
+      "  {'type':'stream_event','event':{'type':'content_block_start','index':1,'content_block':{'type':'text'}}},",
+      "  {'type':'stream_event','event':{'type':'content_block_delta','index':1,'delta':{'type':'text_delta','text':answer}}},",
+      "  {'type':'stream_event','event':{'type':'content_block_stop','index':1}},",
+      "  {'type':'result','status':'success','session_id':'claude-session-e2e'},",
+      "]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.05)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const runtimeName = `${label} ${Date.now()}`;
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "claude_print_arg",
+      output_mode: "stream_json",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 20,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+  return { id: runtime.id, name: runtimeName };
+}
+
 test("creates an AI investigation thread from the project hub and restores it after refresh", async ({
   page,
   request,
@@ -177,6 +232,87 @@ test("creates an AI investigation thread from the project hub and restores it af
   expect(messageBody.items.filter((item) => item.role === "assistant")).toHaveLength(0);
 
   await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(failingRuntime.id)}`);
+});
+
+test("keeps Claude tool-result stream blocks out of visible answer and artifact", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-claude-block-")));
+  fs.mkdirSync(path.join(repo, "lib", "iscsi"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "iscsi", "iscsi.c"),
+    "int iscsi_conn_login_pdu_success_complete(void *arg) { return 0; }\n",
+    "utf8",
+  );
+  const workspaceName = `ai-claude-block-e2e-${Date.now()}`;
+  const threadTitle = `${workspaceName} stream block cleanup`;
+
+  const runtime = await createClaudeToolResultBlockRuntime(request, "Claude block cleanup runtime");
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtime.name });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    const composer = page.getByLabel("AI 线程消息");
+    await composer.click();
+    await composer.pressSequentially("针对 iSCSI 登录生成黑盒测试用例");
+    await page.keyboard.press("Shift+Enter");
+    await composer.pressSequentially("不要把源码搜索过程混入最终答案");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(page.locator(".ct-codex-message").filter({ hasText: "TC-08 正常登录变体" })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.locator(".ct-codex-message").filter({ hasText: "iscsi_conn_login_pdu_success_complete" })).toHaveCount(0);
+    await expect(page.locator(".ct-codex-message").filter({ hasText: "AuthMethod=CHAP" })).toHaveCount(0);
+
+    const diagnosticsSummary = page.getByText("生成诊断：默认折叠");
+    await expect(diagnosticsSummary).toBeVisible({ timeout: 15_000 });
+    await diagnosticsSummary.click();
+    await expect(page.getByText("iscsi_conn_login_pdu_success_complete")).toBeVisible();
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("link", { name: "下载完整产物" }).hover();
+    await page.getByRole("link", { name: "下载完整产物" }).click();
+    const download = await downloadPromise;
+    const artifactPath = testInfo.outputPath("claude-tool-result-clean-artifact.md");
+    await download.saveAs(artifactPath);
+    const artifact = fs.readFileSync(artifactPath, "utf8");
+    expect(artifact).toContain("## 黑盒测试用例");
+    expect(artifact).toContain("TC-08 正常登录变体");
+    expect(artifact).not.toContain("iscsi_conn_login_pdu_success_complete");
+    expect(artifact).not.toContain("AuthMethod=CHAP");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("TC-08 正常登录变体");
+    expect(assistant?.content).not.toContain("iscsi_conn_login_pdu_success_complete");
+    expect(assistant?.content).not.toContain("AuthMethod=CHAP");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
 });
 
 test("prevents duplicate sibling AI thread creation from a real double click", async ({

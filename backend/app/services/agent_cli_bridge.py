@@ -401,13 +401,19 @@ async def _read_stdout(
 
     if output_mode in {"ndjson", "stream_json", "auto"}:
         buffer = ""
+        stream_state: dict[int, str] = {}
         while True:
             raw = await read_with_idle(proc.stdout.readline)
             if raw is None:
                 break
             if not raw:
                 if buffer.strip():
-                    parsed = _parse_event_text(buffer, output_mode, session_update=session_update)
+                    parsed = _parse_event_text(
+                        buffer,
+                        output_mode,
+                        session_update=session_update,
+                        stream_state=stream_state,
+                    )
                     if parsed:
                         parsed, done = apply_completion_policy(parsed)
                         if parsed:
@@ -417,7 +423,12 @@ async def _read_stdout(
                             break
                 break
             text = _decode(raw)
-            parsed = _parse_event_text(text, output_mode, session_update=session_update)
+            parsed = _parse_event_text(
+                text,
+                output_mode,
+                session_update=session_update,
+                stream_state=stream_state,
+            )
             if parsed is None and output_mode == "auto":
                 parsed, done = apply_completion_policy(text)
                 if parsed:
@@ -461,6 +472,7 @@ def _parse_event_text(
     output_mode: str,
     *,
     session_update: Callable[[dict[str, Any]], None] | None = None,
+    stream_state: dict[int, str] | None = None,
 ) -> str | None:
     stripped = _sse_payload_text(_clean_agent_text(text).strip())
     if not stripped:
@@ -476,6 +488,9 @@ def _parse_event_text(
     session = _agent_session_update(event)
     if session and session_update is not None:
         session_update(session)
+    stream_block_text = _stream_content_block_event_text(event, stream_state=stream_state)
+    if stream_block_text is not None:
+        return stream_block_text
     diagnostic = _diagnostic_event_text(event)
     if diagnostic is not None:
         return diagnostic
@@ -558,6 +573,69 @@ def _sse_payload_text(text: str) -> str:
             continue
         payload_lines.append(payload)
     return "\n".join(payload_lines)
+
+
+def _stream_content_block_event_text(
+    event: dict[str, Any],
+    *,
+    stream_state: dict[int, str] | None,
+) -> str | None:
+    stream_event = _stream_content_block_event(event)
+    if stream_event is None:
+        return None
+    stream_type = str(stream_event.get("type") or "").strip()
+    index = _stream_content_block_index(stream_event)
+    if stream_type == "content_block_start":
+        block = stream_event.get("content_block")
+        block_type = _stream_content_block_type(block)
+        if stream_state is not None:
+            stream_state[index] = block_type
+        return ""
+    if stream_type == "content_block_stop":
+        if stream_state is not None:
+            stream_state.pop(index, None)
+        return ""
+    if stream_type != "content_block_delta":
+        return None
+    delta = stream_event.get("delta")
+    if not isinstance(delta, dict):
+        return None
+    delta_type = str(delta.get("type") or "").strip()
+    active_block_type = (stream_state or {}).get(index, "")
+    if delta_type == "thinking_delta" and isinstance(delta.get("thinking"), str):
+        return f"THINKING: {delta['thinking']}"
+    if delta_type != "text_delta" or not isinstance(delta.get("text"), str):
+        return None
+    text = str(delta["text"])
+    if active_block_type in {"tool_use", "tool_result", "function_call", "function_result"}:
+        return f"TOOL: {text}"
+    if active_block_type in {"thinking", "reasoning", "thought", "analysis"}:
+        return f"THINKING: {text}"
+    return text
+
+
+def _stream_content_block_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    if str(event.get("type") or "").strip() == "stream_event":
+        wrapped = event.get("event")
+        return wrapped if isinstance(wrapped, dict) else None
+    event_type = str(event.get("type") or "").strip()
+    if event_type in {"content_block_start", "content_block_delta", "content_block_stop"}:
+        return event
+    return None
+
+
+def _stream_content_block_index(event: dict[str, Any]) -> int:
+    value = event.get("index")
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _stream_content_block_type(block: Any) -> str:
+    if isinstance(block, dict):
+        return str(block.get("type") or block.get("kind") or "").strip().lower()
+    return ""
 
 
 def _event_text(event: dict[str, Any]) -> str | None:
