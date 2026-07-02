@@ -1859,7 +1859,6 @@ def _build_agent_prompt(
     *,
     repo_path: str | None = None,
 ) -> str:
-    llm_messages = _build_prompt(conversation, messages, references, user_message)
     lines = [
         "你正在通过 CodeTalks AI 线程作为本机 Agent 执行任务。",
         f"执行器：{runtime.get('name') or runtime.get('id')}",
@@ -1879,18 +1878,42 @@ def _build_agent_prompt(
             "不要在正文中解释这个结束标记。",
             "",
         ])
-    for message in llm_messages:
+    history = _agent_prompt_history(messages, user_message, runtime)
+    for message in history:
         role = message.get("role", "user")
-        content = message.get("content", "")
-        if role == "system":
-            lines.append("系统上下文：")
-        elif role == "assistant":
+        content = str(message.get("content") or "")
+        if role == "assistant":
             lines.append("历史助手回复：")
         else:
-            lines.append("用户问题：")
+            lines.append("历史用户消息：")
         lines.append(content)
         lines.append("")
+    if history:
+        lines.append("本轮用户问题：")
+    else:
+        lines.append("用户问题：")
+    lines.append(user_message)
     return "\n".join(lines).strip()
+
+
+def _agent_prompt_history(
+    messages: list[dict[str, Any]],
+    user_message: str,
+    runtime: dict[str, Any],
+) -> list[dict[str, str]]:
+    if str(runtime.get("session_persistence") or "none") == "resume_args":
+        return []
+    history = [
+        {"role": str(msg.get("role") or ""), "content": str(msg.get("content") or "")}
+        for msg in messages[-_MAX_HISTORY_MESSAGES:]
+        if msg.get("role") in {"user", "assistant"}
+    ]
+    current = str(user_message or "").strip()
+    for index in range(len(history) - 1, -1, -1):
+        if history[index]["role"] == "user" and history[index]["content"].strip() == current:
+            del history[index]
+            break
+    return history
 
 
 def _build_agent_repair_prompt(

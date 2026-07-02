@@ -1920,6 +1920,118 @@ test("real agent process keeps early and late diagnostics folded outside the ans
   }
 });
 
+test("keeps resumed agent prompts focused on the current user turn", async ({ page, request }) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-resume-prompt-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "Agent resume prompt e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-resume-prompt-")));
+  const runtimeScript = path.join(runtimeDir, "resume_prompt_agent.py");
+  const captureFile = path.join(runtimeDir, "captured-prompts.jsonl");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, pathlib, sys",
+      "args = sys.argv[1:]",
+      "resume = args[args.index('--resume') + 1] if '--resume' in args else ''",
+      "prompt = sys.stdin.read()",
+      `capture = pathlib.Path(${JSON.stringify(captureFile)})`,
+      "capture.write_text((capture.read_text(encoding='utf-8') if capture.exists() else '') + json.dumps({'resume': resume, 'prompt': prompt}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+      "sid = 'ui-session-second' if resume else 'ui-session-first'",
+      "marker = ('UI_RESUME_PROMPT_OK resumed:' + resume) if resume else 'UI_RESUME_PROMPT_OK fresh'",
+      "print(json.dumps({'type':'system','subtype':'init','session_id': sid}, ensure_ascii=False), flush=True)",
+      "print('## 结论\\n' + marker + '\\n\\n## 代码证据\\n- `README.md`: `Agent resume prompt e2e workspace` 表明 Agent 读取的是当前工作区。\\n- `CODETALK_AGENT_PROMPT_FILE`: CodeTalk 写入了完整本轮 prompt 供诊断核验。\\n\\n## 流程梳理\\n1. CodeTalk 拉起本地 Agent 子进程。\\n2. Agent 通过 session_id 建立或续接 CLI 会话。\\n3. 当前轮只接收当前用户任务，历史由 CLI session 承担。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const workspaceName = `ai-resume-prompt-e2e-${Date.now()}`;
+  const runtimeName = `Resume prompt runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} resume prompt`;
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "auto",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "resume_args",
+      resume_args: [runtimeScript, "--resume", "{session_id}"],
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    const composer = page.getByLabel("AI 线程消息");
+    await composer.fill("第一轮：读取工作区 README 并建立会话");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "UI_RESUME_PROMPT_OK fresh" })).toBeVisible({
+      timeout: 30_000,
+    });
+
+    await composer.fill("第二轮：只回答当前任务，不要重复历史");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(
+      page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "UI_RESUME_PROMPT_OK resumed:ui-session-first" }),
+    ).toBeVisible({ timeout: 30_000 });
+
+    const captured = fs.readFileSync(captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line)) as Array<{
+      resume: string;
+      prompt: string;
+    }>;
+    expect(captured).toHaveLength(2);
+    expect(captured[0].resume).toBe("");
+    expect(captured[0].prompt.match(/第一轮/g)?.length).toBe(1);
+    expect(captured[1].resume).toBe("ui-session-first");
+    expect(captured[1].prompt).toContain("第二轮：只回答当前任务，不要重复历史");
+    expect(captured[1].prompt.match(/第二轮/g)?.length).toBe(1);
+    expect(captured[1].prompt).not.toContain("第一轮：读取工作区 README 并建立会话");
+    expect(captured[1].prompt).not.toContain("UI_RESUME_PROMPT_OK fresh");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    expect(messageBody.items.filter((item) => item.role === "user")).toHaveLength(2);
+    expect(messageBody.items.filter((item) => item.role === "assistant")).toHaveLength(2);
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
+  }
+});
+
 test("renders native Codex task and tool events as Agent process diagnostics", async ({
   page,
   request,

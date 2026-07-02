@@ -958,12 +958,15 @@ class TestAgentRuntimes:
         repo = pathlib.Path(sqlite_db).parent / "resume-repo"
         repo.mkdir()
         ws_id = await _seed_workspace(sqlite_db, "ws-agent-resume", repo_path=str(repo))
+        capture_file = pathlib.Path(sqlite_db).parent / "resume-prompts.jsonl"
         agent_code = (
-            "import json, sys; "
+            "import json, pathlib, sys; "
             "resume=''; "
             "args=sys.argv[1:]; "
             "resume=args[args.index('--resume') + 1] if '--resume' in args else ''; "
-            "sys.stdin.read(); "
+            "prompt=sys.stdin.read(); "
+            f"capture=pathlib.Path({str(capture_file)!r}); "
+            "capture.write_text((capture.read_text() if capture.exists() else '') + json.dumps({'resume': resume, 'prompt': prompt}, ensure_ascii=False) + '\\n', encoding='utf-8'); "
             "sid='session-second' if resume else 'session-first'; "
             "print(json.dumps({'type':'system','subtype':'init','session_id':sid}, ensure_ascii=False)); "
             "print(('resumed:' + resume) if resume else 'fresh session'); "
@@ -1053,6 +1056,16 @@ class TestAgentRuntimes:
                     updated = await cur.fetchone()
             assert updated is not None
             assert updated["resume_session_id"] == "session-second"
+
+            captured_prompts = [json.loads(line) for line in capture_file.read_text(encoding="utf-8").splitlines()]
+            assert len(captured_prompts) == 2
+            assert captured_prompts[0]["resume"] == ""
+            assert captured_prompts[0]["prompt"].count("第一轮") == 1
+            assert captured_prompts[1]["resume"] == "session-first"
+            assert "第二轮" in captured_prompts[1]["prompt"]
+            assert captured_prompts[1]["prompt"].count("第二轮") == 1
+            assert "第一轮" not in captured_prompts[1]["prompt"]
+            assert "fresh session" not in captured_prompts[1]["prompt"]
 
     async def test_ai_thread_claude_transport_manages_print_mode_and_resume_without_user_args(self, sqlite_db):
         app = _test_app(sqlite_db)
