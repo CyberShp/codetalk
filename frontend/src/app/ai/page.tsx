@@ -189,7 +189,7 @@ export default function AIHomePage() {
               <Sparkles size={15} />
               项目
             </div>
-            <div className="grid gap-2">
+            <div className="ct-ai-home__project-list">
               {projectRows.map((project) => (
                 <button
                   key={project.id}

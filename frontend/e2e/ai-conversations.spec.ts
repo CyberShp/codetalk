@@ -756,6 +756,27 @@ test("AI home avoids staggered list animations for large thread hubs", async ({ 
   await expect(page.getByRole("heading", { name: "按项目管理持续对话" })).toBeVisible();
   await expect(page.locator(".ct-thread-card")).toHaveCount(50);
 
+  const containment = await page.evaluate(() => {
+    const projectList = document.querySelector(".ct-ai-home__project-list") as HTMLElement | null;
+    const threadTimeline = document.querySelector(".ct-thread-timeline") as HTMLElement | null;
+    return {
+      documentScrollHeight: document.documentElement.scrollHeight,
+      viewportHeight: window.innerHeight,
+      projectClientHeight: projectList?.clientHeight ?? 0,
+      projectScrollHeight: projectList?.scrollHeight ?? 0,
+      threadClientHeight: threadTimeline?.clientHeight ?? 0,
+      threadScrollHeight: threadTimeline?.scrollHeight ?? 0,
+      projectOverflowY: projectList ? window.getComputedStyle(projectList).overflowY : "",
+      threadOverflowY: threadTimeline ? window.getComputedStyle(threadTimeline).overflowY : "",
+    };
+  });
+
+  expect(containment.documentScrollHeight).toBeLessThanOrEqual(containment.viewportHeight + 120);
+  expect(containment.projectScrollHeight).toBeGreaterThan(containment.projectClientHeight + 120);
+  expect(containment.threadScrollHeight).toBeGreaterThan(containment.threadClientHeight + 120);
+  expect(containment.projectOverflowY).toBe("auto");
+  expect(containment.threadOverflowY).toBe("auto");
+
   const listMotion = await page.locator(".ct-thread-project, .ct-thread-card").evaluateAll((nodes) =>
     nodes.map((node) => {
       const element = node as HTMLElement;

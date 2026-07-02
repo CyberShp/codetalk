@@ -1475,6 +1475,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
 .ct-thread-hub__thread-head {
   display: flex;
+  flex: 0 0 auto;
   align-items: flex-start;
   justify-content: space-between;
   gap: 18px;
@@ -1560,7 +1561,12 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
 .ct-thread-timeline {
   display: grid;
+  flex: 1 1 0;
+  min-height: 0;
   gap: 10px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
 }
 
 .ct-thread-card {
@@ -1756,7 +1762,9 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   display: grid;
   grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
   gap: 18px;
-  align-items: start;
+  align-items: stretch;
+  height: min(720px, calc(100vh - 214px));
+  min-height: 420px;
 }
 
 .ct-ai-home__projects,
@@ -1771,13 +1779,32 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 .ct-ai-home__projects {
   position: sticky;
   top: 16px;
+  display: flex;
+  height: 100%;
+  max-height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
   padding: 16px;
 }
 
 .ct-ai-home__threads {
-  min-height: min(720px, calc(100vh - 180px));
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
   padding: clamp(16px, 2vw, 24px);
   animation: ct-thread-panel-in var(--motion-medium) var(--motion-ease) both;
+}
+
+.ct-ai-home__project-list {
+  display: grid;
+  flex: 1 1 0;
+  min-height: 0;
+  gap: 8px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
 }
 
 .ct-codex-ai {
@@ -1811,7 +1838,10 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 .ct-codex-ai__rail {
   position: sticky;
   top: 12px;
+  display: flex;
   height: calc(100vh - 24px);
+  min-height: 0;
+  flex-direction: column;
   overflow: hidden;
   border-radius: 22px;
   padding: 14px;
@@ -1867,6 +1897,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 }
 
 .ct-codex-ai__rail-group {
+  min-height: 0;
   margin-top: 12px;
 }
 
@@ -1882,7 +1913,12 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
 .ct-codex-ai__project-list {
   display: grid;
+  max-height: min(260px, 30vh);
+  min-height: 0;
   gap: 5px;
+  overflow: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
 }
 
 .ct-codex-ai__project-row {
@@ -1943,9 +1979,11 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
 .ct-codex-ai__thread-list {
   display: grid;
-  max-height: calc(100vh - 380px);
+  min-height: 0;
+  flex: 1 1 auto;
   gap: 6px;
   overflow: auto;
+  overscroll-behavior: contain;
   padding-right: 2px;
 }
 

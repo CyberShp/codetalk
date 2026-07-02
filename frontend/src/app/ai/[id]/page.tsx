@@ -52,19 +52,25 @@ function eventKind(event: AIRunEvent): string {
   return typeof value === "string" ? value : "";
 }
 
-function actionLabel(action: AIMessage["actions"][number]): string {
-  const value = action.label;
+function actionTextField(action: AIMessage["actions"][number], field: string): string {
+  const value = (action as Record<string, unknown>)[field];
   return typeof value === "string" ? value : "";
+}
+
+function actionId(action: AIMessage["actions"][number]): string {
+  return actionTextField(action, "id");
+}
+
+function actionLabel(action: AIMessage["actions"][number]): string {
+  return actionTextField(action, "label");
 }
 
 function actionHref(action: AIMessage["actions"][number]): string {
-  const value = action.href;
-  return typeof value === "string" ? value : "";
+  return actionTextField(action, "href");
 }
 
 function actionKind(action: AIMessage["actions"][number]): string {
-  const value = action.kind;
-  return typeof value === "string" ? value : "";
+  return actionTextField(action, "kind");
 }
 
 function isDiagnosticEvent(event: AIRunEvent): boolean {
@@ -918,7 +924,7 @@ export default function AIThreadPage() {
                         .filter((action) => actionHref(action))
                         .map((action) => (
                           <a
-                            key={`${message.id}-${action.id ?? actionHref(action)}`}
+                            key={`${message.id}-${actionId(action) || actionHref(action)}`}
                             href={actionHref(action)}
                             download={actionKind(action) === "download" ? true : undefined}
                           >
