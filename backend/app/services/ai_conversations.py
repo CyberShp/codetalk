@@ -2688,6 +2688,9 @@ async def _agent_thread_artifact_content(artifact_dir: Path) -> str:
                 pass
             else:
                 text = json.dumps(parsed, ensure_ascii=False, indent=2)
+        text = redact_agent_diagnostic_text(text).strip()
+        if not text:
+            continue
         rendered.append((str(path.relative_to(artifact_dir)), text))
     if not rendered:
         return ""

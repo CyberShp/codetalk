@@ -1897,6 +1897,109 @@ test("downloads all Markdown artifacts written by the agent runtime", async ({
   }
 });
 
+test("redacts secrets from a Markdown artifact written by the agent runtime", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-redacted-artifact-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "Redacted agent artifact e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-redacted-artifact-")));
+  const runtimeScript = path.join(runtimeDir, "redacted_artifact_agent.py");
+  const leakedKey = "sk-agentArtifactE2ESecret1234567890";
+  const leakedToken = "artifactE2ETokenLeak12345";
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import os, pathlib, sys",
+      "sys.stdin.read()",
+      "artifact_dir = pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])",
+      "artifact_dir.mkdir(parents=True, exist_ok=True)",
+      `body = '# Agent Report\\n\\nSAFE_ARTIFACT_BODY\\n\\napi_key=${leakedKey}\\ntoken=${leakedToken}\\n'`,
+      "(artifact_dir / 'leaky.md').write_text(body, encoding='utf-8')",
+      "print('已生成文件：leaky.md', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-redacted-artifact-e2e-${Date.now()}`;
+  const runtimeName = `Redacted artifact runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} redacted artifact`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByLabel("AI 线程消息").fill("保存一个报告文件，文件里不能泄露密钥");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const assistantAnswer = page.locator(".ct-codex-message:not(.is-user)");
+    await expect(assistantAnswer.filter({ hasText: "已生成结构化产物" })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("link", { name: "下载完整产物" })).toBeVisible({ timeout: 15_000 });
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("link", { name: "下载完整产物" }).hover();
+    await page.getByRole("link", { name: "下载完整产物" }).click();
+    const download = await downloadPromise;
+    const artifactPath = testInfo.outputPath("redacted-agent-artifact.md");
+    await download.saveAs(artifactPath);
+    const artifact = fs.readFileSync(artifactPath, "utf8");
+    expect(artifact).toContain("SAFE_ARTIFACT_BODY");
+    expect(artifact).toContain("<redacted>");
+    expect(artifact).not.toContain(leakedKey);
+    expect(artifact).not.toContain(leakedToken);
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("已生成结构化产物");
+    expect(assistant?.content).not.toContain(leakedKey);
+    expect(assistant?.content).not.toContain(leakedToken);
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("Claude-style agent runtime resumes the previous CLI session through the real AI thread UI", async ({
   page,
   request,
