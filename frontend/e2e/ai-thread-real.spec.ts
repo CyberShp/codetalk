@@ -488,6 +488,16 @@ test("keeps Claude tool-result stream blocks out of visible answer and artifact"
     await expect(page.locator(".ct-codex-message").filter({ hasText: "iscsi_conn_login_pdu_success_complete" })).toHaveCount(0);
     await expect(page.locator(".ct-codex-message").filter({ hasText: "AuthMethod=CHAP" })).toHaveCount(0);
 
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.getByText(/默认折叠/)).toBeVisible();
+    await expect
+      .poll(async () => processDisclosure.evaluate((node) => (node as HTMLDetailsElement).open))
+      .toBe(false);
+    await expect(processDisclosure.getByText("iscsi_conn_login_pdu_success_complete").first()).not.toBeVisible();
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("iscsi_conn_login_pdu_success_complete").first()).toBeVisible();
+
     const diagnosticsSummary = page.getByText("生成诊断：默认折叠");
     await expect(diagnosticsSummary).toBeVisible({ timeout: 15_000 });
     await diagnosticsSummary.click();

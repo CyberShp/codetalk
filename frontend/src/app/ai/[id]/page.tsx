@@ -201,6 +201,24 @@ function EvidenceReferenceCard({ refItem }: { refItem: AIContextReference }) {
   );
 }
 
+function AgentProcessDisclosure({ diagnostics }: { diagnostics: string[] }) {
+  const visibleDiagnostics = diagnostics.map(redactDiagnosticText).filter(Boolean).slice(-12);
+  if (visibleDiagnostics.length === 0) return null;
+  return (
+    <details className="ct-agent-process" data-testid="agent-process-disclosure">
+      <summary>
+        <span>Agent 过程</span>
+        <em>默认折叠 · {visibleDiagnostics.length} 条</em>
+      </summary>
+      <div>
+        {visibleDiagnostics.map((item, index) => (
+          <p key={`${index}-${item}`}>{item}</p>
+        ))}
+      </div>
+    </details>
+  );
+}
+
 function safeFilename(value: string): string {
   const trimmed = value
     .replace(/[\\/:*?"<>|]+/g, "-")
@@ -960,6 +978,7 @@ export default function AIThreadPage() {
               </div>
             </article>
           )}
+          <AgentProcessDisclosure diagnostics={streamingDiagnostics} />
           <div ref={bottomRef} />
         </section>
         {showJumpToLatest && (
