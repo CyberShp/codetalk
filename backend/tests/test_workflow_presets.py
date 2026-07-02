@@ -23,6 +23,9 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         "nvmf_tcp_tls_auth_blackbox",
         "bdev_qos_latency_blackbox",
         "jsonrpc_concurrency_idempotency_blackbox",
+        "app_startup_shutdown_smoke_blackbox",
+        "nvme_ctrlr_hotplug_reset_blackbox",
+        "storage_capacity_enospc_recovery_blackbox",
     }.issubset({item["id"] for item in presets})
 
     for preset in presets:
@@ -148,6 +151,9 @@ def test_restore_builtin_workflow_presets_refreshes_stale_builtin_definitions(tm
         "nvmf_tcp_tls_auth_blackbox",
         "bdev_qos_latency_blackbox",
         "jsonrpc_concurrency_idempotency_blackbox",
+        "app_startup_shutdown_smoke_blackbox",
+        "nvme_ctrlr_hotplug_reset_blackbox",
+        "storage_capacity_enospc_recovery_blackbox",
         "custom_workflow",
     }.issubset(ids)
 

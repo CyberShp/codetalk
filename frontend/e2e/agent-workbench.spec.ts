@@ -456,9 +456,17 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
       "bdev_io_reset_blackbox",
       "rpc_config_negative_blackbox",
       "reactor_thread_poller_blackbox",
+      "nvmf_disconnect_reconnect_blackbox",
+      "iscsi_auth_failure_blackbox",
+      "bdev_failover_resource_blackbox",
+      "blobstore_ftl_recovery_blackbox",
+      "vhost_vfio_user_lifecycle_blackbox",
       "nvmf_tcp_tls_auth_blackbox",
       "bdev_qos_latency_blackbox",
       "jsonrpc_concurrency_idempotency_blackbox",
+      "app_startup_shutdown_smoke_blackbox",
+      "nvme_ctrlr_hotplug_reset_blackbox",
+      "storage_capacity_enospc_recovery_blackbox",
     ]),
   );
   await expect(page.getByRole("button", { name: "应用预设" })).toBeVisible();

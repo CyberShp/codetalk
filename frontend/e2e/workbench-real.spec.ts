@@ -3,12 +3,29 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-test("lists and installs every required workflow preset through the real workbench UI", async ({
+test("lists and installs every built-in workflow preset through the real workbench UI", async ({
   page,
 }) => {
   const presets = [
     { id: "module_analysis", label: "模块分析工作流" },
     { id: "resource_leak_hunt", label: "资源/异常路径排查工作流" },
+    { id: "source_flow_sfmea_blackbox", label: "代码分析-流程-SFMEA-黑盒用例工作流" },
+    { id: "nvmf_connect_io_blackbox", label: "NVMe-oF 连接/IO 黑盒场景" },
+    { id: "iscsi_login_session_blackbox", label: "iSCSI 登录/会话黑盒场景" },
+    { id: "bdev_io_reset_blackbox", label: "bdev IO/reset 黑盒场景" },
+    { id: "rpc_config_negative_blackbox", label: "RPC/config 负例黑盒场景" },
+    { id: "reactor_thread_poller_blackbox", label: "reactor/thread/poller 调度黑盒场景" },
+    { id: "nvmf_disconnect_reconnect_blackbox", label: "NVMe-oF 断连/重连黑盒场景" },
+    { id: "iscsi_auth_failure_blackbox", label: "iSCSI 认证失败/重置黑盒场景" },
+    { id: "bdev_failover_resource_blackbox", label: "bdev failover/资源压力黑盒场景" },
+    { id: "blobstore_ftl_recovery_blackbox", label: "blobstore/FTL 恢复黑盒场景" },
+    { id: "vhost_vfio_user_lifecycle_blackbox", label: "vhost/vfio-user 生命周期黑盒场景" },
+    { id: "nvmf_tcp_tls_auth_blackbox", label: "NVMe/TCP TLS/认证黑盒场景" },
+    { id: "bdev_qos_latency_blackbox", label: "bdev QoS/时延退化黑盒场景" },
+    { id: "jsonrpc_concurrency_idempotency_blackbox", label: "JSON-RPC 并发/幂等黑盒场景" },
+    { id: "app_startup_shutdown_smoke_blackbox", label: "应用启动/关闭冒烟黑盒场景" },
+    { id: "nvme_ctrlr_hotplug_reset_blackbox", label: "NVMe 控制器热插拔/reset 黑盒场景" },
+    { id: "storage_capacity_enospc_recovery_blackbox", label: "容量/ENOSPC 恢复黑盒场景" },
     { id: "mr_blackbox_test", label: "MR 黑盒测试工作流" },
     { id: "patch_impact_review", label: "补丁影响面评审工作流" },
   ];
@@ -19,6 +36,7 @@ test("lists and installs every required workflow preset through the real workben
 
   const presetSelect = page.getByLabel("工作流预设");
   await expect(presetSelect).toBeVisible({ timeout: 15_000 });
+  await expect(presetSelect.locator("option")).toHaveCount(presets.length);
 
   for (const preset of presets) {
     await expect(
@@ -30,6 +48,9 @@ test("lists and installs every required workflow preset through the real workben
     await expect(page.getByText(`预设已安装: ${preset.label}`)).toBeVisible({
       timeout: 15_000,
     });
+    await expect(page.getByLabel("Workflow JSON")).toHaveValue(
+      new RegExp(`"id": "${preset.id}"`),
+    );
   }
 });
 

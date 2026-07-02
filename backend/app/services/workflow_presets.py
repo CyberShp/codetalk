@@ -599,6 +599,42 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 "create delete idempotency partial success ordering race rollback observable error"
             ),
         ),
+        _source_flow_scenario_preset(
+            preset_id="app_startup_shutdown_smoke_blackbox",
+            name="App Startup / Shutdown Smoke Black-box Scenario",
+            description=(
+                "Analyze SPDK application startup, configuration load, RPC readiness, signal "
+                "handling, graceful shutdown, restart, and externally visible diagnostics."
+            ),
+            default_query=(
+                "app lib/event scripts/rpc.py test/app test/json_config SPDK application startup "
+                "configuration load RPC readiness signal graceful shutdown restart diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="nvme_ctrlr_hotplug_reset_blackbox",
+            name="NVMe Controller Hotplug / Reset Black-box Scenario",
+            description=(
+                "Analyze SPDK NVMe controller attach, identify, reset, timeout, hotremove, "
+                "namespace change, reconnect, and public error reporting behavior."
+            ),
+            default_query=(
+                "lib/nvme test/nvme nvme controller attach identify reset timeout hotremove "
+                "namespace change reconnect public error reporting"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="storage_capacity_enospc_recovery_blackbox",
+            name="Storage Capacity / ENOSPC Recovery Black-box Scenario",
+            description=(
+                "Analyze capacity pressure, ENOSPC, allocation failure, metadata persistence, "
+                "partial write, retry, cleanup, and recovery behavior across SPDK storage layers."
+            ),
+            default_query=(
+                "lib/bdev lib/blob lib/ftl test/bdev test/blobfs capacity pressure ENOSPC "
+                "allocation failure metadata persistence partial write retry cleanup recovery"
+            ),
+        ),
         {
             "id": "mr_blackbox_test",
             "name": "MR Black-box Test Design",
