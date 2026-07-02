@@ -188,6 +188,11 @@ const WORKFLOW_NAME_ZH: Record<string, string> = {
   bdev_io_reset_blackbox: "bdev IO/reset 黑盒场景",
   rpc_config_negative_blackbox: "RPC/config 负例黑盒场景",
   reactor_thread_poller_blackbox: "reactor/thread/poller 调度黑盒场景",
+  nvmf_disconnect_reconnect_blackbox: "NVMe-oF 断连/重连黑盒场景",
+  iscsi_auth_failure_blackbox: "iSCSI 认证失败/重置黑盒场景",
+  bdev_failover_resource_blackbox: "bdev failover/资源压力黑盒场景",
+  blobstore_ftl_recovery_blackbox: "blobstore/FTL 恢复黑盒场景",
+  vhost_vfio_user_lifecycle_blackbox: "vhost/vfio-user 生命周期黑盒场景",
   patch_impact: "补丁影响面计划工作流",
   patch_impact_review: "补丁影响面评审工作流",
 };
@@ -3646,7 +3651,7 @@ export default function AgentWorkbenchPage() {
               >
                 {workflowPresets.map((preset) => (
                   <option key={preset.id} value={preset.id}>
-                    {preset.name}
+                    {workflowDisplayName(preset.definition)}
                   </option>
                 ))}
               </select>

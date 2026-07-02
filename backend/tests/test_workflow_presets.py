@@ -15,6 +15,11 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         "bdev_io_reset_blackbox",
         "rpc_config_negative_blackbox",
         "reactor_thread_poller_blackbox",
+        "nvmf_disconnect_reconnect_blackbox",
+        "iscsi_auth_failure_blackbox",
+        "bdev_failover_resource_blackbox",
+        "blobstore_ftl_recovery_blackbox",
+        "vhost_vfio_user_lifecycle_blackbox",
     }.issubset({item["id"] for item in presets})
 
     for preset in presets:
@@ -92,6 +97,53 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
     assert scenario_outputs["code_evidence"]["schema"]["type"] == "array"
     assert scenario_outputs["sfmea"]["schema"]["type"] == "array"
     assert scenario_outputs["black_box_cases"]["semantic_import"]["enabled"] is True
+
+
+def test_restore_builtin_workflow_presets_refreshes_stale_builtin_definitions(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore, audit_workflow_definition
+    from app.services.workflow_presets import restore_builtin_workflow_presets
+
+    store = WorkflowStore(tmp_path / "workflows.db")
+    store.save_workflow({
+        "id": "module_analysis",
+        "name": "Stale Module Analysis",
+        "version": 1,
+        "inputs": [],
+        "steps": [{"id": "discover_scope", "type": "local_scope_discover"}],
+        "outputs": [{"id": "scope", "type": "json", "from": "discover_scope"}],
+    })
+    store.save_workflow({
+        "id": "custom_workflow",
+        "name": "Custom Workflow",
+        "version": 1,
+        "inputs": [],
+        "steps": [{"id": "render", "type": "report_render"}],
+        "outputs": [{"id": "report", "type": "markdown", "from": "render"}],
+    })
+
+    stale = store.get_workflow("module_analysis")
+    assert any(
+        warning["code"] == "json_output_missing_schema"
+        for warning in audit_workflow_definition(stale.raw)["warnings"]
+    )
+
+    restore_builtin_workflow_presets(store)
+
+    restored = store.get_workflow("module_analysis")
+    assert restored.name == "Module Analysis"
+    assert audit_workflow_definition(restored.raw)["warnings"] == []
+    assert store.get_workflow("custom_workflow").name == "Custom Workflow"
+    ids = {item.id for item in store.list_workflows()}
+    assert {
+        "module_analysis",
+        "resource_leak_hunt",
+        "mr_blackbox_test",
+        "patch_impact_review",
+        "source_flow_sfmea_blackbox",
+        "blobstore_ftl_recovery_blackbox",
+        "vhost_vfio_user_lifecycle_blackbox",
+        "custom_workflow",
+    }.issubset(ids)
 
 
 def test_workflow_preset_can_be_installed_into_store(tmp_path):

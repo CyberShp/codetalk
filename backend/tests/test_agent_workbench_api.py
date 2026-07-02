@@ -56,7 +56,15 @@ async def test_workbench_workflow_crud_api(workbench_client):
 
     listed = await workbench_client.get("/api/workbench/workflows")
     assert listed.status_code == 200
-    assert [item["id"] for item in listed.json()] == ["custom_mr_blackbox"]
+    listed_ids = {item["id"] for item in listed.json()}
+    assert "custom_mr_blackbox" in listed_ids
+    assert {
+        "module_analysis",
+        "resource_leak_hunt",
+        "mr_blackbox_test",
+        "patch_impact_review",
+        "source_flow_sfmea_blackbox",
+    }.issubset(listed_ids)
 
     loaded = await workbench_client.get("/api/workbench/workflows/custom_mr_blackbox")
     assert loaded.status_code == 200
@@ -122,16 +130,27 @@ async def test_workbench_workflow_preset_api(workbench_client):
         "bdev_io_reset_blackbox",
         "rpc_config_negative_blackbox",
         "reactor_thread_poller_blackbox",
+        "nvmf_disconnect_reconnect_blackbox",
+        "iscsi_auth_failure_blackbox",
+        "bdev_failover_resource_blackbox",
+        "blobstore_ftl_recovery_blackbox",
+        "vhost_vfio_user_lifecycle_blackbox",
     }.issubset(preset_ids)
+
+    listed = await workbench_client.get("/api/workbench/workflows")
+    listed_body = listed.json()
+    listed_ids = {item["id"] for item in listed_body}
+    assert "mr_blackbox_test" in listed_ids
+    assert preset_ids.issubset(listed_ids)
+    for item in listed_body:
+        if item["id"] in preset_ids:
+            assert item["audit"]["warnings"] == []
 
     installed = await workbench_client.post(
         "/api/workbench/workflow-presets/mr_blackbox_test/install"
     )
     assert installed.status_code == 201
     assert installed.json()["id"] == "mr_blackbox_test"
-
-    listed = await workbench_client.get("/api/workbench/workflows")
-    assert [item["id"] for item in listed.json()] == ["mr_blackbox_test"]
 
 
 async def test_workbench_workflow_capabilities_api_documents_custom_workflows(workbench_client):

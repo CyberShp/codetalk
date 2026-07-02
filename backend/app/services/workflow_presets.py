@@ -502,6 +502,67 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 "scheduling blocking long task concurrency recovery performance degradation"
             ),
         ),
+        _source_flow_scenario_preset(
+            preset_id="nvmf_disconnect_reconnect_blackbox",
+            name="NVMe-oF Disconnect / Reconnect Black-box Scenario",
+            description=(
+                "Analyze SPDK NVMe-oF timeout, disconnect, reconnect, keep-alive, controller "
+                "reset, qpair teardown, and recovery behavior for source-backed SFMEA and "
+                "black-box cases."
+            ),
+            default_query=(
+                "lib/nvmf test/nvmf NVMe-oF keep alive timeout disconnect reconnect "
+                "controller reset qpair teardown transport error recovery"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="iscsi_auth_failure_blackbox",
+            name="iSCSI Auth Failure / Reset Black-box Scenario",
+            description=(
+                "Analyze SPDK iSCSI CHAP/authentication failure, redirect, digest mismatch, "
+                "session reset, logout, initiator disconnect, and recovery diagnostics."
+            ),
+            default_query=(
+                "lib/iscsi test/iscsi_tgt iSCSI CHAP authentication failure digest mismatch "
+                "redirect session reset logout initiator disconnect recovery diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="bdev_failover_resource_blackbox",
+            name="bdev Failover / Resource Pressure Black-box Scenario",
+            description=(
+                "Analyze SPDK bdev failover, reconnect, resource exhaustion, no-memory paths, "
+                "I/O drain, reset ordering, and public error reporting."
+            ),
+            default_query=(
+                "lib/bdev module/bdev test/bdev bdev failover reconnect resource exhaustion "
+                "no memory IO drain reset ordering public error reporting"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="blobstore_ftl_recovery_blackbox",
+            name="Blobstore / FTL Recovery Black-box Scenario",
+            description=(
+                "Analyze SPDK blobstore and FTL metadata recovery, ENOSPC, abnormal shutdown, "
+                "super block consistency, relocation, and restart recovery behavior."
+            ),
+            default_query=(
+                "lib/blob lib/ftl module/bdev/ftl test/blobfs test/ftl blobstore FTL "
+                "metadata recovery ENOSPC abnormal shutdown super block consistency restart"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="vhost_vfio_user_lifecycle_blackbox",
+            name="vhost / vfio-user Lifecycle Black-box Scenario",
+            description=(
+                "Analyze SPDK vhost and vfio-user device lifecycle, queue configuration, "
+                "guest attach/detach, socket cleanup, reset, and error recovery behavior."
+            ),
+            default_query=(
+                "lib/vhost lib/vfio_user test/vhost test/vfio_user vhost vfio-user device "
+                "lifecycle queue configuration guest attach detach socket cleanup reset recovery"
+            ),
+        ),
         {
             "id": "mr_blackbox_test",
             "name": "MR Black-box Test Design",
@@ -614,3 +675,12 @@ def get_workflow_preset(preset_id: str) -> dict[str, Any]:
 def install_workflow_preset(store: WorkflowStore, preset_id: str) -> WorkflowDefinition:
     preset = get_workflow_preset(preset_id)
     return store.save_workflow(deepcopy(preset["definition"]))
+
+
+def restore_builtin_workflow_presets(store: WorkflowStore) -> list[WorkflowDefinition]:
+    """Install or refresh built-in workflows while preserving custom workflow ids."""
+
+    restored: list[WorkflowDefinition] = []
+    for preset in builtin_workflow_presets():
+        restored.append(store.save_workflow(deepcopy(preset["definition"])))
+    return restored

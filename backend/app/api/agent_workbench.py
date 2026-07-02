@@ -57,6 +57,7 @@ from app.services.workflow_dsl import (
 from app.services.workflow_presets import (
     builtin_workflow_presets,
     install_workflow_preset,
+    restore_builtin_workflow_presets,
 )
 
 router = APIRouter(prefix="/api/workbench", tags=["agent-workbench"])
@@ -163,6 +164,12 @@ def _workbench_dir() -> Path:
 
 def _workflow_store() -> WorkflowStore:
     return WorkflowStore(_workbench_dir() / "workflows.db")
+
+
+def _workflow_store_with_builtin_presets() -> WorkflowStore:
+    store = _workflow_store()
+    restore_builtin_workflow_presets(store)
+    return store
 
 
 def _semantic_store() -> TestSemanticLibraryStore:
@@ -383,13 +390,14 @@ async def audit_workflow_draft(payload: dict[str, Any]) -> dict[str, Any]:
 
 @router.get("/workflows")
 async def list_workflows() -> list[dict[str, Any]]:
-    return [_workflow_response(item.raw) for item in _workflow_store().list_workflows()]
+    store = _workflow_store_with_builtin_presets()
+    return [_workflow_response(item.raw) for item in store.list_workflows()]
 
 
 @router.get("/workflows/{workflow_id}")
 async def get_workflow(workflow_id: str) -> dict[str, Any]:
     try:
-        workflow = _workflow_store().get_workflow(workflow_id)
+        workflow = _workflow_store_with_builtin_presets().get_workflow(workflow_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown workflow: {workflow_id}")
     return _workflow_response(workflow.raw)
@@ -398,7 +406,7 @@ async def get_workflow(workflow_id: str) -> dict[str, Any]:
 @router.get("/workflows/{workflow_id}/snapshot")
 async def get_workflow_snapshot(workflow_id: str) -> dict[str, Any]:
     try:
-        return _workflow_store().freeze_workflow_snapshot(workflow_id)
+        return _workflow_store_with_builtin_presets().freeze_workflow_snapshot(workflow_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown workflow: {workflow_id}")
 
@@ -1478,7 +1486,7 @@ async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
     try:
         result = WorkbenchTaskRunPreparer(
             artifact_root=_task_runs_dir(),
-            workflow_store=_workflow_store(),
+            workflow_store=_workflow_store_with_builtin_presets(),
             evidence_memory=_memory_store(),
             semantic_library=_semantic_store(),
         ).prepare(
@@ -1501,7 +1509,7 @@ async def prepare_and_execute_task_run(payload: RunTaskRunRequest) -> dict[str, 
     try:
         prepared = WorkbenchTaskRunPreparer(
             artifact_root=_task_runs_dir(),
-            workflow_store=_workflow_store(),
+            workflow_store=_workflow_store_with_builtin_presets(),
             evidence_memory=_memory_store(),
             semantic_library=_semantic_store(),
         ).prepare(
