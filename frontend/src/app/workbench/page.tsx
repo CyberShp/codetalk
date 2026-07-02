@@ -656,6 +656,14 @@ function parseJsonObject(value: string): Record<string, unknown> {
   return parsed as Record<string, unknown>;
 }
 
+function workflowIdFromJson(value: string): string {
+  try {
+    return String(parseJsonObject(value).id ?? "").trim();
+  } catch {
+    return "";
+  }
+}
+
 function parseJsonValue(value: string): unknown {
   return JSON.parse(value) as unknown;
 }
@@ -2427,11 +2435,21 @@ export default function AgentWorkbenchPage() {
       if (workflowResult.status === "fulfilled") {
         const nextWorkflowData = workflowResult.value;
         setWorkflows(nextWorkflowData);
-        if (
-          nextWorkflowData.length > 0 &&
-          !nextWorkflowData.some((item) => item.id === selectedWorkflowId)
-        ) {
-          setSelectedWorkflowId(nextWorkflowData[0].id);
+        if (nextWorkflowData.length > 0) {
+          const selectedWorkflow = nextWorkflowData.find((item) => item.id === selectedWorkflowId);
+          const fallbackWorkflow = selectedWorkflow ?? nextWorkflowData[0];
+          if (!selectedWorkflow) {
+            setSelectedWorkflowId(fallbackWorkflow.id);
+          }
+          setWorkflowJson((currentJson) => {
+            const currentId = workflowIdFromJson(currentJson);
+            const currentIsEmpty = !currentJson.trim() || !currentId;
+            const currentIsDefault = currentId === DEFAULT_WORKFLOW.id;
+            if (currentIsDefault || currentIsEmpty) {
+              return pretty(fallbackWorkflow);
+            }
+            return currentJson;
+          });
         }
       } else {
         coreErrors.push(

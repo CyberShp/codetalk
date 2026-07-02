@@ -8,6 +8,7 @@ const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "30
 test("lists and installs every built-in workflow preset through the real workbench UI", async ({
   page,
 }) => {
+  test.setTimeout(120_000);
   const presets = [
     { id: "module_analysis", label: "模块分析工作流" },
     { id: "resource_leak_hunt", label: "资源/异常路径排查工作流" },
@@ -37,6 +38,10 @@ test("lists and installs every built-in workflow preset through the real workben
     { id: "concurrent_operations_stress_blackbox", label: "并发操作/压力黑盒场景" },
     { id: "observability_diagnostics_blackbox", label: "可观测性/诊断黑盒场景" },
     { id: "config_compatibility_rollback_blackbox", label: "配置兼容/回滚黑盒场景" },
+    { id: "lvol_snapshot_clone_blackbox", label: "lvol 快照/克隆黑盒场景" },
+    { id: "raid_degraded_rebuild_blackbox", label: "RAID 降级/rebuild 黑盒场景" },
+    { id: "nvme_multipath_failover_blackbox", label: "NVMe multipath/failover 黑盒场景" },
+    { id: "env_hugepage_memory_blackbox", label: "环境/hugepage 内存黑盒场景" },
     { id: "mr_blackbox_test", label: "MR 黑盒测试工作流" },
     { id: "patch_impact_review", label: "补丁影响面评审工作流" },
   ];
@@ -48,6 +53,9 @@ test("lists and installs every built-in workflow preset through the real workben
   const presetSelect = page.getByLabel("工作流预设");
   await expect(presetSelect).toBeVisible({ timeout: 15_000 });
   await expect(presetSelect.locator("option")).toHaveCount(presets.length);
+  await expect(page.getByLabel("Workflow JSON")).not.toHaveValue(
+    /"id": "mr-blackbox-workflow"/,
+  );
   const scenarioValues = await page
     .getByLabel("Workflow builder scenario")
     .locator("option")
@@ -67,6 +75,10 @@ test("lists and installs every built-in workflow preset through the real workben
       "concurrent_operations_stress_blackbox",
       "observability_diagnostics_blackbox",
       "config_compatibility_rollback_blackbox",
+      "lvol_snapshot_clone_blackbox",
+      "raid_degraded_rebuild_blackbox",
+      "nvme_multipath_failover_blackbox",
+      "env_hugepage_memory_blackbox",
     ]),
   );
 
