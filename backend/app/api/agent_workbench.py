@@ -4168,7 +4168,10 @@ def _materialize_uncovered_function_evidence(
     return evidence_ids, rejected
 
 
-_SOURCE_EXTENSIONS = {".c", ".h", ".cc", ".cpp", ".hpp", ".py", ".go", ".rs", ".java", ".ts", ".tsx", ".js", ".jsx"}
+_SOURCE_EXTENSIONS = {
+    ".c", ".h", ".cc", ".cpp", ".hpp", ".py", ".go", ".rs", ".java",
+    ".ts", ".tsx", ".js", ".jsx", ".sh", ".json",
+}
 
 
 def _source_scope_file_items(payload: dict[str, Any]) -> list[Any]:

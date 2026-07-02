@@ -753,7 +753,7 @@ def _validate_step_artifacts(
 
 SOURCE_EXTENSIONS = frozenset({
     ".c", ".h", ".cc", ".cpp", ".hpp", ".py", ".go", ".rs", ".java",
-    ".ts", ".tsx", ".js", ".jsx",
+    ".ts", ".tsx", ".js", ".jsx", ".sh", ".json",
 })
 
 
@@ -1677,6 +1677,10 @@ def _source_file_score(
         score -= 1
     if path.suffix.lower() in {".c", ".h"}:
         score += 3
+    if path.suffix.lower() in {".sh", ".json"} and (
+        relative.startswith("test/") or "/test/" in f"/{relative}"
+    ):
+        score += 8
     try:
         text = path.read_text(encoding="utf-8", errors="replace")[:12000].lower()
     except OSError:
@@ -1719,6 +1723,7 @@ def _extract_local_symbols(text: str, *, limit: int = 24) -> list[str]:
     patterns = [
         re.compile(r"^\s*(?:static\s+)?(?:inline\s+)?[A-Za-z_][\w\s\*]*\s+([A-Za-z_]\w*)\s*\([^;]*\)\s*\{", re.MULTILINE),
         re.compile(r"^\s*(?:int|void|bool|static)\s+([A-Za-z_]\w*)\s*\(", re.MULTILINE),
+        re.compile(r"^\s*(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\)\s*\{", re.MULTILINE),
     ]
     for pattern in patterns:
         for match in pattern.finditer(text):

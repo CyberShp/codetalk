@@ -2354,6 +2354,81 @@ async def test_builtin_common_scenario_preset_merges_default_query_with_user_sco
     assert scope["files"][0] == "lib/nvmf/ctrlr.c"
 
 
+async def test_spdk_cli_rpc_smoke_preset_discovers_test_scripts_and_config(
+    workbench_client,
+    tmp_path,
+):
+    repo = tmp_path / "spdk-like"
+    rpc_script = repo / "scripts" / "rpc.py"
+    smoke_script = repo / "test" / "json_config" / "rpc_smoke.sh"
+    smoke_config = repo / "test" / "json_config" / "malloc.json"
+    event_file = repo / "lib" / "event" / "app.c"
+    rpc_script.parent.mkdir(parents=True)
+    smoke_script.parent.mkdir(parents=True)
+    event_file.parent.mkdir(parents=True)
+    rpc_script.write_text(
+        "\n".join([
+            "def rpc_get_methods(client):",
+            "    return client.call('rpc_get_methods')",
+            "def bdev_malloc_create(client, size, block_size):",
+            "    return client.call('bdev_malloc_create')",
+        ]),
+        encoding="utf-8",
+    )
+    smoke_script.write_text(
+        "\n".join([
+            "#!/usr/bin/env bash",
+            "rpc_smoke_start_target() { :; }",
+            "rpc.py bdev_malloc_create 64 512",
+            "rpc.py bdev_get_bdevs",
+            "rpc.py bdev_malloc_delete Malloc0",
+        ]),
+        encoding="utf-8",
+    )
+    smoke_config.write_text('{"subsystems":[{"subsystem":"bdev"}]}\n', encoding="utf-8")
+    event_file.write_text("int spdk_app_rpc_listen_start(void) { return 0; }\n", encoding="utf-8")
+
+    installed = await workbench_client.post(
+        "/api/workbench/workflow-presets/spdk_cli_rpc_smoke_blackbox/install"
+    )
+    assert installed.status_code == 201
+
+    response = await workbench_client.post(
+        "/api/workbench/task-runs/run",
+        json={
+            "workflow_id": "spdk_cli_rpc_smoke_blackbox",
+            "workspace_id": "ws-spdk-cli-rpc-smoke",
+            "repo_path": str(repo),
+            "inputs": {
+                "analysis_object": "SPDK CLI RPC smoke startup readiness create list delete invalid command",
+                "repo_path": str(repo),
+            },
+            "timeout_sec": 10,
+        },
+    )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["status"] == "completed"
+    task_dir = _task_run_dir(body["task_run"]["task_run_id"])
+    scope = json.loads(
+        (task_dir / "steps" / "analyze_source_flow" / "source_scope.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert "scripts/rpc.py" in scope["files"]
+    assert "test/json_config/rpc_smoke.sh" in scope["files"]
+    assert "test/json_config/malloc.json" in scope["files"]
+
+    evidence_cards = json.loads(
+        (task_dir / "steps" / "analyze_source_flow" / "evidence_cards.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    by_path = {item["file_path"]: item for item in evidence_cards}
+    assert "rpc_smoke_start_target" in by_path["test/json_config/rpc_smoke.sh"]["symbols"]
+
+
 async def test_builtin_rpc_config_scenario_prioritizes_source_over_test_helpers(
     workbench_client,
     tmp_path,

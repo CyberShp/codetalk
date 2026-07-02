@@ -638,6 +638,138 @@ test("executes source-flow SFMEA black-box workflow through the real workbench U
   await expect(page.getByText(/source:task_run:task_run_[a-f0-9]+:black_box_cases/)).toBeVisible();
 });
 
+test("executes SPDK CLI RPC smoke preset through the real workbench UI", async ({
+  page,
+}, testInfo) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-spdk-cli-rpc-")));
+  fs.mkdirSync(path.join(repo, "scripts"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "test", "json_config"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "app"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "lib", "event"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "scripts", "rpc.py"),
+    [
+      "def rpc_get_methods(client):",
+      "    return client.call('rpc_get_methods')",
+      "def bdev_malloc_create(client, size, block_size):",
+      "    return client.call('bdev_malloc_create')",
+      "def bdev_malloc_delete(client, name):",
+      "    return client.call('bdev_malloc_delete')",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(repo, "app", "spdk_tgt.c"),
+    ["int spdk_tgt_start_rpc_ready(void) {", "    return 0;", "}", ""].join("\n"),
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(repo, "lib", "event", "app.c"),
+    ["int spdk_app_rpc_listen_start(void) {", "    return 0;", "}", ""].join("\n"),
+    "utf8",
+  );
+  fs.writeFileSync(
+    path.join(repo, "test", "json_config", "rpc_smoke.sh"),
+    "# public RPC smoke test: start target, wait for RPC ready, create/list/delete bdev, send invalid command\n",
+    "utf8",
+  );
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "工作流设计" }).hover();
+  await page.getByRole("button", { name: "工作流设计" }).click();
+  await page.getByLabel("工作流预设").selectOption("spdk_cli_rpc_smoke_blackbox");
+  await page.getByRole("button", { name: "安装预设" }).hover();
+  await page.getByRole("button", { name: "安装预设" }).click();
+  await expect(page.getByText("预设已安装: SPDK CLI/RPC 冒烟黑盒场景")).toBeVisible({
+    timeout: 15_000,
+  });
+
+  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
+  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await page.getByLabel("Repo path").fill(repo);
+  await page.getByLabel("Inputs JSON").fill(
+    JSON.stringify(
+      {
+        analysis_object: "SPDK CLI RPC smoke startup readiness create list delete invalid command",
+        repo_path: repo,
+      },
+      null,
+      2,
+    ),
+  );
+
+  await page.getByRole("button", { name: "准备运行" }).hover();
+  await page.getByRole("button", { name: "准备运行" }).click();
+  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "执行工作流" }).hover();
+  await page.getByRole("button", { name: "执行工作流" }).click();
+  await expect(page.getByText(/Workflow execution completed:/)).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(page.getByText(/工作流: completed/)).toBeVisible();
+
+  const hiddenArtifactsToggle = page.getByText(/展开其余 \d+ 个产物/);
+  if (await hiddenArtifactsToggle.isVisible()) {
+    await hiddenArtifactsToggle.hover();
+    await hiddenArtifactsToggle.click();
+  }
+
+  for (const artifactName of [
+    "source_scope.json",
+    "evidence_cards.json",
+    "flow_map.md",
+    "sfmea.json",
+    "black_box_cases.json",
+  ]) {
+    await expect(
+      page.getByRole("button").filter({ hasText: new RegExp(artifactName.replace(".", "\\.")) }).first(),
+    ).toBeVisible({ timeout: 15_000 });
+  }
+
+  const scopeArtifact = page.getByRole("button").filter({ hasText: /source_scope\.json/ }).first();
+  await scopeArtifact.hover();
+  await scopeArtifact.click();
+  const scopeDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "下载预览" }).hover();
+  await page.getByRole("button", { name: "下载预览" }).click();
+  const scopeDownload = await scopeDownloadPromise;
+  const scopePath = testInfo.outputPath("spdk_cli_rpc_source_scope.json");
+  await scopeDownload.saveAs(scopePath);
+  const scopeText = fs.readFileSync(scopePath, "utf8");
+  expect(scopeText).toContain("scripts/rpc.py");
+  expect(scopeText).toContain("test/json_config/rpc_smoke.sh");
+
+  const flowArtifact = page.getByRole("button").filter({ hasText: /flow_map\.md/ }).first();
+  await flowArtifact.hover();
+  await flowArtifact.click();
+  await expect(page.locator("pre").filter({ hasText: /RPC|smoke|ready/i }).first()).toBeVisible();
+
+  const casesArtifact = page.getByRole("button").filter({ hasText: /black_box_cases\.json/ }).first();
+  await casesArtifact.hover();
+  await casesArtifact.click();
+  const casesDownloadPromise = page.waitForEvent("download");
+  await page.getByRole("button", { name: "下载预览" }).hover();
+  await page.getByRole("button", { name: "下载预览" }).click();
+  const casesDownload = await casesDownloadPromise;
+  const casesPath = testInfo.outputPath("spdk_cli_rpc_black_box_cases.json");
+  await casesDownload.saveAs(casesPath);
+  const casesText = fs.readFileSync(casesPath, "utf8");
+  expect(casesText).toContain("black_box_ready");
+  expect(casesText).toContain("public workflow");
+  expect(casesText).not.toContain(repo);
+  const cases = JSON.parse(casesText) as Array<{ steps?: string[] }>;
+  expect(cases.length).toBeGreaterThan(0);
+  expect(cases[0].steps ?? []).not.toEqual(
+    expect.arrayContaining([expect.stringMatching(/rpc_get_methods|bdev_malloc_create|spdk_app_rpc_listen_start/)]),
+  );
+
+  await expect(page.getByText(/source_scope:accepted artifact:source_scope\.json/)).toBeVisible();
+  await expect(page.getByText(/sfmea:accepted artifact:sfmea\.json/)).toBeVisible();
+  await expect(page.getByText(/black_box_cases:ok/)).toBeVisible();
+});
+
 test("prevents duplicate workbench smoke E2E probes from a real double click", async ({
   page,
 }) => {
