@@ -1268,6 +1268,7 @@ async def run_agent_generation(
     live_chunks: list[str] = []
     session_updates: list[dict[str, Any]] = []
     artifact_stream_notice_sent = False
+    adopted_agent_artifact = False
     agent_artifact_dir = ai_thread_agent_artifact_dir(conversation["id"], run_id)
     await _to_thread(agent_artifact_dir.mkdir, parents=True, exist_ok=True)
     runtime_for_turn = dict(runtime)
@@ -1336,6 +1337,7 @@ async def run_agent_generation(
         agent_artifact_content = await _agent_thread_artifact_content(agent_artifact_dir)
         if agent_artifact_content:
             content = agent_artifact_content
+            adopted_agent_artifact = True
         if _agent_answer_requires_repair(user_message["content"], content, references):
             await store.append_event(
                 run_id=run_id,
@@ -1381,6 +1383,7 @@ async def run_agent_generation(
         agent_artifact_content = await _agent_thread_artifact_content(agent_artifact_dir)
         if agent_artifact_content:
             content = agent_artifact_content
+            adopted_agent_artifact = True
         live_content = "".join(live_chunks)
         if not live_content:
             await append_live_answer_delta(content)
@@ -1414,6 +1417,7 @@ async def run_agent_generation(
             run_id=run_id,
             conversation=conversation,
             content=content,
+            force_artifact=adopted_agent_artifact,
         )
         await store.complete_run(
             run_id=run_id,
@@ -2692,9 +2696,10 @@ async def _prepare_assistant_delivery(
     run_id: str,
     conversation: dict[str, Any],
     content: str,
+    force_artifact: bool = False,
 ) -> tuple[str, list[dict[str, str]]]:
     actions = _default_actions()
-    if not _should_materialize_thread_artifact(content):
+    if not force_artifact and not _should_materialize_thread_artifact(content):
         return content, actions
     artifact_path = ai_thread_artifact_path(str(conversation["id"]), run_id)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
