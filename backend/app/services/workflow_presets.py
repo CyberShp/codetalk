@@ -362,6 +362,102 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
             },
         },
         {
+            "id": "mr_blackbox_test",
+            "name": "MR Black-box Test Design",
+            "description": "Let the Agent CLI fetch MR context through its MCP credentials, then validate artifacts and produce black-box test cases.",
+            "definition": {
+                "id": "mr_blackbox_test",
+                "name": "MR Black-box Test Design",
+                "version": 1,
+                "inputs": [
+                    {"id": "mr_link", "type": "mr_link", "required": False, "role": "merge request URL"},
+                    {"id": "patch_diff", "type": "patch", "required": False, "role": "local patch diff"},
+                    {"id": "repo_path", "type": "directory", "required": False, "resolver": "local"},
+                    {"id": "design_doc", "type": "file", "required": False, "role": "design context"},
+                    {"id": "coverage_report", "type": "coverage_report", "required": False, "role": "coverage context"},
+                    {"id": "semantic_library_ref", "type": "semantic_library_ref", "required": False, "role": "test terminology"},
+                ],
+                "steps": [
+                    {
+                        "id": "collect_mr",
+                        "type": "local_mr_blackbox_test",
+                        "goal": "Collect MR or local patch context and produce black-box cases without editing files.",
+                        "required_artifacts": ["mr_snapshot.json", "diff.patch", "changed_files.json", "black_box_cases.json"],
+                    },
+                    {"id": "semantic_retrieve", "type": "semantic_retrieve"},
+                    {"id": "validate_mr_evidence", "type": "evidence_validate"},
+                    {"id": "render_blackbox_cases", "type": "report_render"},
+                ],
+                "outputs": [
+                    {
+                        "id": "mr_scope",
+                        "type": "json",
+                        "from": "collect_mr",
+                        "artifact": "mr_snapshot.json",
+                        "schema": MR_SNAPSHOT_SCHEMA,
+                    },
+                    {
+                        "id": "black_box_cases",
+                        "type": "test_cases",
+                        "from": "collect_mr",
+                        "artifact": "black_box_cases.json",
+                        "semantic_import": {
+                            "enabled": True,
+                            "defaults": {
+                                "test_level": "black_box",
+                                "tags": ["mr_blackbox_test"],
+                            },
+                        },
+                    },
+                ],
+            },
+        },
+        {
+            "id": "patch_impact_review",
+            "name": "Patch Impact Review",
+            "description": "Analyze a patch plan or diff, explain before/after flow changes, impact range, and test recommendations.",
+            "definition": {
+                "id": "patch_impact_review",
+                "name": "Patch Impact Review",
+                "version": 1,
+                "inputs": [
+                    {"id": "patch_plan", "type": "file", "required": False, "role": "patch plan"},
+                    {"id": "patch_diff", "type": "patch", "required": False, "role": "patch diff"},
+                    {"id": "repo_path", "type": "directory", "required": True, "resolver": "local"},
+                ],
+                "steps": [
+                    {"id": "parse_patch", "type": "diff_parse"},
+                    {
+                        "id": "analyze_impact",
+                        "type": "local_patch_impact_review",
+                        "goal": "Explain pre/post flow changes, affected files/symbols, compatibility risks, and test scope from local diff and source evidence.",
+                        "required_artifacts": ["impact_scope.json", "flow_delta.json", "test_recommendations.json"],
+                    },
+                    {"id": "validate_evidence", "type": "evidence_validate"},
+                    {"id": "render_report", "type": "report_render"},
+                ],
+                "outputs": [
+                    {
+                        "id": "impact_scope",
+                        "type": "json",
+                        "from": "analyze_impact",
+                        "artifact": "impact_scope.json",
+                        "schema": IMPACT_SCOPE_SCHEMA,
+                        "evidence_memory": {
+                            "enabled": True,
+                            "kind": "patch_impact_scope",
+                            "subject_key_field": "impact_id",
+                            "path_field": "file_path",
+                            "symbol_field": "symbol",
+                            "status": "candidate_output",
+                            "text_fields": ["summary", "flow_delta", "impact", "risk", "test_scope"],
+                        },
+                    },
+                    {"id": "report", "type": "markdown", "from": "render_report"},
+                ],
+            },
+        },
+        {
             "id": "source_flow_sfmea_blackbox",
             "name": "Code Analysis -> Flow -> SFMEA -> Black-box Cases",
             "description": (
@@ -743,102 +839,54 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 "mixed version partial apply rollback restart persistence idempotency diagnostics"
             ),
         ),
-        {
-            "id": "mr_blackbox_test",
-            "name": "MR Black-box Test Design",
-            "description": "Let the Agent CLI fetch MR context through its MCP credentials, then validate artifacts and produce black-box test cases.",
-            "definition": {
-                "id": "mr_blackbox_test",
-                "name": "MR Black-box Test Design",
-                "version": 1,
-                "inputs": [
-                    {"id": "mr_link", "type": "mr_link", "required": False, "role": "merge request URL"},
-                    {"id": "patch_diff", "type": "patch", "required": False, "role": "local patch diff"},
-                    {"id": "repo_path", "type": "directory", "required": False, "resolver": "local"},
-                    {"id": "design_doc", "type": "file", "required": False, "role": "design context"},
-                    {"id": "coverage_report", "type": "coverage_report", "required": False, "role": "coverage context"},
-                    {"id": "semantic_library_ref", "type": "semantic_library_ref", "required": False, "role": "test terminology"},
-                ],
-                "steps": [
-                    {
-                        "id": "collect_mr",
-                        "type": "local_mr_blackbox_test",
-                        "goal": "Collect MR or local patch context and produce black-box cases without editing files.",
-                        "required_artifacts": ["mr_snapshot.json", "diff.patch", "changed_files.json", "black_box_cases.json"],
-                    },
-                    {"id": "semantic_retrieve", "type": "semantic_retrieve"},
-                    {"id": "validate_mr_evidence", "type": "evidence_validate"},
-                    {"id": "render_blackbox_cases", "type": "report_render"},
-                ],
-                "outputs": [
-                    {
-                        "id": "mr_scope",
-                        "type": "json",
-                        "from": "collect_mr",
-                        "artifact": "mr_snapshot.json",
-                        "schema": MR_SNAPSHOT_SCHEMA,
-                    },
-                    {
-                        "id": "black_box_cases",
-                        "type": "test_cases",
-                        "from": "collect_mr",
-                        "artifact": "black_box_cases.json",
-                        "semantic_import": {
-                            "enabled": True,
-                            "defaults": {
-                                "test_level": "black_box",
-                                "tags": ["mr_blackbox_test"],
-                            },
-                        },
-                    },
-                ],
-            },
-        },
-        {
-            "id": "patch_impact_review",
-            "name": "Patch Impact Review",
-            "description": "Analyze a patch plan or diff, explain before/after flow changes, impact range, and test recommendations.",
-            "definition": {
-                "id": "patch_impact_review",
-                "name": "Patch Impact Review",
-                "version": 1,
-                "inputs": [
-                    {"id": "patch_plan", "type": "file", "required": False, "role": "patch plan"},
-                    {"id": "patch_diff", "type": "patch", "required": False, "role": "patch diff"},
-                    {"id": "repo_path", "type": "directory", "required": True, "resolver": "local"},
-                ],
-                "steps": [
-                    {"id": "parse_patch", "type": "diff_parse"},
-                    {
-                        "id": "analyze_impact",
-                        "type": "local_patch_impact_review",
-                        "goal": "Explain pre/post flow changes, affected files/symbols, compatibility risks, and test scope from local diff and source evidence.",
-                        "required_artifacts": ["impact_scope.json", "flow_delta.json", "test_recommendations.json"],
-                    },
-                    {"id": "validate_evidence", "type": "evidence_validate"},
-                    {"id": "render_report", "type": "report_render"},
-                ],
-                "outputs": [
-                    {
-                        "id": "impact_scope",
-                        "type": "json",
-                        "from": "analyze_impact",
-                        "artifact": "impact_scope.json",
-                        "schema": IMPACT_SCOPE_SCHEMA,
-                        "evidence_memory": {
-                            "enabled": True,
-                            "kind": "patch_impact_scope",
-                            "subject_key_field": "impact_id",
-                            "path_field": "file_path",
-                            "symbol_field": "symbol",
-                            "status": "candidate_output",
-                            "text_fields": ["summary", "flow_delta", "impact", "risk", "test_scope"],
-                        },
-                    },
-                    {"id": "report", "type": "markdown", "from": "render_report"},
-                ],
-            },
-        },
+        _source_flow_scenario_preset(
+            preset_id="lvol_snapshot_clone_blackbox",
+            name="Logical Volume Snapshot / Clone Black-box Scenario",
+            description=(
+                "Analyze SPDK lvol create/delete, snapshot, clone, resize, thin provision, "
+                "metadata persistence, ENOSPC, and recovery behavior."
+            ),
+            default_query=(
+                "module/bdev/lvol lib/blob test/lvol scripts/rpc.py logical volume lvol "
+                "snapshot clone resize thin provision metadata persistence ENOSPC recovery"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="raid_degraded_rebuild_blackbox",
+            name="RAID Degraded / Rebuild Black-box Scenario",
+            description=(
+                "Analyze SPDK RAID create/start/stop, member failure, degraded mode, rebuild, "
+                "I/O continuity, resync progress, and external diagnostics."
+            ),
+            default_query=(
+                "module/bdev/raid test/bdev scripts/rpc.py RAID create start stop member "
+                "failure degraded rebuild IO continuity resync progress diagnostics"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="nvme_multipath_failover_blackbox",
+            name="NVMe Multipath / Failover Black-box Scenario",
+            description=(
+                "Analyze NVMe multipath attach, path loss, ANA state changes, failover, reconnect, "
+                "I/O continuity, timeout handling, and public status signals."
+            ),
+            default_query=(
+                "lib/nvme module/bdev/nvme test/nvme test/bdev NVMe multipath path loss "
+                "ANA failover reconnect IO continuity timeout public status"
+            ),
+        ),
+        _source_flow_scenario_preset(
+            preset_id="env_hugepage_memory_blackbox",
+            name="Environment / Hugepage Memory Black-box Scenario",
+            description=(
+                "Analyze SPDK environment initialization, hugepage allocation, memory pressure, "
+                "invalid launch parameters, cleanup, restart, and observable diagnostics."
+            ),
+            default_query=(
+                "lib/env_dpdk lib/env_ocf test/env app SPDK environment initialization "
+                "hugepage memory allocation pressure invalid parameter cleanup restart diagnostics"
+            ),
+        ),
     ]
     for preset in presets:
         validate_workflow_definition(preset["definition"])

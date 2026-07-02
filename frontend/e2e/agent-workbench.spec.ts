@@ -343,6 +343,10 @@ test("workflow presets stay visible when non-core diagnostics fail", async ({ pa
       "jsonrpc_concurrency_idempotency_blackbox",
       "JSON-RPC Concurrency / Idempotency Black-box Scenario",
     ),
+    minimalWorkflowDefinition("lvol_snapshot_clone_blackbox", "Logical Volume Snapshot / Clone Black-box Scenario"),
+    minimalWorkflowDefinition("raid_degraded_rebuild_blackbox", "RAID Degraded / Rebuild Black-box Scenario"),
+    minimalWorkflowDefinition("nvme_multipath_failover_blackbox", "NVMe Multipath / Failover Black-box Scenario"),
+    minimalWorkflowDefinition("env_hugepage_memory_blackbox", "Environment / Hugepage Memory Black-box Scenario"),
   ];
 
   await page.route("**/api/workbench/workflows", async (route) => {
@@ -395,7 +399,7 @@ test("workflow presets stay visible when non-core diagnostics fail", async ({ pa
     .locator("option")
     .evaluateAll((options) => options.map((option) => option.getAttribute("value")));
   expect(presetValues).toEqual(expect.arrayContaining(definitions.map((item) => item.id)));
-  await expect(page.getByText("11 个已注册")).toBeVisible();
+  await expect(page.getByText("15 个已注册")).toBeVisible();
 });
 
 test("agent workbench renders workflow and task-run controls", async ({ page }) => {
@@ -472,6 +476,10 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
       "bdev_hotremove_io_error_blackbox",
       "blobstore_metadata_powerfail_blackbox",
       "rpc_security_authz_blackbox",
+      "lvol_snapshot_clone_blackbox",
+      "raid_degraded_rebuild_blackbox",
+      "nvme_multipath_failover_blackbox",
+      "env_hugepage_memory_blackbox",
     ]),
   );
   await expect(page.getByRole("button", { name: "应用预设" })).toBeVisible();

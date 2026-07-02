@@ -35,7 +35,18 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         "concurrent_operations_stress_blackbox",
         "observability_diagnostics_blackbox",
         "config_compatibility_rollback_blackbox",
+        "lvol_snapshot_clone_blackbox",
+        "raid_degraded_rebuild_blackbox",
+        "nvme_multipath_failover_blackbox",
+        "env_hugepage_memory_blackbox",
     }.issubset({item["id"] for item in presets})
+    assert [item["id"] for item in presets[:5]] == [
+        "module_analysis",
+        "resource_leak_hunt",
+        "mr_blackbox_test",
+        "patch_impact_review",
+        "source_flow_sfmea_blackbox",
+    ]
 
     for preset in presets:
         workflow = validate_workflow_definition(preset["definition"])
@@ -172,6 +183,10 @@ def test_restore_builtin_workflow_presets_refreshes_stale_builtin_definitions(tm
         "concurrent_operations_stress_blackbox",
         "observability_diagnostics_blackbox",
         "config_compatibility_rollback_blackbox",
+        "lvol_snapshot_clone_blackbox",
+        "raid_degraded_rebuild_blackbox",
+        "nvme_multipath_failover_blackbox",
+        "env_hugepage_memory_blackbox",
         "custom_workflow",
     }.issubset(ids)
 

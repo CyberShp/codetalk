@@ -203,6 +203,10 @@ const WORKFLOW_NAME_ZH: Record<string, string> = {
   concurrent_operations_stress_blackbox: "并发操作/压力黑盒场景",
   observability_diagnostics_blackbox: "可观测性/诊断黑盒场景",
   config_compatibility_rollback_blackbox: "配置兼容/回滚黑盒场景",
+  lvol_snapshot_clone_blackbox: "lvol 快照/克隆黑盒场景",
+  raid_degraded_rebuild_blackbox: "RAID 降级/rebuild 黑盒场景",
+  nvme_multipath_failover_blackbox: "NVMe multipath/failover 黑盒场景",
+  env_hugepage_memory_blackbox: "环境/hugepage 内存黑盒场景",
   patch_impact: "补丁影响面计划工作流",
   patch_impact_review: "补丁影响面评审工作流",
   nvmf_rdma_transport_blackbox: "NVMe/RDMA transport 黑盒场景",
@@ -431,6 +435,34 @@ const WORKFLOW_BUILDER_SCENARIOS = {
     goal: "优先检查 GitNexus 和 CGC 产物，然后分析配置兼容、非法/混合版本输入、部分应用、回滚、重启持久化、幂等性和用户可见诊断，输出代码证据、流程、SFMEA 和黑盒测试用例。",
     artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
   },
+  lvol_snapshot_clone_blackbox: {
+    name: "lvol 快照/克隆",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 module/bdev/lvol、lib/blob 与测试目录的 lvol create/delete、snapshot、clone、resize、thin provision、metadata persistence、ENOSPC 和恢复行为，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  raid_degraded_rebuild_blackbox: {
+    name: "RAID 降级/rebuild",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 module/bdev/raid 与测试目录的 RAID create/start/stop、member failure、degraded mode、rebuild、I/O continuity、resync progress 和外部诊断，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  nvme_multipath_failover_blackbox: {
+    name: "NVMe multipath/failover",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 lib/nvme、module/bdev/nvme 与测试目录的 multipath attach、path loss、ANA state、failover、reconnect、I/O continuity、timeout 和公开状态信号，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
+  env_hugepage_memory_blackbox: {
+    name: "环境/hugepage 内存",
+    inputs: "analysis_object:free_text, repo_path:directory@local, coverage_report:coverage_report",
+    outputs: "source_scope:json=source_scope.json, code_evidence:json=evidence_cards.json, flow_map:markdown=flow_map.md, sfmea:json=sfmea.json, black_box_cases:test_cases=black_box_cases.json",
+    goal: "优先检查 GitNexus 和 CGC 产物，然后分析 env 初始化、hugepage 分配、memory pressure、非法启动参数、cleanup、restart 和可观测诊断，输出代码证据、流程、SFMEA 和黑盒测试用例。",
+    artifacts: "source_scope.json, evidence_cards.json, flow_map.md, sfmea.json, black_box_cases.json",
+  },
 } as const;
 
 const DEFAULT_BUILDER_OUTPUT_SCHEMAS = {
@@ -445,6 +477,21 @@ const DEFAULT_BUILDER_OUTPUT_SCHEMAS = {
     },
   },
   risk_findings: {
+    type: "array",
+    items: { type: "object" },
+  },
+  mr_scope: {
+    type: "object",
+    required: ["kind", "source", "status", "summary"],
+    properties: {
+      kind: { type: "string" },
+      source: { type: "string" },
+      status: { type: "string" },
+      summary: { type: "string" },
+      changed_files: { type: "array" },
+    },
+  },
+  impact_scope: {
     type: "array",
     items: { type: "object" },
   },
