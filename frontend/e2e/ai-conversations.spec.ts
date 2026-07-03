@@ -992,8 +992,21 @@ test("AI home avoids staggered list animations for large thread hubs", async ({ 
   const containment = await page.evaluate(() => {
     const projectList = document.querySelector(".ct-ai-home__project-list") as HTMLElement | null;
     const threadTimeline = document.querySelector(".ct-thread-timeline") as HTMLElement | null;
+    const rightOverflow = Array.from(document.querySelectorAll("body *"))
+      .map((node) => {
+        const rect = node.getBoundingClientRect();
+        return {
+          className: String((node as HTMLElement).className || "").slice(0, 80),
+          text: (node.textContent ?? "").trim().slice(0, 80),
+          right: rect.right,
+          width: rect.width,
+        };
+      })
+      .filter((box) => box.width > 2 && box.right > window.innerWidth + 1);
     return {
       documentScrollHeight: document.documentElement.scrollHeight,
+      documentScrollWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
       projectClientHeight: projectList?.clientHeight ?? 0,
       projectScrollHeight: projectList?.scrollHeight ?? 0,
@@ -1001,14 +1014,29 @@ test("AI home avoids staggered list animations for large thread hubs", async ({ 
       threadScrollHeight: threadTimeline?.scrollHeight ?? 0,
       projectOverflowY: projectList ? window.getComputedStyle(projectList).overflowY : "",
       threadOverflowY: threadTimeline ? window.getComputedStyle(threadTimeline).overflowY : "",
+      rightOverflow,
     };
   });
 
+  expect(containment.documentScrollWidth).toBeLessThanOrEqual(containment.viewportWidth);
+  expect(containment.rightOverflow).toEqual([]);
   expect(containment.documentScrollHeight).toBeLessThanOrEqual(containment.viewportHeight + 120);
   expect(containment.projectScrollHeight).toBeGreaterThan(containment.projectClientHeight + 120);
   expect(containment.threadScrollHeight).toBeGreaterThan(containment.threadClientHeight + 120);
   expect(containment.projectOverflowY).toBe("auto");
   expect(containment.threadOverflowY).toBe("auto");
+
+  const projectList = page.locator(".ct-ai-home__project-list");
+  await projectList.hover();
+  await page.mouse.wheel(0, 900);
+  await expect.poll(() => projectList.evaluate((element) => element.scrollTop)).toBeGreaterThan(80);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeLessThan(5);
+
+  const threadTimeline = page.locator(".ct-thread-timeline");
+  await threadTimeline.hover();
+  await page.mouse.wheel(0, 1200);
+  await expect.poll(() => threadTimeline.evaluate((element) => element.scrollTop)).toBeGreaterThan(120);
+  await expect.poll(() => page.evaluate(() => window.scrollY)).toBeLessThan(5);
 
   const listMotion = await page.locator(".ct-thread-project, .ct-thread-card").evaluateAll((nodes) =>
     nodes.map((node) => {
