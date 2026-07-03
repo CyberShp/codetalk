@@ -2642,6 +2642,23 @@ class TestAIConversationsAPI:
                 }
             ],
         )
+        async with aiosqlite.connect(sqlite_db) as db:
+            async with db.execute(
+                """
+                SELECT content
+                FROM ai_messages
+                WHERE conversation_id = ? AND role = 'assistant'
+                """,
+                (conversation["id"],),
+            ) as cur:
+                raw_assistant_row = await cur.fetchone()
+        assert raw_assistant_row is not None
+        raw_assistant_content = raw_assistant_row[0]
+        assert "THINKING:" not in raw_assistant_content
+        assert "iscsi_conn_login_pdu_success_complete" not in raw_assistant_content
+        assert "旧版流式残片" not in raw_assistant_content
+        assert "TC-01 正常会话登录成功" in raw_assistant_content
+
         artifact_path = ai_thread_artifact_path(conversation["id"], run_id)
         artifact_path.parent.mkdir(parents=True, exist_ok=True)
         artifact_path.write_text(

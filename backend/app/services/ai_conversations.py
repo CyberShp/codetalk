@@ -841,7 +841,10 @@ class AIConversationStore:
     ) -> None:
         run = await self.get_run(run_id)
         now = _now()
-        safe_content = redact_agent_diagnostic_text(content)
+        safe_content = _govern_visible_assistant_content(
+            redact_agent_diagnostic_text(content),
+            references,
+        )
         async with self._connect() as db:
             await db.execute("BEGIN")
             await db.execute(
@@ -3263,14 +3266,17 @@ def _legacy_artifact_preview_for_message(
     has_legacy_process_output = any(
         marker in str(raw_content or "") for marker in _LEGACY_AGENT_DIAGNOSTIC_MARKERS
     )
-    if not has_legacy_process_output:
-        return content
     actions = message.get("actions") if isinstance(message.get("actions"), list) else []
     has_artifact_action = any(
         isinstance(action, dict) and action.get("id") == "download_run_artifact"
         for action in actions
     )
     if not has_artifact_action:
+        return content
+    if (
+        not has_legacy_process_output
+        and not _legacy_cleaned_candidate_is_user_facing(content)
+    ) or _is_compact_thread_artifact_notice(content):
         return content
     conversation_id = str(message.get("conversation_id") or "").strip()
     run_id = str(message.get("run_id") or "").strip()
@@ -3293,6 +3299,11 @@ def _legacy_artifact_preview_for_message(
         f"{_compact_thread_artifact_preview(preview_source)}\n\n---\n"
         "这条历史消息的原始 Agent 过程输出已清理；请使用“下载完整产物”查看完整产物。"
     )
+
+
+def _is_compact_thread_artifact_notice(content: str) -> bool:
+    text = str(content or "")
+    return "已生成结构化产物" in text or "已保存为下载产物" in text
 
 
 def _run_from_row(row: aiosqlite.Row) -> dict[str, Any]:
