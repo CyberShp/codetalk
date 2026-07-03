@@ -1,4 +1,7 @@
-from app.services.agent_cli_bridge import clean_agent_output_text
+from app.services.agent_cli_bridge import (
+    _looks_like_unattended_permission_request,
+    clean_agent_output_text,
+)
 
 
 def test_agent_output_cleaning_repairs_local_cjk_mojibake_without_touching_normal_text():
@@ -15,3 +18,10 @@ def test_agent_output_cleaning_repairs_local_cjk_mojibake_without_touching_norma
     assert "。\n  2. 尝试登录：`iscsiadm --login`。" in cleaned
     assert "锛" not in cleaned
     assert "銆" not in cleaned
+
+
+def test_unattended_permission_request_is_detected_before_agent_hangs():
+    assert _looks_like_unattended_permission_request(
+        "Claude requested permissions to write to /repo/report.md, but you haven't granted it yet."
+    )
+    assert not _looks_like_unattended_permission_request("permission model: readonly; final answer ready")

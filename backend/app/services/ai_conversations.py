@@ -2334,6 +2334,7 @@ def _build_agent_prompt(
         "执行要求：CodeTalk 已把执行器工作目录切到绑定工作区；如果线程绑定 workspace，"
         "先检查当前工作目录中的源码和输入材料，再回答；不要只凭模型记忆。",
         _codex_style_answer_instruction(),
+        _agent_artifact_delivery_contract(user_message),
         _source_first_contract(references, user_message),
         "",
     ]
@@ -2360,6 +2361,20 @@ def _build_agent_prompt(
         lines.append("用户问题：")
     lines.append(user_message)
     return "\n".join(lines).strip()
+
+
+def _agent_artifact_delivery_contract(user_message: str) -> str:
+    wants_downloadable_artifact = _agent_task_requests_downloadable_artifact(user_message, user_message)
+    lines = [
+        "ARTIFACT_DELIVERY_CONTRACT:",
+        "  rule: CodeTalk 负责把最终 Markdown 物化为“下载完整产物”；Agent 不要为了满足用户的下载/保存诉求去写源码仓库文件。",
+        "  do_not: 不要调用 Write/Edit 或 shell 重定向在源码工作区创建报告、SFMEA、测试用例文件。",
+        "  final_answer: 如果用户要求完整报告、SFMEA、黑盒测试用例或可下载文件，请直接输出完整 Markdown 正文；CodeTalk 会自动压缩对话区并生成下载链接。",
+        "  auxiliary_files: 只有确有机器可读辅助文件时，才可写入环境变量 CODETALK_AGENT_ARTIFACT_DIR 指向的目录；绝不要写入源码目录。",
+    ]
+    if wants_downloadable_artifact:
+        lines.append("  current_task: 用户正在请求结构化/可下载产物；本轮必须遵守 final_answer 规则，不要发起交互式文件写入权限请求。")
+    return "\n".join(lines)
 
 
 def _agent_prompt_history(
@@ -2445,6 +2460,7 @@ def _build_agent_repair_prompt(
         "如果前一轮已经查过源码，请复用已有发现；如果没有，请先核对工作区源码和输入材料。",
         "",
         _codex_style_answer_instruction(),
+        _agent_artifact_delivery_contract(user_message),
         _source_first_contract(references, user_message),
         "",
         "原始用户任务：",

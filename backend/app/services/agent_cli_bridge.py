@@ -212,6 +212,11 @@ async def stream_agent_runtime(
                 activity_queue=activity_queue,
             ):
                 if chunk:
+                    if _looks_like_unattended_permission_request(chunk):
+                        raise AgentRuntimeError(
+                            "外部 Agent 请求交互式文件写入权限，CodeTalk 已中止本轮。"
+                            "请让 Agent 输出最终 Markdown，由 CodeTalk 生成下载产物；不要写入源码工作区。"
+                        )
                     saw_stdout_output = True
                     yield chunk
             if proc.returncode is None:
@@ -1520,6 +1525,19 @@ def _clean_agent_text(value: str) -> str:
 def clean_agent_output_text(value: str) -> str:
     """Normalize terminal control noise before text is classified or displayed."""
     return _clean_agent_text(value)
+
+
+def _looks_like_unattended_permission_request(value: str) -> bool:
+    text = _clean_agent_text(str(value or "")).lower()
+    return (
+        "requested permissions" in text
+        and ("haven't granted" in text or "not granted" in text)
+    ) or (
+        "permission" in text
+        and "write" in text
+        and "grant" in text
+        and "not" in text
+    )
 
 
 _CJK_MOJIBAKE_STARTERS = frozenset(

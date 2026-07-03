@@ -1144,6 +1144,31 @@ class TestAIConversationsAPI:
         assert "CGC" in prompt
         assert "除非用户明确要求不要基于源码" in prompt
 
+    async def test_agent_prompt_tells_runtime_not_to_write_download_artifacts_into_source_repo(self):
+        from app.services.ai_conversations import _build_agent_prompt
+
+        prompt = _build_agent_prompt(
+            {
+                "id": "conv-agent-artifact-contract",
+                "title": "产物契约",
+                "scope_type": "workspace",
+                "scope_id": "ws-agent-artifact-contract",
+                "workspace_id": "ws-agent-artifact-contract",
+                "initial_context": {},
+            },
+            [],
+            [],
+            "生成完整 iSCSI login SFMEA 和黑盒测试用例产物，保存为可下载文件",
+            {"id": "runtime-agent-artifact-contract", "name": "Runtime"},
+        )
+
+        assert "ARTIFACT_DELIVERY_CONTRACT" in prompt
+        assert "CodeTalk 负责把最终 Markdown 物化为“下载完整产物”" in prompt
+        assert "不要调用 Write/Edit" in prompt
+        assert "绝不要写入源码目录" in prompt
+        assert "CODETALK_AGENT_ARTIFACT_DIR" in prompt
+        assert "本轮必须遵守 final_answer 规则" in prompt
+
     async def test_agent_prompt_honors_explicit_no_source_analysis_request(self):
         from app.services.ai_conversations import _build_agent_prompt
 
