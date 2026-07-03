@@ -587,7 +587,7 @@ class NativeDeployer:
             else:
                 try:
                     scan = await asyncio.create_subprocess_exec(
-                        "lsof", "-ti", f":{port}",
+                        "lsof", "-ti", f":{port}", "-sTCP:LISTEN",
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.DEVNULL,
                     )
@@ -692,7 +692,7 @@ class NativeDeployer:
             else:
                 try:
                     scan = await asyncio.create_subprocess_exec(
-                        "lsof", "-ti", f":{port}",
+                        "lsof", "-ti", f":{port}", "-sTCP:LISTEN",
                         stdout=asyncio.subprocess.PIPE,
                         stderr=asyncio.subprocess.DEVNULL,
                     )

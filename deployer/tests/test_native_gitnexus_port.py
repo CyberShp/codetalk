@@ -126,6 +126,82 @@ class NativeDeployerTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
 
+    async def test_scan_port_conflicts_on_unix_filters_to_listening_processes(self) -> None:
+        calls: list[tuple[str, ...]] = []
+
+        class FakeProcess:
+            returncode = 0
+
+            def __init__(self, stdout: bytes = b"") -> None:
+                self._stdout = stdout
+
+            async def communicate(self):
+                return self._stdout, b""
+
+            async def wait(self):
+                return 0
+
+            def kill(self):
+                return None
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            calls.append(tuple(str(arg) for arg in args))
+            if args[:2] == ("lsof", "-ti"):
+                return FakeProcess(b"53181\n")
+            if args[:2] == ("ps", "-p"):
+                return FakeProcess(b"Python\n")
+            return FakeProcess()
+
+        deployer = NativeDeployer({"backend_port": 3004}, asyncio.Queue())
+
+        with (
+            patch("deployers.native.sys.platform", "darwin"),
+            patch("deployers.native.asyncio.create_subprocess_exec", fake_create_subprocess_exec),
+        ):
+            conflicts = await deployer._scan_port_conflicts([3004])
+
+        self.assertEqual(
+            conflicts,
+            [{"port": 3004, "pid": 53181, "process_name": "Python", "is_own": False}],
+        )
+        self.assertIn(("lsof", "-ti", ":3004", "-sTCP:LISTEN"), calls)
+
+    async def test_release_ports_on_unix_filters_to_listening_processes(self) -> None:
+        calls: list[tuple[str, ...]] = []
+
+        class FakeProcess:
+            returncode = 0
+
+            def __init__(self, stdout: bytes = b"") -> None:
+                self._stdout = stdout
+
+            async def communicate(self):
+                return self._stdout, b""
+
+            async def wait(self):
+                return 0
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            calls.append(tuple(str(arg) for arg in args))
+            if args[:2] == ("lsof", "-ti"):
+                return FakeProcess(b"53181\n")
+            if args[:2] == ("ps", "-p"):
+                return FakeProcess(b"Python\n")
+            return FakeProcess()
+
+        queue: asyncio.Queue = asyncio.Queue()
+        deployer = NativeDeployer({"backend_port": 3004}, queue)
+
+        with (
+            patch("deployers.native.sys.platform", "darwin"),
+            patch("deployers.native.asyncio.create_subprocess_exec", fake_create_subprocess_exec),
+        ):
+            await deployer._release_ports([3004], step=1, force_takeover=True)
+
+        self.assertIn(("lsof", "-ti", ":3004", "-sTCP:LISTEN"), calls)
+        self.assertIn(("kill", "-9", "53181"), calls)
+        self.assertNotIn(("kill", "-9", "4741"), calls)
+
     async def test_start_services_keeps_core_running_when_cgc_install_fails(self) -> None:
         """CGC is an optional enhancer; install failure must not fail CodeTalk startup."""
         queue: asyncio.Queue = asyncio.Queue()
