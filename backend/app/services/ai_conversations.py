@@ -1559,6 +1559,7 @@ async def run_agent_generation(
             content=content,
             force_artifact=adopted_agent_artifact
             or _agent_task_requests_downloadable_artifact(user_message["content"], content),
+            artifact_only=adopted_agent_artifact,
         )
         await store.complete_run(
             run_id=run_id,
@@ -1840,7 +1841,7 @@ def _agent_answer_too_thin_for_task(content: str, *, user_message: str = "") -> 
         if not has_black_box_json and case_markers < 2 and expectation_markers < 3:
             return True
     if any(marker in requested for marker in ("流程", "梳理", "workflow")) and not any(
-        marker in lowered for marker in ("流程", "步骤", "阶段", "workflow")
+        marker in lowered for marker in ("流程", "步骤", "阶段", "flow", "workflow")
     ):
         return True
     if any(marker in requested for marker in ("代码证据", "源码证据", "源码", "代码", "spdk", "source", "code")):
@@ -3168,6 +3169,7 @@ async def _prepare_assistant_delivery(
     conversation: dict[str, Any],
     content: str,
     force_artifact: bool = False,
+    artifact_only: bool = False,
 ) -> tuple[str, list[dict[str, str]]]:
     actions = _default_actions()
     if not force_artifact and not _should_materialize_thread_artifact(content):
@@ -3198,7 +3200,7 @@ async def _prepare_assistant_delivery(
         },
         *actions,
     ]
-    visible = _compact_thread_artifact_preview(content)
+    visible = _compact_thread_artifact_preview(content, include_body_snippets=not artifact_only)
     return (
         f"{visible}\n\n---\n完整测试设计/SFMEA/黑盒用例已保存为下载产物。请使用“下载完整产物”获取完整产物。",
         actions,
@@ -3324,7 +3326,7 @@ def _should_compact_live_thread_delta(content: str, accumulated: str) -> bool:
     return _should_materialize_thread_artifact(accumulated) or _should_materialize_thread_artifact(content)
 
 
-def _compact_thread_artifact_preview(content: str) -> str:
+def _compact_thread_artifact_preview(content: str, *, include_body_snippets: bool = True) -> str:
     text = str(content or "")
     title_match = re.search(r"(?m)^#{1,3}\s+(.+?)\s*$", text)
     title = title_match.group(1).strip() if title_match else "Agent 产物"
@@ -3341,15 +3343,16 @@ def _compact_thread_artifact_preview(content: str) -> str:
         "",
         f"已生成结构化产物（{detail}），已保存为下载产物。为避免长表格和完整用例挤占对话区，正文只展示摘要。",
     ]
-    summary = _artifact_preview_summary(text)
-    if summary:
-        lines.extend(["", "### 摘要", summary])
-    evidence = _artifact_preview_evidence_lines(text)
-    if evidence:
-        lines.extend(["", "### 证据摘录", *evidence])
-    cases = _artifact_preview_case_lines(text)
-    if cases:
-        lines.extend(["", "### 用例摘录", *cases])
+    if include_body_snippets:
+        summary = _artifact_preview_summary(text)
+        if summary:
+            lines.extend(["", "### 摘要", summary])
+        evidence = _artifact_preview_evidence_lines(text)
+        if evidence:
+            lines.extend(["", "### 证据摘录", *evidence])
+        cases = _artifact_preview_case_lines(text)
+        if cases:
+            lines.extend(["", "### 用例摘录", *cases])
     return "\n".join(lines)
 
 
@@ -3480,6 +3483,8 @@ def _legacy_artifact_preview_for_message(
     if not has_artifact_action:
         return content
     has_compact_notice = _is_compact_thread_artifact_notice(content)
+    if has_compact_notice and not has_legacy_process_output:
+        return content
     if (
         not has_legacy_process_output
         and not _legacy_cleaned_candidate_is_user_facing(content)

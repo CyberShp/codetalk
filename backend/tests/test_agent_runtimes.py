@@ -2181,6 +2181,20 @@ class TestAgentRuntimes:
             )
             is False
         )
+        assert (
+            _agent_answer_requires_repair(
+                "分析 SPDK NVMe-oF target connect 到 IO 提交流程，并列出关键文件证据",
+                "\n".join(
+                    [
+                        "SPDK agent completed analysis",
+                        "Evidence: lib/nvmf/ctrlr.c nvmf_ctrlr_connect",
+                        "Flow: connect request -> controller setup -> IO queue ready",
+                    ]
+                ),
+                [],
+            )
+            is False
+        )
         assert _agent_answer_requires_repair("基于源码分析 SPDK iSCSI login", "你好，有什么需要帮助", []) is True
 
     async def test_ai_thread_agent_runtime_repairs_one_line_source_answer(self, sqlite_db, tmp_path):
@@ -2427,6 +2441,76 @@ class TestAgentRuntimes:
         ]
         assert "rg nvmf_ctrlr_connect" in diagnostics
         assert "执行器没有返回有效内容" not in "\n".join(answer_events)
+
+    async def test_ai_thread_agent_runtime_keeps_agent_file_artifact_body_out_of_visible_answer(
+        self,
+        sqlite_db,
+        tmp_path,
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-file-artifact", repo_path=str(repo))
+        agent_script = tmp_path / "file_artifact_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import os, pathlib, sys",
+                    "sys.stdin.read()",
+                    "artifact_dir = pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])",
+                    "artifact_dir.mkdir(parents=True, exist_ok=True)",
+                    "(artifact_dir / 'handoff.md').write_text('# Agent Handoff\\n\\nConcise saved file.\\n', encoding='utf-8')",
+                    "print('已生成文件：handoff.md', flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, ai_thread_artifact_path, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="File artifact thread",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-file-artifact",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="保存一个简短交接文件",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-file-artifact",
+                "name": "File Artifact Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+            },
+        )
+
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        assert "已生成结构化产物" in assistant["content"]
+        assert "下载完整产物" in assistant["content"]
+        assert "Concise saved file" not in assistant["content"]
+        assert "已生成文件：handoff.md" not in assistant["content"]
+        assert any(action["id"] == "download_run_artifact" for action in assistant["actions"])
+
+        artifact_text = ai_thread_artifact_path(conversation["id"], run_id).read_text(encoding="utf-8")
+        assert "# Agent Handoff" in artifact_text
+        assert "Concise saved file" in artifact_text
+        assert "已生成文件：handoff.md" not in artifact_text
 
     async def test_ai_thread_claude_partial_messages_do_not_pollute_answer_or_artifact(
         self,
@@ -3142,7 +3226,7 @@ class TestAgentRuntimes:
         messages = await store.list_messages(conversation["id"])
         assistant = [item for item in messages if item["role"] == "assistant"][-1]
         assert "已生成结构化产物" in assistant["content"]
-        assert "Concise saved file" in assistant["content"]
+        assert "Concise saved file" not in assistant["content"]
         assert any(action["id"] == "download_run_artifact" for action in assistant["actions"])
 
         artifact_text = ai_thread_artifact_path(conversation["id"], run_id).read_text(encoding="utf-8")
@@ -3213,7 +3297,7 @@ class TestAgentRuntimes:
         messages = await store.list_messages(conversation["id"])
         assistant = [item for item in messages if item["role"] == "assistant"][-1]
         assert "已生成结构化产物" in assistant["content"]
-        assert "FLOW_ARTIFACT_ONLY" in assistant["content"]
+        assert "FLOW_ARTIFACT_ONLY" not in assistant["content"]
         assert "SFMEA_ARTIFACT_ONLY" not in assistant["content"]
         assert any(action["id"] == "download_run_artifact" for action in assistant["actions"])
 
