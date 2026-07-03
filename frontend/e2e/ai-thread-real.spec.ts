@@ -5631,6 +5631,134 @@ test("folds mixed JSON agent tool and thinking parts while showing only the answ
   }
 });
 
+test("folds split agent thinking and source output while keeping process expandable", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-split-thinking-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI split thinking e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-split-thinking-")));
+  const runtimeScript = path.join(runtimeDir, "split_thinking_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json",
+      "import sys",
+      "sys.stdin.read()",
+      "events = [",
+      "  {'content': 'THINKING: '},",
+      "  {'content': '我先核对工作区 iSCSI 登录相关源码，再'},",
+      "  {'content': '据此设计黑盒用例。'},",
+      "  {'content': 'Bash {\"command\": \"grep -n login lib/iscsi/iscsi.c | head -60\"}'},",
+      "  {'content': '1125:iscsi_conn_login_pdu_success_complete(void *arg)\\n'},",
+      "  {'content': 'lib/iscsi/iscsi.c:1539:\\t\\trc = iscsi_op_login_update_param(conn, \"AuthMethod\", \"CHAP\", \"CHAP\");\\n'},",
+      "  {'content': '## 黑盒测试用例\\n'},",
+      "  {'content': '### TC-01 正常登录\\n'},",
+      "  {'content': '前置条件：target 已启动；步骤：initiator 发起 login；预期结果：进入 Full Feature Phase。\\n'},",
+      "]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-split-thinking-e2e-${Date.now()}`;
+  const runtimeName = `Split thinking runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} split thinking`;
+  const prompt = "SPLIT_THINKING_RUN 针对 iSCSI 登录写几个黑盒用例，过程不要混进正文";
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "stream_json",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill(prompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(page.getByText("TC-01 正常登录")).toBeVisible({ timeout: 30_000 });
+    const reader = page.getByLabel("AI 线程对话内容");
+    await expect(reader).not.toContainText("我先核对工作区");
+    await expect(reader).not.toContainText("Bash");
+    await expect(reader).not.toContainText("iscsi_conn_login_pdu_success_complete");
+    await expect(reader).not.toContainText("AuthMethod");
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.getByText("我先核对工作区")).toBeHidden();
+    await processDisclosure.getByText("Agent 过程").hover();
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("我先核对工作区")).toBeVisible();
+    await expect(processDisclosure.getByText("iscsi_conn_login_pdu_success_complete")).toBeVisible();
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("TC-01 正常登录");
+    expect(assistant?.content).not.toContain("我先核对工作区");
+    expect(assistant?.content).not.toContain("Bash");
+    expect(assistant?.content).not.toContain("AuthMethod");
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出" }).hover();
+    await page.getByRole("button", { name: "导出" }).click();
+    const download = await downloadPromise;
+    const exportPath = testInfo.outputPath("real-ai-thread-split-thinking-export.md");
+    await download.saveAs(exportPath);
+    const exported = fs.readFileSync(exportPath, "utf8");
+    expect(exported).toContain("TC-01 正常登录");
+    expect(exported).not.toContain("我先核对工作区");
+    expect(exported).not.toContain("Bash");
+    expect(exported).not.toContain("AuthMethod");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("contains long unbroken AI thread text without right-edge clipping", async ({
   page,
   request,

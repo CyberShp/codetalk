@@ -276,6 +276,32 @@ async def test_agent_output_segments_keep_diagnostic_context_across_stream_chunk
     assert state.diagnostic_prefix == ""
 
 
+async def test_agent_output_segments_keep_split_thinking_text_out_of_visible_answer():
+    from app.services.ai_conversations import _AgentOutputSegmentState, _agent_output_segments
+
+    state = _AgentOutputSegmentState()
+
+    segments: list[tuple[str, str]] = []
+    for chunk in [
+        "THINKING: ",
+        "我先核对工作区 iSCSI 登录相关源码，再",
+        "据此设计黑盒用例。",
+        "\n",
+        "## 黑盒测试用例\n",
+        "### TC-01 正常登录\n",
+    ]:
+        segments.extend(_agent_output_segments(chunk, state=state))
+
+    assert segments == [
+        ("diagnostic", "我先核对工作区 iSCSI 登录相关源码，再"),
+        ("diagnostic", "据此设计黑盒用例。"),
+        ("answer", "## 黑盒测试用例\n"),
+        ("answer", "### TC-01 正常登录\n"),
+    ]
+    assert state.diagnostic_active is False
+    assert state.diagnostic_prefix == ""
+
+
 async def test_agent_output_segments_fold_unindented_tool_result_source_lines():
     from app.services.ai_conversations import _agent_output_segments
 

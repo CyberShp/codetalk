@@ -1672,6 +1672,7 @@ def _agent_answer_too_thin_for_task(content: str, *, user_message: str = "") -> 
 class _AgentOutputSegmentState:
     diagnostic_active: bool = False
     diagnostic_prefix: str = ""
+    diagnostic_streaming_text: bool = False
 
 
 def _agent_output_segments(
@@ -1691,6 +1692,7 @@ def _agent_output_segments(
     segments: list[tuple[str, str]] = []
     diagnostic_buffer: list[str] = []
     diagnostic_prefix = state.diagnostic_prefix if state and state.diagnostic_active else ""
+    diagnostic_streaming_text = bool(state and state.diagnostic_active and state.diagnostic_streaming_text)
 
     def flush_diagnostic() -> None:
         nonlocal diagnostic_buffer
@@ -1699,9 +1701,10 @@ def _agent_output_segments(
             diagnostic_buffer = []
 
     def close_diagnostic_context() -> None:
-        nonlocal diagnostic_prefix
+        nonlocal diagnostic_prefix, diagnostic_streaming_text
         flush_diagnostic()
         diagnostic_prefix = ""
+        diagnostic_streaming_text = False
 
     for line in text.splitlines(keepends=True):
         line_answer_chunk = line.startswith((AGENT_FINAL_ANSWER_PREFIX, AGENT_ANSWER_DELTA_PREFIX))
@@ -1717,15 +1720,19 @@ def _agent_output_segments(
             close_diagnostic_context()
             segments.append(("answer", line))
             continue
-        diagnostic = _agent_diagnostic_text(content)
-        if diagnostic:
+        prefix = _agent_diagnostic_prefix(content)
+        diagnostic = _agent_diagnostic_text(content) if prefix else ""
+        if prefix:
             flush_diagnostic()
-            diagnostic_buffer.append(diagnostic)
-            diagnostic_prefix = _agent_diagnostic_prefix(content)
+            if diagnostic:
+                diagnostic_buffer.append(diagnostic)
+            diagnostic_prefix = prefix
+            diagnostic_streaming_text = not diagnostic
         elif (diagnostic_buffer or diagnostic_prefix) and _agent_diagnostic_continuation(
             content,
             line,
             diagnostic_prefix,
+            diagnostic_streaming_text=diagnostic_streaming_text,
             final_answer_chunk=final_answer_chunk or answer_delta_chunk,
         ):
             diagnostic_buffer.append(redact_agent_diagnostic_text(content))
@@ -1736,6 +1743,7 @@ def _agent_output_segments(
     if state is not None:
         state.diagnostic_active = bool(diagnostic_prefix)
         state.diagnostic_prefix = diagnostic_prefix
+        state.diagnostic_streaming_text = diagnostic_streaming_text
     return segments
 
 
@@ -1769,6 +1777,7 @@ def _agent_diagnostic_continuation(
     raw_line: str,
     diagnostic_prefix: str,
     *,
+    diagnostic_streaming_text: bool = False,
     final_answer_chunk: bool = False,
 ) -> bool:
     if _looks_like_agent_answer_boundary(content):
@@ -1780,6 +1789,8 @@ def _agent_diagnostic_continuation(
         if final_answer_chunk:
             return _looks_like_agent_process_output_line(content)
         return True
+    if diagnostic_streaming_text and lowered_prefix.startswith(("thinking:", "reasoning:", "trace:", "diagnostic:")):
+        return not final_answer_chunk
     return _looks_like_agent_process_output_line(content)
 
 

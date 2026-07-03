@@ -3653,6 +3653,95 @@ class TestAgentRuntimes:
         assert "扫描 lib/bdev" in diagnostics
         assert "工具返回了非关键告警" in diagnostics
 
+    async def test_ai_thread_agent_runtime_folds_split_thinking_and_source_dump_out_of_answer(
+        self,
+        sqlite_db,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-split-thinking", repo_path=str(repo))
+        monkeypatch.chdir(tmp_path)
+        agent_script = tmp_path / "split_thinking_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import json, sys",
+                    "sys.stdin.read()",
+                    "events = [",
+                    "  {'content': 'THINKING: '},",
+                    "  {'content': '我先核对工作区 iSCSI 登录相关源码，再'},",
+                    "  {'content': '据此设计黑盒用例。'},",
+                    "  {'content': 'Bash {\"command\": \"grep -n login lib/iscsi/iscsi.c | head -60\"}'},",
+                    "  {'content': '1125:iscsi_conn_login_pdu_success_complete(void *arg)\\n'},",
+                    "  {'content': 'lib/iscsi/iscsi.c:1539:\\t\\trc = iscsi_op_login_update_param(conn, \"AuthMethod\", \"CHAP\", \"CHAP\");\\n'},",
+                    "  {'content': '## 黑盒测试用例\\n'},",
+                    "  {'content': '### TC-01 正常登录\\n'},",
+                    "  {'content': '前置条件：target 已启动；步骤：initiator 发起 login；预期结果：进入 Full Feature Phase。\\n'},",
+                    "]",
+                    "for event in events:",
+                    "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Split thinking folding thread",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-split-thinking",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="针对 iSCSI 登录写几个黑盒用例",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-split-thinking",
+                "name": "Split Thinking Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "stdin",
+                "output_mode": "stream_json",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+            },
+        )
+
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        assert "## 黑盒测试用例" in assistant["content"]
+        assert "TC-01 正常登录" in assistant["content"]
+        assert "THINKING" not in assistant["content"]
+        assert "我先核对工作区" not in assistant["content"]
+        assert "Bash" not in assistant["content"]
+        assert "iscsi_conn_login_pdu_success_complete" not in assistant["content"]
+        assert "AuthMethod" not in assistant["content"]
+
+        events = await store.list_events_after(conversation["id"])
+        diagnostics = "\n".join(
+            event["payload"].get("content", "")
+            for event in events
+            if event["event_type"] == "delta" and event["payload"].get("kind") == "diagnostic"
+        )
+        assert "我先核对工作区 iSCSI 登录相关源码" in diagnostics
+        assert "Bash" in diagnostics
+        assert "iscsi_conn_login_pdu_success_complete" in diagnostics
+        assert "AuthMethod" in diagnostics
+
     async def test_agent_runtime_stream_decodes_gbk_stdout(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
 
