@@ -3051,6 +3051,81 @@ def test_module_analysis_preset_executes_with_local_scope_discovery(tmp_path):
     }
 
 
+def test_source_flow_workflow_records_validated_local_source_reads(tmp_path):
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workflow_presets import install_workflow_preset
+
+    repo = tmp_path / "spdk-like"
+    source = repo / "lib" / "nvmf" / "ctrlr.c"
+    auth = repo / "lib" / "nvmf" / "auth.c"
+    test_script = repo / "test" / "nvmf" / "nvmf.sh"
+    source.parent.mkdir(parents=True)
+    test_script.parent.mkdir(parents=True)
+    source.write_text(
+        "int spdk_nvmf_ctrlr_connect(void) { return 0; }\n"
+        "int spdk_nvmf_ctrlr_submit_io(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+    auth.write_text(
+        "int nvmf_auth_request_complete(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+    test_script.write_text("# public nvmf connect and io workflow\n", encoding="utf-8")
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    install_workflow_preset(workflow_store, "source_flow_sfmea_blackbox")
+
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="source_flow_sfmea_blackbox",
+        workspace_id="ws-source-flow-local-reads",
+        repo_path=str(repo),
+        inputs={
+            "analysis_object": "NVMe-oF connect authentication queue IO submit",
+            "repo_path": str(repo),
+        },
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert result.status == "completed"
+    root = Path(task_run.artifact_dir)
+    source_read_chain = json.loads(
+        (root / "source_read_chain.json").read_text(encoding="utf-8")
+    )
+    reads_by_path = {item["file_path"]: item for item in source_read_chain["reads"]}
+    assert reads_by_path["lib/nvmf/ctrlr.c"]["status"] == "validated_source_file"
+    assert reads_by_path["lib/nvmf/ctrlr.c"]["sha256"] == hashlib.sha256(
+        source.read_bytes()
+    ).hexdigest()
+    assert source_read_chain["read_count"] >= 2
+    assert source_read_chain["authority_rule"] == (
+        "validated source slices or current local source files may support source evidence"
+    )
+
+    evidence_validation = json.loads(
+        (
+            root
+            / "steps"
+            / "validate_evidence"
+            / "evidence_validation.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert set(evidence_validation["accepted_artifacts"]) >= {
+        "source_scope.json",
+        "evidence_cards.json",
+        "sfmea.json",
+        "black_box_cases.json",
+    }
+
+
 def test_resource_leak_hunt_preset_executes_with_local_risk_scan(tmp_path):
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer
     from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner

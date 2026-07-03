@@ -1619,7 +1619,8 @@ def build_context_artifact_payloads(
         "deployment_retrieved_count": len(deployment_evidence),
         "limit": (context_bundle.get("limits") or {}).get("evidence"),
         "authority_rule": (
-            "retrieval is navigation only; source evidence requires validated source_slices"
+            "retrieval is navigation only; source evidence requires validated source_slices "
+            "or current local source files"
         ),
         "items": [
             {
@@ -1707,7 +1708,9 @@ def build_context_artifact_payloads(
         "reads": reads,
         "read_count": len(reads),
         "rejected": [],
-        "authority_rule": "only validated_source_slice reads may support source evidence",
+        "authority_rule": (
+            "validated source slices or current local source files may support source evidence"
+        ),
     }
     evidence_consumption_trajectory = {
         "query": query,

@@ -314,16 +314,19 @@ class WorkbenchWorkflowRunner:
                 artifact_path = artifact_dir / artifact_name
                 _write_json(artifact_path, payload)
                 written.append(artifact_name)
+            required_artifacts = [
+                str(item) for item in step.get("required_artifacts") or []
+            ]
+            validation = asdict(_validate_step_artifacts(artifact_dir, required_artifacts))
             return {
                 "step_id": step_id,
                 "type": step_type,
-                "status": "completed",
+                "status": "completed" if validation["status"] == "ok" else "invalid",
                 "artifact_dir": str(artifact_dir),
                 "artifact": "source_scope.json",
                 "artifacts": written,
-                "required_artifacts": [
-                    str(item) for item in step.get("required_artifacts") or []
-                ],
+                "required_artifacts": required_artifacts,
+                "validation": validation,
                 "count": len(payloads.get("evidence_cards.json") or []),
             }
 
@@ -340,16 +343,28 @@ class WorkbenchWorkflowRunner:
                 else:
                     _write_json(artifact_path, payload)
                 written.append(artifact_name)
+            required_artifacts = [
+                str(item) for item in step.get("required_artifacts") or []
+            ]
+            validation = asdict(_validate_step_artifacts(artifact_dir, required_artifacts))
+            _append_validated_local_source_reads(
+                task_run=task_run,
+                step_id=step_id,
+                evidence_cards=[
+                    item
+                    for item in payloads.get("evidence_cards.json") or []
+                    if isinstance(item, dict)
+                ],
+            )
             return {
                 "step_id": step_id,
                 "type": step_type,
-                "status": "completed",
+                "status": "completed" if validation["status"] == "ok" else "invalid",
                 "artifact_dir": str(artifact_dir),
                 "artifact": "black_box_cases.json",
                 "artifacts": written,
-                "required_artifacts": [
-                    str(item) for item in step.get("required_artifacts") or []
-                ],
+                "required_artifacts": required_artifacts,
+                "validation": validation,
                 "count": len(payloads.get("black_box_cases.json") or []),
             }
 
@@ -841,6 +856,160 @@ def _local_source_flow_sfmea_blackbox_payloads(
         "sfmea.json": sfmea,
         "black_box_cases.json": cases,
     }
+
+
+def _append_validated_local_source_reads(
+    *,
+    task_run: Any,
+    step_id: str,
+    evidence_cards: list[dict[str, Any]],
+) -> None:
+    task_dir = Path(str(task_run.artifact_dir))
+    repo = Path(str(task_run.repo_path or ""))
+    if not task_dir or not evidence_cards:
+        return
+    reads = _validated_local_source_reads(
+        repo=repo,
+        step_id=step_id,
+        evidence_cards=evidence_cards,
+    )
+    if not reads:
+        return
+    chain_path = task_dir / "source_read_chain.json"
+    chain = _read_json(chain_path)
+    if not isinstance(chain, dict):
+        chain = {
+            "query": str((task_run.task_bundle or {}).get("context_bundle", {}).get("query") or ""),
+            "reads": [],
+            "rejected": [],
+        }
+    existing = {
+        (
+            str(item.get("file_path") or ""),
+            str(item.get("sha256") or ""),
+            str(item.get("source_step_id") or ""),
+        )
+        for item in chain.get("reads") or []
+        if isinstance(item, dict)
+    }
+    merged_reads = [
+        item for item in chain.get("reads") or [] if isinstance(item, dict)
+    ]
+    for read in reads:
+        key = (
+            str(read.get("file_path") or ""),
+            str(read.get("sha256") or ""),
+            str(read.get("source_step_id") or ""),
+        )
+        if key in existing:
+            continue
+        merged_reads.append(read)
+        existing.add(key)
+    chain["reads"] = merged_reads
+    chain["read_count"] = len(merged_reads)
+    chain["authority_rule"] = (
+        "validated source slices or current local source files may support source evidence"
+    )
+    chain.setdefault("rejected", [])
+    _write_json(chain_path, chain)
+    if isinstance(task_run.task_bundle, dict):
+        task_run.task_bundle["source_read_chain"] = chain
+        bundle_path = task_dir / "task_bundle.json"
+        bundle = _read_json(bundle_path)
+        if isinstance(bundle, dict):
+            bundle["source_read_chain"] = chain
+            _write_json(bundle_path, bundle)
+    _append_source_read_events(task_dir=task_dir, reads=reads)
+
+
+def _validated_local_source_reads(
+    *,
+    repo: Path,
+    step_id: str,
+    evidence_cards: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    reads: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for card in evidence_cards:
+        file_path = str(card.get("file_path") or "").strip().replace("\\", "/")
+        if not file_path or file_path in seen:
+            continue
+        source_path = _resolve_repo_source_file(repo, file_path)
+        if source_path is None:
+            continue
+        data = source_path.read_bytes()
+        sha256 = hashlib.sha256(data).hexdigest()
+        reads.append({
+            "event": "local_source_file_read",
+            "provider": str(card.get("source") or "local-search"),
+            "source_step_id": step_id,
+            "file_path": file_path,
+            "sha256": sha256,
+            "current_sha256": sha256,
+            "status": "validated_source_file",
+            "line_count": int(card.get("line_count") or _line_count(data)),
+            "symbols": [str(item) for item in card.get("symbols") or []],
+            "reason": str(card.get("reason") or ""),
+        })
+        seen.add(file_path)
+    return reads
+
+
+def _resolve_repo_source_file(repo: Path, file_path: str) -> Path | None:
+    if not repo:
+        return None
+    try:
+        root = repo.resolve()
+        candidate = (root / file_path).resolve()
+        if candidate != root and root not in candidate.parents:
+            return None
+        if not candidate.exists() or not candidate.is_file():
+            return None
+        return candidate
+    except OSError:
+        return None
+
+
+def _line_count(data: bytes) -> int:
+    text = data.decode("utf-8", errors="replace")
+    if not text:
+        return 0
+    return len(text.splitlines())
+
+
+def _append_source_read_events(*, task_dir: Path, reads: list[dict[str, Any]]) -> None:
+    path = task_dir / "evidence_consumption_trajectory.json"
+    payload = _read_json(path)
+    if not isinstance(payload, dict):
+        return
+    events = [item for item in payload.get("events") or [] if isinstance(item, dict)]
+    existing = {
+        (
+            str(item.get("event") or ""),
+            str(item.get("file_path") or ""),
+            str(item.get("source_step_id") or ""),
+        )
+        for item in events
+    }
+    for read in reads:
+        key = (
+            str(read.get("event") or ""),
+            str(read.get("file_path") or ""),
+            str(read.get("source_step_id") or ""),
+        )
+        if key in existing:
+            continue
+        events.append({
+            "event": "local_source_file_read",
+            "provider": read.get("provider") or "local-search",
+            "source_step_id": read.get("source_step_id") or "",
+            "file_path": read.get("file_path") or "",
+            "sha256": read.get("sha256") or "",
+            "status": read.get("status") or "validated_source_file",
+            "reuse_reason": "current local source file was scanned and hash-validated during workflow execution",
+        })
+    payload["events"] = events
+    _write_json(path, payload)
 
 
 def _prioritize_source_files_for_analysis(files: list[str]) -> list[str]:
