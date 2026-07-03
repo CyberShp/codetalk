@@ -2063,7 +2063,7 @@ class TestAgentRuntimes:
                     "    print('thinking: 已检查 lib/iscsi/iscsi.c', flush=True)",
                     "    print('你好，有什么需要帮助？', flush=True)",
                     "else:",
-                    "    print('## 结论\\n已基于 `lib/iscsi/iscsi.c` 输出 iSCSI login 黑盒测试设计。\\n\\n## 代码证据\\n- `lib/iscsi/iscsi.c`: `iscsi_login_probe`。\\n- `test/iscsi_tgt`: 可承载 login 失败路径回归。\\n\\n## 流程梳理\\n1. initiator 发起 login。\\n2. target 校验参数并返回状态。\\n\\n## SFMEA\\n| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |\\n| login 参数越界 | 协商值非法 | login 被拒绝 | 8 | 3 | 4 | 96 | 增加边界 PDU 测试 |\\n\\n## 黑盒测试用例\\n1. 用例：合法 login 成功；前置条件：target 已启动；步骤：发起 login；预期结果：进入 full feature。\\n2. 用例：非法参数 login 失败；前置条件：target 已启动；步骤：提交越界参数；预期结果：返回失败状态并记录日志。', flush=True)",
+                    "    print('## 结论\\n已基于 `lib/iscsi/iscsi.c` 输出 iSCSI login 黑盒测试设计。\\n\\n## 代码证据\\n- `lib/iscsi/iscsi.c`: `iscsi_login_probe`。\\n- `test/iscsi_tgt`: 可承载 login 失败路径回归。\\n\\n## 流程梳理\\n1. initiator 发起 login。\\n2. target 校验参数并返回状态。\\n\\n## SFMEA\\n| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |\\n| login 参数越界 | 协商值非法 | login 被拒绝 | 8 | 3 | 4 | 96 | 增加边界 PDU 测试 |\\n\\n## 黑盒测试用例\\n1. 用例：合法 login 成功；前置条件：target 已启动；步骤：发起 login；预期结果：进入 full feature；观测点：Login Response 和 session 状态。\\n2. 用例：非法参数 login 失败；前置条件：target 已启动；步骤：提交越界参数；预期结果：返回失败状态并记录日志；失败诊断线索：若状态仍 running，排查 target 配置与 initiator 参数。', flush=True)",
                 ]
             ),
             encoding="utf-8",
@@ -2160,10 +2160,40 @@ class TestAgentRuntimes:
                 "| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |",
                 "| login auth bypass | CHAP 配置错误 | 非授权 initiator 接入 | 9 | 3 | 4 | 108 | 增加拒绝路径测试 |",
                 "2. 用例：非法 InitiatorName 被拒绝；前置条件、步骤、预期结果、观测点完整。",
+                "失败诊断线索：如果未返回拒绝状态，优先排查 target CHAP 配置和 initiator 登录参数。",
             ]
         )
 
         assert _agent_answer_requires_repair(user_message, complete_answer, []) is False
+
+    async def test_ai_thread_agent_runtime_rejects_blackbox_cases_without_observability(self):
+        from app.services.ai_conversations import _agent_answer_requires_repair
+
+        user_message = "针对 iSCSI 登录写两个黑盒用例，先读源码证据"
+        coarse_answer = "\n".join(
+            [
+                "## 代码证据",
+                "- `lib/iscsi/iscsi.c:1539`: CHAP AuthMethod 协商路径。",
+                "- `test/iscsi_tgt`: 可承载登录黑盒回归。",
+                "## 黑盒测试用例",
+                "### TC-01 正常登录",
+                "前置条件：target 已启动；步骤：initiator 发起 iSCSI Login；预期结果：进入 Full Feature Phase。",
+                "### TC-02 CHAP 失败",
+                "前置条件：target 开启 CHAP；步骤：使用错误 secret 登录；预期结果：Login Response 拒绝。",
+            ]
+        )
+
+        assert _agent_answer_requires_repair(user_message, coarse_answer, []) is True
+
+        executable_answer = coarse_answer + "\n".join(
+            [
+                "",
+                "观测点：Login Response status class/detail、`iscsi_get_connections` state/login_phase、target 日志。",
+                "失败诊断线索：若状态进入 running，检查 CHAP 配置是否未启用；若无日志，检查 initiator 是否真正触发登录。",
+            ]
+        )
+
+        assert _agent_answer_requires_repair(user_message, executable_answer, []) is False
 
     async def test_ai_thread_agent_runtime_does_not_treat_codex_as_code_task(self):
         from app.services.ai_conversations import _agent_answer_requires_repair

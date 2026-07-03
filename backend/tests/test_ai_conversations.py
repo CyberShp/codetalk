@@ -2773,6 +2773,7 @@ class TestAIConversationsAPI:
                     f"{index}. 用例 TC-{index:02d}: 前置条件：target 已启动；"
                     "步骤：发起 iSCSI Login；预期结果：返回可观测 Login Response 状态。\n"
                 )
+            yield "失败诊断线索：如果 Login Response 未按预期返回，优先排查 target 配置、initiator 参数和 SPDK target 日志。\n"
             yield (
                 ai_service.AGENT_FINAL_ANSWER_PREFIX
                 + "## 黑盒测试用例\n"

@@ -1931,6 +1931,12 @@ def _agent_answer_too_thin_for_task(content: str, *, user_message: str = "") -> 
         expectation_markers = sum(1 for marker in ("前置", "步骤", "预期", "观测", "失败诊断", "expected") if marker in lowered)
         if not has_black_box_json and case_markers < 2 and expectation_markers < 3:
             return True
+        if (
+            not has_black_box_json
+            and _blackbox_task_requires_executable_detail(requested)
+            and _blackbox_answer_missing_observability(text)
+        ):
+            return True
     if any(marker in requested for marker in ("流程", "梳理", "workflow")) and not any(
         marker in lowered for marker in ("流程", "步骤", "阶段", "flow", "workflow")
     ):
@@ -1941,6 +1947,63 @@ def _agent_answer_too_thin_for_task(content: str, *, user_message: str = "") -> 
             return True
     lines = [line for line in text.splitlines() if line.strip()]
     return len(lines) <= 2 and len(text) < 220
+
+
+def _blackbox_task_requires_executable_detail(requested: str) -> bool:
+    text = str(requested or "").lower()
+    markers = (
+        "完整",
+        "详细",
+        "详尽",
+        "测试设计",
+        "源码",
+        "代码",
+        "证据",
+        "spdk",
+        "sfmea",
+        "complete",
+        "comprehensive",
+        "detailed",
+        "test design",
+        "source",
+        "code",
+        "evidence",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _blackbox_answer_missing_observability(content: str) -> bool:
+    lowered = clean_agent_output_text(str(content or "")).lower()
+    observability_markers = (
+        "观测",
+        "可观测",
+        "日志",
+        "指标",
+        "metric",
+        "status",
+        "state",
+        "响应",
+        "返回码",
+        "错误码",
+        "rpc",
+        "trace",
+    )
+    diagnostic_markers = (
+        "失败诊断",
+        "诊断",
+        "排查",
+        "定位",
+        "线索",
+        "若",
+        "如果",
+        "否则",
+        "root cause",
+        "triage",
+    )
+    return not (
+        any(marker in lowered for marker in observability_markers)
+        and any(marker in lowered for marker in diagnostic_markers)
+    )
 
 
 def _agent_final_answer_should_replace_streaming_answer(streaming_answer: str, final_answer: str) -> bool:
@@ -2214,6 +2277,8 @@ def _codex_style_answer_instruction() -> str:
         "- 文件路径、函数名、配置项、命令参数使用 inline code。\n"
         "- 多行命令、日志、补丁、代码必须使用 fenced code block。\n"
         "- 风险、原因、修改点、验证方式分开写。\n"
+        "- 黑盒测试用例必须包含前置条件、步骤、预期结果、观测点和失败诊断线索；"
+        "黑盒步骤不要要求调用内部函数或修改内部代码。\n"
         "- 不要输出大段无标题文本。\n"
         "- 不要把 STATUS、THINKING、TOOL、TRACE、reasoning、tool_use、tool_result 混入最终答案。"
     )
@@ -2393,6 +2458,7 @@ def _build_agent_repair_prompt(
         "- `## 代码证据`，列出文件路径/函数/关键状态或配置",
         "- `## 流程梳理` 或与原始任务等价的步骤说明",
         "- 如果原始任务要求 SFMEA、黑盒测试或测试设计，必须输出对应章节；长表格/大量用例可以交给 CodeTalk 文件化。",
+        "- 黑盒测试用例必须补齐：前置条件、步骤、预期结果、观测点、失败诊断线索。",
     ]
     return "\n".join(lines).strip()
 
@@ -3735,8 +3801,6 @@ def _legacy_artifact_preview_for_message(
     if not has_artifact_action:
         return content
     has_compact_notice = _is_compact_thread_artifact_notice(content)
-    if has_compact_notice and not has_legacy_process_output:
-        return content
     if (
         not has_legacy_process_output
         and not _legacy_cleaned_candidate_is_user_facing(content)
@@ -3760,12 +3824,17 @@ def _legacy_artifact_preview_for_message(
     preview_source = body if body is not None else artifact_text
     if not str(preview_source or "").strip():
         return content
-    suffix = (
-        "这条历史消息的原始 Agent 过程输出已清理；请使用“下载完整产物”查看完整产物。"
-        if has_legacy_process_output
-        else "完整测试设计/SFMEA/黑盒用例已保存为下载产物。请使用“下载完整产物”获取完整产物。"
+    artifact_only_preview = "完整内容已保存为下载产物" in content or "完整文件" in content
+    if has_legacy_process_output:
+        suffix = "这条历史消息的原始 Agent 过程输出已清理；请使用“下载完整产物”查看完整产物。"
+    elif artifact_only_preview:
+        suffix = "完整内容已保存为下载产物。请使用“下载完整产物”获取完整文件。"
+    else:
+        suffix = "完整测试设计/SFMEA/黑盒用例已保存为下载产物。请使用“下载完整产物”获取完整产物。"
+    return (
+        f"{_compact_thread_artifact_preview(preview_source, include_body_snippets=not artifact_only_preview)}"
+        f"\n\n---\n{suffix}"
     )
-    return f"{_compact_thread_artifact_preview(preview_source)}\n\n---\n{suffix}"
 
 
 def _is_compact_thread_artifact_notice(content: str) -> bool:
