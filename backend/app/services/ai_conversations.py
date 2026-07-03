@@ -3211,7 +3211,38 @@ def _agent_task_requests_downloadable_artifact(user_message: str, content: str) 
     has_complete_intent = any(marker in requested for marker in complete_markers)
     has_artifact_intent = any(marker in requested for marker in artifact_markers)
     has_structured_output = sum(1 for marker in artifact_markers if marker in output) >= 2
-    return has_complete_intent and (has_artifact_intent or has_structured_output)
+    if has_complete_intent and (has_artifact_intent or has_structured_output):
+        return True
+    requested_groups = _agent_structured_deliverable_groups(requested)
+    output_groups = _agent_structured_deliverable_groups(output)
+    if len(requested_groups) >= 3 and len(output_groups) >= 2:
+        return True
+    return {"sfmea", "blackbox"}.issubset(requested_groups) and len(output_groups) >= 2
+
+
+def _agent_structured_deliverable_groups(text: str) -> set[str]:
+    lowered = str(text or "").lower()
+    groups: set[str] = set()
+    if any(marker in lowered for marker in ("代码分析", "代码证据", "源码证据", "code evidence", "source evidence")):
+        groups.add("code")
+    if any(marker in lowered for marker in ("流程梳理", "调用流程", "主链路", "flow", "sequence")):
+        groups.add("flow")
+    if any(marker in lowered for marker in ("sfmea", "failure mode", "rpn")):
+        groups.add("sfmea")
+    if any(
+        marker in lowered
+        for marker in (
+            "黑盒",
+            "测试用例",
+            "测试设计",
+            "black-box",
+            "blackbox",
+            "test case",
+            "test design",
+        )
+    ):
+        groups.add("blackbox")
+    return groups
 
 
 def _should_compact_live_thread_delta(content: str, accumulated: str) -> bool:
