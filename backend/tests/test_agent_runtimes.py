@@ -3146,7 +3146,12 @@ class TestAgentRuntimes:
                     await task
 
     async def test_agent_runtime_output_parser_cleans_terminal_noise_and_unwraps_json(self):
-        from app.services.agent_cli_bridge import AGENT_FINAL_ANSWER_PREFIX, _decode, _parse_event_text
+        from app.services.agent_cli_bridge import (
+            AGENT_ANSWER_DELTA_PREFIX,
+            AGENT_FINAL_ANSWER_PREFIX,
+            _decode,
+            _parse_event_text,
+        )
 
         assert _parse_event_text("\x1b[32m正文片段\x1b[0m\r\n", "plain") == "正文片段"
         assert _parse_event_text("\r\x1b[2K⠋ 12\r\x1b[2K⠙ 47\r\x1b[2K最终答案\n", "plain") == "最终答案"
@@ -3159,14 +3164,14 @@ class TestAgentRuntimes:
                 json.dumps({"choices": [{"delta": {"content": "源码证据"}}]}, ensure_ascii=False),
                 "stream_json",
             )
-            == "源码证据"
+            == f"{AGENT_ANSWER_DELTA_PREFIX}源码证据"
         )
         assert (
             _parse_event_text(
                 f"data: {json.dumps({'choices': [{'delta': {'content': 'SSE 源码证据'}}]}, ensure_ascii=False)}\n",
                 "stream_json",
             )
-            == "SSE 源码证据"
+            == f"{AGENT_ANSWER_DELTA_PREFIX}SSE 源码证据"
         )
         assert (
             _parse_event_text(
@@ -4349,6 +4354,43 @@ class TestAgentRuntimes:
         assert "command: rg bdev_submit lib/bdev" in diagnostics
         assert "bdev_submit" not in answer
         assert "finish_reason" not in answer + diagnostics
+
+    async def test_agent_runtime_chat_choice_tool_calls_surface_as_diagnostics(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+        from app.services.ai_conversations import _agent_output_segments
+
+        agent_code = (
+            "import json, sys; "
+            "events=["
+            "{'choices':[{'delta':{'tool_calls':[{'id':'call_1','type':'function','function':{'name':'search_source','arguments':'{\"query\":\"bdev submit\"}'}}]}}]},"
+            "{'choices':[{'delta':{'function_call':{'name':'read_file','arguments':'{\"path\":\"lib/bdev/bdev.c\"}'}}}]},"
+            "{'choices':[{'delta':{'content':'已读取工具过程并输出答案。'}}]}"
+            "]; "
+            "[print(json.dumps(event, ensure_ascii=False), flush=True) for event in events]; "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "auto",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码后回答",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        segments = [segment for chunk in chunks for segment in _agent_output_segments(chunk)]
+        answer = "".join(content for kind, content in segments if kind == "answer")
+        diagnostics = "\n".join(content for kind, content in segments if kind == "diagnostic")
+        assert answer == "已读取工具过程并输出答案。"
+        assert "search_source" in diagnostics
+        assert "read_file" in diagnostics
+        assert "lib/bdev/bdev.c" in diagnostics
+        assert "tool_calls" not in answer
 
     async def test_agent_runtime_auto_mode_cleans_plain_fallback_chunks(self):
         from app.services.agent_cli_bridge import stream_agent_runtime

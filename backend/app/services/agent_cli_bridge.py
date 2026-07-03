@@ -770,6 +770,9 @@ def _event_text(event: dict[str, Any]) -> str | None:
             parts = _content_parts(value)
             return f"{AGENT_FINAL_ANSWER_PREFIX}{''.join(parts)}" if parts else ""
         return None
+    chat_tool_text = _chat_tool_call_text(event)
+    if chat_tool_text:
+        return _diagnostic_lines("TOOL", chat_tool_text)
     for key in ("delta", "text", "content", "message"):
         value = event.get(key)
         if isinstance(value, str):
@@ -815,10 +818,13 @@ def _event_text(event: dict[str, Any]) -> str | None:
                 if isinstance(value, dict):
                     nested = _event_text(value)
                     if nested:
-                        parts.append(nested)
+                        if _chat_choice_payload_has_answer(value):
+                            parts.append(_chat_choice_answer_text(nested, final=key == "message"))
+                        else:
+                            parts.append(nested)
             direct = choice.get("text")
             if isinstance(direct, str):
-                parts.append(direct)
+                parts.append(_chat_choice_answer_text(direct, final=False))
         if parts:
             return "".join(parts)
         if saw_choice_protocol:
@@ -920,6 +926,60 @@ def _content_parts(value: list[Any]) -> list[str]:
                     suffix = f" {json.dumps(tool_input, ensure_ascii=False)[:300]}"
                 parts.append(f"TOOL: {tool_name}{suffix}\n")
     return parts
+
+
+def _chat_tool_call_text(event: dict[str, Any]) -> str:
+    entries: list[str] = []
+    function_call = event.get("function_call")
+    if isinstance(function_call, dict):
+        text = _function_call_text(function_call)
+        if text:
+            entries.append(text)
+    tool_calls = event.get("tool_calls")
+    if isinstance(tool_calls, list):
+        for item in tool_calls:
+            if not isinstance(item, dict):
+                continue
+            function = item.get("function")
+            if isinstance(function, dict):
+                text = _function_call_text(function)
+                if text:
+                    entries.append(text)
+                    continue
+            text = _function_call_text(item)
+            if text:
+                entries.append(text)
+    return "\n".join(entries)
+
+
+def _chat_choice_payload_has_answer(value: dict[str, Any]) -> bool:
+    content = value.get("content")
+    if isinstance(content, str) and content:
+        return True
+    if isinstance(content, list) and _content_parts(content):
+        return True
+    text = value.get("text")
+    return isinstance(text, str) and bool(text)
+
+
+def _chat_choice_answer_text(value: str, *, final: bool) -> str:
+    if value.startswith((AGENT_FINAL_ANSWER_PREFIX, AGENT_ANSWER_DELTA_PREFIX)):
+        return value
+    if _only_diagnostic_parts(value):
+        return value
+    prefix = AGENT_FINAL_ANSWER_PREFIX if final else AGENT_ANSWER_DELTA_PREFIX
+    return f"{prefix}{value}"
+
+
+def _function_call_text(value: dict[str, Any]) -> str:
+    name = str(value.get("name") or value.get("tool") or value.get("function") or "function_call").strip()
+    arguments = value.get("arguments") or value.get("input")
+    suffix = ""
+    if isinstance(arguments, str) and arguments.strip():
+        suffix = f" {arguments.strip()[:300]}"
+    elif isinstance(arguments, dict) and arguments:
+        suffix = f" {json.dumps(arguments, ensure_ascii=False)[:300]}"
+    return f"{name or 'function_call'}{suffix}".strip()
 
 
 def _opencode_part_tool_text(part: dict[str, Any]) -> str:

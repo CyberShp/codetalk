@@ -2835,6 +2835,118 @@ test("renders chat choice delta chunks without protocol JSON leakage", async ({
   }
 });
 
+test("renders chat choice tool calls as folded Agent process diagnostics", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-choice-tools-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "Chat choice tool calls e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-choice-tools-")));
+  const runtimeScript = path.join(runtimeDir, "chat_choice_tool_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, sys, time",
+      "sys.stdin.read()",
+      "events = [",
+      "  {'choices':[{'delta':{'tool_calls':[{'id':'call_1','type':'function','function':{'name':'search_source','arguments':'{\"query\":\"bdev submit\"}'}}]}}]},",
+      "  {'choices':[{'delta':{'function_call':{'name':'read_file','arguments':'{\"path\":\"lib/bdev/bdev.c\"}'}}}]},",
+      "  {'choices':[{'delta':{'content':'已读取工具过程并输出答案。\\n\\n## 代码证据\\n- `lib/bdev/bdev.c`: submit 路径。\\n- `test/bdev`: 可承载回归。\\n\\n## 流程梳理\\n1. Agent 先发出工具调用。\\n2. CodeTalk 把工具调用折叠到 Agent 过程。'}}]},",
+      "]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.05)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-choice-tools-e2e-${Date.now()}`;
+  const runtimeName = `Chat choice tool runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} choice tools`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "auto",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByLabel("AI 线程消息").fill("请用 Chat choices tool_calls 读取源码并输出最终回答");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const assistantAnswer = page.locator(".ct-codex-message:not(.is-user)");
+    await expect(assistantAnswer.filter({ hasText: "已读取工具过程并输出答案" })).toBeVisible({ timeout: 20_000 });
+    await expect(assistantAnswer.filter({ hasText: "tool_calls" })).toHaveCount(0);
+    await expect(assistantAnswer.filter({ hasText: "search_source" })).toHaveCount(0);
+    await expect(assistantAnswer.filter({ hasText: "read_file" })).toHaveCount(0);
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.getByText("search_source")).toBeHidden();
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.locator("p").filter({ hasText: /search_source.*bdev submit/ })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(processDisclosure.locator("p").filter({ hasText: /read_file.*lib\/bdev\/bdev\.c/ })).toBeVisible();
+
+    let messageBody: { items: Array<{ role: string; content: string }> } = { items: [] };
+    await expect
+      .poll(async () => {
+        const messagesResp = await request.get(
+          `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+        );
+        expect(messagesResp.ok()).toBeTruthy();
+        messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+        return messageBody.items.some(
+          (item) => item.role === "assistant" && item.content.includes("已读取工具过程并输出答案"),
+        );
+      }, { timeout: 15_000 })
+      .toBe(true);
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("已读取工具过程并输出答案");
+    expect(assistant?.content).not.toContain("tool_calls");
+    expect(assistant?.content).not.toContain("search_source");
+    expect(assistant?.content).not.toContain("read_file");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("downloads a Markdown artifact written by the agent runtime", async ({
   page,
   request,
