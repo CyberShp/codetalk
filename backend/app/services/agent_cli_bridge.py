@@ -982,7 +982,9 @@ def _chat_streamed_tool_call_text(
     stream_state: dict[Any, Any] | None,
     key: str,
 ) -> str:
-    arguments = value.get("arguments") or value.get("input")
+    arguments = value.get("arguments")
+    if not isinstance(arguments, str):
+        arguments = value.get("input")
     if not isinstance(arguments, str) or stream_state is None:
         return _function_call_text(value)
     state = stream_state.setdefault(CHAT_TOOL_CALL_STATE_KEY, {})

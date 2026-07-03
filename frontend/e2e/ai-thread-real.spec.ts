@@ -3170,6 +3170,121 @@ test("folds streamed chat choice tool argument chunks into one Agent process lin
   }
 });
 
+test("waits for streamed chat choice tool arguments when the name chunk is empty", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-choice-empty-args-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "Chat choice empty argument e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-choice-empty-args-")));
+  const runtimeScript = path.join(runtimeDir, "chat_choice_empty_args_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, sys, time",
+      "sys.stdin.read()",
+      "events = [",
+      "  {'choices':[{'delta':{'tool_calls':[{'index':0,'id':'call_1','type':'function','function':{'name':'search_source','arguments':''}}]}}]},",
+      "  {'choices':[{'delta':{'tool_calls':[{'index':0,'function':{'arguments':'{\"query\":\"'}}]}}]},",
+      "  {'choices':[{'delta':{'tool_calls':[{'index':0,'function':{'arguments':'nvmf connect'}}]}}]},",
+      "  {'choices':[{'delta':{'tool_calls':[{'index':0,'function':{'arguments':'\"}'}}]}}]},",
+      "  {'choices':[{'delta':{'content':'空参数首段聚合后输出最终回答。\\n\\n## 代码证据\\n- `lib/nvmf`: connect 路径。\\n- `test/nvmf`: 可承载回归。\\n\\n## 流程梳理\\n1. 第一段只有工具名和空参数，不单独刷进过程。\\n2. 参数补齐后，Agent 过程只显示完整工具调用。\\n\\n## 黑盒测试用例\\n- 前置条件：选择当前 workspace 和 Chat choices 执行器。\\n- 步骤：发送空参数首段加后续参数分片。\\n- 预期结果：正文显示结论，过程不出现孤立工具名。'}}]},",
+      "]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.03)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-choice-empty-args-e2e-${Date.now()}`;
+  const runtimeName = `Chat choice empty args runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} empty args`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "auto",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByLabel("AI 线程消息").fill("请处理工具名首段空参数的流式调用");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const assistantAnswer = page
+      .locator(".ct-codex-message:not(.is-user)")
+      .filter({ hasText: "空参数首段聚合后输出最终回答" })
+      .first();
+    await expect(assistantAnswer).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(assistantAnswer).not.toContainText("search_source");
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    const completeToolLine = processDisclosure.locator("p").filter({ hasText: /search_source.*nvmf connect/ });
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(completeToolLine).toBeHidden();
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(completeToolLine).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.locator("p").filter({ hasText: /^search_source$/ })).toHaveCount(0);
+    await expect(processDisclosure.locator("p").filter({ hasText: /function_call.*nvmf connect/ })).toHaveCount(0);
+
+    let messageBody: { items: Array<{ role: string; content: string }> } = { items: [] };
+    await expect
+      .poll(async () => {
+        const messagesResp = await request.get(
+          `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+        );
+        expect(messagesResp.ok()).toBeTruthy();
+        messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+        return messageBody.items.some(
+          (item) => item.role === "assistant" && item.content.includes("空参数首段聚合后输出最终回答"),
+        );
+      }, { timeout: 15_000 })
+      .toBe(true);
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("空参数首段聚合后输出最终回答");
+    expect(assistant?.content).not.toContain("search_source");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("downloads a Markdown artifact written by the agent runtime", async ({
   page,
   request,
