@@ -316,6 +316,76 @@ async function createSlowStreamingRuntime(
   return { id: runtime.id, name: runtimeName };
 }
 
+async function createArtifactHistoryRuntime(
+  request: APIRequestContext,
+  label: string,
+): Promise<{ id: string; name: string; captureFile: string }> {
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-artifact-history-")));
+  const runtimeScript = path.join(runtimeDir, "artifact_history_agent.py");
+  const captureFile = path.join(runtimeDir, "artifact_history_invocations.jsonl");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, os, pathlib, sys",
+      `capture = pathlib.Path(${JSON.stringify(captureFile)})`,
+      "prompt = sys.stdin.read()",
+      "previous = sum(1 for _ in capture.open(encoding='utf-8')) if capture.exists() else 0",
+      "capture.write_text((capture.read_text(encoding='utf-8') if capture.exists() else '') + json.dumps({'turn': previous + 1, 'prompt': prompt}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+      "if previous == 0:",
+      "    artifact_dir = pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])",
+      "    artifact_dir.mkdir(parents=True, exist_ok=True)",
+      "    artifact = '\\n'.join([",
+      "        '# 第一轮完整产物',",
+      "        '',",
+      "        '## 黑盒测试用例',",
+      "        '1. 用例：正常登录；前置条件：target 已启动；步骤：initiator 发起 Login；预期结果：进入 Full Feature Phase；观测点：Login Response、session 状态和日志。',",
+      "        '2. 用例：CHAP 失败恢复；前置条件：target 开启 CHAP；步骤：使用错误 secret 失败后改用正确 secret 重连；预期结果：失败可观测且后续重连成功；观测点：Login Response、认证日志和连接状态。',",
+      "        'FULL_ARTIFACT_CONTEXT_MARKER：TC-99 CHAP 失败后重连恢复。',",
+      "    ])",
+      "    (artifact_dir / 'first-turn-blackbox.md').write_text(artifact, encoding='utf-8')",
+      "    print('已生成文件：first-turn-blackbox.md', flush=True)",
+      "else:",
+      "    seen = 'FULL_ARTIFACT_CONTEXT_MARKER' in prompt",
+      "    answer = '\\n'.join([",
+      "        '## 结论',",
+      "        'HISTORY_ARTIFACT_PROMPT_SEEN=' + str(seen) + '：已基于上一轮完整下载产物继续细化 CHAP 失败恢复。',",
+      "        '',",
+      "        '## 代码证据',",
+      "        '- `lib/iscsi/iscsi.c`: 登录路径与 CHAP 参数协商。',",
+      "        '- `test/iscsi_tgt`: 可承载 iSCSI 登录黑盒回归。',",
+      "        '',",
+      "        '## 黑盒测试用例',",
+      "        '1. 用例：CHAP 错误 secret 后恢复；前置条件：target 开启 CHAP；步骤：先使用错误 secret 登录，再使用正确 secret 重连；预期结果：首次失败可观测，第二次进入 Full Feature Phase；观测点：Login Response、认证日志和 session 状态。',",
+      "        '2. 用例：CHAP 恢复并发；前置条件：两个 initiator 并发登录；步骤：一个 initiator 使用错误 secret，另一个使用正确 secret；预期结果：失败不影响成功路径；观测点：连接数、错误日志和目标状态。',",
+      "    ])",
+      "    print(answer, flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const runtimeName = `${label} ${Date.now()}`;
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 20,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+  return { id: runtime.id, name: runtimeName, captureFile };
+}
+
 async function createCodexStdinRuntime(
   request: APIRequestContext,
   label: string,
@@ -1063,6 +1133,82 @@ test("keeps choice-delta process text out of the visible agent answer", async ({
     expect(assistant?.content).not.toContain("我先核对工作区");
     expect(assistant?.content).not.toContain("Bash");
     expect(assistant?.content).not.toContain("iscsi_conn_login_pdu_success_complete");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
+test("carries a previous downloadable agent artifact into the next non-resume prompt", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-artifact-history-")));
+  fs.mkdirSync(path.join(repo, "lib", "iscsi"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "iscsi", "iscsi.c"),
+    "int iscsi_conn_login_pdu_success_complete(void *arg) { return 0; }\n",
+    "utf8",
+  );
+  const workspaceName = `ai-artifact-history-e2e-${Date.now()}`;
+  const threadTitle = `${workspaceName} continuity`;
+
+  const runtime = await createArtifactHistoryRuntime(request, "Artifact history runtime");
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtime.name });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    const composer = page.getByLabel("AI 线程消息");
+    await composer.click();
+    await composer.pressSequentially("生成完整 iSCSI 登录黑盒测试用例文件");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(page.getByRole("link", { name: "下载完整产物" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator(".ct-codex-message").filter({ hasText: "FULL_ARTIFACT_CONTEXT_MARKER" })).toHaveCount(0);
+
+    await composer.click();
+    await composer.pressSequentially("基于上一轮继续细化 CHAP 失败恢复场景");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(page.locator(".ct-codex-message").filter({ hasText: "HISTORY_ARTIFACT_PROMPT_SEEN=True" })).toBeVisible({
+      timeout: 30_000,
+    });
+
+    const captured = fs.readFileSync(runtime.captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line)) as Array<{
+      turn: number;
+      prompt: string;
+    }>;
+    expect(captured).toHaveLength(2);
+    expect(captured[0].prompt).not.toContain("FULL_ARTIFACT_CONTEXT_MARKER");
+    expect(captured[1].prompt).toContain("历史助手完整下载产物");
+    expect(captured[1].prompt).toContain("FULL_ARTIFACT_CONTEXT_MARKER");
+    expect(captured[1].prompt).toContain("TC-99 CHAP 失败后重连恢复");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    expect(messageBody.items.filter((item) => item.role === "user")).toHaveLength(2);
+    expect(messageBody.items.at(-1)?.content).toContain("HISTORY_ARTIFACT_PROMPT_SEEN=True");
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }

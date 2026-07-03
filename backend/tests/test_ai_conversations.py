@@ -819,6 +819,83 @@ class TestAIConversationsAPI:
         assert "source_analysis_declined: true" in prompt
         assert "不要强制查 GitNexus/CGC 或工作区源码" in prompt
 
+    async def test_agent_prompt_history_expands_previous_download_artifact(
+        self,
+        sqlite_db,
+    ):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.services.ai_conversations import (
+            AIConversationStore,
+            _build_agent_prompt,
+            ai_thread_artifact_path,
+        )
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="历史产物连续性线程",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="生成完整 SFMEA 和黑盒测试用例",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+        artifact_path = ai_thread_artifact_path(conversation["id"], run_id)
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(
+            "\n".join(
+                [
+                    "# 历史产物连续性线程",
+                    "",
+                    f"- conversation_id: {conversation['id']}",
+                    f"- run_id: {run_id}",
+                    "- exported_at: 2026-07-03T00:00:00+00:00",
+                    "",
+                    "## 黑盒测试用例",
+                    "FULL_ARTIFACT_CONTEXT_MARKER：TC-99 CHAP 失败后重连恢复。",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        await store.complete_run(
+            run_id=run_id,
+            content=(
+                "## Agent 产物\n\n"
+                "已生成结构化产物（完整产物内容）。为避免长表格和完整用例挤占对话区，正文已收起到下载文件。"
+            ),
+            references=[],
+            model="agent:test",
+            actions=[
+                {
+                    "id": "download_run_artifact",
+                    "label": "下载完整产物",
+                    "href": f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifact",
+                    "kind": "download",
+                }
+            ],
+        )
+        messages = await store.list_messages(conversation["id"])
+
+        prompt = _build_agent_prompt(
+            conversation,
+            [
+                *messages,
+                {"role": "user", "content": "基于上一轮继续细化 CHAP 失败场景"},
+            ],
+            [],
+            "基于上一轮继续细化 CHAP 失败场景",
+            {"id": "runtime-history", "name": "History Runtime", "session_persistence": "none"},
+        )
+
+        assert "历史助手完整下载产物" in prompt
+        assert "FULL_ARTIFACT_CONTEXT_MARKER" in prompt
+        assert "TC-99 CHAP 失败后重连恢复" in prompt
+
     async def test_context_references_skip_source_and_graph_artifacts_when_source_declined(
         self,
         sqlite_db,

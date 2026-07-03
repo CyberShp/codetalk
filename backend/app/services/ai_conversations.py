@@ -45,6 +45,7 @@ AI_SCOPE_TYPES = {
 _MAX_REFERENCE_CHARS = 1200
 _MAX_CONTEXT_REFERENCES = 14
 _MAX_HISTORY_MESSAGES = 24
+_MAX_AGENT_HISTORY_ARTIFACT_CHARS = 12000
 _THREAD_INLINE_OUTPUT_LIMIT = 3600
 _THREAD_ARTIFACT_KEYWORDS = (
     "sfmea",
@@ -2004,7 +2005,10 @@ def _agent_prompt_history(
     if str(runtime.get("session_persistence") or "none") == "resume_args":
         return []
     history = [
-        {"role": str(msg.get("role") or ""), "content": str(msg.get("content") or "")}
+        {
+            "role": str(msg.get("role") or ""),
+            "content": _agent_prompt_history_content(msg),
+        }
         for msg in messages[-_MAX_HISTORY_MESSAGES:]
         if msg.get("role") in {"user", "assistant"}
     ]
@@ -2014,6 +2018,42 @@ def _agent_prompt_history(
             del history[index]
             break
     return history
+
+
+def _agent_prompt_history_content(message: dict[str, Any]) -> str:
+    content = str(message.get("content") or "")
+    if message.get("role") != "assistant":
+        return content
+    actions = message.get("actions") if isinstance(message.get("actions"), list) else []
+    has_download_artifact = any(
+        isinstance(action, dict) and action.get("id") == "download_run_artifact"
+        for action in actions
+    )
+    if not has_download_artifact:
+        return content
+    conversation_id = str(message.get("conversation_id") or "").strip()
+    run_id = str(message.get("run_id") or "").strip()
+    if not conversation_id or not run_id:
+        return content
+    path = ai_thread_artifact_path(conversation_id, run_id)
+    if not path.exists() or not path.is_file():
+        return content
+    try:
+        artifact_text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return content
+    cleaned = sanitize_ai_thread_artifact_markdown(artifact_text) or artifact_text
+    _header, body = _split_ai_thread_artifact_markdown(cleaned)
+    artifact_body = (body if body is not None else cleaned).strip()
+    if not artifact_body:
+        return content
+    if artifact_body == content.strip():
+        return content
+    return (
+        f"{content.strip()}\n\n"
+        "历史助手完整下载产物（用于延续上下文）：\n"
+        f"{_clip(artifact_body, _MAX_AGENT_HISTORY_ARTIFACT_CHARS)}"
+    ).strip()
 
 
 def _build_agent_repair_prompt(
