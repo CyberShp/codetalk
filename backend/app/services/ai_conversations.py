@@ -3182,6 +3182,7 @@ def _public_events_from_event(
         return [event]
     kind = str(payload.get("kind") or "")
     if kind:
+        _advance_agent_segment_state_from_kind_event(payload, segment_state)
         return [event]
     content = payload.get("content")
     if not isinstance(content, str) or not content:
@@ -3210,6 +3211,29 @@ def _is_public_process_event(event: dict[str, Any]) -> bool:
     if not isinstance(payload, dict):
         return False
     return str(payload.get("kind") or "") in _PUBLIC_PROCESS_EVENT_KINDS
+
+
+def _advance_agent_segment_state_from_kind_event(
+    payload: dict[str, Any],
+    segment_state: _AgentOutputSegmentState,
+) -> None:
+    kind = str(payload.get("kind") or "")
+    content = str(payload.get("content") or "").strip()
+    if kind not in _PUBLIC_PROCESS_EVENT_KINDS:
+        segment_state.diagnostic_active = False
+        segment_state.diagnostic_prefix = ""
+        segment_state.diagnostic_streaming_text = False
+        return
+    if _looks_like_agent_tool_invocation_line(content):
+        segment_state.diagnostic_active = True
+        segment_state.diagnostic_prefix = "tool:"
+        segment_state.diagnostic_streaming_text = False
+        return
+    prefix = _agent_diagnostic_prefix(content)
+    if prefix:
+        segment_state.diagnostic_active = True
+        segment_state.diagnostic_prefix = prefix
+        segment_state.diagnostic_streaming_text = not _agent_diagnostic_text(content)
 
 
 def _default_actions() -> list[dict[str, str]]:

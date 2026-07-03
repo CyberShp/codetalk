@@ -2151,11 +2151,11 @@ class TestAIConversationsAPI:
             references=[],
         )
         run_id = created["run"]["id"]
-        for content in [
+        for payload in [
             "THINKING: ",
             "我先核对工作区 iSCSI 登录相关源码，再",
             "据此设计黑盒用例。",
-            "Bash {\"command\":\"grep -n login lib/iscsi/iscsi.c\"}",
+            {"content": "Bash {\"command\":\"grep -n login lib/iscsi/iscsi.c\"}", "kind": "diagnostic"},
             "1125:iscsi_conn_login_pdu_success_complete(void *arg)\n",
             "lib/iscsi/iscsi.c:1539:\tAuthMethod=CHAP\n",
             "我已掌",
@@ -2164,11 +2164,13 @@ class TestAIConversationsAPI:
             "## 黑盒测试用例\n",
             "### TC-01 正常登录\n",
         ]:
+            if isinstance(payload, str):
+                payload = {"content": payload}
             await store.append_event(
                 run_id=run_id,
                 conversation_id=conversation["id"],
                 event_type="delta",
-                payload={"content": content},
+                payload=payload,
             )
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
