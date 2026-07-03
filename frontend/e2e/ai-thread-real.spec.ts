@@ -9627,10 +9627,7 @@ test("recovers an AI thread to an enabled executor after its bound runtime is di
     const threadRuntimeSelect = page.getByLabel("当前 AI 执行器");
     await expect(page.locator(".ct-codex-ai__notice")).toContainText("已自动切换到", { timeout: 15_000 });
     await expect(threadRuntimeSelect).toHaveValue(expectedFallback?.id ?? "builtin_llm");
-    await expect(threadRuntimeSelect.locator(`option[value="${runtime.id}"]`)).toContainText(
-      `${runtimeName}（已停用）`,
-    );
-    await expect(threadRuntimeSelect.locator(`option[value="${runtime.id}"]`)).toBeDisabled();
+    await expect(threadRuntimeSelect.locator(`option[value="${runtime.id}"]`)).toHaveCount(0);
     await expect(page.locator(".ct-ai-env-card").filter({ hasText: "执行器" })).toContainText(
       expectedFallback?.name ?? "内置模型",
     );

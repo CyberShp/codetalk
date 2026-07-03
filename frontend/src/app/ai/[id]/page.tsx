@@ -97,6 +97,23 @@ function agentRuntimeUnavailable(conversation: AIConversation, runtimes: AgentRu
   return !runtime || !runtime.enabled;
 }
 
+function runtimePickerOptions(
+  runtimes: AgentRuntime[],
+  conversation: AIConversation | null,
+  activeRuntime: AgentRuntime | null,
+): AgentRuntime[] {
+  const options = runtimes.filter((item) => item.enabled);
+  if (
+    conversation?.runtime_type === "agent_runtime" &&
+    activeRuntime &&
+    !activeRuntime.enabled &&
+    !options.some((item) => item.id === activeRuntime.id)
+  ) {
+    options.push(activeRuntime);
+  }
+  return options;
+}
+
 function actionKind(action: AIMessage["actions"][number]): string {
   return actionTextField(action, "kind");
 }
@@ -503,6 +520,10 @@ export default function AIThreadPage() {
   const workspaceId = threadWorkspaceId(conversation);
   const workspace = workspaces.find((item) => item.id === workspaceId) ?? null;
   const activeRuntime = agentRuntimes.find((item) => item.id === conversation?.agent_runtime_id) ?? null;
+  const runtimeOptions = useMemo(
+    () => runtimePickerOptions(agentRuntimes, conversation, activeRuntime),
+    [activeRuntime, agentRuntimes, conversation],
+  );
   const normalizedProjectQuery = railProjectQuery.trim().toLowerCase();
   const normalizedThreadQuery = railThreadQuery.trim().toLowerCase();
   const matchingRailProjects = useMemo(
@@ -1175,7 +1196,7 @@ export default function AIThreadPage() {
             disabled={savingRuntime || isActuallyRunning}
             aria-label="当前 AI 执行器"
           >
-            {agentRuntimes.map((runtime) => (
+            {runtimeOptions.map((runtime) => (
               <option key={runtime.id} value={runtime.id} disabled={!runtime.enabled}>
                 {runtime.name}{runtime.enabled ? "" : "（已停用）"}
               </option>
