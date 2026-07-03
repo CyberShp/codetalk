@@ -59,3 +59,12 @@ test("start-playwright-frontend sets an isolated Next dist dir", async () => {
   assert.match(source, /nextPlaywrightDistDir/);
   assert.match(source, /\.next-playwright-e2e/);
 });
+
+test("next config pins Turbopack root to the frontend directory", async () => {
+  const source = await import("node:fs/promises").then(({ readFile }) =>
+    readFile(new URL("../next.config.ts", import.meta.url), "utf8"),
+  );
+
+  assert.ok(source.includes("const frontendRoot = dirname(fileURLToPath(import.meta.url));"));
+  assert.match(source, /turbopack:\s*{\s*root: frontendRoot,/s);
+});

@@ -1,4 +1,8 @@
 import type { NextConfig } from "next";
+import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const frontendRoot = dirname(fileURLToPath(import.meta.url));
 
 // Intentionally NOT using `output: "standalone"`.
 // Standalone mode is designed for Docker images / serverless cold starts,
@@ -15,8 +19,10 @@ const nextConfig: NextConfig = {
   ...(process.env.CODETALK_NEXT_DIST_DIR
     ? { distDir: process.env.CODETALK_NEXT_DIST_DIR }
     : {}),
+  turbopack: {
+    root: frontendRoot,
+  },
   allowedDevOrigins: ["127.0.0.1"],
 };
 
 export default nextConfig;
-

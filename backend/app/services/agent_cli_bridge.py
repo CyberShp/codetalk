@@ -1513,12 +1513,65 @@ def _clean_agent_text(value: str) -> str:
     cleaned = _ANSI_RE.sub("", cleaned)
     cleaned = _apply_backspace_repaints(cleaned)
     cleaned = _collapse_terminal_repaints(cleaned)
-    return _CONTROL_RE.sub("", cleaned)
+    cleaned = _CONTROL_RE.sub("", cleaned)
+    return _repair_cjk_mojibake_fragments(cleaned)
 
 
 def clean_agent_output_text(value: str) -> str:
     """Normalize terminal control noise before text is classified or displayed."""
     return _clean_agent_text(value)
+
+
+_CJK_MOJIBAKE_STARTERS = frozenset(
+    "锛銆灏瘯鐧诲綍绛栫暐寤虹珛鏃朵粠鎺ュ湪繛缁ф壙坄歚"
+)
+
+
+def _repair_cjk_mojibake_fragments(value: str) -> str:
+    """Repair local UTF-8-as-GBK fragments without re-encoding normal Chinese text."""
+    if not value or not any(char in value for char in _CJK_MOJIBAKE_STARTERS):
+        return value
+    parts: list[str] = []
+    index = 0
+    max_fragment = 240
+    while index < len(value):
+        char = value[index]
+        if char not in _CJK_MOJIBAKE_STARTERS:
+            parts.append(char)
+            index += 1
+            continue
+
+        best_end = index + 1
+        best_text = char
+        limit = min(len(value), index + max_fragment)
+        for end in range(index + 1, limit + 1):
+            segment = value[index:end]
+            if "\n" in segment or "\r" in segment:
+                break
+            repaired = _decode_gb18030_wrapped_utf8(segment)
+            if repaired is None:
+                continue
+            repaired = repaired.replace("\\n", "\n")
+            if not any(_is_cjk(item) for item in repaired):
+                continue
+            if _cjk_mojibake_marker_count(repaired) >= _cjk_mojibake_marker_count(segment):
+                continue
+            best_end = end
+            best_text = repaired
+        parts.append(best_text)
+        index = best_end
+    return "".join(parts)
+
+
+def _decode_gb18030_wrapped_utf8(value: str) -> str | None:
+    try:
+        return value.encode("gb18030").decode("utf-8")
+    except UnicodeError:
+        return None
+
+
+def _cjk_mojibake_marker_count(value: str) -> int:
+    return sum(1 for char in value if char in _CJK_MOJIBAKE_STARTERS)
 
 
 def _strip_incomplete_terminal_escape_suffix(value: str) -> str:
