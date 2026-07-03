@@ -3128,7 +3128,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   }
 
   .ct-codex-ai__project-list {
-    height: min(64px, 8vh);
+    height: min(40px, 5vh);
     max-height: none;
   }
 
@@ -3147,7 +3147,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
   .ct-codex-ai__thread-list {
     flex: 1 1 0;
-    max-height: 68px;
+    max-height: 48px;
     min-height: 0;
   }
 
@@ -3182,11 +3182,11 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   }
 
   .ct-codex-ai__reader-shell {
-    min-height: 240px;
+    min-height: 0;
   }
 
   .ct-codex-ai__reader {
-    min-height: 240px;
+    min-height: 0;
   }
 
   .ct-codex-message {
