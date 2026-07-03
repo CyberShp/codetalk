@@ -2012,7 +2012,11 @@ test("agent runtime receives the complete multiline task from the real AI thread
 
     const multilinePrompt = [
       "基于当前 SPDK 源码，分析 iSCSI login 流程。",
+      "",
       "必须输出：代码证据、流程梳理、SFMEA、黑盒测试用例。",
+      "1. 先确认涉及的入口文件。",
+      "2. 再梳理 login、CHAP、digest、session reset。",
+      "- 黑盒用例只能写外部输入、操作、预期输出和观测点。",
       "不要只回复你好；不要在第一行后截断。",
       "MULTILINE_SENTINEL_LAST_LINE_93217",
     ].join("\n");
@@ -2034,7 +2038,14 @@ test("agent runtime receives the complete multiline task from the real AI thread
     for (const line of multilinePrompt.split("\n")) {
       expect(captured[0].stdin).toContain(line);
     }
+    expect(captured[0].stdin).toContain("基于当前 SPDK 源码，分析 iSCSI login 流程。\n\n必须输出");
     expect(captured[0].stdin.indexOf("基于当前 SPDK 源码")).toBeLessThan(
+      captured[0].stdin.indexOf("1. 先确认涉及的入口文件。"),
+    );
+    expect(captured[0].stdin.indexOf("1. 先确认涉及的入口文件。")).toBeLessThan(
+      captured[0].stdin.indexOf("- 黑盒用例只能写外部输入"),
+    );
+    expect(captured[0].stdin.indexOf("- 黑盒用例只能写外部输入")).toBeLessThan(
       captured[0].stdin.indexOf("MULTILINE_SENTINEL_LAST_LINE_93217"),
     );
 

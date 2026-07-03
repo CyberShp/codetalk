@@ -1744,7 +1744,7 @@ def _looks_like_explicit_agent_probe_answer(content: str) -> bool:
     if any(marker in lowered for marker in ("_missing", " missing ", "=false", "error", "failed", "traceback")):
         return False
     has_probe_marker = bool(
-        re.search(r"\b[A-Z0-9]+(?:_[A-Z0-9]+){2,}_(?:OK|REPLY|PASS|PASSED|SUCCESS)\b", text)
+        re.search(r"\b[A-Z0-9]+(?:_[A-Z0-9]+)+_(?:OK|REPLY|PASS|PASSED|SUCCESS)\b", text)
     )
     has_boolean_evidence = bool(re.search(r"\b[a-zA-Z][a-zA-Z0-9_]{2,}=true\b", text))
     return has_probe_marker and (has_boolean_evidence or len(text) >= 20)

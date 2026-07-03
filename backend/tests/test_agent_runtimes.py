@@ -2055,6 +2055,20 @@ class TestAgentRuntimes:
             )
             is False
         )
+        assert (
+            _agent_answer_requires_repair(
+                "第一行：分析 SPDK reconnect\n第二行：保留上下文再发送",
+                "\n".join(
+                    [
+                        "KEYBOARD_AGENT_REPLY",
+                        "has_multiline_prompt=true",
+                        "user_line_occurrences=1/1",
+                    ]
+                ),
+                [],
+            )
+            is False
+        )
         assert _agent_answer_requires_repair("基于源码分析 SPDK iSCSI login", "你好，有什么需要帮助", []) is True
 
     async def test_ai_thread_agent_runtime_repairs_one_line_source_answer(self, sqlite_db, tmp_path):
