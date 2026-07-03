@@ -985,7 +985,7 @@ def _chat_streamed_tool_call_text(
     arguments = value.get("arguments")
     if not isinstance(arguments, str):
         arguments = value.get("input")
-    if not isinstance(arguments, str) or stream_state is None:
+    if not isinstance(arguments, str) and stream_state is None:
         return _function_call_text(value)
     state = stream_state.setdefault(CHAT_TOOL_CALL_STATE_KEY, {})
     if not isinstance(state, dict):
@@ -998,6 +998,8 @@ def _chat_streamed_tool_call_text(
     name = str(value.get("name") or value.get("tool") or value.get("function") or "").strip()
     if name:
         call_state["name"] = name
+    if not isinstance(arguments, str):
+        return ""
     call_state["arguments"] = str(call_state.get("arguments") or "") + arguments
     completed = _completed_chat_tool_call_text(call_state)
     if completed:
