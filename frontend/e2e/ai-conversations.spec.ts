@@ -2458,7 +2458,24 @@ test("AI conversation keeps long structured artifacts compact while streaming", 
 
     releaseDone();
     await expect(page.getByText("已生成完整结构化产物，可下载查看 SFMEA 和黑盒测试用例。")).toBeVisible();
-    await expect(page.getByRole("link", { name: "下载完整产物" })).toBeVisible();
+    const artifactCard = page.locator(".ct-codex-message__actions").filter({ hasText: "下载完整产物" });
+    await expect(artifactCard).toBeVisible();
+    await expect(artifactCard).toContainText("附件与产物");
+    await expect(page.getByRole("link", { name: /下载完整产物/ })).toBeVisible();
+    const cardMetrics = await artifactCard.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const link = element.querySelector("a") as HTMLElement | null;
+      const linkRect = link?.getBoundingClientRect();
+      return {
+        display: window.getComputedStyle(element).display,
+        width: rect.width,
+        linkWidth: linkRect?.width ?? 0,
+        overflowing: element.scrollWidth > element.clientWidth + 1,
+      };
+    });
+    expect(cardMetrics.display).toBe("grid");
+    expect(cardMetrics.linkWidth).toBeGreaterThan(180);
+    expect(cardMetrics.overflowing).toBe(false);
     await expect(reader).not.toContainText("TC-09");
     await expect(reader).not.toContainText("SFMEA 风险 3");
   } finally {

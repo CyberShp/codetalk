@@ -2380,33 +2380,49 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 }
 
 .ct-codex-message__actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-top: 8px;
-  border: 0;
-  background: transparent;
-  padding: 0;
-  box-shadow: none;
+  display: grid;
+  gap: 7px;
+  width: min(100%, 420px);
+  margin-top: 10px;
+  border: 1px solid rgba(197, 208, 222, 0.92);
+  border-radius: 12px;
+  background: #f8fafc;
+  padding: 9px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.82);
+}
+
+.ct-codex-message__actions-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 760;
 }
 
 .ct-codex-message__actions a {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  min-height: 30px;
-  border: 1px solid rgba(14, 116, 144, 0.2);
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 38px;
+  min-width: 0;
+  border: 1px solid rgba(203, 213, 225, 0.9);
   border-radius: 10px;
-  background: #ecfeff;
-  padding: 6px 9px;
-  color: #155e75;
+  background: #ffffff;
+  padding: 8px 10px;
+  color: #0f172a;
   font-size: 12px;
   font-weight: 760;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ct-codex-message__actions a:hover {
-  background: #cffafe;
-  color: #164e63;
+  border-color: rgba(15, 23, 42, 0.24);
+  background: #f1f5f9;
+  color: #0f172a;
 }
 
 .ct-agent-process {

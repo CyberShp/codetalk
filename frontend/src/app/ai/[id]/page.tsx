@@ -1282,6 +1282,10 @@ export default function AIThreadPage() {
                     </div>
                     {message.actions?.some((action) => resolvedActionHref(action)) && (
                       <div className="ct-codex-message__actions">
+                        <span className="ct-codex-message__actions-title">
+                          <FileText size={14} />
+                          附件与产物
+                        </span>
                         {message.actions
                           .filter((action) => resolvedActionHref(action))
                           .map((action) => (
