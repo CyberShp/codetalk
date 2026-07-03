@@ -243,6 +243,150 @@ class TestWorkspaceCRUD:
         resp = await client_v2.get("/api/workspaces/no-such-id")
         assert resp.status_code == 404
 
+    async def test_delete_workspace_removes_workspace_ai_threads_and_artifacts(
+        self, client_v2, sqlite_db, tmp_path
+    ):
+        from app.config import settings
+
+        repo = tmp_path / "delete-workspace-repo"
+        repo.mkdir()
+        ws_resp = await client_v2.post(
+            "/api/workspaces",
+            json={"name": "delete-me", "repo_path": str(repo)},
+        )
+        assert ws_resp.status_code == 201
+        ws_id = ws_resp.json()["id"]
+        conv_id = "conv-delete-workspace"
+        run_id = "run-delete-workspace"
+        task_id = "task-delete-workspace"
+        now = datetime.now(timezone.utc).isoformat()
+        material_dir = tmp_path / "data" / "workspaces" / ws_id
+        material_dir.mkdir(parents=True)
+        (material_dir / "requirements.md").write_text("delete me\n", encoding="utf-8")
+        conversation_dir = settings.outputs_path / "ai_conversations" / conv_id
+        conversation_dir.mkdir(parents=True)
+        (conversation_dir / "assistant-output.md").write_text("old artifact\n", encoding="utf-8")
+        task_dir = settings.outputs_path / task_id
+        task_dir.mkdir(parents=True)
+        (task_dir / "report.md").write_text("task artifact\n", encoding="utf-8")
+
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspace_materials "
+                "(id, workspace_id, filename, content_type, file_path, is_active, created_at) "
+                "VALUES ('mat-delete-workspace', ?, 'requirements.md', 'requirements', ?, TRUE, ?)",
+                (ws_id, str(material_dir / "requirements.md"), now),
+            )
+            await db.execute(
+                "INSERT INTO material_chunks "
+                "(id, material_id, workspace_id, chunk_index, content, embedding, token_count, created_at) "
+                "VALUES ('chunk-delete-workspace', 'mat-delete-workspace', ?, 0, 'chunk', X'00', 1, ?)",
+                (ws_id, now),
+            )
+            await db.execute(
+                "INSERT INTO workspace_reports "
+                "(id, workspace_id, report_type, title, status, created_at) "
+                "VALUES ('report-delete-workspace', ?, 'test_design', 'delete report', 'completed', ?)",
+                (ws_id, now),
+            )
+            await db.execute(
+                "INSERT INTO workspace_chats (id, workspace_id, mode, role, content, created_at) "
+                "VALUES ('chat-delete-workspace', ?, 'freeqa', 'user', 'hello', ?)",
+                (ws_id, now),
+            )
+            await db.execute(
+                "INSERT INTO coverage_analyses (id, name, workspace_id, repo_path, created_at, updated_at) "
+                "VALUES ('coverage-delete-workspace', 'coverage', ?, ?, ?, ?)",
+                (ws_id, str(repo), now, now),
+            )
+            await db.execute(
+                "INSERT INTO tasks (id, name, repo_path, status, workspace_id, created_at, updated_at) "
+                "VALUES (?, 'delete task', ?, 'completed', ?, ?, ?)",
+                (task_id, str(repo), ws_id, now, now),
+            )
+            await db.execute(
+                "INSERT INTO task_chats (task_id, role, content, created_at) VALUES (?, 'assistant', 'done', ?)",
+                (task_id, now),
+            )
+            await db.execute(
+                "INSERT INTO ai_conversations "
+                "(id, scope_type, scope_id, workspace_id, memory_namespace, runtime_type, title, status, initial_context_json, created_at, updated_at) "
+                "VALUES (?, 'workspace', ?, ?, ?, 'builtin_llm', 'delete conversation', 'idle', '{}', ?, ?)",
+                (conv_id, ws_id, ws_id, f"workspace:{ws_id}", now, now),
+            )
+            await db.execute(
+                "INSERT INTO ai_conversation_runs (id, conversation_id, status, cursor, created_at) "
+                "VALUES (?, ?, 'completed', 0, ?)",
+                (run_id, conv_id, now),
+            )
+            await db.execute(
+                "INSERT INTO ai_messages (id, conversation_id, run_id, role, content, created_at) "
+                "VALUES ('msg-delete-workspace', ?, ?, 'assistant', 'answer', ?)",
+                (conv_id, run_id, now),
+            )
+            await db.execute(
+                "INSERT INTO ai_run_events (run_id, conversation_id, event_type, payload_json, created_at) "
+                "VALUES (?, ?, 'done', '{}', ?)",
+                (run_id, conv_id, now),
+            )
+            await db.execute(
+                "INSERT INTO ai_agent_runtime_sessions "
+                "(conversation_id, agent_runtime_id, cli_session_id, resume_session_id, metadata_json, created_at, updated_at) "
+                "VALUES (?, 'default-codex', 'cli', 'resume', '{}', ?, ?)",
+                (conv_id, now, now),
+            )
+            await db.commit()
+
+        delete_resp = await client_v2.delete(f"/api/workspaces/{ws_id}")
+        assert delete_resp.status_code == 204
+        get_resp = await client_v2.get(f"/api/workspaces/{ws_id}")
+        assert get_resp.status_code == 404
+
+        async with aiosqlite.connect(sqlite_db) as db:
+            for table, column, value in [
+                ("workspaces", "id", ws_id),
+                ("workspace_materials", "workspace_id", ws_id),
+                ("material_chunks", "workspace_id", ws_id),
+                ("workspace_reports", "workspace_id", ws_id),
+                ("workspace_chats", "workspace_id", ws_id),
+                ("coverage_analyses", "workspace_id", ws_id),
+                ("tasks", "workspace_id", ws_id),
+                ("ai_conversations", "workspace_id", ws_id),
+                ("ai_messages", "conversation_id", conv_id),
+                ("ai_conversation_runs", "conversation_id", conv_id),
+                ("ai_run_events", "conversation_id", conv_id),
+                ("ai_agent_runtime_sessions", "conversation_id", conv_id),
+            ]:
+                async with db.execute(f"SELECT COUNT(*) FROM {table} WHERE {column} = ?", (value,)) as cur:
+                    assert (await cur.fetchone())[0] == 0, table
+        assert not material_dir.exists()
+        assert not conversation_dir.exists()
+        assert not task_dir.exists()
+
+    async def test_delete_workspace_rejects_running_ai_thread(self, client_v2, sqlite_db, tmp_path):
+        repo = tmp_path / "delete-running-repo"
+        repo.mkdir()
+        ws_resp = await client_v2.post(
+            "/api/workspaces",
+            json={"name": "delete-running", "repo_path": str(repo)},
+        )
+        assert ws_resp.status_code == 201
+        ws_id = ws_resp.json()["id"]
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO ai_conversations "
+                "(id, scope_type, scope_id, workspace_id, memory_namespace, runtime_type, title, status, initial_context_json, created_at, updated_at) "
+                "VALUES ('conv-running-delete', 'workspace', ?, ?, ?, 'builtin_llm', 'running', 'running', '{}', ?, ?)",
+                (ws_id, ws_id, f"workspace:{ws_id}", now, now),
+            )
+            await db.commit()
+
+        delete_resp = await client_v2.delete(f"/api/workspaces/{ws_id}")
+        assert delete_resp.status_code == 409
+        get_resp = await client_v2.get(f"/api/workspaces/{ws_id}")
+        assert get_resp.status_code == 200
+
     async def test_list_after_create(self, client_v2, tmp_path):
         repo = tmp_path / "r"
         repo.mkdir()

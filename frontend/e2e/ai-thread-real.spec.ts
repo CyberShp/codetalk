@@ -2034,6 +2034,7 @@ test("contains large real AI project and thread lists inside scroll panes", asyn
 }) => {
   test.setTimeout(120_000);
   const stamp = Date.now();
+  const workspaceIdsToDelete: string[] = [];
 
   for (let index = 0; index < 12; index += 1) {
     const extraRepo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), `codetalk-ai-list-extra-${index}-`)));
@@ -2042,6 +2043,7 @@ test("contains large real AI project and thread lists inside scroll panes", asyn
       data: { name: `ai-list-extra-${stamp}-${index}`, repo_path: extraRepo },
     });
     expect(extraWorkspaceResp.status()).toBe(201);
+    workspaceIdsToDelete.push(((await extraWorkspaceResp.json()) as { id: string }).id);
   }
 
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-list-target-")));
@@ -2052,6 +2054,7 @@ test("contains large real AI project and thread lists inside scroll panes", asyn
   });
   expect(workspaceResp.status()).toBe(201);
   const workspace = (await workspaceResp.json()) as { id: string };
+  workspaceIdsToDelete.push(workspace.id);
 
   const threadTitles: string[] = [];
   for (let index = 0; index < 34; index += 1) {
@@ -2169,6 +2172,10 @@ test("contains large real AI project and thread lists inside scroll panes", asyn
   await page.mouse.wheel(0, 1200);
   await expect.poll(() => sidebarThreadList.evaluate((element) => element.scrollTop)).toBeGreaterThan(120);
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBeLessThan(5);
+
+  for (const workspaceId of workspaceIdsToDelete.reverse()) {
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspaceId)}`);
+  }
 });
 
 test("renders long real AI thread histories without per-message entry animations", async ({

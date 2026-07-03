@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 
 import uuid
 from datetime import datetime, timezone
@@ -37,6 +38,28 @@ _INTERNAL_WORKSPACE_STALE_SQL = (
 def _schedule_background_task(coro):
     """Schedule a fire-and-forget workspace background coroutine."""
     return asyncio.create_task(coro)
+
+
+def _remove_tree_quietly(path: Path) -> None:
+    try:
+        shutil.rmtree(path)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.warning("Failed to remove workspace artifact directory %s: %s", path, exc)
+
+
+async def _remove_workspace_file_artifacts(
+    *,
+    ws_id: str,
+    conversation_ids: list[str],
+    task_ids: list[str],
+) -> None:
+    paths = [_MATERIALS_ROOT / ws_id]
+    paths.extend(settings.outputs_path / "ai_conversations" / conv_id for conv_id in conversation_ids)
+    paths.extend(settings.outputs_path / task_id for task_id in task_ids)
+    for path in paths:
+        await asyncio.to_thread(_remove_tree_quietly, path)
 
 
 def _gitnexus_index_lock(base_url: str) -> asyncio.Lock:
@@ -482,6 +505,54 @@ async def create_workspace(
     async with db.execute("SELECT * FROM workspaces WHERE id = ?", (ws_id,)) as cur:
         row = await cur.fetchone()
     return _row_to_workspace(row)
+
+
+@router.delete("/{ws_id}", status_code=204, response_class=Response)
+async def delete_workspace(ws_id: str, db: aiosqlite.Connection = Depends(get_db)):
+    await _get_workspace_or_404(ws_id, db)
+    async with db.execute(
+        """
+        SELECT COUNT(*) AS cnt
+        FROM ai_conversations
+        WHERE workspace_id = ? AND status = 'running'
+        """,
+        (ws_id,),
+    ) as cur:
+        running = await cur.fetchone()
+    if running and int(running["cnt"] or 0) > 0:
+        raise HTTPException(status_code=409, detail="该工作空间仍有 AI 线程在生成中，请先停止后再删除")
+
+    async with db.execute("SELECT id FROM ai_conversations WHERE workspace_id = ?", (ws_id,)) as cur:
+        conversation_ids = [str(row["id"]) for row in await cur.fetchall()]
+    async with db.execute("SELECT id FROM tasks WHERE workspace_id = ?", (ws_id,)) as cur:
+        task_ids = [str(row["id"]) for row in await cur.fetchall()]
+
+    await db.execute("BEGIN")
+    if conversation_ids:
+        placeholders = ",".join("?" for _ in conversation_ids)
+        await db.execute(f"DELETE FROM ai_run_events WHERE conversation_id IN ({placeholders})", conversation_ids)
+        await db.execute(f"DELETE FROM ai_agent_runtime_sessions WHERE conversation_id IN ({placeholders})", conversation_ids)
+        await db.execute(f"DELETE FROM ai_conversation_runs WHERE conversation_id IN ({placeholders})", conversation_ids)
+        await db.execute(f"DELETE FROM ai_messages WHERE conversation_id IN ({placeholders})", conversation_ids)
+        await db.execute(f"DELETE FROM ai_conversations WHERE id IN ({placeholders})", conversation_ids)
+    if task_ids:
+        placeholders = ",".join("?" for _ in task_ids)
+        await db.execute(f"DELETE FROM task_chats WHERE task_id IN ({placeholders})", task_ids)
+        await db.execute(f"DELETE FROM tasks WHERE id IN ({placeholders})", task_ids)
+    await db.execute("DELETE FROM material_chunks WHERE workspace_id = ?", (ws_id,))
+    await db.execute("DELETE FROM workspace_materials WHERE workspace_id = ?", (ws_id,))
+    await db.execute("DELETE FROM workspace_reports WHERE workspace_id = ?", (ws_id,))
+    await db.execute("DELETE FROM workspace_chats WHERE workspace_id = ?", (ws_id,))
+    await db.execute("DELETE FROM coverage_analyses WHERE workspace_id = ?", (ws_id,))
+    await db.execute("DELETE FROM workspaces WHERE id = ?", (ws_id,))
+    await db.commit()
+
+    await _remove_workspace_file_artifacts(
+        ws_id=ws_id,
+        conversation_ids=conversation_ids,
+        task_ids=task_ids,
+    )
+    return Response(status_code=204)
 
 
 @router.get("/{ws_id}", response_model=WorkspaceResponse)
