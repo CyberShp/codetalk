@@ -2213,6 +2213,91 @@ class TestAIConversationsAPI:
             assert "SFMEA 风险 3" in artifact_text
             assert "TC-09" in artifact_text
 
+    async def test_compact_artifact_message_reads_existing_artifact_for_rich_preview(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        app = _test_app(sqlite_db)
+
+        from app.services.ai_conversations import (
+            AIConversationStore,
+            ai_thread_artifact_path,
+        )
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="spdk · AI 调查线程",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="针对 iscsi 登录写几个黑盒用例",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+        await store.complete_run(
+            run_id=run_id,
+            content=(
+                "## 结论\n\n"
+                "已生成结构化产物（完整产物内容）。为避免长表格和完整用例挤占对话区，正文已收起到下载文件。"
+            ),
+            references=[],
+            model="agent:Claude Code",
+            actions=[
+                {
+                    "id": "download_run_artifact",
+                    "label": "下载完整产物",
+                    "href": f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifact",
+                    "kind": "download",
+                }
+            ],
+        )
+
+        artifact_path = ai_thread_artifact_path(conversation["id"], run_id)
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(
+            "\n".join(
+                [
+                    "# spdk · AI 调查线程",
+                    "",
+                    f"- conversation_id: {conversation['id']}",
+                    f"- run_id: {run_id}",
+                    "- exported_at: 2026-07-03T00:00:00+00:00",
+                    "",
+                    "## 结论",
+                    "SPDK iSCSI 登录处理应覆盖正常登录、Discovery、缺 InitiatorName、CHAP 失败和异常 PDU。",
+                    "",
+                    "## 用例设计依据（源码锚点）",
+                    "- `lib/iscsi/iscsi.c:1262` 覆盖版本校验。",
+                    "- `lib/iscsi/iscsi.c:1332` 覆盖 InitiatorName 缺失。",
+                    "",
+                    "## 黑盒测试用例",
+                    "### TC-01 正常会话登录成功",
+                    "前置：target 已启动；步骤：initiator 发起 Normal 登录；预期：进入 Full Feature Phase。",
+                    "### TC-02 Discovery 登录成功",
+                    "前置：发现会话；步骤：SessionType=Discovery；预期：SendTargets 返回可访问 target。",
+                    "### TC-09 超过 MaxConnections",
+                    "前置：MaxConnectionsPerSession=N；步骤：发起第 N+1 条连接；预期：TOO_MANY_CONNECTIONS。",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+
+        assert messages.status_code == 200
+        assistant = messages.json()["items"][1]
+        assert "已生成结构化产物" in assistant["content"]
+        assert "摘要" in assistant["content"]
+        assert "SPDK iSCSI 登录处理应覆盖正常登录" in assistant["content"]
+        assert "lib/iscsi/iscsi.c:1262" in assistant["content"]
+        assert "TC-01 正常会话登录成功" in assistant["content"]
+        assert "TC-09" not in assistant["content"]
+        assert "下载完整产物" in assistant["content"]
+        assert len(assistant["content"]) < 2200
+
     async def test_agent_final_answer_does_not_truncate_richer_streaming_artifact(
         self,
         sqlite_db,
@@ -2688,7 +2773,7 @@ class TestAIConversationsAPI:
         assert "已生成结构化产物" in assistant["content"]
         assert "下载完整产物" in assistant["content"]
         assert "旧版 Agent 过程输出" not in assistant["content"]
-        assert "TC-01 正常会话登录成功" not in assistant["content"]
+        assert "TC-01 正常会话登录成功" in assistant["content"]
         assert "THINKING:" not in assistant["content"]
         assert "iscsi_conn_login_pdu_success_complete" not in assistant["content"]
         assert "旧版流式残片" not in assistant["content"]

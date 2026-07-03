@@ -3198,23 +3198,98 @@ def _should_compact_live_thread_delta(content: str, accumulated: str) -> bool:
 
 
 def _compact_thread_artifact_preview(content: str) -> str:
-    title_match = re.search(r"(?m)^#{1,3}\s+(.+?)\s*$", str(content or ""))
+    text = str(content or "")
+    title_match = re.search(r"(?m)^#{1,3}\s+(.+?)\s*$", text)
     title = title_match.group(1).strip() if title_match else "Agent 产物"
-    step_count = len(re.findall(r"(?m)^\s*\d+[\.)]\s+", str(content or "")))
-    table_rows = max(0, str(content or "").count("\n|") - 1)
+    step_count = len(re.findall(r"(?m)^\s*\d+[\.)]\s+", text))
+    table_rows = max(0, text.count("\n|") - 1)
     facts = []
     if table_rows:
         facts.append(f"{table_rows} 行表格")
     if step_count:
         facts.append(f"{step_count} 条步骤/用例")
     detail = "，".join(facts) if facts else "完整产物内容"
-    return "\n".join(
-        [
-            f"## {title}",
-            "",
-            f"已生成结构化产物（{detail}）。为避免长表格和完整用例挤占对话区，正文已收起到下载文件。",
-        ]
-    )
+    lines = [
+        f"## {title}",
+        "",
+        f"已生成结构化产物（{detail}），已保存为下载产物。为避免长表格和完整用例挤占对话区，正文只展示摘要。",
+    ]
+    summary = _artifact_preview_summary(text)
+    if summary:
+        lines.extend(["", "### 摘要", summary])
+    evidence = _artifact_preview_evidence_lines(text)
+    if evidence:
+        lines.extend(["", "### 证据摘录", *evidence])
+    cases = _artifact_preview_case_lines(text)
+    if cases:
+        lines.extend(["", "### 用例摘录", *cases])
+    return "\n".join(lines)
+
+
+def _artifact_preview_summary(text: str) -> str:
+    for line in str(text or "").splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("#") or stripped.startswith("```"):
+            continue
+        if stripped.startswith("|"):
+            continue
+        if re.match(r"^-\s+(conversation_id|run_id|exported_at|repaired_from_events):", stripped):
+            continue
+        if "已生成结构化产物" in stripped or "下载完整产物" in stripped:
+            continue
+        if _looks_like_legacy_agent_process_leak(stripped):
+            continue
+        return _clip(stripped, 360)
+    return ""
+
+
+def _artifact_preview_evidence_lines(text: str, *, limit: int = 2) -> list[str]:
+    evidence: list[str] = []
+    lines = str(text or "").splitlines()
+    evidence_section: list[str] = []
+    in_evidence_section = False
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"^#{1,4}\s+", stripped):
+            heading = stripped.lstrip("#").strip().lower()
+            in_evidence_section = any(
+                marker in heading
+                for marker in ("代码证据", "源码", "锚点", "用例设计依据", "evidence")
+            )
+            continue
+        if in_evidence_section:
+            evidence_section.append(line)
+    candidate_lines = evidence_section or lines
+    for line in candidate_lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or stripped.startswith("```"):
+            continue
+        if not re.search(
+            r"(?i)(?:`?(?:(?:lib|test|scripts|include)/)?[^`\s:]+\.(?:c|h|cc|cpp|py|sh|md)(?::\d+)?`?)",
+            stripped,
+        ):
+            continue
+        if _looks_like_legacy_agent_process_leak(stripped):
+            continue
+        item = stripped if stripped.startswith(("-", "*")) else f"- {stripped}"
+        if item not in evidence:
+            evidence.append(_clip(item, 220))
+        if len(evidence) >= limit:
+            break
+    return evidence
+
+
+def _artifact_preview_case_lines(text: str, *, limit: int = 2) -> list[str]:
+    cases: list[str] = []
+    for match in re.finditer(r"(?m)^#{2,4}\s+((?:TC|Case|用例)[-\s]?\d+[^\n]*)", str(text or ""), re.IGNORECASE):
+        item = f"- {match.group(1).strip()}"
+        if item not in cases:
+            cases.append(_clip(item, 180))
+        if len(cases) >= limit:
+            break
+    return cases
 
 
 def _conversation_from_row(row: aiosqlite.Row) -> dict[str, Any]:
@@ -3277,10 +3352,12 @@ def _legacy_artifact_preview_for_message(
     )
     if not has_artifact_action:
         return content
+    has_compact_notice = _is_compact_thread_artifact_notice(content)
     if (
         not has_legacy_process_output
         and not _legacy_cleaned_candidate_is_user_facing(content)
-    ) or _is_compact_thread_artifact_notice(content):
+        and not has_compact_notice
+    ):
         return content
     conversation_id = str(message.get("conversation_id") or "").strip()
     run_id = str(message.get("run_id") or "").strip()
@@ -3299,10 +3376,12 @@ def _legacy_artifact_preview_for_message(
     preview_source = body if body is not None else artifact_text
     if not str(preview_source or "").strip():
         return content
-    return (
-        f"{_compact_thread_artifact_preview(preview_source)}\n\n---\n"
+    suffix = (
         "这条历史消息的原始 Agent 过程输出已清理；请使用“下载完整产物”查看完整产物。"
+        if has_legacy_process_output
+        else "完整测试设计/SFMEA/黑盒用例已保存为下载产物。请使用“下载完整产物”获取完整产物。"
     )
+    return f"{_compact_thread_artifact_preview(preview_source)}\n\n---\n{suffix}"
 
 
 def _is_compact_thread_artifact_notice(content: str) -> bool:
