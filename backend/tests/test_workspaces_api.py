@@ -91,6 +91,56 @@ class TestWorkspaceCRUD:
         assert resp.status_code == 200
         assert resp.json() == []
 
+    async def test_list_hides_internal_e2e_workspaces_by_default(self, client_v2, sqlite_db):
+        now = datetime.now(timezone.utc)
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, ?, ?, 1, ?, ?)",
+                (
+                    "ws-real-spdk",
+                    "spdk",
+                    "/Volumes/Media/dpdk/spdk",
+                    now.isoformat(),
+                    now.isoformat(),
+                ),
+            )
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, ?, ?, 1, ?, ?)",
+                (
+                    "ws-internal-ai-list",
+                    "ai-list-target-1783058208353",
+                    "/private/var/folders/demo/T/codetalk-ai-list-target-7mnGty",
+                    (now - timedelta(seconds=1)).isoformat(),
+                    (now - timedelta(seconds=1)).isoformat(),
+                ),
+            )
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, ?, ?, 1, ?, ?)",
+                (
+                    "ws-internal-e2e",
+                    "ai-scroll-e2e-1783058203471",
+                    "/tmp/user-visible-repo",
+                    (now - timedelta(seconds=2)).isoformat(),
+                    (now - timedelta(seconds=2)).isoformat(),
+                ),
+            )
+            await db.commit()
+
+        resp = await client_v2.get("/api/workspaces")
+        assert resp.status_code == 200
+        assert [item["id"] for item in resp.json()] == ["ws-real-spdk"]
+
+        debug_resp = await client_v2.get("/api/workspaces", params={"include_internal": "true"})
+        assert debug_resp.status_code == 200
+        assert [item["id"] for item in debug_resp.json()] == [
+            "ws-real-spdk",
+            "ws-internal-ai-list",
+            "ws-internal-e2e",
+        ]
+
     async def test_create_with_valid_dir(self, client_v2, tmp_path, background_tasks):
         repo_dir = tmp_path / "my_repo"
         repo_dir.mkdir()

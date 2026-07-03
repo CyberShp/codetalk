@@ -409,9 +409,23 @@ async def _run_workspace_analysis(
 # --- Endpoints ---
 
 @router.get("", response_model=list[WorkspaceResponse])
-async def list_workspaces(db: aiosqlite.Connection = Depends(get_db)):
+async def list_workspaces(
+    include_internal: bool = Query(default=False),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    clauses: list[str] = []
+    if not include_internal:
+        clauses.append(
+            """
+            NOT (
+                lower(repo_path) LIKE '%/codetalk-ai-%'
+                OR lower(name) LIKE '%-e2e-%'
+            )
+            """
+        )
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     async with db.execute(
-        "SELECT * FROM workspaces ORDER BY updated_at DESC"
+        f"SELECT * FROM workspaces {where} ORDER BY updated_at DESC"
     ) as cur:
         rows = await cur.fetchall()
     return [_row_to_workspace(r) for r in rows]

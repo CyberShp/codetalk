@@ -448,7 +448,13 @@ export const api = {
 
   // ── 工作空间 (V2) ──
   workspaces: {
-    list: () => request<Workspace[]>("/api/workspaces"),
+    list: (params?: { include_internal?: boolean }) => {
+      const query = new URLSearchParams({
+        ...(params?.include_internal ? { include_internal: "true" } : {}),
+      });
+      const suffix = query.toString() ? `?${query.toString()}` : "";
+      return request<Workspace[]>(`/api/workspaces${suffix}`);
+    },
 
     create: async (data: WorkspaceCreate): Promise<Workspace> => {
       const res = await fetch(`${BASE}/api/workspaces`, {
