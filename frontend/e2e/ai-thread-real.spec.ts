@@ -5039,6 +5039,126 @@ test("self-heals a stale OpenCode resume session through the real AI thread UI",
   }
 });
 
+test("repairs a thin answer with a fresh session after stale OpenCode resume self-heal", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(80_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-stale-repair-opencode-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "OpenCode stale repair e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-opencode-stale-repair-")));
+  const runtimeScript = path.join(runtimeDir, "fake_opencode_stale_repair_agent.py");
+  const captureFile = path.join(runtimeDir, "stale_repair_invocations.jsonl");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, pathlib, sys, time",
+      `capture = pathlib.Path(${JSON.stringify(captureFile)})`,
+      "args = sys.argv[1:]",
+      "prompt = args[-1] if args else ''",
+      "session = args[args.index('--session') + 1] if '--session' in args else ''",
+      "previous = len(capture.read_text(encoding='utf-8').splitlines()) if capture.exists() else 0",
+      "capture.write_text((capture.read_text(encoding='utf-8') if capture.exists() else '') + json.dumps({'turn': previous + 1, 'argv': args, 'session': session, 'prompt': prompt}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+      "if session:",
+      "    print('No conversation found with session ID ' + session, file=sys.stderr)",
+      "    sys.exit(1)",
+      "if previous == 0:",
+      "    answer = '## 结论\\nSTALE_REPAIR_FIRST_SESSION: 已建立 OpenCode 会话。\\n\\n## 代码证据\\n- `README.md`: 当前工作区证据。\\n- `lib/iscsi/iscsi.c`: login 路径候选。\\n\\n## 黑盒测试用例\\n- 用例：正常登录；前置条件：target 已启动；步骤：initiator 发起 login；预期结果：进入 Full Feature Phase；观测点：响应状态和日志。'",
+      "    events = [{'type':'thread.started','thread_id':'opencode-stale-repair-first'}, {'type':'message','role':'assistant','content':answer}, {'type':'result','status':'success','thread_id':'opencode-stale-repair-first'}]",
+      "elif previous == 2:",
+      "    events = [{'type':'message','role':'assistant','content':'你好，有什么需要帮助？'}, {'type':'result','status':'success'}]",
+      "else:",
+      "    answer = '## 结论\\nSTALE_RESUME_REPAIR_FRESH_E2E: 已在 fresh repair 中完成源码分析。\\n\\n## 代码证据\\n- `README.md`: 当前工作区证据。\\n- `lib/iscsi/iscsi.c`: login 状态机。\\n\\n## 流程梳理\\n1. 旧 OpenCode session resume 失败。\\n2. CodeTalk 丢弃旧 session 并 fresh 重试。\\n3. 薄回答触发 repair，repair 不再带旧 session。\\n\\n## 黑盒测试用例\\n- 用例：正常登录；前置条件：target 已启动；步骤：initiator 发起 login；预期结果：进入 Full Feature Phase；观测点：响应状态和日志。'",
+      "    events = [{'type':'message','role':'assistant','content':answer}, {'type':'result','status':'success'}]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.05)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-opencode-stale-repair-e2e-${Date.now()}`;
+  const runtimeName = `OpenCode stale repair runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} stale repair`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "opencode_run_arg",
+      output_mode: "auto",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "resume_args",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    const composer = page.getByPlaceholder(/像 Codex 一样继续追问/);
+    await composer.fill("第一轮：建立 OpenCode 会话");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByText("STALE_REPAIR_FIRST_SESSION")).toBeVisible({ timeout: 20_000 });
+
+    await composer.fill("第二轮：沿用会话分析 iSCSI 登录，输出代码证据、流程梳理和黑盒测试用例");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByText("STALE_RESUME_REPAIR_FRESH_E2E")).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "No conversation found" })).toHaveCount(0);
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "你好，有什么需要帮助" })).toHaveCount(0);
+
+    const captured = fs.readFileSync(captureFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { argv: string[]; session: string; prompt: string });
+    expect(captured.map((item) => item.session)).toEqual(["", "opencode-stale-repair-first", "", ""]);
+    expect(captured[3].argv).not.toContain("--session");
+    expect(captured[3].prompt).toContain("上一次执行器输出过短");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    expect(messageBody.items.some((item) => item.role === "assistant" && item.content.includes("STALE_RESUME_REPAIR_FRESH_E2E"))).toBe(true);
+    expect(messageBody.items.some((item) => item.role === "assistant" && item.content.includes("No conversation found"))).toBe(false);
+    expect(messageBody.items.some((item) => item.role === "assistant" && item.content.includes("你好，有什么需要帮助"))).toBe(false);
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
+  }
+});
+
 test("renders native OpenCode tool and error events as Agent process diagnostics", async ({
   page,
   request,

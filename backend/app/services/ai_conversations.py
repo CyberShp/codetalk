@@ -1389,6 +1389,7 @@ async def run_agent_generation(
                     conversation_id=conversation["id"],
                     agent_runtime_id=runtime_id,
                 )
+            resume_session_id = ""
             await store.append_event(
                 run_id=run_id,
                 conversation_id=conversation["id"],
