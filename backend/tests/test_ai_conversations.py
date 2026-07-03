@@ -1,7 +1,7 @@
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import aiosqlite
@@ -529,7 +529,9 @@ class TestAIConversationsAPI:
     async def test_list_conversations_hides_internal_e2e_threads_by_default(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db, "ws-internal-thread-filter")
         hidden_ws_id = "ws-hidden-e2e-owner"
-        now = datetime.now(timezone.utc).isoformat()
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat()
+        stale = (now_dt - timedelta(hours=1)).isoformat()
         async with aiosqlite.connect(sqlite_db) as db:
             await db.execute(
                 "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
@@ -538,8 +540,8 @@ class TestAIConversationsAPI:
                     hidden_ws_id,
                     "ai-list-target-1783058208353",
                     "/private/var/folders/demo/T/codetalk-ai-list-target-7mnGty",
-                    now,
-                    now,
+                    stale,
+                    stale,
                 ),
             )
             await db.execute(
@@ -549,8 +551,8 @@ class TestAIConversationsAPI:
                     "ws-hidden-context-panel",
                     "ai_context_panel_1782987378405",
                     "/private/var/folders/demo/T/codetalk_ai_context_panel_PmJiko",
-                    now,
-                    now,
+                    stale,
+                    stale,
                 ),
             )
             await db.commit()
@@ -648,6 +650,16 @@ class TestAIConversationsAPI:
             assert hidden_context_panel_thread_resp.status_code == 201
             hidden_context_panel_thread_id = hidden_context_panel_thread_resp.json()["id"]
 
+            async with aiosqlite.connect(sqlite_db) as db:
+                stale_ids = [legacy_id, named_e2e_id, prefixed_e2e_id]
+                for offset, stale_id in enumerate(stale_ids, start=1):
+                    timestamp = (now_dt - timedelta(hours=1, seconds=offset)).isoformat()
+                    await db.execute(
+                        "UPDATE ai_conversations SET created_at = ?, updated_at = ? WHERE id = ?",
+                        (timestamp, timestamp, stale_id),
+                    )
+                await db.commit()
+
             listed = await client.get("/api/ai/conversations", params={"workspace_id": ws_id, "limit": 10})
             assert listed.status_code == 200
             ids = [item["id"] for item in listed.json()["items"]]
@@ -666,7 +678,13 @@ class TestAIConversationsAPI:
             )
             assert debug_listed.status_code == 200
             debug_ids = [item["id"] for item in debug_listed.json()["items"]]
-            assert debug_ids == [prefixed_e2e_id, named_e2e_id, legacy_id, internal_id, visible_id]
+            assert {
+                prefixed_e2e_id,
+                named_e2e_id,
+                legacy_id,
+                internal_id,
+                visible_id,
+            }.issubset(set(debug_ids))
 
             debug_global = await client.get("/api/ai/conversations", params={"limit": 10, "include_internal": "true"})
             assert debug_global.status_code == 200

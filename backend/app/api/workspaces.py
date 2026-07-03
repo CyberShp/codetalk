@@ -28,6 +28,10 @@ logger = logging.getLogger(__name__)
 
 _MATERIALS_ROOT = settings.data_path / "workspaces"
 _GITNEXUS_INDEX_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
+_INTERNAL_WORKSPACE_STALE_SQL = (
+    "COALESCE(julianday(updated_at), julianday(created_at), 0) "
+    "< julianday('now') - (30.0 / 1440.0)"
+)
 
 
 def _schedule_background_task(coro):
@@ -416,15 +420,18 @@ async def list_workspaces(
     clauses: list[str] = []
     if not include_internal:
         clauses.append(
-            """
+            f"""
             NOT (
-                lower(repo_path) LIKE '%/codetalk-ai-%'
-                OR lower(repo_path) LIKE '%/codetalk_ai_context_panel_%'
-                OR lower(repo_path) LIKE '%/codetalk-entry-ui-%'
-                OR lower(name) LIKE '%-e2e-%'
-                OR lower(name) LIKE 'ai_context_panel_%'
-                OR lower(name) LIKE 'entry-discovery-ws-%'
-                OR lower(name) LIKE 'release-click-%'
+                ({_INTERNAL_WORKSPACE_STALE_SQL})
+                AND (
+                    lower(repo_path) LIKE '%/codetalk-ai-%'
+                    OR lower(repo_path) LIKE '%/codetalk_ai_context_panel_%'
+                    OR lower(repo_path) LIKE '%/codetalk-entry-ui-%'
+                    OR lower(name) LIKE '%-e2e-%'
+                    OR lower(name) LIKE 'ai_context_panel_%'
+                    OR lower(name) LIKE 'entry-discovery-ws-%'
+                    OR lower(name) LIKE 'release-click-%'
+                )
             )
             """
         )

@@ -58,6 +58,10 @@ _THREAD_ARTIFACT_KEYWORDS = (
     "rpn",
 )
 _THREAD_ARTIFACT_STREAM_NOTICE = "正在生成结构化产物，完成后会提供下载文件。"
+_STALE_INTERNAL_RECORD_SQL = (
+    "COALESCE(julianday(updated_at), julianday(created_at), 0) "
+    "< julianday('now') - (30.0 / 1440.0)"
+)
 _SOURCE_SUFFIXES = {
     ".c",
     ".cc",
@@ -538,19 +542,28 @@ class AIConversationStore:
             params.append(status)
         if not include_internal:
             clauses.append(
-                """
+                f"""
                 NOT (
                     initial_context_json LIKE '%"codetalk_internal": true%'
                     OR initial_context_json LIKE '%"codetalk_internal":true%'
                     OR initial_context_json LIKE '%"internal_test": true%'
                     OR initial_context_json LIKE '%"internal_test":true%'
-                    OR title LIKE '%E2E 裸工具输出验证%'
-                    OR title LIKE 'E2E %'
-                    OR lower(title) LIKE '%-e2e-%'
+                    OR (
+                        ({_STALE_INTERNAL_RECORD_SQL})
+                        AND (
+                            title LIKE '%E2E 裸工具输出验证%'
+                            OR title LIKE 'E2E %'
+                            OR lower(title) LIKE '%-e2e-%'
+                        )
+                    )
                     OR EXISTS (
                         SELECT 1
                         FROM workspaces hidden_ws
                         WHERE hidden_ws.id = ai_conversations.workspace_id
+                          AND (
+                              COALESCE(julianday(hidden_ws.updated_at), julianday(hidden_ws.created_at), 0)
+                              < julianday('now') - (30.0 / 1440.0)
+                          )
                           AND (
                               lower(hidden_ws.repo_path) LIKE '%/codetalk-ai-%'
                               OR lower(hidden_ws.repo_path) LIKE '%/codetalk_ai_context_panel_%'

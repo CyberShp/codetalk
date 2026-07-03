@@ -93,6 +93,7 @@ class TestWorkspaceCRUD:
 
     async def test_list_hides_internal_e2e_workspaces_by_default(self, client_v2, sqlite_db):
         now = datetime.now(timezone.utc)
+        stale = now - timedelta(hours=1)
         async with aiosqlite.connect(sqlite_db) as db:
             await db.execute(
                 "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
@@ -112,8 +113,8 @@ class TestWorkspaceCRUD:
                     "ws-internal-ai-list",
                     "ai-list-target-1783058208353",
                     "/private/var/folders/demo/T/codetalk-ai-list-target-7mnGty",
-                    (now - timedelta(seconds=1)).isoformat(),
-                    (now - timedelta(seconds=1)).isoformat(),
+                    stale.isoformat(),
+                    stale.isoformat(),
                 ),
             )
             await db.execute(
@@ -123,8 +124,8 @@ class TestWorkspaceCRUD:
                     "ws-internal-e2e",
                     "ai-scroll-e2e-1783058203471",
                     "/tmp/user-visible-repo",
-                    (now - timedelta(seconds=2)).isoformat(),
-                    (now - timedelta(seconds=2)).isoformat(),
+                    (stale - timedelta(seconds=1)).isoformat(),
+                    (stale - timedelta(seconds=1)).isoformat(),
                 ),
             )
             for offset, ws_id, name, repo_path in [
@@ -147,22 +148,34 @@ class TestWorkspaceCRUD:
                     "/Volumes/Media/codetalk",
                 ),
             ]:
-                timestamp = (now - timedelta(seconds=offset)).isoformat()
+                timestamp = (stale - timedelta(seconds=offset)).isoformat()
                 await db.execute(
                     "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
                     "VALUES (?, ?, ?, 1, ?, ?)",
                     (ws_id, name, repo_path, timestamp, timestamp),
                 )
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, ?, ?, 1, ?, ?)",
+                (
+                    "ws-fresh-e2e",
+                    "ai-scroll-e2e-fresh",
+                    "/private/var/folders/demo/T/codetalk-ai-scroll-fresh",
+                    (now - timedelta(seconds=1)).isoformat(),
+                    (now - timedelta(seconds=1)).isoformat(),
+                ),
+            )
             await db.commit()
 
         resp = await client_v2.get("/api/workspaces")
         assert resp.status_code == 200
-        assert [item["id"] for item in resp.json()] == ["ws-real-spdk"]
+        assert [item["id"] for item in resp.json()] == ["ws-real-spdk", "ws-fresh-e2e"]
 
         debug_resp = await client_v2.get("/api/workspaces", params={"include_internal": "true"})
         assert debug_resp.status_code == 200
         assert [item["id"] for item in debug_resp.json()] == [
             "ws-real-spdk",
+            "ws-fresh-e2e",
             "ws-internal-ai-list",
             "ws-internal-e2e",
             "ws-context-panel",
