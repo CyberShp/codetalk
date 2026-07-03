@@ -5775,6 +5775,125 @@ test("cancels a running agent-runtime AI thread through the real UI", async ({
   }
 });
 
+test("continues the same AI thread after cancelling a running agent", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(120_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-cancel-retry-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI cancel retry e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-cancel-retry-")));
+  const runtimeScript = path.join(runtimeDir, "cancel_retry_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "# -*- coding: utf-8 -*-",
+      "import sys, time",
+      "prompt = sys.stdin.read()",
+      "if 'RETRY_AFTER_CANCEL' not in prompt:",
+      "    print('CANCEL_RETRY_PARTIAL_SHOULD_NOT_PERSIST', flush=True)",
+      "    time.sleep(20)",
+      "    print('CANCEL_RETRY_AFTER_STOP_SHOULD_NOT_RENDER', flush=True)",
+      "else:",
+      "    print('## 结论\\nCANCEL_RETRY_FINAL: 取消后同一线程可以继续执行并返回完整答案。\\n\\n## 代码证据\\n- `README.md`: `AI cancel retry e2e workspace` 来自当前工作区。\\n- `test/nvmf`: 可承载取消后重试的黑盒回归。\\n\\n## 流程梳理\\n1. 第一轮 Agent 输出临时片段后被用户点击停止。\\n2. CodeTalk 取消运行并清空 streaming 状态。\\n3. 用户在同一线程继续输入，Agent 重新启动并返回最终答案。\\n\\n## SFMEA\\n| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |\\n| 取消后线程卡住 | running 状态未恢复 | 用户无法继续分析 | 8 | 3 | 3 | 72 | 真实 UI 取消后立即发送下一轮并核验消息历史 |\\n\\n## 黑盒测试用例\\n1. 用例：取消后继续输入；前置条件：Agent 正在生成；步骤：点击停止后发送 RETRY_AFTER_CANCEL；预期结果：出现 CANCEL_RETRY_FINAL；观测点：按钮状态、消息历史、运行状态。\\n2. 用例：取消轮不落半截回答；前置条件：第一轮已有临时 delta；步骤：停止并查询消息列表；预期结果：第一轮只有用户消息，没有 assistant；失败诊断线索为 CANCEL_RETRY_PARTIAL_SHOULD_NOT_PERSIST。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-cancel-retry-e2e-${Date.now()}`;
+  const runtimeName = `Cancel retry runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} same thread retry`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 60,
+      enabled: true,
+      completion_mode: "process_exit",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    const firstPrompt = "先启动一个会被取消的长任务";
+    await page.getByLabel("AI 线程消息").fill(firstPrompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByRole("button", { name: "停止" })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("CANCEL_RETRY_PARTIAL_SHOULD_NOT_PERSIST")).toBeVisible({ timeout: 20_000 });
+
+    await page.getByRole("button", { name: "停止" }).hover();
+    await page.getByRole("button", { name: "停止" }).click();
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
+    await expect(page.getByLabel("AI 线程消息")).toBeEnabled({ timeout: 15_000 });
+    await expect(page.getByText("CANCEL_RETRY_AFTER_STOP_SHOULD_NOT_RENDER")).toHaveCount(0);
+
+    const retryPrompt = "RETRY_AFTER_CANCEL 请继续同一线程并输出完整四件套";
+    await page.getByLabel("AI 线程消息").fill(retryPrompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByText("CANCEL_RETRY_FINAL")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("CANCEL_RETRY_PARTIAL_SHOULD_NOT_PERSIST")).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
+
+    const conversationResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`,
+    );
+    expect(conversationResp.ok()).toBeTruthy();
+    const conversation = (await conversationResp.json()) as {
+      status: string;
+      latest_run: { status: string } | null;
+    };
+    expect(conversation.status).toBe("idle");
+    expect(conversation.latest_run?.status).toBe("completed");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    expect(messageBody.items.map((item) => item.role)).toEqual(["user", "user", "assistant"]);
+    expect(messageBody.items[0].content).toBe(firstPrompt);
+    expect(messageBody.items[1].content).toBe(retryPrompt);
+    expect(messageBody.items[2].content).toContain("CANCEL_RETRY_FINAL");
+    expect(messageBody.items[2].content).not.toContain("CANCEL_RETRY_PARTIAL_SHOULD_NOT_PERSIST");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("keeps AI thread navigation locked while an agent run is streaming", async ({
   page,
   request,
