@@ -240,7 +240,7 @@ class AgentRuntimeStore:
             seconds = int(result.get("timeout_seconds") or 900)
             result["timeout_seconds"] = max(1, min(seconds, 3600))
         if not partial or "completion_mode" in result:
-            value = str(result.get("completion_mode") or "idle_after_output").strip()
+            value = str(result.get("completion_mode") or "process_exit").strip()
             if value not in COMPLETION_MODES:
                 raise ValueError(f"不支持的 completion_mode: {value}")
             result["completion_mode"] = value
@@ -289,7 +289,7 @@ def _runtime_from_row(row: aiosqlite.Row) -> dict[str, Any]:
     data["env"] = _json_loads(data.pop("env_json", "{}"), {})
     data["output_mode"] = data.get("output_mode") or "auto"
     data["timeout_seconds"] = int(data.get("timeout_seconds") or 900)
-    data["completion_mode"] = data.get("completion_mode") or "idle_after_output"
+    data["completion_mode"] = data.get("completion_mode") or "process_exit"
     data["idle_complete_seconds"] = int(data.get("idle_complete_seconds") or 5)
     data["sentinel_text"] = data.get("sentinel_text") or ""
     data["session_persistence"] = data.get("session_persistence") or "none"

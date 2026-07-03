@@ -31,7 +31,7 @@ class AgentRuntimeBase(BaseModel):
     env: dict[str, str] = Field(default_factory=dict)
     health_command: str = ""
     timeout_seconds: int = Field(default=900, ge=1, le=3600)
-    completion_mode: str = "idle_after_output"
+    completion_mode: str = "process_exit"
     idle_complete_seconds: int = Field(default=5, ge=1, le=300)
     sentinel_text: str = ""
     session_persistence: str = "none"

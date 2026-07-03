@@ -96,7 +96,7 @@ class TestAgentRuntimes:
         body = created.json()
         assert body["prompt_transport"] == "stdin"
         assert body["output_mode"] == "auto"
-        assert body["completion_mode"] == "idle_after_output"
+        assert body["completion_mode"] == "process_exit"
         assert body["idle_complete_seconds"] == 5
         assert body["sentinel_text"] == ""
         assert body["session_persistence"] == "none"
@@ -974,6 +974,84 @@ class TestAgentRuntimes:
             assert "最终答案：NGA 已输出完整内容。" in assistant["content"]
             final_conversation = await client.get(f"/api/ai/conversations/{conversation.json()['id']}")
             assert final_conversation.json()["status"] == "idle"
+
+    async def test_ai_thread_agent_runtime_default_waits_for_process_exit_after_thinking_idle(
+        self,
+        sqlite_db,
+        tmp_path,
+    ):
+        app = _test_app(sqlite_db)
+        repo = tmp_path / "spdk"
+        (repo / "lib" / "nvmf").mkdir(parents=True)
+        (repo / "lib" / "nvmf" / "ctrlr.c").write_text(
+            "int spdk_nvmf_ctrlr_connect_probe(void) { return 0; }\n",
+            encoding="utf-8",
+        )
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-default-process-exit", repo_path=str(repo))
+        agent_script = tmp_path / "thinking_then_answer_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import sys, time",
+                    "sys.stdin.read()",
+                    "print('thinking: 正在读取工作区源码 lib/nvmf/ctrlr.c', flush=True)",
+                    "time.sleep(1.4)",
+                    "print('## 结论\\n已基于 `lib/nvmf/ctrlr.c` 完成源码分析。\\n\\n## 代码证据\\n- `lib/nvmf/ctrlr.c`: `spdk_nvmf_ctrlr_connect_probe`。\\n- `test/nvmf`: 可承载连接路径回归。\\n\\n## 流程梳理\\n1. Agent 先读取源码证据。\\n2. 等待内部分析完成后输出最终答案。', flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            runtime = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Default Process Exit Agent",
+                    "command": sys.executable,
+                    "args": [str(agent_script)],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "working_dir_mode": "project",
+                    "idle_complete_seconds": 1,
+                    "timeout_seconds": 10,
+                },
+            )
+            assert runtime.status_code == 201
+
+        from app.services.ai_conversations import AIConversationStore, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Default process-exit agent",
+            runtime_type="agent_runtime",
+            agent_runtime_id=runtime.json()["id"],
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="基于当前 SPDK 源码，输出代码证据和流程梳理。",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(store=store, run_id=run_id, runtime=runtime.json())
+
+        latest = await store.latest_run(conversation["id"])
+        assert latest and latest["status"] == "completed"
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        assert "已基于 `lib/nvmf/ctrlr.c` 完成源码分析" in assistant["content"]
+        assert "执行器没有返回有效内容" not in assistant["content"]
+        events = await store.list_events_after(conversation["id"])
+        diagnostics = "\n".join(
+            event["payload"].get("content", "")
+            for event in events
+            if event["event_type"] == "delta" and event["payload"].get("kind") == "diagnostic"
+        )
+        assert "正在读取工作区源码 lib/nvmf/ctrlr.c" in diagnostics
 
     async def test_ai_thread_agent_runtime_resumes_saved_cli_session(self, sqlite_db):
         app = _test_app(sqlite_db)

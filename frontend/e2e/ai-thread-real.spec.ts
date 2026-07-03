@@ -724,7 +724,7 @@ test("creates an AI investigation thread from the project hub and restores it af
   await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(failingRuntime.id)}`);
 });
 
-test("custom agent created from settings completes by default after output idle", async ({
+test("custom agent created from settings waits for process exit by default", async ({
   page,
   request,
 }) => {
@@ -741,18 +741,19 @@ test("custom agent created from settings completes by default after output idle"
       "prompt_file = os.environ.get('CODETALK_AGENT_PROMPT_FILE')",
       "file_prompt = open(prompt_file, encoding='utf-8').read() if prompt_file else ''",
       "assert '分析工作区源码' in prompt or '分析工作区源码' in file_prompt",
+      "print('thinking: 默认自定义 Agent 正在读取 README.md', flush=True)",
+      "time.sleep(1.4)",
       "print('\\n'.join([",
       "  '## 结论',",
-      "  '默认自定义 Agent 已完成源码分析，并且输出后保持进程存活以验证 idle 收敛。',",
+      "  '默认自定义 Agent 已完成源码分析，并且等待进程自然退出。',",
       "  '## 代码证据',",
       "  '- `README.md`: 工作区入口文件，证明 Agent 以项目目录为上下文读取源码材料。',",
       "  '- `lib/example.c`: 示例源码证据占位，用于满足源码分析答案的文件引用结构。',",
       "  '## 流程',",
       "  '1. 接收 AI 线程中的用户任务。',",
       "  '2. 读取 stdin 与 CODETALK_AGENT_PROMPT_FILE 中的完整 prompt。',",
-      "  '3. 输出最终分析并继续保持进程存活。',",
+      "  '3. 先输出过程诊断，随后输出最终分析并退出。',",
       "]), flush=True)",
-      "time.sleep(30)",
       "",
     ].join("\n"),
     "utf8",
@@ -799,7 +800,7 @@ test("custom agent created from settings completes by default after output idle"
     expect(runtime).toBeTruthy();
     runtimeId = runtime?.id ?? "";
     expect(runtime?.output_mode).toBe("auto");
-    expect(runtime?.completion_mode).toBe("idle_after_output");
+    expect(runtime?.completion_mode).toBe("process_exit");
     expect(runtime?.timeout_seconds).toBe(900);
 
     await page.goto("/ai", { waitUntil: "domcontentloaded" });

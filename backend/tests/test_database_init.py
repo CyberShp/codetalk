@@ -245,7 +245,7 @@ class TestDefaultAgentRuntimes:
         assert row is not None
         assert row["output_mode"] == "auto"
         assert row["timeout_seconds"] == 900
-        assert row["completion_mode"] == "idle_after_output"
+        assert row["completion_mode"] == "process_exit"
         assert row["idle_complete_seconds"] == 5
         assert row["sentinel_text"] == ""
         assert row["session_persistence"] == "none"

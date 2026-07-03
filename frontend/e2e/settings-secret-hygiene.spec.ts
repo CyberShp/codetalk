@@ -329,7 +329,7 @@ test("settings custom agent preset sends clowder-like runtime defaults", async (
   const payload = postedPayloads[0] as Record<string, unknown>;
   expect(payload.prompt_transport).toBe("stdin");
   expect(payload.output_mode).toBe("auto");
-  expect(payload.completion_mode).toBe("idle_after_output");
+  expect(payload.completion_mode).toBe("process_exit");
   expect(payload.idle_complete_seconds).toBe(5);
   expect(payload.sentinel_text).toBe("");
   expect(payload.session_persistence).toBe("none");
