@@ -1732,6 +1732,7 @@ class _AgentOutputSegmentState:
     diagnostic_active: bool = False
     diagnostic_prefix: str = ""
     diagnostic_streaming_text: bool = False
+    tool_answer_active: bool = False
 
 
 def _agent_output_segments(
@@ -3176,12 +3177,22 @@ def _public_events_from_event(
         segment_state.diagnostic_active = False
         segment_state.diagnostic_prefix = ""
         segment_state.diagnostic_streaming_text = False
+        segment_state.tool_answer_active = False
         return [event]
     payload = event.get("payload")
     if not isinstance(payload, dict):
         return [event]
     kind = str(payload.get("kind") or "")
     if kind:
+        if _kind_event_should_be_reclassified_as_answer(payload, segment_state):
+            next_event = dict(event)
+            next_payload = dict(payload)
+            next_payload.pop("kind", None)
+            segment_state.diagnostic_active = False
+            segment_state.diagnostic_prefix = ""
+            segment_state.diagnostic_streaming_text = False
+            segment_state.tool_answer_active = True
+            return [{**next_event, "payload": next_payload}]
         _advance_agent_segment_state_from_kind_event(payload, segment_state)
         return [event]
     content = payload.get("content")
@@ -3197,6 +3208,7 @@ def _public_events_from_event(
         next_payload["content"] = text
         if segment_kind == "diagnostic":
             next_payload["kind"] = "diagnostic"
+            segment_state.tool_answer_active = False
         public_events.append({**next_event, "payload": next_payload})
     return public_events
 
@@ -3223,17 +3235,41 @@ def _advance_agent_segment_state_from_kind_event(
         segment_state.diagnostic_active = False
         segment_state.diagnostic_prefix = ""
         segment_state.diagnostic_streaming_text = False
+        segment_state.tool_answer_active = False
         return
     if _looks_like_agent_tool_invocation_line(content):
         segment_state.diagnostic_active = True
         segment_state.diagnostic_prefix = "tool:"
         segment_state.diagnostic_streaming_text = False
+        segment_state.tool_answer_active = False
         return
     prefix = _agent_diagnostic_prefix(content)
     if prefix:
         segment_state.diagnostic_active = True
         segment_state.diagnostic_prefix = prefix
         segment_state.diagnostic_streaming_text = not _agent_diagnostic_text(content)
+        segment_state.tool_answer_active = False
+
+
+def _kind_event_should_be_reclassified_as_answer(
+    payload: dict[str, Any],
+    segment_state: _AgentOutputSegmentState,
+) -> bool:
+    kind = str(payload.get("kind") or "")
+    if kind not in _PUBLIC_PROCESS_EVENT_KINDS:
+        return False
+    content = str(payload.get("content") or "").strip()
+    if not content:
+        return False
+    if _agent_diagnostic_prefix(content) or _looks_like_agent_tool_invocation_line(content):
+        return False
+    if _looks_like_agent_process_output_line(content) or _looks_like_agent_tool_status_line(content):
+        return False
+    if segment_state.tool_answer_active:
+        return True
+    return segment_state.diagnostic_active and segment_state.diagnostic_prefix.lower().startswith(
+        ("tool:", "tool_use:", "tool_result:")
+    )
 
 
 def _default_actions() -> list[dict[str, str]]:
