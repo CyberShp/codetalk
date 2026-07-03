@@ -7043,7 +7043,7 @@ test("fails visibly when a structured agent answer still lacks required sections
 test("retries a structured quality failure and recovers with a complete agent answer", async ({
   page,
   request,
-}) => {
+}, testInfo) => {
   test.setTimeout(90_000);
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-quality-retry-repo-")));
   fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
@@ -7146,10 +7146,22 @@ test("retries a structured quality failure and recovers with a complete agent an
     await expect(page.getByText("QUALITY_RETRY_FINAL_ANSWER")).toBeVisible({ timeout: 30_000 });
     await expect(page.locator("div[role='alert']").filter({ hasText: "Agent 返回内容不足" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
-    await expect(page.getByRole("heading", { name: "代码证据" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "流程梳理" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "SFMEA" })).toBeVisible();
-    await expect(page.getByRole("heading", { name: "黑盒测试用例" })).toBeVisible();
+    await expect(page.getByRole("link", { name: "下载完整产物" })).toBeVisible({ timeout: 15_000 });
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "完整测试设计/SFMEA/黑盒用例已保存为下载产物" })).toBeVisible();
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("link", { name: "下载完整产物" }).hover();
+    await page.getByRole("link", { name: "下载完整产物" }).click();
+    const download = await downloadPromise;
+    const artifactPath = testInfo.outputPath("quality-retry-artifact.md");
+    await download.saveAs(artifactPath);
+    const artifact = fs.readFileSync(artifactPath, "utf8");
+    expect(artifact).toContain("QUALITY_RETRY_FINAL_ANSWER");
+    expect(artifact).toContain("## 代码证据");
+    expect(artifact).toContain("## 流程梳理");
+    expect(artifact).toContain("## SFMEA");
+    expect(artifact).toContain("## 黑盒测试用例");
+    expect(artifact).not.toContain("QUALITY_RETRY_INCOMPLETE_ANSWER");
 
     const processDisclosure = page.getByTestId("agent-process-disclosure");
     await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
@@ -7157,7 +7169,7 @@ test("retries a structured quality failure and recovers with a complete agent an
       .poll(async () => processDisclosure.evaluate((node) => (node as HTMLDetailsElement).open))
       .toBe(false);
     await processDisclosure.getByText("Agent 过程").click();
-    await expect(processDisclosure.getByText("正在读取工作区源码上下文")).toBeVisible();
+    await expect(processDisclosure.getByText("GitNexus/CGC 图谱产物未命中")).toBeVisible();
     await expect(processDisclosure.getByText("QUALITY_RETRY_INCOMPLETE_ANSWER")).toHaveCount(0);
 
     const conversationResp = await request.get(
@@ -7180,8 +7192,9 @@ test("retries a structured quality failure and recovers with a complete agent an
     };
     const assistant = [...messageBody.items].reverse().find((item) => item.role === "assistant");
     expect(assistant?.content).toContain("QUALITY_RETRY_FINAL_ANSWER");
-    expect(assistant?.content).toContain("## SFMEA");
-    expect(assistant?.content).toContain("## 黑盒测试用例");
+    expect(assistant?.content).toContain("下载完整产物");
+    expect(assistant?.content).not.toContain("## SFMEA");
+    expect(assistant?.content).not.toContain("## 黑盒测试用例");
     expect(assistant?.content).not.toContain("QUALITY_RETRY_INCOMPLETE_ANSWER");
     expect(fs.readFileSync(counterFile, "utf8")).toBe("3");
   } finally {

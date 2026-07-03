@@ -5003,6 +5003,75 @@ class TestAgentRuntimes:
         assert "command: rg nvmf_connect lib/nvmf" in diagnostics
         assert "thread.started" not in answer + diagnostics
 
+    async def test_ai_thread_codex_delta_final_answer_persists_without_repair(
+        self,
+        sqlite_db,
+        tmp_path,
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-codex-delta-final", repo_path=str(repo))
+        agent_script = tmp_path / "codex_delta_final_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import json, sys",
+                    "sys.stdin.read()",
+                    "events = [",
+                    "  {'type':'thread.started','thread_id':'codex-delta-session'},",
+                    "  {'type':'item.completed','item':{'type':'command_execution','command':'rg nvmf_connect lib/nvmf','status':'completed','exit_code':0,'aggregated_output':'lib/nvmf/ctrlr.c: nvmf_connect'}},",
+                    "  {'type':'item.updated','item':{'type':'agent_message','delta':'CODEX_DELTA_FINAL: '}},",
+                    "  {'type':'item.updated','item':{'type':'agent_message','delta':'已基于源码完成增量回答。'}},",
+                    "  {'type':'item.completed','item':{'type':'agent_message'}},",
+                    "]",
+                    "for event in events:",
+                    "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Codex delta final thread",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-codex-delta-final",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="请用 Codex delta 事件读取源码并输出最终回答",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-codex-delta-final",
+                "name": "Codex Delta Final Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "codex_exec_json",
+                "output_mode": "stream_json",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+            },
+        )
+
+        run = await store.get_run(run_id)
+        assert run["status"] == "completed"
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        assert "CODEX_DELTA_FINAL: 已基于源码完成增量回答。" in assistant["content"]
+        assert "nvmf_connect" not in assistant["content"]
+
     async def test_agent_runtime_chat_choice_delta_chunks_surface_as_answer(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
         from app.services.ai_conversations import _agent_output_segments
