@@ -8419,6 +8419,151 @@ test("downloads only the latest successful artifact after an agent retry", async
   }
 });
 
+test("keeps separate download links for multiple artifact turns in one AI thread", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-multi-turn-artifacts-repo-")));
+  fs.mkdirSync(path.join(repo, "lib", "bdev"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "bdev", "bdev.c"),
+    "int bdev_multi_turn_artifact_probe(void) { return 0; }\n",
+    "utf8",
+  );
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-multi-turn-artifacts-")));
+  const runtimeScript = path.join(runtimeDir, "multi_turn_artifact_agent.py");
+  const counterFile = path.join(runtimeDir, "invocations.txt");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import os, pathlib, sys",
+      "sys.stdin.read()",
+      "counter = pathlib.Path(__file__).with_name('invocations.txt')",
+      "count = int(counter.read_text(encoding='utf-8') or '0') if counter.exists() else 0",
+      "count += 1",
+      "counter.write_text(str(count), encoding='utf-8')",
+      "artifact_dir = pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])",
+      "artifact_dir.mkdir(parents=True, exist_ok=True)",
+      "marker = 'FIRST_TURN_ARTIFACT_MARKER' if count == 1 else 'SECOND_TURN_ARTIFACT_MARKER'",
+      "title = '# 第一轮 bdev 测试设计' if count == 1 else '# 第二轮 bdev 测试设计'",
+      "(artifact_dir / f'turn_{count}_report.md').write_text('\\n'.join([",
+      "    title,",
+      "    '',",
+      "    marker + ': 当前下载必须只来自这一轮 run。',",
+      "    '',",
+      "    '## 代码证据',",
+      "    '- `lib/bdev/bdev.c`: `bdev_multi_turn_artifact_probe` 约束 bdev 场景。',",
+      "    '',",
+      "    '## 流程梳理',",
+      "    '1. 应用打开 bdev。',",
+      "    '2. 提交 I/O 并等待 completion。',",
+      "    '',",
+      "    '## SFMEA',",
+      "    '- failure mode: completion lost; cause: queue drain race; effect: I/O hang; severity 8; occurrence 3; detection 4; RPN 96; mitigation: 监控 I/O 状态和超时恢复。',",
+      "    '',",
+      "    '## 黑盒测试用例',",
+      "    '1. 用例：bdev I/O 完成观测；前置条件：bdev 已创建；步骤：提交读写 I/O；预期结果：完成事件可观测且状态正确；观测点：RPC、日志、I/O 计数。',",
+      "]) + '\\n', encoding='utf-8')",
+      "print(f'已生成文件：turn_{count}_report.md', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-multi-turn-artifacts-e2e-${Date.now()}`;
+  const runtimeName = `Multi turn artifacts runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} artifact links`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill("第一轮：生成 bdev I/O 完整测试设计、SFMEA 和黑盒用例文件");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByRole("link", { name: "下载完整产物" })).toBeVisible({ timeout: 30_000 });
+
+    await page.getByLabel("AI 线程消息").fill("第二轮：生成 bdev reset/failover 完整测试设计、SFMEA 和黑盒用例文件");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    const downloadLinks = page.getByRole("link", { name: "下载完整产物" });
+    await expect(downloadLinks).toHaveCount(2, { timeout: 30_000 });
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    const restoredLinks = page.getByRole("link", { name: "下载完整产物" });
+    await expect(restoredLinks).toHaveCount(2, { timeout: 15_000 });
+    const firstHref = await restoredLinks.nth(0).getAttribute("href");
+    const secondHref = await restoredLinks.nth(1).getAttribute("href");
+    expect(firstHref).toMatch(/\/api\/ai\/conversations\/[^/]+\/runs\/[^/]+\/artifact$/);
+    expect(secondHref).toMatch(/\/api\/ai\/conversations\/[^/]+\/runs\/[^/]+\/artifact$/);
+    expect(firstHref).not.toBe(secondHref);
+
+    const firstDownloadPromise = page.waitForEvent("download");
+    await restoredLinks.nth(0).hover();
+    await restoredLinks.nth(0).click();
+    const firstDownload = await firstDownloadPromise;
+    const firstArtifactPath = testInfo.outputPath("multi-turn-first-artifact.md");
+    await firstDownload.saveAs(firstArtifactPath);
+    const firstArtifact = fs.readFileSync(firstArtifactPath, "utf8");
+    expect(firstArtifact).toContain("FIRST_TURN_ARTIFACT_MARKER");
+    expect(firstArtifact).not.toContain("SECOND_TURN_ARTIFACT_MARKER");
+
+    const secondDownloadPromise = page.waitForEvent("download");
+    await restoredLinks.nth(1).hover();
+    await restoredLinks.nth(1).click();
+    const secondDownload = await secondDownloadPromise;
+    const secondArtifactPath = testInfo.outputPath("multi-turn-second-artifact.md");
+    await secondDownload.saveAs(secondArtifactPath);
+    const secondArtifact = fs.readFileSync(secondArtifactPath, "utf8");
+    expect(secondArtifact).toContain("SECOND_TURN_ARTIFACT_MARKER");
+    expect(secondArtifact).not.toContain("FIRST_TURN_ARTIFACT_MARKER");
+    expect(fs.readFileSync(counterFile, "utf8")).toBe("2");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
+  }
+});
+
 test("injects requested workspace source into a real agent-runtime AI thread", async ({
   page,
   request,
