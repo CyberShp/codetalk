@@ -6140,7 +6140,7 @@ test("completes an agent-runtime AI thread and exports the persisted answer", as
   }
 });
 
-test("keeps an incomplete structured agent answer visible with folded quality diagnostics", async ({
+test("fails visibly when a structured agent answer still lacks required sections after repair", async ({
   page,
   request,
 }) => {
@@ -6168,7 +6168,7 @@ test("keeps an incomplete structured agent answer visible with folded quality di
   );
   const workspaceName = `ai-quality-warning-e2e-${Date.now()}`;
   const runtimeName = `Quality warning runtime ${Date.now()}`;
-  const threadTitle = `${workspaceName} structured soft warning`;
+  const threadTitle = `${workspaceName} structured quality failure`;
   const prompt = "分析 SPDK NVMe-oF target connect，并输出代码证据、流程梳理、SFMEA 和黑盒测试用例";
 
   const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
@@ -6215,15 +6215,23 @@ test("keeps an incomplete structured agent answer visible with folded quality di
     await page.getByLabel("AI 线程消息").fill(prompt);
     await page.getByRole("button", { name: "发送" }).hover();
     await page.getByRole("button", { name: "发送" }).click();
-    await expect(page.getByText("QUALITY_WARNING_VISIBLE_ANSWER")).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByText("Evidence: lib/nvmf/ctrlr.c nvmf_ctrlr_connect_quality_warning")).toBeVisible();
-    await expect(page.locator("div[role='alert']").filter({ hasText: "Agent 返回内容不足" })).toHaveCount(0);
-    await expect(page.getByText("仍未完全满足本轮源码分析验收项")).toBeHidden();
+    await expect(page.locator("div[role='alert']").filter({ hasText: "Agent 返回内容不足" })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.locator("div[role='alert']").filter({ hasText: "缺失的证据、SFMEA、流程梳理和黑盒测试用例" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "重试上一条" })).toBeVisible();
+    await expect(page.getByText("QUALITY_WARNING_VISIBLE_ANSWER")).toHaveCount(0);
 
     const processDisclosure = page.getByTestId("agent-process-disclosure");
     await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect
+      .poll(async () => processDisclosure.evaluate((node) => (node as HTMLDetailsElement).open))
+      .toBe(false);
     await processDisclosure.getByText("Agent 过程").click();
-    await expect(processDisclosure.getByText("仍未完全满足本轮源码分析验收项")).toBeVisible();
+    await expect
+      .poll(async () => processDisclosure.evaluate((node) => (node as HTMLDetailsElement).open))
+      .toBe(true);
+    await expect(processDisclosure.getByText("上一次执行器输出过短")).toBeVisible();
     await expect(page.getByText("生成诊断：默认折叠")).toHaveCount(0);
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
 
@@ -6235,8 +6243,8 @@ test("keeps an incomplete structured agent answer visible with folded quality di
       status: string;
       latest_run: { status: string } | null;
     };
-    expect(conversation.status).toBe("idle");
-    expect(conversation.latest_run?.status).toBe("completed");
+    expect(conversation.status).toBe("error");
+    expect(conversation.latest_run?.status).toBe("failed");
 
     const messagesResp = await request.get(
       `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
@@ -6246,8 +6254,7 @@ test("keeps an incomplete structured agent answer visible with folded quality di
       items: Array<{ role: string; content: string }>;
     };
     const assistant = messageBody.items.find((item) => item.role === "assistant");
-    expect(assistant?.content).toContain("QUALITY_WARNING_VISIBLE_ANSWER");
-    expect(assistant?.content).toContain("lib/nvmf/ctrlr.c");
+    expect(assistant?.content ?? "").not.toContain("QUALITY_WARNING_VISIBLE_ANSWER");
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }
