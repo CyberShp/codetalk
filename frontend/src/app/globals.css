@@ -3186,6 +3186,14 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     overflow: hidden;
   }
 
+  .ct-codex-ai__topbar h1 {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 16px;
+    line-height: 1.15;
+  }
+
   .ct-codex-ai__topbar select,
   .ct-codex-ai__topbar button,
   .ct-codex-ai__context-toggle {
@@ -3232,12 +3240,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   }
 
   .ct-codex-composer__footer > div {
-    flex: 1 1 auto;
-    flex-wrap: wrap;
-    min-width: 0;
-    gap: 6px;
-    overflow: hidden;
-    padding-bottom: 1px;
+    display: none;
   }
 
   .ct-codex-composer__footer button {
@@ -3248,10 +3251,6 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     padding: 5px 8px;
     text-overflow: ellipsis;
     white-space: nowrap;
-  }
-
-  .ct-codex-composer__footer > div button:nth-child(n + 3) {
-    display: none;
   }
 
   .ct-codex-composer .ct-codex-send {
