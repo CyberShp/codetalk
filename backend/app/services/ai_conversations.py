@@ -796,23 +796,34 @@ class AIConversationStore:
         process_only: bool = False,
     ) -> list[dict[str, Any]]:
         capped_limit = max(1, min(limit, 500))
-        raw_limit = 500 if process_only else capped_limit
         async with self._connect() as db:
-            async with db.execute(
-                """
-                SELECT *
-                FROM (
+            if process_only:
+                async with db.execute(
+                    """
                     SELECT *
                     FROM ai_run_events
                     WHERE conversation_id = ? AND run_id = ?
-                    ORDER BY event_id DESC
-                    LIMIT ?
-                )
-                ORDER BY event_id ASC
-                """,
-                (conversation_id, run_id, raw_limit),
-            ) as cur:
-                events = _public_events_from_rows(await cur.fetchall())
+                    ORDER BY event_id ASC
+                    """,
+                    (conversation_id, run_id),
+                ) as cur:
+                    events = _public_events_from_rows(await cur.fetchall())
+            else:
+                async with db.execute(
+                    """
+                    SELECT *
+                    FROM (
+                        SELECT *
+                        FROM ai_run_events
+                        WHERE conversation_id = ? AND run_id = ?
+                        ORDER BY event_id DESC
+                        LIMIT ?
+                    )
+                    ORDER BY event_id ASC
+                    """,
+                    (conversation_id, run_id, capped_limit),
+                ) as cur:
+                    events = _public_events_from_rows(await cur.fetchall())
         if process_only:
             events = [event for event in events if _is_public_process_event(event)]
         return events[-capped_limit:]

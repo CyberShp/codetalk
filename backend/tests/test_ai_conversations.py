@@ -2255,6 +2255,60 @@ class TestAIConversationsAPI:
         assert "iscsi_conn_login_pdu_success_complete" in process
         assert "answer chunk 259" not in process
 
+    async def test_process_only_run_events_do_not_lose_process_after_very_long_answer(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        app = _test_app(sqlite_db)
+
+        from app.services.ai_conversations import AIConversationStore
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="超长答案过程恢复",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="生成完整 SFMEA 和黑盒测试用例",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+        for content in [
+            "THINKING: ",
+            "正在读取 lib/nvmf/ctrlr.c 并规划测试设计。",
+            "Bash {\"command\":\"rg nvmf_ctrlr_connect lib/nvmf/ctrlr.c\"}",
+            "1032:nvmf_ctrlr_connect(struct spdk_nvmf_request *req)\n",
+            "## 黑盒测试用例\n",
+        ]:
+            await store.append_event(
+                run_id=run_id,
+                conversation_id=conversation["id"],
+                event_type="delta",
+                payload={"content": content},
+            )
+        for index in range(900):
+            await store.append_event(
+                run_id=run_id,
+                conversation_id=conversation["id"],
+                event_type="delta",
+                payload={"content": f"answer chunk {index}\n"},
+            )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                f"/api/ai/conversations/{conversation['id']}/events",
+                params={"run_id": run_id, "limit": 200, "process_only": True},
+            )
+
+        assert response.status_code == 200
+        items = response.json()["items"]
+        process = "\n".join(item["payload"].get("content", "") or item["payload"].get("message", "") for item in items)
+        assert "正在读取 lib/nvmf/ctrlr.c" in process
+        assert "rg nvmf_ctrlr_connect" in process
+        assert "nvmf_ctrlr_connect" in process
+        assert "answer chunk 899" not in process
+
     async def test_legacy_agent_process_leak_is_hidden_from_messages_and_artifact(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)
