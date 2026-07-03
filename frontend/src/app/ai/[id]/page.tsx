@@ -1338,7 +1338,9 @@ export default function AIThreadPage() {
             autoComplete="off"
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              const nativeEvent = event.nativeEvent as KeyboardEvent & { isComposing?: boolean };
+              if (nativeEvent.isComposing || event.shiftKey) return;
+              if (event.key === "Enter") {
                 event.preventDefault();
                 void send();
               }
