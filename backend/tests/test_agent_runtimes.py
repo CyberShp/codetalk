@@ -1534,6 +1534,40 @@ class TestAgentRuntimes:
             assert "resumed:codex-first" not in " ".join(second_argv)
             assert "问：resumed:codex-first" in captured[1]["stdin"]
 
+    async def test_agent_runtime_codex_exit_one_after_substantive_output_is_success(self, tmp_path):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_script = tmp_path / "fake_codex_exit_one_after_answer.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import json, sys",
+                    "print(json.dumps({'type':'thread.started','thread_id':'codex-exit-one'}, ensure_ascii=False), flush=True)",
+                    "print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'CODEX_EXIT_ONE_FINAL_ANSWER 已基于源码完成分析。'}}, ensure_ascii=False), flush=True)",
+                    "print('Codex CLI exited with code 1 after final answer', file=sys.stderr, flush=True)",
+                    "raise SystemExit(1)",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        chunks: list[str] = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "codex_exec_json",
+                "output_mode": "stream_json",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码后回答",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        output = "".join(chunks)
+        assert "CODEX_EXIT_ONE_FINAL_ANSWER 已基于源码完成分析。" in output
+
     async def test_ai_thread_agent_runtime_keeps_json_status_events_out_of_final_answer(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)

@@ -237,6 +237,15 @@ async def stream_agent_runtime(
             except Exception:
                 pass
 
+    if (
+        return_code == 1
+        and prompt_transport == "codex_exec_json"
+        and saw_stdout_output
+        and not completed_by_policy
+        and not cancelled_by_request
+    ):
+        return
+
     if return_code != 0 and not completed_by_policy and not cancelled_by_request:
         error = "".join(stderr_chunks).strip()
         raise AgentRuntimeError(redact_agent_diagnostic_text(error or f"执行器退出码：{return_code}"))
