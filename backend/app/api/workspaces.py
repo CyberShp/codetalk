@@ -30,7 +30,7 @@ _MATERIALS_ROOT = settings.data_path / "workspaces"
 _GITNEXUS_INDEX_LOCKS: dict[tuple[str, int], asyncio.Lock] = {}
 _INTERNAL_WORKSPACE_STALE_SQL = (
     "COALESCE(julianday(updated_at), julianday(created_at), 0) "
-    "< julianday('now') - (30.0 / 1440.0)"
+    "< julianday('now') - (1.0 / 1440.0)"
 )
 
 

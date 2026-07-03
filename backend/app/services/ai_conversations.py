@@ -60,7 +60,7 @@ _THREAD_ARTIFACT_KEYWORDS = (
 _THREAD_ARTIFACT_STREAM_NOTICE = "正在生成结构化产物，完成后会提供下载文件。"
 _STALE_INTERNAL_RECORD_SQL = (
     "COALESCE(julianday(updated_at), julianday(created_at), 0) "
-    "< julianday('now') - (30.0 / 1440.0)"
+    "< julianday('now') - (1.0 / 1440.0)"
 )
 _SOURCE_SUFFIXES = {
     ".c",
