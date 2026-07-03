@@ -302,6 +302,42 @@ async def test_agent_output_segments_keep_split_thinking_text_out_of_visible_ans
     assert state.diagnostic_prefix == ""
 
 
+async def test_agent_output_segments_do_not_trust_answer_delta_prefix_for_process_lines():
+    from app.services.agent_cli_bridge import AGENT_ANSWER_DELTA_PREFIX, AGENT_FINAL_ANSWER_PREFIX
+    from app.services.ai_conversations import _AgentOutputSegmentState, _agent_output_segments
+
+    state = _AgentOutputSegmentState()
+
+    segments: list[tuple[str, str]] = []
+    for chunk in [
+        f"{AGENT_ANSWER_DELTA_PREFIX}THINKING: ",
+        f"{AGENT_ANSWER_DELTA_PREFIX}我先核对工作区 iSCSI 登录相关源码，再",
+        f"{AGENT_ANSWER_DELTA_PREFIX}据此设计黑盒用例。",
+        f"{AGENT_ANSWER_DELTA_PREFIX}Bash {{\"command\": \"grep -n login lib/iscsi/iscsi.c | head -60\"}}",
+        f"{AGENT_ANSWER_DELTA_PREFIX}1125:iscsi_conn_login_pdu_success_complete(void *arg)\n",
+        (
+            f"{AGENT_FINAL_ANSWER_PREFIX}我已掌握登录处理链的关键分支。"
+            "下面基于 `lib/iscsi/iscsi.c` 的实际校验逻辑给出黑盒用例。\n"
+            "## 黑盒测试用例\n"
+            "### TC-01 正常登录\n"
+        ),
+    ]:
+        segments.extend(_agent_output_segments(chunk, state=state))
+
+    visible_answer = "".join(content for kind, content in segments if kind == "answer")
+    diagnostics = "\n".join(content for kind, content in segments if kind == "diagnostic")
+
+    assert "## 黑盒测试用例" in visible_answer
+    assert "TC-01 正常登录" in visible_answer
+    assert "THINKING" not in visible_answer
+    assert "我先核对工作区" not in visible_answer
+    assert "Bash" not in visible_answer
+    assert "iscsi_conn_login_pdu_success_complete" not in visible_answer
+    assert "我先核对工作区 iSCSI 登录相关源码" in diagnostics
+    assert "Bash" in diagnostics
+    assert "iscsi_conn_login_pdu_success_complete" in diagnostics
+
+
 async def test_agent_output_segments_fold_unindented_tool_result_source_lines():
     from app.services.ai_conversations import _agent_output_segments
 

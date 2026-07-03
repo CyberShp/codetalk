@@ -1743,7 +1743,6 @@ def _agent_output_segments(
     text = clean_agent_output_text(str(chunk or ""))
     if not text.strip():
         return []
-    answer_delta_chunk = text.startswith(AGENT_ANSWER_DELTA_PREFIX)
     final_answer_chunk = text.startswith(AGENT_FINAL_ANSWER_PREFIX)
     if text.startswith(AGENT_FINAL_ANSWER_PREFIX):
         text = text[len(AGENT_FINAL_ANSWER_PREFIX) :]
@@ -1767,7 +1766,6 @@ def _agent_output_segments(
         diagnostic_streaming_text = False
 
     for line in text.splitlines(keepends=True):
-        line_answer_chunk = line.startswith((AGENT_FINAL_ANSWER_PREFIX, AGENT_ANSWER_DELTA_PREFIX))
         if line.startswith(AGENT_FINAL_ANSWER_PREFIX):
             line = line[len(AGENT_FINAL_ANSWER_PREFIX) :]
         elif line.startswith(AGENT_ANSWER_DELTA_PREFIX):
@@ -1775,10 +1773,6 @@ def _agent_output_segments(
         content = line.strip()
         if not content:
             close_diagnostic_context()
-            continue
-        if line_answer_chunk:
-            close_diagnostic_context()
-            segments.append(("answer", line))
             continue
         prefix = _agent_diagnostic_prefix(content)
         diagnostic = _agent_diagnostic_text(content) if prefix else ""
@@ -1798,7 +1792,7 @@ def _agent_output_segments(
             line,
             diagnostic_prefix,
             diagnostic_streaming_text=diagnostic_streaming_text,
-            final_answer_chunk=final_answer_chunk or answer_delta_chunk,
+            final_answer_chunk=final_answer_chunk,
         ):
             diagnostic_buffer.append(redact_agent_diagnostic_text(content))
         else:
