@@ -3235,6 +3235,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     flex-direction: row;
     align-items: center;
     flex-wrap: nowrap;
+    justify-content: flex-end;
     gap: 7px;
     padding-top: 7px;
   }
