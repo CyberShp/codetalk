@@ -1409,7 +1409,7 @@ async def run_agent_generation(
         if agent_artifact_content:
             content = agent_artifact_content
             adopted_agent_artifact = True
-        if _agent_answer_requires_repair(user_message["content"], content, references):
+        if not adopted_agent_artifact and _agent_answer_requires_repair(user_message["content"], content, references):
             await store.append_event(
                 run_id=run_id,
                 conversation_id=conversation["id"],
@@ -1434,7 +1434,11 @@ async def run_agent_generation(
                 "".join(chunks).strip() or "执行器没有返回有效内容，请检查命令输出模式。",
                 references,
             )
-            if _agent_answer_requires_repair(user_message["content"], content, references):
+            agent_artifact_content = await _agent_thread_artifact_content(agent_artifact_dir)
+            if agent_artifact_content:
+                content = agent_artifact_content
+                adopted_agent_artifact = True
+            if not adopted_agent_artifact and _agent_answer_requires_repair(user_message["content"], content, references):
                 await store.fail_run(
                     run_id,
                     (

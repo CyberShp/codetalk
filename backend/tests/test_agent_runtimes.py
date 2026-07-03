@@ -2734,6 +2734,89 @@ class TestAgentRuntimes:
         assert "TC-08" in artifact_text
         assert "已生成文件：spdk-blackbox.md" not in artifact_text
 
+    async def test_ai_thread_agent_runtime_does_not_repair_after_artifact_file_adoption(
+        self,
+        sqlite_db,
+        tmp_path,
+        monkeypatch,
+    ):
+        repo = tmp_path / "spdk"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-artifact-before-repair", repo_path=str(repo))
+        monkeypatch.chdir(tmp_path)
+        prompt_log = tmp_path / "artifact_before_repair_prompts.jsonl"
+        agent_script = tmp_path / "artifact_before_repair_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import json, os, pathlib, sys",
+                    f"prompt_log = pathlib.Path({str(prompt_log)!r})",
+                    "prompt = sys.stdin.read()",
+                    "previous = prompt_log.read_text(encoding='utf-8') if prompt_log.exists() else ''",
+                    "prompt_log.write_text(previous + json.dumps({'prompt': prompt}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+                    "artifact_dir = pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])",
+                    "artifact_dir.mkdir(parents=True, exist_ok=True)",
+                    "report = '# SPDK 黑盒测试设计\\n\\n## 黑盒测试用例\\n' + ''.join([f'TC-{index:02d}: 外部可观测路径，执行连接并检查日志状态。\\n' for index in range(1, 9)])",
+                    "(artifact_dir / 'spdk-blackbox.md').write_text(report, encoding='utf-8')",
+                    "print('已生成文件：spdk-blackbox.md', flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, ai_thread_artifact_path, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Artifact before repair thread",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-artifact-before-repair",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content=(
+                "请基于当前 SPDK 源码输出完整的代码分析、流程梳理、SFMEA 和黑盒测试用例，"
+                "并保存为文件。"
+            ),
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-artifact-before-repair",
+                "name": "Artifact Before Repair Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+            },
+        )
+
+        prompts = [json.loads(line) for line in prompt_log.read_text(encoding="utf-8").splitlines()]
+        assert len(prompts) == 1
+
+        run = await store.get_run(run_id)
+        assert run["status"] == "completed"
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        assert "已生成结构化产物" in assistant["content"]
+        assert "下载完整产物" in assistant["content"]
+        assert "TC-08" not in assistant["content"]
+        assert any(action["id"] == "download_run_artifact" for action in assistant["actions"])
+
+        artifact_text = ai_thread_artifact_path(conversation["id"], run_id).read_text(encoding="utf-8")
+        assert "TC-08" in artifact_text
+        assert "已生成文件：spdk-blackbox.md" not in artifact_text
+
     async def test_ai_thread_agent_runtime_downloads_complete_inline_test_design(
         self,
         sqlite_db,
