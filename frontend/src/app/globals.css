@@ -1238,6 +1238,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
+  overflow-wrap: anywhere;
   border: 1px solid rgba(216, 227, 239, 0.82);
   border-radius: 16px;
   background: #ffffff;
@@ -1256,6 +1257,8 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 .ct-ai-ref code {
   min-width: 0;
   max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
   border-radius: 999px;
   background: #f1f5f9;
   padding: 3px 7px;
@@ -1274,7 +1277,9 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 }
 
 .ct-ai-ref__meta span {
-  flex: 0 0 auto;
+  flex: 1 1 92px;
+  min-width: 0;
+  overflow-wrap: anywhere;
   color: #64748b;
   font-size: 11px;
   font-weight: 600;
@@ -1283,15 +1288,14 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 .ct-ai-ref__meta code {
   min-width: 0;
   max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .ct-ai-ref p {
   margin-top: 6px;
   display: -webkit-box;
   overflow: hidden;
+  overflow-wrap: anywhere;
   color: #64748b;
   font-size: 12px;
   line-height: 1.5;
@@ -1337,6 +1341,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   display: block;
   max-height: 180px;
   overflow: auto;
+  overflow-wrap: anywhere;
   margin: 0;
   padding: 9px;
   color: #475569;
@@ -2477,8 +2482,9 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   font-size: 11px;
   font-weight: 640;
   overflow: hidden;
+  overflow-wrap: anywhere;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .ct-agent-process summary em {
@@ -2487,8 +2493,9 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   font-style: normal;
   font-weight: 680;
   overflow: hidden;
+  overflow-wrap: anywhere;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .ct-agent-process > div {
@@ -3059,9 +3066,9 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     width: 100%;
     max-width: 100%;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(144px, 17vh) minmax(0, 1fr);
-    height: 100%;
-    min-height: 0;
+    grid-template-rows: auto minmax(0, 1fr);
+    height: max(660px, calc(100vh - 190px));
+    min-height: max(660px, calc(100vh - 190px));
     padding: 0 10px 10px;
     overflow: hidden;
   }
@@ -3079,9 +3086,10 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   .ct-codex-ai__rail {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: auto auto minmax(44px, 1fr);
+    grid-template-rows: auto auto;
     align-content: stretch;
     gap: 6px;
+    height: auto;
     max-height: none;
     overflow: hidden;
     padding: 6px;
@@ -3127,19 +3135,18 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
   .ct-codex-ai__thread-list {
     grid-column: 1 / -1;
-    min-height: 44px;
+    min-height: 0;
   }
 
   .ct-codex-ai__thread-list {
     flex: 1 1 0;
-    height: auto;
-    max-height: none;
+    max-height: 68px;
     min-height: 0;
   }
 
   .ct-codex-ai__main {
     height: 100%;
-    min-height: 0;
+    min-height: 430px;
   }
 
   .ct-codex-ai__context {
@@ -3165,6 +3172,14 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     width: min(100%, calc(100vw - 54px));
     max-width: calc(100vw - 54px);
     min-width: 0;
+  }
+
+  .ct-codex-ai__reader-shell {
+    min-height: 300px;
+  }
+
+  .ct-codex-ai__reader {
+    min-height: 300px;
   }
 
   .ct-codex-message {
