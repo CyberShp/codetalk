@@ -281,8 +281,7 @@ function AgentProcessDisclosure({ diagnostics }: { diagnostics: string[] }) {
   const [open, setOpen] = useState(false);
   const visibleDiagnostics = capAgentProcessDiagnostics(diagnostics);
   if (visibleDiagnostics.length === 0) return null;
-  const latestDiagnostic = visibleDiagnostics[visibleDiagnostics.length - 1] ?? "";
-  const latestSummary = agentProcessSummaryText(latestDiagnostic);
+  const latestSummary = latestAgentProcessSummaryText(visibleDiagnostics);
   return (
     <details
       className="ct-agent-process"
@@ -309,6 +308,24 @@ function AgentProcessDisclosure({ diagnostics }: { diagnostics: string[] }) {
 function agentProcessSummaryText(value: string): string {
   const cleaned = redactDiagnosticText(value).replace(/\s+/g, " ").trim();
   if (!cleaned) return "过程已更新";
+  if (shouldFoldAgentProcessSummary(cleaned)) {
+    return "内部过程已更新，可展开查看";
+  }
+  return cleaned.length > 120 ? `${cleaned.slice(0, 117)}...` : cleaned;
+}
+
+function latestAgentProcessSummaryText(values: string[]): string {
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    const cleaned = redactDiagnosticText(values[index] ?? "").replace(/\s+/g, " ").trim();
+    if (!cleaned || foldedAgentProcessCount(cleaned) > 0 || shouldFoldAgentProcessSummary(cleaned)) continue;
+    return agentProcessSummaryText(cleaned);
+  }
+  return agentProcessSummaryText(values[values.length - 1] ?? "");
+}
+
+function shouldFoldAgentProcessSummary(value: string): boolean {
+  const cleaned = redactDiagnosticText(value).replace(/\s+/g, " ").trim();
+  if (!cleaned) return false;
   const lowered = cleaned.toLowerCase();
   const sensitiveProcessMarkers = [
     "chain-of-thought",
@@ -336,19 +353,13 @@ function agentProcessSummaryText(value: string): string {
     "错误",
     "工具调用",
   ];
-  if (sensitiveProcessMarkers.some((marker) => lowered.includes(marker))) {
-    return "内部过程已更新，可展开查看";
-  }
-  if (looksLikeRawAgentProcessOutput(cleaned)) {
-    return "内部过程已更新，可展开查看";
-  }
-  return cleaned.length > 120 ? `${cleaned.slice(0, 117)}...` : cleaned;
+  return sensitiveProcessMarkers.some((marker) => lowered.includes(marker)) || looksLikeRawAgentProcessOutput(cleaned);
 }
 
 function looksLikeRawAgentProcessOutput(value: string): boolean {
   const text = value.trim();
   if (!text) return false;
-  if (/^\d{1,7}[:\t]/.test(text)) return true;
+  if (/^\d{1,7}(?::|\t|\s+[{};)]\s*$)/.test(text)) return true;
   if (/^[^\s:]+\.(?:c|h|cc|cpp|cxx|hpp|py|go|rs|ts|tsx|js|java|sh|md):\d+[:\t]/i.test(text)) {
     return true;
   }

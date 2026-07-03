@@ -2035,13 +2035,145 @@ test("AI conversation keeps raw tool output out of the collapsed Agent process s
 
   const processDisclosure = page.getByTestId("agent-process-disclosure");
   await expect(processDisclosure.getByText("Agent 过程")).toBeVisible();
-  await expect(processDisclosure.locator("summary")).toContainText("内部过程已更新，可展开查看");
+  await expect(processDisclosure.locator("summary")).toContainText("正在读取工作区源码上下文");
   await expect(processDisclosure.locator("summary")).not.toContainText("1434:");
   await expect(processDisclosure.locator("summary")).not.toContainText("rsph->status_detail");
   await expect(page.locator(".ct-codex-ai__reader")).not.toContainText("rsph->status_detail");
 
   await processDisclosure.getByText("Agent 过程").click();
   await expect(processDisclosure.getByText("rsph->status_detail")).toBeVisible();
+});
+
+test("AI conversation collapsed Agent summary prefers friendly progress over raw source tail", async ({ page }) => {
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: [
+        {
+          id: "ws-agent-friendly-summary",
+          name: "SPDK 友好过程摘要",
+          repo_path: "/Volumes/Media/dpdk/spdk",
+          indexed: 1,
+          index_job: null,
+          index_progress: 100,
+          analyze_status: null,
+          analyze_progress: 0,
+          last_index_error: null,
+          created_at: "2026-06-28T00:00:00Z",
+          updated_at: "2026-06-28T00:00:00Z",
+          materials: [],
+          reports: [],
+        },
+      ],
+    });
+  });
+  await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations?workspace_id=ws-agent-friendly-summary&limit=50", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations/conv-agent-friendly-summary", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        id: "conv-agent-friendly-summary",
+        scope_type: "workspace",
+        scope_id: "ws-agent-friendly-summary",
+        workspace_id: "ws-agent-friendly-summary",
+        memory_namespace: "workspace:ws-agent-friendly-summary",
+        title: "Agent 友好过程摘要线程",
+        status: "idle",
+        initial_context: {},
+        created_at: "2026-06-28T00:00:00Z",
+        updated_at: "2026-06-28T00:00:02Z",
+        latest_run: {
+          id: "run-agent-friendly-summary",
+          conversation_id: "conv-agent-friendly-summary",
+          status: "completed",
+          cursor: 6,
+          error: null,
+          model: "agent:Claude Code",
+          token_usage: {},
+          created_at: "2026-06-28T00:00:01Z",
+          started_at: "2026-06-28T00:00:01Z",
+          completed_at: "2026-06-28T00:00:02Z",
+        },
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-agent-friendly-summary/messages", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        items: [
+          {
+            id: "msg-agent-friendly-user",
+            conversation_id: "conv-agent-friendly-summary",
+            run_id: "run-agent-friendly-summary",
+            role: "user",
+            content: "核对 iSCSI CHAP 源码证据",
+            references: [],
+            actions: [],
+            created_at: "2026-06-28T00:00:01Z",
+          },
+          {
+            id: "msg-agent-friendly-assistant",
+            conversation_id: "conv-agent-friendly-summary",
+            run_id: "run-agent-friendly-summary",
+            role: "assistant",
+            content: "FINAL_ANSWER: 已基于源码核对完成。",
+            references: [],
+            actions: [],
+            created_at: "2026-06-28T00:00:02Z",
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-agent-friendly-summary/events?**", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        items: [
+          {
+            event_id: 1,
+            run_id: "run-agent-friendly-summary",
+            conversation_id: "conv-agent-friendly-summary",
+            event_type: "status",
+            payload: { status: "running", message: "正在读取工作区源码上下文。" },
+            created_at: "2026-06-28T00:00:01Z",
+          },
+          {
+            event_id: 2,
+            run_id: "run-agent-friendly-summary",
+            conversation_id: "conv-agent-friendly-summary",
+            event_type: "delta",
+            payload: {
+              kind: "diagnostic",
+              content: "CodeTalk 已在完成时整理执行器输出，最终回答以线程消息为准。",
+            },
+            created_at: "2026-06-28T00:00:02Z",
+          },
+          {
+            event_id: 3,
+            run_id: "run-agent-friendly-summary",
+            conversation_id: "conv-agent-friendly-summary",
+            event_type: "delta",
+            payload: { kind: "diagnostic", content: "213\t\t}" },
+            created_at: "2026-06-28T00:00:02Z",
+          },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/ai/conv-agent-friendly-summary", { waitUntil: "domcontentloaded" });
+
+  const processDisclosure = page.getByTestId("agent-process-disclosure");
+  await expect(processDisclosure.locator("summary")).toContainText("CodeTalk 已在完成时整理执行器输出");
+  await expect(processDisclosure.locator("summary")).not.toContainText("213");
 });
 
 test("AI conversation keeps the start and end of a long Agent process history", async ({ page }) => {
