@@ -583,6 +583,19 @@ class TestAIConversationsAPI:
             assert named_e2e_resp.status_code == 201
             named_e2e_id = named_e2e_resp.json()["id"]
 
+            prefixed_e2e_resp = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "memory_namespace": f"workspace:{ws_id}",
+                    "title": "E2E 源码全文折叠验证",
+                },
+            )
+            assert prefixed_e2e_resp.status_code == 201
+            prefixed_e2e_id = prefixed_e2e_resp.json()["id"]
+
             listed = await client.get("/api/ai/conversations", params={"workspace_id": ws_id, "limit": 10})
             assert listed.status_code == 200
             ids = [item["id"] for item in listed.json()["items"]]
@@ -594,7 +607,7 @@ class TestAIConversationsAPI:
             )
             assert debug_listed.status_code == 200
             debug_ids = [item["id"] for item in debug_listed.json()["items"]]
-            assert debug_ids == [named_e2e_id, legacy_id, internal_id, visible_id]
+            assert debug_ids == [prefixed_e2e_id, named_e2e_id, legacy_id, internal_id, visible_id]
 
     async def test_delete_conversation_removes_idle_thread_and_rejects_running_thread(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)

@@ -545,6 +545,7 @@ class AIConversationStore:
                     OR initial_context_json LIKE '%"internal_test": true%'
                     OR initial_context_json LIKE '%"internal_test":true%'
                     OR title LIKE '%E2E 裸工具输出验证%'
+                    OR title LIKE 'E2E %'
                     OR lower(title) LIKE '%-e2e-%'
                 )
                 """
