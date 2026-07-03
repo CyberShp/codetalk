@@ -2388,7 +2388,7 @@ class TestAgentRuntimes:
         assert "## 黑盒测试用例" in content
         assert content.count("## 黑盒测试用例") == 1
         assert "已生成结构化产物" in content
-        assert "TC-02 CHAP 失败" not in content
+        assert "TC-02 CHAP 失败" in content
         assert "THINKING" not in content
         assert "我先搜索源码" not in content
         assert "tool_use" not in content
@@ -2484,7 +2484,7 @@ class TestAgentRuntimes:
         assistant = [item for item in messages if item["role"] == "assistant"][-1]
         assert "## 黑盒测试用例" in assistant["content"]
         assert "已生成结构化产物" in assistant["content"]
-        assert "TC-01 正常登录变体" not in assistant["content"]
+        assert "TC-01 正常登录变体" in assistant["content"]
         assert "iscsi_conn_login_pdu_success_complete" not in assistant["content"]
         assert "AuthMethod=CHAP" not in assistant["content"]
 
@@ -2961,7 +2961,7 @@ class TestAgentRuntimes:
         messages = await store.list_messages(conversation["id"])
         assistant = [item for item in messages if item["role"] == "assistant"][-1]
         assert "已生成结构化产物" in assistant["content"]
-        assert "Concise saved file" not in assistant["content"]
+        assert "Concise saved file" in assistant["content"]
         assert any(action["id"] == "download_run_artifact" for action in assistant["actions"])
 
         artifact_text = ai_thread_artifact_path(conversation["id"], run_id).read_text(encoding="utf-8")
@@ -3032,7 +3032,7 @@ class TestAgentRuntimes:
         messages = await store.list_messages(conversation["id"])
         assistant = [item for item in messages if item["role"] == "assistant"][-1]
         assert "已生成结构化产物" in assistant["content"]
-        assert "FLOW_ARTIFACT_ONLY" not in assistant["content"]
+        assert "FLOW_ARTIFACT_ONLY" in assistant["content"]
         assert "SFMEA_ARTIFACT_ONLY" not in assistant["content"]
         assert any(action["id"] == "download_run_artifact" for action in assistant["actions"])
 

@@ -362,6 +362,30 @@ async def test_agent_output_segments_fold_unindented_tool_result_source_lines():
     ]
 
 
+async def test_agent_output_segments_fold_bare_tool_result_source_lines_before_answer():
+    from app.services.ai_conversations import _agent_output_segments
+
+    segments = _agent_output_segments(
+        "1125:iscsi_conn_login_pdu_success_complete(void *arg)\n"
+        "lib/iscsi/iscsi.c:1539:\t\trc = iscsi_op_login_update_param(conn, \"AuthMethod\", \"CHAP\", \"CHAP\");\n"
+        "AuthMethod=CHAP\n"
+        "\n"
+        "## 黑盒测试用例\n"
+        "### TC-01 正常登录\n"
+    )
+
+    assert segments == [
+        (
+            "diagnostic",
+            "1125:iscsi_conn_login_pdu_success_complete(void *arg)\n"
+            "lib/iscsi/iscsi.c:1539:\t\trc = iscsi_op_login_update_param(conn, \"AuthMethod\", \"CHAP\", \"CHAP\");\n"
+            "AuthMethod=CHAP",
+        ),
+        ("answer", "## 黑盒测试用例\n"),
+        ("answer", "### TC-01 正常登录\n"),
+    ]
+
+
 async def test_agent_output_segments_keep_final_answer_after_json_tool_parts():
     from app.services.agent_cli_bridge import AGENT_FINAL_ANSWER_PREFIX
     from app.services.ai_conversations import _agent_output_segments

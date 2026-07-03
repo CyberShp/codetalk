@@ -1903,6 +1903,15 @@ def _agent_output_segments(
             diagnostic_buffer.append(redact_agent_diagnostic_text(content))
             diagnostic_prefix = "tool:"
             diagnostic_streaming_text = False
+        elif (
+            not final_answer_chunk
+            and not diagnostic_prefix
+            and _looks_like_agent_bare_tool_result_line(content)
+        ):
+            flush_diagnostic()
+            diagnostic_buffer.append(redact_agent_diagnostic_text(content))
+            diagnostic_prefix = "tool:"
+            diagnostic_streaming_text = False
         elif (diagnostic_buffer or diagnostic_prefix) and _agent_diagnostic_continuation(
             content,
             line,
@@ -1973,19 +1982,32 @@ def _looks_like_agent_process_output_line(content: str) -> bool:
     text = str(content or "").strip()
     if not text:
         return False
-    if re.match(r"^\d{1,7}[:\t]", text):
-        return True
-    if re.match(r"^[^\s:]+\.(?:c|h|cc|cpp|cxx|hpp|py|go|rs|ts|tsx|js|java|sh|md):\d+:", text):
+    if _looks_like_agent_bare_tool_result_line(text):
         return True
     if _SOURCE_CODE_LINE_RE.search(text):
         return True
     return False
 
 
+def _looks_like_agent_bare_tool_result_line(content: str) -> bool:
+    text = str(content or "").strip()
+    if not text:
+        return False
+    if re.match(r"^\d{1,7}[:\t]", text):
+        return True
+    return bool(
+        re.match(
+            r"^[^\s:]+\.(?:c|h|cc|cpp|cxx|hpp|py|go|rs|ts|tsx|js|java|sh|md):\d+:",
+            text,
+        )
+    )
+
+
 def _looks_like_agent_tool_status_line(content: str) -> bool:
     text = str(content or "").strip().lower()
     return bool(
         re.match(r"^(?:stdout|stderr|status|exit[_ ]?code|return[_ ]?code|duration|elapsed)\s*[:=]", text)
+        or re.match(r"^[a-z_][a-z0-9_.-]{1,60}\s*=\s*\S+", text, re.IGNORECASE)
     )
 
 
