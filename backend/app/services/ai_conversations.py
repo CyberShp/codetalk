@@ -3446,8 +3446,13 @@ async def _prepare_assistant_delivery(
         *actions,
     ]
     visible = _compact_thread_artifact_preview(content, include_body_snippets=not artifact_only)
+    suffix = (
+        "完整内容已保存为下载产物。请使用“下载完整产物”获取完整文件。"
+        if artifact_only
+        else "完整测试设计/SFMEA/黑盒用例已保存为下载产物。请使用“下载完整产物”获取完整产物。"
+    )
     return (
-        f"{visible}\n\n---\n完整测试设计/SFMEA/黑盒用例已保存为下载产物。请使用“下载完整产物”获取完整产物。",
+        f"{visible}\n\n---\n{suffix}",
         actions,
     )
 

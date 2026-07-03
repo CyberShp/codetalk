@@ -2555,6 +2555,8 @@ class TestAgentRuntimes:
         assert "下载完整产物" in assistant["content"]
         assert "Concise saved file" not in assistant["content"]
         assert "已生成文件：handoff.md" not in assistant["content"]
+        assert "SFMEA" not in assistant["content"]
+        assert "黑盒用例" not in assistant["content"]
         assert any(action["id"] == "download_run_artifact" for action in assistant["actions"])
 
         artifact_text = ai_thread_artifact_path(conversation["id"], run_id).read_text(encoding="utf-8")
