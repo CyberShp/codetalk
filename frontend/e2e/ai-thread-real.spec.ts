@@ -621,7 +621,8 @@ async function createClaudeResumeRuntime(
       "capture.write_text((capture.read_text(encoding='utf-8') if capture.exists() else '') + json.dumps({'argv': args, 'prompt': prompt, 'prompt_file': prompt_file}, ensure_ascii=False) + '\\n', encoding='utf-8')",
       "resume = args[args.index('--resume') + 1] if '--resume' in args else ''",
       "session_id = 'claude-e2e-second' if resume else 'claude-e2e-first'",
-      "answer = ('resumed claude:' + resume) if resume else 'fresh claude print'",
+      "marker = ('resumed claude:' + resume) if resume else 'fresh claude print'",
+      "answer = '## 结论\\n' + marker + '\\n\\n## 代码证据\\n- `README.md`: Claude resume transport e2e workspace 来自当前工作区。\\n- `lib/iscsi/iscsi.c`: 作为本轮源码分析的候选证据路径。\\n\\n## 流程梳理\\n1. CodeTalk 通过 Claude print 参数启动本地 Agent。\\n2. 第二轮通过 --resume 续接上一轮 CLI session。'",
       "events = [",
       "  {'type':'system','subtype':'init','session_id':session_id},",
       "  {'type':'assistant','message':{'role':'assistant','content':[{'type':'text','text':answer}]}},",
@@ -674,7 +675,8 @@ async function createOpenCodeResumeRuntime(
       "capture.write_text((capture.read_text(encoding='utf-8') if capture.exists() else '') + json.dumps({'argv': args, 'prompt': prompt}, ensure_ascii=False) + '\\n', encoding='utf-8')",
       "session = args[args.index('--session') + 1] if '--session' in args else ''",
       "thread_id = 'opencode-e2e-second' if session else 'opencode-e2e-first'",
-      "answer = ('resumed opencode:' + session) if session else 'fresh opencode run'",
+      "marker = ('resumed opencode:' + session) if session else 'fresh opencode run'",
+      "answer = '## 结论\\n' + marker + '\\n\\n## 代码证据\\n- `README.md`: OpenCode resume transport e2e workspace 来自当前工作区。\\n- `lib/iscsi/iscsi.c`: 作为本轮源码分析的候选证据路径。\\n\\n## 流程梳理\\n1. CodeTalk 通过 OpenCode run 启动本地 Agent。\\n2. 第二轮通过 --session 续接上一轮 CLI session。'",
       "events = [",
       "  {'type':'thread.started','thread_id':thread_id},",
       "  {'type':'message','role':'assistant','content':answer},",
@@ -2438,6 +2440,13 @@ test("keeps resumed agent prompts focused on the current user turn", async ({ pa
     await page.getByRole("button", { name: "发送" }).click();
     await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "UI_RESUME_PROMPT_OK fresh" })).toBeVisible({
       timeout: 30_000,
+    });
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "UI_RESUME_PROMPT_OK fresh" })).toBeVisible({
+      timeout: 15_000,
     });
 
     await composer.fill("第二轮：只回答当前任务，不要重复历史");
@@ -4591,8 +4600,8 @@ test("Claude-style agent runtime resumes the previous CLI session through the re
     const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
     expect(messageBody.items).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ role: "assistant", content: "fresh claude print" }),
-        expect.objectContaining({ role: "assistant", content: "resumed claude:claude-e2e-first" }),
+        expect.objectContaining({ role: "assistant", content: expect.stringContaining("fresh claude print") }),
+        expect.objectContaining({ role: "assistant", content: expect.stringContaining("resumed claude:claude-e2e-first") }),
       ]),
     );
   } finally {
@@ -4670,8 +4679,8 @@ test("OpenCode agent runtime resumes the previous CLI session through the real A
     const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
     expect(messageBody.items).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ role: "assistant", content: "fresh opencode run" }),
-        expect.objectContaining({ role: "assistant", content: "resumed opencode:opencode-e2e-first" }),
+        expect.objectContaining({ role: "assistant", content: expect.stringContaining("fresh opencode run") }),
+        expect.objectContaining({ role: "assistant", content: expect.stringContaining("resumed opencode:opencode-e2e-first") }),
       ]),
     );
   } finally {
