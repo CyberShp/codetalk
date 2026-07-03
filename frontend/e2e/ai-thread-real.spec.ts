@@ -6932,6 +6932,101 @@ test("keeps an expanded Agent process disclosure open while diagnostics continue
   }
 });
 
+test("shows collapsed Agent process progress while keeping diagnostics out of the answer", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-process-summary-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI process collapsed summary e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-process-summary-agent-")));
+  const runtimeScript = path.join(runtimeDir, "process_summary_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys, time",
+      "sys.stdin.read()",
+      "for index in range(1, 5):",
+      "    print(f'thinking: COLLAPSED_PROGRESS_STEP_{index:02d} reading workspace source evidence', flush=True)",
+      "    time.sleep(0.8)",
+      "print('## 结论', flush=True)",
+      "print('COLLAPSED_PROGRESS_FINAL: 已完成源码分析，过程保持折叠但有进度提示。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-process-summary-e2e-${Date.now()}`;
+  const runtimeName = `Process summary runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} process summary`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByLabel("AI 线程消息").fill("PROCESS_SUMMARY_RUN 请分析源码，并用折叠过程显示进展");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect
+      .poll(async () => processDisclosure.evaluate((node) => (node as HTMLDetailsElement).open))
+      .toBe(false);
+    await expect(processDisclosure.locator("summary")).toContainText("COLLAPSED_PROGRESS_STEP_01", {
+      timeout: 15_000,
+    });
+    await expect(processDisclosure.locator("summary")).toContainText("COLLAPSED_PROGRESS_STEP_04", {
+      timeout: 20_000,
+    });
+    await expect
+      .poll(async () => processDisclosure.evaluate((node) => (node as HTMLDetailsElement).open))
+      .toBe(false);
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "COLLAPSED_PROGRESS_STEP_04" })).toHaveCount(0);
+
+    await expect(page.getByText("COLLAPSED_PROGRESS_FINAL")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
+    await processDisclosure.getByText("Agent 过程").hover();
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("COLLAPSED_PROGRESS_STEP_04")).toBeVisible();
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("cleans real external-agent terminal noise before display, persistence, and export", async ({
   page,
   request,
