@@ -685,7 +685,7 @@ class AIConversationStore:
                 row = await cur.fetchone()
         if row is None:
             raise KeyError(message_id)
-        return _message_from_row(row)
+        return _public_message_from_row(row)
 
     async def get_run(self, run_id: str) -> dict[str, Any]:
         async with self._connect() as db:

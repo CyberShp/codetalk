@@ -488,6 +488,47 @@ class TestAIConversationsAPI:
         messages = await store.list_messages(conversation["id"])
         assert [item["content"] for item in messages] == ["第一轮：启动 agent 分析源码"]
 
+    async def test_get_message_hides_legacy_agent_process_leakage(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        from app.services.ai_conversations import AIConversationStore
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="旧版 Agent 消息清洗",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="针对 iSCSI 登录写几个黑盒用例",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+        raw_answer = (
+            "THINKING: 我先核对工作区 iSCSI 登录相关源码，再据此设计黑盒用例。"
+            "1125:iscsi_conn_login_pdu_success_complete(void *arg)\n"
+            "1149:iscsi_op_login_response(struct spdk_iscsi_conn *conn,\n"
+            "1191:iscsi_op_login_rsp_init(struct spdk_iscsi_conn *conn,\n\n"
+            "## 黑盒测试用例\n"
+            "### TC-01 正常登录\n"
+            "前置条件：target 已启动；步骤：initiator 发起 Login；预期结果：进入 Full Feature Phase。\n"
+        )
+        await store.complete_run(
+            run_id=run_id,
+            content=raw_answer,
+            references=[],
+            model="agent:legacy",
+        )
+        messages = await store.list_messages(conversation["id"])
+        assistant = next(item for item in messages if item["role"] == "assistant")
+        single = await store.get_message(assistant["id"])
+
+        assert "## 黑盒测试用例" in single["content"]
+        assert "TC-01 正常登录" in single["content"]
+        assert "THINKING:" not in single["content"]
+        assert "iscsi_conn_login_pdu_success_complete" not in single["content"]
+
     async def test_create_workbench_conversation_publicizes_artifact_context(self, sqlite_db):
         task_run_id = "task_run_public_context"
         app = _test_app(sqlite_db)
