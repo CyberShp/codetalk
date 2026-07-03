@@ -17,6 +17,8 @@ import {
 import { api } from "@/lib/api";
 import type { AgentRuntime, AIConversation, Workspace } from "@/lib/types";
 
+const PROJECT_LIST_RENDER_LIMIT = 80;
+
 type ProjectRow = {
   id: string;
   name: string;
@@ -68,6 +70,7 @@ export default function AIHomePage() {
   const [agentRuntimes, setAgentRuntimes] = useState<AgentRuntime[]>([]);
   const [selectedRuntimeId, setSelectedRuntimeId] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState("");
+  const [projectQuery, setProjectQuery] = useState("");
   const [title, setTitle] = useState("");
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -128,6 +131,16 @@ export default function AIHomePage() {
     }
     return rows;
   }, [threads, workspaces]);
+
+  const renderedProjectRows = useMemo(() => {
+    const query = projectQuery.trim().toLowerCase();
+    const filtered = query
+      ? projectRows.filter((project) =>
+          `${project.name} ${project.detail}`.toLowerCase().includes(query),
+        )
+      : projectRows;
+    return filtered.slice(0, PROJECT_LIST_RENDER_LIMIT);
+  }, [projectQuery, projectRows]);
 
   const selectedProject = projectRows.find((item) => item.id === selectedProjectId) ?? projectRows[0] ?? null;
   const visibleThreads = useMemo(
@@ -214,8 +227,15 @@ export default function AIHomePage() {
               <Sparkles size={15} />
               项目
             </div>
+            <input
+              className="ct-ai-home__project-search"
+              value={projectQuery}
+              onChange={(event) => setProjectQuery(event.target.value)}
+              placeholder="搜索项目"
+              aria-label="搜索项目"
+            />
             <div className="ct-ai-home__project-list">
-              {projectRows.map((project) => (
+              {renderedProjectRows.map((project) => (
                 <button
                   key={project.id}
                   type="button"
