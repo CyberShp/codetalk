@@ -7027,6 +7027,122 @@ test("shows collapsed Agent process progress while keeping diagnostics out of th
   }
 });
 
+test("clears the previous Agent process when a new turn starts in the same thread", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-process-turns-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI process turn isolation e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-process-turns-agent-")));
+  const runtimeScript = path.join(runtimeDir, "process_turns_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys, time",
+      "prompt = sys.stdin.read()",
+      "if 'SECOND_TURN_PROCESS_RUN' in prompt:",
+      "    for index in range(1, 5):",
+      "        print(f'thinking: SECOND_TURN_PROCESS_STEP_{index:02d} reading current task evidence', flush=True)",
+      "        time.sleep(0.8)",
+      "    print('## 结论', flush=True)",
+      "    print('SECOND_TURN_PROCESS_FINAL: 第二轮只展示当前任务过程。', flush=True)",
+      "else:",
+      "    for index in range(1, 4):",
+      "        print(f'thinking: FIRST_TURN_PROCESS_STEP_{index:02d} reading previous task evidence', flush=True)",
+      "        time.sleep(0.2)",
+      "    print('## 结论', flush=True)",
+      "    print('FIRST_TURN_PROCESS_FINAL: 第一轮完成，过程稍后不应污染第二轮。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-process-turns-e2e-${Date.now()}`;
+  const runtimeName = `Process turns runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} process turns`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByLabel("AI 线程消息").fill("FIRST_TURN_PROCESS_RUN 请分析第一轮任务");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByText("FIRST_TURN_PROCESS_FINAL")).toBeVisible({ timeout: 20_000 });
+
+    const firstProcessDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(firstProcessDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await firstProcessDisclosure.getByText("Agent 过程").click();
+    await expect(firstProcessDisclosure.getByText("FIRST_TURN_PROCESS_STEP_03")).toBeVisible();
+
+    await page.getByLabel("AI 线程消息").fill("SECOND_TURN_PROCESS_RUN 请继续第二轮任务，只显示当前过程");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByText("FIRST_TURN_PROCESS_STEP_03")).toHaveCount(0);
+
+    const secondProcessDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(secondProcessDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(secondProcessDisclosure.locator("summary")).not.toContainText("FIRST_TURN_PROCESS_STEP");
+    await expect(secondProcessDisclosure.locator("summary")).toContainText("SECOND_TURN_PROCESS_STEP_01", {
+      timeout: 15_000,
+    });
+    await expect(secondProcessDisclosure.locator("summary")).toContainText("SECOND_TURN_PROCESS_STEP_04", {
+      timeout: 20_000,
+    });
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "FIRST_TURN_PROCESS_STEP" })).toHaveCount(0);
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "SECOND_TURN_PROCESS_STEP" })).toHaveCount(0);
+
+    await expect(page.getByText("SECOND_TURN_PROCESS_FINAL")).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
+    const secondProcessOpen = await secondProcessDisclosure.evaluate((node) => (node as HTMLDetailsElement).open);
+    if (!secondProcessOpen) {
+      await secondProcessDisclosure.locator("summary").hover();
+      await secondProcessDisclosure.locator("summary").click();
+    }
+    await expect
+      .poll(async () => secondProcessDisclosure.evaluate((node) => (node as HTMLDetailsElement).open))
+      .toBe(true);
+    await expect(secondProcessDisclosure.locator("p").filter({ hasText: "SECOND_TURN_PROCESS_STEP_04" })).toBeVisible();
+    await expect(secondProcessDisclosure.getByText("FIRST_TURN_PROCESS_STEP_03")).toHaveCount(0);
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("cleans real external-agent terminal noise before display, persistence, and export", async ({
   page,
   request,
