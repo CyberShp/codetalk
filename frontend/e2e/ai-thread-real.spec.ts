@@ -5782,6 +5782,10 @@ test("folds split agent thinking and source output while keeping process expanda
       "  {'content': 'Bash {\"command\": \"grep -n login lib/iscsi/iscsi.c | head -60\"}'},",
       "  {'content': '1125:iscsi_conn_login_pdu_success_complete(void *arg)\\n'},",
       "  {'content': 'lib/iscsi/iscsi.c:1539:\\t\\trc = iscsi_op_login_update_param(conn, \"AuthMethod\", \"CHAP\", \"CHAP\");\\n'},",
+      "  {'content': 'THINKING: '},",
+      "  {'content': '我已掌'},",
+      "  {'content': '握登录处理链的关键分支。下面基于 `lib/iscsi/iscsi.c` 的实际校验逻辑给出黑盒用例'},",
+      "  {'content': '。\\n'},",
       "  {'content': '## 黑盒测试用例\\n'},",
       "  {'content': '### TC-01 正常登录\\n'},",
       "  {'content': '前置条件：target 已启动；步骤：initiator 发起 login；预期结果：进入 Full Feature Phase。\\n'},",
@@ -5846,6 +5850,7 @@ test("folds split agent thinking and source output while keeping process expanda
 
     await expect(page.getByText("TC-01 正常登录")).toBeVisible({ timeout: 30_000 });
     const reader = page.getByLabel("AI 线程对话内容");
+    await expect(reader).toContainText("我已掌握登录处理链的关键分支");
     await expect(reader).not.toContainText("我先核对工作区");
     await expect(reader).not.toContainText("Bash");
     await expect(reader).not.toContainText("iscsi_conn_login_pdu_success_complete");
@@ -5853,11 +5858,14 @@ test("folds split agent thinking and source output while keeping process expanda
 
     const processDisclosure = page.getByTestId("agent-process-disclosure");
     await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.getByText("最新：。")).toHaveCount(0);
+    await expect(processDisclosure.getByText("最新：我已掌")).toHaveCount(0);
     await expect(processDisclosure.getByText("我先核对工作区")).toBeHidden();
     await processDisclosure.getByText("Agent 过程").hover();
     await processDisclosure.getByText("Agent 过程").click();
     await expect(processDisclosure.getByText("我先核对工作区")).toBeVisible();
     await expect(processDisclosure.getByText("iscsi_conn_login_pdu_success_complete")).toBeVisible();
+    await expect(processDisclosure.getByText("我已掌握登录处理链")).toHaveCount(0);
 
     const messagesResp = await request.get(
       `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
@@ -5868,6 +5876,7 @@ test("folds split agent thinking and source output while keeping process expanda
     };
     const assistant = messageBody.items.find((item) => item.role === "assistant");
     expect(assistant?.content).toContain("TC-01 正常登录");
+    expect(assistant?.content).toContain("我已掌握登录处理链的关键分支");
     expect(assistant?.content).not.toContain("我先核对工作区");
     expect(assistant?.content).not.toContain("Bash");
     expect(assistant?.content).not.toContain("AuthMethod");
