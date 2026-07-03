@@ -1787,6 +1787,11 @@ def _agent_output_segments(
                 diagnostic_buffer.append(diagnostic)
             diagnostic_prefix = prefix
             diagnostic_streaming_text = not diagnostic
+        elif _looks_like_agent_tool_invocation_line(content):
+            flush_diagnostic()
+            diagnostic_buffer.append(redact_agent_diagnostic_text(content))
+            diagnostic_prefix = "tool:"
+            diagnostic_streaming_text = False
         elif (diagnostic_buffer or diagnostic_prefix) and _agent_diagnostic_continuation(
             content,
             line,
@@ -1845,9 +1850,7 @@ def _agent_diagnostic_continuation(
         return True
     lowered_prefix = diagnostic_prefix.lower()
     if lowered_prefix.startswith(("tool:", "tool_use:", "tool_result:")):
-        if final_answer_chunk:
-            return _looks_like_agent_process_output_line(content)
-        return True
+        return _looks_like_agent_process_output_line(content) or _looks_like_agent_tool_status_line(content)
     if diagnostic_streaming_text and lowered_prefix.startswith(("thinking:", "reasoning:", "trace:", "diagnostic:")):
         return not final_answer_chunk
     return _looks_like_agent_process_output_line(content)
@@ -1864,6 +1867,20 @@ def _looks_like_agent_process_output_line(content: str) -> bool:
     if _SOURCE_CODE_LINE_RE.search(text):
         return True
     return False
+
+
+def _looks_like_agent_tool_status_line(content: str) -> bool:
+    text = str(content or "").strip().lower()
+    return bool(
+        re.match(r"^(?:stdout|stderr|status|exit[_ ]?code|return[_ ]?code|duration|elapsed)\s*[:=]", text)
+    )
+
+
+def _looks_like_agent_tool_invocation_line(content: str) -> bool:
+    text = str(content or "").strip()
+    if not text:
+        return False
+    return bool(re.match(r"^(?:Bash|Read|Grep|Glob|Edit|Write|Task|TodoWrite)\s+\{", text))
 
 
 def _looks_like_agent_answer_boundary(content: str) -> bool:
