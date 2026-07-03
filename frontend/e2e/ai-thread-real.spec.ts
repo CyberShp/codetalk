@@ -6310,6 +6310,11 @@ test("keeps real agent thinking diagnostics collapsed and out of the persisted a
     await expect(reader).not.toContainText("chain-of-thought-like internal note");
     const processDisclosure = page.getByTestId("agent-process-disclosure");
     await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    const processSummary = processDisclosure.locator("summary");
+    await expect(processSummary).toContainText("最新：内部过程已更新，可展开查看");
+    await expect(processSummary).not.toContainText("chain-of-thought");
+    await expect(processSummary).not.toContainText("internal note");
+    await expect(processSummary).not.toContainText("internal multiline note");
     await expect(processDisclosure.getByText("reading workspace source evidence")).toBeHidden();
     await expect(processDisclosure.getByText("internal multiline note: select evidence cards")).toBeHidden();
     await expect(processDisclosure.getByText("internal multiline note: avoid exposing")).toBeHidden();
