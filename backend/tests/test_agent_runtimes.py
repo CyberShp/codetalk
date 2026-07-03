@@ -2135,6 +2135,22 @@ class TestAgentRuntimes:
         from app.services.ai_conversations import _agent_answer_requires_repair
 
         assert _agent_answer_requires_repair("问：fresh codex", "fresh codex", []) is False
+        assert (
+            _agent_answer_requires_repair(
+                "请读取工作区源码并说明 Codex transport stdin",
+                "fresh codex stdin",
+                [],
+            )
+            is True
+        )
+        assert (
+            _agent_answer_requires_repair(
+                "第一轮：验证 Codex transport stdin prompt delivery",
+                "CODEX_STDIN_REPLY prompt_transport_ok=true fresh",
+                [{"source_type": "workspace_source", "title": "README.md"}],
+            )
+            is False
+        )
 
     async def test_ai_thread_agent_runtime_accepts_explicit_probe_style_agent_output(self):
         from app.services.ai_conversations import _agent_answer_requires_repair

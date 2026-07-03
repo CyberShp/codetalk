@@ -457,7 +457,7 @@ async function createCodexStdinRuntime(
       "capture.write_text((capture.read_text(encoding='utf-8') if capture.exists() else '') + json.dumps({'argv': args, 'stdin': stdin}, ensure_ascii=False) + '\\n', encoding='utf-8')",
       "resume = args[args.index('resume') + 1] if 'resume' in args else ''",
       "thread_id = 'codex-e2e-second' if resume else 'codex-e2e-first'",
-      "answer = ('resumed:' + resume) if resume else 'fresh codex stdin'",
+      "answer = ('CODEX_STDIN_REPLY prompt_transport_ok=true resumed:' + resume) if resume else 'CODEX_STDIN_REPLY prompt_transport_ok=true fresh'",
       "print(json.dumps({'type':'thread.started','thread_id':thread_id}, ensure_ascii=False), flush=True)",
       "time.sleep(0.05)",
       "print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':answer}}, ensure_ascii=False), flush=True)",
@@ -2090,12 +2090,12 @@ test("Codex agent runtime reads prompts from stdin and resumes through the real 
     await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
 
-    const firstPrompt = "第一轮：请读取工作区源码并说明 Codex transport stdin";
+    const firstPrompt = "第一轮：验证 Codex transport stdin prompt delivery";
     const composer = page.getByPlaceholder(/像 Codex 一样继续追问/);
     await composer.fill(firstPrompt);
     await page.getByRole("button", { name: "发送" }).hover();
     await page.getByRole("button", { name: "发送" }).click();
-    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "fresh codex stdin" })).toBeVisible({
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "CODEX_STDIN_REPLY prompt_transport_ok=true fresh" })).toBeVisible({
       timeout: 20_000,
     });
 
@@ -2103,7 +2103,7 @@ test("Codex agent runtime reads prompts from stdin and resumes through the real 
     await composer.fill(secondPrompt);
     await page.getByRole("button", { name: "发送" }).hover();
     await page.getByRole("button", { name: "发送" }).click();
-    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "resumed:codex-e2e-first" })).toBeVisible({
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "CODEX_STDIN_REPLY prompt_transport_ok=true resumed:codex-e2e-first" })).toBeVisible({
       timeout: 20_000,
     });
 
@@ -2127,8 +2127,8 @@ test("Codex agent runtime reads prompts from stdin and resumes through the real 
     const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
     expect(messageBody.items).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ role: "assistant", content: "fresh codex stdin" }),
-        expect.objectContaining({ role: "assistant", content: "resumed:codex-e2e-first" }),
+        expect.objectContaining({ role: "assistant", content: "CODEX_STDIN_REPLY prompt_transport_ok=true fresh" }),
+        expect.objectContaining({ role: "assistant", content: "CODEX_STDIN_REPLY prompt_transport_ok=true resumed:codex-e2e-first" }),
       ]),
     );
   } finally {
