@@ -2024,6 +2024,39 @@ class TestAgentRuntimes:
 
         assert _agent_answer_requires_repair("问：fresh codex", "fresh codex", []) is False
 
+    async def test_ai_thread_agent_runtime_accepts_explicit_probe_style_agent_output(self):
+        from app.services.ai_conversations import _agent_answer_requires_repair
+
+        references = [
+            {"source_type": "workspace_source", "title": "lib/nvmf/material_probe.c"},
+            {"source_type": "workspace_material", "title": "requirements.md"},
+        ]
+
+        assert (
+            _agent_answer_requires_repair(
+                "请分析 lib/nvmf/material_probe.c，并结合 requirements.md 生成黑盒测试重点",
+                "MATERIAL_SOURCE_CONTEXT_OK requirements.md lib/nvmf/material_probe.c\n",
+                references,
+            )
+            is False
+        )
+        assert (
+            _agent_answer_requires_repair(
+                "第一行：分析 SPDK iSCSI login\n第二行：输出流程梳理\n第三行：生成 SFMEA 和黑盒测试用例",
+                "\n".join(
+                    [
+                        "MANAGED_MULTILINE_AGENT_REPLY",
+                        "argv_has_full_multiline=true",
+                        "prompt_file_has_full_multiline=true",
+                        "argv_line_occurrences=1/1/1",
+                    ]
+                ),
+                [],
+            )
+            is False
+        )
+        assert _agent_answer_requires_repair("基于源码分析 SPDK iSCSI login", "你好，有什么需要帮助", []) is True
+
     async def test_ai_thread_agent_runtime_repairs_one_line_source_answer(self, sqlite_db, tmp_path):
         repo = tmp_path / "spdk"
         (repo / "lib" / "nvmf").mkdir(parents=True)

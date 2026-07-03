@@ -1566,6 +1566,8 @@ def _agent_answer_requires_repair(
         return True
     if _looks_like_agent_no_final_answer_notice(content):
         return True
+    if _looks_like_explicit_agent_probe_answer(content):
+        return False
     return (
         _agent_task_requires_structured_delivery(user_message)
         or _agent_task_requires_source_grounding(user_message, references)
@@ -1722,6 +1724,23 @@ def _looks_like_agent_no_final_answer_notice(content: str) -> bool:
         "novalidcontent",
     )
     return any(marker in text for marker in no_answer_markers)
+
+
+def _looks_like_explicit_agent_probe_answer(content: str) -> bool:
+    text = clean_agent_output_text(str(content or "")).strip()
+    if not text:
+        return False
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines or len(lines) > 12:
+        return False
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("_missing", " missing ", "=false", "error", "failed", "traceback")):
+        return False
+    has_probe_marker = bool(
+        re.search(r"\b[A-Z0-9]+(?:_[A-Z0-9]+){2,}_(?:OK|REPLY|PASS|PASSED|SUCCESS)\b", text)
+    )
+    has_boolean_evidence = bool(re.search(r"\b[a-zA-Z][a-zA-Z0-9_]{2,}=true\b", text))
+    return has_probe_marker and (has_boolean_evidence or len(text) >= 20)
 
 
 def _agent_answer_too_thin_for_task(content: str, *, user_message: str = "") -> bool:
