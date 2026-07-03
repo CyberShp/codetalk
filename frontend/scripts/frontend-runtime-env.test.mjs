@@ -36,3 +36,13 @@ test("next-with-port passes the derived frontend runtime env to Next", () => {
   assert.match(source, /buildFrontendRuntimeEnv/);
   assert.match(source, /env:\s*buildFrontendRuntimeEnv/);
 });
+
+test("frontend build script also derives the public API URL before invoking Next", () => {
+  const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  const source = readFileSync(new URL("./next-build-env.mjs", import.meta.url), "utf8");
+
+  assert.equal(packageJson.scripts.build, "node scripts/next-build-env.mjs");
+  assert.match(source, /buildFrontendRuntimeEnv/);
+  assert.match(source, /env:\s*buildFrontendRuntimeEnv/);
+  assert.match(source, /\"build\"/);
+});
