@@ -20,6 +20,7 @@ from app.services.agent_runtimes import MANAGED_PROVIDER_PROMPT_TRANSPORTS, vali
 
 AGENT_FINAL_ANSWER_PREFIX = "__CODETALK_AGENT_FINAL_ANSWER__:"
 AGENT_ANSWER_DELTA_PREFIX = "__CODETALK_AGENT_ANSWER_DELTA__:"
+CHAT_TOOL_CALL_STATE_KEY = "__codetalk_chat_tool_calls__"
 
 
 class AgentRuntimeError(RuntimeError):
@@ -549,7 +550,7 @@ def _parse_event_text(
     diagnostic = _diagnostic_event_text(event)
     if diagnostic is not None:
         return diagnostic
-    unwrapped = _event_text(event)
+    unwrapped = _event_text(event, stream_state=stream_state)
     if unwrapped is not None:
         return _clean_agent_text(unwrapped)
     if _looks_like_protocol_noise(event):
@@ -693,7 +694,7 @@ def _stream_content_block_type(block: Any) -> str:
     return ""
 
 
-def _event_text(event: dict[str, Any]) -> str | None:
+def _event_text(event: dict[str, Any], *, stream_state: dict[Any, Any] | None = None) -> str | None:
     output_text_done = _response_output_text_done(event)
     if output_text_done is not None:
         return output_text_done
@@ -770,7 +771,7 @@ def _event_text(event: dict[str, Any]) -> str | None:
             parts = _content_parts(value)
             return f"{AGENT_FINAL_ANSWER_PREFIX}{''.join(parts)}" if parts else ""
         return None
-    chat_tool_text = _chat_tool_call_text(event)
+    chat_tool_text = _chat_tool_call_text(event, stream_state=stream_state)
     if chat_tool_text:
         return _diagnostic_lines("TOOL", chat_tool_text)
     for key in ("delta", "text", "content", "message"):
@@ -778,7 +779,7 @@ def _event_text(event: dict[str, Any]) -> str | None:
         if isinstance(value, str):
             return value
         if isinstance(value, dict):
-            nested = _event_text(value)
+            nested = _event_text(value, stream_state=stream_state)
             if nested is not None:
                 return nested
         if isinstance(value, list):
@@ -798,7 +799,7 @@ def _event_text(event: dict[str, Any]) -> str | None:
         if isinstance(value, str):
             return value
         if isinstance(value, dict):
-            nested = _event_text(value)
+            nested = _event_text(value, stream_state=stream_state)
             if nested is not None:
                 return nested
         if isinstance(value, list):
@@ -816,7 +817,7 @@ def _event_text(event: dict[str, Any]) -> str | None:
             for key in ("delta", "message"):
                 value = choice.get(key)
                 if isinstance(value, dict):
-                    parts.extend(_chat_choice_payload_parts(value, final=key == "message"))
+                    parts.extend(_chat_choice_payload_parts(value, final=key == "message", stream_state=stream_state))
             direct = choice.get("text")
             if isinstance(direct, str):
                 parts.append(_chat_choice_answer_text(direct, final=False))
@@ -829,7 +830,7 @@ def _event_text(event: dict[str, Any]) -> str | None:
         parts = []
         for candidate in candidates:
             if isinstance(candidate, dict):
-                nested = _event_text(candidate)
+                nested = _event_text(candidate, stream_state=stream_state)
                 if nested:
                     parts.append(nested)
         if parts:
@@ -923,33 +924,39 @@ def _content_parts(value: list[Any]) -> list[str]:
     return parts
 
 
-def _chat_tool_call_text(event: dict[str, Any]) -> str:
+def _chat_tool_call_text(event: dict[str, Any], *, stream_state: dict[Any, Any] | None = None) -> str:
     entries: list[str] = []
     function_call = event.get("function_call")
     if isinstance(function_call, dict):
-        text = _function_call_text(function_call)
+        text = _chat_streamed_tool_call_text(function_call, stream_state=stream_state, key="function_call")
         if text:
             entries.append(text)
     tool_calls = event.get("tool_calls")
     if isinstance(tool_calls, list):
-        for item in tool_calls:
+        for index, item in enumerate(tool_calls):
             if not isinstance(item, dict):
                 continue
             function = item.get("function")
-            if isinstance(function, dict):
-                text = _function_call_text(function)
-                if text:
-                    entries.append(text)
-                    continue
-            text = _function_call_text(item)
+            key = str(item.get("index") if item.get("index") is not None else item.get("id") or index)
+            text = _chat_streamed_tool_call_text(
+                function if isinstance(function, dict) else item,
+                stream_state=stream_state,
+                key=key,
+            )
             if text:
                 entries.append(text)
     return "\n".join(entries)
 
 
-def _chat_choice_payload_parts(value: dict[str, Any], *, final: bool) -> list[str]:
+def _chat_choice_payload_parts(
+    value: dict[str, Any],
+    *,
+    final: bool,
+    stream_state: dict[Any, Any] | None = None,
+) -> list[str]:
     parts: list[str] = []
-    tool_text = _chat_tool_call_text(value)
+    has_tool_call = _chat_payload_has_tool_call(value)
+    tool_text = _chat_tool_call_text(value, stream_state=stream_state)
     answer_text = _chat_choice_payload_answer_text(value)
     if tool_text:
         parts.append(_diagnostic_lines("TOOL", tool_text))
@@ -959,8 +966,57 @@ def _chat_choice_payload_parts(value: dict[str, Any], *, final: bool) -> list[st
         parts.append(_chat_choice_answer_text(answer_text, final=final))
     if parts:
         return parts
-    nested = _event_text(value)
+    if has_tool_call:
+        return []
+    nested = _event_text(value, stream_state=stream_state)
     return [nested] if nested else []
+
+
+def _chat_payload_has_tool_call(value: dict[str, Any]) -> bool:
+    return isinstance(value.get("function_call"), dict) or isinstance(value.get("tool_calls"), list)
+
+
+def _chat_streamed_tool_call_text(
+    value: dict[str, Any],
+    *,
+    stream_state: dict[Any, Any] | None,
+    key: str,
+) -> str:
+    arguments = value.get("arguments") or value.get("input")
+    if not isinstance(arguments, str) or stream_state is None:
+        return _function_call_text(value)
+    state = stream_state.setdefault(CHAT_TOOL_CALL_STATE_KEY, {})
+    if not isinstance(state, dict):
+        state = {}
+        stream_state[CHAT_TOOL_CALL_STATE_KEY] = state
+    call_state = state.setdefault(str(key), {"name": "", "arguments": ""})
+    if not isinstance(call_state, dict):
+        call_state = {"name": "", "arguments": ""}
+        state[str(key)] = call_state
+    name = str(value.get("name") or value.get("tool") or value.get("function") or "").strip()
+    if name:
+        call_state["name"] = name
+    call_state["arguments"] = str(call_state.get("arguments") or "") + arguments
+    completed = _completed_chat_tool_call_text(call_state)
+    if completed:
+        state.pop(str(key), None)
+    return completed
+
+
+def _completed_chat_tool_call_text(call_state: dict[str, Any]) -> str:
+    arguments = str(call_state.get("arguments") or "")
+    if not arguments.strip():
+        return ""
+    try:
+        parsed = json.loads(arguments)
+    except json.JSONDecodeError:
+        return ""
+    name = str(call_state.get("name") or "function_call").strip() or "function_call"
+    if isinstance(parsed, dict):
+        suffix = json.dumps(parsed, ensure_ascii=False, separators=(",", ":"))[:300]
+    else:
+        suffix = arguments.strip()[:300]
+    return f"{name} {suffix}".strip()
 
 
 def _chat_choice_payload_answer_text(value: dict[str, Any]) -> str:
