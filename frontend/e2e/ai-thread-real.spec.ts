@@ -4482,6 +4482,140 @@ test("downloads complete inline SFMEA and black-box output from the agent runtim
   }
 });
 
+test("keeps live streaming SFMEA and black-box output compact while preserving the downloaded artifact", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-live-artifact-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "Live compact artifact e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-live-artifact-")));
+  const runtimeScript = path.join(runtimeDir, "live_artifact_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys, time",
+      "sys.stdin.read()",
+      "def emit(line=''):",
+      "    print(line, flush=True)",
+      "    time.sleep(0.04)",
+      "emit('## 结论')",
+      "emit('LIVE_ARTIFACT_FINAL: 已完成 SPDK connect 长结构化测试设计。')",
+      "emit('')",
+      "emit('## 代码证据')",
+      "emit('- `lib/nvmf/ctrlr.c`: `nvmf_ctrlr_connect`。')",
+      "emit('- `test/nvmf`: 可承载 connect/reconnect 黑盒回归。')",
+      "emit('')",
+      "emit('## 流程梳理')",
+      "for index in range(1, 10):",
+      "    emit(f'{index}. LIVE_FLOW_STEP_{index:02d}: initiator 与 target 完成 connect 阶段 {index}。')",
+      "emit('')",
+      "emit('## SFMEA')",
+      "emit('| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |')",
+      "emit('| --- | --- | --- | --- | --- | --- | --- | --- |')",
+      "for index in range(1, 26):",
+      "    emit(f'| LIVE_SFMEA_ROW_{index:02d} | transport edge case {index} | IO pause {index} | 8 | 3 | 4 | {90 + index} | 增加外部日志、RPC 状态和重连观测 |')",
+      "emit('')",
+      "emit('## 黑盒测试用例')",
+      "for index in range(1, 26):",
+      "    emit(f'{index}. LIVE_BLACKBOX_TC_{index:02d}: 前置条件 target 已启动；步骤执行 connect/reconnect 场景 {index}；预期结果返回明确状态且不中断后续 IO；观测点为 RPC、日志、连接状态和延迟指标。')",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-live-artifact-e2e-${Date.now()}`;
+  const runtimeName = `Live artifact runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} live compact`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page
+      .getByLabel("AI 线程消息")
+      .fill("请输出完整的代码分析、流程梳理、SFMEA 和黑盒测试用例，并在生成中保持页面可读");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const reader = page.getByLabel("AI 线程对话内容");
+    await expect(page.getByText("正在生成结构化产物，完成后会提供下载文件。")).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(page.getByRole("button", { name: "停止" })).toBeVisible({ timeout: 10_000 });
+    await expect(reader).not.toContainText("LIVE_SFMEA_ROW_25");
+    await expect(reader).not.toContainText("LIVE_BLACKBOX_TC_25");
+
+    const assistantAnswer = page.locator(".ct-codex-message:not(.is-user)");
+    await expect(assistantAnswer.filter({ hasText: "已生成结构化产物" })).toBeVisible({ timeout: 35_000 });
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
+    await expect(page.getByRole("link", { name: "下载完整产物" })).toBeVisible({ timeout: 15_000 });
+    await expect(reader).not.toContainText("LIVE_SFMEA_ROW_25");
+    await expect(reader).not.toContainText("LIVE_BLACKBOX_TC_25");
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("link", { name: "下载完整产物" }).hover();
+    await page.getByRole("link", { name: "下载完整产物" }).click();
+    const download = await downloadPromise;
+    const artifactPath = testInfo.outputPath("live-artifact.md");
+    await download.saveAs(artifactPath);
+    const artifact = fs.readFileSync(artifactPath, "utf8");
+    expect(artifact).toContain("LIVE_ARTIFACT_FINAL");
+    expect(artifact).toContain("LIVE_SFMEA_ROW_25");
+    expect(artifact).toContain("LIVE_BLACKBOX_TC_25");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    const assistant = [...messageBody.items].reverse().find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("下载完整产物");
+    expect(assistant?.content).not.toContain("LIVE_SFMEA_ROW_25");
+    expect(assistant?.content).not.toContain("LIVE_BLACKBOX_TC_25");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("downloads four-piece inline SFMEA and black-box output without requiring complete wording", async ({
   page,
   request,
