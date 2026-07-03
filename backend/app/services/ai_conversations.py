@@ -3730,11 +3730,7 @@ def _legacy_artifact_preview_for_message(
     if not has_artifact_action:
         return content
     has_compact_notice = _is_compact_thread_artifact_notice(content)
-    if (
-        has_compact_notice
-        and not has_legacy_process_output
-        and ("### 摘要" in content or "### 证据摘录" in content or "### 用例摘录" in content)
-    ):
+    if has_compact_notice and not has_legacy_process_output:
         return content
     if (
         not has_legacy_process_output
