@@ -2755,6 +2755,7 @@ class TestAgentRuntimes:
                     "previous = prompt_log.read_text(encoding='utf-8') if prompt_log.exists() else ''",
                     "prompt_log.write_text(previous + json.dumps({'prompt': prompt}, ensure_ascii=False) + '\\n', encoding='utf-8')",
                     "artifact_dir = pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])",
+                    "assert artifact_dir.is_absolute(), artifact_dir",
                     "artifact_dir.mkdir(parents=True, exist_ok=True)",
                     "report = '# SPDK 黑盒测试设计\\n\\n## 黑盒测试用例\\n' + ''.join([f'TC-{index:02d}: 外部可观测路径，执行连接并检查日志状态。\\n' for index in range(1, 9)])",
                     "(artifact_dir / 'spdk-blackbox.md').write_text(report, encoding='utf-8')",

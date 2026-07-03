@@ -1307,7 +1307,7 @@ async def run_agent_generation(
     session_updates: list[dict[str, Any]] = []
     artifact_stream_notice_sent = False
     adopted_agent_artifact = False
-    agent_artifact_dir = ai_thread_agent_artifact_dir(conversation["id"], run_id)
+    agent_artifact_dir = ai_thread_agent_artifact_dir(conversation["id"], run_id).resolve()
     await _to_thread(agent_artifact_dir.mkdir, parents=True, exist_ok=True)
     runtime_for_turn = dict(runtime)
     runtime_env = dict(runtime_for_turn.get("env") or {})
