@@ -553,7 +553,12 @@ class AIConversationStore:
                         WHERE hidden_ws.id = ai_conversations.workspace_id
                           AND (
                               lower(hidden_ws.repo_path) LIKE '%/codetalk-ai-%'
+                              OR lower(hidden_ws.repo_path) LIKE '%/codetalk_ai_context_panel_%'
+                              OR lower(hidden_ws.repo_path) LIKE '%/codetalk-entry-ui-%'
                               OR lower(hidden_ws.name) LIKE '%-e2e-%'
+                              OR lower(hidden_ws.name) LIKE 'ai_context_panel_%'
+                              OR lower(hidden_ws.name) LIKE 'entry-discovery-ws-%'
+                              OR lower(hidden_ws.name) LIKE 'release-click-%'
                           )
                     )
                 )

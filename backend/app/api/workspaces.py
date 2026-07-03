@@ -419,7 +419,12 @@ async def list_workspaces(
             """
             NOT (
                 lower(repo_path) LIKE '%/codetalk-ai-%'
+                OR lower(repo_path) LIKE '%/codetalk_ai_context_panel_%'
+                OR lower(repo_path) LIKE '%/codetalk-entry-ui-%'
                 OR lower(name) LIKE '%-e2e-%'
+                OR lower(name) LIKE 'ai_context_panel_%'
+                OR lower(name) LIKE 'entry-discovery-ws-%'
+                OR lower(name) LIKE 'release-click-%'
             )
             """
         )

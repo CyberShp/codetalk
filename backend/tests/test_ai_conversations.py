@@ -542,6 +542,17 @@ class TestAIConversationsAPI:
                     now,
                 ),
             )
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, ?, ?, 1, ?, ?)",
+                (
+                    "ws-hidden-context-panel",
+                    "ai_context_panel_1782987378405",
+                    "/private/var/folders/demo/T/codetalk_ai_context_panel_PmJiko",
+                    now,
+                    now,
+                ),
+            )
             await db.commit()
         app = _test_app(sqlite_db)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -624,6 +635,19 @@ class TestAIConversationsAPI:
             assert hidden_workspace_thread_resp.status_code == 201
             hidden_workspace_thread_id = hidden_workspace_thread_resp.json()["id"]
 
+            hidden_context_panel_thread_resp = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": "ws-hidden-context-panel",
+                    "workspace_id": "ws-hidden-context-panel",
+                    "memory_namespace": "workspace:ws-hidden-context-panel",
+                    "title": "上下文面板普通标题",
+                },
+            )
+            assert hidden_context_panel_thread_resp.status_code == 201
+            hidden_context_panel_thread_id = hidden_context_panel_thread_resp.json()["id"]
+
             listed = await client.get("/api/ai/conversations", params={"workspace_id": ws_id, "limit": 10})
             assert listed.status_code == 200
             ids = [item["id"] for item in listed.json()["items"]]
@@ -634,6 +658,7 @@ class TestAIConversationsAPI:
             global_ids = [item["id"] for item in global_listed.json()["items"]]
             assert visible_id in global_ids
             assert hidden_workspace_thread_id not in global_ids
+            assert hidden_context_panel_thread_id not in global_ids
 
             debug_listed = await client.get(
                 "/api/ai/conversations",
@@ -647,6 +672,7 @@ class TestAIConversationsAPI:
             assert debug_global.status_code == 200
             debug_global_ids = [item["id"] for item in debug_global.json()["items"]]
             assert hidden_workspace_thread_id in debug_global_ids
+            assert hidden_context_panel_thread_id in debug_global_ids
 
     async def test_delete_conversation_removes_idle_thread_and_rejects_running_thread(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)

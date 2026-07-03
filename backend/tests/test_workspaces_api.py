@@ -127,6 +127,32 @@ class TestWorkspaceCRUD:
                     (now - timedelta(seconds=2)).isoformat(),
                 ),
             )
+            for offset, ws_id, name, repo_path in [
+                (
+                    3,
+                    "ws-context-panel",
+                    "ai_context_panel_1782987378405",
+                    "/private/var/folders/demo/T/codetalk_ai_context_panel_PmJiko",
+                ),
+                (
+                    4,
+                    "ws-entry-discovery",
+                    "entry-discovery-ws-1782969432209",
+                    "/private/var/folders/demo/T/codetalk-entry-ui-Vxi8SH",
+                ),
+                (
+                    5,
+                    "ws-release-click",
+                    "release-click-1782867168717",
+                    "/Volumes/Media/codetalk",
+                ),
+            ]:
+                timestamp = (now - timedelta(seconds=offset)).isoformat()
+                await db.execute(
+                    "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                    "VALUES (?, ?, ?, 1, ?, ?)",
+                    (ws_id, name, repo_path, timestamp, timestamp),
+                )
             await db.commit()
 
         resp = await client_v2.get("/api/workspaces")
@@ -139,6 +165,9 @@ class TestWorkspaceCRUD:
             "ws-real-spdk",
             "ws-internal-ai-list",
             "ws-internal-e2e",
+            "ws-context-panel",
+            "ws-entry-discovery",
+            "ws-release-click",
         ]
 
     async def test_create_with_valid_dir(self, client_v2, tmp_path, background_tasks):
