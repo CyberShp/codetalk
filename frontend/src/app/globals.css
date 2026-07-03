@@ -3043,7 +3043,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     width: 100%;
     max-width: 100%;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(148px, 18vh) minmax(0, 1fr);
+    grid-template-rows: minmax(144px, 17vh) minmax(0, 1fr);
     height: 100%;
     min-height: 0;
     padding: 0 10px 10px;
@@ -3068,7 +3068,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     gap: 6px;
     max-height: none;
     overflow: hidden;
-    padding: 8px;
+    padding: 6px;
   }
 
   .ct-codex-ai__back {
