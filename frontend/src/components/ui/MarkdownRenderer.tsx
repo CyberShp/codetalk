@@ -167,11 +167,11 @@ export default function MarkdownRenderer({
                   {lang}
                 </span>
               )}
-              <pre className={`bg-surface-container-lowest overflow-x-auto border border-outline-variant/40 ${
-                variant === "ai" ? "rounded-md p-3" : "rounded-lg p-4"
+              <pre className={`bg-surface-container-lowest max-w-full min-w-0 border border-outline-variant/40 ${
+                variant === "ai" ? "overflow-x-hidden whitespace-pre-wrap break-words rounded-md p-3" : "overflow-x-auto rounded-lg p-4"
               }`}>
                 <code
-                  className="font-data text-xs hljs text-on-surface"
+                  className={`font-data text-xs hljs text-on-surface ${variant === "ai" ? "whitespace-pre-wrap break-words" : ""}`}
                   dangerouslySetInnerHTML={{ __html: highlighted }}
                 />
               </pre>
