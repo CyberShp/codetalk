@@ -969,6 +969,7 @@ class AIConversationStore:
         run_id: str,
         content: str,
         references: list[dict[str, Any]],
+        evidence_content: str | None = None,
         model: str | None = None,
         token_usage: dict[str, Any] | None = None,
         actions: list[dict[str, str]] | None = None,
@@ -979,7 +980,7 @@ class AIConversationStore:
         enriched_references = await _enrich_references_with_answer_citations(
             conversation=conversation,
             references=references,
-            content=content,
+            content=evidence_content if evidence_content is not None else content,
             db_path=self.db_path,
         )
         safe_content = _govern_visible_assistant_content(
@@ -1391,6 +1392,7 @@ async def run_generation(
             run_id=run_id,
             content=final_content,
             references=references,
+            evidence_content=content,
             model=model or None,
             actions=actions,
         )
@@ -1656,6 +1658,7 @@ async def run_agent_generation(
             run_id=run_id,
             content=final_content,
             references=references,
+            evidence_content=content,
             model=f"agent:{runtime.get('name') or runtime.get('id')}",
             actions=actions,
         )

@@ -911,6 +911,102 @@ class TestAIConversationsAPI:
         assert refs[1]["metadata"]["start_line"] <= 55 <= refs[1]["metadata"]["end_line"]
         assert "require_chap" in refs[1]["excerpt"]
 
+    async def test_complete_run_uses_full_artifact_body_for_precise_refs_when_visible_answer_is_compact(
+        self,
+        sqlite_db,
+        tmp_path,
+    ):
+        ws_id = await _seed_workspace(sqlite_db)
+        repo = tmp_path / "repo"
+        source_dir = repo / "lib" / "iscsi"
+        source_dir.mkdir(parents=True)
+        iscsi_lines = [f"int filler_{idx};" for idx in range(1, 860)]
+        iscsi_lines[793] = 'SPDK_ERRLOG("unsupported AuthMethod %.64s\\n", method);'
+        conn_lines = [f"int conn_filler_{idx};" for idx in range(1, 240)]
+        conn_lines[191] = "conn->disable_chap = portal->group->disable_chap;"
+        (source_dir / "iscsi.c").write_text("\n".join(iscsi_lines), encoding="utf-8")
+        (source_dir / "conn.c").write_text("\n".join(conn_lines), encoding="utf-8")
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute("UPDATE workspaces SET repo_path = ? WHERE id = ?", (str(repo), ws_id))
+            await db.commit()
+
+        from app.services.ai_conversations import AIConversationStore
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="下载产物证据行号线程",
+        )
+        coarse_refs = [
+            {
+                "source_type": "workspace_source",
+                "source_id": f"{ws_id}:lib/iscsi/iscsi.c:1-41",
+                "title": "lib/iscsi/iscsi.c:1",
+                "excerpt": "1: file header",
+                "metadata": {
+                    "workspace_id": ws_id,
+                    "path": "lib/iscsi/iscsi.c",
+                    "start_line": 1,
+                    "end_line": 41,
+                },
+            },
+            {
+                "source_type": "workspace_source",
+                "source_id": f"{ws_id}:lib/iscsi/conn.c:1-41",
+                "title": "lib/iscsi/conn.c:1",
+                "excerpt": "1: file header",
+                "metadata": {
+                    "workspace_id": ws_id,
+                    "path": "lib/iscsi/conn.c",
+                    "start_line": 1,
+                    "end_line": 41,
+                },
+            },
+        ]
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="生成完整 iSCSI login SFMEA 和黑盒测试用例产物",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+        compact_visible_answer = (
+            "## iSCSI Login — SFMEA + 黑盒测试用例产物\n\n"
+            "完整测试设计/SFMEA/黑盒用例已保存为下载产物。"
+        )
+        full_artifact_body = (
+            "## 代码证据\n"
+            "- `lib/iscsi/iscsi.c:794`: 非 CHAP AuthMethod 被拒绝。\n"
+            "- `lib/iscsi/conn.c:192`: 连接继承 portal group 的 disable_chap 策略。\n\n"
+            "## SFMEA\n"
+            "| failure mode | cause | effect | detection | RPN |\n"
+            "| --- | --- | --- | --- | --- |\n"
+            "| 非 CHAP 被放行 | AuthMethod 校验失效 | 认证绕过 | 登录响应和日志 | 30 |\n\n"
+            "## 黑盒测试用例\n"
+            "### TC-01 非 CHAP AuthMethod 拒绝\n"
+        )
+        await store.complete_run(
+            run_id=run_id,
+            content=compact_visible_answer,
+            evidence_content=full_artifact_body,
+            references=coarse_refs,
+            model="agent:test",
+            actions=[{"id": "download_run_artifact", "label": "下载完整产物", "kind": "download"}],
+        )
+
+        messages = await store.list_messages(conversation["id"])
+        assistant = next(item for item in messages if item["role"] == "assistant")
+        refs = assistant["references"]
+
+        assert "lib/iscsi/iscsi.c:794" not in assistant["content"]
+        assert refs[0]["title"] == "lib/iscsi/iscsi.c:794"
+        assert refs[0]["metadata"]["start_line"] <= 794 <= refs[0]["metadata"]["end_line"]
+        assert "unsupported AuthMethod" in refs[0]["excerpt"]
+        assert refs[1]["title"] == "lib/iscsi/conn.c:192"
+        assert refs[1]["metadata"]["start_line"] <= 192 <= refs[1]["metadata"]["end_line"]
+        assert "disable_chap" in refs[1]["excerpt"]
+
     async def test_create_workbench_conversation_publicizes_artifact_context(self, sqlite_db):
         task_run_id = "task_run_public_context"
         app = _test_app(sqlite_db)
