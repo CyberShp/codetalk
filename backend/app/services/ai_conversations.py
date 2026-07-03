@@ -669,6 +669,11 @@ class AIConversationStore:
     async def list_messages(self, conversation_id: str) -> list[dict[str, Any]]:
         async with self._connect() as db:
             async with db.execute(
+                "SELECT * FROM ai_conversations WHERE id = ?",
+                (conversation_id,),
+            ) as cur:
+                conversation_row = await cur.fetchone()
+            async with db.execute(
                 """
                 SELECT *
                 FROM ai_messages
@@ -677,7 +682,73 @@ class AIConversationStore:
                 """,
                 (conversation_id,),
             ) as cur:
-                return [_public_message_from_row(row) for row in await cur.fetchall()]
+                rows = await cur.fetchall()
+            async with db.execute(
+                """
+                SELECT id, status
+                FROM ai_conversation_runs
+                WHERE conversation_id = ?
+                """,
+                (conversation_id,),
+            ) as cur:
+                completed_run_ids = {
+                    str(row["id"])
+                    for row in await cur.fetchall()
+                    if str(row["status"] or "") == "completed"
+                }
+        messages = [_public_message_from_row(row) for row in rows]
+        if conversation_row is not None:
+            await self._backfill_legacy_download_artifacts(
+                conversation=_conversation_from_row(conversation_row),
+                messages=messages,
+                completed_run_ids=completed_run_ids,
+            )
+        return messages
+
+    async def _backfill_legacy_download_artifacts(
+        self,
+        *,
+        conversation: dict[str, Any],
+        messages: list[dict[str, Any]],
+        completed_run_ids: set[str],
+    ) -> None:
+        user_message_by_run: dict[str, str] = {}
+        updates: list[tuple[str, str, str]] = []
+        for message in messages:
+            run_id = str(message.get("run_id") or "").strip()
+            if message.get("role") == "user" and run_id:
+                user_message_by_run[run_id] = str(message.get("content") or "")
+                continue
+            if message.get("role") != "assistant" or not run_id or run_id not in completed_run_ids:
+                continue
+            actions = message.get("actions") if isinstance(message.get("actions"), list) else []
+            if any(isinstance(action, dict) and action.get("id") == "download_run_artifact" for action in actions):
+                continue
+            user_content = user_message_by_run.get(run_id, "")
+            content = str(message.get("content") or "").strip()
+            if not content or not _agent_task_requests_downloadable_artifact(user_content, content):
+                continue
+            final_content, final_actions = await _prepare_assistant_delivery(
+                run_id=run_id,
+                conversation=conversation,
+                content=content,
+                force_artifact=True,
+            )
+            message["content"] = final_content
+            message["actions"] = final_actions
+            updates.append((final_content, _json_dumps(final_actions), str(message["id"])))
+        if not updates:
+            return
+        async with self._connect() as db:
+            await db.executemany(
+                """
+                UPDATE ai_messages
+                SET content = ?, actions_json = ?
+                WHERE id = ?
+                """,
+                updates,
+            )
+            await db.commit()
 
     async def create_user_message_and_run(
         self,

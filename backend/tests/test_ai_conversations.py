@@ -2524,6 +2524,65 @@ class TestAIConversationsAPI:
             assert "## 黑盒测试用例" in artifact_text
             assert "TC-02 CHAP 失败" in artifact_text
 
+    async def test_legacy_source_blackbox_message_backfills_downloadable_artifact_on_read(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.services.ai_conversations import (
+            AIConversationStore,
+            ai_thread_artifact_path,
+        )
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="spdk · E2E 裸工具输出验证 2",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="针对 iSCSI 登录写两个黑盒用例，先读源码证据，但不要把工具输出放进最终答案",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+        legacy_content = (
+            "## 代码证据\n"
+            "- `lib/iscsi/iscsi.c:1539`: CHAP AuthMethod 协商路径。\n\n"
+            "## 黑盒测试用例\n"
+            "### TC-01 正常登录\n"
+            "前置条件：target 已启动；步骤：initiator 发起 iSCSI Login；预期结果：进入 Full Feature Phase。\n"
+            "### TC-02 CHAP 失败\n"
+            "前置条件：target 开启 CHAP；步骤：使用错误 secret 登录；预期结果：Login Response 拒绝。\n"
+        )
+        await store.complete_run(
+            run_id=run_id,
+            content=legacy_content,
+            references=[],
+            model="agent:legacy",
+        )
+
+        artifact_path = ai_thread_artifact_path(conversation["id"], run_id)
+        assert not artifact_path.exists()
+
+        messages = await store.list_messages(conversation["id"])
+        assistant = messages[1]
+
+        assert "已保存为下载产物" in assistant["content"]
+        assert "Login Response 拒绝" not in assistant["content"]
+        download_action = next(
+            action for action in assistant["actions"] if action["id"] == "download_run_artifact"
+        )
+        assert download_action["href"] == f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifact"
+        assert artifact_path.exists()
+        artifact_text = artifact_path.read_text(encoding="utf-8")
+        assert "# spdk · E2E 裸工具输出验证 2" in artifact_text
+        assert "TC-02 CHAP 失败" in artifact_text
+        assert "THINKING:" not in artifact_text
+
+        persisted = await store.list_messages(conversation["id"])
+        persisted_assistant = persisted[1]
+        assert any(action["id"] == "download_run_artifact" for action in persisted_assistant["actions"])
+
     async def test_compact_artifact_message_reads_existing_artifact_for_rich_preview(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)
