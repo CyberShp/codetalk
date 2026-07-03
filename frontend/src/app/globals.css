@@ -1996,6 +1996,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 }
 
 .ct-codex-ai__rail-group {
+  flex: 0 0 auto;
   min-height: 0;
   margin-top: 12px;
 }

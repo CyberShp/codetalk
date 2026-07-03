@@ -418,6 +418,21 @@ test("AI conversation rail filters dense projects and thread histories", async (
   await expect(page.getByText("已收起 18 条线程")).toBeVisible();
   await expect(page.getByText("SPDK production target")).toBeHidden();
 
+  const denseLayout = await page.locator(".ct-codex-ai").evaluate((element) => {
+    const projectList = element.querySelector(".ct-codex-ai__project-list") as HTMLElement | null;
+    const newButton = element.querySelector(".ct-codex-ai__new") as HTMLElement | null;
+    const projectListRect = projectList?.getBoundingClientRect();
+    const newButtonRect = newButton?.getBoundingClientRect();
+    return {
+      projectListBottom: projectListRect?.bottom ?? 0,
+      newButtonTop: newButtonRect?.top ?? 0,
+      projectListClientHeight: projectList?.clientHeight ?? 0,
+      projectListScrollHeight: projectList?.scrollHeight ?? 0,
+    };
+  });
+  expect(denseLayout.projectListScrollHeight).toBeGreaterThan(denseLayout.projectListClientHeight + 80);
+  expect(denseLayout.projectListBottom).toBeLessThanOrEqual(denseLayout.newButtonTop - 8);
+
   await page.getByLabel("搜索 AI 项目").fill("production");
   await expect(page.getByText("SPDK production target")).toBeVisible();
   await expect(page.getByText("Large project 2")).toBeHidden();
