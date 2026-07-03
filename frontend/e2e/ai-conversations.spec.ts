@@ -20,6 +20,7 @@ async function mockReadableConversation(
   page: Page,
   options: {
     assistantContent?: string;
+    userReferences?: Array<Record<string, unknown>>;
     references?: Array<Record<string, unknown>>;
     extraReferences?: Array<Record<string, unknown>>;
     extraMessages?: Array<Record<string, unknown>>;
@@ -180,7 +181,7 @@ async function mockReadableConversation(
             run_id: "run-1",
             role: "user",
             content: "这个测试设计还缺什么？",
-            references: [],
+            references: options.userReferences ?? [],
             actions: [],
             created_at: "2026-06-28T00:00:00Z",
           },
@@ -320,6 +321,70 @@ test("AI conversation page is a wide persistent reading surface", async ({ page 
   );
   expect(exported).toContain("时间: 2026-06-28T00:00:00Z");
   expect(exported).toContain("时间: 2026-06-28T00:00:01Z");
+});
+
+test("AI conversation evidence cards prioritize latest assistant precise source refs", async ({ page }) => {
+  await mockReadableConversation(page, {
+    userReferences: [
+      {
+        source_type: "workspace_source",
+        source_id: "ws-1:lib/iscsi/iscsi.c:1-41",
+        title: "lib/iscsi/iscsi.c:1",
+        excerpt: "1: /* SPDX-License-Identifier */",
+        metadata: {
+          workspace_id: "ws-1",
+          path: "lib/iscsi/iscsi.c",
+          start_line: 1,
+          end_line: 41,
+        },
+      },
+      {
+        source_type: "workspace_source",
+        source_id: "ws-1:lib/iscsi/conn.c:1-41",
+        title: "lib/iscsi/conn.c:1",
+        excerpt: "1: /* SPDX-License-Identifier */",
+        metadata: {
+          workspace_id: "ws-1",
+          path: "lib/iscsi/conn.c",
+          start_line: 1,
+          end_line: 41,
+        },
+      },
+    ],
+    references: [
+      {
+        source_type: "workspace_source",
+        source_id: "ws-1:lib/iscsi/iscsi.c:782-834",
+        title: "lib/iscsi/iscsi.c:794",
+        excerpt: "794: SPDK_ERRLOG(\"unsupported AuthMethod %.64s\\n\", method);",
+        metadata: {
+          workspace_id: "ws-1",
+          path: "lib/iscsi/iscsi.c",
+          start_line: 782,
+          end_line: 834,
+        },
+      },
+      {
+        source_type: "workspace_source",
+        source_id: "ws-1:lib/iscsi/conn.c:180-232",
+        title: "lib/iscsi/conn.c:192",
+        excerpt: "192: conn->disable_chap = portal->group->disable_chap;",
+        metadata: {
+          workspace_id: "ws-1",
+          path: "lib/iscsi/conn.c",
+          start_line: 180,
+          end_line: 232,
+        },
+      },
+    ],
+  });
+  await page.goto("/ai/conv-1", { waitUntil: "domcontentloaded" });
+
+  const cards = page.locator(".ct-ai-ref");
+  await expect(cards.first()).toContainText("lib/iscsi/iscsi.c:794");
+  await expect(cards.first()).toContainText("lib/iscsi/iscsi.c:L782-L834");
+  await expect(cards.nth(1)).toContainText("lib/iscsi/conn.c:192");
+  await expect(cards.nth(1)).toContainText("lib/iscsi/conn.c:L180-L232");
 });
 
 test("AI conversation evidence cards keep long source excerpts folded", async ({ page }) => {

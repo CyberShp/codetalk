@@ -157,9 +157,12 @@ function publicWorkspaceLabel(workspace: Workspace | null, thread: AIConversatio
 
 function uniqueReferences(messages: AIMessage[]): AIContextReference[] {
   const map = new Map<string, AIContextReference>();
-  for (const msg of messages) {
+  for (const msg of [...messages].reverse()) {
     for (const ref of msg.references ?? []) {
-      map.set(`${ref.source_type}:${ref.source_id}`, ref);
+      const key = `${ref.source_type}:${ref.source_id}`;
+      if (!map.has(key)) {
+        map.set(key, ref);
+      }
     }
   }
   return Array.from(map.values()).slice(0, 12);
