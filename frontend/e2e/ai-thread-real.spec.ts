@@ -4395,6 +4395,135 @@ test("OpenCode agent runtime resumes the previous CLI session through the real A
   }
 });
 
+test("self-heals a stale OpenCode resume session through the real AI thread UI", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-stale-opencode-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "OpenCode stale resume e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-opencode-stale-")));
+  const runtimeScript = path.join(runtimeDir, "fake_opencode_stale_agent.py");
+  const captureFile = path.join(runtimeDir, "stale_invocations.jsonl");
+  const staleFlag = path.join(runtimeDir, "stale.flag");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, pathlib, sys, time",
+      `capture = pathlib.Path(${JSON.stringify(captureFile)})`,
+      `stale = pathlib.Path(${JSON.stringify(staleFlag)})`,
+      "args = sys.argv[1:]",
+      "prompt = args[-1] if args else ''",
+      "session = args[args.index('--session') + 1] if '--session' in args else ''",
+      "capture.write_text((capture.read_text(encoding='utf-8') if capture.exists() else '') + json.dumps({'argv': args, 'session': session, 'prompt': prompt}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+      "if session:",
+      "    stale.write_text(session, encoding='utf-8')",
+      "    print('No conversation found with session ID ' + session, file=sys.stderr)",
+      "    sys.exit(1)",
+      "recovered = stale.exists()",
+      "thread_id = 'opencode-stale-recovered' if recovered else 'opencode-stale-first'",
+      "marker = 'RECOVERED_STALE_SESSION_E2E' if recovered else 'FIRST_STALE_SESSION_E2E'",
+      "answer = '## 结论\\n' + marker + ': 已完成本轮 Agent 会话。\\n\\n## 代码证据\\n- `README.md`: 当前工作区证据。\\n- `lib/iscsi/iscsi.c`: login 路径候选。\\n\\n## 黑盒测试用例\\n- 用例：正常登录；前置条件：target 已启动；步骤：initiator 发起 login；预期结果：进入 Full Feature Phase；观测点：响应状态和日志。'",
+      "events = [",
+      "  {'type':'thread.started','thread_id':thread_id},",
+      "  {'type':'message','role':'assistant','content':answer},",
+      "  {'type':'result','status':'success','thread_id':thread_id},",
+      "]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.05)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-opencode-stale-e2e-${Date.now()}`;
+  const runtimeName = `OpenCode stale runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} stale session`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "opencode_run_arg",
+      output_mode: "auto",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "resume_args",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    const composer = page.getByPlaceholder(/像 Codex 一样继续追问/);
+    await composer.fill("第一轮：建立 OpenCode 会话");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByText("FIRST_STALE_SESSION_E2E")).toBeVisible({ timeout: 20_000 });
+
+    await composer.fill("第二轮：沿用会话，如果旧会话失效则自动恢复");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByText("RECOVERED_STALE_SESSION_E2E")).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "No conversation found" })).toHaveCount(0);
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    const staleSessionDetail = processDisclosure.locator("p").filter({ hasText: "旧会话已失效" });
+    await expect(staleSessionDetail).toBeHidden();
+    await processDisclosure.getByText("Agent 过程").hover();
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(staleSessionDetail).toBeVisible();
+
+    const captured = fs.readFileSync(captureFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { argv: string[]; session: string; prompt: string });
+    expect(captured.map((item) => item.session)).toEqual(["", "opencode-stale-first", ""]);
+    expect(captured[2].argv).not.toContain("--session");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    expect(messageBody.items.some((item) => item.role === "assistant" && item.content.includes("RECOVERED_STALE_SESSION_E2E"))).toBe(true);
+    expect(messageBody.items.some((item) => item.role === "assistant" && item.content.includes("No conversation found"))).toBe(false);
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
+  }
+});
+
 test("renders native OpenCode tool and error events as Agent process diagnostics", async ({
   page,
   request,

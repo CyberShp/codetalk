@@ -1167,6 +1167,101 @@ class TestAgentRuntimes:
             assert "第一轮" not in captured_prompts[1]["prompt"]
             assert "fresh session" not in captured_prompts[1]["prompt"]
 
+    async def test_ai_thread_agent_runtime_self_heals_stale_resume_session(self, sqlite_db, tmp_path):
+        repo = tmp_path / "stale-resume-repo"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-stale-resume", repo_path=str(repo))
+        capture_file = tmp_path / "stale-resume-invocations.jsonl"
+        agent_script = tmp_path / "stale_resume_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import json, pathlib, sys",
+                    f"capture = pathlib.Path({str(capture_file)!r})",
+                    "args = sys.argv[1:]",
+                    "resume = args[args.index('--resume') + 1] if '--resume' in args else ''",
+                    "prompt = sys.stdin.read()",
+                    "capture.write_text((capture.read_text(encoding='utf-8') if capture.exists() else '') + json.dumps({'resume': resume, 'prompt': prompt}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+                    "if resume:",
+                    "    print('No conversation found with session ID ' + resume, file=sys.stderr)",
+                    "    sys.exit(1)",
+                    "print(json.dumps({'type':'system','subtype':'init','session_id':'session-recovered'}, ensure_ascii=False), flush=True)",
+                    "print('## 结论\\nRECOVERED_FRESH_SESSION_ANSWER: 已重新创建会话并完成源码分析。\\n\\n## 代码证据\\n- `lib/iscsi/iscsi.c`: login 状态机。\\n- `test/iscsi_tgt`: 可承载黑盒回归。\\n\\n## 黑盒测试用例\\n- 用例：正常登录；前置条件：target 已启动；步骤：initiator 发起 login；预期结果：进入 Full Feature Phase；观测点：响应状态和日志。', flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Stale resume self-heal",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-stale-resume",
+        )
+        await store.upsert_agent_runtime_session(
+            conversation_id=conversation["id"],
+            agent_runtime_id="runtime-stale-resume",
+            cli_session_id="session-stale",
+            resume_session_id="session-stale",
+            metadata={"run_id": "old-run"},
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="继续基于当前源码分析 iSCSI 登录黑盒测试",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-stale-resume",
+                "name": "Stale Resume Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "stdin",
+                "output_mode": "auto",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+                "session_persistence": "resume_args",
+                "resume_args": [str(agent_script), "--resume", "{session_id}"],
+            },
+        )
+
+        latest = await store.latest_run(conversation["id"])
+        assert latest and latest["status"] == "completed"
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        assert "RECOVERED_FRESH_SESSION_ANSWER" in assistant["content"]
+        assert "No conversation found" not in assistant["content"]
+
+        captured = [json.loads(line) for line in capture_file.read_text(encoding="utf-8").splitlines()]
+        assert [item["resume"] for item in captured] == ["session-stale", ""]
+        assert captured[0]["prompt"].count("继续基于当前源码分析") == 1
+        assert captured[1]["prompt"].count("继续基于当前源码分析") == 1
+
+        session = await store.get_agent_runtime_session(
+            conversation_id=conversation["id"],
+            agent_runtime_id="runtime-stale-resume",
+        )
+        assert session is not None
+        assert session["resume_session_id"] == "session-recovered"
+
+        events = await store.list_events_after(conversation["id"])
+        diagnostics = "\n".join(
+            event["payload"].get("content", "")
+            for event in events
+            if event["event_type"] == "delta" and event["payload"].get("kind") == "diagnostic"
+        )
+        assert "旧会话已失效" in diagnostics
+
     async def test_ai_thread_claude_transport_manages_print_mode_and_resume_without_user_args(self, sqlite_db):
         app = _test_app(sqlite_db)
         repo = pathlib.Path(sqlite_db).parent / "claude-provider-repo"

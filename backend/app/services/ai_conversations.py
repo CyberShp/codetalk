@@ -22,6 +22,7 @@ from app.config import settings
 from app.services.agent_cli_bridge import (
     AGENT_ANSWER_DELTA_PREFIX,
     AGENT_FINAL_ANSWER_PREFIX,
+    AgentRuntimeError,
     clean_agent_output_text,
     resolve_agent_cwd,
     stream_agent_runtime,
@@ -987,6 +988,24 @@ class AIConversationStore:
             )
             await db.commit()
 
+    async def delete_agent_runtime_session(
+        self,
+        *,
+        conversation_id: str,
+        agent_runtime_id: str,
+    ) -> None:
+        if not conversation_id or not agent_runtime_id:
+            return
+        async with self._connect() as db:
+            await db.execute(
+                """
+                DELETE FROM ai_agent_runtime_sessions
+                WHERE conversation_id = ? AND agent_runtime_id = ?
+                """,
+                (conversation_id, agent_runtime_id),
+            )
+            await db.commit()
+
     @asynccontextmanager
     async def _connect(self):
         db = await aiosqlite.connect(self.db_path)
@@ -1337,7 +1356,27 @@ async def run_agent_generation(
         return turn_chunks
 
     try:
-        chunks = await consume_agent_turn(prompt, resume_session_id)
+        try:
+            chunks = await consume_agent_turn(prompt, resume_session_id)
+        except AgentRuntimeError as exc:
+            if not _agent_resume_error_can_self_heal(exc, resume_session_id=resume_session_id):
+                raise
+            session_updates.clear()
+            if runtime_id:
+                await store.delete_agent_runtime_session(
+                    conversation_id=conversation["id"],
+                    agent_runtime_id=runtime_id,
+                )
+            await store.append_event(
+                run_id=run_id,
+                conversation_id=conversation["id"],
+                event_type="delta",
+                payload={
+                    "kind": "diagnostic",
+                    "content": "旧会话已失效，CodeTalk 已切换为 fresh agent 会话重试本轮任务。",
+                },
+            )
+            chunks = await consume_agent_turn(prompt, "")
         if await run_cancelled():
             return
         content = _govern_visible_assistant_content(
@@ -1467,6 +1506,23 @@ def _latest_resume_session_id(session_updates: list[dict[str, Any]]) -> str:
         if value:
             return value
     return ""
+
+
+def _agent_resume_error_can_self_heal(
+    exc: Exception,
+    *,
+    resume_session_id: str,
+) -> bool:
+    if not str(resume_session_id or "").strip():
+        return False
+    message = redact_agent_diagnostic_text(str(exc))
+    return bool(
+        re.search(
+            r"No conversation found with session ID|no rollout found|missing_rollout",
+            message,
+            re.IGNORECASE,
+        )
+    )
 
 
 def _agent_answer_requires_repair(
