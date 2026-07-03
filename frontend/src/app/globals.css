@@ -2897,12 +2897,14 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   }
 
   .ct-ai-home {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
     height: 100%;
     overflow: hidden;
   }
 
   .ct-ai-home__grid {
-    grid-template-rows: minmax(116px, 18vh) minmax(0, 1fr);
+    grid-template-rows: minmax(112px, min(18vh, 148px)) minmax(0, 1fr);
     min-height: 0;
     overflow: hidden;
   }
