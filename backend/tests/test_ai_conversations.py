@@ -2948,6 +2948,111 @@ class TestAIConversationsAPI:
         assert "TC-09" in artifact_text
         assert "进入 Full Feature Phase" not in artifact_text
 
+    async def test_agent_run_process_discloses_public_milestones_without_terminal_dump(
+        self,
+        sqlite_db,
+        tmp_path,
+        monkeypatch,
+    ):
+        ws_id = await _seed_workspace(sqlite_db)
+        repo = tmp_path / "repo"
+        source_dir = repo / "lib" / "iscsi"
+        source_dir.mkdir(parents=True)
+        (source_dir / "iscsi.c").write_text(
+            "\n".join(f"int iscsi_line_{index};" for index in range(1, 90)),
+            encoding="utf-8",
+        )
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute("UPDATE workspaces SET repo_path = ? WHERE id = ?", (str(repo), ws_id))
+            await db.commit()
+
+        from app.services import ai_conversations as ai_service
+
+        async def fake_stream_agent_runtime(**_kwargs):
+            yield (
+                "## 代码证据\n"
+                "- `lib/iscsi/iscsi.c:42`: 登录路径证据。\n\n"
+                "## 流程梳理\n"
+                "1. 接收 initiator login 请求并解析参数。\n"
+                "2. 校验 CHAP 认证状态并建立 session。\n"
+                "3. 返回 login 响应并进入可提交 IO 的阶段。\n\n"
+                "## SFMEA\n"
+                "| failure mode | cause | effect | detection | severity | occurrence | detection score | RPN | mitigation |\n"
+                "| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+                "| FM-01 | auth bypass | unauthorized login | login 日志和认证失败计数 | 9 | 2 | 3 | 54 | 增加非法 CHAP 回归测试 |\n"
+                "| FM-02 | digest mismatch | login rejected | RPC 状态、错误码、trace | 7 | 3 | 4 | 84 | 覆盖 header/data digest 组合 |\n"
+                "| FM-03 | session reset race | IO hang | session state 与超时指标 | 8 | 2 | 5 | 80 | 增加 reset/reconnect 并发场景 |\n\n"
+                "## 黑盒测试用例\n"
+                "- 用例 TC-01 非 CHAP 登录失败\n"
+                "  前置条件：target 已启动；步骤：发起非法登录；预期结果：认证失败；观测点：login 响应、日志、session 状态；失败诊断线索：若返回成功则检查认证配置。\n"
+                "- 用例 TC-02 digest mismatch\n"
+                "  前置条件：启用 digest；步骤：使用错误 digest 登录；预期结果：返回错误码；观测点：RPC 状态、错误日志；失败诊断线索：若无错误日志则检查错误路径上报。\n"
+                "- 用例 TC-03 session reset 恢复\n"
+                "  前置条件：已有连接；步骤：触发 reset 后重新登录；预期结果：旧 session 释放且新 session 可用；观测点：连接状态、超时指标；失败诊断线索：如果 IO 卡住则定位 session 清理。\n"
+            )
+
+        monkeypatch.setattr(ai_service, "stream_agent_runtime", fake_stream_agent_runtime)
+
+        store = ai_service.AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            runtime_type="agent_runtime",
+            agent_runtime_id="fake-agent",
+            title="Agent 过程里程碑",
+        )
+        refs = await ai_service.build_context_references(
+            conversation=conversation,
+            user_message="请读取 lib/iscsi/iscsi.c 生成完整 SFMEA 和黑盒测试用例",
+            db_path=sqlite_db,
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="请读取 lib/iscsi/iscsi.c 生成完整 SFMEA 和黑盒测试用例",
+            references=refs,
+        )
+        run_id = created["run"]["id"]
+
+        await ai_service.run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "fake-agent",
+                "name": "Fake Agent",
+                "command": "/bin/echo",
+                "args": [],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "completion_mode": "process_exit",
+            },
+        )
+
+        messages = await store.list_messages(conversation["id"])
+        assistant = next(item for item in messages if item["role"] == "assistant")
+        assert "已保存为下载产物" in assistant["content"]
+        assert "FM-01" not in assistant["content"]
+
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                f"/api/ai/conversations/{conversation['id']}/events",
+                params={"run_id": run_id, "limit": 200, "process_only": True},
+            )
+
+        assert response.status_code == 200
+        process = "\n".join(
+            item["payload"].get("content", "") or item["payload"].get("message", "")
+            for item in response.json()["items"]
+        )
+        assert "CodeTalk 已启动 Fake Agent" in process
+        assert f"工作目录：{repo}" in process
+        assert "源码证据输入：lib/iscsi/iscsi.c" in process
+        assert "下载产物已准备" in process
+        assert "/api/ai/conversations/" in process
+        assert "```" not in process
+        assert "| FM-01 |" not in process
+
     async def test_list_run_events_returns_recent_redacted_agent_process(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)
