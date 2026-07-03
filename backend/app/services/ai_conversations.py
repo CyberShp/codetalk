@@ -1363,12 +1363,15 @@ async def run_agent_generation(
                     continue
                 if is_final_answer:
                     final_answer_parts.append(content)
-                else:
-                    turn_chunks.append(content)
+                    continue
+                turn_chunks.append(content)
                 if _agent_answer_chunk_safe_for_live_stream(content):
                     await append_live_answer_delta(content)
             if is_final_answer and final_answer_parts:
-                turn_chunks = final_answer_parts
+                final_answer = "".join(final_answer_parts)
+                streaming_answer = "".join(turn_chunks)
+                if _agent_final_answer_should_replace_streaming_answer(streaming_answer, final_answer):
+                    turn_chunks = final_answer_parts
         return turn_chunks
 
     try:
@@ -1749,6 +1752,69 @@ def _agent_answer_too_thin_for_task(content: str, *, user_message: str = "") -> 
             return True
     lines = [line for line in text.splitlines() if line.strip()]
     return len(lines) <= 2 and len(text) < 220
+
+
+def _agent_final_answer_should_replace_streaming_answer(streaming_answer: str, final_answer: str) -> bool:
+    streaming = clean_agent_output_text(str(streaming_answer or "")).strip()
+    final = clean_agent_output_text(str(final_answer or "")).strip()
+    if not final:
+        return False
+    if not streaming:
+        return True
+    if streaming in final:
+        return True
+    if final in streaming:
+        return False
+    streaming_score = _agent_answer_completeness_score(streaming)
+    final_score = _agent_answer_completeness_score(final)
+    if final_score > streaming_score:
+        return True
+    if final_score == streaming_score and len(final) >= len(streaming):
+        return True
+    return len(final) >= int(len(streaming) * 0.85) and final_score >= streaming_score
+
+
+def _agent_answer_completeness_score(content: str) -> int:
+    text = clean_agent_output_text(str(content or "")).strip()
+    if not text:
+        return 0
+    lowered = text.lower()
+    headings = len(re.findall(r"(?m)^#{1,3}\s+\S+", text))
+    source_refs = len(re.findall(r"\b(?:lib|test|scripts|include)/[^\s`:'）)]+(?::\d+)?", text))
+    numbered_cases = len(
+        re.findall(
+            r"(?mi)^\s*(?:[-*]|\d+[.)、]|#{2,4})\s*(?:\*\*)?(?:tc[-_ ]?\d+|用例|case|前置条件|步骤)",
+            text,
+        )
+    )
+    evidence_markers = sum(
+        1
+        for marker in (
+            "源码锚点",
+            "源码证据",
+            "代码证据",
+            "用例设计依据",
+            "sfmea",
+            "failure mode",
+            "rpn",
+            "severity",
+            "occurrence",
+            "detection",
+            "黑盒测试用例",
+            "预期结果",
+            "观测点",
+        )
+        if marker in lowered
+    )
+    line_count = len([line for line in text.splitlines() if line.strip()])
+    return (
+        min(len(text), 12000) // 120
+        + headings * 25
+        + source_refs * 12
+        + numbered_cases * 20
+        + evidence_markers * 18
+        + min(line_count, 160)
+    )
 
 
 @dataclass

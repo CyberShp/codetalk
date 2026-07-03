@@ -2213,6 +2213,81 @@ class TestAIConversationsAPI:
             assert "SFMEA 风险 3" in artifact_text
             assert "TC-09" in artifact_text
 
+    async def test_agent_final_answer_does_not_truncate_richer_streaming_artifact(
+        self,
+        sqlite_db,
+        monkeypatch,
+    ):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.services import ai_conversations as ai_service
+
+        async def fake_stream_agent_runtime(**_kwargs):
+            yield "我已掌握登录处理链的关键分支。下面基于 `lib/iscsi/iscsi.c` 给出黑盒用例。\n"
+            yield "## 结论\n"
+            yield "SPDK iSCSI 登录处理覆盖版本、阶段位、InitiatorName、SessionType、target 访问、CHAP 和参数协商。\n"
+            yield "## 用例设计依据（源码锚点）\n"
+            yield "- 版本校验：`lib/iscsi/iscsi.c:1262` -> `ISCSI_LOGIN_UNSUPPORTED_VERSION`\n"
+            yield "- 缺 InitiatorName：`lib/iscsi/iscsi.c:1332` -> `ISCSI_LOGIN_MISSING_PARMS`\n"
+            yield "## 黑盒测试用例\n"
+            for index in range(1, 10):
+                yield (
+                    f"{index}. 用例 TC-{index:02d}: 前置条件：target 已启动；"
+                    "步骤：发起 iSCSI Login；预期结果：返回可观测 Login Response 状态。\n"
+                )
+            yield (
+                ai_service.AGENT_FINAL_ANSWER_PREFIX
+                + "## 黑盒测试用例\n"
+                + "### TC-01 正常会话登录成功\n"
+                + "前置条件：target 已启动；步骤：initiator 发起 Login；预期结果：进入 Full Feature Phase。\n"
+            )
+
+        monkeypatch.setattr(ai_service, "stream_agent_runtime", fake_stream_agent_runtime)
+
+        store = ai_service.AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            runtime_type="agent_runtime",
+            agent_runtime_id="fake-agent",
+            title="Agent 完整产物保留",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="针对 iSCSI 登录生成完整黑盒测试用例",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await ai_service.run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "fake-agent",
+                "name": "Fake Agent",
+                "command": "/bin/echo",
+                "args": [],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "completion_mode": "process_exit",
+            },
+        )
+
+        messages = await store.list_messages(conversation["id"])
+        assistant = next(item for item in messages if item["role"] == "assistant")
+        assert "已保存为下载产物" in assistant["content"]
+        assert "用例设计依据" not in assistant["content"]
+
+        artifact_text = ai_service.ai_thread_artifact_path(conversation["id"], run_id).read_text(
+            encoding="utf-8",
+        )
+        assert "## 结论" in artifact_text
+        assert "## 用例设计依据（源码锚点）" in artifact_text
+        assert "lib/iscsi/iscsi.c:1262" in artifact_text
+        assert "TC-09" in artifact_text
+        assert "进入 Full Feature Phase" not in artifact_text
+
     async def test_list_run_events_returns_recent_redacted_agent_process(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)
