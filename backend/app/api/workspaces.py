@@ -338,26 +338,28 @@ async def _index_workspace(ws_id: str, repo_path: str) -> None:
             await _db.commit()
 
     try:
-        adapter = GitNexusAdapter(base_url=settings.gitnexus_base_url)
-
-        # T3: 健康预检 — 避免等待 connect timeout 才报错
-        health = await adapter.health_check()
-        if not health.is_healthy:
-            health = await _try_start_gitnexus_and_recheck(adapter, health)
-        if not health.is_healthy:
-            detail = health.last_check or health.container_status or "unreachable"
-            error_msg = f"GitNexus 服务未运行，请先启动 GitNexus（{detail}）"
-            async with aiosqlite.connect(settings.sqlite_db) as db:
-                await db.execute(
-                    "UPDATE workspaces SET indexed = -1, last_index_error = ?, "
-                    "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
-                    (error_msg, ws_id),
-                )
-                await db.commit()
-            logger.error("Workspace indexing skipped for %s: %s", ws_id, error_msg)
-            return
-
         async with _gitnexus_index_lock(settings.gitnexus_base_url):
+            adapter = GitNexusAdapter(base_url=settings.gitnexus_base_url)
+
+            # T3: 健康预检 — 避免等待 connect timeout 才报错。Keep the
+            # preflight under the same lock as prepare(): GitNexus is
+            # effectively single-flight and its health/probe endpoints can
+            # also return busy while another repo analysis is starting.
+            health = await adapter.health_check()
+            if not health.is_healthy:
+                health = await _try_start_gitnexus_and_recheck(adapter, health)
+            if not health.is_healthy:
+                detail = health.last_check or health.container_status or "unreachable"
+                error_msg = f"GitNexus 服务未运行，请先启动 GitNexus（{detail}）"
+                async with aiosqlite.connect(settings.sqlite_db) as db:
+                    await db.execute(
+                        "UPDATE workspaces SET indexed = -1, last_index_error = ?, "
+                        "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                        (error_msg, ws_id),
+                    )
+                    await db.commit()
+                logger.error("Workspace indexing skipped for %s: %s", ws_id, error_msg)
+                return
             await adapter.prepare(AnalysisRequest(repo_local_path=repo_path), on_progress=_on_index_progress)
 
         async with aiosqlite.connect(settings.sqlite_db) as db:

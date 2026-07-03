@@ -522,6 +522,53 @@ class TestIndexAndAnalyze:
         assert [row[2] for row in rows] == [100, 100]
         assert [row[3] for row in rows] == [None, None]
 
+    async def test_workspace_indexing_serializes_gitnexus_health_checks(
+        self, sqlite_db, tmp_path, monkeypatch
+    ):
+        from app.api import workspaces
+
+        repo_a = tmp_path / "repo-health-a"
+        repo_b = tmp_path / "repo-health-b"
+        repo_a.mkdir()
+        repo_b.mkdir()
+        await _seed_ws(sqlite_db, "ws-health-a", indexed=0, repo_path=str(repo_a))
+        await _seed_ws(sqlite_db, "ws-health-b", indexed=0, repo_path=str(repo_b))
+
+        state = {"active_health": 0, "max_active_health": 0, "health_calls": 0}
+        entered_health = asyncio.Event()
+        release_health = asyncio.Event()
+
+        class FakeGitNexusAdapter:
+            def __init__(self, base_url: str | None = None):
+                self.base_url = base_url
+
+            async def health_check(self):
+                state["active_health"] += 1
+                state["health_calls"] += 1
+                state["max_active_health"] = max(state["max_active_health"], state["active_health"])
+                entered_health.set()
+                await release_health.wait()
+                state["active_health"] -= 1
+                return ToolHealth(is_healthy=True, container_status="running")
+
+            async def prepare(self, request, on_progress=None):
+                if on_progress:
+                    await on_progress(50)
+
+        monkeypatch.setattr("app.adapters.gitnexus.GitNexusAdapter", FakeGitNexusAdapter)
+
+        task_a = asyncio.create_task(workspaces._index_workspace("ws-health-a", str(repo_a)))
+        await asyncio.wait_for(entered_health.wait(), timeout=2)
+        task_b = asyncio.create_task(workspaces._index_workspace("ws-health-b", str(repo_b)))
+        await asyncio.sleep(0.05)
+
+        assert state["max_active_health"] == 1
+        assert state["health_calls"] == 1
+
+        release_health.set()
+        await asyncio.gather(task_a, task_b)
+        assert state["health_calls"] == 2
+
     async def test_analyze_requires_indexed(self, client_v2, sqlite_db):
         await _seed_ws(sqlite_db, "ws-noidx", indexed=0)
         resp = await client_v2.post("/api/workspaces/ws-noidx/analyze")
