@@ -40,6 +40,9 @@ const RAIL_VISIBLE_LIMIT = 24;
 const MOBILE_RAIL_VISIBLE_LIMIT = 8;
 const EVIDENCE_EXCERPT_PREVIEW_CHARS = 120;
 const AGENT_PROCESS_DIAGNOSTIC_LIMIT = 200;
+const AGENT_PROCESS_DIAGNOSTIC_HEAD_LIMIT = 32;
+const AGENT_PROCESS_FOLD_PREFIX = "已折叠中间 ";
+const AGENT_PROCESS_FOLD_SUFFIX = " 条 Agent 过程事件";
 
 function eventContent(event: AIRunEvent): string {
   const value = event.payload.content;
@@ -317,13 +320,43 @@ function looksLikeRawAgentProcessOutput(value: string): boolean {
 function capAgentProcessDiagnostics(items: string[]): string[] {
   const deduped: string[] = [];
   const seen = new Set<string>();
+  let previouslyFolded = 0;
   for (let index = items.length - 1; index >= 0; index -= 1) {
     const item = redactDiagnosticText(items[index] ?? "").trim();
+    const foldedCount = foldedAgentProcessCount(item);
+    if (foldedCount > 0) {
+      previouslyFolded += foldedCount;
+      continue;
+    }
     if (!item || seen.has(item)) continue;
     seen.add(item);
     deduped.push(item);
   }
-  return deduped.reverse().slice(-AGENT_PROCESS_DIAGNOSTIC_LIMIT);
+  const ordered = deduped.reverse();
+  const logicalCount = ordered.length + previouslyFolded;
+  if (logicalCount <= AGENT_PROCESS_DIAGNOSTIC_LIMIT) return ordered;
+  const headCount = Math.min(AGENT_PROCESS_DIAGNOSTIC_HEAD_LIMIT, ordered.length);
+  const tailCount = Math.max(1, AGENT_PROCESS_DIAGNOSTIC_LIMIT - headCount - 1);
+  const head = ordered.slice(0, headCount);
+  const tail = ordered.slice(-tailCount);
+  const foldedCount = Math.max(1, logicalCount - head.length - tail.length);
+  return [
+    ...head,
+    `${AGENT_PROCESS_FOLD_PREFIX}${foldedCount}${AGENT_PROCESS_FOLD_SUFFIX}`,
+    ...tail,
+  ];
+}
+
+function foldedAgentProcessCount(value: string): number {
+  if (!value.startsWith(AGENT_PROCESS_FOLD_PREFIX) || !value.endsWith(AGENT_PROCESS_FOLD_SUFFIX)) {
+    return 0;
+  }
+  const raw = value.slice(
+    AGENT_PROCESS_FOLD_PREFIX.length,
+    value.length - AGENT_PROCESS_FOLD_SUFFIX.length,
+  );
+  const count = Number.parseInt(raw, 10);
+  return Number.isFinite(count) && count > 0 ? count : 0;
 }
 
 function safeFilename(value: string): string {

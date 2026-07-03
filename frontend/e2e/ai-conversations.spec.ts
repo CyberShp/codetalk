@@ -1916,6 +1916,134 @@ test("AI conversation keeps raw tool output out of the collapsed Agent process s
   await expect(processDisclosure.getByText("rsph->status_detail")).toBeVisible();
 });
 
+test("AI conversation keeps the start and end of a long Agent process history", async ({ page }) => {
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: [
+        {
+          id: "ws-agent-long-process",
+          name: "SPDK 长过程项目",
+          repo_path: "/Volumes/Media/dpdk/spdk",
+          indexed: 1,
+          index_job: null,
+          index_progress: 100,
+          analyze_status: null,
+          analyze_progress: 0,
+          last_index_error: null,
+          created_at: "2026-06-28T00:00:00Z",
+          updated_at: "2026-06-28T00:00:00Z",
+          materials: [],
+          reports: [],
+        },
+      ],
+    });
+  });
+  await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations?workspace_id=ws-agent-long-process&limit=50", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations/conv-agent-long-process", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        id: "conv-agent-long-process",
+        scope_type: "workspace",
+        scope_id: "ws-agent-long-process",
+        workspace_id: "ws-agent-long-process",
+        memory_namespace: "workspace:ws-agent-long-process",
+        title: "Agent 长过程线程",
+        status: "idle",
+        initial_context: {},
+        created_at: "2026-06-28T00:00:00Z",
+        updated_at: "2026-06-28T00:00:02Z",
+        latest_run: {
+          id: "run-agent-long-process",
+          conversation_id: "conv-agent-long-process",
+          status: "completed",
+          cursor: 300,
+          error: null,
+          model: "agent:Claude Code",
+          token_usage: {},
+          created_at: "2026-06-28T00:00:01Z",
+          started_at: "2026-06-28T00:00:01Z",
+          completed_at: "2026-06-28T00:00:02Z",
+        },
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-agent-long-process/messages", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        items: [
+          {
+            id: "msg-agent-long-process-user",
+            conversation_id: "conv-agent-long-process",
+            run_id: "run-agent-long-process",
+            role: "user",
+            content: "分析 SPDK iSCSI login 并生成黑盒测试",
+            references: [],
+            actions: [],
+            created_at: "2026-06-28T00:00:01Z",
+          },
+          {
+            id: "msg-agent-long-process-assistant",
+            conversation_id: "conv-agent-long-process",
+            run_id: "run-agent-long-process",
+            role: "assistant",
+            content: "## 结论\n\nLONG_PROCESS_FINAL: 正文只展示最终答案。",
+            references: [],
+            actions: [],
+            created_at: "2026-06-28T00:00:02Z",
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-agent-long-process/events?**", async (route) => {
+    const items = Array.from({ length: 260 }, (_, index) => ({
+      event_id: index + 1,
+      run_id: "run-agent-long-process",
+      conversation_id: "conv-agent-long-process",
+      event_type: index === 0 ? "status" : "delta",
+      payload:
+        index === 0
+          ? { status: "running", message: "AGENT_SPAWN_START: resume session and load workspace" }
+          : {
+              kind: "diagnostic",
+              content: `AGENT_PROCESS_STEP_${String(index + 1).padStart(3, "0")}: reading lib/iscsi/iscsi.c`,
+            },
+      created_at: "2026-06-28T00:00:01Z",
+    }));
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: { items },
+    });
+  });
+
+  await page.goto("/ai/conv-agent-long-process", { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByText("LONG_PROCESS_FINAL: 正文只展示最终答案。")).toBeVisible();
+  await expect(page.locator(".ct-codex-ai__reader")).not.toContainText("AGENT_PROCESS_STEP_120");
+  const processDisclosure = page.getByTestId("agent-process-disclosure");
+  await expect(processDisclosure.getByText("Agent 过程")).toBeVisible();
+  await expect(processDisclosure.locator("summary")).toContainText("默认折叠");
+
+  await processDisclosure.getByText("Agent 过程").click();
+  await expect(processDisclosure.getByText("AGENT_SPAWN_START: resume session and load workspace")).toBeVisible();
+  await expect(
+    processDisclosure.locator("p").filter({ hasText: "AGENT_PROCESS_STEP_260: reading lib/iscsi/iscsi.c" }),
+  ).toBeVisible();
+  await expect(processDisclosure.getByText(/已折叠中间 \d+ 条 Agent 过程事件/)).toBeVisible();
+  await expect(
+    processDisclosure.locator("p").filter({ hasText: "AGENT_PROCESS_STEP_070: reading lib/iscsi/iscsi.c" }),
+  ).toHaveCount(0);
+});
+
 test("AI conversation keeps long structured artifacts compact while streaming", async ({ page }) => {
   let completed = false;
   let releaseDone = () => {};
