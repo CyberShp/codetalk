@@ -4454,6 +4454,7 @@ test("downloads complete inline SFMEA and black-box output from the agent runtim
     await page.getByRole("button", { name: "新建线程" }).click();
 
     await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
     await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
 
@@ -4477,6 +4478,18 @@ test("downloads complete inline SFMEA and black-box output from the agent runtim
     expect(artifact).toContain("connect timeout");
     expect(artifact).toContain("## 黑盒测试用例");
     expect(artifact).toContain("用例：连接超时");
+
+    const exportPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出" }).hover();
+    await page.getByRole("button", { name: "导出" }).click();
+    const exportDownload = await exportPromise;
+    const exportPath = testInfo.outputPath("inline-complete-thread-export.md");
+    await exportDownload.saveAs(exportPath);
+    const exported = fs.readFileSync(exportPath, "utf8");
+    expect(exported).toContain("### 附件与产物");
+    expect(exported).toContain("下载完整产物");
+    expect(exported).toContain(`/api/ai/conversations/${threadId}/runs/`);
+    expect(exported).toContain("完整测试设计/SFMEA/黑盒用例已保存为下载产物");
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }

@@ -408,6 +408,21 @@ function buildThreadMarkdown(conversation: AIConversation | null, messages: AIMe
       lines.push("");
     }
     lines.push(message.content ? redactDiagnosticText(message.content) : "_空消息_");
+    const actionLinks = (message.actions ?? [])
+      .map((action) => {
+        const href = resolvedActionHref(action);
+        if (!href) return null;
+        const label = actionLabel(action) || "下载产物";
+        return { label, href };
+      })
+      .filter((item): item is { label: string; href: string } => Boolean(item));
+    if (actionLinks.length) {
+      lines.push("");
+      lines.push("### 附件与产物");
+      for (const action of actionLinks) {
+        lines.push(`- ${redactDiagnosticText(action.label)}: ${redactDiagnosticText(action.href)}`);
+      }
+    }
     if (message.references?.length) {
       lines.push("");
       lines.push("### 证据引用");
