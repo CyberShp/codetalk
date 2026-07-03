@@ -4392,6 +4392,41 @@ class TestAgentRuntimes:
         assert "lib/bdev/bdev.c" in diagnostics
         assert "tool_calls" not in answer
 
+    async def test_agent_runtime_chat_choice_tool_call_and_content_in_same_delta_keep_answer(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+        from app.services.ai_conversations import _agent_output_segments
+
+        agent_code = (
+            "import json, sys; "
+            "event={'choices':[{'delta':{"
+            "'tool_calls':[{'id':'call_1','type':'function','function':{'name':'search_source','arguments':'{\"query\":\"nvmf connect\"}'}}],"
+            "'content':'同包回答：已基于工具调用继续输出结论。'"
+            "}}]}; "
+            "print(json.dumps(event, ensure_ascii=False), flush=True); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "auto",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码后回答",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        segments = [segment for chunk in chunks for segment in _agent_output_segments(chunk)]
+        answer = "".join(content for kind, content in segments if kind == "answer")
+        diagnostics = "\n".join(content for kind, content in segments if kind == "diagnostic")
+        assert answer == "同包回答：已基于工具调用继续输出结论。"
+        assert "search_source" in diagnostics
+        assert "nvmf connect" in diagnostics
+        assert "tool_calls" not in answer
+
     async def test_agent_runtime_auto_mode_cleans_plain_fallback_chunks(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
 

@@ -1704,9 +1704,18 @@ def _agent_output_segments(
         diagnostic_prefix = ""
 
     for line in text.splitlines(keepends=True):
+        line_answer_chunk = line.startswith((AGENT_FINAL_ANSWER_PREFIX, AGENT_ANSWER_DELTA_PREFIX))
+        if line.startswith(AGENT_FINAL_ANSWER_PREFIX):
+            line = line[len(AGENT_FINAL_ANSWER_PREFIX) :]
+        elif line.startswith(AGENT_ANSWER_DELTA_PREFIX):
+            line = line[len(AGENT_ANSWER_DELTA_PREFIX) :]
         content = line.strip()
         if not content:
             close_diagnostic_context()
+            continue
+        if line_answer_chunk:
+            close_diagnostic_context()
+            segments.append(("answer", line))
             continue
         diagnostic = _agent_diagnostic_text(content)
         if diagnostic:

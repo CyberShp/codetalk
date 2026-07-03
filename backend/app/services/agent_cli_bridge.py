@@ -816,12 +816,7 @@ def _event_text(event: dict[str, Any]) -> str | None:
             for key in ("delta", "message"):
                 value = choice.get(key)
                 if isinstance(value, dict):
-                    nested = _event_text(value)
-                    if nested:
-                        if _chat_choice_payload_has_answer(value):
-                            parts.append(_chat_choice_answer_text(nested, final=key == "message"))
-                        else:
-                            parts.append(nested)
+                    parts.extend(_chat_choice_payload_parts(value, final=key == "message"))
             direct = choice.get("text")
             if isinstance(direct, str):
                 parts.append(_chat_choice_answer_text(direct, final=False))
@@ -952,14 +947,32 @@ def _chat_tool_call_text(event: dict[str, Any]) -> str:
     return "\n".join(entries)
 
 
-def _chat_choice_payload_has_answer(value: dict[str, Any]) -> bool:
+def _chat_choice_payload_parts(value: dict[str, Any], *, final: bool) -> list[str]:
+    parts: list[str] = []
+    tool_text = _chat_tool_call_text(value)
+    answer_text = _chat_choice_payload_answer_text(value)
+    if tool_text:
+        parts.append(_diagnostic_lines("TOOL", tool_text))
+        if answer_text:
+            parts.append("\n")
+    if answer_text:
+        parts.append(_chat_choice_answer_text(answer_text, final=final))
+    if parts:
+        return parts
+    nested = _event_text(value)
+    return [nested] if nested else []
+
+
+def _chat_choice_payload_answer_text(value: dict[str, Any]) -> str:
     content = value.get("content")
     if isinstance(content, str) and content:
-        return True
-    if isinstance(content, list) and _content_parts(content):
-        return True
+        return content
+    if isinstance(content, list):
+        parts = _content_parts(content)
+        if parts:
+            return "".join(parts)
     text = value.get("text")
-    return isinstance(text, str) and bool(text)
+    return text if isinstance(text, str) and text else ""
 
 
 def _chat_choice_answer_text(value: str, *, final: bool) -> str:
