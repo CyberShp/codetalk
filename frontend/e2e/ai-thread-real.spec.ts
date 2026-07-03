@@ -1603,12 +1603,33 @@ test("prevents duplicate sibling AI thread creation from a real double click", a
   const workspaceName = `ai-sibling-e2e-${Date.now()}`;
   const firstThreadTitle = `${workspaceName} primary investigation`;
   const siblingTitle = `${workspaceName} · 新调查`;
+  const otherRepo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-sibling-other-")));
+  fs.writeFileSync(path.join(otherRepo, "README.md"), "AI sibling side rail count fixture\n", "utf8");
+  const otherWorkspaceName = `${workspaceName}-other`;
 
   const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
     data: { name: workspaceName, repo_path: repo },
   });
   expect(workspaceResp.status()).toBe(201);
   const workspace = (await workspaceResp.json()) as { id: string };
+  const otherWorkspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: otherWorkspaceName, repo_path: otherRepo },
+  });
+  expect(otherWorkspaceResp.status()).toBe(201);
+  const otherWorkspace = (await otherWorkspaceResp.json()) as { id: string };
+  const otherThreadResp = await request.post(`${backendBase}/api/ai/conversations`, {
+    data: {
+      scope_type: "workspace",
+      scope_id: otherWorkspace.id,
+      workspace_id: otherWorkspace.id,
+      title: `${otherWorkspaceName} count fixture`,
+      initial_context: {
+        workspace_id: otherWorkspace.id,
+        project_name: otherWorkspaceName,
+      },
+    },
+  });
+  expect(otherThreadResp.status()).toBe(201);
 
   await page.goto("/ai", { waitUntil: "domcontentloaded" });
   const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
@@ -1644,6 +1665,13 @@ test("prevents duplicate sibling AI thread creation from a real double click", a
     timeout: 15_000,
   });
   await expect.poll(() => createRequests.length).toBe(1);
+  const detailProjectRow = page.locator(".ct-codex-ai__project-row").filter({ hasText: workspaceName }).first();
+  await expect(detailProjectRow.locator("em")).toHaveText("2");
+  const projectSearch = page.getByLabel("搜索 AI 项目");
+  await projectSearch.fill(otherWorkspaceName);
+  const otherProjectRow = page.locator(".ct-codex-ai__project-row").filter({ hasText: otherWorkspaceName }).first();
+  await expect(otherProjectRow.locator("em")).toHaveText("1");
+  await projectSearch.fill("");
 
   const listResp = await request.get(
     `${backendBase}/api/ai/conversations?workspace_id=${workspace.id}&limit=10`,

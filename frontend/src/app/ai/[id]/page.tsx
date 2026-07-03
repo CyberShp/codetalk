@@ -435,6 +435,7 @@ export default function AIThreadPage() {
   const [messages, setMessages] = useState<AIMessage[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [threads, setThreads] = useState<AIConversation[]>([]);
+  const [railThreads, setRailThreads] = useState<AIConversation[]>([]);
   const [agentRuntimes, setAgentRuntimes] = useState<AgentRuntime[]>([]);
   const [savingRuntime, setSavingRuntime] = useState(false);
   const [input, setInput] = useState("");
@@ -486,6 +487,14 @@ export default function AIThreadPage() {
     () => threads.filter((thread) => threadWorkspaceId(thread) === workspaceId),
     [threads, workspaceId],
   );
+  const railProjectThreadCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const thread of railThreads) {
+      const projectId = threadWorkspaceId(thread);
+      counts.set(projectId, (counts.get(projectId) ?? 0) + 1);
+    }
+    return counts;
+  }, [railThreads]);
   const matchingThreads = useMemo(
     () =>
       workspaceThreads.filter((thread) => {
@@ -553,10 +562,12 @@ export default function AIThreadPage() {
     setWorkspaces(workspaceItems);
     setAgentRuntimes(runtimeResult.items);
     const projectId = threadWorkspaceId(conv);
-    const threadResult = await api.aiConversations.list(
-      projectId === "global" ? { limit: 50 } : { workspace_id: projectId, limit: 50 },
-    );
+    const [threadResult, railThreadResult] = await Promise.all([
+      api.aiConversations.list(projectId === "global" ? { limit: 50 } : { workspace_id: projectId, limit: 50 }),
+      api.aiConversations.list({ limit: 100 }),
+    ]);
     setThreads(threadResult.items);
+    setRailThreads(railThreadResult.items);
     if (conv.latest_run?.id) {
       const eventResult = await api.aiConversations
         .events(conversationId, { run_id: conv.latest_run.id, limit: 200, process_only: true })
@@ -915,6 +926,8 @@ export default function AIThreadPage() {
           memory_namespace: `workspace:${workspace.id}`,
         },
       });
+      setThreads((current) => [next, ...current.filter((item) => item.id !== next.id)]);
+      setRailThreads((current) => [next, ...current.filter((item) => item.id !== next.id)].slice(0, 100));
       router.push(`/ai/${next.id}`);
     } finally {
       creatingSiblingThreadRef.current = false;
@@ -937,6 +950,7 @@ export default function AIThreadPage() {
       await api.aiConversations.delete(thread.id);
       const nextThreads = threads.filter((item) => item.id !== thread.id);
       setThreads(nextThreads);
+      setRailThreads((current) => current.filter((item) => item.id !== thread.id));
       if (thread.id === conversationId) {
         const fallback = nextThreads.find((item) => threadWorkspaceId(item) === workspaceId);
         router.push(fallback ? `/ai/${fallback.id}` : "/ai");
@@ -995,7 +1009,7 @@ export default function AIThreadPage() {
               const projectRowContent = (
                 <>
                   <span>{project.name}</span>
-                  <em>{project.reports.length + project.materials.length}</em>
+                  <em>{railProjectThreadCounts.get(project.id) ?? 0}</em>
                 </>
               );
               return threadNavigationBusy ? (
