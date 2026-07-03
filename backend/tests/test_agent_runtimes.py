@@ -4469,6 +4469,38 @@ class TestAgentRuntimes:
         assert "首段源码分析" in output
         assert "最终答案：stderr 活动期间不应被 idle 提前截断。" in output
 
+    async def test_agent_runtime_reports_stderr_progress_without_polluting_answer(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import sys, time; "
+            "sys.stderr.write('reading workspace source: lib/nvmf/connect.c\\n'); sys.stderr.flush(); "
+            "time.sleep(0.05); "
+            "sys.stderr.write('building SFMEA evidence table\\n'); sys.stderr.flush(); "
+            "time.sleep(0.05); "
+            "print('最终答案：stderr 进度只应进入折叠过程。', flush=True)"
+        )
+        chunks: list[str] = []
+        progress: list[str] = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+            stderr_update=progress.append,
+        ):
+            chunks.append(chunk)
+
+        output = "".join(chunks)
+        assert output.strip() == "最终答案：stderr 进度只应进入折叠过程。"
+        assert any("reading workspace source: lib/nvmf/connect.c" in item for item in progress)
+        assert any("building SFMEA evidence table" in item for item in progress)
+
     async def test_agent_runtime_stream_decodes_utf16le_stdout_from_windows_shells(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
 

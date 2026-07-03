@@ -1402,6 +1402,14 @@ async def run_agent_generation(
         )
         live_chunks.append(live_content)
 
+    async def append_agent_process_delta(content: str) -> None:
+        await store.append_event(
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            event_type="delta",
+            payload={"kind": "diagnostic", "content": content},
+        )
+
     async def consume_agent_turn(turn_prompt: str, turn_resume_session_id: str | None) -> list[str]:
         turn_chunks: list[str] = []
         segment_state = _AgentOutputSegmentState()
@@ -1411,6 +1419,7 @@ async def run_agent_generation(
             cwd=cwd,
             resume_session_id=turn_resume_session_id,
             session_update=session_updates.append,
+            stderr_update=append_agent_process_delta,
             is_cancelled=run_cancelled,
         ):
             if await run_cancelled():
@@ -1419,12 +1428,7 @@ async def run_agent_generation(
             final_answer_parts: list[str] = []
             for kind, content in _agent_output_segments(delta, state=segment_state):
                 if kind == "diagnostic":
-                    await store.append_event(
-                        run_id=run_id,
-                        conversation_id=conversation["id"],
-                        event_type="delta",
-                        payload={"kind": "diagnostic", "content": content},
-                    )
+                    await append_agent_process_delta(content)
                     continue
                 if is_final_answer:
                     final_answer_parts.append(content)

@@ -69,6 +69,7 @@ async def stream_agent_runtime(
     cwd: str | None,
     resume_session_id: str | None = None,
     session_update: Callable[[dict[str, Any]], None] | None = None,
+    stderr_update: Callable[[str], Any] | None = None,
     is_cancelled: Callable[[], Any] | None = None,
 ) -> AsyncIterator[str]:
     command = str(runtime.get("command") or "").strip()
@@ -167,10 +168,13 @@ async def stream_agent_runtime(
             text = _decode_strict_if_complete(bytes(pending))
             if text is not None:
                 stderr_chunks.append(text)
+                await _emit_stderr_updates(text, stderr_update)
                 mark_activity()
                 pending.clear()
         if pending:
-            stderr_chunks.append(_decode(bytes(pending)))
+            text = _decode(bytes(pending))
+            stderr_chunks.append(text)
+            await _emit_stderr_updates(text, stderr_update)
             mark_activity()
 
     stderr_task = asyncio.create_task(_drain_stderr())
@@ -249,6 +253,26 @@ async def stream_agent_runtime(
     if return_code != 0 and not completed_by_policy and not cancelled_by_request:
         error = "".join(stderr_chunks).strip()
         raise AgentRuntimeError(redact_agent_diagnostic_text(error or f"执行器退出码：{return_code}"))
+
+
+async def _emit_stderr_updates(text: str, callback: Callable[[str], Any] | None) -> None:
+    if callback is None:
+        return
+    for line in _stderr_progress_lines(text):
+        result = callback(line)
+        if asyncio.iscoroutine(result):
+            await result
+
+
+def _stderr_progress_lines(text: str) -> list[str]:
+    cleaned = clean_agent_output_text(text)
+    lines: list[str] = []
+    for raw in cleaned.splitlines():
+        line = redact_agent_diagnostic_text(raw).strip()
+        if not line:
+            continue
+        lines.append(line)
+    return lines[-20:]
 
 
 async def _missing_command_message(command: str) -> str:

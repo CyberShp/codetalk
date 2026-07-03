@@ -6192,6 +6192,103 @@ test("keeps real agent thinking diagnostics collapsed and out of the persisted a
   }
 });
 
+test("shows real agent stderr progress in the folded process panel while generation is running", async ({
+  page,
+  request,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-stderr-progress-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI stderr progress e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-stderr-runtime-")));
+  const runtimeScript = path.join(runtimeDir, "stderr_progress_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys, time",
+      "sys.stdin.read()",
+      "sys.stderr.write('stderr progress: reading workspace source lib/nvmf/connect.c\\n'); sys.stderr.flush()",
+      "time.sleep(1.2)",
+      "sys.stderr.write('stderr progress: mapping SFMEA and black-box tests\\n'); sys.stderr.flush()",
+      "time.sleep(0.2)",
+      "print('## 结论\\nSTDERR_PROGRESS_FINAL: 已基于源码完成分析。\\n\\n## 代码证据\\n- `README.md`: `AI stderr progress e2e workspace`。\\n- `lib/nvmf/connect.c`: 作为 connect 流程证据域。\\n\\n## 黑盒测试用例\\n- 用例：前置条件为 target 可连接；步骤为触发 reconnect timeout；预期结果为日志和状态可观测。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-stderr-progress-${Date.now()}`;
+  const runtimeName = `Stderr progress runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} folded stderr progress`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByPlaceholder(/像 Codex 一样继续追问/).fill("请读取源码并生成 SFMEA 与黑盒测试用例");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 10_000 });
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("stderr progress: reading workspace source lib/nvmf/connect.c")).toBeVisible({
+      timeout: 10_000,
+    });
+    const reader = page.getByLabel("AI 线程对话内容");
+    await expect(reader).not.toContainText("stderr progress: reading workspace source");
+
+    await expect(page.getByText("STDERR_PROGRESS_FINAL")).toBeVisible({ timeout: 30_000 });
+    await expect(processDisclosure.getByText("stderr progress: mapping SFMEA and black-box tests")).toBeVisible();
+    await expect(reader).not.toContainText("stderr progress: mapping SFMEA");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("STDERR_PROGRESS_FINAL");
+    expect(assistant?.content).not.toContain("stderr progress: reading workspace source");
+    expect(assistant?.content).not.toContain("stderr progress: mapping SFMEA");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("folds real agent log and progress JSON events out of the visible answer", async ({
   page,
   request,
