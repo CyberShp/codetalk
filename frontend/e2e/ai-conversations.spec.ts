@@ -1679,15 +1679,23 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
   await expect(page.getByText("最终答案：覆盖 reconnect timeout 的黑盒观察点。")).toBeVisible();
   await expect(page.locator(".ct-codex-ai__reader")).not.toContainText("正在准备工作区源码上下文");
   await expect(page.locator(".ct-codex-ai__reader")).not.toContainText("诊断步骤 01");
-  await expect(page.getByText("生成诊断：默认折叠")).toBeVisible();
-  await expect(page.getByText("正在准备工作区源码上下文")).toBeHidden();
-  await expect(page.getByText("诊断步骤 01：正在读取 lib/nvmf/connect.c")).toBeHidden();
-  await page.getByText("生成诊断：默认折叠").click();
-  await expect(page.getByText("正在准备工作区源码上下文")).toBeVisible();
-  await expect(page.getByText("诊断步骤 01：正在读取 lib/nvmf/connect.c")).toBeVisible();
-  await expect(page.getByText("诊断步骤 20：正在读取 lib/nvmf/connect.c")).toBeVisible();
-  await expect(page.locator(".ct-ai-diagnostic p").filter({ hasText: "正在准备工作区源码上下文" })).toHaveCount(1);
-  await expect(page.locator(".ct-ai-diagnostic p").filter({ hasText: "诊断步骤 01：正在读取 lib/nvmf/connect.c" })).toHaveCount(1);
+  const processDisclosure = page.getByTestId("agent-process-disclosure");
+  await expect(processDisclosure.getByText("Agent 过程")).toBeVisible();
+  await expect(processDisclosure.locator("summary")).toContainText("默认折叠");
+  await expect(processDisclosure.locator("p").filter({ hasText: "正在准备工作区源码上下文" })).toBeHidden();
+  await expect(
+    processDisclosure.locator("p").filter({ hasText: "诊断步骤 01：正在读取 lib/nvmf/connect.c" }),
+  ).toBeHidden();
+  await processDisclosure.getByText("Agent 过程").click();
+  await expect(processDisclosure.getByText("正在准备工作区源码上下文")).toBeVisible();
+  await expect(
+    processDisclosure.locator("p").filter({ hasText: "诊断步骤 01：正在读取 lib/nvmf/connect.c" }),
+  ).toBeVisible();
+  await expect(
+    processDisclosure.locator("p").filter({ hasText: "诊断步骤 20：正在读取 lib/nvmf/connect.c" }),
+  ).toBeVisible();
+  await expect(processDisclosure.locator("p").filter({ hasText: "正在准备工作区源码上下文" })).toHaveCount(1);
+  await expect(processDisclosure.locator("p").filter({ hasText: "诊断步骤 01：正在读取 lib/nvmf/connect.c" })).toHaveCount(1);
 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "导出" }).click();
