@@ -562,7 +562,7 @@ class AIConversationStore:
                         WHERE hidden_ws.id = ai_conversations.workspace_id
                           AND (
                               COALESCE(julianday(hidden_ws.updated_at), julianday(hidden_ws.created_at), 0)
-                              < julianday('now') - (30.0 / 1440.0)
+                              < julianday('now') - (1.0 / 1440.0)
                           )
                           AND (
                               lower(hidden_ws.repo_path) LIKE '%/codetalk-ai-%'
@@ -573,6 +573,16 @@ class AIConversationStore:
                               OR lower(hidden_ws.name) LIKE 'entry-discovery-ws-%'
                               OR lower(hidden_ws.name) LIKE 'release-click-%'
                           )
+                    )
+                    OR (
+                        workspace_id IS NOT NULL
+                        AND workspace_id != ''
+                        AND workspace_id != 'global'
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM workspaces visible_ws
+                            WHERE visible_ws.id = ai_conversations.workspace_id
+                        )
                     )
                 )
                 """

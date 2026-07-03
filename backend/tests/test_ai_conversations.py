@@ -650,6 +650,19 @@ class TestAIConversationsAPI:
             assert hidden_context_panel_thread_resp.status_code == 201
             hidden_context_panel_thread_id = hidden_context_panel_thread_resp.json()["id"]
 
+            orphan_workspace_thread_resp = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": "ws-orphan-internal-history",
+                    "workspace_id": "ws-orphan-internal-history",
+                    "memory_namespace": "workspace:ws-orphan-internal-history",
+                    "title": "普通标题但归属已清理测试 workspace",
+                },
+            )
+            assert orphan_workspace_thread_resp.status_code == 201
+            orphan_workspace_thread_id = orphan_workspace_thread_resp.json()["id"]
+
             async with aiosqlite.connect(sqlite_db) as db:
                 stale_ids = [legacy_id, named_e2e_id, prefixed_e2e_id]
                 for offset, stale_id in enumerate(stale_ids, start=1):
@@ -671,6 +684,7 @@ class TestAIConversationsAPI:
             assert visible_id in global_ids
             assert hidden_workspace_thread_id not in global_ids
             assert hidden_context_panel_thread_id not in global_ids
+            assert orphan_workspace_thread_id not in global_ids
 
             debug_listed = await client.get(
                 "/api/ai/conversations",
@@ -691,6 +705,7 @@ class TestAIConversationsAPI:
             debug_global_ids = [item["id"] for item in debug_global.json()["items"]]
             assert hidden_workspace_thread_id in debug_global_ids
             assert hidden_context_panel_thread_id in debug_global_ids
+            assert orphan_workspace_thread_id in debug_global_ids
 
     async def test_delete_conversation_removes_idle_thread_and_rejects_running_thread(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
