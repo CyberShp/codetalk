@@ -2010,6 +2010,187 @@ test("contains large real AI project and thread lists inside scroll panes", asyn
   await expect.poll(() => page.evaluate(() => window.scrollY)).toBeLessThan(5);
 });
 
+test("renders long real AI thread histories without per-message entry animations", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(120_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-long-history-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI long history performance guard workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-long-history-runtime-")));
+  const runtimeScript = path.join(runtimeDir, "long_history_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "# -*- coding: utf-8 -*-",
+      "import re, sys",
+      "prompt = sys.stdin.read()",
+      "matches = re.findall(r'LONG_HISTORY_TURN_(\\d+)', prompt)",
+      "turn = matches[-1] if matches else 'unknown'",
+      "print(f'## 结论\\nLONG_HISTORY_REPLY_{turn}: 已读取当前工作区并保持长历史渲染轻量。\\n\\n## 代码证据\\n- `README.md`: `AI long history performance guard workspace` 作为本轮真实工作区证据。\\n- `test/nvmf`: 可承载 connect/reconnect 长历史分析的黑盒回归。\\n\\n## 流程梳理\\n1. 用户在同一 AI 线程连续追问 SPDK connect/reconnect 场景。\\n2. CodeTalk 将每轮任务交给真实 agent runtime，并把回答追加到线程历史。\\n3. 浏览器重新打开长历史线程时，只在内部 reader 滚动，不给每条消息添加入场动画。\\n\\n## SFMEA\\n| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |\\n| 长历史消息逐条动画 | 每条消息渲染时都触发 transform/animation | 页面卡顿、滚动掉帧 | 7 | 4 | 4 | 112 | 用真实 E2E 检查 animationName、transform 和 will-change |\\n\\n## 黑盒测试用例\\n1. 用例：长历史线程打开不卡顿；前置条件：已有 24 轮真实 agent 对话；步骤：打开线程详情页；预期结果：正文消息全部可见且只在 reader 内滚动；观测点：document scrollHeight、reader overflow。\\n2. 用例：消息无逐条动画；前置条件：长历史已渲染；步骤：读取每条消息 computed style；预期结果：animationName 为 none、transform 为 none、未设置 will-change；失败诊断线索为消息 DOM 上的动画样式。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-long-history-${Date.now()}`;
+  const runtimeName = `Long history perf runtime ${Date.now()}`;
+  let runtime: { id: string } | null = null;
+  let workspace: { id: string } | null = null;
+  let conversation: { id: string } | null = null;
+
+  const waitForMessageCount = async (conversationId: string, expected: number) => {
+    await expect
+      .poll(
+        async () => {
+          const response = await request.get(
+            `${backendBase}/api/ai/conversations/${encodeURIComponent(conversationId)}/messages`,
+          );
+          expect(response.ok()).toBeTruthy();
+          const body = (await response.json()) as { items: Array<{ role: string; content: string }> };
+          return body.items.length;
+        },
+        { timeout: 45_000 },
+      )
+      .toBe(expected);
+  };
+
+  try {
+    const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+      data: {
+        name: runtimeName,
+        command: "python3",
+        args: [runtimeScript],
+        prompt_transport: "stdin",
+        output_mode: "plain",
+        working_dir_mode: "project",
+        fixed_working_dir: "",
+        env: {},
+        health_command: "",
+        timeout_seconds: 20,
+        enabled: true,
+        completion_mode: "process_exit",
+      },
+    });
+    expect(runtimeResp.status()).toBe(201);
+    runtime = (await runtimeResp.json()) as { id: string };
+
+    const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+      data: { name: workspaceName, repo_path: repo },
+    });
+    expect(workspaceResp.status()).toBe(201);
+    workspace = (await workspaceResp.json()) as { id: string };
+
+    const conversationResp = await request.post(`${backendBase}/api/ai/conversations`, {
+      data: {
+        scope_type: "workspace",
+        scope_id: workspace.id,
+        workspace_id: workspace.id,
+        memory_namespace: `workspace:${workspace.id}`,
+        runtime_type: "agent_runtime",
+        agent_runtime_id: runtime.id,
+        title: `${workspaceName} long message history`,
+        initial_context: {
+          workspace_id: workspace.id,
+          project_name: workspaceName,
+          memory_namespace: `workspace:${workspace.id}`,
+        },
+      },
+    });
+    expect(conversationResp.status()).toBe(201);
+    conversation = (await conversationResp.json()) as { id: string };
+
+    for (let index = 1; index <= 24; index += 1) {
+      const sendResp = await request.post(
+        `${backendBase}/api/ai/conversations/${encodeURIComponent(conversation.id)}/messages`,
+        {
+          data: {
+            content: `LONG_HISTORY_TURN_${String(index).padStart(2, "0")} 分析 SPDK connect/reconnect 并保持长历史页面轻量`,
+          },
+        },
+      );
+      expect(sendResp.status()).toBe(202);
+      await waitForMessageCount(conversation.id, index * 2);
+    }
+
+    await page.setViewportSize({ width: 1440, height: 820 });
+    await page.goto(`/ai/${conversation.id}`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: `${workspaceName} long message history` })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.locator(".ct-codex-message")).toHaveCount(48);
+    await expect(page.getByText("LONG_HISTORY_REPLY_24")).toBeVisible({ timeout: 15_000 });
+
+    const metrics = await page.locator(".ct-codex-ai").evaluate((shell) => {
+      const reader = document.querySelector(".ct-codex-ai__reader") as HTMLElement | null;
+      const messages = Array.from(document.querySelectorAll(".ct-codex-message")) as HTMLElement[];
+      const runningAnimations = document
+        .getAnimations({ subtree: true })
+        .filter((animation) => {
+          const target = animation.effect instanceof KeyframeEffect ? animation.effect.target : null;
+          return target instanceof Element && target.closest(".ct-codex-ai");
+        })
+        .map((animation) => {
+          const target = animation.effect instanceof KeyframeEffect ? animation.effect.target : null;
+          const timing = animation.effect?.getComputedTiming();
+          return {
+            className: target instanceof HTMLElement ? target.className : "",
+            playState: animation.playState,
+            iterations: timing?.iterations,
+          };
+        })
+        .filter((animation) => animation.playState !== "finished" && animation.iterations === Infinity);
+      return {
+        documentScrollHeight: document.documentElement.scrollHeight,
+        viewportHeight: window.innerHeight,
+        shellHeight: (shell as HTMLElement).getBoundingClientRect().height,
+        readerClientHeight: reader?.clientHeight ?? 0,
+        readerScrollHeight: reader?.scrollHeight ?? 0,
+        readerOverflowY: reader ? window.getComputedStyle(reader).overflowY : "",
+        messageMotion: messages.map((message) => {
+          const styles = window.getComputedStyle(message);
+          return {
+            animationName: styles.animationName,
+            animationDuration: styles.animationDuration,
+            transform: styles.transform,
+            willChange: styles.willChange,
+          };
+        }),
+        runningAnimations,
+      };
+    });
+
+    expect(metrics.documentScrollHeight).toBeLessThanOrEqual(metrics.viewportHeight + 40);
+    expect(metrics.shellHeight).toBeLessThanOrEqual(metrics.viewportHeight);
+    expect(metrics.readerOverflowY).toBe("auto");
+    expect(metrics.readerScrollHeight).toBeGreaterThan(metrics.readerClientHeight + 600);
+    expect(metrics.runningAnimations).toEqual([]);
+    expect(
+      metrics.messageMotion.filter(
+        (item) =>
+          item.animationName !== "none" ||
+          item.transform !== "none" ||
+          (item.willChange !== "auto" && item.willChange.trim() !== ""),
+      ),
+      "long real AI histories should not animate or promote every message on render",
+    ).toEqual([]);
+
+    const reader = page.getByLabel("AI 线程对话内容");
+    await reader.hover();
+    await page.mouse.wheel(0, -1200);
+    await expect.poll(() => page.evaluate(() => window.scrollY)).toBeLessThan(5);
+  } finally {
+    if (conversation) {
+      await request.delete(`${backendBase}/api/ai/conversations/${encodeURIComponent(conversation.id)}`).catch(() => undefined);
+    }
+    if (runtime) {
+      await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`).catch(() => undefined);
+    }
+    if (workspace) {
+      await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`).catch(() => undefined);
+    }
+  }
+});
+
 test("sends quick actions and memory actions through the real AI thread composer", async ({
   page,
   request,
