@@ -83,6 +83,10 @@ _SOURCE_SUFFIXES = {
     ".rst",
     ".txt",
 }
+_SOURCE_CITATION_RE = re.compile(
+    r"(?P<path>(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:c|cc|cpp|cxx|h|hh|hpp|py|rs|go|java|js|jsx|ts|tsx|sh|md|rst|txt))"
+    r":(?P<line>\d{1,7})(?:-(?P<end>\d{1,7}))?"
+)
 _QUERY_STOPWORDS = {
     "the",
     "and",
@@ -971,9 +975,16 @@ class AIConversationStore:
     ) -> None:
         run = await self.get_run(run_id)
         now = _now()
+        conversation = await self.get_conversation(run["conversation_id"])
+        enriched_references = await _enrich_references_with_answer_citations(
+            conversation=conversation,
+            references=references,
+            content=content,
+            db_path=self.db_path,
+        )
         safe_content = _govern_visible_assistant_content(
             redact_agent_diagnostic_text(content),
-            references,
+            enriched_references,
         )
         async with self._connect() as db:
             await db.execute("BEGIN")
@@ -988,7 +999,7 @@ class AIConversationStore:
                     run["conversation_id"],
                     run_id,
                     safe_content,
-                    _json_dumps(references),
+                    _json_dumps(enriched_references),
                     _json_dumps(actions or _default_actions()),
                     now,
                 ),
@@ -2531,10 +2542,14 @@ def repo_path_hint(conversation: dict[str, Any]) -> str:
     return str(conversation.get("workspace_id") or "global")
 
 
-async def _conversation_repo_path(conversation: dict[str, Any]) -> str | None:
+async def _conversation_repo_path(
+    conversation: dict[str, Any],
+    *,
+    db_path: str | Path | None = None,
+) -> str | None:
     workspace_id = _conversation_workspace_id(conversation)
     if workspace_id != "global":
-        async with aiosqlite.connect(settings.sqlite_db) as db:
+        async with aiosqlite.connect(str(db_path or settings.sqlite_db)) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("SELECT repo_path FROM workspaces WHERE id = ?", (workspace_id,)) as cur:
                 row = await cur.fetchone()
@@ -2547,6 +2562,156 @@ async def _conversation_repo_path(conversation: dict[str, Any]) -> str | None:
     if workbench_repo:
         return workbench_repo
     return None
+
+
+async def _enrich_references_with_answer_citations(
+    *,
+    conversation: dict[str, Any],
+    references: list[dict[str, Any]],
+    content: str,
+    db_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    workspace_id = _conversation_workspace_id(conversation)
+    if workspace_id == "global":
+        return references
+    repo_path = await _conversation_repo_path(conversation, db_path=db_path)
+    if not repo_path:
+        return references
+    repo = Path(repo_path).expanduser()
+    if not repo.exists() or not repo.is_dir():
+        return references
+    precise_refs = await _to_thread(
+        _answer_citation_refs_sync,
+        repo,
+        workspace_id,
+        content,
+        references,
+    )
+    if not precise_refs:
+        return references
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for ref in [*precise_refs, *references]:
+        source_type = str(ref.get("source_type") or "")
+        source_id = str(ref.get("source_id") or "")
+        key = (source_type, source_id)
+        if not source_type or not source_id or key in seen:
+            continue
+        merged.append(ref)
+        seen.add(key)
+        if len(merged) >= _MAX_CONTEXT_REFERENCES:
+            break
+    return merged
+
+
+def _answer_citation_refs_sync(
+    repo: Path,
+    workspace_id: str,
+    content: str,
+    references: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    repo_root = repo.resolve()
+    reference_paths = _workspace_source_reference_paths(references)
+    refs: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for cited_path, line_no in _source_citations(str(content or "")):
+        for rel_path in _resolve_cited_source_path(repo_root, cited_path, reference_paths):
+            candidate = (repo_root / rel_path).resolve()
+            if not _safe_source_file(repo_root, candidate):
+                continue
+            ref = _source_file_ref(repo_root, workspace_id, candidate, line=line_no)
+            if not ref or ref.source_id in seen:
+                continue
+            refs.append(ref.to_dict())
+            seen.add(ref.source_id)
+            break
+        if len(refs) >= 8:
+            break
+    return refs
+
+
+def _source_citations(text: str) -> list[tuple[str, int]]:
+    citations: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    for match in _SOURCE_CITATION_RE.finditer(text or ""):
+        cited_path = match.group("path").strip("`'\"()[]{}.,;")
+        try:
+            line_no = max(1, int(match.group("line")))
+        except (TypeError, ValueError):
+            continue
+        key = (cited_path, line_no)
+        if key in seen:
+            continue
+        citations.append(key)
+        seen.add(key)
+        if len(citations) >= 24:
+            break
+    return citations
+
+
+def _workspace_source_reference_paths(references: list[dict[str, Any]]) -> list[str]:
+    paths: list[str] = []
+    for ref in references:
+        if ref.get("source_type") != "workspace_source":
+            continue
+        metadata = ref.get("metadata") if isinstance(ref.get("metadata"), dict) else {}
+        path = str(metadata.get("path") or "").strip()
+        if path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _resolve_cited_source_path(repo_root: Path, cited_path: str, reference_paths: list[str]) -> list[str]:
+    normalized = cited_path.strip().strip("/")
+    if not normalized or ".." in normalized:
+        return []
+    if "/" in normalized:
+        candidate = (repo_root / normalized).resolve()
+        if _safe_source_file(repo_root, candidate):
+            return [candidate.relative_to(repo_root).as_posix()]
+        return []
+    reference_matches = [path for path in reference_paths if Path(path).name == normalized]
+    if len(reference_matches) == 1:
+        return reference_matches
+    rg_matches = _repo_paths_with_basename(repo_root, normalized)
+    if len(rg_matches) == 1:
+        return rg_matches
+    return []
+
+
+def _repo_paths_with_basename(repo_root: Path, basename: str) -> list[str]:
+    try:
+        result = subprocess.run(
+            [
+                "rg",
+                "--files",
+                "--glob",
+                f"**/{basename}",
+                "--glob",
+                "!**/.git/**",
+                "--glob",
+                "!**/build/**",
+                "--glob",
+                "!**/node_modules/**",
+            ],
+            cwd=repo_root,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=2,
+        )
+    except Exception:
+        return []
+    matches: list[str] = []
+    for rel in result.stdout.splitlines():
+        candidate = (repo_root / rel).resolve()
+        if _safe_source_file(repo_root, candidate):
+            normalized = candidate.relative_to(repo_root).as_posix()
+            if normalized not in matches:
+                matches.append(normalized)
+    return matches[:3]
 
 
 async def _workspace_material_refs(db: aiosqlite.Connection, workspace_id: str) -> list[ContextReference]:

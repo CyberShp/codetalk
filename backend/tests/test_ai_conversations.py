@@ -828,6 +828,89 @@ class TestAIConversationsAPI:
         assert "THINKING:" not in single["content"]
         assert "iscsi_conn_login_pdu_success_complete" not in single["content"]
 
+    async def test_complete_run_promotes_answer_line_citations_to_precise_workspace_refs(
+        self,
+        sqlite_db,
+        tmp_path,
+    ):
+        ws_id = await _seed_workspace(sqlite_db)
+        repo = tmp_path / "repo"
+        source_dir = repo / "lib" / "iscsi"
+        source_dir.mkdir(parents=True)
+        iscsi_lines = [f"int filler_{idx};" for idx in range(1, 90)]
+        iscsi_lines[41] = 'SPDK_ERRLOG("unsupported AuthMethod %.64s\\n", method);'
+        conn_lines = [f"int conn_filler_{idx};" for idx in range(1, 90)]
+        conn_lines[54] = "conn->require_chap = portal->group->require_chap;"
+        (source_dir / "iscsi.c").write_text("\n".join(iscsi_lines), encoding="utf-8")
+        (source_dir / "conn.c").write_text("\n".join(conn_lines), encoding="utf-8")
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute("UPDATE workspaces SET repo_path = ? WHERE id = ?", (str(repo), ws_id))
+            await db.commit()
+
+        from app.services.ai_conversations import AIConversationStore
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="精确证据行号线程",
+        )
+        coarse_refs = [
+            {
+                "source_type": "workspace_source",
+                "source_id": f"{ws_id}:lib/iscsi/iscsi.c:1-20",
+                "title": "lib/iscsi/iscsi.c:1",
+                "excerpt": "1: file header",
+                "metadata": {
+                    "workspace_id": ws_id,
+                    "path": "lib/iscsi/iscsi.c",
+                    "start_line": 1,
+                    "end_line": 20,
+                },
+            },
+            {
+                "source_type": "workspace_source",
+                "source_id": f"{ws_id}:lib/iscsi/conn.c:1-20",
+                "title": "lib/iscsi/conn.c:1",
+                "excerpt": "1: file header",
+                "metadata": {
+                    "workspace_id": ws_id,
+                    "path": "lib/iscsi/conn.c",
+                    "start_line": 1,
+                    "end_line": 20,
+                },
+            },
+        ]
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="分析 iSCSI CHAP 登录",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+        await store.complete_run(
+            run_id=run_id,
+            content=(
+                "证据：`iscsi.c:42-45` 拒绝 unsupported AuthMethod；"
+                "`lib/iscsi/conn.c:55` 从 portal group 继承 require_chap。"
+            ),
+            references=coarse_refs,
+            model="agent:test",
+        )
+
+        messages = await store.list_messages(conversation["id"])
+        assistant = next(item for item in messages if item["role"] == "assistant")
+        refs = assistant["references"]
+
+        assert refs[0]["title"] == "lib/iscsi/iscsi.c:42"
+        assert refs[0]["metadata"]["path"] == "lib/iscsi/iscsi.c"
+        assert refs[0]["metadata"]["start_line"] <= 42 <= refs[0]["metadata"]["end_line"]
+        assert "unsupported AuthMethod" in refs[0]["excerpt"]
+        assert refs[1]["title"] == "lib/iscsi/conn.c:55"
+        assert refs[1]["metadata"]["path"] == "lib/iscsi/conn.c"
+        assert refs[1]["metadata"]["start_line"] <= 55 <= refs[1]["metadata"]["end_line"]
+        assert "require_chap" in refs[1]["excerpt"]
+
     async def test_create_workbench_conversation_publicizes_artifact_context(self, sqlite_db):
         task_run_id = "task_run_public_context"
         app = _test_app(sqlite_db)
