@@ -6260,6 +6260,155 @@ test("fails visibly when a structured agent answer still lacks required sections
   }
 });
 
+test("retries a structured quality failure and recovers with a complete agent answer", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-quality-retry-repo-")));
+  fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "nvmf", "ctrlr.c"),
+    "int nvmf_ctrlr_connect_retry_quality(void) { return 0; }\n",
+    "utf8",
+  );
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-quality-retry-")));
+  const runtimeScript = path.join(runtimeDir, "quality_retry_agent.py");
+  const counterFile = path.join(runtimeDir, "invocations.txt");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import pathlib, sys",
+      "counter = pathlib.Path(__file__).with_name('invocations.txt')",
+      "prompt = sys.stdin.read()",
+      "count = int(counter.read_text(encoding='utf-8') or '0') if counter.exists() else 0",
+      "count += 1",
+      "counter.write_text(str(count), encoding='utf-8')",
+      "if count < 3:",
+      "    print('QUALITY_RETRY_INCOMPLETE_ANSWER', flush=True)",
+      "    print('Evidence: lib/nvmf/ctrlr.c nvmf_ctrlr_connect_retry_quality', flush=True)",
+      "    print('Flow: connect request -> controller setup -> IO queue ready', flush=True)",
+      "else:",
+      "    print('## 结论', flush=True)",
+      "    print('QUALITY_RETRY_FINAL_ANSWER: 已基于源码完成完整四件套。', flush=True)",
+      "    print('\\n## 代码证据', flush=True)",
+      "    print('- `lib/nvmf/ctrlr.c`: `nvmf_ctrlr_connect_retry_quality` 是本轮 connect 入口证据。', flush=True)",
+      "    print('- `test/nvmf`: 可承载 connect/reconnect 黑盒回归。', flush=True)",
+      "    print('\\n## 流程梳理', flush=True)",
+      "    print('1. Initiator 发起 NVMe-oF connect。', flush=True)",
+      "    print('2. Target 建立 controller 并完成 queue 准备。', flush=True)",
+      "    print('\\n## SFMEA', flush=True)",
+      "    print('- failure mode: reconnect timeout; cause: transport delay; effect: I/O pause; severity 8; occurrence 3; detection 4; RPN 96; mitigation: observe RPC error and reconnect state.', flush=True)",
+      "    print('\\n## 黑盒测试用例', flush=True)",
+      "    print('1. 用例：正常连接；前置条件：target 已启动；步骤：initiator 发起 connect；预期结果：连接成功；观测点：RPC 状态、日志和连接状态。', flush=True)",
+      "    print('2. 用例：连接超时；前置条件：注入网络延迟；步骤：发起 connect 并等待超时；预期结果：返回超时错误且可重连；观测点：错误码、日志、恢复状态。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-quality-retry-e2e-${Date.now()}`;
+  const runtimeName = `Quality retry runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} retry quality`;
+  const prompt = "分析 SPDK NVMe-oF target connect，并输出代码证据、流程梳理、SFMEA 和黑盒测试用例";
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill(prompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    const retryButton = page.getByRole("button", { name: "重试上一条" });
+    await expect(page.locator("div[role='alert']").filter({ hasText: "Agent 返回内容不足" })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByText("QUALITY_RETRY_INCOMPLETE_ANSWER")).toHaveCount(0);
+
+    await retryButton.hover();
+    await retryButton.click();
+    await expect(page.getByText("QUALITY_RETRY_FINAL_ANSWER")).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator("div[role='alert']").filter({ hasText: "Agent 返回内容不足" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: "代码证据" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "流程梳理" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "SFMEA" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "黑盒测试用例" })).toBeVisible();
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect
+      .poll(async () => processDisclosure.evaluate((node) => (node as HTMLDetailsElement).open))
+      .toBe(false);
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("正在读取工作区源码上下文")).toBeVisible();
+    await expect(processDisclosure.getByText("QUALITY_RETRY_INCOMPLETE_ANSWER")).toHaveCount(0);
+
+    const conversationResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`,
+    );
+    expect(conversationResp.ok()).toBeTruthy();
+    const conversation = (await conversationResp.json()) as {
+      status: string;
+      latest_run: { status: string } | null;
+    };
+    expect(conversation.status).toBe("idle");
+    expect(conversation.latest_run?.status).toBe("completed");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    const assistant = [...messageBody.items].reverse().find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("QUALITY_RETRY_FINAL_ANSWER");
+    expect(assistant?.content).toContain("## SFMEA");
+    expect(assistant?.content).toContain("## 黑盒测试用例");
+    expect(assistant?.content).not.toContain("QUALITY_RETRY_INCOMPLETE_ANSWER");
+    expect(fs.readFileSync(counterFile, "utf8")).toBe("3");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("injects requested workspace source into a real agent-runtime AI thread", async ({
   page,
   request,
