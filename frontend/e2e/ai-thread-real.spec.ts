@@ -9554,7 +9554,7 @@ test("switches an idle AI thread executor through the real UI and persists it", 
   }
 });
 
-test("shows the thread-bound executor even after that runtime is disabled", async ({
+test("recovers an AI thread to an enabled executor after its bound runtime is disabled", async ({
   page,
   request,
 }) => {
@@ -9610,22 +9610,45 @@ test("shows the thread-bound executor even after that runtime is disabled", asyn
       },
     );
     expect(disabled.ok()).toBeTruthy();
+    const runtimeList = await request.get(`${backendBase}/api/settings/agent-runtimes?enabled=true`);
+    expect(runtimeList.ok()).toBeTruthy();
+    const enabledRuntimes = (await runtimeList.json()) as { items: Array<{ id: string; name: string }> };
+    const expectedFallback =
+      enabledRuntimes.items.find((item) => item.id === "default-claude-code") ??
+      enabledRuntimes.items.find((item) => item.id === "default-codex") ??
+      enabledRuntimes.items.find((item) => item.id === "default-opencode") ??
+      enabledRuntimes.items[0] ??
+      null;
 
     await page.goto(`/ai/${conversation.id}`, { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({
       timeout: 15_000,
     });
     const threadRuntimeSelect = page.getByLabel("当前 AI 执行器");
-    await expect(threadRuntimeSelect).toHaveValue(runtime.id);
+    await expect(page.locator(".ct-codex-ai__notice")).toContainText("已自动切换到", { timeout: 15_000 });
+    await expect(threadRuntimeSelect).toHaveValue(expectedFallback?.id ?? "builtin_llm");
     await expect(threadRuntimeSelect.locator(`option[value="${runtime.id}"]`)).toContainText(
       `${runtimeName}（已停用）`,
     );
     await expect(threadRuntimeSelect.locator(`option[value="${runtime.id}"]`)).toBeDisabled();
-    await expect(page.locator(".ct-ai-env-card").filter({ hasText: "执行器" })).toContainText(runtimeName);
-    await expect(page.locator(".ct-ai-env-card").filter({ hasText: "执行器" })).toContainText("已停用");
-    await expect(page.getByLabel("AI 线程消息")).toBeDisabled();
-    await expect(page.getByRole("button", { name: "解释这个测试设计背后的风险判断" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "发送" })).toBeDisabled();
+    await expect(page.locator(".ct-ai-env-card").filter({ hasText: "执行器" })).toContainText(
+      expectedFallback?.name ?? "内置模型",
+    );
+    await expect(page.getByLabel("AI 线程消息")).toBeEnabled();
+    await expect(page.getByRole("button", { name: "解释这个测试设计背后的风险判断" })).toBeEnabled();
+    await page.getByLabel("AI 线程消息").fill("验证恢复后的执行器可以继续输入");
+    await expect(page.getByRole("button", { name: "发送" })).toBeEnabled();
+
+    const recoveredResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(conversation.id)}`,
+    );
+    expect(recoveredResp.ok()).toBeTruthy();
+    const recovered = (await recoveredResp.json()) as {
+      runtime_type: string;
+      agent_runtime_id: string | null;
+    };
+    expect(recovered.runtime_type).toBe(expectedFallback ? "agent_runtime" : "builtin_llm");
+    expect(recovered.agent_runtime_id).toBe(expectedFallback?.id ?? null);
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }

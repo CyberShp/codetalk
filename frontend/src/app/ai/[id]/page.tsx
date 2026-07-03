@@ -43,6 +43,7 @@ const AGENT_PROCESS_DIAGNOSTIC_LIMIT = 200;
 const AGENT_PROCESS_DIAGNOSTIC_HEAD_LIMIT = 32;
 const AGENT_PROCESS_FOLD_PREFIX = "已折叠中间 ";
 const AGENT_PROCESS_FOLD_SUFFIX = " 条 Agent 过程事件";
+const DEFAULT_AGENT_RUNTIME_FALLBACKS = ["default-claude-code", "default-codex", "default-opencode"];
 
 function eventContent(event: AIRunEvent): string {
   const value = event.payload.content;
@@ -80,6 +81,20 @@ function resolvedActionHref(action: AIMessage["actions"][number]): string {
   const href = actionHref(action);
   if (href.startsWith("/api/")) return `${API_BASE}${href}`;
   return href;
+}
+
+function preferredEnabledAgentRuntime(runtimes: AgentRuntime[]): AgentRuntime | null {
+  for (const id of DEFAULT_AGENT_RUNTIME_FALLBACKS) {
+    const runtime = runtimes.find((item) => item.id === id && item.enabled);
+    if (runtime) return runtime;
+  }
+  return runtimes.find((item) => item.enabled) ?? null;
+}
+
+function agentRuntimeUnavailable(conversation: AIConversation, runtimes: AgentRuntime[]): boolean {
+  if (conversation.runtime_type !== "agent_runtime") return false;
+  const runtime = runtimes.find((item) => item.id === conversation.agent_runtime_id);
+  return !runtime || !runtime.enabled;
 }
 
 function actionKind(action: AIMessage["actions"][number]): string {
@@ -472,6 +487,7 @@ export default function AIThreadPage() {
   const [mobileRail, setMobileRail] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [runtimeNotice, setRuntimeNotice] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const cancellingRef = useRef(false);
   const creatingSiblingThreadRef = useRef(false);
@@ -541,9 +557,10 @@ export default function AIThreadPage() {
       latestRun?.id === streamingRunId &&
       ["queued", "running"].includes(latestRun?.status ?? ""),
   );
-  const activeAgentRuntimeDisabled =
-    conversation?.runtime_type === "agent_runtime" && activeRuntime ? !activeRuntime.enabled : false;
-  const composerDisabled = sending || isActuallyRunning || activeAgentRuntimeDisabled;
+  const activeAgentRuntimeUnavailable =
+    conversation?.runtime_type === "agent_runtime" &&
+    (!activeRuntime || !activeRuntime.enabled);
+  const composerDisabled = sending || isActuallyRunning || activeAgentRuntimeUnavailable;
   const threadNavigationBusy =
     savingRuntime || cancelling || creatingSiblingThread || Boolean(deletingThreadId) || isActuallyRunning;
   const lastUserMessage = useMemo(
@@ -570,33 +587,58 @@ export default function AIThreadPage() {
 
   const loadInitialPage = useCallback(async () => {
     setError(null);
+    setRuntimeNotice(null);
     const [conv, msgResult, workspaceItems, runtimeResult] = await Promise.all([
       api.aiConversations.get(conversationId),
       api.aiConversations.messages(conversationId),
       api.workspaces.list(),
       api.settings.listAgentRuntimes().catch(() => ({ items: [] as AgentRuntime[] })),
     ]);
-    setConversation(conv);
+    let loadedConversation = conv;
+    if (
+      agentRuntimeUnavailable(conv, runtimeResult.items) &&
+      conv.latest_run?.status !== "queued" &&
+      conv.latest_run?.status !== "running"
+    ) {
+      const staleRuntime = runtimeResult.items.find((item) => item.id === conv.agent_runtime_id);
+      const fallback = preferredEnabledAgentRuntime(runtimeResult.items);
+      const fallbackLabel = fallback?.name ?? "内置模型";
+      try {
+        loadedConversation = await api.aiConversations.update(conversationId, {
+          runtime_type: fallback ? "agent_runtime" : "builtin_llm",
+          agent_runtime_id: fallback?.id ?? null,
+        });
+        setRuntimeNotice(
+          staleRuntime
+            ? `原执行器 ${staleRuntime.name} 已停用，已自动切换到 ${fallbackLabel}。`
+            : `原执行器不存在，已自动切换到 ${fallbackLabel}。`,
+        );
+      } catch (exc) {
+        const reason = exc instanceof Error ? exc.message : "自动切换失败";
+        setRuntimeNotice(`当前执行器不可用，请在右上角切换执行器后继续。${reason}`);
+      }
+    }
+    setConversation(loadedConversation);
     setMessages(msgResult.items);
     setWorkspaces(workspaceItems);
     setAgentRuntimes(runtimeResult.items);
-    const projectId = threadWorkspaceId(conv);
+    const projectId = threadWorkspaceId(loadedConversation);
     const [threadResult, railThreadResult] = await Promise.all([
       api.aiConversations.list(projectId === "global" ? { limit: 50 } : { workspace_id: projectId, limit: 50 }),
       api.aiConversations.list({ limit: 100 }),
     ]);
     setThreads(threadResult.items);
     setRailThreads(railThreadResult.items);
-    if (conv.latest_run?.id) {
+    if (loadedConversation.latest_run?.id) {
       const eventResult = await api.aiConversations
-        .events(conversationId, { run_id: conv.latest_run.id, limit: 200, process_only: true })
+        .events(conversationId, { run_id: loadedConversation.latest_run.id, limit: 200, process_only: true })
         .catch(() => ({ items: [] as AIRunEvent[] }));
       setStreamingDiagnostics(agentProcessDiagnosticsFromEvents(eventResult.items));
     } else {
       setStreamingDiagnostics([]);
     }
-    if (conv.latest_run?.status === "queued" || conv.latest_run?.status === "running") {
-      setStreamingRunId(conv.latest_run.id);
+    if (loadedConversation.latest_run?.status === "queued" || loadedConversation.latest_run?.status === "running") {
+      setStreamingRunId(loadedConversation.latest_run.id);
     }
   }, [conversationId]);
 
@@ -915,6 +957,7 @@ export default function AIThreadPage() {
     if (!conversation || savingRuntime || isActuallyRunning) return;
     setSavingRuntime(true);
     setError(null);
+    setRuntimeNotice(null);
     try {
       const updated = await api.aiConversations.update(conversation.id, {
         runtime_type: value === "builtin_llm" ? "builtin_llm" : "agent_runtime",
@@ -1162,6 +1205,13 @@ export default function AIThreadPage() {
             {visibleError.includes("未配置活跃的聊天模型") && (
               <Link href="/settings">去设置执行器</Link>
             )}
+          </div>
+        )}
+
+        {runtimeNotice && (
+          <div className="ct-codex-ai__notice" role="status">
+            <AlertCircle size={16} />
+            <span>{runtimeNotice}</span>
           </div>
         )}
 
