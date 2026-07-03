@@ -440,6 +440,83 @@ async function createArtifactHistoryRuntime(
   return { id: runtime.id, name: runtimeName, captureFile };
 }
 
+async function createResumeArtifactHistoryRuntime(
+  request: APIRequestContext,
+  label: string,
+): Promise<{ id: string; name: string; captureFile: string }> {
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-resume-artifact-history-")));
+  const runtimeScript = path.join(runtimeDir, "resume_artifact_history_agent.py");
+  const captureFile = path.join(runtimeDir, "resume_artifact_history_invocations.jsonl");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, os, pathlib, sys, time",
+      `capture = pathlib.Path(${JSON.stringify(captureFile)})`,
+      "args = sys.argv[1:]",
+      "prompt = args[args.index('-p') + 1] if '-p' in args else ''",
+      "prompt_file = pathlib.Path(os.environ['CODETALK_AGENT_PROMPT_FILE']).read_text(encoding='utf-8')",
+      "previous = sum(1 for _ in capture.open(encoding='utf-8')) if capture.exists() else 0",
+      "capture.write_text((capture.read_text(encoding='utf-8') if capture.exists() else '') + json.dumps({'turn': previous + 1, 'argv': args, 'prompt': prompt, 'prompt_file': prompt_file}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+      "resume = args[args.index('--resume') + 1] if '--resume' in args else ''",
+      "session_id = 'resume-artifact-e2e-second' if resume else 'resume-artifact-e2e-first'",
+      "if previous == 0:",
+      "    artifact_dir = pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])",
+      "    artifact_dir.mkdir(parents=True, exist_ok=True)",
+      "    artifact = '\\n'.join([",
+      "        '# 第一轮完整产物',",
+      "        '',",
+      "        '## 黑盒测试用例',",
+      "        'FULL_ARTIFACT_CONTEXT_MARKER：TC-99 CHAP 失败后重连恢复。',",
+      "    ])",
+      "    (artifact_dir / 'first-turn-blackbox.md').write_text(artifact, encoding='utf-8')",
+      "    answer = '已生成文件：first-turn-blackbox.md'",
+      "else:",
+      "    seen = 'FULL_ARTIFACT_CONTEXT_MARKER' in prompt or 'FULL_ARTIFACT_CONTEXT_MARKER' in prompt_file",
+      "    answer = '\\n'.join([",
+      "        '## 结论',",
+      "        'RESUME_HISTORY_ARTIFACT_PROMPT_SEEN=' + str(seen) + '：已通过 --resume 续接 CLI session，不重复注入上一轮完整产物。',",
+      "        '',",
+      "        '## 代码证据',",
+      "        '- `lib/iscsi/iscsi.c`: 登录路径与 CHAP 参数协商。',",
+      "        '',",
+      "        '## 黑盒测试用例',",
+      "        '1. 用例：CHAP 错误 secret 后恢复；前置条件：target 开启 CHAP；步骤：先失败后重连；预期结果：首次失败可观测，第二次进入 Full Feature Phase。',",
+      "    ])",
+      "events = [",
+      "  {'type':'system','subtype':'init','session_id':session_id},",
+      "  {'type':'assistant','message':{'role':'assistant','content':[{'type':'text','text':answer}]}},",
+      "  {'type':'result','status':'success','session_id':session_id},",
+      "]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.05)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const runtimeName = `${label} ${Date.now()}`;
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "claude_print_arg",
+      output_mode: "stream_json",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 20,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "resume_args",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+  return { id: runtime.id, name: runtimeName, captureFile };
+}
+
 async function createCodexStdinRuntime(
   request: APIRequestContext,
   label: string,
@@ -1391,6 +1468,90 @@ test("carries a previous downloadable agent artifact into the next non-resume pr
     const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
     expect(messageBody.items.filter((item) => item.role === "user")).toHaveLength(2);
     expect(messageBody.items.at(-1)?.content).toContain("HISTORY_ARTIFACT_PROMPT_SEEN=True");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
+test("skips previous downloadable artifact injection when the agent runtime resumes a CLI session", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-resume-artifact-history-")));
+  fs.mkdirSync(path.join(repo, "lib", "iscsi"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "iscsi", "iscsi.c"),
+    "int iscsi_conn_login_pdu_success_complete(void *arg) { return 0; }\n",
+    "utf8",
+  );
+  const workspaceName = `ai-resume-artifact-history-e2e-${Date.now()}`;
+  const threadTitle = `${workspaceName} continuity`;
+
+  const runtime = await createResumeArtifactHistoryRuntime(request, "Resume artifact history runtime");
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtime.name });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    const composer = page.getByLabel("AI 线程消息");
+    await composer.click();
+    await composer.pressSequentially("生成完整 iSCSI 登录黑盒测试用例文件");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(page.getByRole("link", { name: "下载完整产物" })).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator(".ct-codex-message").filter({ hasText: "FULL_ARTIFACT_CONTEXT_MARKER" })).toHaveCount(0);
+
+    await composer.click();
+    await composer.pressSequentially("基于上一轮继续细化 CHAP 失败恢复场景");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(page.locator(".ct-codex-message").filter({ hasText: "RESUME_HISTORY_ARTIFACT_PROMPT_SEEN=False" })).toBeVisible({
+      timeout: 30_000,
+    });
+
+    const captured = fs.readFileSync(runtime.captureFile, "utf8").trim().split("\n").map((line) => JSON.parse(line)) as Array<{
+      turn: number;
+      argv: string[];
+      prompt: string;
+      prompt_file: string;
+    }>;
+    expect(captured).toHaveLength(2);
+    expect(captured[0].argv).not.toContain("--resume");
+    expect(captured[0].prompt).not.toContain("FULL_ARTIFACT_CONTEXT_MARKER");
+    expect(captured[0].prompt_file).not.toContain("FULL_ARTIFACT_CONTEXT_MARKER");
+    expect(captured[1].argv).toEqual(expect.arrayContaining(["--resume", "resume-artifact-e2e-first", "-p"]));
+    expect(captured[1].prompt).toContain("基于上一轮继续细化 CHAP 失败恢复场景");
+    expect(captured[1].prompt_file).toContain("基于上一轮继续细化 CHAP 失败恢复场景");
+    expect(captured[1].prompt).not.toContain("历史助手完整下载产物");
+    expect(captured[1].prompt).not.toContain("FULL_ARTIFACT_CONTEXT_MARKER");
+    expect(captured[1].prompt_file).not.toContain("历史助手完整下载产物");
+    expect(captured[1].prompt_file).not.toContain("FULL_ARTIFACT_CONTEXT_MARKER");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    expect(messageBody.items.filter((item) => item.role === "user")).toHaveLength(2);
+    expect(messageBody.items.at(-1)?.content).toContain("RESUME_HISTORY_ARTIFACT_PROMPT_SEEN=False");
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }
