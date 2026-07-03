@@ -1873,6 +1873,8 @@ def _looks_like_agent_answer_boundary(content: str) -> bool:
     lowered = text.lower()
     if lowered.startswith((AGENT_FINAL_ANSWER_PREFIX.lower(), "final answer:", "final_answer:", "最终答案：", "最终答案:")):
         return True
+    if _LEGACY_AGENT_REPORT_INTRO_RE.match(text):
+        return True
     return bool(
         re.match(
             r"^#{1,3}\s*(?:结论|摘要|代码证据|流程|流程梳理|SFMEA|黑盒测试用例|测试用例|风险|用例设计依据|下一步建议)\b",

@@ -2158,6 +2158,7 @@ class TestAIConversationsAPI:
             "Bash {\"command\":\"grep -n login lib/iscsi/iscsi.c\"}",
             "1125:iscsi_conn_login_pdu_success_complete(void *arg)\n",
             "lib/iscsi/iscsi.c:1539:\tAuthMethod=CHAP\n",
+            "我已掌握登录处理链的关键分支。下面基于 `lib/iscsi/iscsi.c` 的实际校验逻辑给出黑盒用例。\n",
             "## 黑盒测试用例\n",
             "### TC-01 正常登录\n",
         ]:
@@ -2189,11 +2190,13 @@ class TestAIConversationsAPI:
         )
 
         assert "## 黑盒测试用例" in visible_answer
+        assert "我已掌握登录处理链的关键分支" in visible_answer
         assert "TC-01 正常登录" in visible_answer
         assert "THINKING" not in visible_answer
         assert "iscsi_conn_login_pdu_success_complete" not in visible_answer
         assert "AuthMethod=CHAP" not in visible_answer
         assert "我先核对工作区 iSCSI 登录相关源码" in process
+        assert "我已掌握登录处理链的关键分支" not in process
         assert "grep -n login" in process
         assert "iscsi_conn_login_pdu_success_complete" in process
         assert "AuthMethod=CHAP" in process
