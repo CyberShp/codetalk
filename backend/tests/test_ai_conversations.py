@@ -421,6 +421,48 @@ async def test_context_status_message_names_workbench_task_artifacts():
     assert "未找到直接匹配" not in message
 
 
+async def test_context_status_message_discloses_graph_artifact_degrade_to_source():
+    from app.services.ai_conversations import _context_status_message
+
+    message = _context_status_message(
+        [
+            {
+                "source_type": "workspace_source",
+                "source_id": "lib/iscsi/iscsi.c",
+                "title": "lib/iscsi/iscsi.c",
+            }
+        ]
+    )
+
+    assert "GitNexus/CGC 图谱产物未命中" in message
+    assert "降级" in message
+    assert "工作区源码" in message
+
+
+async def test_context_status_message_names_graph_artifacts_when_available():
+    from app.services.ai_conversations import _context_status_message
+
+    message = _context_status_message(
+        [
+            {
+                "source_type": "workspace_report",
+                "source_id": "report-gitnexus",
+                "title": "GitNexus 可信度评估",
+                "metadata": {"report_type": "gitnexus_reliability"},
+            },
+            {
+                "source_type": "workspace_source",
+                "source_id": "lib/nvmf/ctrlr.c",
+                "title": "lib/nvmf/ctrlr.c",
+            },
+        ]
+    )
+
+    assert "GitNexus/CGC 图谱产物" in message
+    assert "工作区源码" in message
+    assert "未命中" not in message
+
+
 class TestAIConversationsAPI:
     async def test_create_and_list_project_scoped_conversations(self, sqlite_db):
         ws_a = await _seed_workspace(sqlite_db, "ws-a")

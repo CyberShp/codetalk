@@ -1161,7 +1161,13 @@ async def run_generation(
         run_id=run_id,
         conversation_id=conversation["id"],
         event_type="status",
-        payload={"status": "running", "message": _context_status_message(references)},
+        payload={
+            "status": "running",
+            "message": _context_status_message(
+                references,
+                source_analysis_declined=_source_analysis_declined(user_message["content"]),
+            ),
+        },
     )
     prompt = _build_prompt(conversation, messages, references, user_message["content"])
     chunks: list[str] = []
@@ -1267,7 +1273,13 @@ async def run_agent_generation(
         run_id=run_id,
         conversation_id=conversation["id"],
         event_type="status",
-        payload={"status": "running", "message": _context_status_message(references)},
+        payload={
+            "status": "running",
+            "message": _context_status_message(
+                references,
+                source_analysis_declined=_source_analysis_declined(user_message["content"]),
+            ),
+        },
     )
     cwd = resolve_agent_cwd(runtime, repo_path=repo_path)
     runtime_id = str(runtime.get("id") or conversation.get("agent_runtime_id") or "").strip()
@@ -1486,21 +1498,32 @@ async def maybe_await(value: Any) -> Any:
     return value
 
 
-def _context_status_message(references: list[dict[str, Any]]) -> str:
+def _context_status_message(
+    references: list[dict[str, Any]],
+    *,
+    source_analysis_declined: bool = False,
+) -> str:
     source_types = {str(ref.get("source_type") or "") for ref in references}
     parts: list[str] = []
+    graph_refs = [] if source_analysis_declined else _gitnexus_cgc_refs(references)
+    if graph_refs:
+        parts.append("GitNexus/CGC 图谱产物")
     if "workspace_source" in source_types:
         parts.append("工作区源码")
     if "workspace_material" in source_types:
         parts.append("输入材料")
-    if "workspace_report" in source_types:
+    if "workspace_report" in source_types and not graph_refs:
         parts.append("历史报告")
     if "workbench_task_artifact" in source_types:
         parts.append("任务产物")
     if "semantic_case" in source_types:
         parts.append("语义案例")
     if not parts:
-        return "正在准备可用上下文；未找到直接匹配的工作区源码或输入材料。"
+        if source_analysis_declined:
+            return "按用户要求未强制读取 GitNexus/CGC 图谱或工作区源码；正在基于可用上下文回答。"
+        return "GitNexus/CGC 图谱产物未命中；未找到直接匹配的工作区源码或输入材料。"
+    if not graph_refs and not source_analysis_declined:
+        return f"GitNexus/CGC 图谱产物未命中，已降级读取{'、'.join(parts)}上下文。"
     return f"正在读取{'、'.join(parts)}上下文。"
 
 

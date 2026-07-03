@@ -1119,6 +1119,8 @@ test("keeps choice-delta process text out of the visible agent answer", async ({
       .poll(async () => processDisclosure.evaluate((node) => (node as HTMLDetailsElement).open))
       .toBe(false);
     await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("GitNexus/CGC 图谱产物未命中").first()).toBeVisible();
+    await expect(processDisclosure.getByText("降级读取工作区源码").first()).toBeVisible();
     await expect(processDisclosure.getByText("我先核对工作区 iSCSI 登录相关源码").first()).toBeVisible();
     await expect(processDisclosure.getByText("iscsi_conn_login_pdu_success_complete").first()).toBeVisible();
 
