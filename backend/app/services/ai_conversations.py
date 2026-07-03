@@ -547,6 +547,15 @@ class AIConversationStore:
                     OR title LIKE '%E2E 裸工具输出验证%'
                     OR title LIKE 'E2E %'
                     OR lower(title) LIKE '%-e2e-%'
+                    OR EXISTS (
+                        SELECT 1
+                        FROM workspaces hidden_ws
+                        WHERE hidden_ws.id = ai_conversations.workspace_id
+                          AND (
+                              lower(hidden_ws.repo_path) LIKE '%/codetalk-ai-%'
+                              OR lower(hidden_ws.name) LIKE '%-e2e-%'
+                          )
+                    )
                 )
                 """
             )

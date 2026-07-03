@@ -528,6 +528,21 @@ class TestAIConversationsAPI:
 
     async def test_list_conversations_hides_internal_e2e_threads_by_default(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db, "ws-internal-thread-filter")
+        hidden_ws_id = "ws-hidden-e2e-owner"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, ?, ?, 1, ?, ?)",
+                (
+                    hidden_ws_id,
+                    "ai-list-target-1783058208353",
+                    "/private/var/folders/demo/T/codetalk-ai-list-target-7mnGty",
+                    now,
+                    now,
+                ),
+            )
+            await db.commit()
         app = _test_app(sqlite_db)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             visible_resp = await client.post(
@@ -596,10 +611,29 @@ class TestAIConversationsAPI:
             assert prefixed_e2e_resp.status_code == 201
             prefixed_e2e_id = prefixed_e2e_resp.json()["id"]
 
+            hidden_workspace_thread_resp = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": hidden_ws_id,
+                    "workspace_id": hidden_ws_id,
+                    "memory_namespace": f"workspace:{hidden_ws_id}",
+                    "title": "普通标题但归属内部测试 workspace",
+                },
+            )
+            assert hidden_workspace_thread_resp.status_code == 201
+            hidden_workspace_thread_id = hidden_workspace_thread_resp.json()["id"]
+
             listed = await client.get("/api/ai/conversations", params={"workspace_id": ws_id, "limit": 10})
             assert listed.status_code == 200
             ids = [item["id"] for item in listed.json()["items"]]
             assert ids == [visible_id]
+
+            global_listed = await client.get("/api/ai/conversations", params={"limit": 10})
+            assert global_listed.status_code == 200
+            global_ids = [item["id"] for item in global_listed.json()["items"]]
+            assert visible_id in global_ids
+            assert hidden_workspace_thread_id not in global_ids
 
             debug_listed = await client.get(
                 "/api/ai/conversations",
@@ -608,6 +642,11 @@ class TestAIConversationsAPI:
             assert debug_listed.status_code == 200
             debug_ids = [item["id"] for item in debug_listed.json()["items"]]
             assert debug_ids == [prefixed_e2e_id, named_e2e_id, legacy_id, internal_id, visible_id]
+
+            debug_global = await client.get("/api/ai/conversations", params={"limit": 10, "include_internal": "true"})
+            assert debug_global.status_code == 200
+            debug_global_ids = [item["id"] for item in debug_global.json()["items"]]
+            assert hidden_workspace_thread_id in debug_global_ids
 
     async def test_delete_conversation_removes_idle_thread_and_rejects_running_thread(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
