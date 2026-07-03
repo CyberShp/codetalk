@@ -545,6 +545,8 @@ test("AI conversation mobile layout keeps navigation and topbar controls within 
     const viewportRight = window.innerWidth;
     const topbar = document.querySelector(".ct-codex-ai__topbar");
     const main = document.querySelector(".ct-codex-ai__main");
+    const reader = document.querySelector(".ct-codex-ai__reader") as HTMLElement | null;
+    const composer = document.querySelector(".ct-codex-composer") as HTMLElement | null;
     const topbarRect = topbar?.getBoundingClientRect();
     const topbarStyle = topbar ? window.getComputedStyle(topbar) : null;
     const topbarControls = Array.from(
@@ -579,6 +581,9 @@ test("AI conversation mobile layout keeps navigation and topbar controls within 
       viewportRight,
       documentScrollWidth: document.documentElement.scrollWidth,
       mainRight: main?.getBoundingClientRect().right ?? 0,
+      readerClientHeight: reader?.clientHeight ?? 0,
+      readerScrollHeight: reader?.scrollHeight ?? 0,
+      composerHeight: composer?.getBoundingClientRect().height ?? 0,
       topbar: {
         count: document.querySelectorAll(".ct-codex-ai__topbar").length,
         left: topbarRect?.left ?? 0,
@@ -596,6 +601,9 @@ test("AI conversation mobile layout keeps navigation and topbar controls within 
 
   expect(metrics.documentScrollWidth).toBeLessThanOrEqual(metrics.viewportRight);
   expect(metrics.mainRight).toBeLessThanOrEqual(metrics.viewportRight);
+  expect(metrics.readerClientHeight).toBeGreaterThanOrEqual(180);
+  expect(metrics.readerScrollHeight).toBeGreaterThanOrEqual(metrics.readerClientHeight);
+  expect(metrics.composerHeight).toBeLessThanOrEqual(180);
   expect(metrics.topbarControls.length).toBeGreaterThanOrEqual(3);
   expect(
     metrics.topbarControls.every(
@@ -1009,7 +1017,7 @@ test("AI home avoids staggered list animations for large thread hubs", async ({ 
 test("AI home mobile contains dense project and thread lists inside scroll panes", async ({ page }) => {
   const workspaces = Array.from({ length: 24 }, (_, index) => ({
     id: `ws-mobile-home-${index + 1}`,
-    name: `SPDK 移动项目 ${index + 1}`,
+    name: `SPDK 移动项目 ${index + 1} with persistent thread history and long workspace label`,
     repo_path: `/Volumes/Media/dpdk/spdk-mobile-${index + 1}`,
     indexed: 1,
     index_job: null,
@@ -1057,8 +1065,21 @@ test("AI home mobile contains dense project and thread lists inside scroll panes
     const home = document.querySelector(".ct-ai-home") as HTMLElement | null;
     const projectList = document.querySelector(".ct-ai-home__project-list") as HTMLElement | null;
     const threadTimeline = document.querySelector(".ct-thread-timeline") as HTMLElement | null;
+    const rightOverflow = Array.from(document.querySelectorAll("body *"))
+      .map((node) => {
+        const rect = node.getBoundingClientRect();
+        return {
+          className: String((node as HTMLElement).className || "").slice(0, 80),
+          text: (node.textContent ?? "").trim().slice(0, 80),
+          right: rect.right,
+          width: rect.width,
+        };
+      })
+      .filter((box) => box.width > 2 && box.right > window.innerWidth + 1);
     return {
       documentScrollHeight: document.documentElement.scrollHeight,
+      documentScrollWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth,
       viewportHeight: window.innerHeight,
       homeHeight: home?.getBoundingClientRect().height ?? 0,
       projectClientHeight: projectList?.clientHeight ?? 0,
@@ -1067,9 +1088,12 @@ test("AI home mobile contains dense project and thread lists inside scroll panes
       threadScrollHeight: threadTimeline?.scrollHeight ?? 0,
       projectOverflowY: projectList ? window.getComputedStyle(projectList).overflowY : "",
       threadOverflowY: threadTimeline ? window.getComputedStyle(threadTimeline).overflowY : "",
+      rightOverflow,
     };
   });
 
+  expect(containment.documentScrollWidth).toBeLessThanOrEqual(containment.viewportWidth);
+  expect(containment.rightOverflow).toEqual([]);
   expect(containment.documentScrollHeight).toBeLessThanOrEqual(containment.viewportHeight * 1.75);
   expect(containment.homeHeight).toBeLessThanOrEqual(containment.viewportHeight * 1.65);
   expect(containment.projectScrollHeight).toBeGreaterThan(containment.projectClientHeight + 120);

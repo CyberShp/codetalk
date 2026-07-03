@@ -1461,7 +1461,9 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
 .ct-thread-project {
   display: flex;
+  box-sizing: border-box;
   width: 100%;
+  min-width: 0;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
@@ -1475,6 +1477,14 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     border-color var(--motion-fast) var(--motion-ease),
     background var(--motion-fast) var(--motion-ease),
     box-shadow var(--motion-fast) var(--motion-ease);
+}
+
+.ct-thread-project > div,
+.ct-thread-project > span {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
 }
 
 .ct-thread-project:hover,
@@ -2893,7 +2903,6 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   }
 
   .ct-ai-home__header,
-  .ct-codex-ai__topbar,
   .ct-codex-composer__footer {
     align-items: stretch;
     flex-wrap: nowrap;
@@ -2929,7 +2938,10 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
   .ct-codex-ai,
   .ct-codex-ai.is-context-open {
-    grid-template-columns: 1fr;
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    grid-template-columns: minmax(0, 1fr);
     height: auto;
     padding: 0 10px 10px;
     overflow: visible;
@@ -2939,6 +2951,8 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   .ct-codex-ai__context {
     position: relative;
     top: auto;
+    width: 100%;
+    max-width: calc(100vw - 52px);
     height: auto;
   }
 
@@ -2975,8 +2989,61 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   }
 
   .ct-codex-ai__main {
+    width: min(100%, calc(100vw - 52px));
+    max-width: 100%;
+    min-width: 0;
+    min-height: min(70vh, 620px);
+  }
+
+  .ct-codex-ai__reader-shell,
+  .ct-codex-ai__reader {
+    box-sizing: border-box;
+    width: min(100%, calc(100vw - 54px));
+    max-width: calc(100vw - 54px);
+    min-width: 0;
+  }
+
+  .ct-codex-message {
+    box-sizing: border-box;
     width: 100%;
-    min-height: 70vh;
+    max-width: 100%;
+    margin-inline: 0;
+  }
+
+  .ct-codex-message__content {
+    flex: 1 1 0;
+    max-width: calc(100% - 38px);
+  }
+
+  .ct-codex-message__content > div {
+    max-width: 100%;
+  }
+
+  .ct-codex-ai__topbar {
+    box-sizing: border-box;
+    display: grid;
+    width: min(100%, calc(100vw - 54px));
+    max-width: 100%;
+    min-width: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    align-items: stretch;
+    gap: 8px;
+    overflow: hidden;
+    padding: 10px;
+  }
+
+  .ct-codex-ai__topbar > div {
+    grid-column: 1 / -1;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .ct-codex-ai__topbar select,
+  .ct-codex-ai__topbar button,
+  .ct-codex-ai__context-toggle {
+    min-width: 0;
+    justify-content: center;
+    padding: 7px 8px;
   }
 
   .ct-codex-ai__topbar > div,
@@ -2992,7 +3059,55 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   }
 
   .ct-codex-composer {
-    width: calc(100% - 20px);
+    box-sizing: border-box;
+    width: min(calc(100% - 20px), calc(100vw - 74px));
+    max-width: calc(100vw - 74px);
+    margin-bottom: 10px;
+    border-radius: 16px;
+    padding: 9px 10px 10px;
+  }
+
+  .ct-codex-composer textarea {
+    min-height: 44px;
+    max-height: 120px;
+    line-height: 1.45;
+  }
+
+  .ct-codex-composer__footer {
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: 7px;
+    padding-top: 7px;
+  }
+
+  .ct-codex-composer__footer > div {
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    min-width: 0;
+    gap: 6px;
+    overflow: hidden;
+    padding-bottom: 1px;
+  }
+
+  .ct-codex-composer__footer button {
+    min-width: 0;
+    max-width: 100%;
+    flex: 1 1 100%;
+    overflow: hidden;
+    padding: 5px 8px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .ct-codex-composer__footer > div button:nth-child(n + 3) {
+    display: none;
+  }
+
+  .ct-codex-composer .ct-codex-send {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 82px;
   }
 
   .ct-thread-hub__header,
