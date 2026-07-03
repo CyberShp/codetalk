@@ -541,6 +541,22 @@ class AIConversationStore:
             clauses.append("status = ?")
             params.append(status)
         if not include_internal:
+            missing_workspace_internal_filter = (
+                ""
+                if workspace_id
+                else f"""
+                    OR (
+                        workspace_id IS NOT NULL
+                        AND workspace_id != ''
+                        AND workspace_id != 'global'
+                        AND NOT EXISTS (
+                            SELECT 1
+                            FROM workspaces visible_ws
+                            WHERE visible_ws.id = ai_conversations.workspace_id
+                        )
+                    )
+                """
+            )
             clauses.append(
                 f"""
                 NOT (
@@ -574,16 +590,7 @@ class AIConversationStore:
                               OR lower(hidden_ws.name) LIKE 'release-click-%'
                           )
                     )
-                    OR (
-                        workspace_id IS NOT NULL
-                        AND workspace_id != ''
-                        AND workspace_id != 'global'
-                        AND NOT EXISTS (
-                            SELECT 1
-                            FROM workspaces visible_ws
-                            WHERE visible_ws.id = ai_conversations.workspace_id
-                        )
-                    )
+                    {missing_workspace_internal_filter}
                 )
                 """
             )

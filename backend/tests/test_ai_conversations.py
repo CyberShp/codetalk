@@ -3079,3 +3079,102 @@ class TestAIConversationsAPI:
         assert "THINKING:" not in assistant["content"]
         assert "iscsi_conn_login_pdu_success_complete" not in assistant["content"]
         assert "AuthMethod" not in assistant["content"]
+
+    async def test_legacy_agent_process_leak_does_not_pollute_next_agent_prompt(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.services.ai_conversations import (
+            AIConversationStore,
+            _build_agent_prompt,
+            ai_thread_artifact_path,
+        )
+
+        legacy_content = "\n".join(
+            [
+                "THINKING: 我先核对工作区 iSCSI 登录相关源码。",
+                "Bash {\"command\": \"grep -n login lib/iscsi/iscsi.c | head -60\"}",
+                "1125:iscsi_conn_login_pdu_success_complete(void *arg)",
+                "1539:\t\trc = iscsi_op_login_update_param(conn, \"AuthMethod\", \"CHAP\", \"CHAP\");",
+                "我已掌握登录处理链的关键分支。下面基于 `lib/iscsi/iscsi.c` 给出黑盒用例。",
+                "## 结论",
+                "SPDK iSCSI 登录处理应覆盖正常登录、目标不存在、访问控制、CHAP 失败和异常 PDU。",
+                "## 黑盒测试用例",
+                "### TC-01 正常会话登录成功",
+                "前置条件：target 已启动；步骤：initiator 发起 Normal 登录；预期：进入 Full Feature Phase。",
+            ]
+        )
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="旧版污染连续线程",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-history-clean",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="针对 iscsi 登录写几个黑盒用例",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+        await store.complete_run(
+            run_id=run_id,
+            content=legacy_content,
+            references=[],
+            model="agent:legacy",
+            actions=[
+                {
+                    "id": "download_run_artifact",
+                    "label": "下载完整产物",
+                    "href": f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifact",
+                    "kind": "download",
+                }
+            ],
+        )
+        artifact_path = ai_thread_artifact_path(conversation["id"], run_id)
+        artifact_path.parent.mkdir(parents=True, exist_ok=True)
+        artifact_path.write_text(
+            "\n".join(
+                [
+                    "# 旧版污染连续线程",
+                    "",
+                    f"- conversation_id: {conversation['id']}",
+                    f"- run_id: {run_id}",
+                    "- exported_at: 2026-07-03T00:00:00+00:00",
+                    "",
+                    legacy_content,
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        created_next = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="继续细化 CHAP 失败和重连恢复用例",
+            references=[],
+        )
+        messages = await store.list_messages(conversation["id"])
+        prompt = _build_agent_prompt(
+            conversation,
+            messages,
+            [],
+            created_next["message"]["content"],
+            {
+                "id": "runtime-history-clean",
+                "name": "History Clean Runtime",
+                "session_persistence": "none",
+            },
+        )
+
+        assert "历史助手回复" in prompt
+        assert "历史助手完整下载产物" in prompt
+        assert "TC-01 正常会话登录成功" in prompt
+        assert "CHAP 失败" in prompt
+        assert "THINKING:" not in prompt
+        assert "Bash {" not in prompt
+        assert "grep -n login" not in prompt
+        assert "iscsi_conn_login_pdu_success_complete" not in prompt
+        assert "AuthMethod" not in prompt
