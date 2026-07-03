@@ -159,6 +159,22 @@ class MediumArtifactLLM:
         yield "## SFMEA\n\n" + "\n".join(rows) + "\n\n## 黑盒测试用例\n\n" + cases
 
 
+class ShortSourceBlackBoxArtifactLLM:
+    async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
+        yield (
+            "## 代码证据\n"
+            "- `lib/iscsi/iscsi.c:1539`: CHAP AuthMethod 协商路径。\n"
+            "- `test/iscsi_tgt`: 可承载登录黑盒回归。\n\n"
+            "## 黑盒测试用例\n"
+            "### TC-01 正常登录\n"
+            "前置条件：target 已启动；步骤：initiator 发起 iSCSI Login；"
+            "预期结果：进入 Full Feature Phase；观测点：Login Response、session 状态和日志。\n\n"
+            "### TC-02 CHAP 失败\n"
+            "前置条件：target 开启 CHAP；步骤：使用错误 secret 登录；"
+            "预期结果：Login Response 拒绝；观测点：认证失败日志和连接状态。\n"
+        )
+
+
 async def test_agent_output_segments_strip_terminal_noise_before_diagnostic_detection():
     from app.services.ai_conversations import _agent_output_segments
 
@@ -2452,6 +2468,61 @@ class TestAIConversationsAPI:
             assert "# 结构化产物线程" in artifact_text
             assert "SFMEA 风险 3" in artifact_text
             assert "TC-09" in artifact_text
+
+    async def test_source_evidence_blackbox_request_materializes_downloadable_artifact(
+        self,
+        sqlite_db,
+        monkeypatch,
+    ):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.api import ai_conversations
+
+        monkeypatch.setattr(
+            ai_conversations,
+            "create_llm_client_from_active",
+            lambda: ShortSourceBlackBoxArtifactLLM(),
+        )
+
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "title": "短黑盒产物线程",
+                },
+            )
+            conversation = created.json()
+
+            posted = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "针对 iSCSI 登录写两个黑盒用例，先读源码证据"},
+            )
+            assert posted.status_code == 202
+            for _ in range(60):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                body = messages.json()
+                if len(body["items"]) == 2:
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                pytest.fail("assistant message was not generated")
+
+            assistant = body["items"][1]
+            assert "已保存为下载产物" in assistant["content"]
+            assert "Login Response 拒绝" not in assistant["content"]
+            download_action = next(
+                action for action in assistant["actions"] if action["id"] == "download_run_artifact"
+            )
+            artifact = await client.get(download_action["href"])
+            assert artifact.status_code == 200
+            artifact_text = artifact.text
+            assert "# 短黑盒产物线程" in artifact_text
+            assert "## 代码证据" in artifact_text
+            assert "## 黑盒测试用例" in artifact_text
+            assert "TC-02 CHAP 失败" in artifact_text
 
     async def test_compact_artifact_message_reads_existing_artifact_for_rich_preview(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)

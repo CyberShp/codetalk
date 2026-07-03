@@ -1242,7 +1242,11 @@ async def run_generation(
         chunks.append(content)
         live_content = content
         live_kind = ""
-        if _should_compact_live_thread_delta(content, "".join(chunks)):
+        accumulated = "".join(chunks)
+        if _should_compact_live_thread_delta(content, accumulated) or _agent_task_requests_downloadable_artifact(
+            user_message["content"],
+            accumulated,
+        ):
             if artifact_stream_notice_sent:
                 return
             artifact_stream_notice_sent = True
@@ -1299,6 +1303,7 @@ async def run_generation(
             run_id=run_id,
             conversation=conversation,
             content=content,
+            force_artifact=_agent_task_requests_downloadable_artifact(user_message["content"], content),
         )
         await store.complete_run(
             run_id=run_id,
@@ -3295,6 +3300,8 @@ def _agent_task_requests_downloadable_artifact(user_message: str, content: str) 
         return True
     requested_groups = _agent_structured_deliverable_groups(requested)
     output_groups = _agent_structured_deliverable_groups(output)
+    if {"code", "blackbox"}.issubset(requested_groups) and {"code", "blackbox"}.issubset(output_groups):
+        return True
     if len(requested_groups) >= 3 and len(output_groups) >= 2:
         return True
     return {"sfmea", "blackbox"}.issubset(requested_groups) and len(output_groups) >= 2
@@ -3487,7 +3494,11 @@ def _legacy_artifact_preview_for_message(
     if not has_artifact_action:
         return content
     has_compact_notice = _is_compact_thread_artifact_notice(content)
-    if has_compact_notice and not has_legacy_process_output:
+    if (
+        has_compact_notice
+        and not has_legacy_process_output
+        and ("### 摘要" in content or "### 证据摘录" in content or "### 用例摘录" in content)
+    ):
         return content
     if (
         not has_legacy_process_output

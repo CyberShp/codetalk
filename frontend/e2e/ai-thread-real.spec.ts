@@ -8426,6 +8426,131 @@ test("downloads only the latest successful artifact after an agent retry", async
   }
 });
 
+test("materializes short source-evidence black-box answers as downloadable artifacts", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-short-blackbox-repo-")));
+  fs.mkdirSync(path.join(repo, "lib", "iscsi"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "test", "iscsi_tgt"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "iscsi", "iscsi.c"),
+    "int iscsi_op_login_update_param(void) { return 0; }\n",
+    "utf8",
+  );
+  fs.writeFileSync(path.join(repo, "test", "iscsi_tgt", "login.sh"), "#!/bin/sh\n", "utf8");
+
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-short-blackbox-runtime-")));
+  const runtimeScript = path.join(runtimeDir, "short_blackbox_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "sys.stdin.read()",
+      "print('## 代码证据')",
+      "print('- `lib/iscsi/iscsi.c:1539`: CHAP AuthMethod 协商路径。')",
+      "print('- `test/iscsi_tgt`: 可承载登录黑盒回归。')",
+      "print('')",
+      "print('## 黑盒测试用例')",
+      "print('### TC-01 正常登录')",
+      "print('前置条件：target 已启动；步骤：initiator 发起 iSCSI Login；预期结果：进入 Full Feature Phase；观测点：Login Response、session 状态和日志。')",
+      "print('')",
+      "print('### TC-02 CHAP 失败')",
+      "print('前置条件：target 开启 CHAP；步骤：使用错误 secret 登录；预期结果：Login Response 拒绝；观测点：认证失败日志和连接状态。')",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const workspaceName = `ai-short-blackbox-e2e-${Date.now()}`;
+  const runtimeName = `Short blackbox runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} source blackbox artifact`;
+  const prompt = "针对 iSCSI 登录写两个黑盒用例，先读源码证据";
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 20,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill(prompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "已保存为下载产物" })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByRole("link", { name: "下载完整产物" })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("AI 线程对话内容")).not.toContainText("Login Response 拒绝");
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("link", { name: "下载完整产物" }).hover();
+    await page.getByRole("link", { name: "下载完整产物" }).click();
+    const download = await downloadPromise;
+    const artifactPath = testInfo.outputPath("short-source-blackbox-artifact.md");
+    await download.saveAs(artifactPath);
+    const artifact = fs.readFileSync(artifactPath, "utf8");
+    expect(artifact).toContain("# " + threadTitle);
+    expect(artifact).toContain("## 代码证据");
+    expect(artifact).toContain("## 黑盒测试用例");
+    expect(artifact).toContain("TC-02 CHAP 失败");
+    expect(artifact).toContain("Login Response 拒绝");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    const assistant = [...messageBody.items].reverse().find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("下载完整产物");
+    expect(assistant?.content).not.toContain("Login Response 拒绝");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
+  }
+});
+
 test("keeps separate download links for multiple artifact turns in one AI thread", async ({
   page,
   request,
