@@ -2913,9 +2913,13 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 }
 
 @media (max-width: 900px) {
+  :root {
+    --ct-mobile-nav-height: 216px;
+  }
+
   .ct-page-shell:has(.ct-ai-home),
   .ct-page-shell:has(.ct-codex-ai) {
-    height: calc(100dvh - 180px);
+    height: calc(100dvh - var(--ct-mobile-nav-height));
     min-height: 0;
     overflow: hidden;
   }
@@ -3067,8 +3071,8 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     max-width: 100%;
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: auto minmax(0, 1fr);
-    height: max(660px, calc(100vh - 190px));
-    min-height: max(660px, calc(100vh - 190px));
+    height: 100%;
+    min-height: 0;
     padding: 0 10px 10px;
     overflow: hidden;
   }
@@ -3086,7 +3090,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   .ct-codex-ai__rail {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
-    grid-template-rows: auto auto;
+    grid-template-rows: auto auto auto;
     align-content: stretch;
     gap: 6px;
     height: auto;
@@ -3106,7 +3110,10 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   }
 
   .ct-codex-ai__rail-group {
-    display: none;
+    display: grid;
+    grid-column: 1 / -1;
+    gap: 5px;
+    margin-top: 0;
   }
 
   .ct-codex-ai__rail-label {
@@ -3121,7 +3128,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   }
 
   .ct-codex-ai__project-list {
-    height: min(56px, 7vh);
+    height: min(64px, 8vh);
     max-height: none;
   }
 
@@ -3175,11 +3182,11 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   }
 
   .ct-codex-ai__reader-shell {
-    min-height: 300px;
+    min-height: 240px;
   }
 
   .ct-codex-ai__reader {
-    min-height: 300px;
+    min-height: 240px;
   }
 
   .ct-codex-message {
