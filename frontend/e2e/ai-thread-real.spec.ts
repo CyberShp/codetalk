@@ -5648,6 +5648,25 @@ test("keeps real agent thinking diagnostics collapsed and out of the persisted a
     expect(exported).not.toContain("diagnostic:");
     expect(exported).not.toContain("internal multiline note");
     expect(exported).not.toContain("chain-of-thought-like internal note");
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("FINAL_DIAGNOSTIC_ANSWER")).toBeVisible({ timeout: 15_000 });
+    const reloadedReader = page.getByLabel("AI 线程对话内容");
+    await expect(reloadedReader).not.toContainText("reading workspace source evidence");
+    await expect(reloadedReader).not.toContainText("internal multiline note");
+    await expect(reloadedReader).not.toContainText("chain-of-thought-like internal note");
+
+    const reloadedProcessDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(reloadedProcessDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect
+      .poll(async () => reloadedProcessDisclosure.evaluate((node) => (node as HTMLDetailsElement).open))
+      .toBe(false);
+    await expect(reloadedProcessDisclosure.getByText("reading workspace source evidence")).toBeHidden();
+    await reloadedProcessDisclosure.getByText("Agent 过程").click();
+    await expect(reloadedProcessDisclosure.getByText("reading workspace source evidence")).toBeVisible();
+    await expect(reloadedProcessDisclosure.getByText("internal multiline note: select evidence cards")).toBeVisible();
+    await expect(reloadedProcessDisclosure.getByText("chain-of-thought-like internal note")).toBeVisible();
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }
