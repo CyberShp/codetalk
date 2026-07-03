@@ -2132,6 +2132,129 @@ class TestAIConversationsAPI:
         assert process_items[1]["payload"]["message"] == "正在读取工作区源码上下文。"
         assert process_items[2]["payload"]["content"] == "TOOL: rg iscsi_login lib/iscsi"
 
+    async def test_legacy_split_agent_process_events_are_publicly_diagnostic(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        app = _test_app(sqlite_db)
+
+        from app.services.ai_conversations import AIConversationStore
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="旧版 Agent 事件恢复",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="针对 iSCSI 登录写几个黑盒用例",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+        for content in [
+            "THINKING: ",
+            "我先核对工作区 iSCSI 登录相关源码，再",
+            "据此设计黑盒用例。",
+            "Bash {\"command\":\"grep -n login lib/iscsi/iscsi.c\"}",
+            "1125:iscsi_conn_login_pdu_success_complete(void *arg)\n",
+            "lib/iscsi/iscsi.c:1539:\tAuthMethod=CHAP\n",
+            "## 黑盒测试用例\n",
+            "### TC-01 正常登录\n",
+        ]:
+            await store.append_event(
+                run_id=run_id,
+                conversation_id=conversation["id"],
+                event_type="delta",
+                payload={"content": content},
+            )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                f"/api/ai/conversations/{conversation['id']}/events",
+                params={"run_id": run_id, "limit": 50},
+            )
+
+        assert response.status_code == 200
+        items = response.json()["items"]
+        visible_answer = "".join(
+            item["payload"].get("content", "")
+            for item in items
+            if item["event_type"] == "delta"
+            and item["payload"].get("kind") not in {"diagnostic", "thinking", "reasoning", "trace"}
+        )
+        process = "\n".join(
+            item["payload"].get("content", "")
+            for item in items
+            if item["event_type"] == "delta" and item["payload"].get("kind") == "diagnostic"
+        )
+
+        assert "## 黑盒测试用例" in visible_answer
+        assert "TC-01 正常登录" in visible_answer
+        assert "THINKING" not in visible_answer
+        assert "iscsi_conn_login_pdu_success_complete" not in visible_answer
+        assert "AuthMethod=CHAP" not in visible_answer
+        assert "我先核对工作区 iSCSI 登录相关源码" in process
+        assert "grep -n login" in process
+        assert "iscsi_conn_login_pdu_success_complete" in process
+        assert "AuthMethod=CHAP" in process
+
+    async def test_process_only_run_events_restore_legacy_agent_process_after_long_answer(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        app = _test_app(sqlite_db)
+
+        from app.services.ai_conversations import AIConversationStore
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="旧版 Agent 过程恢复",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="生成完整测试设计",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+        for content in [
+            "THINKING: ",
+            "我先读取 lib/iscsi/iscsi.c。",
+            "1125:iscsi_conn_login_pdu_success_complete(void *arg)\n",
+            "## 黑盒测试用例\n",
+        ]:
+            await store.append_event(
+                run_id=run_id,
+                conversation_id=conversation["id"],
+                event_type="delta",
+                payload={"content": content},
+            )
+        for index in range(260):
+            await store.append_event(
+                run_id=run_id,
+                conversation_id=conversation["id"],
+                event_type="delta",
+                payload={"content": f"answer chunk {index}\n"},
+            )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                f"/api/ai/conversations/{conversation['id']}/events",
+                params={"run_id": run_id, "limit": 200, "process_only": True},
+            )
+
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert all(
+            item["event_type"] in {"status", "error"}
+            or item["payload"].get("kind") in {"diagnostic", "thinking", "reasoning", "trace"}
+            for item in items
+        )
+        process = "\n".join(item["payload"].get("content", "") or item["payload"].get("message", "") for item in items)
+        assert "我先读取 lib/iscsi/iscsi.c" in process
+        assert "iscsi_conn_login_pdu_success_complete" in process
+        assert "answer chunk 259" not in process
+
     async def test_legacy_agent_process_leak_is_hidden_from_messages_and_artifact(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)

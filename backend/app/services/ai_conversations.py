@@ -785,7 +785,7 @@ class AIConversationStore:
                 """,
                 (conversation_id, max(0, cursor), max(1, min(limit, 500))),
             ) as cur:
-                return [_event_from_row(row) for row in await cur.fetchall()]
+                return _public_events_from_rows(await cur.fetchall())
 
     async def list_events_for_run(
         self,
@@ -796,34 +796,26 @@ class AIConversationStore:
         process_only: bool = False,
     ) -> list[dict[str, Any]]:
         capped_limit = max(1, min(limit, 500))
-        process_clause = ""
-        if process_only:
-            process_clause = """
-                    AND (
-                        event_type IN ('status', 'error')
-                        OR (
-                            event_type = 'delta'
-                            AND json_extract(payload_json, '$.kind') IN ('diagnostic', 'thinking', 'reasoning', 'trace')
-                        )
-                    )
-            """
+        raw_limit = 500 if process_only else capped_limit
         async with self._connect() as db:
             async with db.execute(
-                f"""
+                """
                 SELECT *
                 FROM (
                     SELECT *
                     FROM ai_run_events
                     WHERE conversation_id = ? AND run_id = ?
-                    {process_clause}
                     ORDER BY event_id DESC
                     LIMIT ?
                 )
                 ORDER BY event_id ASC
                 """,
-                (conversation_id, run_id, capped_limit),
+                (conversation_id, run_id, raw_limit),
             ) as cur:
-                return [_event_from_row(row) for row in await cur.fetchall()]
+                events = _public_events_from_rows(await cur.fetchall())
+        if process_only:
+            events = [event for event in events if _is_public_process_event(event)]
+        return events[-capped_limit:]
 
     async def complete_run(
         self,
@@ -3133,6 +3125,61 @@ def _event_from_row(row: aiosqlite.Row) -> dict[str, Any]:
     data = dict(row)
     data["payload"] = _json_loads(data.pop("payload_json", "{}"), {})
     return data
+
+
+_PUBLIC_PROCESS_EVENT_KINDS = {"diagnostic", "thinking", "reasoning", "trace"}
+
+
+def _public_events_from_rows(rows: list[aiosqlite.Row]) -> list[dict[str, Any]]:
+    events: list[dict[str, Any]] = []
+    segment_state = _AgentOutputSegmentState()
+    for row in rows:
+        events.extend(_public_events_from_event(_event_from_row(row), segment_state))
+    return events
+
+
+def _public_events_from_event(
+    event: dict[str, Any],
+    segment_state: _AgentOutputSegmentState,
+) -> list[dict[str, Any]]:
+    if event.get("event_type") != "delta":
+        segment_state.diagnostic_active = False
+        segment_state.diagnostic_prefix = ""
+        segment_state.diagnostic_streaming_text = False
+        return [event]
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return [event]
+    kind = str(payload.get("kind") or "")
+    if kind:
+        return [event]
+    content = payload.get("content")
+    if not isinstance(content, str) or not content:
+        return [event]
+    segments = _agent_output_segments(content, state=segment_state)
+    if not segments:
+        return []
+    public_events: list[dict[str, Any]] = []
+    for segment_kind, text in segments:
+        next_event = dict(event)
+        next_payload = dict(payload)
+        next_payload["content"] = text
+        if segment_kind == "diagnostic":
+            next_payload["kind"] = "diagnostic"
+        public_events.append({**next_event, "payload": next_payload})
+    return public_events
+
+
+def _is_public_process_event(event: dict[str, Any]) -> bool:
+    event_type = str(event.get("event_type") or "")
+    if event_type in {"status", "error"}:
+        return True
+    if event_type != "delta":
+        return False
+    payload = event.get("payload")
+    if not isinstance(payload, dict):
+        return False
+    return str(payload.get("kind") or "") in _PUBLIC_PROCESS_EVENT_KINDS
 
 
 def _default_actions() -> list[dict[str, str]]:
