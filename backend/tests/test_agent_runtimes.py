@@ -1204,6 +1204,17 @@ class TestAgentRuntimes:
             runtime_type="agent_runtime",
             agent_runtime_id="runtime-stale-resume",
         )
+        previous = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="上一轮：请记录 iSCSI CHAP 失败恢复场景",
+            references=[],
+        )
+        await store.complete_run(
+            run_id=previous["run"]["id"],
+            content="## 结论\nPREVIOUS_CONTEXT_MARKER: CHAP 失败后应验证重连恢复。",
+            references=[],
+            model="agent:test",
+        )
         await store.upsert_agent_runtime_session(
             conversation_id=conversation["id"],
             agent_runtime_id="runtime-stale-resume",
@@ -1245,7 +1256,11 @@ class TestAgentRuntimes:
         captured = [json.loads(line) for line in capture_file.read_text(encoding="utf-8").splitlines()]
         assert [item["resume"] for item in captured] == ["session-stale", ""]
         assert captured[0]["prompt"].count("继续基于当前源码分析") == 1
+        assert "PREVIOUS_CONTEXT_MARKER" not in captured[0]["prompt"]
         assert captured[1]["prompt"].count("继续基于当前源码分析") == 1
+        assert "历史助手回复" in captured[1]["prompt"]
+        assert "PREVIOUS_CONTEXT_MARKER" in captured[1]["prompt"]
+        assert "CHAP 失败后应验证重连恢复" in captured[1]["prompt"]
 
         session = await store.get_agent_runtime_session(
             conversation_id=conversation["id"],

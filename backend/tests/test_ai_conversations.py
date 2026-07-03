@@ -1143,6 +1143,41 @@ class TestAIConversationsAPI:
         assert "FULL_ARTIFACT_CONTEXT_MARKER" in prompt
         assert "TC-99 CHAP 失败后重连恢复" in prompt
 
+        resume_prompt = _build_agent_prompt(
+            conversation,
+            [
+                *messages,
+                {"role": "user", "content": "基于上一轮继续细化 CHAP 失败场景"},
+            ],
+            [],
+            "基于上一轮继续细化 CHAP 失败场景",
+            {
+                "id": "runtime-history",
+                "name": "History Runtime",
+                "session_persistence": "resume_args",
+            },
+        )
+        assert "历史助手完整下载产物" not in resume_prompt
+        assert "FULL_ARTIFACT_CONTEXT_MARKER" not in resume_prompt
+
+        fresh_fallback_prompt = _build_agent_prompt(
+            conversation,
+            [
+                *messages,
+                {"role": "user", "content": "基于上一轮继续细化 CHAP 失败场景"},
+            ],
+            [],
+            "基于上一轮继续细化 CHAP 失败场景",
+            {
+                "id": "runtime-history",
+                "name": "History Runtime",
+                "session_persistence": "resume_args",
+                "force_prompt_history": True,
+            },
+        )
+        assert "历史助手完整下载产物" in fresh_fallback_prompt
+        assert "FULL_ARTIFACT_CONTEXT_MARKER" in fresh_fallback_prompt
+
     async def test_context_references_skip_source_and_graph_artifacts_when_source_declined(
         self,
         sqlite_db,

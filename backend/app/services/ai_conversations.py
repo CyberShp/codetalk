@@ -1346,12 +1346,15 @@ async def run_agent_generation(
         )
         if session:
             resume_session_id = str(session.get("resume_session_id") or session.get("cli_session_id") or "")
+    prompt_runtime = dict(runtime)
+    if str(runtime.get("session_persistence") or "none") == "resume_args" and not resume_session_id:
+        prompt_runtime["force_prompt_history"] = True
     prompt = _build_agent_prompt(
         conversation,
         messages,
         references,
         user_message["content"],
-        runtime,
+        prompt_runtime,
         repo_path=repo_path,
     )
     chunks: list[str] = []
@@ -1451,7 +1454,15 @@ async def run_agent_generation(
                     "content": "旧会话已失效，CodeTalk 已切换为 fresh agent 会话重试本轮任务。",
                 },
             )
-            chunks = await consume_agent_turn(prompt, "")
+            fresh_prompt = _build_agent_prompt(
+                conversation,
+                messages,
+                references,
+                user_message["content"],
+                {**runtime, "force_prompt_history": True},
+                repo_path=repo_path,
+            )
+            chunks = await consume_agent_turn(fresh_prompt, "")
         if await run_cancelled():
             return
         content = _govern_visible_assistant_content(
@@ -2192,7 +2203,10 @@ def _agent_prompt_history(
     user_message: str,
     runtime: dict[str, Any],
 ) -> list[dict[str, str]]:
-    if str(runtime.get("session_persistence") or "none") == "resume_args":
+    if (
+        str(runtime.get("session_persistence") or "none") == "resume_args"
+        and not runtime.get("force_prompt_history")
+    ):
         return []
     history = [
         {
