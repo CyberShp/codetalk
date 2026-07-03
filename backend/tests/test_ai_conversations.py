@@ -2158,9 +2158,10 @@ class TestAIConversationsAPI:
             {"content": "Bash {\"command\":\"grep -n login lib/iscsi/iscsi.c\"}", "kind": "diagnostic"},
             "1125:iscsi_conn_login_pdu_success_complete(void *arg)\n",
             "lib/iscsi/iscsi.c:1539:\tAuthMethod=CHAP\n",
-            {"content": "我已掌", "kind": "diagnostic"},
-            {"content": "握登录处理链的关键分支。下面基于 `lib/iscsi/iscsi.c` 的实际校验逻辑给出黑盒用例", "kind": "diagnostic"},
-            {"content": "。", "kind": "diagnostic"},
+            "THINKING: ",
+            "我已掌",
+            "握登录处理链的关键分支。下面基于 `lib/iscsi/iscsi.c` 的实际校验逻辑给出黑盒用例",
+            "。\n",
             "## 黑盒测试用例\n",
             "### TC-01 正常登录\n",
         ]:

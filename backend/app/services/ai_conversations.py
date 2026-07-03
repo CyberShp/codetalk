@@ -1853,6 +1853,8 @@ def _agent_diagnostic_continuation(
     if lowered_prefix.startswith(("tool:", "tool_use:", "tool_result:")):
         return _looks_like_agent_process_output_line(content) or _looks_like_agent_tool_status_line(content)
     if diagnostic_streaming_text and lowered_prefix.startswith(("thinking:", "reasoning:", "trace:", "diagnostic:")):
+        if _looks_like_agent_answer_intro_fragment(content):
+            return False
         return not final_answer_chunk
     return _looks_like_agent_process_output_line(content)
 
@@ -1882,6 +1884,11 @@ def _looks_like_agent_tool_invocation_line(content: str) -> bool:
     if not text:
         return False
     return bool(re.match(r"^(?:Bash|Read|Grep|Glob|Edit|Write|Task|TodoWrite)\s+\{", text))
+
+
+def _looks_like_agent_answer_intro_fragment(content: str) -> bool:
+    text = str(content or "").strip()
+    return text.startswith(("我已掌", "下面基", "基于 `", "基于`"))
 
 
 def _looks_like_agent_answer_boundary(content: str) -> bool:
