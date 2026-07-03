@@ -126,6 +126,7 @@ async def list_conversations(
     workspace_id: str | None = None,
     memory_namespace: str | None = None,
     status: str | None = None,
+    include_internal: bool = Query(default=False),
     limit: int = Query(default=20, ge=1, le=100),
 ) -> dict[str, Any]:
     items = await _store().list_conversations(
@@ -134,6 +135,7 @@ async def list_conversations(
         workspace_id=workspace_id,
         memory_namespace=memory_namespace,
         status=status,
+        include_internal=include_internal,
         limit=limit,
     )
     return {"items": items}

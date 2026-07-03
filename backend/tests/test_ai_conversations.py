@@ -526,6 +526,76 @@ class TestAIConversationsAPI:
             items = listed.json()["items"]
             assert [item["id"] for item in items] == [body_a["id"]]
 
+    async def test_list_conversations_hides_internal_e2e_threads_by_default(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db, "ws-internal-thread-filter")
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            visible_resp = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "memory_namespace": f"workspace:{ws_id}",
+                    "title": "spdk · 用户真实调查线程",
+                },
+            )
+            assert visible_resp.status_code == 201
+            visible_id = visible_resp.json()["id"]
+
+            internal_resp = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "memory_namespace": f"workspace:{ws_id}",
+                    "title": "spdk · 内部回归线程",
+                    "initial_context": {"codetalk_internal": True, "source": "playwright"},
+                },
+            )
+            assert internal_resp.status_code == 201
+            internal_id = internal_resp.json()["id"]
+
+            legacy_resp = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "memory_namespace": f"workspace:{ws_id}",
+                    "title": "spdk · E2E 裸工具输出验证 2",
+                },
+            )
+            assert legacy_resp.status_code == 201
+            legacy_id = legacy_resp.json()["id"]
+
+            named_e2e_resp = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "memory_namespace": f"workspace:{ws_id}",
+                    "title": "ai-thread-e2e-1783060000 NVMe-oF connect 调查",
+                },
+            )
+            assert named_e2e_resp.status_code == 201
+            named_e2e_id = named_e2e_resp.json()["id"]
+
+            listed = await client.get("/api/ai/conversations", params={"workspace_id": ws_id, "limit": 10})
+            assert listed.status_code == 200
+            ids = [item["id"] for item in listed.json()["items"]]
+            assert ids == [visible_id]
+
+            debug_listed = await client.get(
+                "/api/ai/conversations",
+                params={"workspace_id": ws_id, "limit": 10, "include_internal": "true"},
+            )
+            assert debug_listed.status_code == 200
+            debug_ids = [item["id"] for item in debug_listed.json()["items"]]
+            assert debug_ids == [named_e2e_id, legacy_id, internal_id, visible_id]
+
     async def test_delete_conversation_removes_idle_thread_and_rejects_running_thread(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
         store_path = sqlite_db

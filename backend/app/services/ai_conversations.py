@@ -516,6 +516,7 @@ class AIConversationStore:
         workspace_id: str | None = None,
         memory_namespace: str | None = None,
         status: str | None = None,
+        include_internal: bool = False,
         limit: int = 20,
     ) -> list[dict[str, Any]]:
         clauses: list[str] = []
@@ -535,6 +536,19 @@ class AIConversationStore:
         if status:
             clauses.append("status = ?")
             params.append(status)
+        if not include_internal:
+            clauses.append(
+                """
+                NOT (
+                    initial_context_json LIKE '%"codetalk_internal": true%'
+                    OR initial_context_json LIKE '%"codetalk_internal":true%'
+                    OR initial_context_json LIKE '%"internal_test": true%'
+                    OR initial_context_json LIKE '%"internal_test":true%'
+                    OR title LIKE '%E2E 裸工具输出验证%'
+                    OR lower(title) LIKE '%-e2e-%'
+                )
+                """
+            )
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         params.append(max(1, min(limit, 100)))
         async with self._connect() as db:

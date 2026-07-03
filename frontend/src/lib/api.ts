@@ -626,6 +626,7 @@ export const api = {
       workspace_id?: string;
       memory_namespace?: string;
       status?: string;
+      include_internal?: boolean;
       limit?: number;
     }) => {
       const query = new URLSearchParams({
@@ -634,6 +635,7 @@ export const api = {
         ...(params?.workspace_id ? { workspace_id: params.workspace_id } : {}),
         ...(params?.memory_namespace ? { memory_namespace: params.memory_namespace } : {}),
         ...(params?.status ? { status: params.status } : {}),
+        ...(params?.include_internal ? { include_internal: "true" } : {}),
         ...(params?.limit ? { limit: String(params.limit) } : {}),
       });
       const suffix = query.toString() ? `?${query.toString()}` : "";
