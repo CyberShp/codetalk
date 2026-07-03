@@ -5315,6 +5315,104 @@ test("keeps historical AI thread reading stable while an agent run is streaming"
   }
 });
 
+test("keeps split terminal OSC noise out of the visible AI thread answer", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-split-osc-repo-")));
+  fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "nvmf", "connect.c"),
+    "int split_osc_connect_probe(void) { return 0; }\n",
+    "utf8",
+  );
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-split-osc-")));
+  const runtimeScript = path.join(runtimeDir, "split_osc_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys, time",
+      "sys.stdin.read()",
+      "sys.stdout.write('\\x1b]8;;file:///tmp/nga-session-12345')",
+      "sys.stdout.flush()",
+      "time.sleep(0.05)",
+      "sys.stdout.write('\\x07')",
+      "print('## 结论\\nFINAL_SPLIT_OSC_ANSWER: 已过滤分块终端控制噪音，只展示源码分析结论。\\n\\n## 代码证据\\n- `lib/nvmf/connect.c`: `split_osc_connect_probe` 是本轮工作区源码证据。\\n- `test/nvmf`: 可承载 connect/reconnect 黑盒回归。\\n\\n## 流程梳理\\n1. Agent 先输出终端 OSC 链接控制序列。\\n2. CodeTalk 清洗控制噪音后保留最终回答。\\n\\n## SFMEA\\n- failure mode: reconnect timeout; cause: transport delay; effect: I/O pause; severity 8; occurrence 3; detection 4; RPN 96; mitigation: observe RPC error and reconnect state.\\n\\n## 黑盒测试用例\\n1. 用例：正常连接；前置条件：target 已启动；步骤：initiator 发起 connect；预期结果：连接成功；观测点：RPC 状态、日志和连接状态。\\n2. 用例：连接超时；前置条件：注入网络延迟；步骤：发起 connect 并等待超时；预期结果：返回超时错误且可重连；观测点：错误码、日志、恢复状态。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-split-osc-e2e-${Date.now()}`;
+  const runtimeName = `Split OSC runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} terminal cleanup`;
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 20,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill("分析 connect 路径并输出代码证据、流程、SFMEA 和黑盒测试用例");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(page.getByText("FINAL_SPLIT_OSC_ANSWER")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText("file:///tmp/nga-session-12345")).toHaveCount(0);
+    await expect(page.getByText("8;;file:///tmp/nga-session-12345")).toHaveCount(0);
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    const assistant = [...messageBody.items].reverse().find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("FINAL_SPLIT_OSC_ANSWER");
+    expect(assistant?.content).not.toContain("file:///tmp/nga-session-12345");
+    expect(assistant?.content).not.toContain("8;;");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("jumps to latest when sending from a detached AI thread reading position", async ({
   page,
   request,

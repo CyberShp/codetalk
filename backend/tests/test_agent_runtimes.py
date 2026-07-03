@@ -4114,6 +4114,36 @@ class TestAgentRuntimes:
         assert "47%" not in output
         assert "12/100" not in output
 
+    async def test_agent_runtime_stream_drops_split_osc_terminal_sequence(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import sys, time; "
+            "sys.stdout.write('\\x1b]8;;file:///tmp/nga-session-12345'); "
+            "sys.stdout.flush(); "
+            "time.sleep(0.05); "
+            "sys.stdout.write('\\x07最终答案：已完成源码分析。\\n'); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        output = "".join(chunks)
+        assert output.strip() == "最终答案：已完成源码分析。"
+        assert "file:///tmp/nga-session-12345" not in output
+        assert "8;;" not in output
+
     async def test_agent_runtime_stream_strips_progress_glyph_prefix_before_answer(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
 

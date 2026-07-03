@@ -1476,7 +1476,8 @@ _TUI_BORDER_RE = re.compile(r"^[╭╮╰╯│─┌┐└┘├┤┬┴┼═
 
 
 def _clean_agent_text(value: str) -> str:
-    cleaned = _ANSI_RE.sub("", value)
+    cleaned = _strip_incomplete_terminal_escape_suffix(value)
+    cleaned = _ANSI_RE.sub("", cleaned)
     cleaned = _apply_backspace_repaints(cleaned)
     cleaned = _collapse_terminal_repaints(cleaned)
     return _CONTROL_RE.sub("", cleaned)
@@ -1485,6 +1486,28 @@ def _clean_agent_text(value: str) -> str:
 def clean_agent_output_text(value: str) -> str:
     """Normalize terminal control noise before text is classified or displayed."""
     return _clean_agent_text(value)
+
+
+def _strip_incomplete_terminal_escape_suffix(value: str) -> str:
+    """Drop terminal control tails that were split before their terminator arrived."""
+    cleaned = value
+    for marker in ("\x1b]", "\x9d"):
+        index = cleaned.rfind(marker)
+        if index == -1:
+            continue
+        tail = cleaned[index:]
+        if "\x07" not in tail and "\x1b\\" not in tail:
+            cleaned = cleaned[:index]
+    for marker in ("\x1b[", "\x9b"):
+        index = cleaned.rfind(marker)
+        if index != -1 and not _has_complete_csi_sequence(cleaned[index:], marker=marker):
+            cleaned = cleaned[:index]
+    return cleaned
+
+
+def _has_complete_csi_sequence(value: str, *, marker: str) -> bool:
+    tail = value[len(marker) :]
+    return bool(re.match(r"[0-?]*[ -/]*[@-~]", tail))
 
 
 def _apply_backspace_repaints(value: str) -> str:
