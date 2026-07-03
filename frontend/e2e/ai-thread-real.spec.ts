@@ -3285,6 +3285,131 @@ test("waits for streamed chat choice tool arguments when the name chunk is empty
   }
 });
 
+test("keeps interleaved chat choice tool argument streams separated in Agent process", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-choice-interleaved-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "Chat choice interleaved tool args e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-choice-interleaved-")));
+  const runtimeScript = path.join(runtimeDir, "chat_choice_interleaved_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import json, sys, time",
+      "sys.stdin.read()",
+      "events = [",
+      "  {'choices':[{'delta':{'tool_calls':[",
+      "    {'index':0,'id':'call_search','type':'function','function':{'name':'search_source','arguments':'{\"query\":\"'}},",
+      "    {'index':1,'id':'call_read','type':'function','function':{'name':'read_file','arguments':'{\"path\":\"'}}",
+      "  ]}}]},",
+      "  {'choices':[{'delta':{'tool_calls':[{'index':1,'function':{'arguments':'lib/nvmf/ctrlr.c'}}]}}]},",
+      "  {'choices':[{'delta':{'tool_calls':[{'index':0,'function':{'arguments':'nvmf connect'}}]}}]},",
+      "  {'choices':[{'delta':{'tool_calls':[{'index':1,'function':{'arguments':'\"}'}}]}}]},",
+      "  {'choices':[{'delta':{'tool_calls':[{'index':0,'function':{'arguments':'\"}'}}]}}]},",
+      "  {'choices':[{'delta':{'content':'交错工具参数聚合后输出最终回答。\\n\\n## 代码证据\\n- `lib/nvmf/ctrlr.c`: connect 控制器路径。\\n- `test/nvmf`: 可承载回归。\\n\\n## 流程梳理\\n1. 两个工具调用的参数分片交错到达。\\n2. Agent 过程分别显示完整 search 和 read 调用。\\n\\n## 黑盒测试用例\\n- 前置条件：选择当前 workspace 和 Chat choices 执行器。\\n- 步骤：发送双工具交错参数分片。\\n- 预期结果：正文干净，过程不串线。'}}]},",
+      "]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.03)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-choice-interleaved-e2e-${Date.now()}`;
+  const runtimeName = `Chat choice interleaved runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} interleaved`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "auto",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByLabel("AI 线程消息").fill("请处理两个工具调用交错参数分片");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const assistantAnswer = page
+      .locator(".ct-codex-message:not(.is-user)")
+      .filter({ hasText: "交错工具参数聚合后输出最终回答" })
+      .first();
+    await expect(assistantAnswer).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(assistantAnswer).not.toContainText("search_source");
+    await expect(assistantAnswer).not.toContainText("read_file");
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    const searchLine = processDisclosure.locator("p").filter({ hasText: /search_source.*nvmf connect/ });
+    const readLine = processDisclosure.locator("p").filter({ hasText: /read_file.*lib\/nvmf\/ctrlr\.c/ });
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(searchLine).toBeHidden();
+    await expect(readLine).toBeHidden();
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(searchLine).toBeVisible({ timeout: 15_000 });
+    await expect(readLine).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.locator("p").filter({ hasText: /search_source.*lib\/nvmf\/ctrlr\.c/ })).toHaveCount(0);
+    await expect(processDisclosure.locator("p").filter({ hasText: /read_file.*nvmf connect/ })).toHaveCount(0);
+    await expect(processDisclosure.locator("p").filter({ hasText: /function_call/ })).toHaveCount(0);
+
+    let messageBody: { items: Array<{ role: string; content: string }> } = { items: [] };
+    await expect
+      .poll(async () => {
+        const messagesResp = await request.get(
+          `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+        );
+        expect(messagesResp.ok()).toBeTruthy();
+        messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+        return messageBody.items.some(
+          (item) => item.role === "assistant" && item.content.includes("交错工具参数聚合后输出最终回答"),
+        );
+      }, { timeout: 15_000 })
+      .toBe(true);
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("交错工具参数聚合后输出最终回答");
+    expect(assistant?.content).not.toContain("search_source");
+    expect(assistant?.content).not.toContain("read_file");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("downloads a Markdown artifact written by the agent runtime", async ({
   page,
   request,

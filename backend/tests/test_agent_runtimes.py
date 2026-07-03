@@ -4503,6 +4503,50 @@ class TestAgentRuntimes:
         assert 'search_source {"query":"nvmf connect"}' in diagnostics
         assert "function_call" not in diagnostics
 
+    async def test_agent_runtime_chat_choice_interleaved_tool_arguments_do_not_cross_streams(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+        from app.services.ai_conversations import _agent_output_segments
+
+        agent_code = (
+            "import json, sys; "
+            "events=["
+            "{'choices':[{'delta':{'tool_calls':["
+            "{'index':0,'id':'call_search','type':'function','function':{'name':'search_source','arguments':'{\"query\":\"'}},"
+            "{'index':1,'id':'call_read','type':'function','function':{'name':'read_file','arguments':'{\"path\":\"'}}"
+            "]}}]},"
+            "{'choices':[{'delta':{'tool_calls':[{'index':1,'function':{'arguments':'lib/nvmf/ctrlr.c'}}]}}]},"
+            "{'choices':[{'delta':{'tool_calls':[{'index':0,'function':{'arguments':'nvmf connect'}}]}}]},"
+            "{'choices':[{'delta':{'tool_calls':[{'index':1,'function':{'arguments':'\"}'}}]}}]},"
+            "{'choices':[{'delta':{'tool_calls':[{'index':0,'function':{'arguments':'\"}'}}]}}]},"
+            "{'choices':[{'delta':{'content':'交错工具参数聚合后输出最终回答。'}}]}"
+            "]; "
+            "[print(json.dumps(event, ensure_ascii=False), flush=True) for event in events]; "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "auto",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码后回答",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        segments = [segment for chunk in chunks for segment in _agent_output_segments(chunk)]
+        answer = "".join(content for kind, content in segments if kind == "answer")
+        diagnostics = "\n".join(content for kind, content in segments if kind == "diagnostic")
+        assert answer == "交错工具参数聚合后输出最终回答。"
+        assert diagnostics.count("search_source") == 1
+        assert diagnostics.count("read_file") == 1
+        assert 'search_source {"query":"nvmf connect"}' in diagnostics
+        assert 'read_file {"path":"lib/nvmf/ctrlr.c"}' in diagnostics
+        assert "function_call" not in diagnostics
+
     async def test_agent_runtime_auto_mode_cleans_plain_fallback_chunks(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
 
