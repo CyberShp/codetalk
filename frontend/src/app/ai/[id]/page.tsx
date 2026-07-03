@@ -297,7 +297,21 @@ function agentProcessSummaryText(value: string): string {
   if (sensitiveProcessMarkers.some((marker) => lowered.includes(marker))) {
     return "内部过程已更新，可展开查看";
   }
+  if (looksLikeRawAgentProcessOutput(cleaned)) {
+    return "内部过程已更新，可展开查看";
+  }
   return cleaned.length > 120 ? `${cleaned.slice(0, 117)}...` : cleaned;
+}
+
+function looksLikeRawAgentProcessOutput(value: string): boolean {
+  const text = value.trim();
+  if (!text) return false;
+  if (/^\d{1,7}[:\t]/.test(text)) return true;
+  if (/^[^\s:]+\.(?:c|h|cc|cpp|cxx|hpp|py|go|rs|ts|tsx|js|java|sh|md):\d+[:\t]/i.test(text)) {
+    return true;
+  }
+  if (/^(?:Bash|Read|Grep|Glob|Edit|Write|Task|TodoWrite)\s+\{/.test(text)) return true;
+  return /(?:->|::|[{};])/.test(text) && /\b(?:spdk_\w+|struct|return|if|for|while|conn|reqh|rsph|status_detail)\b/i.test(text);
 }
 
 function capAgentProcessDiagnostics(items: string[]): string[] {

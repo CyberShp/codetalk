@@ -1700,6 +1700,147 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
   expect(exported).not.toContain("诊断步骤 01");
 });
 
+test("AI conversation keeps raw tool output out of the collapsed Agent process summary", async ({ page }) => {
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: [
+        {
+          id: "ws-agent-summary",
+          name: "SPDK 摘要项目",
+          repo_path: "/Volumes/Media/dpdk/spdk",
+          indexed: 1,
+          index_job: null,
+          index_progress: 100,
+          analyze_status: null,
+          analyze_progress: 0,
+          last_index_error: null,
+          created_at: "2026-06-28T00:00:00Z",
+          updated_at: "2026-06-28T00:00:00Z",
+          materials: [],
+          reports: [],
+        },
+      ],
+    });
+  });
+  await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations?workspace_id=ws-agent-summary&limit=50", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations/conv-agent-summary", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        id: "conv-agent-summary",
+        scope_type: "workspace",
+        scope_id: "ws-agent-summary",
+        workspace_id: "ws-agent-summary",
+        memory_namespace: "workspace:ws-agent-summary",
+        title: "Agent 过程摘要线程",
+        status: "idle",
+        initial_context: {},
+        created_at: "2026-06-28T00:00:00Z",
+        updated_at: "2026-06-28T00:00:02Z",
+        latest_run: {
+          id: "run-agent-summary",
+          conversation_id: "conv-agent-summary",
+          status: "completed",
+          cursor: 6,
+          error: null,
+          model: "agent:Claude Code",
+          token_usage: {},
+          created_at: "2026-06-28T00:00:01Z",
+          started_at: "2026-06-28T00:00:01Z",
+          completed_at: "2026-06-28T00:00:02Z",
+        },
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-agent-summary/messages", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        items: [
+          {
+            id: "msg-agent-summary-user",
+            conversation_id: "conv-agent-summary",
+            run_id: "run-agent-summary",
+            role: "user",
+            content: "针对 iSCSI 登录生成黑盒用例",
+            references: [],
+            actions: [],
+            created_at: "2026-06-28T00:00:01Z",
+          },
+          {
+            id: "msg-agent-summary-assistant",
+            conversation_id: "conv-agent-summary",
+            run_id: "run-agent-summary",
+            role: "assistant",
+            content: "## 黑盒测试用例\n\n已生成结构化产物，正文保持干净。",
+            references: [],
+            actions: [],
+            created_at: "2026-06-28T00:00:02Z",
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-agent-summary/events?**", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        items: [
+          {
+            event_id: 1,
+            run_id: "run-agent-summary",
+            conversation_id: "conv-agent-summary",
+            event_type: "status",
+            payload: { status: "running", message: "正在读取工作区源码上下文。" },
+            created_at: "2026-06-28T00:00:01Z",
+          },
+          {
+            event_id: 2,
+            run_id: "run-agent-summary",
+            conversation_id: "conv-agent-summary",
+            event_type: "delta",
+            payload: {
+              kind: "diagnostic",
+              content: 'Bash {"command":"grep -n \\"status_detail\\" lib/iscsi/iscsi.c | head"}',
+            },
+            created_at: "2026-06-28T00:00:01Z",
+          },
+          {
+            event_id: 3,
+            run_id: "run-agent-summary",
+            conversation_id: "conv-agent-summary",
+            event_type: "delta",
+            payload: {
+              kind: "diagnostic",
+              content: "1434:\t\trsph->status_detail = ISCSI_LOGIN_TARGET_TEMPORARILY_MOVED;",
+            },
+            created_at: "2026-06-28T00:00:01Z",
+          },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/ai/conv-agent-summary", { waitUntil: "domcontentloaded" });
+
+  const processDisclosure = page.getByTestId("agent-process-disclosure");
+  await expect(processDisclosure.getByText("Agent 过程")).toBeVisible();
+  await expect(processDisclosure.locator("summary")).toContainText("内部过程已更新，可展开查看");
+  await expect(processDisclosure.locator("summary")).not.toContainText("1434:");
+  await expect(processDisclosure.locator("summary")).not.toContainText("rsph->status_detail");
+  await expect(page.locator(".ct-codex-ai__reader")).not.toContainText("rsph->status_detail");
+
+  await processDisclosure.getByText("Agent 过程").click();
+  await expect(processDisclosure.getByText("rsph->status_detail")).toBeVisible();
+});
+
 test("AI conversation keeps long structured artifacts compact while streaming", async ({ page }) => {
   let completed = false;
   let releaseDone = () => {};
