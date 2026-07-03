@@ -8254,6 +8254,171 @@ test("retries a structured quality failure and recovers with a complete agent an
   }
 });
 
+test("downloads only the latest successful artifact after an agent retry", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-stale-artifact-retry-repo-")));
+  fs.mkdirSync(path.join(repo, "lib", "iscsi"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "iscsi", "iscsi.c"),
+    "int iscsi_login_retry_artifact_probe(void) { return 0; }\n",
+    "utf8",
+  );
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-stale-artifact-retry-")));
+  const runtimeScript = path.join(runtimeDir, "stale_artifact_retry_agent.py");
+  const counterFile = path.join(runtimeDir, "invocations.txt");
+  const artifactDirsFile = path.join(runtimeDir, "artifact_dirs.txt");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import os, pathlib, sys",
+      "prompt = sys.stdin.read()",
+      "counter = pathlib.Path(__file__).with_name('invocations.txt')",
+      "count = int(counter.read_text(encoding='utf-8') or '0') if counter.exists() else 0",
+      "count += 1",
+      "counter.write_text(str(count), encoding='utf-8')",
+      "artifact_dir = pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])",
+      "artifact_dir.mkdir(parents=True, exist_ok=True)",
+      `pathlib.Path(${JSON.stringify(artifactDirsFile)}).write_text((pathlib.Path(${JSON.stringify(artifactDirsFile)}).read_text(encoding='utf-8') if pathlib.Path(${JSON.stringify(artifactDirsFile)}).exists() else '') + str(count) + ':' + str(artifact_dir) + '\\n', encoding='utf-8')`,
+      "if count == 1:",
+      "    (artifact_dir / 'stale_failed.md').write_text('# 失败轮半截产物\\n\\nSTALE_FAILED_ARTIFACT: 这份旧文件不应该出现在重试后的下载里。\\n', encoding='utf-8')",
+      "    print('正在分析源码，但本轮即将失败', flush=True)",
+      "    raise SystemExit(9)",
+      "(artifact_dir / 'final_complete.md').write_text('\\n'.join([",
+      "    '# 完整测试设计',",
+      "    '',",
+      "    'NEW_COMPLETE_ARTIFACT: 重试后的完整产物。',",
+      "    '',",
+      "    '## 代码证据',",
+      "    '- `lib/iscsi/iscsi.c`: `iscsi_login_retry_artifact_probe` 作为 iSCSI login 证据。',",
+      "    '',",
+      "    '## 流程梳理',",
+      "    '1. Initiator 发起 Login Request。',",
+      "    '2. Target 校验认证参数并返回 Login Response。',",
+      "    '',",
+      "    '## SFMEA',",
+      "    '- failure mode: CHAP secret mismatch; cause: 错误 secret; effect: login failed; severity 7; occurrence 4; detection 3; RPN 84; mitigation: 观测 Login Response 与认证日志。',",
+      "    '',",
+      "    '## 黑盒测试用例',",
+      "    '1. 用例：CHAP 失败后重试；前置条件：target 开启 CHAP；步骤：先用错误 secret 登录，再用正确 secret 重试；预期结果：首次失败可观测，第二次进入 Full Feature Phase；观测点：Login Response、认证日志和 session 状态。',",
+      "]) + '\\n', encoding='utf-8')",
+      "print('已生成文件：final_complete.md', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-stale-artifact-retry-e2e-${Date.now()}`;
+  const runtimeName = `Stale artifact retry runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} retry artifact isolation`;
+  const prompt = "分析 SPDK iSCSI login，输出代码证据、流程梳理、SFMEA 和黑盒测试用例，并把完整结果保存为文件";
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill(prompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(page.locator("div[role='alert']").filter({ hasText: "执行器退出码：9" })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByRole("button", { name: "重试上一条" })).toBeVisible();
+    await expect(page.getByText("STALE_FAILED_ARTIFACT")).toHaveCount(0);
+
+    const firstRunResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`,
+    );
+    expect(firstRunResp.ok()).toBeTruthy();
+    const failedConversation = (await firstRunResp.json()) as {
+      latest_run: { id: string; status: string } | null;
+    };
+    expect(failedConversation.latest_run?.status).toBe("failed");
+    const failedArtifactDir = fs.readFileSync(artifactDirsFile, "utf8").trim().split("\n")[0].split(":").slice(1).join(":");
+    expect(fs.existsSync(path.join(failedArtifactDir, "stale_failed.md"))).toBe(true);
+
+    await page.getByRole("button", { name: "重试上一条" }).hover();
+    await page.getByRole("button", { name: "重试上一条" }).click();
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "完整测试设计/SFMEA/黑盒用例已保存为下载产物" })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.locator("div[role='alert']").filter({ hasText: "执行器退出码：9" })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "下载完整产物" })).toBeVisible({ timeout: 15_000 });
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("link", { name: "下载完整产物" }).hover();
+    await page.getByRole("link", { name: "下载完整产物" }).click();
+    const download = await downloadPromise;
+    const artifactPath = testInfo.outputPath("retry-latest-artifact.md");
+    await download.saveAs(artifactPath);
+    const artifact = fs.readFileSync(artifactPath, "utf8");
+    expect(artifact).toContain("NEW_COMPLETE_ARTIFACT");
+    expect(artifact).toContain("## 代码证据");
+    expect(artifact).toContain("## 流程梳理");
+    expect(artifact).toContain("## SFMEA");
+    expect(artifact).toContain("## 黑盒测试用例");
+    expect(artifact).not.toContain("STALE_FAILED_ARTIFACT");
+    expect(artifact).not.toContain("正在分析源码，但本轮即将失败");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    const assistant = [...messageBody.items].reverse().find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("下载完整产物");
+    expect(assistant?.content).not.toContain("STALE_FAILED_ARTIFACT");
+    expect(fs.readFileSync(counterFile, "utf8")).toBe("2");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
+  }
+});
+
 test("injects requested workspace source into a real agent-runtime AI thread", async ({
   page,
   request,
