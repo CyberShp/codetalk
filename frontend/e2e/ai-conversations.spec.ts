@@ -578,7 +578,6 @@ test("AI conversation mobile rail keeps dense project and thread lists contained
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/ai/conv-mobile-dense", { waitUntil: "domcontentloaded" });
 
-  await expect(page.getByText("已收起 28 个项目")).toBeVisible();
   await expect(page.getByText("已收起 34 条线程")).toBeVisible();
 
   const layout = await page.locator(".ct-codex-ai").evaluate((element) => {
@@ -589,6 +588,9 @@ test("AI conversation mobile rail keeps dense project and thread lists contained
       documentScrollHeight: document.documentElement.scrollHeight,
       viewportHeight: window.innerHeight,
       railHeight: rail?.getBoundingClientRect().height ?? 0,
+      railClientHeight: rail?.clientHeight ?? 0,
+      railScrollHeight: rail?.scrollHeight ?? 0,
+      projectListRendered: (projectList?.getBoundingClientRect().height ?? 0) > 1,
       projectClientHeight: projectList?.clientHeight ?? 0,
       projectScrollHeight: projectList?.scrollHeight ?? 0,
       threadClientHeight: threadList?.clientHeight ?? 0,
@@ -599,14 +601,13 @@ test("AI conversation mobile rail keeps dense project and thread lists contained
   });
 
   expect(layout.railHeight).toBeLessThanOrEqual(layout.viewportHeight * 0.72);
+  expect(layout.railScrollHeight).toBeLessThanOrEqual(layout.railClientHeight + 4);
   expect(layout.documentScrollHeight).toBeLessThanOrEqual(layout.viewportHeight * 1.75);
-  expect(layout.projectScrollHeight).toBeGreaterThan(layout.projectClientHeight + 80);
+  expect(layout.projectListRendered).toBe(false);
+  expect(layout.threadClientHeight).toBeGreaterThanOrEqual(44);
   expect(layout.threadScrollHeight).toBeGreaterThan(layout.threadClientHeight + 80);
-  expect(layout.projectOverflowY).toBe("auto");
   expect(layout.threadOverflowY).toBe("auto");
 
-  await page.getByLabel("搜索 AI 项目").fill("production");
-  await expect(page.getByText("SPDK mobile production target")).toBeVisible();
   await page.getByLabel("搜索 AI 线程").fill("rare mobile");
   await expect(page.getByText("rare mobile iSCSI login SFMEA")).toBeVisible();
 });

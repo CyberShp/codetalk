@@ -2892,7 +2892,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 @media (max-width: 900px) {
   .ct-page-shell:has(.ct-ai-home),
   .ct-page-shell:has(.ct-codex-ai) {
-    height: calc(100dvh - 216px);
+    height: calc(100dvh - 180px);
     min-height: 0;
     overflow: hidden;
   }
@@ -3043,7 +3043,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     width: 100%;
     max-width: 100%;
     grid-template-columns: minmax(0, 1fr);
-    grid-template-rows: minmax(360px, 48vh) minmax(0, 1fr);
+    grid-template-rows: minmax(148px, 18vh) minmax(0, 1fr);
     height: 100%;
     min-height: 0;
     padding: 0 10px 10px;
@@ -3061,13 +3061,57 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   }
 
   .ct-codex-ai__rail {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto minmax(44px, 1fr);
+    align-content: stretch;
+    gap: 6px;
     max-height: none;
     overflow: hidden;
+    padding: 8px;
+  }
+
+  .ct-codex-ai__back {
+    min-height: 32px;
+    margin: 0;
+    padding: 6px 8px;
+  }
+
+  .ct-codex-ai__project {
+    display: none;
+  }
+
+  .ct-codex-ai__rail-group {
+    display: none;
+  }
+
+  .ct-codex-ai__rail-label {
+    display: none;
+  }
+
+  .ct-codex-ai__rail-search {
+    grid-column: 1 / -1;
+    min-height: 32px;
+    margin-bottom: 0;
+    padding: 6px 8px;
   }
 
   .ct-codex-ai__project-list {
-    height: min(78px, 9vh);
+    height: min(56px, 7vh);
     max-height: none;
+  }
+
+  .ct-codex-ai__new {
+    width: auto;
+    min-height: 32px;
+    margin: 0;
+    padding: 6px 9px;
+    white-space: nowrap;
+  }
+
+  .ct-codex-ai__thread-list {
+    grid-column: 1 / -1;
+    min-height: 44px;
   }
 
   .ct-codex-ai__thread-list {
@@ -3129,11 +3173,11 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     width: min(100%, calc(100vw - 54px));
     max-width: 100%;
     min-width: 0;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     align-items: stretch;
-    gap: 8px;
+    gap: 6px;
     overflow: hidden;
-    padding: 10px;
+    padding: 8px;
   }
 
   .ct-codex-ai__topbar > div {
@@ -3147,7 +3191,9 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   .ct-codex-ai__context-toggle {
     min-width: 0;
     justify-content: center;
-    padding: 7px 8px;
+    gap: 5px;
+    padding: 6px 7px;
+    font-size: 11px;
   }
 
   .ct-codex-ai__topbar > div,
