@@ -2468,7 +2468,13 @@ def _looks_like_agent_tool_invocation_line(content: str) -> bool:
     text = str(content or "").strip()
     if not text:
         return False
-    return bool(re.match(r"^(?:Bash|Read|Grep|Glob|Edit|Write|Task|TodoWrite)\s+\{", text))
+    return bool(
+        re.match(
+            r"^(?:Bash|Read|Grep|Glob|Edit|Write|Task|TodoWrite)"
+            r"(?:\s+\{|\s*\(|\s+(?:command|file(?:_path)?|path|pattern|query)\s*[=:])",
+            text,
+        )
+    )
 
 
 def _looks_like_agent_answer_intro_fragment(content: str) -> bool:

@@ -1397,6 +1397,110 @@ test("keeps choice-delta process text out of the visible agent answer", async ({
   }
 });
 
+test("keeps plain parenthesized tool invocations out of the visible agent answer", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-plain-tool-call-")));
+  fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "nvmf", "ctrlr.c"),
+    "int nvmf_ctrlr_plain_tool_probe(void) { return 0; }\n",
+    "utf8",
+  );
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-plain-tool-call-")));
+  const runtimeScript = path.join(runtimeDir, "plain_tool_call_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "sys.stdin.read()",
+      "print(\"Read(file_path='lib/nvmf/ctrlr.c')\", flush=True)",
+      "print(\"Bash(command='rg nvmf_ctrlr_plain_tool_probe lib/nvmf')\", flush=True)",
+      "print('lib/nvmf/ctrlr.c:1:int nvmf_ctrlr_plain_tool_probe(void) { return 0; }', flush=True)",
+      "print('## 结论\\nPAREN_TOOL_FINAL: 已完成源码分析，工具调用仅进入折叠过程。\\n\\n## 代码证据\\n- `lib/nvmf/ctrlr.c`: `nvmf_ctrlr_plain_tool_probe` 是当前工作区源码证据。\\n- `test/nvmf`: 可承载 connect/reconnect 黑盒回归。\\n\\n## 黑盒测试用例\\n### TC-01 正常连接\\n前置条件：target 已启动；步骤：initiator 发起 connect；预期结果：连接成功；观测点：RPC 状态、连接状态和 target 日志；失败诊断线索：若连接失败，检查 listener、NQN 和 target 日志。\\n### TC-02 连接超时\\n前置条件：注入网络延迟；步骤：发起 connect 并等待超时；预期结果：返回超时错误且可重连；观测点：错误码、重试状态和 target 日志；失败诊断线索：若未超时，检查延迟注入和重试参数。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-plain-tool-e2e-${Date.now()}`;
+  const runtimeName = `Plain tool call runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} folded plain tools`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 20,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByLabel("AI 线程消息").fill("基于源码输出两个黑盒测试用例");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const answer = page.locator(".ct-codex-message").filter({ hasText: "PAREN_TOOL_FINAL" });
+    await expect(answer).toBeVisible({ timeout: 30_000 });
+    await expect(answer).not.toContainText("Read(file_path");
+    await expect(answer).not.toContainText("Bash(command");
+    await expect(answer).not.toContainText("nvmf_ctrlr_plain_tool_probe(void");
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.getByText(/默认折叠/)).toBeVisible();
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("Read(file_path='lib/nvmf/ctrlr.c')")).toBeVisible();
+    await expect(processDisclosure.getByText("Bash(command='rg nvmf_ctrlr_plain_tool_probe lib/nvmf')")).toBeVisible();
+    await expect(processDisclosure.getByText("nvmf_ctrlr_plain_tool_probe(void")).toBeVisible();
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("PAREN_TOOL_FINAL");
+    expect(assistant?.content).not.toContain("Read(file_path");
+    expect(assistant?.content).not.toContain("Bash(command");
+    expect(assistant?.content).not.toContain("nvmf_ctrlr_plain_tool_probe(void");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("carries a previous downloadable agent artifact into the next non-resume prompt", async ({
   page,
   request,

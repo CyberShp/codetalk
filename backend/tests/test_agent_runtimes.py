@@ -2902,7 +2902,7 @@ class TestAgentRuntimes:
                 [
                     "import json, sys",
                     "sys.stdin.read()",
-                    "answer = '## 黑盒测试用例\\n' + ''.join([f'{index}. TC-{index:02d} 正常登录变体：前置条件 target 已启动，步骤执行 iSCSI Login 场景 {index}，预期结果进入 Full Feature Phase 或返回明确 Login Response。\\n' for index in range(1, 9)])",
+                    "answer = '## 黑盒测试用例\\n' + ''.join([f'{index}. TC-{index:02d} 正常登录变体：前置条件 target 已启动，步骤执行 iSCSI Login 场景 {index}，预期结果进入 Full Feature Phase 或返回明确 Login Response，观测点为 Login Response、session state 和 target 日志，失败诊断线索为检查 CHAP、InitiatorName 和 target 日志。\\n' for index in range(1, 9)])",
                     "events = [",
                     "  {'type':'system','subtype':'init','session_id':'claude-session'},",
                     "  {'type':'stream_event','event':{'type':'content_block_start','index':0,'content_block':{'type':'tool_result','tool_use_id':'toolu_1'}}},",
@@ -4458,7 +4458,9 @@ class TestAgentRuntimes:
                     "  {'content': 'lib/iscsi/iscsi.c:1539:\\t\\trc = iscsi_op_login_update_param(conn, \"AuthMethod\", \"CHAP\", \"CHAP\");\\n'},",
                     "  {'content': '## 黑盒测试用例\\n'},",
                     "  {'content': '### TC-01 正常登录\\n'},",
-                    "  {'content': '前置条件：target 已启动；步骤：initiator 发起 login；预期结果：进入 Full Feature Phase。\\n'},",
+                    "  {'content': '前置条件：target 已启动；步骤：initiator 发起 login；预期结果：进入 Full Feature Phase；观测点：Login Response、session state 和 target 日志；失败诊断线索：若登录失败，检查 CHAP、InitiatorName 和 target 日志。\\n'},",
+                    "  {'content': '### TC-02 CHAP 失败\\n'},",
+                    "  {'content': '前置条件：target 开启 CHAP；步骤：使用错误 secret 发起 login；预期结果：Login Response 拒绝；观测点：错误码、session state 和 target 日志；失败诊断线索：若未拒绝，检查认证配置是否生效。\\n'},",
                     "]",
                     "for event in events:",
                     "    print(json.dumps(event, ensure_ascii=False), flush=True)",
@@ -5239,6 +5241,30 @@ class TestAgentRuntimes:
         assert "secret/path" not in answer
         assert "内部推理：先列出工具计划" in diagnostics
         assert "cat /secret/path returned internal-only trace" in diagnostics
+
+    async def test_agent_runtime_plain_tool_invocation_parentheses_fold_as_diagnostics(self):
+        from app.services.ai_conversations import _agent_output_segments
+
+        raw = "\n".join(
+            [
+                "Read(file_path='lib/nvmf/ctrlr.c')",
+                "Bash(command='rg nvmf_ctrlr_connect lib/nvmf')",
+                "lib/nvmf/ctrlr.c:1125:nvmf_ctrlr_connect(void *arg)",
+                "## 结论",
+                "最终答案：只展示源码分析结论。",
+            ]
+        )
+        segments = _agent_output_segments(raw)
+        answer = "".join(content for kind, content in segments if kind == "answer")
+        diagnostics = "\n".join(content for kind, content in segments if kind == "diagnostic")
+
+        assert "最终答案：只展示源码分析结论。" in answer
+        assert "Read(file_path" not in answer
+        assert "Bash(command" not in answer
+        assert "nvmf_ctrlr_connect(void" not in answer
+        assert "Read(file_path='lib/nvmf/ctrlr.c')" in diagnostics
+        assert "Bash(command='rg nvmf_ctrlr_connect lib/nvmf')" in diagnostics
+        assert "nvmf_ctrlr_connect(void" in diagnostics
 
     async def test_agent_runtime_plain_mode_drops_cli_banner_without_hiding_answer(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
