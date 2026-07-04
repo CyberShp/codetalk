@@ -1591,6 +1591,12 @@ class TestAIConversationsAPI:
                 header
                 + [
                     "#define SPDK_NVMF_INVALID_CONNECT_CMD 1",
+                    "static void",
+                    "nvmf_ctrlr_send_connect_rsp(void *ctx)",
+                    "{",
+                    "    (void)ctx;",
+                    "}",
+                    *[f"int filler_{idx};" for idx in range(24)],
                     "static int",
                     "nvmf_ctrlr_connect_io_ready(void)",
                     "{",

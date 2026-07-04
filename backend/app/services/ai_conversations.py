@@ -3370,6 +3370,7 @@ def _source_line_match_score(
         score += 6
     if _source_line_looks_like_function_definition(stripped, previous_line, next_line):
         score += 14
+    score += _source_function_name_intent_score(stripped, matched_terms)
     if "{" in stripped:
         score += 2
     if stripped and stripped.upper() == stripped and any(term.upper() in stripped for term in matched_terms):
@@ -3390,6 +3391,19 @@ def _source_line_looks_like_function_definition(line: str, previous_line: str, n
     if next_line.strip() != "{":
         return False
     return bool(re.search(r"\b[A-Za-z_][A-Za-z0-9_\s\*]*$", previous))
+
+
+def _source_function_name_intent_score(line: str, matched_terms: list[str]) -> int:
+    match = re.match(r"^([A-Za-z_][A-Za-z0-9_]*)\s*\(", line)
+    if not match:
+        return 0
+    name = match.group(1).lower()
+    score = 0
+    if "connect" in matched_terms and (name.endswith("_connect") or name.endswith("_cmd_connect")):
+        score += 8
+    if "connect" in matched_terms and any(token in name for token in ("send", "rsp", "response")):
+        score -= 8
+    return score
 
 
 def _source_text_has_term(text: str, term: str) -> bool:
