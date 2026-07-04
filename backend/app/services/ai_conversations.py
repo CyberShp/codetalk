@@ -2051,8 +2051,85 @@ def _agent_answer_too_thin_for_task(content: str, *, user_message: str = "") -> 
         evidence_markers = ("代码证据", "源码证据", "lib/", "test/", ".c", ".h", "function", "函数")
         if sum(1 for marker in evidence_markers if marker in lowered) < 2:
             return True
+        if _source_evidence_missing_specific_flow_anchor(requested, text):
+            return True
     lines = [line for line in text.splitlines() if line.strip()]
     return len(lines) <= 2 and len(text) < 220
+
+
+def _source_evidence_missing_specific_flow_anchor(user_message: str, content: str) -> bool:
+    anchors = _specific_flow_anchors(user_message)
+    if not anchors:
+        return False
+    evidence_text = _source_evidence_section_text(content)
+    if not evidence_text:
+        return False
+    evidence_without_paths = re.sub(
+        r"\b(?:lib|test|scripts|include)/[^\s`:'）)]+(?::\d+)?",
+        " ",
+        evidence_text.lower(),
+    )
+    return not any(anchor in evidence_without_paths for anchor in anchors)
+
+
+def _specific_flow_anchors(text: str) -> list[str]:
+    normalized = str(text or "").lower()
+    normalized = normalized.replace("nvme‑of", "nvme-of").replace("nvme_of", "nvme-of")
+    tokens = re.findall(r"[a-z][a-z0-9_-]{2,}", normalized)
+    behavior_tokens = {
+        "auth",
+        "chap",
+        "complete",
+        "connect",
+        "digest",
+        "disconnect",
+        "failover",
+        "login",
+        "poller",
+        "queue",
+        "ready",
+        "reconnect",
+        "reset",
+        "submit",
+        "timeout",
+    }
+    anchors: list[str] = []
+    for token in tokens:
+        clean = token.replace("-", "_")
+        candidates = {token, clean}
+        if not candidates & behavior_tokens:
+            continue
+        anchor = clean if clean in behavior_tokens else token
+        if anchor not in anchors:
+            anchors.append(anchor)
+    return anchors[:4]
+
+
+def _source_evidence_section_text(content: str) -> str:
+    lines = str(content or "").splitlines()
+    sections: list[str] = []
+    collecting = False
+    for line in lines:
+        stripped = line.strip()
+        if re.match(r"^#{1,4}\s+", stripped):
+            if collecting:
+                break
+            heading = stripped.lower()
+            collecting = any(
+                marker in heading
+                for marker in ("代码证据", "源码证据", "source evidence", "code evidence")
+            )
+            continue
+        if collecting:
+            sections.append(line)
+    if not sections:
+        return ""
+    evidence_lines = [
+        line
+        for line in sections
+        if re.search(r"\b(?:lib|test|scripts|include)/[^\s`:'）)]+(?::\d+)?", line)
+    ]
+    return "\n".join(evidence_lines or sections)
 
 
 def _blackbox_task_requires_executable_detail(requested: str) -> bool:

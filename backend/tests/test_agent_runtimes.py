@@ -2195,6 +2195,39 @@ class TestAgentRuntimes:
 
         assert _agent_answer_requires_repair(user_message, executable_answer, []) is False
 
+    async def test_ai_thread_agent_runtime_rejects_irrelevant_source_evidence_for_specific_flow(self):
+        from app.services.ai_conversations import _agent_answer_requires_repair
+
+        user_message = (
+            "请基于当前 SPDK 工作区源码分析 NVMe-oF target connect 到 IO ready 的主链路，"
+            "输出代码证据、流程梳理、SFMEA 和黑盒测试用例。"
+        )
+        weak_source_evidence = (
+            "## 结论\n"
+            "已生成 SPDK NVMe-oF connect 测试设计。\n\n"
+            "## 代码证据\n"
+            "- `lib/nvmf/ctrlr.c:42`: `struct spdk_nvmf_custom_admin_cmd`。\n"
+            "- `lib/nvmf/ctrlr.c:47`: `g_nvmf_custom_admin_cmd_hdlrs`。\n\n"
+            "## 流程梳理\n"
+            "1. initiator 发起 connect。\n"
+            "2. target 建立 controller 并进入 IO ready。\n\n"
+            "## SFMEA\n"
+            "| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |\n"
+            "| connect timeout | transport delay | 连接失败 | 8 | 3 | 4 | 96 | 增加超时用例 |\n\n"
+            "## 黑盒测试用例\n"
+            "1. 用例：正常 connect；前置条件：target 已启动；步骤：发起连接；"
+            "预期结果：连接成功；观测点：RPC 状态和日志；失败诊断线索：检查 listener。\n"
+            "2. 用例：connect timeout；前置条件：网络延迟；步骤：发起连接；"
+            "预期结果：超时失败；观测点：错误码和日志；失败诊断线索：检查超时配置。\n"
+        )
+        relevant_source_evidence = weak_source_evidence.replace(
+            "`struct spdk_nvmf_custom_admin_cmd`",
+            "`nvmf_ctrlr_connect` handles the connect command",
+        )
+
+        assert _agent_answer_requires_repair(user_message, weak_source_evidence, []) is True
+        assert _agent_answer_requires_repair(user_message, relevant_source_evidence, []) is False
+
     async def test_ai_thread_agent_runtime_does_not_treat_codex_as_code_task(self):
         from app.services.ai_conversations import _agent_answer_requires_repair
 
@@ -3239,7 +3272,7 @@ class TestAgentRuntimes:
                 [
                     "import sys",
                     "sys.stdin.read()",
-                    "print('## 结论\\n已完成 SPDK connect 完整测试设计。\\n\\n## 代码证据\\n- `lib/nvmf/ctrlr.c`: `nvmf_ctrlr_connect`。\\n- `test/nvmf`: 可承载连接测试。\\n\\n## 流程梳理\\n1. initiator 发起连接。\\n2. target 建立 controller。\\n\\n## SFMEA\\n| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |\\n| connect timeout | 网络抖动 | 连接失败 | 8 | 3 | 4 | 96 | 增加超时与重试观测 |\\n\\n## 黑盒测试用例\\n1. 用例：正常连接；前置条件：target 已启动；步骤：发起连接；预期结果：连接成功；观测点：日志和状态。\\n2. 用例：连接超时；前置条件：注入网络延迟；步骤：发起连接；预期结果：超时失败且可重试；观测点：错误码和日志。', flush=True)",
+                    "print('## 结论\\n已完成 SPDK connect 完整测试设计。\\n\\n## 代码证据\\n- `lib/nvmf/ctrlr.c`: `nvmf_ctrlr_connect`。\\n- `test/nvmf`: 可承载连接测试。\\n\\n## 流程梳理\\n1. initiator 发起连接。\\n2. target 建立 controller。\\n\\n## SFMEA\\n| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |\\n| connect timeout | 网络抖动 | 连接失败 | 8 | 3 | 4 | 96 | 增加超时与重试观测 |\\n\\n## 黑盒测试用例\\n1. 用例：正常连接；前置条件：target 已启动；步骤：发起连接；预期结果：连接成功；观测点：日志和状态；失败诊断线索：若状态未 ready，检查 listener、NQN 和 target 日志。\\n2. 用例：连接超时；前置条件：注入网络延迟；步骤：发起连接；预期结果：超时失败且可重试；观测点：错误码和日志；失败诊断线索：若未触发超时，检查延迟注入、重试参数和日志时间线。', flush=True)",
                     "",
                 ]
             ),
