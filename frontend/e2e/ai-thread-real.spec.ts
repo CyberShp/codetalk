@@ -6434,8 +6434,9 @@ test("keeps historical AI thread reading stable while an agent run is streaming"
     const distanceFromBottomAfterMoreDeltas = await reader.evaluate(
       (element) => element.scrollHeight - element.scrollTop - element.clientHeight,
     );
-    expect(scrollTopAfterMoreDeltas).toBeLessThanOrEqual(scrollTopWhileReading + 96);
+    expect(Math.abs(scrollTopAfterMoreDeltas - scrollTopWhileReading)).toBeLessThanOrEqual(4);
     expect(distanceFromBottomAfterMoreDeltas).toBeGreaterThan(240);
+    await expect(page.getByText("HISTORY-LINE-40")).toBeVisible();
     await expect(page.getByRole("button", { name: "跳到最新回复" })).toBeVisible();
 
     await page.getByRole("button", { name: "跳到最新回复" }).hover();
