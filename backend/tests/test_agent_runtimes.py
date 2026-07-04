@@ -1403,6 +1403,104 @@ class TestAgentRuntimes:
         )
         assert session is None
 
+    async def test_ai_thread_agent_runtime_repairs_thin_answer_with_latest_resume_session(
+        self,
+        sqlite_db,
+        tmp_path,
+    ):
+        repo = tmp_path / "resume-repair-repo"
+        repo.mkdir()
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-resume-repair", repo_path=str(repo))
+        capture_file = tmp_path / "resume-repair-invocations.jsonl"
+        agent_script = tmp_path / "resume_repair_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import json, pathlib, sys, time",
+                    f"capture = pathlib.Path({str(capture_file)!r})",
+                    "args = sys.argv[1:]",
+                    "session = args[args.index('--session') + 1] if '--session' in args else ''",
+                    "prompt = args[-1] if args else ''",
+                    "previous = len(capture.read_text(encoding='utf-8').splitlines()) if capture.exists() else 0",
+                    "capture.write_text((capture.read_text(encoding='utf-8') if capture.exists() else '') + json.dumps({'turn': previous + 1, 'session': session, 'prompt': prompt, 'argv': args}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+                    "if previous == 0:",
+                    "    events = [",
+                    "        {'type':'thread.started','thread_id':'repair-session-first'},",
+                    "        {'type':'message','role':'assistant','content':'你好，有什么需要帮助？'},",
+                    "        {'type':'result','status':'success','thread_id':'repair-session-first'},",
+                    "    ]",
+                    "else:",
+                    "    answer = '## 结论\\nRESUME_REPAIR_FINAL: 自动续跑沿用了最新 Agent session。\\n\\n## 代码证据\\n- `README.md`: 当前工作区证据。\\n- `lib/nvmf/ctrlr.c`: connect 流程候选。\\n\\n## 流程梳理\\n1. 首次 Agent 建立 CLI session。\\n2. 薄回答触发 CodeTalk repair。\\n3. repair 通过 --session 续接上一次会话，而不是重新初始化。\\n\\n## SFMEA\\n| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |\\n| connect timeout | transport delay | 连接失败 | 8 | 3 | 4 | 96 | 增加 timeout 黑盒观测 |\\n\\n## 黑盒测试用例\\n1. 用例：正常连接；前置条件：target 已启动；步骤：initiator 发起 connect；预期结果：连接成功；观测点：状态和日志；失败诊断线索：检查 NQN、listener 和 target 日志。\\n2. 用例：连接超时；前置条件：注入网络延迟；步骤：发起 connect；预期结果：超时失败且可重试；观测点：错误码、日志和重连状态；失败诊断线索：检查延迟注入、重试参数和日志时间线。'",
+                    "    events = [",
+                    "        {'type':'thread.started','thread_id':'repair-session-second'},",
+                    "        {'type':'message','role':'assistant','content':answer},",
+                    "        {'type':'result','status':'success','thread_id':'repair-session-second'},",
+                    "    ]",
+                    "for event in events:",
+                    "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+                    "    time.sleep(0.02)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Resume repair",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-resume-repair",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content=(
+                "基于当前源码分析 NVMe-oF connect，输出代码证据、流程梳理、SFMEA，"
+                "并至少给出两个黑盒测试用例。"
+            ),
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-resume-repair",
+                "name": "Resume Repair Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "opencode_run_arg",
+                "output_mode": "auto",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+                "session_persistence": "resume_args",
+            },
+        )
+
+        latest = await store.latest_run(conversation["id"])
+        assert latest and latest["status"] == "completed"
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        assert "RESUME_REPAIR_FINAL" in assistant["content"]
+        assert "你好，有什么需要帮助" not in assistant["content"]
+
+        captured = [json.loads(line) for line in capture_file.read_text(encoding="utf-8").splitlines()]
+        assert [item["session"] for item in captured] == ["", "repair-session-first"]
+        assert "上一次执行器输出过短" in captured[1]["prompt"]
+        assert "--session" in captured[1]["argv"]
+
+        session = await store.get_agent_runtime_session(
+            conversation_id=conversation["id"],
+            agent_runtime_id="runtime-resume-repair",
+        )
+        assert session is not None
+        assert session["resume_session_id"] == "repair-session-second"
+
     async def test_ai_thread_claude_transport_manages_print_mode_and_resume_without_user_args(self, sqlite_db):
         app = _test_app(sqlite_db)
         repo = pathlib.Path(sqlite_db).parent / "claude-provider-repo"

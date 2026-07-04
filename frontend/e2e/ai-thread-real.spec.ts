@@ -6006,6 +6006,130 @@ test("repairs a thin answer with a fresh session after stale OpenCode resume sel
   }
 });
 
+test("repairs a thin OpenCode answer by resuming the latest CLI session", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(80_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-resume-repair-opencode-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "OpenCode resume repair e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-opencode-resume-repair-")));
+  const runtimeScript = path.join(runtimeDir, "fake_opencode_resume_repair_agent.py");
+  const captureFile = path.join(runtimeDir, "resume_repair_invocations.jsonl");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "# -*- coding: utf-8 -*-",
+      "import json, pathlib, sys, time",
+      `capture = pathlib.Path(${JSON.stringify(captureFile)})`,
+      "args = sys.argv[1:]",
+      "prompt = args[-1] if args else ''",
+      "session = args[args.index('--session') + 1] if '--session' in args else ''",
+      "previous = len(capture.read_text(encoding='utf-8').splitlines()) if capture.exists() else 0",
+      "capture.write_text((capture.read_text(encoding='utf-8') if capture.exists() else '') + json.dumps({'turn': previous + 1, 'argv': args, 'session': session, 'prompt': prompt}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+      "if previous == 0:",
+      "    events = [",
+      "      {'type':'thread.started','thread_id':'opencode-resume-repair-first'},",
+      "      {'type':'message','role':'assistant','content':'你好，有什么需要帮助？'},",
+      "      {'type':'result','status':'success','thread_id':'opencode-resume-repair-first'},",
+      "    ]",
+      "else:",
+      "    answer = '## 结论\\nOPENCODE_RESUME_REPAIR_E2E: 自动续跑沿用了最新 OpenCode session。\\n\\n## 代码证据\\n- `README.md`: 当前工作区证据。\\n- `lib/nvmf/ctrlr.c`: connect 流程候选。\\n\\n## 流程梳理\\n1. 首次 Agent 建立 CLI session。\\n2. 薄回答触发 CodeTalk repair。\\n3. repair 通过 --session 续接上一次会话，而不是重新初始化。\\n\\n## SFMEA\\n| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |\\n| connect timeout | transport delay | 连接失败 | 8 | 3 | 4 | 96 | 增加 timeout 黑盒观测 |\\n\\n## 黑盒测试用例\\n1. 用例：正常连接；前置条件：target 已启动；步骤：initiator 发起 connect；预期结果：连接成功；观测点：状态和日志；失败诊断线索：检查 NQN、listener 和 target 日志。\\n2. 用例：连接超时；前置条件：注入网络延迟；步骤：发起 connect；预期结果：超时失败且可重试；观测点：错误码、日志和重连状态；失败诊断线索：检查延迟注入、重试参数和日志时间线。'",
+      "    events = [",
+      "      {'type':'thread.started','thread_id':'opencode-resume-repair-second'},",
+      "      {'type':'message','role':'assistant','content':answer},",
+      "      {'type':'result','status':'success','thread_id':'opencode-resume-repair-second'},",
+      "    ]",
+      "for event in events:",
+      "    print(json.dumps(event, ensure_ascii=False), flush=True)",
+      "    time.sleep(0.05)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-opencode-resume-repair-e2e-${Date.now()}`;
+  const runtimeName = `OpenCode resume repair runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} resume repair`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "opencode_run_arg",
+      output_mode: "auto",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "resume_args",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    const composer = page.getByPlaceholder(/像 Codex 一样继续追问/);
+    await composer.fill("基于当前源码分析 NVMe-oF connect，输出代码证据、流程梳理、SFMEA，并至少给出两个黑盒测试用例。");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByText("OPENCODE_RESUME_REPAIR_E2E")).toBeVisible({ timeout: 30_000 });
+    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "你好，有什么需要帮助" })).toHaveCount(0);
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    const repairDetail = processDisclosure.locator("p").filter({ hasText: "上一次执行器输出过短" });
+    await expect(repairDetail).toBeHidden();
+    await processDisclosure.getByText("Agent 过程").hover();
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(repairDetail).toBeVisible({ timeout: 15_000 });
+
+    const captured = fs.readFileSync(captureFile, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { argv: string[]; session: string; prompt: string });
+    expect(captured.map((item) => item.session)).toEqual(["", "opencode-resume-repair-first"]);
+    expect(captured[1].argv).toContain("--session");
+    expect(captured[1].prompt).toContain("上一次执行器输出过短");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    expect(messageBody.items.some((item) => item.role === "assistant" && item.content.includes("OPENCODE_RESUME_REPAIR_E2E"))).toBe(true);
+    expect(messageBody.items.some((item) => item.role === "assistant" && item.content.includes("你好，有什么需要帮助"))).toBe(false);
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
+  }
+});
+
 test("renders native OpenCode tool and error events as Agent process diagnostics", async ({
   page,
   request,
