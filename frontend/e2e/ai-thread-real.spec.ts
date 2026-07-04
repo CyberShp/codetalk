@@ -5125,7 +5125,19 @@ test("downloads complete inline SFMEA and black-box output from the agent runtim
     [
       "import sys",
       "sys.stdin.read()",
-      "print('## 结论\\n已完成 SPDK connect 完整测试设计。\\n\\n## 代码证据\\n- `lib/nvmf/ctrlr.c`: `nvmf_ctrlr_connect`。\\n- `test/nvmf`: 可承载连接测试。\\n\\n## 流程梳理\\n1. initiator 发起连接。\\n2. target 建立 controller。\\n\\n## SFMEA\\n| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |\\n| connect timeout | 网络抖动 | 连接失败 | 8 | 3 | 4 | 96 | 增加超时与重试观测 |\\n\\n## 黑盒测试用例\\n1. 用例：正常连接；前置条件：target 已启动；步骤：发起连接；预期结果：连接成功；观测点：日志和状态。\\n2. 用例：连接超时；前置条件：注入网络延迟；步骤：发起连接；预期结果：超时失败且可重试；观测点：错误码和日志。', flush=True)",
+      "cases = [",
+      "  ('正常连接', 'target 已启动且 listener 配置完成', '发起 NVMe-oF connect', '连接成功并可查询 controller 状态', 'RPC 状态、target 日志、连接状态', '若失败检查 NQN、listener 和 target 日志'),",
+      "  ('非法 NQN', 'target 已启动', '使用不存在的 NQN 发起 connect', '返回明确失败且 target 不崩溃', '错误码、日志、连接状态', '若成功检查 NQN 校验路径'),",
+      "  ('连接超时', '注入网络延迟', '发起 connect 并等待超时', '超时失败且可重试', '错误码、重试状态、日志', '检查延迟注入和超时参数'),",
+      "  ('断开后重连', '已有连接和队列', '断开链路后恢复并重连', '新连接可用且旧状态清理', '连接状态、日志、I/O 恢复时间', '检查 reconnect 时间线'),",
+      "  ('并发连接', 'target 可接受多 initiator', '并发发起多路 connect', '连接互不串扰', 'controller 数量、日志、延迟', '检查资源上限和 session 隔离'),",
+      "  ('资源不足', '限制可用队列或内存', '发起 connect', '返回可诊断错误并释放部分资源', '错误码、内存/队列指标、日志', '检查清理路径'),",
+      "  ('controller reset', '连接已建立并有 I/O', '触发 reset 后重新发起 connect', 'I/O 可恢复且状态一致', 'I/O 状态、reset 日志、连接状态', '检查 reset 与 drain 顺序'),",
+      "  ('性能退化', '稳定环境下建立基线', '批量 connect/reconnect 并统计耗时', '耗时不超过基线阈值', 'p95 延迟、CPU、日志', '检查 poller 阻塞和队列积压'),",
+      "]",
+      "body = '## 结论\\n已完成 SPDK connect 完整测试设计。\\n\\n## 代码证据\\n- `lib/nvmf/ctrlr.c`: `nvmf_ctrlr_connect`。\\n- `test/nvmf`: 可承载连接测试。\\n\\n## 流程梳理\\n1. initiator 发起连接。\\n2. target 校验 NQN、listener 与 controller 参数。\\n3. 建立 controller/queue 并返回 connect 响应。\\n4. 异常路径返回错误并释放阶段性资源。\\n\\n## SFMEA\\n| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |\\n| connect timeout | 网络抖动 | 连接失败 | 8 | 3 | 4 | 96 | 增加超时与重试观测 |\\n| stale controller | 断开清理不完整 | 重连状态异常 | 8 | 3 | 3 | 72 | 覆盖断开后重连和 reset 恢复 |\\n\\n## 黑盒测试用例\\n'",
+      "body += ''.join([f'{index}. 用例：{name}；前置条件：{pre}; 步骤：{step}; 预期结果：{expected}; 观测点：{observe}; 失败诊断线索：{diag}。\\n' for index, (name, pre, step, expected, observe, diag) in enumerate(cases, 1)])",
+      "print(body, flush=True)",
       "",
     ].join("\n"),
     "utf8",
@@ -5248,7 +5260,7 @@ test("keeps live streaming SFMEA and black-box output compact while preserving t
       "emit('')",
       "emit('## 黑盒测试用例')",
       "for index in range(1, 26):",
-      "    emit(f'{index}. LIVE_BLACKBOX_TC_{index:02d}: 前置条件 target 已启动；步骤执行 connect/reconnect 场景 {index}；预期结果返回明确状态且不中断后续 IO；观测点为 RPC、日志、连接状态和延迟指标。')",
+      "    emit(f'{index}. 用例：LIVE_BLACKBOX_TC_{index:02d} connect/reconnect 场景；前置条件 target 已启动；步骤执行 connect/reconnect 场景 {index}；预期结果返回明确状态且不中断后续 IO；观测点为 RPC、日志、连接状态和延迟指标；失败诊断线索：若状态异常，检查 NQN、listener、target 日志和重连时间线。')",
       "",
     ].join("\n"),
     "utf8",
@@ -5320,6 +5332,22 @@ test("keeps live streaming SFMEA and black-box output compact while preserving t
     await expect(page.getByRole("link", { name: "下载完整产物" })).toBeVisible({ timeout: 15_000 });
     await expect(reader).not.toContainText("LIVE_SFMEA_ROW_25");
     await expect(reader).not.toContainText("LIVE_BLACKBOX_TC_25");
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(page.getByRole("link", { name: "下载完整产物" })).toBeVisible({ timeout: 15_000 });
+    const mobileArtifactMetrics = await page.locator(".ct-codex-message__actions").filter({ hasText: "下载完整产物" }).evaluate((element) => {
+      const link = element.querySelector("a") as HTMLElement | null;
+      return {
+        actionOverflowing: element.scrollWidth > element.clientWidth + 1,
+        linkOverflowing: link ? link.scrollWidth > link.clientWidth + 1 : true,
+        pageOverflowing: document.documentElement.scrollWidth > window.innerWidth + 1,
+      };
+    });
+    expect(mobileArtifactMetrics).toEqual({
+      actionOverflowing: false,
+      linkOverflowing: false,
+      pageOverflowing: false,
+    });
 
     const downloadPromise = page.waitForEvent("download");
     await page.getByRole("link", { name: "下载完整产物" }).hover();
