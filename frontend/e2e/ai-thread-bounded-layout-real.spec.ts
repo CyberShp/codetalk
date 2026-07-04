@@ -211,3 +211,43 @@ test("AI thread keeps crowded thread rail bounded on desktop", async ({ page, re
     }
   }
 });
+
+test("AI thread deletes the active idle thread from the rail and opens a fallback thread", async ({
+  page,
+  request,
+}) => {
+  const runId = `${Date.now()}`;
+  const workspace = await createWorkspace(request, runId, 200);
+  const fallbackThread = await createConversation(request, workspace, runId, 200);
+  const deletedThread = await createConversation(request, workspace, runId, 201);
+
+  try {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`/ai/${deletedThread.id}`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: deletedThread.title })).toBeVisible({
+      timeout: 15_000,
+    });
+
+    page.once("dialog", async (dialog) => {
+      expect(dialog.message()).toContain(deletedThread.title);
+      await dialog.accept();
+    });
+
+    const deletedRow = page.locator(".ct-codex-ai__thread-row").filter({ hasText: deletedThread.title });
+    await expect(deletedRow).toBeVisible();
+    await deletedRow.hover();
+    await deletedRow.getByRole("button", { name: `删除线程 ${deletedThread.title}` }).click();
+
+    await expect(page).toHaveURL(new RegExp(`/ai/${fallbackThread.id}$`));
+    await expect(page.getByRole("heading", { name: fallbackThread.title })).toBeVisible();
+    await expect(page.locator(".ct-codex-ai__thread-row").filter({ hasText: deletedThread.title })).toHaveCount(0);
+
+    const deletedResponse = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(deletedThread.id)}`,
+    );
+    expect(deletedResponse.status()).toBe(404);
+  } finally {
+    await request.delete(`${backendBase}/api/ai/conversations/${encodeURIComponent(fallbackThread.id)}`).catch(() => undefined);
+    await request.delete(`${backendBase}/api/ai/conversations/${encodeURIComponent(deletedThread.id)}`).catch(() => undefined);
+  }
+});
