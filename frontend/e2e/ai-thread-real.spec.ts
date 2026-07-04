@@ -7105,6 +7105,12 @@ test("recovers a running AI thread after browser reload with process state intac
 
     const restoredProcessDisclosure = page.getByTestId("agent-process-disclosure");
     await expect(restoredProcessDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(restoredProcessDisclosure.locator("summary")).toContainText("默认折叠");
+    await expect(
+      restoredProcessDisclosure.locator("p").filter({
+        hasText: "RELOAD_PROCESS_STEP_01 reading workspace source README.md",
+      }),
+    ).toBeHidden();
     await restoredProcessDisclosure.getByText("Agent 过程").click();
     await expect(
       restoredProcessDisclosure.locator("p").filter({
