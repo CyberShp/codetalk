@@ -22,10 +22,20 @@ function textIncludesAny(value: unknown, needles: string[]): boolean {
 }
 
 function isAiThreadE2ERuntime(runtime: Record<string, unknown>): boolean {
+  const runtimePathText = JSON.stringify([
+    runtime.command ?? "",
+    runtime.args ?? [],
+    runtime.health_command ?? "",
+    runtime.fixed_working_dir ?? "",
+  ]);
   return (
     textIncludesAny(runtime.name, ["e2e", "runtime cancel", "terminal cleanup", "Relevant Evidence"]) ||
-    textIncludesAny(runtime.command, ["/tmp/codetalk"]) ||
-    textIncludesAny(JSON.stringify(runtime.args ?? []), ["/tmp/codetalk"])
+    textIncludesAny(runtimePathText, [
+      "/tmp/codetalk",
+      "codetalk-agent-",
+      "codetalk-claude-",
+      "codetalk-ai-",
+    ])
   );
 }
 
@@ -110,6 +120,42 @@ async function cleanupAiThreadE2EData(request: APIRequestContext): Promise<void>
 
 test.afterEach(async ({ request }) => {
   await cleanupAiThreadE2EData(request);
+});
+
+test("cleanup catches temp-path AI thread agent runtimes that do not mention e2e in the name", async ({
+  request,
+}) => {
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-cleanup-")));
+  const runtimeScript = path.join(runtimeDir, "cleanup_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    ["import sys", "sys.stdin.read()", "print('cleanup guard')", ""].join("\n"),
+    "utf8",
+  );
+  const runtimeName = `Cleanup escaped runtime ${Date.now()}`;
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 10,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+
+  await cleanupAiThreadE2EData(request);
+
+  const listResp = await request.get(`${backendBase}/api/settings/agent-runtimes`);
+  expect(listResp.ok()).toBeTruthy();
+  const body = (await listResp.json()) as { items?: Array<{ name?: string }> };
+  expect((body.items ?? []).some((runtime) => runtime.name === runtimeName)).toBe(false);
 });
 
 async function createDeterministicFailingRuntime(
