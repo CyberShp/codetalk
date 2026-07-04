@@ -602,6 +602,37 @@ class TestAIConversationsAPI:
                 """,
                 (stale, stale),
             )
+            await db.execute(
+                """
+                INSERT INTO agent_runtimes
+                    (id, name, command, args_json, prompt_transport, output_mode,
+                     working_dir_mode, fixed_working_dir, env_json, health_command,
+                     timeout_seconds, completion_mode, idle_complete_seconds, sentinel_text,
+                     session_persistence, resume_args_json, enabled, created_at, updated_at)
+                VALUES (
+                    'agent-stale-temp-path-runtime',
+                    'Plain escaped temp runtime',
+                    '/usr/bin/python3',
+                    '["/private/var/folders/demo/T/codetalk-agent-running-draft-abc/agent.py"]',
+                    'stdin',
+                    'auto',
+                    'project',
+                    '',
+                    '{}',
+                    '',
+                    10,
+                    'process_exit',
+                    5,
+                    '',
+                    'none',
+                    '[]',
+                    1,
+                    ?,
+                    ?
+                )
+                """,
+                (stale, stale),
+            )
             await db.commit()
         app = _test_app(sqlite_db)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -686,6 +717,21 @@ class TestAIConversationsAPI:
             assert runtime_bound_resp.status_code == 201
             runtime_bound_id = runtime_bound_resp.json()["id"]
 
+            temp_path_runtime_resp = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "memory_namespace": f"workspace:{ws_id}",
+                    "runtime_type": "agent_runtime",
+                    "agent_runtime_id": "agent-stale-temp-path-runtime",
+                    "title": "普通标题但绑定遗留临时 runtime",
+                },
+            )
+            assert temp_path_runtime_resp.status_code == 201
+            temp_path_runtime_id = temp_path_runtime_resp.json()["id"]
+
             hidden_workspace_thread_resp = await client.post(
                 "/api/ai/conversations",
                 json={
@@ -726,7 +772,7 @@ class TestAIConversationsAPI:
             orphan_workspace_thread_id = orphan_workspace_thread_resp.json()["id"]
 
             async with aiosqlite.connect(sqlite_db) as db:
-                stale_ids = [legacy_id, named_e2e_id, prefixed_e2e_id, runtime_bound_id]
+                stale_ids = [legacy_id, named_e2e_id, prefixed_e2e_id, runtime_bound_id, temp_path_runtime_id]
                 for offset, stale_id in enumerate(stale_ids, start=1):
                     timestamp = (now_dt - timedelta(hours=1, seconds=offset)).isoformat()
                     await db.execute(
@@ -759,6 +805,7 @@ class TestAIConversationsAPI:
                 named_e2e_id,
                 legacy_id,
                 runtime_bound_id,
+                temp_path_runtime_id,
                 internal_id,
                 visible_id,
             }.issubset(set(debug_ids))

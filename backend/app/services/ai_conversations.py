@@ -586,6 +586,18 @@ class AIConversationStore:
                                   lower(internal_runtime.name) LIKE '%e2e%'
                                   OR lower(internal_runtime.command) LIKE '%/tmp/codetalk%'
                                   OR lower(internal_runtime.args_json) LIKE '%/tmp/codetalk%'
+                                  OR lower(internal_runtime.command) LIKE '%codetalk-agent-%'
+                                  OR lower(internal_runtime.args_json) LIKE '%codetalk-agent-%'
+                                  OR lower(internal_runtime.fixed_working_dir) LIKE '%codetalk-agent-%'
+                                  OR lower(internal_runtime.health_command) LIKE '%codetalk-agent-%'
+                                  OR lower(internal_runtime.command) LIKE '%codetalk-claude-%'
+                                  OR lower(internal_runtime.args_json) LIKE '%codetalk-claude-%'
+                                  OR lower(internal_runtime.fixed_working_dir) LIKE '%codetalk-claude-%'
+                                  OR lower(internal_runtime.health_command) LIKE '%codetalk-claude-%'
+                                  OR lower(internal_runtime.command) LIKE '%codetalk-ai-%'
+                                  OR lower(internal_runtime.args_json) LIKE '%codetalk-ai-%'
+                                  OR lower(internal_runtime.fixed_working_dir) LIKE '%codetalk-ai-%'
+                                  OR lower(internal_runtime.health_command) LIKE '%codetalk-ai-%'
                               )
                         )
                     )
