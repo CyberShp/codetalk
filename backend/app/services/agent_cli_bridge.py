@@ -1500,10 +1500,13 @@ _PROGRESS_STATUS_RE = re.compile(
 _CLI_BANNER_RE = re.compile(
     r"^(?:"
     r"(?:claude(?:\s+code)?|codex|gemini|opencode|nga)(?:\s+(?:cli|code))?\s+v?\d"
+    r"|usage\s*:\s*(?:claude(?:\s+code)?|codex|gemini|opencode|nga)\b"
     r"|cwd\s*:"
     r"|working directory\s*:"
     r"|session(?:\s+id)?\s*:"
     r"|thread(?:\s+id)?\s*:"
+    r"|model\s*:\s*(?:claude|codex|gemini|opencode|nga)\b"
+    r"|context\s*:\s*(?:/|[A-Za-z]:[\\/]|~)"
     r"|welcome\s+to\s+(?:claude(?:\s+code)?|codex|gemini|opencode|nga)\b"
     r"|ready(?:\s+for\b|\s*$)"
     r"|tips?\s*:"
@@ -1517,6 +1520,18 @@ _CLI_BANNER_RE = re.compile(
     re.IGNORECASE,
 )
 _TUI_BORDER_RE = re.compile(r"^[╭╮╰╯│─┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬\s]+$")
+_CLI_HELP_START_RE = re.compile(
+    r"^usage\s*:\s*(?:claude(?:\s+code)?|codex|gemini|opencode|nga)\b",
+    re.IGNORECASE,
+)
+_CLI_HELP_CONTINUATION_RE = re.compile(
+    r"^(?:"
+    r"(?:options?|commands?|arguments?|flags?)\s*:?\s*$"
+    r"|(?:-{1,2}|/)[A-Za-z?][\w?.-]*(?:\s|=|,|$)"
+    r"|(?:model|context|cwd|working directory|provider|profile|session(?:\s+id)?|thread(?:\s+id)?)\s*:"
+    r")",
+    re.IGNORECASE,
+)
 
 
 def _clean_agent_text(value: str) -> str:
@@ -1634,10 +1649,19 @@ def _apply_backspace_repaints(value: str) -> str:
 def _collapse_terminal_repaints(value: str) -> str:
     normalized = value.replace("\r\n", "\n")
     lines: list[str] = []
+    cli_help_block = False
     for raw_line in normalized.split("\n"):
         line = raw_line.split("\r")[-1]
+        original_stripped = line.strip()
+        if _looks_like_cli_help_start(original_stripped):
+            cli_help_block = True
+            continue
         line = _strip_progress_glyph_prefix(line)
         stripped = line.strip()
+        if cli_help_block:
+            if not stripped or _looks_like_cli_help_continuation(original_stripped) or _looks_like_cli_help_continuation(stripped):
+                continue
+            cli_help_block = False
         if (
             _SPINNER_PROGRESS_RE.match(stripped)
             or _PROGRESS_ONLY_RE.match(stripped)
@@ -1664,6 +1688,14 @@ def _looks_like_cli_ui_noise(value: str) -> bool:
         return True
     normalized = stripped.strip("│ ").strip()
     return bool(_CLI_BANNER_RE.match(normalized))
+
+
+def _looks_like_cli_help_start(value: str) -> bool:
+    return bool(_CLI_HELP_START_RE.match(value.strip()))
+
+
+def _looks_like_cli_help_continuation(value: str) -> bool:
+    return bool(_CLI_HELP_CONTINUATION_RE.match(value.strip()))
 
 
 def _looks_like_replacement_gibberish(value: str) -> bool:

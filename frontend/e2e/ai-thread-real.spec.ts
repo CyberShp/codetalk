@@ -8289,6 +8289,126 @@ test("cleans real external-agent terminal noise before display, persistence, and
   }
 });
 
+test("cleans external-agent usage banners before display, persistence, and export", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-help-banner-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI help banner cleanup e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-help-banner-")));
+  const runtimeScript = path.join(runtimeDir, "help_banner_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "sys.stdin.read()",
+      "sys.stdout.write('Usage: claude [options] [prompt]\\n')",
+      "sys.stdout.write('Options:\\n')",
+      "sys.stdout.write('  --print            Print response\\n')",
+      "sys.stdout.write('  --output-format    stream-json\\n')",
+      "sys.stdout.write('Model: claude-sonnet-4\\n')",
+      "sys.stdout.write('Context: /Volumes/Media/dpdk/spdk\\n')",
+      "sys.stdout.write('## 结论\\nFINAL_HELP_BANNER_CLEAN_ANSWER: 已完成源码分析。\\n\\n## 代码证据\\n- `README.md`: `AI help banner cleanup e2e workspace` 表明 Agent 读取了当前工作区。\\n- `lib/nvmf`: 可作为 connect 流程证据域。\\n\\n## 黑盒测试用例\\n- 前置条件：target 已启动；步骤：运行 `spdk_tgt --wait-for-rpc` 后发起 connect；预期结果：连接成功或返回明确错误；观测点：RPC 状态、日志和连接状态。\\n')",
+      "sys.stdout.flush()",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-help-banner-e2e-${Date.now()}`;
+  const runtimeName = `Help banner runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} help banner cleanup`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill("HELP_BANNER_CLEAN_RUN 请读取源码并输出最终分析");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByText("FINAL_HELP_BANNER_CLEAN_ANSWER")).toBeVisible({ timeout: 30_000 });
+    const reader = page.getByLabel("AI 线程对话内容");
+    await expect(reader).toContainText("spdk_tgt --wait-for-rpc");
+    await expect(reader).not.toContainText("Usage: claude");
+    await expect(reader).not.toContainText("Options:");
+    await expect(reader).not.toContainText("--print");
+    await expect(reader).not.toContainText("--output-format");
+    await expect(reader).not.toContainText("Model: claude-sonnet-4");
+    await expect(reader).not.toContainText("Context: /Volumes/Media/dpdk/spdk");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("FINAL_HELP_BANNER_CLEAN_ANSWER");
+    expect(assistant?.content).toContain("spdk_tgt --wait-for-rpc");
+    expect(assistant?.content).not.toContain("Usage: claude");
+    expect(assistant?.content).not.toContain("Options:");
+    expect(assistant?.content).not.toContain("--print");
+    expect(assistant?.content).not.toContain("--output-format");
+    expect(assistant?.content).not.toContain("Model: claude-sonnet-4");
+    expect(assistant?.content).not.toContain("Context: /Volumes/Media/dpdk/spdk");
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出" }).hover();
+    await page.getByRole("button", { name: "导出" }).click();
+    const download = await downloadPromise;
+    const exportPath = testInfo.outputPath("real-ai-thread-help-banner-clean-export.md");
+    await download.saveAs(exportPath);
+    const exported = fs.readFileSync(exportPath, "utf8");
+    expect(exported).toContain("FINAL_HELP_BANNER_CLEAN_ANSWER");
+    expect(exported).toContain("spdk_tgt --wait-for-rpc");
+    expect(exported).not.toContain("Usage: claude");
+    expect(exported).not.toContain("Options:");
+    expect(exported).not.toContain("--print");
+    expect(exported).not.toContain("--output-format");
+    expect(exported).not.toContain("Model: claude-sonnet-4");
+    expect(exported).not.toContain("Context: /Volumes/Media/dpdk/spdk");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("folds mixed JSON agent tool and thinking parts while showing only the answer", async ({
   page,
   request,
