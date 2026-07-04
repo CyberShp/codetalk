@@ -1464,20 +1464,18 @@ async def run_agent_generation(
     runtime_env = dict(runtime_for_turn.get("env") or {})
     runtime_env["CODETALK_AGENT_ARTIFACT_DIR"] = str(agent_artifact_dir)
     runtime_for_turn["env"] = runtime_env
-    await store.append_event(
-        run_id=run_id,
-        conversation_id=conversation["id"],
-        event_type="delta",
-        payload={
-            "kind": "diagnostic",
-            "content": _agent_run_start_milestone(
-                runtime=runtime,
-                cwd=cwd,
-                references=references,
-                resume_session_id=resume_session_id,
-            ),
-        },
-    )
+    for milestone in _agent_run_start_milestones(
+        runtime=runtime,
+        cwd=cwd,
+        references=references,
+        resume_session_id=resume_session_id,
+    ):
+        await store.append_event(
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            event_type="delta",
+            payload={"kind": "diagnostic", "content": milestone},
+        )
 
     async def run_cancelled() -> bool:
         current = await store.get_run(run_id)
@@ -1738,34 +1736,35 @@ def _context_status_message(
     return f"正在读取{'、'.join(parts)}上下文。"
 
 
-def _agent_run_start_milestone(
+def _agent_run_start_milestones(
     *,
     runtime: dict[str, Any],
     cwd: str | Path | None,
     references: list[dict[str, Any]],
     resume_session_id: str = "",
-) -> str:
+) -> list[str]:
     runtime_name = redact_agent_diagnostic_text(
         str(runtime.get("name") or runtime.get("id") or "Agent")
     ).strip() or "Agent"
-    lines = [f"CodeTalk 已启动 {runtime_name}，执行过程会收纳在 Agent 过程面板。"]
+    lines = [f"CodeTalk 已启动 {runtime_name}。"]
     cwd_text = redact_agent_diagnostic_text(str(cwd or "")).strip()
     if cwd_text:
-        lines.append(f"工作目录：{cwd_text}")
+        workspace_name = Path(cwd_text).name or "当前工作区"
+        lines.append(f"工作区已绑定：{workspace_name}。")
     if resume_session_id:
-        lines.append("会话：沿用当前线程的 Agent 会话上下文。")
+        lines.append("会话已延续：沿用当前线程的 Agent 上下文。")
     graph_paths = _public_reference_paths_for_process(references, source_type="", limit=4)
     source_paths = _public_reference_paths_for_process(references, source_type="workspace_source", limit=5)
     material_paths = _public_reference_paths_for_process(references, source_type="workspace_material", limit=3)
     if graph_paths:
-        lines.append("图谱/报告证据输入：" + "、".join(graph_paths))
+        lines.append("图谱/报告证据已准备：" + "、".join(graph_paths))
     if source_paths:
-        lines.append("源码证据输入：" + "、".join(source_paths))
+        lines.extend(f"源码证据已准备：{path}" for path in source_paths)
     if material_paths:
-        lines.append("材料输入：" + "、".join(material_paths))
+        lines.extend(f"材料已准备：{path}" for path in material_paths)
     if not (graph_paths or source_paths or material_paths):
-        lines.append("证据输入：未命中可公开引用，Agent 将使用线程上下文继续。")
-    return "\n".join(lines)
+        lines.append("证据未命中可公开引用，Agent 将使用线程上下文继续。")
+    return lines
 
 
 def _agent_artifact_ready_milestone(*, content: str, artifact_href: str) -> str:

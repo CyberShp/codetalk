@@ -3111,8 +3111,10 @@ class TestAIConversationsAPI:
             for item in response.json()["items"]
         )
         assert "CodeTalk 已启动 Fake Agent" in process
-        assert f"工作目录：{repo}" in process
-        assert "源码证据输入：lib/iscsi/iscsi.c" in process
+        assert "工作区已绑定：repo" in process
+        assert f"工作目录：{repo}" not in process
+        assert str(repo) not in process
+        assert "源码证据已准备：lib/iscsi/iscsi.c" in process
         assert "下载产物已准备" in process
         assert "/api/ai/conversations/" not in process
         assert "```" not in process
