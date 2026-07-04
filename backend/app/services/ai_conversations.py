@@ -2493,6 +2493,8 @@ def _looks_like_agent_tool_invocation_line(content: str) -> bool:
     text = str(content or "").strip()
     if not text:
         return False
+    if re.match(r"^(?:[$#>❯➜])\s*(?:rg|grep|find|fd|cat|sed|awk|ls|tree|python\d*|python3|git)\b", text):
+        return True
     return bool(
         re.match(
             r"^(?:Bash|Read|Grep|Glob|Edit|Write|Task|TodoWrite)"

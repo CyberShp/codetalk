@@ -402,6 +402,30 @@ async def test_agent_output_segments_fold_bare_tool_result_source_lines_before_a
     ]
 
 
+async def test_agent_output_segments_fold_shell_prompt_transcript_before_answer():
+    from app.services.ai_conversations import _agent_output_segments
+
+    segments = _agent_output_segments(
+        "$ rg nvmf_ctrlr_shell_probe lib/nvmf\n"
+        "lib/nvmf/ctrlr.c:1:int nvmf_ctrlr_shell_probe(void) { return 0; }\n"
+        "exit_code=0\n"
+        "\n"
+        "## 结论\n"
+        "SHELL_TRANSCRIPT_FINAL: 已基于源码输出结论。\n"
+    )
+
+    assert segments == [
+        (
+            "diagnostic",
+            "$ rg nvmf_ctrlr_shell_probe lib/nvmf\n"
+            "lib/nvmf/ctrlr.c:1:int nvmf_ctrlr_shell_probe(void) { return 0; }\n"
+            "exit_code=0",
+        ),
+        ("answer", "## 结论\n"),
+        ("answer", "SHELL_TRANSCRIPT_FINAL: 已基于源码输出结论。\n"),
+    ]
+
+
 async def test_agent_output_segments_keep_final_answer_after_json_tool_parts():
     from app.services.agent_cli_bridge import AGENT_FINAL_ANSWER_PREFIX
     from app.services.ai_conversations import _agent_output_segments
