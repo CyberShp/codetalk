@@ -6802,6 +6802,125 @@ test("lets the user draft the next AI thread prompt while an agent is still runn
   }
 });
 
+test("recovers a running AI thread after browser reload with process state intact", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-reload-running-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI reload running e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-reload-running-")));
+  const runtimeScript = path.join(runtimeDir, "reload_running_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "# -*- coding: utf-8 -*-",
+      "import sys, time",
+      "sys.stdin.read()",
+      "print('thinking: RELOAD_PROCESS_STEP_01 reading workspace source README.md', flush=True)",
+      "time.sleep(4)",
+      "print('## 结论\\nRELOAD_RUNNING_FINAL: 浏览器刷新后，同一轮 Agent 仍能恢复过程状态并显示最终回答。\\n\\n## 代码证据\\n- `README.md`: `AI reload running e2e workspace` 来自当前工作区。\\n\\n## 流程梳理\\n1. 用户在 AI 线程发送较慢的源码分析任务。\\n2. Agent 先输出过程诊断，CodeTalk 将其放入默认折叠的 Agent 过程。\\n3. 浏览器在运行中刷新后重新订阅同一 run，并在完成后刷新线程消息。\\n\\n## 黑盒测试用例\\n- 前置条件：Agent 正在生成；步骤：刷新浏览器页面；预期结果：过程可展开查看，最终回答出现在对话区，发送按钮恢复。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-reload-running-e2e-${Date.now()}`;
+  const runtimeName = `Reload running runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} reload running`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page
+      .getByLabel("AI 线程消息")
+      .fill("RELOAD_RUNNING_PROMPT 请启动较慢的源码分析，刷新后继续显示过程和最终结果");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByRole("button", { name: "停止" })).toBeVisible({ timeout: 15_000 });
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(
+      processDisclosure.locator("p").filter({
+        hasText: "RELOAD_PROCESS_STEP_01 reading workspace source README.md",
+      }),
+    ).toBeVisible({ timeout: 15_000 });
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    const restoredProcessDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(restoredProcessDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await restoredProcessDisclosure.getByText("Agent 过程").click();
+    await expect(
+      restoredProcessDisclosure.locator("p").filter({
+        hasText: "RELOAD_PROCESS_STEP_01 reading workspace source README.md",
+      }),
+    ).toBeVisible({ timeout: 15_000 });
+
+    await expect(page.getByText("RELOAD_RUNNING_FINAL")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
+    const composer = page.getByLabel("AI 线程消息");
+    await expect(composer).toBeEnabled({ timeout: 15_000 });
+    await composer.fill("刷新恢复后继续追问");
+    await expect(page.getByRole("button", { name: "发送" })).toBeEnabled({ timeout: 15_000 });
+    const reader = page.getByLabel("AI 线程对话内容");
+    await expect(reader).not.toContainText("thinking:");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    expect(messageBody.items.map((item) => item.role)).toEqual(["user", "assistant"]);
+    expect(messageBody.items[1].content).toContain("RELOAD_RUNNING_FINAL");
+    expect(messageBody.items[1].content).not.toContain("RELOAD_PROCESS_STEP_01");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("keeps AI thread navigation locked while an agent run is streaming", async ({
   page,
   request,
