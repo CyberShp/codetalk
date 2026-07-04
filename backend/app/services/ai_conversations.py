@@ -3337,14 +3337,22 @@ def _best_source_line_for_query(path: Path, query: str) -> int:
     best_line = 1
     best_score = 0
     for idx, line in enumerate(lines, start=1):
-        score = _source_line_match_score(line, terms)
+        previous_line = lines[idx - 2] if idx >= 2 else ""
+        next_line = lines[idx] if idx < len(lines) else ""
+        score = _source_line_match_score(line, terms, previous_line=previous_line, next_line=next_line)
         if score > best_score:
             best_line = idx
             best_score = score
     return best_line if best_score > 0 else 1
 
 
-def _source_line_match_score(line: str, terms: list[str]) -> int:
+def _source_line_match_score(
+    line: str,
+    terms: list[str],
+    *,
+    previous_line: str = "",
+    next_line: str = "",
+) -> int:
     normalized = line.lower().replace("-", "_")
     matched_terms = [term for term in terms if _source_text_has_term(normalized, term)]
     if not matched_terms:
@@ -3360,11 +3368,28 @@ def _source_line_match_score(line: str, terms: list[str]) -> int:
         score += 6
     if re.match(r"^(static\s+)?(inline\s+)?[A-Za-z_][A-Za-z0-9_\s\*]*\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", stripped):
         score += 6
+    if _source_line_looks_like_function_definition(stripped, previous_line, next_line):
+        score += 14
     if "{" in stripped:
         score += 2
     if stripped and stripped.upper() == stripped and any(term.upper() in stripped for term in matched_terms):
         score -= 3
     return score
+
+
+def _source_line_looks_like_function_definition(line: str, previous_line: str, next_line: str) -> bool:
+    if not line or line.startswith(("#", "/*", "*", "//")):
+        return False
+    if not re.match(r"^[A-Za-z_][A-Za-z0-9_]*\s*\([^;]*\)\s*$", line):
+        return False
+    previous = previous_line.strip()
+    if not previous or previous.startswith(("#", "//", "/*", "*")):
+        return False
+    if previous.endswith((";", ")", "}", "{")):
+        return False
+    if next_line.strip() != "{":
+        return False
+    return bool(re.search(r"\b[A-Za-z_][A-Za-z0-9_\s\*]*$", previous))
 
 
 def _source_text_has_term(text: str, term: str) -> bool:

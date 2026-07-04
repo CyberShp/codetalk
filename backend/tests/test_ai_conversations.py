@@ -1591,7 +1591,10 @@ class TestAIConversationsAPI:
                 header
                 + [
                     "#define SPDK_NVMF_INVALID_CONNECT_CMD 1",
-                    "static int nvmf_ctrlr_connect_io_ready(void) {",
+                    "static int",
+                    "nvmf_ctrlr_connect_io_ready(void)",
+                    "{",
+                    '    SPDK_DEBUGLOG(nvmf, "Subsystem is not ready for connect, retrying...\\n");',
                     "    return 1;",
                     "}",
                 ]
