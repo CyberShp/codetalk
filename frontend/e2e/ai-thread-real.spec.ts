@@ -16,6 +16,102 @@ assertCanMutatePublicRuntime({
   backendPort,
 });
 
+function textIncludesAny(value: unknown, needles: string[]): boolean {
+  const text = String(value ?? "").toLowerCase();
+  return needles.some((needle) => text.includes(needle.toLowerCase()));
+}
+
+function isAiThreadE2ERuntime(runtime: Record<string, unknown>): boolean {
+  return (
+    textIncludesAny(runtime.name, ["e2e", "runtime cancel", "terminal cleanup", "Relevant Evidence"]) ||
+    textIncludesAny(runtime.command, ["/tmp/codetalk"]) ||
+    textIncludesAny(JSON.stringify(runtime.args ?? []), ["/tmp/codetalk"])
+  );
+}
+
+function isAiThreadE2EConversation(conversation: Record<string, unknown>, runtimeIds: Set<string>): boolean {
+  const title = String(conversation.title ?? "");
+  const runtimeId = String(conversation.agent_runtime_id ?? "");
+  return (
+    runtimeIds.has(runtimeId) ||
+    textIncludesAny(title, [
+      "-e2e-",
+      "E2E ",
+      " E2E",
+      "E2E 源码全文折叠验证",
+      "Relevant evidence line 验证",
+      "SPDK real nvmf clowder 验证",
+    ])
+  );
+}
+
+function isAiThreadE2EWorkspace(workspace: Record<string, unknown>): boolean {
+  return (
+    textIncludesAny(workspace.name, ["-e2e-", "ai_context_panel_", "entry-discovery-ws-", "release-click-"]) ||
+    textIncludesAny(workspace.repo_path, [
+      "/codetalk-ai-",
+      "/codetalk_ai_context_panel_",
+      "/codetalk-entry-ui-",
+      "/codetalk-agent-",
+    ])
+  );
+}
+
+async function deleteIfPresent(request: APIRequestContext, url: string): Promise<void> {
+  const response = await request.delete(url);
+  expect([204, 404, 409]).toContain(response.status());
+}
+
+async function cleanupAiThreadE2EData(request: APIRequestContext): Promise<void> {
+  const runtimesResp = await request.get(`${backendBase}/api/settings/agent-runtimes`);
+  const runtimesBody = runtimesResp.ok()
+    ? ((await runtimesResp.json()) as { items?: Array<Record<string, unknown>> })
+    : { items: [] };
+  const runtimeIds = new Set(
+    (runtimesBody.items ?? [])
+      .filter(isAiThreadE2ERuntime)
+      .map((runtime) => String(runtime.id ?? ""))
+      .filter(Boolean),
+  );
+
+  const conversationsResp = await request.get(
+    `${backendBase}/api/ai/conversations?include_internal=true&limit=100`,
+  );
+  if (conversationsResp.ok()) {
+    const conversationsBody = (await conversationsResp.json()) as { items?: Array<Record<string, unknown>> };
+    for (const conversation of conversationsBody.items ?? []) {
+      if (!isAiThreadE2EConversation(conversation, runtimeIds)) continue;
+      await deleteIfPresent(
+        request,
+        `${backendBase}/api/ai/conversations/${encodeURIComponent(String(conversation.id ?? ""))}`,
+      );
+    }
+  }
+
+  const workspacesResp = await request.get(`${backendBase}/api/workspaces?include_internal=true`);
+  if (workspacesResp.ok()) {
+    const workspaces = (await workspacesResp.json()) as Array<Record<string, unknown>>;
+    for (const workspace of workspaces) {
+      if (!isAiThreadE2EWorkspace(workspace)) continue;
+      await deleteIfPresent(
+        request,
+        `${backendBase}/api/workspaces/${encodeURIComponent(String(workspace.id ?? ""))}`,
+      );
+    }
+  }
+
+  for (const runtimeId of runtimeIds) {
+    await deleteIfPresent(
+      request,
+      `${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtimeId)}`,
+    );
+  }
+}
+
+test.afterEach(async ({ request }) => {
+  await cleanupAiThreadE2EData(request);
+});
+
 async function createDeterministicFailingRuntime(
   request: APIRequestContext,
   label: string,

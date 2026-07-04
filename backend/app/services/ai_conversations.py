@@ -576,6 +576,19 @@ class AIConversationStore:
                             OR lower(title) LIKE '%-e2e-%'
                         )
                     )
+                    OR (
+                        ({_STALE_INTERNAL_RECORD_SQL})
+                        AND EXISTS (
+                            SELECT 1
+                            FROM agent_runtimes internal_runtime
+                            WHERE internal_runtime.id = ai_conversations.agent_runtime_id
+                              AND (
+                                  lower(internal_runtime.name) LIKE '%e2e%'
+                                  OR lower(internal_runtime.command) LIKE '%/tmp/codetalk%'
+                                  OR lower(internal_runtime.args_json) LIKE '%/tmp/codetalk%'
+                              )
+                        )
+                    )
                     OR EXISTS (
                         SELECT 1
                         FROM workspaces hidden_ws
