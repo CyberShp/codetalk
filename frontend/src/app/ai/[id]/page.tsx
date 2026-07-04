@@ -596,6 +596,7 @@ export default function AIThreadPage() {
     conversation?.runtime_type === "agent_runtime" &&
     (!activeRuntime || !activeRuntime.enabled);
   const composerDisabled = sending || isActuallyRunning || activeAgentRuntimeUnavailable;
+  const composerInputDisabled = sending || activeAgentRuntimeUnavailable;
   const threadNavigationBusy =
     savingRuntime || cancelling || creatingSiblingThread || Boolean(deletingThreadId) || isActuallyRunning;
   const lastUserMessage = useMemo(
@@ -1350,7 +1351,7 @@ export default function AIThreadPage() {
             }}
             placeholder="像 Codex 一样继续追问代码、需求、测试设计、复跑策略..."
             rows={3}
-            disabled={composerDisabled}
+            disabled={composerInputDisabled}
           />
           <div className="ct-codex-composer__footer">
             <div>
@@ -1359,7 +1360,7 @@ export default function AIThreadPage() {
                   key={action}
                   type="button"
                   onClick={() => setInput(action)}
-                  disabled={composerDisabled}
+                  disabled={composerInputDisabled}
                 >
                   {action}
                 </button>

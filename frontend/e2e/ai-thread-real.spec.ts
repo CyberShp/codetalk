@@ -6686,6 +6686,122 @@ test("continues the same AI thread after cancelling a running agent", async ({
   }
 });
 
+test("lets the user draft the next AI thread prompt while an agent is still running", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-running-draft-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI running draft e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-running-draft-")));
+  const runtimeScript = path.join(runtimeDir, "running_draft_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "# -*- coding: utf-8 -*-",
+      "import sys, time",
+      "prompt = sys.stdin.read()",
+      "if 'DRAFT_SECOND_PROMPT' in prompt:",
+      "    print('## 结论\\nRUNNING_DRAFT_SECOND_FINAL: 用户运行中起草的下一步已在同一线程继续执行。\\n\\n## 代码证据\\n- `README.md`: `AI running draft e2e workspace` 来自当前工作区。\\n\\n## 黑盒测试用例\\n- 前置条件：第一轮 Agent 已完成；步骤：发送运行中保留的草稿；预期结果：第二轮在同一线程生成。', flush=True)",
+      "else:",
+      "    print('RUNNING_DRAFT_FIRST_PROGRESS: agent 正在读取源码，用户此时可以起草下一条。', flush=True)",
+      "    time.sleep(3)",
+      "    print('## 结论\\nRUNNING_DRAFT_FIRST_FINAL: 第一轮完成，草稿不应丢失也不应提前提交。\\n\\n## 代码证据\\n- `README.md`: `AI running draft e2e workspace` 来自当前工作区。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-running-draft-e2e-${Date.now()}`;
+  const runtimeName = `Running draft runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} running draft`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    const composer = page.getByLabel("AI 线程消息");
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    await composer.fill("FIRST_RUNNING_PROMPT 请开始较慢的源码分析");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByRole("button", { name: "停止" })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("RUNNING_DRAFT_FIRST_PROGRESS")).toBeVisible({ timeout: 15_000 });
+
+    const draftPrompt = "DRAFT_SECOND_PROMPT 请沿着上一轮继续生成黑盒测试";
+    await expect(composer).toBeEnabled();
+    await composer.fill(draftPrompt);
+    await expect(composer).toHaveValue(draftPrompt);
+    await composer.press("Enter");
+    await expect(composer).toHaveValue(draftPrompt);
+
+    const runningMessagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(runningMessagesResp.ok()).toBeTruthy();
+    const runningMessages = (await runningMessagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    expect(runningMessages.items.filter((item) => item.role === "user")).toHaveLength(1);
+    expect(runningMessages.items.some((item) => item.content === draftPrompt)).toBe(false);
+
+    await expect(page.getByText("RUNNING_DRAFT_FIRST_FINAL")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("button", { name: "发送" })).toBeEnabled({ timeout: 15_000 });
+    await expect(composer).toHaveValue(draftPrompt);
+
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByText("RUNNING_DRAFT_SECOND_FINAL")).toBeVisible({ timeout: 30_000 });
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    expect(messageBody.items.map((item) => item.role)).toEqual(["user", "assistant", "user", "assistant"]);
+    expect(messageBody.items[2].content).toBe(draftPrompt);
+    expect(messageBody.items[3].content).toContain("RUNNING_DRAFT_SECOND_FINAL");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("keeps AI thread navigation locked while an agent run is streaming", async ({
   page,
   request,
