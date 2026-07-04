@@ -6120,6 +6120,8 @@ test("cancels a running agent-runtime AI thread through the real UI", async ({
     await expect.poll(() => sendRequests.length).toBe(1);
     await expect(page.getByRole("button", { name: "停止" })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText("agent-runtime-first-delta")).toBeVisible({ timeout: 20_000 });
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
     await expect(page.getByLabel("AI 线程消息")).toBeDisabled();
     await expect(page.getByRole("button", { name: "解释这个测试设计背后的风险判断" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "补充黑盒边界条件和异常路径" })).toBeDisabled();
@@ -6148,6 +6150,11 @@ test("cancels a running agent-runtime AI thread through the real UI", async ({
     await cancelRequest;
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
     await expect(page.getByText("agent-runtime-after-cancel")).toHaveCount(0);
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await processDisclosure.locator("summary").hover();
+    await processDisclosure.locator("summary").click();
+    await expect(processDisclosure.getByText("agent-runtime-first-delta")).toBeVisible();
+    await expect(processDisclosure.getByText("用户已停止本轮 Agent")).toBeVisible();
     await expect.poll(() => cancelRequests.length).toBe(1);
     await page.waitForTimeout(2_000);
     expect(fs.existsSync(cancelledMarker)).toBe(false);

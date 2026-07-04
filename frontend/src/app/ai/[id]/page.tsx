@@ -980,7 +980,10 @@ export default function AIThreadPage() {
       await api.aiConversations.cancel(conversationId).catch(() => {});
       setStreamingRunId(null);
       setStreamingContent("");
-      setStreamingDiagnostics([]);
+      setStreamingDiagnostics((prev) => capAgentProcessDiagnostics([
+        ...prev,
+        "用户已停止本轮 Agent。",
+      ]));
       await refreshMessagesAfterDone().catch(() => {});
     } finally {
       cancellingRef.current = false;
