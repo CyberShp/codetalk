@@ -1,10 +1,59 @@
 import { expect, test } from "@playwright/test";
-import type { Page } from "@playwright/test";
+import type { APIRequestContext, Page } from "@playwright/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
+
+async function deleteIfPresent(request: APIRequestContext, url: string) {
+  const response = await request.delete(url);
+  expect([204, 404, 409]).toContain(response.status());
+}
+
+async function cleanupSettingsE2EData(request: APIRequestContext) {
+  const runtimesResp = await request.get(`${backendBase}/api/settings/agent-runtimes`);
+  if (runtimesResp.ok()) {
+    const data = (await runtimesResp.json()) as {
+      items?: Array<{ id: string; name?: string; command?: string; args?: string[] }>;
+    };
+    for (const runtime of data.items ?? []) {
+      const name = runtime.name ?? "";
+      const command = runtime.command ?? "";
+      const args = (runtime.args ?? []).join(" ");
+      if (
+        name.startsWith("ui-agent-") ||
+        name.startsWith("OpenCode Managed ") ||
+        name.startsWith("settings-disabled-runtime-") ||
+        command.includes("codetalk-agent-probe-") ||
+        args.includes("codetalk-agent-probe-")
+      ) {
+        await deleteIfPresent(
+          request,
+          `${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`,
+        );
+      }
+    }
+  }
+
+  const llmResp = await request.get(`${backendBase}/api/settings/llm`);
+  if (llmResp.ok()) {
+    const configs = (await llmResp.json()) as Array<{ id: string; name?: string; model?: string }>;
+    for (const config of configs) {
+      const name = config.name ?? "";
+      if (name.startsWith("ui-")) {
+        await deleteIfPresent(
+          request,
+          `${backendBase}/api/settings/llm/${encodeURIComponent(config.id)}`,
+        );
+      }
+    }
+  }
+}
+
+test.afterEach(async ({ request }) => {
+  await cleanupSettingsE2EData(request);
+});
 
 async function expectBrowserStorageNotToContain(page: Page, secret: string) {
   const storageText = await page.evaluate(() =>
@@ -258,6 +307,49 @@ test("settings agent runtime env values are not rendered after save", async ({ p
   await expect(reloadedRuntime).toBeVisible();
   await expect(page.locator("body")).not.toContainText(secret);
   await expectBrowserStorageNotToContain(page, secret);
+});
+
+test("settings keeps disabled historical agent runtimes collapsed by default", async ({
+  page,
+  request,
+}) => {
+  const runtimeName = `settings-disabled-runtime-${Date.now()}`;
+  const createResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: ["--version"],
+      prompt_transport: "stdin",
+      output_mode: "auto",
+      working_dir_mode: "project",
+      timeout_seconds: 900,
+      completion_mode: "process_exit",
+      idle_complete_seconds: 5,
+      sentinel_text: "",
+      session_persistence: "none",
+      resume_args: [],
+      env: {},
+      enabled: false,
+    },
+  });
+  expect(createResp.ok()).toBeTruthy();
+
+  await page.goto("/settings", { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByText(runtimeName)).toBeHidden();
+  await expect(page.getByText(/停用\/历史执行器 \d+ 个/)).toBeVisible();
+
+  await page.getByText(/停用\/历史执行器 \d+ 个/).hover();
+  await page.getByText(/停用\/历史执行器 \d+ 个/).click();
+
+  const historicalRuntime = page
+    .locator("div.rounded-xl.border")
+    .filter({ has: page.locator("strong", { hasText: runtimeName }) })
+    .filter({ hasText: "python3 --version" })
+    .first();
+  await expect(historicalRuntime).toBeVisible();
+  await expect(historicalRuntime).toContainText("已停用");
+  await expect(historicalRuntime.getByRole("button", { name: "测试" })).toBeDisabled();
 });
 
 test("settings blocks malformed agent runtime env JSON with repair guidance", async ({

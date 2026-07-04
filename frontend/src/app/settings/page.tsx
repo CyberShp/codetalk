@@ -183,6 +183,69 @@ const AGENT_RUNTIME_PRESETS = [
   form: AgentRuntimeCreate;
 }>;
 
+function AgentRuntimeCard({
+  runtime,
+  deletingRuntime,
+  probeMessage,
+  onProbe,
+  onDelete,
+}: {
+  runtime: AgentRuntime;
+  deletingRuntime: boolean;
+  probeMessage?: string;
+  onProbe: (runtime: AgentRuntime) => void;
+  onDelete: (runtimeId: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-outline-variant/20 bg-surface px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center gap-2">
+          <strong className="text-sm text-on-surface">{runtime.name}</strong>
+          {!runtime.enabled && (
+            <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[11px] text-on-surface-variant">
+              已停用
+            </span>
+          )}
+          <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[11px] text-on-surface-variant">
+            {agentTransportLabel(runtime.prompt_transport)}
+          </span>
+          <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[11px] text-on-surface-variant">
+            {runtime.output_mode}
+          </span>
+          {runtime.session_persistence === "resume_args" && (
+            <span className="rounded-full bg-primary-container px-2 py-0.5 text-[11px] text-on-primary-container">
+              resume
+            </span>
+          )}
+        </div>
+        <p className="mt-1 break-all font-data text-xs text-on-surface-variant">
+          {runtime.command} {runtime.args.join(" ")}
+        </p>
+        {probeMessage && (
+          <p className="mt-1 text-xs text-on-surface-variant">{probeMessage}</p>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={() => onProbe(runtime)}
+        disabled={deletingRuntime || !runtime.enabled}
+        className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-sm text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+      >
+        测试
+      </button>
+      <button
+        type="button"
+        onClick={() => onDelete(runtime.id)}
+        disabled={deletingRuntime}
+        className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/20 px-3 py-1.5 text-sm text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-50"
+      >
+        {deletingRuntime && <Loader2 size={13} className="animate-spin" />}
+        {deletingRuntime ? "删除中..." : "删除"}
+      </button>
+    </div>
+  );
+}
+
 export default function SettingsPage() {
   const [configs, setConfigs] = useState<LLMConfig[]>([]);
   const [general, setGeneral] = useState<GeneralSettings>({
@@ -540,6 +603,8 @@ export default function SettingsPage() {
   }, []);
 
   const managedAgentRuntime = MANAGED_AGENT_TRANSPORTS.has(agentRuntimeForm.prompt_transport);
+  const enabledAgentRuntimes = agentRuntimes.filter((runtime) => runtime.enabled);
+  const disabledAgentRuntimes = agentRuntimes.filter((runtime) => !runtime.enabled);
 
   if (loading) {
     return (
@@ -877,7 +942,7 @@ export default function SettingsPage() {
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-sm font-semibold text-on-surface">已配置执行器</h3>
               <span className="rounded-full bg-surface-container-high px-2 py-1 text-xs text-on-surface-variant">
-                {agentRuntimes.length} 个
+                可用 {enabledAgentRuntimes.length} 个
               </span>
             </div>
             {agentRuntimes.length === 0 ? (
@@ -885,52 +950,43 @@ export default function SettingsPage() {
                 首次启动会自动创建 Claude Code、Codex 和 OpenCode 托管执行器；如果这里仍为空，可以点上面的预设手动补建。
               </div>
             ) : (
-              agentRuntimes.map((runtime) => {
-                const deletingRuntime = deletingAgentRuntimeIds.includes(runtime.id);
-                return (
-                <div key={runtime.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-outline-variant/20 bg-surface px-4 py-3">
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <strong className="text-sm text-on-surface">{runtime.name}</strong>
-                      <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[11px] text-on-surface-variant">
-                        {agentTransportLabel(runtime.prompt_transport)}
-                      </span>
-                      <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[11px] text-on-surface-variant">
-                        {runtime.output_mode}
-                      </span>
-                      {runtime.session_persistence === "resume_args" && (
-                        <span className="rounded-full bg-primary-container px-2 py-0.5 text-[11px] text-on-primary-container">
-                          resume
-                        </span>
-                      )}
+              <>
+                {enabledAgentRuntimes.map((runtime) => {
+                  const deletingRuntime = deletingAgentRuntimeIds.includes(runtime.id);
+                  return (
+                    <AgentRuntimeCard
+                      key={runtime.id}
+                      runtime={runtime}
+                      deletingRuntime={deletingRuntime}
+                      probeMessage={agentRuntimeProbe[runtime.id]}
+                      onProbe={handleProbeAgentRuntime}
+                      onDelete={handleDeleteAgentRuntime}
+                    />
+                  );
+                })}
+                {disabledAgentRuntimes.length > 0 && (
+                  <details className="rounded-xl border border-outline-variant/20 bg-surface/70 px-4 py-3">
+                    <summary className="cursor-pointer text-sm font-medium text-on-surface">
+                      停用/历史执行器 {disabledAgentRuntimes.length} 个
+                    </summary>
+                    <div className="mt-3 grid gap-3">
+                      {disabledAgentRuntimes.map((runtime) => {
+                        const deletingRuntime = deletingAgentRuntimeIds.includes(runtime.id);
+                        return (
+                          <AgentRuntimeCard
+                            key={runtime.id}
+                            runtime={runtime}
+                            deletingRuntime={deletingRuntime}
+                            probeMessage={agentRuntimeProbe[runtime.id]}
+                            onProbe={handleProbeAgentRuntime}
+                            onDelete={handleDeleteAgentRuntime}
+                          />
+                        );
+                      })}
                     </div>
-                    <p className="mt-1 break-all font-data text-xs text-on-surface-variant">
-                      {runtime.command} {runtime.args.join(" ")}
-                    </p>
-                    {agentRuntimeProbe[runtime.id] && (
-                      <p className="mt-1 text-xs text-on-surface-variant">{agentRuntimeProbe[runtime.id]}</p>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => handleProbeAgentRuntime(runtime)}
-                    disabled={deletingRuntime}
-                    className="rounded-lg border border-outline-variant/30 px-3 py-1.5 text-sm text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
-                  >
-                    测试
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleDeleteAgentRuntime(runtime.id)}
-                    disabled={deletingRuntime}
-                    className="inline-flex items-center gap-1.5 rounded-lg border border-red-500/20 px-3 py-1.5 text-sm text-red-500 transition-colors hover:bg-red-500/10 disabled:opacity-50"
-                  >
-                    {deletingRuntime && <Loader2 size={13} className="animate-spin" />}
-                    {deletingRuntime ? "删除中..." : "删除"}
-                  </button>
-                </div>
-                );
-              })
+                  </details>
+                )}
+              </>
             )}
           </div>
         </div>
