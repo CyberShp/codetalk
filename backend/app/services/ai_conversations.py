@@ -1067,6 +1067,12 @@ class AIConversationStore:
         await self.append_event(
             run_id=run["id"],
             conversation_id=conversation_id,
+            event_type="delta",
+            payload={"kind": "diagnostic", "content": "用户已停止本轮 Agent。"},
+        )
+        await self.append_event(
+            run_id=run["id"],
+            conversation_id=conversation_id,
             event_type="done",
             payload={"status": "cancelled"},
         )

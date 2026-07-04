@@ -3870,8 +3870,15 @@ class TestAgentRuntimes:
 
             latest = await store.latest_run(conversation["id"])
             messages = await store.list_messages(conversation["id"])
+            events = await store.list_events_after(conversation["id"])
             assert latest and latest["status"] == "cancelled"
             assert [item["role"] for item in messages] == ["user"]
+            assert any(
+                event["event_type"] == "delta"
+                and event["payload"].get("kind") == "diagnostic"
+                and "用户已停止本轮 Agent" in event["payload"].get("content", "")
+                for event in events
+            )
             assert not marker.exists()
         finally:
             if not task.done():

@@ -6172,6 +6172,17 @@ test("cancels a running agent-runtime AI thread through the real UI", async ({
     expect(conversation.status).toBe("idle");
     expect(conversation.latest_run?.status).toBe("cancelled");
 
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    const reloadedProcessDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(reloadedProcessDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await reloadedProcessDisclosure.locator("summary").click();
+    await expect(reloadedProcessDisclosure.getByText("CodeTalk 已启动")).toBeVisible();
+    await expect(
+      reloadedProcessDisclosure.locator("p").filter({ hasText: "用户已停止本轮 Agent" }),
+    ).toBeVisible();
+    await expect(reloadedProcessDisclosure.getByText("agent-runtime-first-delta")).toHaveCount(0);
+
     const messagesResp = await request.get(
       `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
     );
