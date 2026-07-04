@@ -5075,6 +5075,37 @@ class TestAgentRuntimes:
         assert "榛戠爜" not in output
         assert "67890" not in output
 
+    async def test_agent_runtime_stream_drops_symbol_numeric_terminal_noise(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import sys; "
+            "sys.stdout.write('▒▒▒▒▒1293847560\\n'); "
+            "sys.stdout.write('▛▛▛▛8899001122\\n'); "
+            "sys.stdout.write('╳╳╳╳╳╳4455667788\\n'); "
+            "sys.stdout.write('最终答案：已完成源码分析，覆盖 3 条风险。\\n'); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        output = "".join(chunks)
+        assert output.strip() == "最终答案：已完成源码分析，覆盖 3 条风险。"
+        assert "▒▒▒▒▒1293847560" not in output
+        assert "▛▛▛▛8899001122" not in output
+        assert "╳╳╳╳╳╳4455667788" not in output
+
     async def test_agent_runtime_plain_stream_preserves_utf8_split_across_read_boundary(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
 

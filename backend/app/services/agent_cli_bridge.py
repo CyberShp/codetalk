@@ -1621,7 +1621,13 @@ def _strip_incomplete_terminal_escape_suffix(value: str) -> str:
         if index == -1:
             continue
         tail = cleaned[index:]
-        if "\x07" not in tail and "\x1b\\" not in tail and "\x9c" not in tail:
+        if (
+            "\x07" not in tail
+            and "\x1b\\" not in tail
+            and "\x9c" not in tail
+            and "\n" not in tail
+            and "\r" not in tail
+        ):
             cleaned = cleaned[:index]
     for marker in ("\x1b[", "\x9b"):
         index = cleaned.rfind(marker)
@@ -1669,6 +1675,7 @@ def _collapse_terminal_repaints(value: str) -> str:
             or _looks_like_replacement_gibberish(stripped)
             or _looks_like_short_binary_gibberish(stripped)
             or _looks_like_mojibake_numeric_noise(stripped)
+            or _looks_like_symbol_numeric_noise(stripped)
             or _looks_like_cli_ui_noise(stripped)
         ):
             continue
@@ -1741,6 +1748,38 @@ def _looks_like_mojibake_numeric_noise(value: str) -> bool:
         and cjk_count > 0
         and (latin_letter_count + non_ascii_latin_count) >= 2
         and len(value.split()) <= 2
+    )
+
+
+def _looks_like_symbol_numeric_noise(value: str) -> bool:
+    stripped = value.strip()
+    if not 4 <= len(stripped) <= 100:
+        return False
+    if _contains_cjk_sentence_punctuation(stripped):
+        return False
+    digit_count = sum(1 for char in stripped if char.isdigit())
+    if digit_count < 4:
+        return False
+    symbol_count = sum(
+        1
+        for char in stripped
+        if unicodedata.category(char).startswith("S") or _is_terminal_drawing_char(char)
+    )
+    if symbol_count < 3:
+        return False
+    non_space_count = sum(1 for char in stripped if not char.isspace())
+    if non_space_count == 0:
+        return False
+    letter_count = sum(1 for char in stripped if char.isalpha())
+    return letter_count == 0 and (symbol_count + digit_count) / non_space_count >= 0.8
+
+
+def _is_terminal_drawing_char(char: str) -> bool:
+    codepoint = ord(char)
+    return (
+        0x2500 <= codepoint <= 0x257F
+        or 0x2580 <= codepoint <= 0x259F
+        or 0x25A0 <= codepoint <= 0x25FF
     )
 
 
