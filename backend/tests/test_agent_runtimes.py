@@ -2277,6 +2277,42 @@ class TestAgentRuntimes:
         )
         assert _agent_answer_requires_repair("基于源码分析 SPDK iSCSI login", "你好，有什么需要帮助", []) is True
 
+        source_grounded_blackbox = (
+            "## 结论\n"
+            "已生成结构化产物，最终 result 事件作为唯一正文来源。\n\n"
+            "## 代码证据\n"
+            "- `lib/iscsi/iscsi.c`: 登录状态机源码文件用于约束测试范围。\n"
+            "- `test/iscsi_tgt`: 可映射黑盒登录回归。\n\n"
+            "## 流程梳理\n"
+            "1. Agent 先执行源码查找。\n"
+            "2. 工具输出进入折叠过程。\n"
+            "3. result 字段产出最终测试设计。\n\n"
+            "## 黑盒测试用例\n"
+            "1. TC-01 Result 登录场景：前置条件 target 已启动，步骤执行 iSCSI Login，"
+            "预期结果可观测，观测点为 Login Response、session 状态和日志。\n"
+            "2. TC-02 Result 登录场景：前置条件 target 已启动，步骤执行 CHAP Login，"
+            "预期结果可观测，观测点为 Login Response、session 状态和日志。\n"
+        )
+        assert (
+            _agent_answer_requires_repair(
+                "针对 iSCSI 登录生成黑盒测试用例\n先查源码，再把正式答案作为最终结果输出",
+                source_grounded_blackbox,
+                [{"source_type": "workspace_source"}],
+            )
+            is False
+        )
+
+        blackbox_without_triage = (
+            "## 代码证据\n"
+            "- `lib/nvmf/ctrlr.c`: connect 入口证据。\n\n"
+            "## 黑盒测试用例\n"
+            "1. 用例：正常连接；前置条件：target 已启动；步骤：initiator 发起 connect；"
+            "预期结果：连接成功；观测点：RPC 状态和日志。\n"
+            "2. 用例：连接超时；前置条件：注入网络延迟；步骤：发起 connect 并等待超时；"
+            "预期结果：返回超时错误；观测点：错误码和日志。\n"
+        )
+        assert _agent_answer_requires_repair("输出完整测试设计和黑盒测试用例", blackbox_without_triage, []) is True
+
     async def test_ai_thread_agent_runtime_repairs_one_line_source_answer(self, sqlite_db, tmp_path):
         repo = tmp_path / "spdk"
         (repo / "lib" / "nvmf").mkdir(parents=True)

@@ -1748,7 +1748,7 @@ def _agent_run_start_milestone(
     runtime_name = redact_agent_diagnostic_text(
         str(runtime.get("name") or runtime.get("id") or "Agent")
     ).strip() or "Agent"
-    lines = [f"CodeTalk 已启动 {runtime_name}，默认折叠执行过程，只在此处展示公开进度。"]
+    lines = [f"CodeTalk 已启动 {runtime_name}，执行过程会收纳在 Agent 过程面板。"]
     cwd_text = redact_agent_diagnostic_text(str(cwd or "")).strip()
     if cwd_text:
         lines.append(f"工作目录：{cwd_text}")
@@ -2041,11 +2041,11 @@ def _agent_answer_too_thin_for_task(content: str, *, user_message: str = "") -> 
         expectation_markers = sum(1 for marker in ("前置", "步骤", "预期", "观测", "失败诊断", "expected") if marker in lowered)
         if not has_black_box_json and case_markers < 2 and expectation_markers < 3:
             return True
-        if (
-            not has_black_box_json
-            and _blackbox_task_requires_executable_detail(requested)
-            and _blackbox_answer_missing_observability(text)
-        ):
+        if not has_black_box_json and _blackbox_answer_missing_observability(text):
+            return True
+        if not has_black_box_json and _blackbox_task_requires_executable_detail(
+            requested
+        ) and _blackbox_answer_missing_failure_diagnostics(text):
             return True
     if any(marker in requested for marker in ("流程", "梳理", "workflow")) and not any(
         marker in lowered for marker in ("流程", "步骤", "阶段", "flow", "workflow")
@@ -2066,18 +2066,16 @@ def _blackbox_task_requires_executable_detail(requested: str) -> bool:
         "详细",
         "详尽",
         "测试设计",
-        "源码",
-        "代码",
-        "证据",
-        "spdk",
-        "sfmea",
+        "失败诊断",
+        "诊断线索",
+        "可执行",
         "complete",
         "comprehensive",
         "detailed",
+        "executable",
         "test design",
-        "source",
-        "code",
-        "evidence",
+        "failure diagnostic",
+        "triage",
     )
     return any(marker in text for marker in markers)
 
@@ -2098,6 +2096,11 @@ def _blackbox_answer_missing_observability(content: str) -> bool:
         "rpc",
         "trace",
     )
+    return not any(marker in lowered for marker in observability_markers)
+
+
+def _blackbox_answer_missing_failure_diagnostics(content: str) -> bool:
+    lowered = clean_agent_output_text(str(content or "")).lower()
     diagnostic_markers = (
         "失败诊断",
         "诊断",
@@ -2110,10 +2113,7 @@ def _blackbox_answer_missing_observability(content: str) -> bool:
         "root cause",
         "triage",
     )
-    return not (
-        any(marker in lowered for marker in observability_markers)
-        and any(marker in lowered for marker in diagnostic_markers)
-    )
+    return not any(marker in lowered for marker in diagnostic_markers)
 
 
 def _agent_final_answer_should_replace_streaming_answer(streaming_answer: str, final_answer: str) -> bool:
