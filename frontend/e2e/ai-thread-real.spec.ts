@@ -8931,9 +8931,13 @@ test("downloads only the latest successful artifact after an agent retry", async
 
     await page.getByRole("button", { name: "重试上一条" }).hover();
     await page.getByRole("button", { name: "重试上一条" }).click();
-    await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "完整测试设计/SFMEA/黑盒用例已保存为下载产物" })).toBeVisible({
+    const assistantArtifactMessage = page.locator(".ct-codex-message:not(.is-user)").filter({
+      hasText: "已生成结构化产物",
+    });
+    await expect(assistantArtifactMessage).toBeVisible({
       timeout: 30_000,
     });
+    await expect(assistantArtifactMessage).toContainText("完整内容已保存为下载产物");
     await expect(page.locator("div[role='alert']").filter({ hasText: "执行器退出码：9" })).toHaveCount(0);
     await expect(page.getByRole("link", { name: "下载完整产物" })).toBeVisible({ timeout: 15_000 });
 
