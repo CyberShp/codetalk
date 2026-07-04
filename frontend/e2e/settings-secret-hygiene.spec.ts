@@ -367,8 +367,10 @@ test("settings OpenCode preset saves managed session resume by default", async (
   await page.getByPlaceholder("例如 Claude Code").fill(runtimeName);
   await page.getByRole("button", { name: "高级选项" }).hover();
   await page.getByRole("button", { name: "高级选项" }).click();
-  await expect(page.getByText(/OpenCode 托管协议/)).toBeVisible();
-  await expect(page.getByText(/无需配置结束标记或 resume 参数/)).toBeVisible();
+  const managedNotice = page.locator("div").filter({
+    hasText: /当前是 OpenCode 托管\s*协议.*无需配置结束标记或 resume 参数/,
+  }).first();
+  await expect(managedNotice).toBeVisible();
   await page.getByRole("button", { name: "保存" }).hover();
   await page.getByRole("button", { name: "保存" }).click();
 
