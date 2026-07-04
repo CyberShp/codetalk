@@ -3096,17 +3096,17 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     grid-template-columns: minmax(0, 1fr) auto;
     grid-template-rows: auto auto auto;
     align-content: stretch;
-    gap: 6px;
+    gap: 4px;
     height: auto;
     max-height: none;
     overflow: hidden;
-    padding: 6px;
+    padding: 5px;
   }
 
   .ct-codex-ai__back {
-    min-height: 32px;
+    min-height: 28px;
     margin: 0;
-    padding: 6px 8px;
+    padding: 5px 8px;
   }
 
   .ct-codex-ai__project {
@@ -3126,21 +3126,21 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
   .ct-codex-ai__rail-search {
     grid-column: 1 / -1;
-    min-height: 32px;
+    min-height: 28px;
     margin-bottom: 0;
-    padding: 6px 8px;
+    padding: 5px 8px;
   }
 
   .ct-codex-ai__project-list {
-    height: min(40px, 5vh);
+    height: min(34px, 4vh);
     max-height: none;
   }
 
   .ct-codex-ai__new {
     width: auto;
-    min-height: 32px;
+    min-height: 28px;
     margin: 0;
-    padding: 6px 9px;
+    padding: 5px 8px;
     white-space: nowrap;
   }
 
@@ -3151,11 +3151,12 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
   .ct-codex-ai__thread-list {
     flex: 1 1 0;
-    max-height: 48px;
+    max-height: 38px;
     min-height: 0;
   }
 
   .ct-codex-ai__main {
+    grid-template-rows: auto minmax(180px, 1fr) auto;
     height: 100%;
     min-height: 430px;
   }
@@ -3217,9 +3218,9 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     min-width: 0;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     align-items: stretch;
-    gap: 6px;
+    gap: 5px;
     overflow: hidden;
-    padding: 8px;
+    padding: 6px;
   }
 
   .ct-codex-ai__topbar > div {
@@ -3241,8 +3242,9 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   .ct-codex-ai__context-toggle {
     min-width: 0;
     justify-content: center;
-    gap: 5px;
-    padding: 6px 7px;
+    gap: 4px;
+    min-height: 28px;
+    padding: 5px 6px;
     font-size: 11px;
   }
 
@@ -3262,7 +3264,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     box-sizing: border-box;
     width: min(calc(100% - 20px), calc(100vw - 74px));
     max-width: calc(100vw - 74px);
-    margin-bottom: 10px;
+    margin-bottom: 8px;
     border-radius: 16px;
     padding: 9px 10px 10px;
   }
