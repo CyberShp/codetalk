@@ -1,9 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  acquirePublicRuntimeMutationLock,
   assertCanMutatePublicRuntime,
   isPublicLocalRuntime,
   resolveReuseExistingServer,
@@ -24,6 +26,7 @@ test("3003/3004 is recognized as the public local runtime", () => {
 });
 
 test("mutating SPDK E2E refuses to reuse the public runtime without an explicit opt-in", () => {
+  const lockDir = fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-public-runtime-lock-"));
   assert.throws(
     () =>
       assertCanMutatePublicRuntime({
@@ -42,11 +45,40 @@ test("mutating SPDK E2E refuses to reuse the public runtime without an explicit 
       env: {
         CODETALK_REUSE_EXISTING_SERVER: "1",
         CODETALK_E2E_ALLOW_PUBLIC_DATA_MUTATION: "1",
+        CODETALK_E2E_PUBLIC_RUNTIME_LOCK_DIR: lockDir,
         CODETALK_FRONTEND_PORT: "3003",
         CODETALK_BACKEND_PORT: "3004",
       },
       flowName: "SPDK real E2E",
     }),
+  );
+});
+
+test("public runtime mutation guard prevents concurrent E2E processes from sharing cleanup state", () => {
+  const lockDir = fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-public-runtime-lock-"));
+  const env = {
+    CODETALK_REUSE_EXISTING_SERVER: "1",
+    CODETALK_E2E_ALLOW_PUBLIC_DATA_MUTATION: "1",
+    CODETALK_E2E_PUBLIC_RUNTIME_LOCK_DIR: lockDir,
+    CODETALK_FRONTEND_PORT: "3003",
+    CODETALK_BACKEND_PORT: "3004",
+  };
+
+  const lockPath = acquirePublicRuntimeMutationLock({ env, flowName: "AI thread real E2E" });
+  assert.equal(typeof lockPath, "string");
+  assert.equal(acquirePublicRuntimeMutationLock({ env, flowName: "AI thread real E2E" }), lockPath);
+
+  const secondLockDir = fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-public-runtime-lock-"));
+  const secondLockPath = path.join(secondLockDir, "3003-3004.lock");
+  fs.mkdirSync(secondLockPath, { recursive: true });
+  fs.writeFileSync(path.join(secondLockPath, "owner.json"), JSON.stringify({ pid: 1 }), "utf8");
+  assert.throws(
+    () =>
+      acquirePublicRuntimeMutationLock({
+        env: { ...env, CODETALK_E2E_PUBLIC_RUNTIME_LOCK_DIR: secondLockDir },
+        flowName: "AI thread real E2E",
+      }),
+    /refused to run concurrently/,
   );
 });
 

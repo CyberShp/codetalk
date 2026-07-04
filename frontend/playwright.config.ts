@@ -14,6 +14,7 @@ const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
 const runId =
   process.env.CODETALK_PLAYWRIGHT_RUN_ID ??
   `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`;
+process.env.CODETALK_PLAYWRIGHT_RUN_ID = runId;
 
 if (!process.env.CODETALK_PLAYWRIGHT_DATA_DIR) {
   process.env.CODETALK_PLAYWRIGHT_DATA_DIR = path.join(

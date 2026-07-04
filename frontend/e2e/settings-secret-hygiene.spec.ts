@@ -4,7 +4,18 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { assertCanMutatePublicRuntime } from "../scripts/playwright-runtime-policy.mjs";
+
 const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
+const frontendPort = process.env.CODETALK_FRONTEND_PORT ?? "3003";
+const backendPort = process.env.CODETALK_BACKEND_PORT ?? "3004";
+
+assertCanMutatePublicRuntime({
+  env: process.env,
+  flowName: "settings secret hygiene E2E",
+  frontendPort,
+  backendPort,
+});
 
 async function deleteIfPresent(request: APIRequestContext, url: string) {
   const response = await request.delete(url);
