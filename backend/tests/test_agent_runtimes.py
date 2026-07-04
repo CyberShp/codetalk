@@ -3996,6 +3996,10 @@ class TestAgentRuntimes:
         assert _parse_event_text("\x1b[32m正文片段\x1b[0m\r\n", "plain") == "正文片段"
         assert _parse_event_text("\r\x1b[2K⠋ 12\r\x1b[2K⠙ 47\r\x1b[2K最终答案\n", "plain") == "最终答案"
         assert _parse_event_text("\x1b(B最终答案：字符集切换噪声已清理\n", "plain") == "最终答案：字符集切换噪声已清理"
+        assert _parse_event_text("\x1bP1;2;3+q54321\x1b\\最终答案：DCS 噪声已清理\n", "plain") == "最终答案：DCS 噪声已清理"
+        assert _parse_event_text("\x1b^nga-progress-418\x1b\\最终答案：PM 噪声已清理\n", "plain") == "最终答案：PM 噪声已清理"
+        assert _parse_event_text("\x1b_nga-apc-9527\x1b\\最终答案：APC 噪声已清理\n", "plain") == "最终答案：APC 噪声已清理"
+        assert _parse_event_text("\x9d8;;file:///tmp/nga-2468\x07最终答案：8-bit OSC 噪声已清理\n", "plain") == "最终答案：8-bit OSC 噪声已清理"
         assert _parse_event_text("1\n2\n47%\n12/100\n最终答案\n", "plain") == "最终答案"
         assert _parse_event_text("■■■■⬝⬝⬝⬝■■■■■⬝⬝⬝兼容\n", "plain") == "兼容"
         assert _decode("源码证据：连接失败".encode("gbk")) == "源码证据：连接失败"
@@ -4842,6 +4846,35 @@ class TestAgentRuntimes:
         assert output.strip() == "最终答案：已完成源码分析。"
         assert "file:///tmp/nga-session-12345" not in output
         assert "8;;" not in output
+
+    async def test_agent_runtime_stream_drops_split_dcs_terminal_sequence(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import sys, time; "
+            "sys.stdout.write('\\x1bP1;2;3+q54321'); "
+            "sys.stdout.flush(); "
+            "time.sleep(0.05); "
+            "sys.stdout.write('\\x1b\\\\最终答案：DCS 噪声已清理。\\n'); "
+            "sys.stdout.flush()"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        output = "".join(chunks)
+        assert output.strip() == "最终答案：DCS 噪声已清理。"
+        assert "54321" not in output
 
     async def test_agent_runtime_stream_strips_progress_glyph_prefix_before_answer(self):
         from app.services.agent_cli_bridge import stream_agent_runtime

@@ -1465,7 +1465,13 @@ def _mojibake_score(value: str) -> int:
 
 
 _ANSI_RE = re.compile(
-    r"\x1b\[[0-?]*[ -/]*[@-~]"
+    r"\x1b[PX^_][^\x1b\x9c]*(?:\x1b\\|\x9c)"
+    r"|\x9d[^\x07\x9c]*(?:\x07|\x9c)"
+    r"|\x90[^\x9c]*(?:\x9c)"
+    r"|\x98[^\x9c]*(?:\x9c)"
+    r"|\x9e[^\x9c]*(?:\x9c)"
+    r"|\x9f[^\x9c]*(?:\x9c)"
+    r"|\x1b\[[0-?]*[ -/]*[@-~]"
     r"|\x1b\][^\x07]*(?:\x07|\x1b\\)"
     r"|\x1b(?:[@-Z\\-_]|\([A-Za-z0-9]|\)[A-Za-z0-9]|\*[A-Za-z0-9]|\+[A-Za-z0-9]|[#%][A-Za-z0-9])"
 )
@@ -1595,12 +1601,12 @@ def _cjk_mojibake_marker_count(value: str) -> int:
 def _strip_incomplete_terminal_escape_suffix(value: str) -> str:
     """Drop terminal control tails that were split before their terminator arrived."""
     cleaned = value
-    for marker in ("\x1b]", "\x9d"):
+    for marker in ("\x1b]", "\x1bP", "\x1bX", "\x1b^", "\x1b_", "\x9d", "\x90", "\x98", "\x9e", "\x9f"):
         index = cleaned.rfind(marker)
         if index == -1:
             continue
         tail = cleaned[index:]
-        if "\x07" not in tail and "\x1b\\" not in tail:
+        if "\x07" not in tail and "\x1b\\" not in tail and "\x9c" not in tail:
             cleaned = cleaned[:index]
     for marker in ("\x1b[", "\x9b"):
         index = cleaned.rfind(marker)
