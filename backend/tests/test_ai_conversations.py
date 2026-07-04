@@ -1573,6 +1573,61 @@ class TestAIConversationsAPI:
         assert "nvmf_dir_target" in source_refs[0].excerpt
         assert all(not ref.metadata["path"].startswith("lib/iscsi/") for ref in source_refs[:2])
 
+    async def test_workspace_source_refs_for_directory_hint_start_near_matching_flow_line(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+    ):
+        repo = tmp_path / "repo"
+        nvmf_dir = repo / "lib" / "nvmf"
+        nvmf_dir.mkdir(parents=True)
+        header = [f"/* copyright header {idx} */" for idx in range(1, 45)]
+        (nvmf_dir / "auth.c").write_text(
+            "\n".join(header + ["int nvmf_auth_disconnect_qpair(void) { return 0; }"]),
+            encoding="utf-8",
+        )
+        (nvmf_dir / "ctrlr.c").write_text(
+            "\n".join(
+                header
+                + [
+                    "static int nvmf_ctrlr_connect_io_ready(void) {",
+                    "    return 1;",
+                    "}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        ws_id = "ws-dir-hint-flow-line"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'Directory Hint Flow Line WS', ?, 1, ?, ?)",
+                (ws_id, str(repo), now, now),
+            )
+            await db.commit()
+
+        from app.services.ai_conversations import build_context_references
+
+        refs = await build_context_references(
+            conversation={
+                "id": "conv-dir-hint-flow-line",
+                "scope_type": "workspace",
+                "scope_id": ws_id,
+                "workspace_id": ws_id,
+                "memory_namespace": f"workspace:{ws_id}",
+                "initial_context": {},
+            },
+            user_message="请分析 SPDK NVMe-oF target connect 到 IO ready 的主链路",
+            db_path=sqlite_db,
+        )
+        source_refs = [ref for ref in refs if ref.source_type == "workspace_source"]
+
+        assert source_refs
+        assert source_refs[0].metadata["path"] == "lib/nvmf/ctrlr.c"
+        assert source_refs[0].metadata["start_line"] > 1
+        assert "nvmf_ctrlr_connect_io_ready" in source_refs[0].excerpt
+
     async def test_agent_prompt_uses_public_workspace_label_without_absolute_repo_path(self):
         from app.services.ai_conversations import _build_agent_prompt
 

@@ -3043,7 +3043,12 @@ def _collect_source_refs_sync(repo: Path, workspace_id: str, query: str) -> list
         candidate = (repo_root / path_hint).resolve()
         if _safe_source_dir(repo_root, candidate):
             for source_path in _directory_source_candidates(repo_root, candidate, query=query):
-                ref = _source_file_ref(repo_root, workspace_id, source_path, line=1)
+                ref = _source_file_ref(
+                    repo_root,
+                    workspace_id,
+                    source_path,
+                    line=_best_source_line_for_query(source_path, query),
+                )
                 if ref and ref.source_id not in seen:
                     refs.append(ref)
                     seen.add(ref.source_id)
@@ -3052,7 +3057,12 @@ def _collect_source_refs_sync(repo: Path, workspace_id: str, query: str) -> list
                     return refs
             continue
         if _safe_source_file(repo_root, candidate):
-            ref = _source_file_ref(repo_root, workspace_id, candidate, line=1)
+            ref = _source_file_ref(
+                repo_root,
+                workspace_id,
+                candidate,
+                line=_best_source_line_for_query(candidate, query),
+            )
             if ref and ref.source_id not in seen:
                 refs.append(ref)
                 seen.add(ref.source_id)
@@ -3267,7 +3277,7 @@ def _safe_source_dir(repo_root: Path, path: Path) -> bool:
 def _directory_source_candidates(repo_root: Path, directory: Path, *, query: str = "") -> list[Path]:
     ignored_parts = {".git", "build", "node_modules", ".next", ".venv", "__pycache__"}
     candidates: list[Path] = []
-    query_terms = _query_terms(query)
+    query_terms = _source_relevance_terms(query)
     symbol_terms = _symbol_query_terms(query)
     try:
         paths = sorted(
@@ -3296,9 +3306,46 @@ def _source_candidate_rank_for_query(
     name_text = path.stem.lower()
     symbol_terms = symbol_terms or []
     symbol_matched = _source_file_contains_any(path, symbol_terms)
+    content_matched = _source_file_contains_any(path, query_terms)
     matched = any(term in name_text or term in rel_text for term in query_terms)
     bucket, normalized = _source_candidate_rank(path)
-    return (0 if symbol_matched else 1, 0 if matched else 1, bucket, normalized)
+    return (0 if symbol_matched else 1, 0 if content_matched else 1, 0 if matched else 1, bucket, normalized)
+
+
+def _source_relevance_terms(text: str) -> list[str]:
+    terms: list[str] = []
+    for term in [*_specific_flow_anchors(text), *_query_terms(text)]:
+        normalized = term.replace("-", "_").lower()
+        if normalized in {"spdk", "nvme", "nvmf", "target", "workspace", "source", "code"}:
+            continue
+        if len(normalized) < 3 or normalized in terms:
+            continue
+        terms.append(normalized)
+        if len(terms) >= 6:
+            break
+    return terms
+
+
+def _best_source_line_for_query(path: Path, query: str) -> int:
+    terms = [*_symbol_query_terms(query), *_source_relevance_terms(query)]
+    if not terms:
+        return 1
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception:
+        return 1
+    for idx, line in enumerate(lines, start=1):
+        normalized = line.lower().replace("-", "_")
+        if any(_source_text_has_term(normalized, term) for term in terms):
+            return idx
+    return 1
+
+
+def _source_text_has_term(text: str, term: str) -> bool:
+    normalized = str(term or "").replace("-", "_").lower()
+    if not normalized:
+        return False
+    return bool(re.search(rf"(?<![a-z0-9]){re.escape(normalized)}(?![a-z0-9])", text))
 
 
 def _symbol_query_terms(text: str) -> list[str]:
@@ -3323,7 +3370,8 @@ def _source_file_contains_any(path: Path, terms: list[str]) -> bool:
         text = path.read_text(encoding="utf-8", errors="ignore")[:262_144].lower()
     except Exception:
         return False
-    return any(term in text for term in terms)
+    normalized = text.replace("-", "_")
+    return any(_source_text_has_term(normalized, term) for term in terms)
 
 
 def _source_candidate_rank(path: Path) -> tuple[int, str]:
