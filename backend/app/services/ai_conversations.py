@@ -1770,11 +1770,7 @@ def _agent_run_start_milestone(
 
 def _agent_artifact_ready_milestone(*, content: str, artifact_href: str) -> str:
     size = len(str(content or "").encode("utf-8", errors="replace"))
-    lines = [f"下载产物已准备：约 {size} bytes，正文区仅保留摘要。"]
-    safe_href = redact_agent_diagnostic_text(str(artifact_href or "").strip())
-    if safe_href:
-        lines.append(f"下载入口：{safe_href}")
-    return "\n".join(lines)
+    return f"下载产物已准备：约 {size} bytes，正文区仅保留摘要。"
 
 
 def _public_reference_paths_for_process(

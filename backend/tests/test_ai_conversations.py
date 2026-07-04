@@ -3049,7 +3049,7 @@ class TestAIConversationsAPI:
         assert f"工作目录：{repo}" in process
         assert "源码证据输入：lib/iscsi/iscsi.c" in process
         assert "下载产物已准备" in process
-        assert "/api/ai/conversations/" in process
+        assert "/api/ai/conversations/" not in process
         assert "```" not in process
         assert "| FM-01 |" not in process
 
