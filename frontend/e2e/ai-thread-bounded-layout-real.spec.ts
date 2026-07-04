@@ -153,3 +153,61 @@ test("AI thread keeps crowded project and thread rails inside bounded scroll are
     }
   }
 });
+
+test("AI thread keeps crowded thread rail bounded on desktop", async ({ page, request }) => {
+  const runId = `${Date.now()}`;
+  const workspace = await createWorkspace(request, runId, 100);
+  const conversations: ConversationRecord[] = [];
+  try {
+    for (let index = 0; index < 56; index += 1) {
+      conversations.push(await createConversation(request, workspace, runId, index));
+    }
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`/ai/${conversations[0].id}`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: conversations[0].title })).toBeVisible({
+      timeout: 15_000,
+    });
+    await page.getByLabel("搜索 AI 线程").hover();
+
+    const pageMetrics = await page.evaluate(() => ({
+      bodyScrollHeight: document.documentElement.scrollHeight,
+      viewportHeight: window.innerHeight,
+      bodyOverflowY: window.getComputedStyle(document.documentElement).overflowY,
+    }));
+    expect(pageMetrics.bodyScrollHeight).toBeLessThanOrEqual(pageMetrics.viewportHeight + 12);
+
+    const railMetrics = await page.locator(".ct-codex-ai__rail").evaluate((node) => {
+      const element = node as HTMLElement;
+      const rect = element.getBoundingClientRect();
+      return {
+        bottom: rect.bottom,
+        height: rect.height,
+        viewportHeight: window.innerHeight,
+        overflowY: window.getComputedStyle(element).overflowY,
+      };
+    });
+    expect(railMetrics.overflowY).toBe("hidden");
+    expect(railMetrics.height).toBeLessThanOrEqual(railMetrics.viewportHeight - 12);
+    expect(railMetrics.bottom).toBeLessThanOrEqual(railMetrics.viewportHeight + 1);
+
+    const threadListMetrics = await page.locator(".ct-codex-ai__thread-list").evaluate((node) => {
+      const element = node as HTMLElement;
+      const rect = element.getBoundingClientRect();
+      return {
+        bottom: rect.bottom,
+        clientHeight: element.clientHeight,
+        scrollHeight: element.scrollHeight,
+        overflowY: window.getComputedStyle(element).overflowY,
+        viewportHeight: window.innerHeight,
+      };
+    });
+    expect(threadListMetrics.overflowY).toBe("auto");
+    expect(threadListMetrics.scrollHeight).toBeGreaterThan(threadListMetrics.clientHeight);
+    expect(threadListMetrics.bottom).toBeLessThanOrEqual(threadListMetrics.viewportHeight + 1);
+  } finally {
+    for (const conversation of conversations) {
+      await request.delete(`${backendBase}/api/ai/conversations/${encodeURIComponent(conversation.id)}`).catch(() => undefined);
+    }
+  }
+});
