@@ -3551,6 +3551,138 @@ test("real agent process keeps early and late diagnostics folded outside the ans
   }
 });
 
+test("keeps long external agent process lines readable on mobile", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-process-mobile-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI process mobile layout e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-process-mobile-")));
+  const runtimeScript = path.join(runtimeDir, "process_mobile_agent.py");
+  const longCommandToken =
+    "opencode_codeagent_command_with_deep_workspace_path_" +
+    "lib_nvmf_connect_timeout_reconnect_controller_reset_".repeat(8);
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "# -*- coding: utf-8 -*-",
+      "import sys, time",
+      "sys.stdin.read()",
+      `print('thinking: ${longCommandToken}', flush=True)`,
+      "time.sleep(0.1)",
+      `print('thinking: tool_result {\"cmd\":\"rg ${longCommandToken} /Volumes/Media/dpdk/spdk/lib/nvmf\",\"status\":\"running\",\"session\":\"mobile-process-layout\"}', flush=True)`,
+      "time.sleep(0.1)",
+      "print('## 结论\\nPROCESS_MOBILE_LAYOUT_FINAL: 外部 agent 的超长过程行保持在折叠区，移动端展开后也不截断右侧内容。\\n\\n## 代码证据\\n- `README.md`: `AI process mobile layout e2e workspace` 来自当前工作区。\\n\\n## 黑盒测试用例\\n- 用例：移动端展开 Agent 过程；前置条件：外部 agent 输出超长命令和 JSON 过程；步骤：打开 390px 视口并展开过程；预期结果：页面没有横向滚动，过程文本自动换行。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-process-mobile-e2e-${Date.now()}`;
+  const runtimeName = `Process mobile layout runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} process mobile`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByLabel("AI 线程消息").fill("PROCESS_MOBILE_LAYOUT_RUN 展开检查外部 agent 过程排版");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.getByText("PROCESS_MOBILE_LAYOUT_FINAL")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
+    await page.waitForTimeout(250);
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.locator("summary")).toContainText("默认折叠");
+    const processSummary = processDisclosure.locator("summary");
+    await processSummary.scrollIntoViewIfNeeded();
+    const processLabel = processSummary.locator("span", { hasText: "Agent 过程" });
+    await processLabel.hover();
+    await processLabel.click();
+    await expect
+      .poll(async () => processDisclosure.evaluate((node) => (node as HTMLDetailsElement).open))
+      .toBe(true);
+    await expect(processDisclosure.getByText(longCommandToken).first()).toBeVisible({ timeout: 15_000 });
+
+    const layout = await processDisclosure.evaluate((element) => {
+      const processRect = element.getBoundingClientRect();
+      const nodes = Array.from(element.querySelectorAll("summary, strong, em, p"));
+      return {
+        pageOverflowing: document.documentElement.scrollWidth > window.innerWidth + 1,
+        processOverflowing: (element as HTMLElement).scrollWidth > (element as HTMLElement).clientWidth + 1,
+        textOverflowing: nodes
+          .map((node) => {
+            const htmlNode = node as HTMLElement;
+            const rect = htmlNode.getBoundingClientRect();
+            return {
+              tag: htmlNode.tagName,
+              text: (htmlNode.textContent ?? "").slice(0, 160),
+              left: rect.left,
+              right: rect.right,
+              scrollWidth: htmlNode.scrollWidth,
+              clientWidth: htmlNode.clientWidth,
+              processLeft: processRect.left,
+              processRight: processRect.right,
+            };
+          })
+          .filter(
+            (box) =>
+              box.scrollWidth > box.clientWidth + 1 ||
+              box.left < box.processLeft - 1 ||
+              box.right > box.processRight + 1,
+          ),
+      };
+    });
+    expect(layout).toEqual({
+      pageOverflowing: false,
+      processOverflowing: false,
+      textOverflowing: [],
+    });
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
+  }
+});
+
 test("keeps resumed agent prompts focused on the current user turn", async ({ page, request }) => {
   test.setTimeout(90_000);
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-resume-prompt-repo-")));
@@ -8262,7 +8394,9 @@ test("shows collapsed Agent process progress while keeping diagnostics out of th
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
     await processDisclosure.getByText("Agent 过程").hover();
     await processDisclosure.getByText("Agent 过程").click();
-    await expect(processDisclosure.getByText("COLLAPSED_PROGRESS_STEP_04")).toBeVisible();
+    await expect(
+      processDisclosure.locator("p").filter({ hasText: "COLLAPSED_PROGRESS_STEP_04" }),
+    ).toBeVisible();
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
   }

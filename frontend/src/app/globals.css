@@ -2430,6 +2430,8 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 }
 
 .ct-agent-process {
+  position: relative;
+  z-index: 2;
   flex: 0 0 auto;
   max-width: 820px;
   width: calc(100% - clamp(28px, 4.8vw, 56px));
@@ -2439,9 +2441,12 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   background: rgba(248, 250, 252, 0.78);
   color: #475569;
   font-size: 12px;
+  pointer-events: auto;
 }
 
 .ct-agent-process summary {
+  position: relative;
+  z-index: 1;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto auto;
   min-height: 38px;

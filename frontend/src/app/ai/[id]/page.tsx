@@ -282,14 +282,24 @@ function AgentProcessDisclosure({ diagnostics }: { diagnostics: string[] }) {
   const visibleDiagnostics = capAgentProcessDiagnostics(diagnostics);
   if (visibleDiagnostics.length === 0) return null;
   const latestSummary = latestAgentProcessSummaryText(visibleDiagnostics);
+  const toggleOpen = () => setOpen((current) => !current);
   return (
     <details
       className="ct-agent-process"
       data-testid="agent-process-disclosure"
       open={open}
-      onToggle={(event) => setOpen(event.currentTarget.open)}
     >
-      <summary>
+      <summary
+        onClick={(event) => {
+          event.preventDefault();
+          toggleOpen();
+        }}
+        onKeyDown={(event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          toggleOpen();
+        }}
+      >
         <span>Agent 过程</span>
         <strong title={latestSummary}>最新：{latestSummary}</strong>
         <em>默认折叠 · {visibleDiagnostics.length} 条</em>
@@ -943,7 +953,7 @@ export default function AIThreadPage() {
           : prev,
       );
       setStreamingRunId(result.run.id);
-      setContextOpen(true);
+      setContextOpen(!window.matchMedia("(max-width: 760px)").matches);
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : "发送失败");
       setInput(text);
