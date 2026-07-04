@@ -1,4 +1,3 @@
-@import url('https://fonts.googleapis.com/css2?family=Geist:wght@400;450;500;550;600;650;700&family=Geist+Mono:wght@400;500;600&family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
 /* CodeTalk Bright QA Workbench */
@@ -51,9 +50,9 @@
   --color-on-surface: var(--on-surface);
   --color-on-surface-variant: var(--on-surface-variant);
   --color-outline-variant: var(--outline-variant);
-  --font-display: 'Geist', 'Inter', sans-serif;
-  --font-ui: 'Geist', 'Inter', sans-serif;
-  --font-data: 'Geist Mono', 'JetBrains Mono', monospace;
+  --font-display: ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  --font-ui: ui-sans-serif, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Hiragino Sans GB", sans-serif;
+  --font-data: ui-monospace, "SFMono-Regular", "SF Mono", Consolas, "Liberation Mono", monospace;
 }
 
 body {
