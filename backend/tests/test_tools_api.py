@@ -1050,6 +1050,57 @@ async def test_process_manager_wraps_windows_powershell_shim_before_spawn(
     assert cmd[7:] == ["serve", "--port", "7100"]
 
 
+async def test_process_manager_adopts_healthy_external_gitnexus_without_respawn(monkeypatch):
+    """If port 7100 already hosts GitNexus, start() should not spawn a duplicate server."""
+    from app.services import process_manager
+
+    pm = process_manager.ProcessManager()
+    spawn_called = False
+
+    async def fail_if_spawned(*_args, **_kwargs):
+        nonlocal spawn_called
+        spawn_called = True
+        raise AssertionError("ProcessManager tried to spawn a duplicate GitNexus")
+
+    def port_open(_host: str, _port: int):
+        return True
+
+    monkeypatch.setattr(process_manager, "_tcp_port_is_bound", port_open)
+    monkeypatch.setattr(process_manager.asyncio, "create_subprocess_exec", fail_if_spawned)
+
+    started = await pm.start("gitnexus")
+    status = pm._processes["gitnexus"].to_dict()
+
+    assert started is True
+    assert spawn_called is False
+    assert status["status"] == "running"
+    assert status["healthy"] is True
+    assert status["pid"] is None
+    assert status["last_error"] is None
+
+
+async def test_tcp_port_probe_uses_bind_instead_of_connect(monkeypatch):
+    """A busy GitNexus may listen on 7100 while refusing new TCP handshakes."""
+    from app.services import process_manager
+
+    class _Socket:
+        def __init__(self, *_args, **_kwargs):
+            self.bound = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def bind(self, address):
+            raise OSError(48, "Address already in use")
+
+    monkeypatch.setattr(process_manager.socket, "socket", _Socket)
+
+    assert process_manager._tcp_port_is_bound("localhost", 7100)
+
+
 async def test_process_log_streams_write_to_named_files(tmp_path, monkeypatch):
     """Managed subprocess stdout/stderr should be inspectable from log files."""
     from app.config import settings

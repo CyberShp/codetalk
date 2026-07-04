@@ -668,7 +668,7 @@ async def _existing_healthy_managed_tool(pm: ProcessManager, tool_name: str) -> 
     try:
         result = health_check(tool_name)
         if isawaitable(result):
-            result = await result
+            result = await asyncio.wait_for(result, timeout=2)
     except Exception:
         return None
     if not isinstance(result, dict) or not bool(result.get("healthy")):

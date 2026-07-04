@@ -1,15 +1,18 @@
 """Process manager for spawning, monitoring, and restarting local tool processes."""
 
 import asyncio
+import errno
 import logging
 import os
 import shutil
+import socket
 import sys
 import time
 from dataclasses import dataclass, field
 from io import BufferedWriter
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -201,6 +204,31 @@ def _build_process_env(name: str, cfg: dict[str, Any], cwd: str | None) -> dict[
     return env
 
 
+def _managed_health_port(cfg: dict[str, Any]) -> tuple[str, int] | None:
+    health_url = str(cfg.get("health_url") or "").strip()
+    if not health_url:
+        return None
+    parsed = urlparse(health_url)
+    if not parsed.hostname or not parsed.port:
+        return None
+    return parsed.hostname, parsed.port
+
+
+def _tcp_port_is_bound(host: str, port: int) -> bool:
+    bind_hosts = ["0.0.0.0"] if host in {"localhost", "127.0.0.1", "0.0.0.0", "::1"} else [host]
+    for bind_host in bind_hosts:
+        family = socket.AF_INET6 if ":" in bind_host else socket.AF_INET
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind((bind_host, port))
+            except OSError as exc:
+                if exc.errno in {errno.EADDRINUSE, errno.EACCES}:
+                    return True
+                continue
+            return False
+    return False
+
+
 def _open_process_log_streams(name: str) -> tuple[BufferedWriter, BufferedWriter]:
     log_dir = settings.data_path / "logs" / "processes"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -364,6 +392,20 @@ class ProcessManager:
             return True
 
         cfg = mp._config
+        if mp.process is None:
+            port_target = _managed_health_port(cfg)
+            if port_target is not None and _tcp_port_is_bound(*port_target):
+                mp.status = "running"
+                mp.pid = None
+                mp.started_at = None
+                mp.last_error = None
+                logger.info(
+                    "ProcessManager: using externally running '%s' on %s:%d",
+                    name,
+                    port_target[0],
+                    port_target[1],
+                )
+                return True
         cmd: list[str] = _resolve_spawn_command(cfg["command"])
         cwd: str | None = cfg.get("cwd") or None
 
@@ -575,6 +617,9 @@ class ProcessManager:
                 # Detect crashed subprocess
                 if mp.process is not None and mp.process.returncode is not None:
                     exit_code = mp.process.returncode
+                    mp.process = None
+                    mp.pid = None
+                    mp.started_at = None
                     logger.warning(
                         "ProcessManager: '%s' exited unexpectedly (code=%d), auto-restarting",
                         name,
@@ -589,6 +634,13 @@ class ProcessManager:
                 # HTTP health check for running processes
                 if mp.status == "running":
                     health = await self.health_check(name)
+                    if not health.get("healthy", False) and mp.process is None:
+                        logger.warning(
+                            "ProcessManager: externally running '%s' failed health check; not auto-restarting",
+                            name,
+                        )
+                        mp.status = "running"
+                        continue
                     if not health.get("healthy", False) and mp.status == "error":
                         if not mp._config.get("restart_on_health_failure", True):
                             logger.warning(
