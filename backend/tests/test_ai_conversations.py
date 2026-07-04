@@ -1590,6 +1590,7 @@ class TestAIConversationsAPI:
             "\n".join(
                 header
                 + [
+                    "#define SPDK_NVMF_INVALID_CONNECT_CMD 1",
                     "static int nvmf_ctrlr_connect_io_ready(void) {",
                     "    return 1;",
                     "}",

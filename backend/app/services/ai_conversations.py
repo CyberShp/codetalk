@@ -3334,11 +3334,37 @@ def _best_source_line_for_query(path: Path, query: str) -> int:
         lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
     except Exception:
         return 1
+    best_line = 1
+    best_score = 0
     for idx, line in enumerate(lines, start=1):
-        normalized = line.lower().replace("-", "_")
-        if any(_source_text_has_term(normalized, term) for term in terms):
-            return idx
-    return 1
+        score = _source_line_match_score(line, terms)
+        if score > best_score:
+            best_line = idx
+            best_score = score
+    return best_line if best_score > 0 else 1
+
+
+def _source_line_match_score(line: str, terms: list[str]) -> int:
+    normalized = line.lower().replace("-", "_")
+    matched_terms = [term for term in terms if _source_text_has_term(normalized, term)]
+    if not matched_terms:
+        return 0
+
+    stripped = line.strip()
+    score = len(matched_terms) * 10
+    if stripped.startswith(("#", "/*", "*", "//")):
+        score -= 8
+    if stripped.startswith("#define"):
+        score -= 6
+    if "(" in stripped and ")" in stripped and not stripped.startswith("#"):
+        score += 6
+    if re.match(r"^(static\s+)?(inline\s+)?[A-Za-z_][A-Za-z0-9_\s\*]*\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", stripped):
+        score += 6
+    if "{" in stripped:
+        score += 2
+    if stripped and stripped.upper() == stripped and any(term.upper() in stripped for term in matched_terms):
+        score -= 3
+    return score
 
 
 def _source_text_has_term(text: str, term: str) -> bool:
