@@ -10813,6 +10813,95 @@ test("switches an idle AI thread executor through the real UI and persists it", 
   }
 });
 
+test("defaults new AI threads to a managed clowder-like executor even when custom runtimes exist", async ({
+  page,
+  request,
+}) => {
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-default-runtime-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI default runtime e2e workspace\n", "utf8");
+  const workspaceName = `ai-default-runtime-${Date.now()}`;
+  const runtimeName = `ZZZ custom runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} default executor`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: ["--version"],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const customRuntime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    const enabledRuntimesResp = await request.get(`${backendBase}/api/settings/agent-runtimes?enabled=true`);
+    expect(enabledRuntimesResp.ok()).toBeTruthy();
+    const enabledRuntimes = (await enabledRuntimesResp.json()) as { items: Array<{ id: string; name: string }> };
+    const expectedDefault =
+      enabledRuntimes.items.find((item) => item.id === "default-claude-code") ??
+      enabledRuntimes.items.find((item) => item.id === "default-codex") ??
+      enabledRuntimes.items.find((item) => item.id === "default-opencode") ??
+      enabledRuntimes.items[0] ??
+      null;
+    expect(expectedDefault).not.toBeNull();
+    expect(expectedDefault?.id).not.toBe(customRuntime.id);
+
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    const homeRuntimeSelect = page.getByLabel("AI 线程执行器");
+    await expect(homeRuntimeSelect).toHaveValue(expectedDefault?.id ?? "builtin_llm");
+    await expect(homeRuntimeSelect.locator(`option[value="${customRuntime.id}"]`)).toContainText(runtimeName);
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    const threadRuntimeSelect = page.getByLabel("当前 AI 执行器");
+    await expect(threadRuntimeSelect).toHaveValue(expectedDefault?.id ?? "builtin_llm");
+    await expect(page.locator(".ct-ai-env-card").filter({ hasText: "执行器" })).toContainText(
+      expectedDefault?.name ?? "内置模型",
+    );
+
+    const conversationResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`,
+    );
+    expect(conversationResp.ok()).toBeTruthy();
+    const conversation = (await conversationResp.json()) as {
+      runtime_type: string;
+      agent_runtime_id: string | null;
+      workspace_id: string;
+    };
+    expect(conversation.runtime_type).toBe(expectedDefault ? "agent_runtime" : "builtin_llm");
+    expect(conversation.agent_runtime_id).toBe(expectedDefault?.id ?? null);
+    expect(conversation.agent_runtime_id).not.toBe(customRuntime.id);
+    expect(conversation.workspace_id).toBe(workspace.id);
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(customRuntime.id)}`);
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
+  }
+});
+
 test("recovers an AI thread to an enabled executor after its bound runtime is disabled", async ({
   page,
   request,
