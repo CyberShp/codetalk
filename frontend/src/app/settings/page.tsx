@@ -142,6 +142,7 @@ const AGENT_RUNTIME_PRESETS = [
       output_mode: "auto",
       completion_mode: "process_exit",
       timeout_seconds: 900,
+      session_persistence: "resume_args",
     },
   },
   {
@@ -429,7 +430,18 @@ export default function SettingsPage() {
 
   const updateAgentRuntimeForm = useCallback(
     <K extends keyof AgentRuntimeCreate>(key: K, value: AgentRuntimeCreate[K]) => {
-      setAgentRuntimeForm((prev) => ({ ...prev, [key]: value }));
+      setAgentRuntimeForm((prev) => {
+        const next = { ...prev, [key]: value };
+        if (key === "prompt_transport" && MANAGED_AGENT_TRANSPORTS.has(value as AgentRuntimeCreate["prompt_transport"])) {
+          return {
+            ...next,
+            completion_mode: "process_exit",
+            session_persistence: "resume_args",
+            resume_args: [],
+          };
+        }
+        return next;
+      });
     },
     [],
   );

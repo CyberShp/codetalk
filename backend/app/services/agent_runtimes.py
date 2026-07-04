@@ -257,6 +257,8 @@ class AgentRuntimeStore:
                 raise ValueError(f"不支持的 session_persistence: {value}")
             result["session_persistence"] = value
         provider_manages_resume = result.get("prompt_transport") in MANAGED_PROVIDER_PROMPT_TRANSPORTS
+        if provider_manages_resume:
+            result["session_persistence"] = "resume_args"
         if (
             result.get("session_persistence") == "resume_args"
             and not result.get("resume_args")

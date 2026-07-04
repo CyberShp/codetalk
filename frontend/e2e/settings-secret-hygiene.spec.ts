@@ -345,6 +345,62 @@ test("settings custom agent preset sends clowder-like runtime defaults", async (
   }
 });
 
+test("settings OpenCode preset saves managed session resume by default", async ({
+  page,
+  request,
+}) => {
+  const runtimeName = `OpenCode Managed ${Date.now()}`;
+  const postedPayloads: unknown[] = [];
+
+  page.on("request", (req) => {
+    if (
+      req.method() === "POST" &&
+      new URL(req.url()).pathname === "/api/settings/agent-runtimes"
+    ) {
+      postedPayloads.push(req.postDataJSON());
+    }
+  });
+
+  await page.goto("/settings", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "OpenCode" }).hover();
+  await page.getByRole("button", { name: "OpenCode" }).click();
+  await page.getByPlaceholder("例如 Claude Code").fill(runtimeName);
+  await page.getByRole("button", { name: "高级选项" }).hover();
+  await page.getByRole("button", { name: "高级选项" }).click();
+  await expect(page.getByText(/OpenCode 托管协议/)).toBeVisible();
+  await expect(page.getByText(/无需配置结束标记或 resume 参数/)).toBeVisible();
+  await page.getByRole("button", { name: "保存" }).hover();
+  await page.getByRole("button", { name: "保存" }).click();
+
+  const savedRuntime = page
+    .locator("div.rounded-xl.border")
+    .filter({ has: page.locator("strong", { hasText: runtimeName }) })
+    .filter({ hasText: "opencode" })
+    .first();
+  await expect(savedRuntime).toBeVisible({ timeout: 15_000 });
+  await expect.poll(() => postedPayloads.length).toBe(1);
+
+  const payload = postedPayloads[0] as Record<string, unknown>;
+  expect(payload.prompt_transport).toBe("opencode_run_arg");
+  expect(payload.output_mode).toBe("auto");
+  expect(payload.completion_mode).toBe("process_exit");
+  expect(payload.session_persistence).toBe("resume_args");
+  expect(payload.resume_args).toEqual([]);
+
+  const listResp = await request.get(`${backendBase}/api/settings/agent-runtimes`);
+  expect(listResp.ok()).toBeTruthy();
+  const runtimes = (await listResp.json()) as {
+    items: Array<{ id: string; name: string; prompt_transport: string; session_persistence: string }>;
+  };
+  const runtime = runtimes.items.find((item) => item.name === runtimeName);
+  expect(runtime).toBeTruthy();
+  expect(runtime?.prompt_transport).toBe("opencode_run_arg");
+  expect(runtime?.session_persistence).toBe("resume_args");
+  if (runtime) {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("settings prevents duplicate agent runtime deletion from a real double click", async ({
   page,
   request,

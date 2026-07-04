@@ -103,6 +103,40 @@ class TestAgentRuntimes:
         assert body["resume_args"] == []
         assert body["timeout_seconds"] == 900
 
+    @pytest.mark.parametrize(
+        ("transport", "output_mode"),
+        [
+            ("claude_print_arg", "stream_json"),
+            ("codex_exec_json", "stream_json"),
+            ("opencode_run_arg", "auto"),
+        ],
+    )
+    async def test_managed_agent_runtime_defaults_to_clowder_like_session_resume(
+        self,
+        sqlite_db,
+        transport,
+        output_mode,
+    ):
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": f"Managed {transport}",
+                    "command": sys.executable,
+                    "prompt_transport": transport,
+                    "output_mode": output_mode,
+                    "session_persistence": "none",
+                    "resume_args": [],
+                },
+            )
+
+        assert created.status_code == 201
+        body = created.json()
+        assert body["prompt_transport"] == transport
+        assert body["session_persistence"] == "resume_args"
+        assert body["resume_args"] == []
+
     async def test_agent_runtime_list_orders_managed_defaults_for_thread_default(self, sqlite_db):
         now = datetime.now(timezone.utc).isoformat()
         async with aiosqlite.connect(sqlite_db) as db:
