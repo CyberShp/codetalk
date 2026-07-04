@@ -2368,6 +2368,13 @@ def _agent_output_segments(
         if not content:
             close_diagnostic_context()
             continue
+        unwrapped_answer = _strip_agent_final_answer_marker(content)
+        if unwrapped_answer != content:
+            close_diagnostic_context()
+            if not unwrapped_answer:
+                continue
+            line = unwrapped_answer + ("\n" if line.endswith(("\n", "\r")) else "")
+            content = unwrapped_answer
         prefix = _agent_diagnostic_prefix(content)
         diagnostic = _agent_diagnostic_text(content) if prefix else ""
         if prefix:
@@ -2414,6 +2421,16 @@ def _agent_diagnostic_text(text: str) -> str:
     if prefix:
         return redact_agent_diagnostic_text(text[len(prefix):].strip())
     return ""
+
+
+_AGENT_FINAL_ANSWER_MARKER_RE = re.compile(
+    r"^(?:final\s+answer|final_answer|最终答案)\s*[:：]\s*",
+    re.IGNORECASE,
+)
+
+
+def _strip_agent_final_answer_marker(text: str) -> str:
+    return _AGENT_FINAL_ANSWER_MARKER_RE.sub("", str(text or "").strip(), count=1).strip()
 
 
 def _agent_diagnostic_prefix(text: str) -> str:

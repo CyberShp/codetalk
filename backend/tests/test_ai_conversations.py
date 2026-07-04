@@ -186,7 +186,7 @@ async def test_agent_output_segments_strip_terminal_noise_before_diagnostic_dete
 
     assert segments == [
         ("diagnostic", "正在读取 lib/nvmf/connect.c"),
-        ("answer", "最终答案：已基于工作区源码回答。\n"),
+        ("answer", "已基于工作区源码回答。\n"),
     ]
 
 
@@ -423,6 +423,25 @@ async def test_agent_output_segments_fold_shell_prompt_transcript_before_answer(
         ),
         ("answer", "## 结论\n"),
         ("answer", "SHELL_TRANSCRIPT_FINAL: 已基于源码输出结论。\n"),
+    ]
+
+
+async def test_agent_output_segments_strip_final_answer_wrappers():
+    from app.services.ai_conversations import _agent_output_segments
+
+    segments = _agent_output_segments(
+        "Final answer: 已完成源码分析。\n"
+        "FINAL ANSWER:\n"
+        "## 结论\n"
+        "WRAPPED_FINAL_MARKER_CLEAN: 只显示回答正文。\n"
+        "最终答案：中文包装也会被剥离。\n"
+    )
+
+    assert segments == [
+        ("answer", "已完成源码分析。\n"),
+        ("answer", "## 结论\n"),
+        ("answer", "WRAPPED_FINAL_MARKER_CLEAN: 只显示回答正文。\n"),
+        ("answer", "中文包装也会被剥离。\n"),
     ]
 
 

@@ -1747,6 +1747,117 @@ test("folds plain shell transcript output into Agent process instead of the answ
   }
 });
 
+test("strips final-answer wrappers from real agent output before display and persistence", async ({
+  page,
+  request,
+}, testInfo) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-final-wrapper-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI final wrapper cleanup e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-final-wrapper-")));
+  const runtimeScript = path.join(runtimeDir, "final_wrapper_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "sys.stdin.read()",
+      "print('FINAL ANSWER:', flush=True)",
+      "print('## 结论', flush=True)",
+      "print('WRAPPED_FINAL_MARKER_CLEAN: 已完成源码分析，协议包装不会展示给用户。', flush=True)",
+      "print('', flush=True)",
+      "print('## 代码证据', flush=True)",
+      "print('- `README.md`: `AI final wrapper cleanup e2e workspace` 来自当前工作区。', flush=True)",
+      "print('- `test/nvmf`: 可承载 connect/reconnect 黑盒回归。', flush=True)",
+      "print('', flush=True)",
+      "print('## 黑盒测试用例', flush=True)",
+      "print('### TC-01 正常连接', flush=True)",
+      "print('前置条件：target 已启动；步骤：initiator 发起 connect；预期结果：连接成功；观测点：RPC 状态、连接状态和 target 日志。', flush=True)",
+      "print('最终答案：中文包装词也应该被剥离。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-final-wrapper-e2e-${Date.now()}`;
+  const runtimeName = `Final wrapper runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} final wrapper`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 20,
+      enabled: true,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 20_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+
+    await page.getByLabel("AI 线程消息").fill("请输出最终答案，不要展示协议包装词");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const answer = page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "WRAPPED_FINAL_MARKER_CLEAN" });
+    await expect(answer).toBeVisible({ timeout: 30_000 });
+    await expect(answer).not.toContainText("FINAL ANSWER");
+    await expect(answer).not.toContainText("最终答案：");
+    await expect(answer).toContainText("中文包装词也应该被剥离。");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("WRAPPED_FINAL_MARKER_CLEAN");
+    expect(assistant?.content).toContain("中文包装词也应该被剥离。");
+    expect(assistant?.content).not.toContain("FINAL ANSWER");
+    expect(assistant?.content).not.toContain("最终答案：");
+
+    const downloadPromise = page.waitForEvent("download");
+    await page.getByRole("button", { name: "导出" }).hover();
+    await page.getByRole("button", { name: "导出" }).click();
+    const download = await downloadPromise;
+    const exportPath = testInfo.outputPath("final-wrapper-clean-export.md");
+    await download.saveAs(exportPath);
+    const exported = fs.readFileSync(exportPath, "utf8");
+    expect(exported).toContain("WRAPPED_FINAL_MARKER_CLEAN");
+    expect(exported).toContain("中文包装词也应该被剥离。");
+    expect(exported).not.toContain("FINAL ANSWER");
+    expect(exported).not.toContain("最终答案：");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("carries a previous downloadable agent artifact into the next non-resume prompt", async ({
   page,
   request,
