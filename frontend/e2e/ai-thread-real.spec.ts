@@ -3386,7 +3386,7 @@ test("one-line source agent answer is repaired before it becomes the visible ass
     const processDisclosure = page.getByTestId("agent-process-disclosure");
     await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
     await processDisclosure.getByText("Agent 过程").click();
-    await expect(processDisclosure.getByText("上一次执行器输出过短")).toBeVisible();
+    await expect(processDisclosure.locator("p").filter({ hasText: "上一次执行器输出过短" })).toBeVisible();
     await expect(page.getByText("生成诊断：默认折叠")).toHaveCount(0);
 
     const captured = fs.readFileSync(runtime.captureFile, "utf8")
@@ -8101,6 +8101,126 @@ test("shows real agent stderr progress in the folded process panel while generat
   }
 });
 
+test("does not finish idle-after-output agents while stderr source progress is active", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(80_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-idle-stderr-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI idle stderr progress e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-idle-stderr-")));
+  const runtimeScript = path.join(runtimeDir, "idle_stderr_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "# -*- coding: utf-8 -*-",
+      "import sys, time",
+      "sys.stdin.read()",
+      "print('thinking: IDLE_STDOUT_THIN_PROGRESS reading lib/nvmf/connect.c', flush=True)",
+      "for index in range(1, 5):",
+      "    sys.stderr.write(f'stderr source progress {index}: reading workspace source lib/nvmf/connect.c\\n')",
+      "    sys.stderr.flush()",
+      "    time.sleep(0.35)",
+      "print('## 结论\\nIDLE_STDERR_FINAL: stderr 持续活跃期间没有被 idle_after_output 提前截断。\\n\\n## 代码证据\\n- `README.md`: `AI idle stderr progress e2e workspace` 来自当前工作区。\\n- `lib/nvmf/connect.c`: 作为 connect/reconnect 源码证据域。\\n\\n## 流程梳理\\n1. Agent 先输出一条 stdout thinking 过程。\\n2. 随后只通过 stderr 持续报告源码读取进度。\\n3. CodeTalk 等到最终 stdout 答案，而不是在第一段 stdout 后按 idle 提前结束。\\n\\n## 黑盒测试用例\\n1. 用例：stderr 活跃期间不提前完成；前置条件：runtime 使用 idle_after_output；步骤：stdout 首段后只输出 stderr 进度；预期结果：最终答案可见；观测点：线程状态、折叠过程。\\n2. 用例：过程不污染回答；前置条件：存在 stdout thinking 和 stderr 进度；步骤：等待完成；预期结果：assistant 正文不包含内部过程 marker 或 stderr 诊断行。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-idle-stderr-e2e-${Date.now()}`;
+  const runtimeName = `Idle stderr runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} idle stderr`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+      completion_mode: "idle_after_output",
+      idle_complete_seconds: 1,
+      session_persistence: "none",
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill("请读取源码并在 stderr 持续进展后输出最终答案");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("stderr source progress 1")).toBeVisible({ timeout: 15_000 });
+    await expect(
+      page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "IDLE_STDERR_FINAL" }),
+    ).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
+
+    const reader = page.getByLabel("AI 线程对话内容");
+    await expect(reader).not.toContainText("IDLE_STDOUT_THIN_PROGRESS");
+    await expect(reader).not.toContainText("stderr source progress");
+
+    await expect(processDisclosure.getByText("stderr source progress 4")).toBeVisible({ timeout: 15_000 });
+    await expect(processDisclosure.getByText("IDLE_STDOUT_THIN_PROGRESS")).toBeVisible();
+
+    const conversationResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`,
+    );
+    expect(conversationResp.ok()).toBeTruthy();
+    const conversation = (await conversationResp.json()) as {
+      status: string;
+      latest_run: { status: string; error: string | null } | null;
+    };
+    expect(conversation.status).toBe("idle");
+    expect(conversation.latest_run?.status).toBe("completed");
+    expect(conversation.latest_run?.error ?? "").toBe("");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content).toContain("IDLE_STDERR_FINAL");
+    expect(assistant?.content).not.toContain("IDLE_STDOUT_THIN_PROGRESS");
+    expect(assistant?.content).not.toContain("stderr source progress");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
+  }
+});
+
 test("folds real agent log and progress JSON events out of the visible answer", async ({
   page,
   request,
@@ -8186,13 +8306,13 @@ test("folds real agent log and progress JSON events out of the visible answer", 
 
     const processDisclosure = page.getByTestId("agent-process-disclosure");
     await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
-    await expect(processDisclosure.getByText("正在读取 lib/nvmf/ctrlr.c")).toBeHidden();
-    await expect(processDisclosure.getByText("扫描 lib/bdev")).toBeHidden();
+    await expect(processDisclosure.locator("p").filter({ hasText: "正在读取 lib/nvmf/ctrlr.c" })).toBeHidden();
+    await expect(processDisclosure.locator("p").filter({ hasText: "扫描 lib/bdev" })).toBeHidden();
     await processDisclosure.getByText("Agent 过程").hover();
     await processDisclosure.getByText("Agent 过程").click();
-    await expect(processDisclosure.getByText("正在读取 lib/nvmf/ctrlr.c")).toBeVisible();
-    await expect(processDisclosure.getByText("扫描 lib/bdev")).toBeVisible();
-    await expect(processDisclosure.getByText("工具返回了非关键告警", { exact: true })).toBeVisible();
+    await expect(processDisclosure.locator("p").filter({ hasText: "正在读取 lib/nvmf/ctrlr.c" })).toBeVisible();
+    await expect(processDisclosure.locator("p").filter({ hasText: "扫描 lib/bdev" })).toBeVisible();
+    await expect(processDisclosure.locator("p").filter({ hasText: "工具返回了非关键告警" })).toBeVisible();
 
     const messagesResp = await request.get(
       `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
