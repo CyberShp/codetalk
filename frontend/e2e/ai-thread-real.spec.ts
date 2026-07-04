@@ -6154,7 +6154,7 @@ test("cancels a running agent-runtime AI thread through the real UI", async ({
     await processDisclosure.locator("summary").hover();
     await processDisclosure.locator("summary").click();
     await expect(processDisclosure.getByText("CodeTalk 已启动")).toBeVisible();
-    await expect(processDisclosure.getByText("用户已停止本轮 Agent")).toBeVisible();
+    await expect(processDisclosure.locator("p").filter({ hasText: "用户已停止本轮 Agent" })).toBeVisible();
     await expect(processDisclosure.getByText("agent-runtime-first-delta")).toHaveCount(0);
     await expect.poll(() => cancelRequests.length).toBe(1);
     await page.waitForTimeout(2_000);
