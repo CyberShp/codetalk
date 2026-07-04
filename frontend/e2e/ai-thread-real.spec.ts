@@ -1585,6 +1585,7 @@ test("does not pull the reader to the bottom while the user reviews earlier AI o
     await page.getByRole("button", { name: "新建线程" }).hover();
     await page.getByRole("button", { name: "新建线程" }).click();
     await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
     await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
 
     const composer = page.getByLabel("AI 线程消息");
@@ -1756,7 +1757,6 @@ test("uses a Claude assistant message as the final answer instead of keeping par
     await page.getByRole("button", { name: "新建线程" }).hover();
     await page.getByRole("button", { name: "新建线程" }).click();
     await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
-    const threadId = page.url().split("/").pop() ?? "";
     await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
 
     const composer = page.getByLabel("AI 线程消息");
@@ -2482,9 +2482,9 @@ test("Codex agent runtime reads prompts from stdin and resumes through the real 
     await page.getByRole("button", { name: "新建线程" }).click();
 
     await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
-    const threadId = page.url().split("/").pop() ?? "";
     await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+    const threadId = page.url().split("/").pop() ?? "";
 
     const firstPrompt = "第一轮：验证 Codex transport stdin prompt delivery";
     const composer = page.getByPlaceholder(/像 Codex 一样继续追问/);
@@ -2562,7 +2562,6 @@ test("Codex agent runtime keeps the final answer when the CLI exits 1 after outp
     await page.getByRole("button", { name: "新建线程" }).click();
 
     await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
-    const threadId = page.url().split("/").pop() ?? "";
     await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
 
@@ -2784,6 +2783,95 @@ test("diagnostic-only source agent fails visibly instead of idling with a fake a
     expect(messagesResp.ok()).toBeTruthy();
     const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
     expect(messageBody.items.map((item) => item.role)).toEqual(["user"]);
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+    await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
+  }
+});
+
+test("keeps failed agent stderr visible inside the folded Agent process", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-error-process-repo-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "AI error process e2e workspace\n", "utf8");
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-error-process-")));
+  const runtimeScript = path.join(runtimeDir, "failing_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys, time",
+      "sys.stdin.read()",
+      "print('thinking: ERROR_PROCESS_STEP_01 reading workspace source', flush=True)",
+      "time.sleep(0.2)",
+      "print('fatal diagnostic: ERROR_PROCESS_FATAL_SOURCE_SCAN failed while opening lib/nvmf/ctrlr.c', file=sys.stderr, flush=True)",
+      "sys.exit(2)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-error-process-${Date.now()}`;
+  const runtimeName = `Error process runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} folded failure`;
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill("请读取工作区源码并解释 connect 路径");
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    await expect(page.locator("div[role='alert']").filter({ hasText: "ERROR_PROCESS_FATAL_SOURCE_SCAN" })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.locator(".ct-codex-message:not(.is-user)")).toHaveCount(0);
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await processDisclosure.locator("summary").hover();
+    await processDisclosure.locator("summary").click();
+    await expect(processDisclosure.getByText("ERROR_PROCESS_STEP_01")).toBeVisible();
+    await expect(processDisclosure.getByText("ERROR_PROCESS_FATAL_SOURCE_SCAN")).toBeVisible();
+    await expect(page.getByText("生成诊断：默认折叠")).toHaveCount(0);
+
   } finally {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
     await request.delete(`${backendBase}/api/workspaces/${encodeURIComponent(workspace.id)}`);
