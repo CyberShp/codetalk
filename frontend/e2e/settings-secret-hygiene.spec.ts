@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import type { APIRequestContext, Page } from "@playwright/test";
+import type { APIRequestContext, Page, Request } from "@playwright/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -503,6 +503,84 @@ test("settings OpenCode preset saves managed session resume by default", async (
   expect(runtime?.session_persistence).toBe("resume_args");
   if (runtime) {
     await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
+test("settings Claude and Codex presets save managed clowder-like defaults", async ({
+  page,
+  request,
+}) => {
+  const cases = [
+    {
+      buttonName: "Claude Code",
+      runtimeName: `ui-agent-claude-managed-${Date.now()}`,
+      commandText: "claude",
+      notice: /当前是 Claude 托管\s*协议.*无需配置结束标记或 resume 参数/,
+      promptTransport: "claude_print_arg",
+      outputMode: "stream_json",
+    },
+    {
+      buttonName: "Codex CLI",
+      runtimeName: `ui-agent-codex-managed-${Date.now()}`,
+      commandText: "codex",
+      notice: /当前是 Codex 托管\s*协议.*无需配置结束标记或 resume 参数/,
+      promptTransport: "codex_exec_json",
+      outputMode: "stream_json",
+    },
+  ];
+
+  for (const item of cases) {
+    const postedPayloads: unknown[] = [];
+    const requestListener = (req: Request) => {
+      if (
+        req.method() === "POST" &&
+        new URL(req.url()).pathname === "/api/settings/agent-runtimes"
+      ) {
+        postedPayloads.push(req.postDataJSON());
+      }
+    };
+    page.on("request", requestListener);
+
+    await page.goto("/settings", { waitUntil: "domcontentloaded" });
+    await page.getByRole("button", { name: item.buttonName }).hover();
+    await page.getByRole("button", { name: item.buttonName }).click();
+    await page.getByPlaceholder("例如 Claude Code").fill(item.runtimeName);
+    await page.getByRole("button", { name: "高级选项" }).hover();
+    await page.getByRole("button", { name: "高级选项" }).click();
+    await expect(page.locator("div").filter({ hasText: item.notice }).first()).toBeVisible();
+    await page.getByRole("button", { name: "保存" }).hover();
+    await page.getByRole("button", { name: "保存" }).click();
+
+    const savedRuntime = page
+      .locator("div.rounded-xl.border")
+      .filter({ has: page.locator("strong", { hasText: item.runtimeName }) })
+      .filter({ hasText: item.commandText })
+      .first();
+    await expect(savedRuntime).toBeVisible({ timeout: 15_000 });
+    await expect.poll(() => postedPayloads.length).toBe(1);
+    page.off("request", requestListener);
+
+    const payload = postedPayloads[0] as Record<string, unknown>;
+    expect(payload.prompt_transport).toBe(item.promptTransport);
+    expect(payload.output_mode).toBe(item.outputMode);
+    expect(payload.completion_mode).toBe("process_exit");
+    expect(payload.session_persistence).toBe("resume_args");
+    expect(payload.resume_args).toEqual([]);
+    expect(payload.sentinel_text).toBe("");
+
+    const listResp = await request.get(`${backendBase}/api/settings/agent-runtimes`);
+    expect(listResp.ok()).toBeTruthy();
+    const runtimes = (await listResp.json()) as {
+      items: Array<{ id: string; name: string; prompt_transport: string; output_mode: string; session_persistence: string }>;
+    };
+    const runtime = runtimes.items.find((runtimeItem) => runtimeItem.name === item.runtimeName);
+    expect(runtime).toBeTruthy();
+    expect(runtime?.prompt_transport).toBe(item.promptTransport);
+    expect(runtime?.output_mode).toBe(item.outputMode);
+    expect(runtime?.session_persistence).toBe("resume_args");
+    if (runtime) {
+      await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+    }
   }
 });
 
