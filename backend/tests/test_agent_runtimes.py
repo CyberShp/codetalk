@@ -2229,6 +2229,20 @@ class TestAgentRuntimes:
 
         assert _agent_answer_requires_repair(user_message, executable_answer, []) is False
 
+        single_case_answer = "\n".join(
+            [
+                "## 代码证据",
+                "- `lib/iscsi/iscsi.c:1539`: CHAP AuthMethod 协商路径。",
+                "- `test/iscsi_tgt`: 可承载登录黑盒回归。",
+                "## 黑盒测试用例",
+                "### TC-01 正常登录",
+                "前置条件：target 已启动；步骤：initiator 发起 iSCSI Login；预期结果：进入 Full Feature Phase。",
+                "观测点：Login Response status class/detail、`iscsi_get_connections` state/login_phase、target 日志。",
+                "失败诊断线索：若状态进入 running，检查 CHAP 配置是否未启用；若无日志，检查 initiator 是否真正触发登录。",
+            ]
+        )
+        assert _agent_answer_requires_repair(user_message, single_case_answer, []) is True
+
     async def test_ai_thread_agent_runtime_rejects_irrelevant_source_evidence_for_specific_flow(self):
         from app.services.ai_conversations import _agent_answer_requires_repair
 

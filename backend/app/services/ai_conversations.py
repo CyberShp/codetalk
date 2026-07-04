@@ -2038,7 +2038,10 @@ def _agent_answer_too_thin_for_task(content: str, *, user_message: str = "") -> 
         has_black_box_json = any(marker in lowered for marker in ("black_box_cases", "blackbox_cases", "test_cases"))
         if not has_black_box_json and not any(marker in lowered for marker in ("黑盒", "测试用例", "test case", "前置条件", "预期结果")):
             return True
-        case_markers = len(re.findall(r"(?:^|\n)\s*(?:[-*]|\d+[.)、])\s*(?:\*\*)?(?:用例|case|前置条件|步骤)", text, re.I))
+        case_markers = _blackbox_case_count(text)
+        requested_min_cases = _blackbox_requested_min_case_count(requested)
+        if not has_black_box_json and requested_min_cases and case_markers < requested_min_cases:
+            return True
         expectation_markers = sum(1 for marker in ("前置", "步骤", "预期", "观测", "失败诊断", "expected") if marker in lowered)
         if not has_black_box_json and case_markers < 2 and expectation_markers < 3:
             return True
@@ -2156,6 +2159,42 @@ def _blackbox_task_requires_executable_detail(requested: str) -> bool:
         "triage",
     )
     return any(marker in text for marker in markers)
+
+
+def _blackbox_requested_min_case_count(requested: str) -> int:
+    text = str(requested or "").lower()
+    count_words = {
+        "两": 2,
+        "二": 2,
+        "俩": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+    }
+    match = re.search(r"(\d{1,2})\s*(?:个|条|组|项)?\s*(?:黑盒)?(?:测试)?用例", text)
+    if match:
+        return max(1, min(20, int(match.group(1))))
+    match = re.search(r"(两|二|俩|三|四|五)\s*(?:个|条|组|项)?\s*(?:黑盒)?(?:测试)?用例", text)
+    if match:
+        return count_words.get(match.group(1), 0)
+    match = re.search(r"\b(two|three|four|five)\s+(?:black[- ]?box\s+)?(?:test\s+)?cases\b", text)
+    if match:
+        return {"two": 2, "three": 3, "four": 4, "five": 5}[match.group(1)]
+    return 0
+
+
+def _blackbox_case_count(content: str) -> int:
+    case_heading_re = re.compile(
+        r"^\s*(?:#{1,6}\s*)?(?:[-*]\s*)?(?:\d+[.)、]\s*)?(?:"
+        r"TC[-_\s]?\d+"
+        r"|用例\s*[:：]"
+        r"|用例[一二三四五六七八九十\d]"
+        r"|case\s*(?:\d+|[:：])"
+        r"|test\s+case\s*(?:\d+|[:：])"
+        r")",
+        re.IGNORECASE,
+    )
+    return sum(1 for line in str(content or "").splitlines() if case_heading_re.search(line.strip()))
 
 
 def _blackbox_answer_missing_observability(content: str) -> bool:

@@ -8305,6 +8305,115 @@ test("fails visibly when a structured agent answer still lacks required sections
   }
 });
 
+test("fails visibly when an agent returns only one case for a two-case black-box task", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(70_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-case-breadth-repo-")));
+  fs.mkdirSync(path.join(repo, "lib", "iscsi"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "iscsi", "iscsi.c"),
+    "int iscsi_login_case_breadth_probe(void) { return 0; }\n",
+    "utf8",
+  );
+  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-case-breadth-")));
+  const runtimeScript = path.join(runtimeDir, "case_breadth_agent.py");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "import sys",
+      "sys.stdin.read()",
+      "print('## 结论\\nCASE_BREADTH_INCOMPLETE_ANSWER: 只生成了一条测试用例。\\n\\n## 代码证据\\n- `lib/iscsi/iscsi.c`: `iscsi_login_case_breadth_probe` 是本轮源码证据。\\n- `test/iscsi_tgt`: 可承载 iSCSI login 黑盒回归。\\n\\n## 黑盒测试用例\\n### TC-01 正常登录\\n前置条件：target 已启动；步骤：initiator 发起 iSCSI Login；预期结果：进入 Full Feature Phase。\\n观测点：Login Response status class/detail、session state、target 日志。\\n失败诊断线索：若状态异常，检查 CHAP 配置、InitiatorName 和 target 日志。', flush=True)",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  const workspaceName = `ai-case-breadth-e2e-${Date.now()}`;
+  const runtimeName = `Case breadth runtime ${Date.now()}`;
+  const threadTitle = `${workspaceName} two case guard`;
+  const prompt = "针对 iSCSI login 写两个黑盒测试用例，先读源码证据，并包含前置条件、步骤、预期结果、观测点和失败诊断线索";
+
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: runtimeName,
+      command: "python3",
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+
+  try {
+    await page.goto("/ai", { waitUntil: "domcontentloaded" });
+    const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
+    await expect(projectButton).toBeVisible({ timeout: 15_000 });
+    await projectButton.hover();
+    await projectButton.click();
+    await expect(page.getByRole("heading", { name: workspaceName })).toBeVisible();
+
+    await page.getByLabel("AI 线程执行器").selectOption({ label: runtimeName });
+    await page.getByPlaceholder(/线程名称/).fill(threadTitle);
+    await page.getByRole("button", { name: "新建线程" }).hover();
+    await page.getByRole("button", { name: "新建线程" }).click();
+
+    await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
+    await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
+
+    await page.getByLabel("AI 线程消息").fill(prompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+    await expect(page.locator("div[role='alert']").filter({ hasText: "Agent 返回内容不足" })).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByRole("button", { name: "重试上一条" })).toBeVisible();
+    await expect(page.getByText("CASE_BREADTH_INCOMPLETE_ANSWER")).toHaveCount(0);
+
+    const processDisclosure = page.getByTestId("agent-process-disclosure");
+    await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
+    await processDisclosure.getByText("Agent 过程").click();
+    await expect(processDisclosure.getByText("上一次执行器输出过短")).toBeVisible();
+
+    const conversationResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}`,
+    );
+    expect(conversationResp.ok()).toBeTruthy();
+    const conversation = (await conversationResp.json()) as {
+      status: string;
+      latest_run: { status: string } | null;
+    };
+    expect(conversation.status).toBe("error");
+    expect(conversation.latest_run?.status).toBe("failed");
+
+    const messagesResp = await request.get(
+      `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
+    );
+    expect(messagesResp.ok()).toBeTruthy();
+    const messageBody = (await messagesResp.json()) as {
+      items: Array<{ role: string; content: string }>;
+    };
+    const assistant = messageBody.items.find((item) => item.role === "assistant");
+    expect(assistant?.content ?? "").not.toContain("CASE_BREADTH_INCOMPLETE_ANSWER");
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("retries a structured quality failure and recovers with a complete agent answer", async ({
   page,
   request,
