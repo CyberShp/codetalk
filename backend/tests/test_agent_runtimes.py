@@ -2398,6 +2398,85 @@ class TestAgentRuntimes:
             is False
         )
 
+    async def test_ai_thread_agent_runtime_preserves_multiline_user_task_in_prompt(
+        self,
+        sqlite_db,
+        tmp_path,
+    ):
+        repo = tmp_path / "spdk"
+        (repo / "lib" / "nvmf").mkdir(parents=True)
+        (repo / "lib" / "nvmf" / "ctrlr.c").write_text(
+            "int nvmf_ctrlr_connect(void) { return 0; }\n",
+            encoding="utf-8",
+        )
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-multiline-prompt", repo_path=str(repo))
+        prompt_log = tmp_path / "multiline-agent-prompts.jsonl"
+        agent_script = tmp_path / "multiline_prompt_agent.py"
+        agent_script.write_text(
+            "\n".join(
+                [
+                    "import json, pathlib, sys",
+                    f"prompt_log = pathlib.Path({str(prompt_log)!r})",
+                    "prompt = sys.stdin.read()",
+                    "previous = prompt_log.read_text(encoding='utf-8') if prompt_log.exists() else ''",
+                    "prompt_log.write_text(previous + json.dumps({'prompt': prompt}, ensure_ascii=False) + '\\n', encoding='utf-8')",
+                    "assert 'NVMe-oF target connect 到 IO ready' in prompt",
+                    "assert '按代码证据 -> 流程梳理 -> SFMEA -> 黑盒测试用例输出' in prompt",
+                    "assert prompt.find('NVMe-oF target connect 到 IO ready') < prompt.find('按代码证据 -> 流程梳理 -> SFMEA -> 黑盒测试用例输出')",
+                    "print('## 结论\\n已收到完整多行任务，并基于 `lib/nvmf/ctrlr.c` 输出结果。\\n\\n## 代码证据\\n- `lib/nvmf/ctrlr.c`: `nvmf_ctrlr_connect`。\\n\\n## 流程梳理\\n1. connect 进入 controller 建立路径。\\n\\n## SFMEA\\n| failure mode | cause | effect | severity | occurrence | detection | RPN | mitigation |\\n| connect timeout | transport delay | 连接失败 | 8 | 3 | 4 | 96 | 增加超时用例 |\\n\\n## 黑盒测试用例\\n1. 用例：正常连接；前置条件：target 已启动；步骤：发起 connect；预期结果：连接成功；观测点：状态和日志；失败诊断线索：若状态未 ready，检查 listener、subsystem NQN 和 target 日志。\\n2. 用例：连接超时；前置条件：网络延迟；步骤：发起 connect；预期结果：超时失败；观测点：错误码和日志；失败诊断线索：若没有超时错误，检查注入条件、重试参数和日志时间线。', flush=True)",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        from app.services.ai_conversations import AIConversationStore, run_agent_generation
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="Multiline task prompt",
+            runtime_type="agent_runtime",
+            agent_runtime_id="runtime-multiline-prompt",
+        )
+        user_task = (
+            "请基于当前 SPDK 工作区源码分析 NVMe-oF target connect 到 IO ready 的主链路。\n"
+            "按代码证据 -> 流程梳理 -> SFMEA -> 黑盒测试用例输出；过程默认折叠，完整产物可下载。"
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content=user_task,
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "runtime-multiline-prompt",
+                "name": "Multiline Prompt Agent",
+                "command": sys.executable,
+                "args": [str(agent_script)],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "working_dir_mode": "project",
+                "timeout_seconds": 10,
+            },
+        )
+
+        prompts = [json.loads(line) for line in prompt_log.read_text(encoding="utf-8").splitlines()]
+        assert len(prompts) == 1
+        assert "NVMe-oF target connect 到 IO ready" in prompts[0]["prompt"]
+        assert "按代码证据 -> 流程梳理 -> SFMEA -> 黑盒测试用例输出" in prompts[0]["prompt"]
+
+        messages = await store.list_messages(conversation["id"])
+        assistant = [item for item in messages if item["role"] == "assistant"][-1]
+        assert "已收到完整多行任务" in assistant["content"]
+        assert "下载完整产物" in assistant["content"]
+
     async def test_ai_thread_agent_runtime_fails_structured_task_when_repair_stays_incomplete(
         self,
         sqlite_db,
