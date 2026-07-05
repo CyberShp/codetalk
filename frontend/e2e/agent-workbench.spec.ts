@@ -718,6 +718,23 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
     });
   await expect(page.locator(".ct-workflow-node")).toHaveCount(nodeCountBeforeDrop + 1);
   await expect(page.getByText(/画布节点已添加/)).toBeVisible();
+  await expect(page.getByLabel("Workflow selected node title")).toBeVisible();
+  await page.getByLabel("Workflow selected node title").fill("自定义智能体节点");
+  await expect(
+    page.locator(".ct-workflow-node", { hasText: "自定义智能体节点" }),
+  ).toBeVisible();
+  const nodeCountBeforeCopy = await page.locator(".ct-workflow-node").count();
+  await page.getByRole("button", { name: "复制节点" }).click();
+  await expect(page.locator(".ct-workflow-node")).toHaveCount(
+    nodeCountBeforeCopy + 1,
+  );
+  await expect(
+    page.locator(".ct-workflow-node", { hasText: "自定义智能体节点 副本" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "删除节点" }).click();
+  await expect(page.locator(".ct-workflow-node")).toHaveCount(nodeCountBeforeCopy);
+  await page.getByRole("button", { name: "重置位置" }).click();
+  await expect(page.getByText(/节点位置已重置|节点布局已重置/)).toBeVisible();
   await expect(page.getByLabel("Workflow builder scenario")).toBeVisible();
   const builderScenarioOptions = await page
     .getByLabel("Workflow builder scenario")
@@ -782,6 +799,9 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByText("工作流草稿已生成: custom_mr_blackbox")).toBeVisible();
   await expect(page.getByText("Draft:ready")).toBeVisible();
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"test_hooks"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"ui": \{/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"layout": \{/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"nodes": \[/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"schema": \{\s+"type": "array"/);
   await page.getByLabel("Workflow builder scenario").selectOption("source_flow_sfmea_blackbox");
   await page.getByRole("button", { name: "生成草稿" }).click();
