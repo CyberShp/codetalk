@@ -3258,6 +3258,7 @@ export default function AgentWorkbenchPage() {
   );
   const [builderProvider, setBuilderProvider] = useState("claude-code");
   const [builderMcpProfile, setBuilderMcpProfile] = useState("codehub-mcp");
+  const [builderSkillQuery, setBuilderSkillQuery] = useState("");
   const [builderGoal, setBuilderGoal] = useState<string>(
     WORKFLOW_BUILDER_SCENARIOS.mr_blackbox_test.goal,
   );
@@ -3498,6 +3499,25 @@ export default function AgentWorkbenchPage() {
       ),
     [builderSkillIds, workflowSkillOptions],
   );
+  const visibleBuilderSkillOptions = useMemo(() => {
+    const query = builderSkillQuery.trim().toLowerCase();
+    const matches = query
+      ? workflowSkillOptions.filter((skill) =>
+          [
+            skill.id,
+            skill.label,
+            skill.description ?? "",
+            skill.source ?? "",
+          ]
+            .join(" ")
+            .toLowerCase()
+            .includes(query),
+        )
+      : workflowSkillOptions.filter(
+          (skill, index) => builderSkillIds.includes(skill.id) || index < 8,
+        );
+    return matches.slice(0, 24);
+  }, [builderSkillIds, builderSkillQuery, workflowSkillOptions]);
   const builderProviderItem = useMemo(
     () =>
       (providerMatrix?.providers ?? []).find(
@@ -4148,12 +4168,30 @@ export default function AgentWorkbenchPage() {
       return;
     }
     const spec = workflowSpecToText({ id, type, resolver });
-    setBuilderInputSpec((current) => appendCommaSpec(current, spec));
-    setBuilderInputLabels((current) => ({ ...current, [id]: label }));
-    setNewWorkflowInputName("");
-    setNewWorkflowInputId("");
+    const nextInputSpec = appendCommaSpec(builderInputSpec, spec);
+    const nextInputLabels = { ...builderInputLabels, [id]: label };
+    flushSync(() => {
+      setBuilderInputSpec(nextInputSpec);
+      setBuilderInputLabels(nextInputLabels);
+      setNewWorkflowInputName("");
+      setNewWorkflowInputId("");
+    });
     setMessage(`输入契约已添加: ${label}`);
-    window.setTimeout(() => mergeWorkflowLayoutIntoJson(), 0);
+    window.setTimeout(() => {
+      try {
+        generateWorkflowFromBuilder({
+          inputSpec: nextInputSpec,
+          inputLabels: nextInputLabels,
+        });
+      } catch (error) {
+        mergeWorkflowLayoutIntoJson();
+        setMessage(
+          error instanceof Error
+            ? `输入契约已添加，但草稿同步失败: ${error.message}`
+            : `输入契约已添加，但草稿同步失败`,
+        );
+      }
+    }, 0);
   }
 
   function addBuilderOutputContract() {
@@ -4168,14 +4206,34 @@ export default function AgentWorkbenchPage() {
       return;
     }
     const spec = workflowSpecToText({ id, type, artifact });
-    setBuilderOutputSpec((current) => appendCommaSpec(current, spec));
-    setBuilderArtifacts((current) => appendCommaSpec(current, artifact));
-    setBuilderOutputLabels((current) => ({ ...current, [id]: label }));
-    setNewWorkflowOutputName("");
-    setNewWorkflowOutputId("");
-    setNewWorkflowOutputArtifact("");
+    const nextOutputSpec = appendCommaSpec(builderOutputSpec, spec);
+    const nextArtifacts = appendCommaSpec(builderArtifacts, artifact);
+    const nextOutputLabels = { ...builderOutputLabels, [id]: label };
+    flushSync(() => {
+      setBuilderOutputSpec(nextOutputSpec);
+      setBuilderArtifacts(nextArtifacts);
+      setBuilderOutputLabels(nextOutputLabels);
+      setNewWorkflowOutputName("");
+      setNewWorkflowOutputId("");
+      setNewWorkflowOutputArtifact("");
+    });
     setMessage(`输出契约已添加: ${label}`);
-    window.setTimeout(() => mergeWorkflowLayoutIntoJson(), 0);
+    window.setTimeout(() => {
+      try {
+        generateWorkflowFromBuilder({
+          outputSpec: nextOutputSpec,
+          artifacts: nextArtifacts,
+          outputLabels: nextOutputLabels,
+        });
+      } catch (error) {
+        mergeWorkflowLayoutIntoJson();
+        setMessage(
+          error instanceof Error
+            ? `输出契约已添加，但草稿同步失败: ${error.message}`
+            : `输出契约已添加，但草稿同步失败`,
+        );
+      }
+    }, 0);
   }
 
   function connectActiveWorkflowNode() {
@@ -4672,17 +4730,30 @@ export default function AgentWorkbenchPage() {
     setActiveWorkflowNodeId("agent-task");
   }
 
-  function generateWorkflowFromBuilder() {
+  function generateWorkflowFromBuilder(
+    overrides: {
+      inputSpec?: string;
+      outputSpec?: string;
+      artifacts?: string;
+      inputLabels?: Record<string, string>;
+      outputLabels?: Record<string, string>;
+    } = {},
+  ) {
     const workflowId = builderWorkflowId.trim();
     const workflowName = builderWorkflowName.trim();
     if (!workflowId || !workflowName) {
       throw new Error("Workflow builder requires workflow id and name");
     }
     const inputSchemas = parseJsonObject(builderInputSchemas || "{}");
-    const inputs = parseWorkflowSpecList(builderInputSpec, "free_text").map(
+    const inputSpec = overrides.inputSpec ?? builderInputSpec;
+    const outputSpec = overrides.outputSpec ?? builderOutputSpec;
+    const artifactsSpec = overrides.artifacts ?? builderArtifacts;
+    const inputLabels = overrides.inputLabels ?? builderInputLabels;
+    const outputLabels = overrides.outputLabels ?? builderOutputLabels;
+    const inputs = parseWorkflowSpecList(inputSpec, "free_text").map(
       (input) => {
         const schema = inputSchemaForSpec(input.id, input.type, inputSchemas);
-        const label = workflowItemLabel(builderInputLabels, input.id);
+        const label = workflowItemLabel(inputLabels, input.id);
         return {
           id: input.id,
           label,
@@ -4701,7 +4772,7 @@ export default function AgentWorkbenchPage() {
         };
       },
     );
-    const requiredArtifacts = parseCommaSeparated(builderArtifacts);
+    const requiredArtifacts = parseCommaSeparated(artifactsSpec);
     const selectedSkills = selectedBuilderSkillOptions.map((skill) => ({
       id: skill.id,
       label: skill.label,
@@ -4711,9 +4782,9 @@ export default function AgentWorkbenchPage() {
     const outputSchemas = parseJsonObject(builderOutputSchemas || "{}");
     const evidenceMappings = parseJsonObject(builderEvidenceMappings || "{}");
     const semanticImports = parseJsonObject(builderSemanticImports || "{}");
-    const outputs = parseWorkflowSpecList(builderOutputSpec, "json").map(
+    const outputs = parseWorkflowSpecList(outputSpec, "json").map(
       (output) => {
-        const label = workflowItemLabel(builderOutputLabels, output.id);
+        const label = workflowItemLabel(outputLabels, output.id);
         const artifact =
           output.artifact ||
           outputArtifactForSpec(output.id, output.type, requiredArtifacts);
@@ -6364,7 +6435,7 @@ export default function AgentWorkbenchPage() {
                 {workflowPresets.length} 个内置预设，{workflows.length} 个已注册
               </span>
             </div>
-            <div className="ct-workflow-builder-grid grid gap-2.5 xl:grid-cols-[148px_minmax(900px,1fr)_268px]">
+            <div className="ct-workflow-builder-grid grid gap-2.5 xl:grid-cols-[148px_minmax(820px,1fr)_320px]">
               <aside
                 aria-label="Workflow module palette"
                 className="rounded-lg border border-outline-variant/30 bg-surface/82 p-1.5"
@@ -6580,7 +6651,7 @@ export default function AgentWorkbenchPage() {
 
               <aside
                 aria-label="Workflow inspector"
-                className="ct-workflow-inspector max-h-[calc(100vh-170px)] overflow-y-auto rounded-lg border border-outline-variant/30 bg-surface/86 p-2"
+                className="ct-workflow-inspector max-h-[calc(100vh-170px)] overflow-y-auto rounded-lg border border-outline-variant/30 bg-surface/86 p-2 [&_input]:!text-[10px] [&_select]:!text-[10px] [&_textarea]:!text-[10px]"
               >
                 <div
                   data-testid="workflow-canvas-relation"
@@ -6987,11 +7058,41 @@ export default function AgentWorkbenchPage() {
                         恢复默认
                       </button>
                     </div>
+                    <div className="mb-2 grid gap-1.5">
+                      <input
+                        aria-label="Workflow builder skill search"
+                        value={builderSkillQuery}
+                        onChange={(event) =>
+                          setBuilderSkillQuery(event.target.value)
+                        }
+                        placeholder="搜索 skill 名称、来源或用途"
+                        className="w-full rounded-md border border-outline-variant/30 bg-surface-container px-2 py-1 font-data text-[10px] text-on-surface outline-none focus:border-primary"
+                      />
+                      <div className="flex flex-wrap gap-1.5 text-[10px] text-on-surface-variant">
+                        <span className="rounded bg-surface-container px-1.5 py-0.5">
+                          已选 {builderSkillIds.length}
+                        </span>
+                        <span
+                          aria-label="Workflow builder visible skill count"
+                          className="rounded bg-surface-container px-1.5 py-0.5"
+                        >
+                          显示 {visibleBuilderSkillOptions.length}/
+                          {workflowSkillOptions.length}
+                        </span>
+                        {!builderSkillQuery.trim() &&
+                          workflowSkillOptions.length >
+                            visibleBuilderSkillOptions.length && (
+                            <span className="rounded bg-surface-container px-1.5 py-0.5">
+                              输入关键词查看更多
+                            </span>
+                          )}
+                      </div>
+                    </div>
                     <div
                       className="grid gap-1.5"
                       aria-label="Workflow builder skills"
                     >
-                      {workflowSkillOptions.map((skill) => {
+                      {visibleBuilderSkillOptions.map((skill) => {
                         const checked = builderSkillIds.includes(skill.id);
                         return (
                           <label
@@ -7599,7 +7700,9 @@ export default function AgentWorkbenchPage() {
                     }}
                     className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
                   >
-                    <option value="">手动路径</option>
+                    <option value="" disabled>
+                      请选择已创建工作空间
+                    </option>
                     {workspaces.map((workspace) => (
                       <option key={workspace.id} value={workspace.id}>
                         {workspace.name} · {workspace.repo_path}
@@ -7607,36 +7710,19 @@ export default function AgentWorkbenchPage() {
                     ))}
                   </select>
                 ) : (
-                  <input
-                    aria-label="Workspace ID"
-                    value={workspaceId}
-                    onChange={(event) => setWorkspaceId(event.target.value)}
-                    className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
-                  />
+                  <div className="rounded-lg border border-warning/25 bg-warning/5 px-3 py-2 text-xs text-warning">
+                    还没有可运行的工作空间，请先在工作空间页面创建并完成索引。
+                  </div>
                 )}
               </label>
-              <label className="block">
-                <span className="mb-1 block text-xs text-on-surface-variant">
-                  仓库路径
-                </span>
-                <input
-                  aria-label="Repo path"
-                  value={repoPath}
-                  onChange={(event) => {
-                    const nextPath = event.target.value;
-                    setRepoPath(nextPath);
-                    setInputsJson((current) =>
-                      updateInputsJsonValue(
-                        current || "{}",
-                        { id: "repo_path", type: "directory" },
-                        nextPath,
-                      ),
-                    );
-                  }}
-                  placeholder="E:\\repo\\nof"
-                  className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface outline-none focus:border-primary"
-                />
-              </label>
+              <div className="rounded-lg border border-outline-variant/30 bg-surface px-3 py-2">
+                <p className="mb-1 text-xs text-on-surface-variant">
+                  源码路径来自所选工作空间
+                </p>
+                <p className="break-all font-data text-xs text-on-surface">
+                  {repoPath.trim() || "请选择工作空间"}
+                </p>
+              </div>
               <label className="block">
                 <span className="mb-1 block text-xs text-on-surface-variant">
                   执行器覆盖
@@ -7698,7 +7784,9 @@ export default function AgentWorkbenchPage() {
                               }}
                               className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
                             >
-                              <option value="">手动路径</option>
+                              <option value="" disabled>
+                                请选择已创建工作空间
+                              </option>
                               {workspaces.map((workspace) => (
                                 <option
                                   key={workspace.id}
@@ -7708,17 +7796,9 @@ export default function AgentWorkbenchPage() {
                                 </option>
                               ))}
                             </select>
-                            <input
-                              aria-label="Manual source directory"
-                              value={value}
-                              onChange={(event) => {
-                                const nextPath = event.target.value;
-                                updatePrepareInput(input, nextPath);
-                                setRepoPath(nextPath);
-                              }}
-                              placeholder={role || "本地源码路径"}
-                              className="mt-1 w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 font-data text-xs text-on-surface outline-none focus:border-primary"
-                            />
+                            <p className="mt-1 break-all font-data text-[10px] text-on-surface-variant">
+                              {value || role || "从工作空间选择源码路径"}
+                            </p>
                           </label>
                         );
                       }
