@@ -5321,3 +5321,33 @@ textarea:focus-visible {
   font-size: 11px !important;
   line-height: 14px !important;
 }
+
+.ct-workbench-shell .ct-workflow-inspector {
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.ct-workbench-shell .ct-workflow-inspector :is(.text-sm, .text-xs) {
+  font-size: 11px !important;
+  line-height: 15px !important;
+}
+
+.ct-workbench-shell .ct-workflow-inspector :is(input, select, textarea, button) {
+  min-height: 30px !important;
+  border-radius: 7px !important;
+  font-size: 11px !important;
+  line-height: 15px !important;
+}
+
+.ct-workbench-shell .ct-workflow-inspector :is(input, select) {
+  padding-block: 5px !important;
+  padding-inline: 8px !important;
+}
+
+.ct-workbench-shell .ct-workflow-inspector textarea {
+  padding: 8px !important;
+}
+
+.ct-workbench-shell .ct-workflow-inspector button {
+  padding: 5px 8px !important;
+}

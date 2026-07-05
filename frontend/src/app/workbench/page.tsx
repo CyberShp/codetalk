@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { useRouter } from "next/navigation";
 import {
@@ -54,6 +54,10 @@ import type {
 } from "@/lib/types";
 
 const MIN_VISIBLE_BUSY_ACTION_MS = 600;
+const WORKFLOW_CANVAS_WIDTH = 1500;
+const WORKFLOW_CANVAS_HEIGHT = 1100;
+const WORKFLOW_NODE_WIDTH = 168;
+const WORKFLOW_NODE_HEIGHT = 96;
 
 const DEFAULT_WORKFLOW = {
   id: "mr-blackbox-workflow",
@@ -1147,13 +1151,70 @@ const WORKFLOW_MODULE_PALETTE = [
   },
 ];
 
-const WORKFLOW_NODE_TONE: Record<string, string> = {
+type WorkflowPaletteModuleId = (typeof WORKFLOW_MODULE_PALETTE)[number]["id"];
+type WorkflowCanvasNodeKind = "input" | "context" | "agent" | "output" | "verify";
+type WorkflowCanvasNode = {
+  id: string;
+  kind: WorkflowCanvasNodeKind;
+  title: string;
+  subtitle: string;
+  body: string[];
+  x: number;
+  y: number;
+  source: "contract" | "canvas";
+};
+type WorkflowNodePosition = { x: number; y: number };
+
+const WORKFLOW_NODE_TONE: Record<WorkflowCanvasNodeKind, string> = {
   input: "border-sky-300/45 bg-sky-400/10",
   context: "border-emerald-300/45 bg-emerald-400/10",
   agent: "border-primary/35 bg-primary/10",
   output: "border-rose-300/45 bg-rose-400/10",
   verify: "border-amber-300/45 bg-amber-400/10",
 };
+
+function workflowPaletteKind(moduleId: WorkflowPaletteModuleId): WorkflowCanvasNodeKind {
+  if (moduleId === "input" || moduleId === "agent" || moduleId === "output") {
+    return moduleId;
+  }
+  return "context";
+}
+
+function workflowPaletteSubtitle(moduleId: WorkflowPaletteModuleId): string {
+  switch (moduleId) {
+    case "input":
+      return "输入契约";
+    case "agent":
+      return "执行步骤";
+    case "mcp":
+      return "工具配置";
+    case "skills":
+      return "技能上下文";
+    case "gitnexus":
+      return "源码证据";
+    case "cgc":
+      return "调用图证据";
+    case "output":
+      return "输出契约";
+    default:
+      return "画布模块";
+  }
+}
+
+function clampWorkflowNodePosition(
+  position: WorkflowNodePosition,
+): WorkflowNodePosition {
+  return {
+    x: Math.max(
+      0,
+      Math.min(position.x, WORKFLOW_CANVAS_WIDTH - WORKFLOW_NODE_WIDTH),
+    ),
+    y: Math.max(
+      0,
+      Math.min(position.y, WORKFLOW_CANVAS_HEIGHT - WORKFLOW_NODE_HEIGHT),
+    ),
+  };
+}
 
 function safeWorkflowSpecList(
   value: string,
@@ -2861,6 +2922,16 @@ function ProviderSectionTitle({ children }: { children: React.ReactNode }) {
 export default function AgentWorkbenchPage() {
   const router = useRouter();
   const workbenchRootRef = useRef<HTMLDivElement | null>(null);
+  const workflowBoardRef = useRef<HTMLDivElement | null>(null);
+  const workflowCanvasInnerRef = useRef<HTMLDivElement | null>(null);
+  const workflowDragRef = useRef<{
+    id: string;
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startX: number;
+    startY: number;
+  } | null>(null);
   const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([]);
   const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -2908,6 +2979,14 @@ export default function AgentWorkbenchPage() {
   const [builderInputSchemas, setBuilderInputSchemas] = useState(
     pretty(DEFAULT_BUILDER_INPUT_SCHEMAS),
   );
+  const [workflowNodePositions, setWorkflowNodePositions] = useState<
+    Record<string, WorkflowNodePosition>
+  >({});
+  const [workflowExtraNodes, setWorkflowExtraNodes] = useState<
+    WorkflowCanvasNode[]
+  >([]);
+  const [activeWorkflowNodeId, setActiveWorkflowNodeId] =
+    useState<string>("agent-task");
   const [selectedPresetId, setSelectedPresetId] = useState("");
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(
     DEFAULT_WORKFLOW.id,
@@ -3169,7 +3248,7 @@ export default function AgentWorkbenchPage() {
     builderOutputSpec,
     builderSemanticImports,
   ]);
-  const workflowCanvasNodes = useMemo(() => {
+  const workflowContractNodes = useMemo<WorkflowCanvasNode[]>(() => {
     const inputItems = safeWorkflowSpecList(builderInputSpec, "free_text");
     const outputItems = safeWorkflowSpecList(builderOutputSpec, "json");
     const requiredArtifacts = parseCommaSeparated(builderArtifacts);
@@ -3184,6 +3263,7 @@ export default function AgentWorkbenchPage() {
         body: inputItems.slice(0, 4).map((item) => `${item.id}:${item.type}`),
         x: 36,
         y: 72,
+        source: "contract",
       },
       {
         id: "source-context",
@@ -3193,6 +3273,7 @@ export default function AgentWorkbenchPage() {
         body: ["优先读取工作区源码", "复用索引与调用图产物"],
         x: 300,
         y: 220,
+        source: "contract",
       },
       {
         id: "skills-mcp",
@@ -3202,6 +3283,7 @@ export default function AgentWorkbenchPage() {
         body: ["AGENTS.md / skills", "GitNexus", "CGC"],
         x: 565,
         y: 88,
+        source: "contract",
       },
       {
         id: "agent-task",
@@ -3213,6 +3295,7 @@ export default function AgentWorkbenchPage() {
         body: [builderScenario, builderGoal.trim().slice(0, 72) || "等待目标"],
         x: 840,
         y: 295,
+        source: "contract",
       },
       {
         id: "outputs",
@@ -3233,6 +3316,7 @@ export default function AgentWorkbenchPage() {
         ],
         x: 1120,
         y: 155,
+        source: "contract",
       },
       {
         id: "validation",
@@ -3246,6 +3330,7 @@ export default function AgentWorkbenchPage() {
         ],
         x: 1260,
         y: 500,
+        source: "contract",
       },
     ];
   }, [
@@ -3260,6 +3345,97 @@ export default function AgentWorkbenchPage() {
     workflowDraftAuditSummary.semanticImportOutputCount,
     workflowDraftAuditSummary.warnings.length,
   ]);
+  const workflowCanvasNodes = useMemo<WorkflowCanvasNode[]>(
+    () =>
+      [...workflowContractNodes, ...workflowExtraNodes].map((node) => {
+        const override = workflowNodePositions[node.id];
+        return override ? { ...node, ...override } : node;
+      }),
+    [workflowContractNodes, workflowExtraNodes, workflowNodePositions],
+  );
+  const activeWorkflowNode = useMemo(
+    () =>
+      workflowCanvasNodes.find((node) => node.id === activeWorkflowNodeId) ??
+      workflowCanvasNodes[0],
+    [activeWorkflowNodeId, workflowCanvasNodes],
+  );
+
+  function startWorkflowNodeDrag(
+    event: ReactPointerEvent<HTMLElement>,
+    node: WorkflowCanvasNode,
+  ) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    setActiveWorkflowNodeId(node.id);
+    workflowDragRef.current = {
+      id: node.id,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startX: node.x,
+      startY: node.y,
+    };
+  }
+
+  function moveWorkflowNode(event: ReactPointerEvent<HTMLElement>) {
+    const drag = workflowDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    const nextPosition = clampWorkflowNodePosition({
+      x: drag.startX + event.clientX - drag.startClientX,
+      y: drag.startY + event.clientY - drag.startClientY,
+    });
+    setWorkflowNodePositions((current) => ({
+      ...current,
+      [drag.id]: nextPosition,
+    }));
+  }
+
+  function endWorkflowNodeDrag(event: ReactPointerEvent<HTMLElement>) {
+    const drag = workflowDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    workflowDragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    const node = workflowCanvasNodes.find((item) => item.id === drag.id);
+    if (node) {
+      setMessage(`节点位置已更新: ${node.title}`);
+    }
+  }
+
+  function addPaletteNodeToCanvas(
+    moduleId: string,
+    clientX: number,
+    clientY: number,
+  ) {
+    const paletteModule = WORKFLOW_MODULE_PALETTE.find(
+      (item) => item.id === moduleId,
+    );
+    const canvasRect = workflowCanvasInnerRef.current?.getBoundingClientRect();
+    if (!paletteModule || !canvasRect) return;
+    const position = clampWorkflowNodePosition({
+      x: clientX - canvasRect.left - WORKFLOW_NODE_WIDTH / 2,
+      y: clientY - canvasRect.top - WORKFLOW_NODE_HEIGHT / 2,
+    });
+    const nodeId = `canvas-${moduleId}-${Date.now().toString(36)}`;
+    const node: WorkflowCanvasNode = {
+      id: nodeId,
+      kind: workflowPaletteKind(paletteModule.id),
+      title: paletteModule.label,
+      subtitle: workflowPaletteSubtitle(paletteModule.id),
+      body: ["画布新增节点", "未自动改写字段契约"],
+      x: position.x,
+      y: position.y,
+      source: "canvas",
+    };
+    setWorkflowExtraNodes((current) => [...current, node]);
+    setActiveWorkflowNodeId(nodeId);
+    setMessage(
+      `画布节点已添加: ${paletteModule.label}；当前只影响画布布局。`,
+    );
+  }
 
   function applyWorkspaceSelection(workspace: Workspace) {
     setWorkspaceId(workspace.id);
@@ -5250,17 +5426,6 @@ export default function AgentWorkbenchPage() {
               <section
                 aria-label="Workflow canvas"
                 onDragOver={(event) => event.preventDefault()}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  const moduleId = event.dataTransfer.getData(
-                    "application/x-codetalk-workflow-module",
-                  );
-                  const paletteModule = WORKFLOW_MODULE_PALETTE.find(
-                    (item) => item.id === moduleId,
-                  );
-                  if (paletteModule)
-                    setMessage("节点模块已放入工作区: " + paletteModule.label);
-                }}
                 className="ct-workflow-canvas min-h-[700px] rounded-lg border border-outline-variant/30 bg-surface/72 p-2.5"
               >
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
@@ -5286,19 +5451,44 @@ export default function AgentWorkbenchPage() {
                     </span>
                   </div>
                 </div>
-                <div className="ct-workflow-board max-h-[720px] overflow-auto rounded-lg border border-outline-variant/20 bg-surface-container/55">
-                  <div className="relative h-[1100px] min-w-[1500px] p-3">
+                <div
+                  ref={workflowBoardRef}
+                  className="ct-workflow-board max-h-[720px] overflow-auto rounded-lg border border-outline-variant/20 bg-surface-container/55"
+                  onDragOver={(event) => {
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "copy";
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    addPaletteNodeToCanvas(
+                      event.dataTransfer.getData(
+                        "application/x-codetalk-workflow-module",
+                      ),
+                      event.clientX,
+                      event.clientY,
+                    );
+                  }}
+                >
+                  <div
+                    ref={workflowCanvasInnerRef}
+                    className="relative"
+                    style={{
+                      height: WORKFLOW_CANVAS_HEIGHT,
+                      width: WORKFLOW_CANVAS_WIDTH,
+                    }}
+                  >
                     <svg
                       aria-hidden="true"
                       className="pointer-events-none absolute inset-0 h-full w-full text-primary/45"
                       preserveAspectRatio="none"
-                      viewBox="0 0 1500 1100"
+                      viewBox={`0 0 ${WORKFLOW_CANVAS_WIDTH} ${WORKFLOW_CANVAS_HEIGHT}`}
                     >
                       {workflowCanvasNodes.slice(1).map((node, index) => (
                         <line
                           key={"link-" + node.id}
                           className="ct-workflow-link"
-                          x1={workflowCanvasNodes[index].x + 156}
+                          x1={workflowCanvasNodes[index].x + WORKFLOW_NODE_WIDTH - 12}
                           y1={workflowCanvasNodes[index].y + 42}
                           x2={node.x}
                           y2={node.y + 42}
@@ -5312,9 +5502,22 @@ export default function AgentWorkbenchPage() {
                       {workflowCanvasNodes.map((node, index) => (
                         <article
                           key={node.id}
-                          style={{ left: node.x, top: node.y, width: 168 }}
+                          style={{
+                            left: node.x,
+                            top: node.y,
+                            width: WORKFLOW_NODE_WIDTH,
+                          }}
+                          onPointerDown={(event) =>
+                            startWorkflowNodeDrag(event, node)
+                          }
+                          onPointerMove={moveWorkflowNode}
+                          onPointerUp={endWorkflowNodeDrag}
+                          onPointerCancel={endWorkflowNodeDrag}
                           className={[
-                            "ct-workflow-node absolute h-24 overflow-hidden rounded-md border p-1.5 shadow-sm",
+                            "ct-workflow-node absolute h-24 cursor-move select-none overflow-hidden rounded-md border p-1.5 shadow-sm",
+                            activeWorkflowNodeId === node.id
+                              ? "ring-2 ring-primary/35"
+                              : "",
                             WORKFLOW_NODE_TONE[node.kind] ??
                               "border-outline-variant/30 bg-surface",
                           ].join(" ")}
@@ -5354,8 +5557,24 @@ export default function AgentWorkbenchPage() {
 
               <aside
                 aria-label="Workflow inspector"
-                className="max-h-[calc(100vh-170px)] overflow-y-auto rounded-lg border border-outline-variant/30 bg-surface/86 p-2.5"
+                className="ct-workflow-inspector max-h-[calc(100vh-170px)] overflow-y-auto rounded-lg border border-outline-variant/30 bg-surface/86 p-2"
               >
+                <div
+                  data-testid="workflow-canvas-relation"
+                  className="mb-2 rounded-lg border border-outline-variant/30 bg-surface-container/70 px-2 py-1.5 text-[11px] leading-4 text-on-surface-variant"
+                >
+                  <div className="grid gap-1 font-data">
+                    <span>场景 / 字段契约 / 画布布局</span>
+                    <span>场景会重置字段契约；字段契约用于生成与保存。</span>
+                    <span>画布布局只保存节点位置和临时节点。</span>
+                  </div>
+                  <p className="mt-1 truncate text-on-surface">
+                    当前节点:{activeWorkflowNode?.title ?? "未选中"} ·{" "}
+                    {activeWorkflowNode?.source === "canvas"
+                      ? "画布新增，未写入字段契约"
+                      : "来自字段契约"}
+                  </p>
+                </div>
                 {groupedWorkflowPresets.length > 0 && (
                   <details className="mb-3 rounded-lg border border-outline-variant/30 bg-surface-container/70 p-2">
                     <summary className="cursor-pointer text-xs font-semibold text-on-surface">

@@ -677,6 +677,47 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   expect(canvasMetrics.canvasClientWidth).toBeGreaterThan(canvasMetrics.viewportWidth * 0.56);
   expect(canvasMetrics.boardScrollWidth).toBeGreaterThan(canvasMetrics.canvasClientWidth + 600);
   expect(canvasMetrics.boardScrollHeight).toBeGreaterThan(canvasMetrics.boardClientHeight + 200);
+  const inspectorMetrics = await page.getByLabel("Workflow inspector").evaluate((inspector) => {
+    const label = inspector.querySelector("label > span");
+    const select = inspector.querySelector("select");
+    const textarea = inspector.querySelector("textarea");
+    const relation = inspector.querySelector("[data-testid='workflow-canvas-relation']");
+    return {
+      labelSize: label ? parseFloat(getComputedStyle(label).fontSize) : 0,
+      selectSize: select ? parseFloat(getComputedStyle(select).fontSize) : 0,
+      textareaSize: textarea ? parseFloat(getComputedStyle(textarea).fontSize) : 0,
+      relationSize: relation ? parseFloat(getComputedStyle(relation).fontSize) : 0,
+      relationText: relation?.textContent ?? "",
+    };
+  });
+  expect(inspectorMetrics.labelSize).toBeLessThanOrEqual(11);
+  expect(inspectorMetrics.selectSize).toBeLessThanOrEqual(11);
+  expect(inspectorMetrics.textareaSize).toBeLessThanOrEqual(11);
+  expect(inspectorMetrics.relationSize).toBeLessThanOrEqual(11);
+  expect(inspectorMetrics.relationText).toContain("字段契约");
+  expect(inspectorMetrics.relationText).toContain("画布布局");
+  const firstNode = page.locator(".ct-workflow-node").first();
+  const beforeMove = await firstNode.boundingBox();
+  expect(beforeMove).not.toBeNull();
+  await page.mouse.move(beforeMove!.x + 24, beforeMove!.y + 18);
+  await page.mouse.down();
+  await page.mouse.move(beforeMove!.x + 146, beforeMove!.y + 78, { steps: 8 });
+  await page.mouse.up();
+  const afterMove = await firstNode.boundingBox();
+  expect(afterMove).not.toBeNull();
+  expect(Math.abs(afterMove!.x - beforeMove!.x)).toBeGreaterThan(80);
+  expect(Math.abs(afterMove!.y - beforeMove!.y)).toBeGreaterThan(35);
+  const nodeCountBeforeDrop = await page.locator(".ct-workflow-node").count();
+  const boardBox = await page.locator(".ct-workflow-board").boundingBox();
+  expect(boardBox).not.toBeNull();
+  await page
+    .getByLabel("Workflow module palette")
+    .getByRole("button", { name: "智能体模块" })
+    .dragTo(page.locator(".ct-workflow-board"), {
+      targetPosition: { x: Math.min(boardBox!.width - 60, 520), y: 360 },
+    });
+  await expect(page.locator(".ct-workflow-node")).toHaveCount(nodeCountBeforeDrop + 1);
+  await expect(page.getByText(/画布节点已添加/)).toBeVisible();
   await expect(page.getByLabel("Workflow builder scenario")).toBeVisible();
   const builderScenarioOptions = await page
     .getByLabel("Workflow builder scenario")
