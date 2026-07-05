@@ -3177,6 +3177,35 @@ function workflowOutputArtifactRank(relativePath: string): number {
   return rank === -1 ? order.length : rank;
 }
 
+function artifactAudience(
+  artifact: WorkbenchTaskArtifact,
+): "deliverable" | "input" | "support" | "diagnostic" {
+  if (
+    artifact.audience === "deliverable" ||
+    artifact.audience === "input" ||
+    artifact.audience === "support" ||
+    artifact.audience === "diagnostic"
+  ) {
+    return artifact.audience;
+  }
+  if (artifact.relative_path.startsWith("inputs/")) {
+    return "input";
+  }
+  if (workflowOutputArtifactRank(artifact.relative_path) < 10) {
+    return "deliverable";
+  }
+  return AUDIT_ARTIFACT_KIND_ORDER.includes(artifact.kind)
+    ? "diagnostic"
+    : "support";
+}
+
+function artifactAudienceLabel(audience: string): string {
+  if (audience === "deliverable") return "交付文件";
+  if (audience === "input") return "输入材料";
+  if (audience === "diagnostic") return "内部诊断";
+  return "支撑文件";
+}
+
 function Panel({
   title,
   icon,
@@ -8886,13 +8915,53 @@ export default function AgentWorkbenchPage() {
                     artifactManifest.task_run_id ===
                       preparedRun.task_run_id && (
                       <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
-                        审计产物: {artifactManifest.artifacts.length}
                         {(() => {
                           const sortedArtifacts = prioritizedAuditArtifacts(
                             artifactManifest.artifacts,
                           );
-                          const visibleArtifacts = sortedArtifacts.slice(0, 12);
-                          const hiddenArtifacts = sortedArtifacts.slice(
+                          const groupedArtifacts = {
+                            deliverable: sortedArtifacts.filter(
+                              (artifact) =>
+                                artifactAudience(artifact) === "deliverable",
+                            ),
+                            input: sortedArtifacts.filter(
+                              (artifact) => artifactAudience(artifact) === "input",
+                            ),
+                            support: sortedArtifacts.filter(
+                              (artifact) =>
+                                artifactAudience(artifact) === "support",
+                            ),
+                            diagnostic: sortedArtifacts.filter(
+                              (artifact) =>
+                                artifactAudience(artifact) === "diagnostic",
+                            ),
+                          };
+                          const primaryArtifacts =
+                            groupedArtifacts.deliverable.length > 0
+                              ? groupedArtifacts.deliverable
+                              : groupedArtifacts.support.slice(0, 6);
+                          const supportArtifacts =
+                            groupedArtifacts.deliverable.length > 0
+                              ? groupedArtifacts.support
+                              : groupedArtifacts.support.slice(6);
+                          const secondaryGroups = [
+                            ["input", groupedArtifacts.input],
+                            ["support", supportArtifacts],
+                            ["diagnostic", groupedArtifacts.diagnostic],
+                          ] as const;
+                          const artifactSummary = [
+                            `${artifactAudienceLabel("deliverable")}: ${
+                              groupedArtifacts.deliverable.length
+                            }`,
+                            `${artifactAudienceLabel("input")}: ${
+                              groupedArtifacts.input.length
+                            }`,
+                            `${artifactAudienceLabel("diagnostic")}: ${
+                              groupedArtifacts.diagnostic.length
+                            }`,
+                          ].join(" · ");
+                          const visibleArtifacts = primaryArtifacts.slice(0, 10);
+                          const hiddenArtifacts = primaryArtifacts.slice(
                             visibleArtifacts.length,
                           );
                           const artifactButton = (
@@ -8920,18 +8989,42 @@ export default function AgentWorkbenchPage() {
                           );
                           return (
                             <>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-medium text-on-surface">
+                                  运行产物
+                                </span>
+                                <span className="font-data text-[10px]">
+                                  {artifactSummary}
+                                </span>
+                              </div>
                               <div className="mt-1 flex flex-wrap gap-1.5">
                                 {visibleArtifacts.map(artifactButton)}
                               </div>
                               {hiddenArtifacts.length > 0 && (
                                 <details className="mt-1 rounded bg-surface/70 px-2 py-1">
                                   <summary className="cursor-pointer text-[11px] font-medium text-on-surface">
-                                    展开其余 {hiddenArtifacts.length} 个产物
+                                    展开其余 {hiddenArtifacts.length} 个交付文件
                                   </summary>
                                   <div className="mt-1 flex flex-wrap gap-1.5">
                                     {hiddenArtifacts.map(artifactButton)}
                                   </div>
                                 </details>
+                              )}
+                              {secondaryGroups.map(([audience, artifacts]) =>
+                                artifacts.length > 0 ? (
+                                  <details
+                                    key={audience}
+                                    className="mt-1 rounded bg-surface/70 px-2 py-1"
+                                  >
+                                    <summary className="cursor-pointer text-[11px] font-medium text-on-surface">
+                                      {artifactAudienceLabel(audience)}{" "}
+                                      {artifacts.length}
+                                    </summary>
+                                    <div className="mt-1 flex flex-wrap gap-1.5">
+                                      {artifacts.map(artifactButton)}
+                                    </div>
+                                  </details>
+                                ) : null,
                               )}
                             </>
                           );

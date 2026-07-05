@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from app.services.workbench_artifact_manifest import artifact_preview_with_redaction_status
+from app.services.workbench_artifact_manifest import build_task_artifact_manifest
 
 
 def test_artifact_preview_redacts_before_truncating_secret_boundary(tmp_path):
@@ -21,3 +22,30 @@ def test_artifact_preview_redacts_before_truncating_secret_boundary(tmp_path):
     assert secret not in preview
     assert "boundary" not in preview
     assert "<redacted>" in preview
+
+
+def test_artifact_manifest_marks_deliverables_and_diagnostics(tmp_path):
+    task_dir = tmp_path / "task"
+    (task_dir / "steps" / "discover_scope").mkdir(parents=True)
+    (task_dir / "steps" / "render_report").mkdir(parents=True)
+    (task_dir / "steps" / "discover_scope" / "source_scope.json").write_text(
+        '{"files":[]}', encoding="utf-8"
+    )
+    (task_dir / "steps" / "render_report" / "report.md").write_text(
+        "# Report\n", encoding="utf-8"
+    )
+    (task_dir / "task_bundle.json").write_text("{}", encoding="utf-8")
+    (task_dir / "provider_snapshot.json").write_text("{}", encoding="utf-8")
+    (task_dir / "inputs").mkdir()
+    (task_dir / "inputs" / "requirements.md").write_text("req", encoding="utf-8")
+
+    artifacts = {
+        item["relative_path"]: item
+        for item in build_task_artifact_manifest(task_dir)
+    }
+
+    assert artifacts["steps/discover_scope/source_scope.json"]["audience"] == "deliverable"
+    assert artifacts["steps/render_report/report.md"]["audience"] == "deliverable"
+    assert artifacts["task_bundle.json"]["audience"] == "diagnostic"
+    assert artifacts["provider_snapshot.json"]["audience"] == "diagnostic"
+    assert artifacts["inputs/requirements.md"]["audience"] == "input"
