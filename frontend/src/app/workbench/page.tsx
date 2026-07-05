@@ -16,6 +16,7 @@ import {
   Save,
   Search,
   MessageSquareText,
+  WandSparkles,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { api } from "@/lib/api";
@@ -47,7 +48,9 @@ import type {
   WorkbenchTaskArtifact,
   WorkbenchTaskArtifactContent,
   WorkbenchTaskArtifactManifest,
+  Workspace,
   WorkflowDraftServerAudit,
+  WorkflowGenerationDraftResult,
 } from "@/lib/types";
 
 const MIN_VISIBLE_BUSY_ACTION_MS = 600;
@@ -161,11 +164,6 @@ const WORKBENCH_VIEWS: Array<{
     id: "knowledge",
     label: "证据与语义",
     description: "沉淀事实、复用测试语义",
-  },
-  {
-    id: "diagnostics",
-    label: "执行器体检",
-    description: "智能体 CLI、MCP 与部署探测",
   },
 ];
 
@@ -2432,7 +2430,15 @@ export default function AgentWorkbenchPage() {
   const workbenchRootRef = useRef<HTMLDivElement | null>(null);
   const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([]);
   const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workflowJson, setWorkflowJson] = useState(pretty(DEFAULT_WORKFLOW));
+  const [aiWorkflowPrompt, setAiWorkflowPrompt] = useState(
+    "针对 SPDK iSCSI login 生成灰白盒测试设计工作流：先查 GitNexus/CGC 和源码证据，再输出流程、SFMEA、黑盒用例，并保存可下载产物。",
+  );
+  const [aiWorkflowPreferredId, setAiWorkflowPreferredId] = useState("iscsi_login_gray_white_test");
+  const [aiWorkflowPreferredName, setAiWorkflowPreferredName] = useState("iSCSI Login 灰白盒测试设计");
+  const [aiWorkflowGeneration, setAiWorkflowGeneration] =
+    useState<WorkflowGenerationDraftResult | null>(null);
   const [builderScenario, setBuilderScenario] =
     useState<keyof typeof WORKFLOW_BUILDER_SCENARIOS>("mr_blackbox_test");
   const [builderWorkflowId, setBuilderWorkflowId] = useState("custom_mr_blackbox");
@@ -2676,6 +2682,15 @@ export default function AgentWorkbenchPage() {
     builderOutputSpec,
     builderSemanticImports,
   ]);
+
+  function applyWorkspaceSelection(workspace: Workspace) {
+    setWorkspaceId(workspace.id);
+    setRepoPath(workspace.repo_path);
+    setInputsJson((current) =>
+      updateInputsJsonValue(current || "{}", { id: "repo_path", type: "directory" }, workspace.repo_path),
+    );
+  }
+
   const loadWorkflows = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -2727,10 +2742,11 @@ export default function AgentWorkbenchPage() {
         );
       }
 
-      const [taskRunResult, providerResult, systemAuditResult] = await Promise.allSettled([
+      const [taskRunResult, providerResult, systemAuditResult, workspaceResult] = await Promise.allSettled([
         api.workbench.taskRuns.list({ limit: 10 }),
         api.workbench.providerCapabilities(),
         api.workbench.systemAudit(),
+        api.workspaces.list(),
       ]);
 
       const diagnosticErrors: string[] = [];
@@ -2742,12 +2758,23 @@ export default function AgentWorkbenchPage() {
       if (providerResult.status === "fulfilled") {
         setProviderMatrix(providerResult.value);
       } else {
-        diagnosticErrors.push("执行器矩阵");
+        diagnosticErrors.push("执行器能力");
       }
       if (systemAuditResult.status === "fulfilled") {
         setSystemAudit(systemAuditResult.value);
       } else {
         diagnosticErrors.push("系统审计");
+      }
+      if (workspaceResult.status === "fulfilled") {
+        const visibleWorkspaces = workspaceResult.value;
+        setWorkspaces(visibleWorkspaces);
+        if (!repoPath.trim() && visibleWorkspaces.length > 0) {
+          const preferred =
+            visibleWorkspaces.find((workspace) => workspace.indexed === 1) ?? visibleWorkspaces[0];
+          applyWorkspaceSelection(preferred);
+        }
+      } else {
+        diagnosticErrors.push("工作空间列表");
       }
 
       if (coreErrors.length > 0) {
@@ -2760,7 +2787,7 @@ export default function AgentWorkbenchPage() {
     } finally {
       setLoading(false);
     }
-  }, [selectedPresetId, selectedWorkflowId]);
+  }, [repoPath, selectedPresetId, selectedWorkflowId]);
 
   useEffect(() => {
     void loadWorkflows();
@@ -2960,6 +2987,22 @@ export default function AgentWorkbenchPage() {
   const generateWorkflowDraft = () =>
     runAction("generate-workflow", async () => {
       generateWorkflowFromBuilder();
+    });
+
+  const generateAiWorkflowDraft = () =>
+    runAction("generate-ai-workflow", async () => {
+      const result = await api.workbench.workflows.generateDraft({
+        prompt: aiWorkflowPrompt.trim(),
+        preferred_id: aiWorkflowPreferredId.trim() || undefined,
+        preferred_name: aiWorkflowPreferredName.trim() || undefined,
+      });
+      setAiWorkflowGeneration(result);
+      setWorkflowJson(pretty(result.workflow));
+      setSelectedWorkflowId(result.workflow.id);
+      setWorkflowDraftServerAudit(result.audit);
+      setMessage(
+        `AI 工作流草稿已生成: ${workflowDisplayName(result.workflow)} · ${result.generation_id}`,
+      );
     });
 
   const saveWorkflow = () =>
@@ -3602,8 +3645,7 @@ export default function AgentWorkbenchPage() {
               智能体编排台
             </h1>
             <p className="mt-3 max-w-3xl text-sm leading-6 text-on-surface-variant">
-              它不是一个普通页面，而是给黑盒测试人员用的外部智能体编排台：把 Claude Code、OpenCode
-              或自定义 CLI 当成只读执行器，读取 MR、补丁、设计文档和覆盖率报告，产出可审计证据、黑盒用例和可复跑产物。
+              面向代码分析、流程梳理、SFMEA 与黑盒测试设计的工作流编排台。选择工作区后，任务会优先围绕源码、输入文件和历史证据生成可审计产物。
             </p>
           </div>
           <button
@@ -3630,9 +3672,9 @@ export default function AgentWorkbenchPage() {
             </p>
           </div>
           <div className="ct-workbench-stat rounded-xl border border-outline-variant/25 bg-surface-container/75 p-4">
-            <p className="text-xs text-on-surface-variant">外部智能体</p>
+            <p className="text-xs text-on-surface-variant">工作空间</p>
             <p className="mt-2 font-display text-2xl font-semibold text-on-surface">
-              {providerMatrix?.providers.length ?? 0}
+              {workspaces.length}
             </p>
           </div>
           <div className="ct-workbench-stat rounded-xl border border-outline-variant/25 bg-surface-container/75 p-4">
@@ -3656,7 +3698,7 @@ export default function AgentWorkbenchPage() {
         </div>
       )}
 
-      <div className="ct-workbench-switcher mb-5 grid gap-2 lg:grid-cols-4">
+      <div className="ct-workbench-switcher mb-5 grid gap-2 lg:grid-cols-3">
         {WORKBENCH_VIEWS.map((view) => {
           const selected = activeWorkbenchView === view.id;
           const badge =
@@ -3666,9 +3708,7 @@ export default function AgentWorkbenchPage() {
                 : `${taskRuns.length} 任务`
               : view.id === "workflow"
                 ? `${workflowPresets.length} 预设 / ${workflows.length} 已注册`
-                : view.id === "knowledge"
-                  ? `${semanticResults.length + memoryResults.length} 结果`
-                  : `${providerMatrix?.providers.length ?? 0} 执行器`;
+                  : `${semanticResults.length + memoryResults.length} 结果`;
           return (
             <button
               key={view.id}
@@ -3687,10 +3727,8 @@ export default function AgentWorkbenchPage() {
                     <PlayCircle size={16} />
                   ) : view.id === "workflow" ? (
                     <ClipboardList size={16} />
-                  ) : view.id === "knowledge" ? (
-                    <Library size={16} />
                   ) : (
-                    <AlertTriangle size={16} />
+                    <Library size={16} />
                   )}
                   <span className="truncate text-sm font-semibold">{view.label}</span>
                 </span>
@@ -4387,6 +4425,68 @@ export default function AgentWorkbenchPage() {
             </div>
           )}
           <div className="mb-3 rounded-lg border border-outline-variant/30 bg-surface p-3">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <p className="text-sm font-medium text-on-surface">AI 生成工作流</p>
+              </div>
+              <button
+                onClick={generateAiWorkflowDraft}
+                disabled={Boolean(busyAction) || aiWorkflowPrompt.trim().length < 8}
+                className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
+              >
+                {busyAction === "generate-ai-workflow" ? (
+                  <Loader2 size={14} className="animate-spin" />
+                ) : (
+                  <WandSparkles size={14} />
+                )}
+                AI 生成
+              </button>
+            </div>
+            <div className="grid gap-2 md:grid-cols-2">
+              <label className="block">
+                <span className="mb-1 block text-xs text-on-surface-variant">偏好 ID</span>
+                <input
+                  value={aiWorkflowPreferredId}
+                  onChange={(event) => setAiWorkflowPreferredId(event.target.value)}
+                  className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 font-data text-xs text-on-surface outline-none focus:border-primary"
+                  aria-label="AI workflow preferred id"
+                />
+              </label>
+              <label className="block">
+                <span className="mb-1 block text-xs text-on-surface-variant">偏好名称</span>
+                <input
+                  value={aiWorkflowPreferredName}
+                  onChange={(event) => setAiWorkflowPreferredName(event.target.value)}
+                  className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                  aria-label="AI workflow preferred name"
+                />
+              </label>
+            </div>
+            <label className="mt-2 block">
+              <span className="mb-1 block text-xs text-on-surface-variant">工作流话术</span>
+              <textarea
+                value={aiWorkflowPrompt}
+                onChange={(event) => setAiWorkflowPrompt(event.target.value)}
+                className="h-24 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container p-3 text-xs text-on-surface outline-none focus:border-primary"
+                aria-label="AI workflow prompt"
+              />
+            </label>
+            {aiWorkflowGeneration && (
+              <div className="mt-2 rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-xs text-on-surface-variant">
+                <div className="flex flex-wrap gap-2">
+                  <span className="font-medium text-on-surface">
+                    generation:{aiWorkflowGeneration.generation_id}
+                  </span>
+                  <span>audit:{aiWorkflowGeneration.audit.status}</span>
+                  <span>warnings:{aiWorkflowGeneration.audit.warnings.length}</span>
+                  {aiWorkflowGeneration.artifact?.path && (
+                    <span className="break-all">artifact:{aiWorkflowGeneration.artifact.path}</span>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+          <div className="mb-3 rounded-lg border border-outline-variant/30 bg-surface p-3">
             <div className="mb-3 flex flex-wrap items-end gap-2">
               <label className="min-w-48 flex-1">
                 <span className="mb-1 block text-xs text-on-surface-variant">场景</span>
@@ -4727,20 +4827,45 @@ export default function AgentWorkbenchPage() {
               </div>
             )}
             <label className="block">
-              <span className="mb-1 block text-xs text-on-surface-variant">工作区 ID</span>
-              <input
-                aria-label="Workspace ID"
-                value={workspaceId}
-                onChange={(event) => setWorkspaceId(event.target.value)}
-                className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
-              />
+              <span className="mb-1 block text-xs text-on-surface-variant">工作空间</span>
+              {workspaces.length > 0 ? (
+                <select
+                  aria-label="Workspace selector"
+                  value={workspaces.some((workspace) => workspace.id === workspaceId) ? workspaceId : ""}
+                  onChange={(event) => {
+                    const workspace = workspaces.find((item) => item.id === event.target.value);
+                    if (workspace) applyWorkspaceSelection(workspace);
+                  }}
+                  className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                >
+                  <option value="">手动路径</option>
+                  {workspaces.map((workspace) => (
+                    <option key={workspace.id} value={workspace.id}>
+                      {workspace.name} · {workspace.repo_path}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  aria-label="Workspace ID"
+                  value={workspaceId}
+                  onChange={(event) => setWorkspaceId(event.target.value)}
+                  className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                />
+              )}
             </label>
             <label className="block">
               <span className="mb-1 block text-xs text-on-surface-variant">仓库路径</span>
               <input
                 aria-label="Repo path"
                 value={repoPath}
-                onChange={(event) => setRepoPath(event.target.value)}
+                onChange={(event) => {
+                  const nextPath = event.target.value;
+                  setRepoPath(nextPath);
+                  setInputsJson((current) =>
+                    updateInputsJsonValue(current || "{}", { id: "repo_path", type: "directory" }, nextPath),
+                  );
+                }}
                 placeholder="E:\\repo\\nof"
                 className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-sm text-on-surface outline-none focus:border-primary"
               />
@@ -4763,15 +4888,58 @@ export default function AgentWorkbenchPage() {
                   工作流输入
                 </p>
                 <div className="space-y-2">
-                  {selectedWorkflowInputs.map((input) => {
-                    const inputId = String(input.id ?? "");
-                    const inputType = String(input.type ?? "text");
-                    const required = input.required === true;
-                    const role = String(input.role ?? "");
-                    const value = inputTextValue(parsedPrepareInputs, input);
-                    if (!inputId) return null;
-                    if (inputType === "boolean") {
-                      return (
+                    {selectedWorkflowInputs.map((input) => {
+                      const inputId = String(input.id ?? "");
+                      const inputType = String(input.type ?? "text");
+                      const required = input.required === true;
+                      const role = String(input.role ?? "");
+                      const value = inputTextValue(parsedPrepareInputs, input);
+                      if (!inputId) return null;
+                      if (inputId === "repo_path" && inputType === "directory" && workspaces.length > 0) {
+                        return (
+                          <label key={inputId} className="block">
+                            <span className="mb-1 block text-xs text-on-surface-variant">
+                              {inputId}:{inputType}
+                              {required ? " *" : ""}
+                            </span>
+                            <select
+                              aria-label={`Workflow input ${inputId}`}
+                              value={
+                                workspaces.some((workspace) => workspace.repo_path === value)
+                                  ? value
+                                  : ""
+                              }
+                              onChange={(event) => {
+                                const selected = workspaces.find(
+                                  (workspace) => workspace.repo_path === event.target.value,
+                                );
+                                if (selected) applyWorkspaceSelection(selected);
+                              }}
+                              className="w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                            >
+                              <option value="">手动路径</option>
+                              {workspaces.map((workspace) => (
+                                <option key={workspace.id} value={workspace.repo_path}>
+                                  {workspace.name} · {workspace.repo_path}
+                                </option>
+                              ))}
+                            </select>
+                            <input
+                              aria-label="Manual source directory"
+                              value={value}
+                              onChange={(event) => {
+                                const nextPath = event.target.value;
+                                updatePrepareInput(input, nextPath);
+                                setRepoPath(nextPath);
+                              }}
+                              placeholder={role || "本地源码路径"}
+                              className="mt-1 w-full rounded-lg border border-outline-variant/30 bg-surface-container px-3 py-2 font-data text-xs text-on-surface outline-none focus:border-primary"
+                            />
+                          </label>
+                        );
+                      }
+                      if (inputType === "boolean") {
+                        return (
                         <label key={inputId} className="block">
                           <span className="mb-1 block text-xs text-on-surface-variant">
                             {inputId}:{inputType}

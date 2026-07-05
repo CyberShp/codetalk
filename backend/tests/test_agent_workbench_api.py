@@ -117,6 +117,87 @@ async def test_workbench_workflow_draft_audit_api_reports_warnings_and_invalid(
     assert "unsupported workflow step type" in invalid_body["error"]
 
 
+async def test_workbench_workflow_generate_draft_uses_active_model_and_persists_artifact(
+    workbench_client,
+    monkeypatch,
+):
+    from app.llm.base import LLMResponse
+
+    workflow = {
+        "id": "ai_iscsi_login_test",
+        "name": "AI iSCSI login test workflow",
+        "version": 1,
+        "inputs": [
+            {"id": "analysis_object", "type": "free_text", "required": True},
+            {"id": "repo_path", "type": "directory", "required": True, "resolver": "local"},
+        ],
+        "steps": [
+            {
+                "id": "analyze_source_flow",
+                "type": "local_source_flow_sfmea_blackbox",
+                "required_artifacts": [
+                    "source_scope.json",
+                    "evidence_cards.json",
+                    "flow_map.md",
+                    "sfmea.json",
+                    "black_box_cases.json",
+                ],
+            },
+            {"id": "validate_evidence", "type": "evidence_validate"},
+            {"id": "render_report", "type": "report_render"},
+        ],
+        "outputs": [
+            {
+                "id": "source_scope",
+                "type": "json",
+                "from": "analyze_source_flow",
+                "artifact": "source_scope.json",
+                "schema": {"type": "object", "properties": {"files": {"type": "array"}}},
+            },
+            {"id": "report", "type": "markdown", "from": "render_report"},
+        ],
+    }
+
+    class FakeLLM:
+        async def complete(self, messages, max_tokens=4096, temperature=0.3):
+            assert "Allowed input types" in messages[1]["content"]
+            assert "iSCSI login" in messages[1]["content"]
+            return LLMResponse(
+                content=json.dumps(workflow),
+                model="fake-active-model",
+                usage={"total_tokens": 123},
+            )
+
+    async def fake_create_llm_client_from_active():
+        return FakeLLM()
+
+    monkeypatch.setattr(
+        "app.llm.factory.create_llm_client_from_active",
+        fake_create_llm_client_from_active,
+    )
+
+    resp = await workbench_client.post(
+        "/api/workbench/workflows/generate-draft",
+        json={
+            "prompt": "针对 iSCSI login 做灰白盒测试设计，输出流程、SFMEA、黑盒用例",
+            "preferred_id": "iscsi_login_gray_white",
+            "preferred_name": "iSCSI Login 灰白盒",
+        },
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["workflow"]["id"] == "iscsi_login_gray_white"
+    assert body["workflow"]["name"] == "iSCSI Login 灰白盒"
+    assert body["audit"]["valid"] is True
+    assert body["model"] == "fake-active-model"
+    artifact_path = _workbench_path(body["artifact"]["path"])
+    assert artifact_path.exists()
+    artifact = json.loads(artifact_path.read_text("utf-8"))
+    assert artifact["kind"] == "workflow_generation"
+    assert artifact["workflow"]["id"] == "iscsi_login_gray_white"
+
+
 async def test_workbench_workflow_preset_api(workbench_client):
     presets = await workbench_client.get("/api/workbench/workflow-presets")
     assert presets.status_code == 200

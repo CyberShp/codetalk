@@ -60,6 +60,12 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
       headers: corsHeaders(route.request().headers().origin),
     });
   });
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({
+      json: [],
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
   await page.route("**/api/workbench/provider-capabilities", async (route) => {
     await route.fulfill({
       json: {
@@ -322,7 +328,7 @@ async function gotoWorkbench(page: Page) {
 
 async function openWorkbenchView(
   page: Page,
-  name: "运行驾驶舱" | "工作流设计" | "证据与语义" | "执行器体检",
+  name: "运行驾驶舱" | "工作流设计" | "证据与语义",
 ) {
   await page.getByRole("button", { name: new RegExp(name) }).click();
   await expect(page.getByRole("button", { name: new RegExp(name) })).toHaveAttribute(
@@ -442,6 +448,94 @@ test("workflow run selector falls back to built-in presets when registered workf
   ).toHaveCount(1);
 });
 
+test("workflow run can select an existing workspace and sync repo_path input", async ({
+  page,
+}) => {
+  const definitions = [minimalWorkflowDefinition("module_analysis", "Module Analysis")];
+
+  await page.route("**/api/workbench/workflows", async (route) => {
+    await route.fulfill({
+      json: [],
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+  await page.route("**/api/workbench/workflow-presets", async (route) => {
+    await route.fulfill({
+      json: {
+        items: definitions.map((definition) => ({
+          id: definition.id,
+          name: definition.name,
+          description: `${definition.name} preset`,
+          definition,
+        })),
+      },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+  await page.route("**/api/workbench/task-runs*", async (route) => {
+    await route.fulfill({
+      json: { items: [] },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+  await page.route("**/api/workbench/provider-capabilities", async (route) => {
+    await route.fulfill({
+      json: { status: "ok", providers: [], notes: [] },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+  await page.route("**/api/workbench/system-audit", async (route) => {
+    await route.fulfill({
+      json: { status: "ok", checks: [], summary: {} },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({
+      json: [
+        {
+          id: "ws_one",
+          name: "one",
+          repo_path: "/tmp/one",
+          indexed: 1,
+          index_job: null,
+          index_progress: 100,
+          analyze_status: null,
+          analyze_progress: 0,
+          last_index_error: null,
+          created_at: "2026-07-05T00:00:00Z",
+          updated_at: "2026-07-05T00:00:00Z",
+          materials: [],
+          reports: [],
+        },
+        {
+          id: "ws_spdk",
+          name: "spdk",
+          repo_path: "/Volumes/Media/dpdk/spdk",
+          indexed: 1,
+          index_job: null,
+          index_progress: 100,
+          analyze_status: null,
+          analyze_progress: 0,
+          last_index_error: null,
+          created_at: "2026-07-05T00:00:00Z",
+          updated_at: "2026-07-05T00:00:00Z",
+          materials: [],
+          reports: [],
+        },
+      ],
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+
+  await gotoWorkbench(page);
+  await page.getByLabel("Workspace selector").selectOption("ws_spdk");
+  await expect(page.getByLabel("Repo path")).toHaveValue("/Volumes/Media/dpdk/spdk");
+  await expect(page.getByLabel("Workflow input repo_path")).toHaveValue(
+    "/Volumes/Media/dpdk/spdk",
+  );
+});
+
 test("workflow presets stay visible when non-core diagnostics fail", async ({ page }) => {
   const definitions = [
     minimalWorkflowDefinition("module_analysis", "Module Analysis"),
@@ -534,39 +628,8 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
 
   await gotoWorkbench(page);
 
-  await openWorkbenchView(page, "执行器体检");
-  await expect(page.getByRole("heading", { name: "执行器矩阵" })).toBeVisible();
-  await expect(page.getByText("ccr code", { exact: true }).first()).toBeVisible();
-  await expect(
-    page.getByText("/api/tools/claude-code/startup-probe", { exact: true }),
-  ).toBeVisible();
-  await expect(page.getByText("claude_print_arg").first()).toBeVisible();
-  await expect(page.getByText("解析").first()).toBeVisible();
-  await expect(page.getByText("available").first()).toBeVisible();
-  await expect(page.getByText("fallback").first()).toBeVisible();
-  await expect(page.getByText("launch:exec")).toBeVisible();
-  await expect(
-    page.getByText("原因: primary command unavailable; using fallback: claude"),
-  ).toBeVisible();
-  await expect(page.getByText("探测配方")).toBeVisible();
-  await expect(page.getByText("后端命令:")).toBeVisible();
-  await expect(page.getByText("覆盖环境变量:")).toBeVisible();
-  await expect(page.getByText("检查:")).toBeVisible();
-  await expect(page.getByText(/PowerShell profile/)).toBeVisible();
-  await expect(page.getByText("Agent 持有凭证").first()).toBeVisible();
-  await expect(page.getByText("CORP_AGENT_PROFILE")).toBeVisible();
-  await expect(page.getByText("CodeTalk 可直接调用").first()).toBeVisible();
-  await expect(page.getByText("Local repo search")).toBeVisible();
-  await expect(page.getByText("源码发现")).toBeVisible();
-  await expect(page.getByText("源码切片")).toBeVisible();
-  await expect(page.getByText("fast-context").first()).toBeVisible();
-  await expect(page.getByText("codetalk_mcp_bridge")).toBeVisible();
-  await page.getByRole("button", { name: "启动探测" }).first().click();
-  await expect(page.getByText("启动探测 ok: claude-code")).toBeVisible();
-  await expect(page.getByText("探测结果:")).toBeVisible();
-  await expect(page.getByText("startup_probe_ok via ccr code")).toBeVisible();
-  await expect(page.getByText("探测启动:")).toBeVisible();
-  await expect(page.getByText("探测次数:")).toBeVisible();
+  await expect(page.getByRole("button", { name: /执行器体检/ })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "执行器矩阵" })).toHaveCount(0);
   await openWorkbenchView(page, "工作流设计");
   await expect(page.getByRole("heading", { name: "工作流编排" })).toBeVisible();
   await expect(page.getByLabel("Workflow builder scenario")).toBeVisible();
@@ -1416,8 +1479,6 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   );
 
   await gotoWorkbench(page);
-  await openWorkbenchView(page, "执行器体检");
-  await expect(page.getByText("ccr code", { exact: true }).first()).toBeVisible();
   await openWorkbenchView(page, "运行驾驶舱");
   const preparePanel = page
     .locator("section")

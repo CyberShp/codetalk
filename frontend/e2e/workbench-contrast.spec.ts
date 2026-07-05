@@ -44,6 +44,12 @@ async function routeDiagnosticsWorkbench(page: Page) {
       headers: corsHeaders(route.request().headers().origin),
     });
   });
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({
+      json: [],
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
   await page.route("**/api/workbench/system-audit", async (route) => {
     await route.fulfill({
       json: {
@@ -226,25 +232,14 @@ test("workbench tabs and panels share one typography scale", async ({ page }) =>
   expect(panelMetrics!.buttonSize).toBe("14px");
 });
 
-test("provider diagnostics cards expose scannable labeled facts", async ({ page }) => {
+test("workbench keeps executor diagnostics out of the primary cockpit", async ({ page }) => {
   await routeDiagnosticsWorkbench(page);
   await page.goto("/workbench");
-  await page.getByRole("button", { name: /执行器体检/ }).click();
-  await expect(page.getByRole("heading", { name: "执行器矩阵" })).toBeVisible();
 
-  const firstCard = page.locator(".ct-provider-card").first();
-  await expect(firstCard).toBeVisible();
-
-  const requiredFacts = ["归属", "命令", "MCP", "产物", "JSON"];
-  for (const fact of requiredFacts) {
-    await expect(
-      firstCard.locator(".ct-provider-kv-label", { hasText: fact }),
-      `${fact} should be a dedicated label, not inline grey prose`,
-    ).toBeVisible();
-  }
-
-  await expect(firstCard.locator(".ct-provider-kv-value").first()).toBeVisible();
-  await expect(firstCard.locator(".ct-provider-section-title", { hasText: "启动探测" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /执行器体检/ })).toHaveCount(0);
+  await expect(page.getByRole("heading", { name: "执行器矩阵" })).toHaveCount(0);
+  await expect(page.locator(".ct-provider-card")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /工作流设计/ })).toBeVisible();
 });
 
 test("workbench removes noninteractive summary cards", async ({ page }) => {

@@ -53,6 +53,7 @@ from app.services.workflow_dsl import (
     WorkflowStore,
     WorkflowValidationError,
     audit_workflow_definition,
+    validate_workflow_definition,
 )
 from app.services.workflow_presets import (
     builtin_workflow_presets,
@@ -136,6 +137,12 @@ class PrepareTaskRunRequest(BaseModel):
 class RunTaskRunRequest(PrepareTaskRunRequest):
     timeout_sec: int = Field(default=90, ge=1, le=3600)
     stop_on_error: bool = True
+
+
+class GenerateWorkflowDraftRequest(BaseModel):
+    prompt: str = Field(min_length=8, max_length=8000)
+    preferred_id: str = Field(default="", max_length=80)
+    preferred_name: str = Field(default="", max_length=120)
 
 
 class DeploymentProbeRequest(BaseModel):
@@ -385,6 +392,89 @@ async def audit_workflow_draft(payload: dict[str, Any]) -> dict[str, Any]:
         "valid": True,
         "error": "",
         "warnings": list(audit.get("warnings") or []),
+    }
+
+
+@router.post("/workflows/generate-draft")
+async def generate_workflow_draft(payload: GenerateWorkflowDraftRequest) -> dict[str, Any]:
+    prompt_text = payload.prompt.strip()
+    generation_id = f"workflow_gen_{uuid.uuid4().hex}"
+    messages = _workflow_generation_messages(
+        prompt_text,
+        preferred_id=payload.preferred_id,
+        preferred_name=payload.preferred_name,
+    )
+    try:
+        from app.llm.factory import create_llm_client_from_active
+
+        llm = await create_llm_client_from_active()
+        response = await llm.complete(messages, max_tokens=4096, temperature=0.2)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"工作流生成模型不可用：{exc}")
+
+    raw_output = response.content.strip()
+    try:
+        draft = _extract_workflow_json(raw_output)
+        if payload.preferred_id.strip():
+            draft["id"] = _safe_workflow_id(payload.preferred_id)
+        if payload.preferred_name.strip():
+            draft["name"] = payload.preferred_name.strip()
+        workflow = validate_workflow_definition(draft)
+        audit = audit_workflow_definition(workflow.raw)
+    except WorkflowValidationError as exc:
+        artifact_path = _write_workflow_generation_artifact(
+            generation_id=generation_id,
+            prompt=prompt_text,
+            raw_output=raw_output,
+            workflow=None,
+            audit={"status": "invalid", "valid": False, "error": str(exc), "warnings": []},
+        )
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": f"AI 生成的工作流未通过校验：{exc}",
+                "generation_id": generation_id,
+                "artifact": {"path": _public_workbench_artifact_path(artifact_path)},
+            },
+        )
+    except Exception as exc:
+        artifact_path = _write_workflow_generation_artifact(
+            generation_id=generation_id,
+            prompt=prompt_text,
+            raw_output=raw_output,
+            workflow=None,
+            audit={"status": "invalid", "valid": False, "error": str(exc), "warnings": []},
+        )
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "message": f"无法解析 AI 工作流 JSON：{exc}",
+                "generation_id": generation_id,
+                "artifact": {"path": _public_workbench_artifact_path(artifact_path)},
+            },
+        )
+
+    artifact_path = _write_workflow_generation_artifact(
+        generation_id=generation_id,
+        prompt=prompt_text,
+        raw_output=raw_output,
+        workflow=workflow.raw,
+        audit=audit,
+    )
+    workflow_response = _workflow_response(workflow.raw)
+    audit_response = {
+        "status": audit.get("status") or "ok",
+        "valid": True,
+        "error": "",
+        "warnings": list(audit.get("warnings") or []),
+    }
+    return {
+        "generation_id": generation_id,
+        "workflow": workflow_response,
+        "audit": audit_response,
+        "artifact": {"path": _public_workbench_artifact_path(artifact_path)},
+        "model": response.model,
+        "usage": response.usage,
     }
 
 
@@ -1565,6 +1655,112 @@ def _workflow_response(payload: dict[str, Any]) -> dict[str, Any]:
     response = dict(payload)
     response["audit"] = audit_workflow_definition(payload)
     return response
+
+
+def _workflow_generation_messages(
+    user_prompt: str,
+    *,
+    preferred_id: str = "",
+    preferred_name: str = "",
+) -> list[dict[str, str]]:
+    preferred = []
+    if preferred_id.strip():
+        preferred.append(f"- preferred id: {_safe_workflow_id(preferred_id)}")
+    if preferred_name.strip():
+        preferred.append(f"- preferred name: {preferred_name.strip()}")
+    preferred_text = "\n".join(preferred) if preferred else "- no preferred id/name supplied"
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You generate CodeTalk Agent Workbench workflow definitions. "
+                "Return exactly one JSON object, no Markdown fences, no prose. "
+                "The JSON must validate against CodeTalk's workflow DSL. "
+                "Use only allowed input and step types. Prefer source-backed, artifact-first "
+                "testing workflows. For storage/code-analysis testing, include repo_path as a "
+                "directory input with resolver local, and include structured JSON schemas for "
+                "JSON outputs so audit does not warn about missing schemas. "
+                "Every agent_task must declare required_artifacts. Outputs that reference agent "
+                "artifacts must include from and artifact. Black-box test outputs should use "
+                "type test_cases with semantic_import defaults when appropriate."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                "Allowed input types: "
+                + ", ".join(sorted(ALLOWED_INPUT_TYPES))
+                + "\nAllowed step types: "
+                + ", ".join(sorted(ALLOWED_STEP_TYPES))
+                + "\nCommon output types: markdown, json, test_cases, scope_report.\n"
+                "Resolvers: manual, local, agent_mcp.\n"
+                f"{preferred_text}\n\n"
+                "Required workflow JSON shape:\n"
+                "{\n"
+                '  "id": "lower_snake_case_id",\n'
+                '  "name": "Human readable name",\n'
+                '  "version": 1,\n'
+                '  "inputs": [{"id":"analysis_object","type":"free_text","required":true}],\n'
+                '  "steps": [{"id":"agent_collect","type":"agent_task","provider":"claude-code","goal":"...","required_artifacts":["evidence_cards.json"]}],\n'
+                '  "outputs": [{"id":"report","type":"markdown","from":"render_report"}]\n'
+                "}\n\n"
+                "User workflow request:\n"
+                + user_prompt
+            ),
+        },
+    ]
+
+
+def _extract_workflow_json(raw_output: str) -> dict[str, Any]:
+    text = raw_output.strip()
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        start = text.find("{")
+        end = text.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        payload = json.loads(text[start : end + 1])
+    if not isinstance(payload, dict):
+        raise ValueError("workflow draft must be a JSON object")
+    return payload
+
+
+def _safe_workflow_id(value: str) -> str:
+    candidate = re.sub(r"[^A-Za-z0-9_]+", "_", value.strip().lower()).strip("_")
+    candidate = re.sub(r"_+", "_", candidate)
+    if not candidate:
+        candidate = f"ai_workflow_{uuid.uuid4().hex[:8]}"
+    if not re.match(r"^[A-Za-z_]", candidate):
+        candidate = f"workflow_{candidate}"
+    return candidate[:80]
+
+
+def _write_workflow_generation_artifact(
+    *,
+    generation_id: str,
+    prompt: str,
+    raw_output: str,
+    workflow: dict[str, Any] | None,
+    audit: dict[str, Any],
+) -> Path:
+    artifact_dir = _workbench_dir() / "workflow_generations"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    artifact_path = artifact_dir / f"{_safe_segment(generation_id, 'generation_id')}.json"
+    payload = {
+        "kind": "workflow_generation",
+        "generation_id": generation_id,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "prompt": truncate_redacted_text(prompt, 8000),
+        "raw_output": truncate_redacted_text(raw_output, 20000),
+        "workflow": workflow,
+        "audit": audit,
+    }
+    artifact_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return artifact_path
 
 
 def _agent_cli_provider_matrix_item(provider_id: str, spec: Any) -> dict[str, Any]:

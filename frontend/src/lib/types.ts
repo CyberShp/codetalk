@@ -822,6 +822,17 @@ export interface WorkbenchSmokeE2EResult {
   };
 }
 
+export interface WorkflowGenerationDraftResult {
+  generation_id: string;
+  workflow: WorkflowDefinition;
+  audit: WorkflowDraftServerAudit;
+  artifact?: {
+    path?: string;
+  };
+  model?: string;
+  usage?: Record<string, unknown>;
+}
+
 export interface WorkbenchProviderTaskProbeResult {
   status: string;
   provider: string;

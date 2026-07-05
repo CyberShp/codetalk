@@ -50,6 +50,7 @@ import type {
   WorkbenchWorkflowCapabilities,
   WorkbenchCoreWorkflowReadiness,
   WorkbenchInputUploadResult,
+  WorkflowGenerationDraftResult,
   WorkbenchProviderTaskProbeResult,
   WorkbenchSmokeE2EResult,
   WorkbenchTaskArtifactContent,
@@ -833,6 +834,19 @@ export const api = {
       auditDraft: (data: WorkflowDefinition | Record<string, unknown>) =>
         request<import("./types").WorkflowDraftServerAudit>(
           "/api/workbench/workflows/audit-draft",
+          {
+            method: "POST",
+            body: JSON.stringify(data),
+          },
+        ),
+
+      generateDraft: (data: {
+        prompt: string;
+        preferred_id?: string;
+        preferred_name?: string;
+      }) =>
+        request<WorkflowGenerationDraftResult>(
+          "/api/workbench/workflows/generate-draft",
           {
             method: "POST",
             body: JSON.stringify(data),
