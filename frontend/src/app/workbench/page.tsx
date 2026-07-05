@@ -3299,6 +3299,7 @@ export default function AgentWorkbenchPage() {
   const [workflowCanvasEdges, setWorkflowCanvasEdges] = useState<
     WorkflowCanvasEdge[]
   >([]);
+  const [workflowLinkSourceId, setWorkflowLinkSourceId] = useState("");
   const [workflowLinkTargetId, setWorkflowLinkTargetId] = useState("");
   const [workflowNodePositions, setWorkflowNodePositions] = useState<
     Record<string, WorkflowNodePosition>
@@ -3664,6 +3665,23 @@ export default function AgentWorkbenchPage() {
       ) ?? null,
     [selectedWorkflowSteps],
   );
+  const selectedAgentSkillInstructions = useMemo(() => {
+    const raw = selectedAgentStep?.skill_instructions;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .map((item) =>
+        item && typeof item === "object"
+          ? (item as Record<string, unknown>)
+          : null,
+      )
+      .filter((item): item is Record<string, unknown> => Boolean(item));
+  }, [selectedAgentStep]);
+  const selectedAgentSkillIds = useMemo(() => {
+    const raw = selectedAgentStep?.skills;
+    return Array.isArray(raw)
+      ? raw.map((item) => String(item)).filter(Boolean)
+      : [];
+  }, [selectedAgentStep]);
   const selectedRunProvider = useMemo(
     () =>
       providerOverride.trim() ||
@@ -4237,8 +4255,11 @@ export default function AgentWorkbenchPage() {
   }
 
   function connectActiveWorkflowNode() {
-    if (!activeWorkflowNode || !workflowLinkTargetId) return;
-    if (activeWorkflowNode.id === workflowLinkTargetId) {
+    const source =
+      workflowCanvasNodes.find((node) => node.id === workflowLinkSourceId) ??
+      activeWorkflowNode;
+    if (!source || !workflowLinkTargetId) return;
+    if (source.id === workflowLinkTargetId) {
       setMessage("不能连接到当前节点自身");
       return;
     }
@@ -4248,7 +4269,7 @@ export default function AgentWorkbenchPage() {
     if (!target) return;
     const exists = workflowCanvasEdges.some(
       (edge) =>
-        edge.source === activeWorkflowNode.id && edge.target === target.id,
+        edge.source === source.id && edge.target === target.id,
     );
     if (exists) {
       setMessage("这两个节点已经连线");
@@ -4257,14 +4278,15 @@ export default function AgentWorkbenchPage() {
     const nextEdges = [
       ...workflowCanvasEdges,
       {
-        id: `edge-${activeWorkflowNode.id}-${target.id}-${Date.now().toString(36)}`,
-        source: activeWorkflowNode.id,
+        id: `edge-${source.id}-${target.id}-${Date.now().toString(36)}`,
+        source: source.id,
         target: target.id,
-        label: `${activeWorkflowNode.title} -> ${target.title}`,
+        label: `${source.title} -> ${target.title}`,
       },
     ];
     setWorkflowCanvasEdges(nextEdges);
-    setMessage(`连线已添加: ${activeWorkflowNode.title} -> ${target.title}`);
+    setActiveWorkflowNodeId(source.id);
+    setMessage(`连线已添加: ${source.title} -> ${target.title}`);
     mergeWorkflowLayoutIntoJson(
       workflowLayoutSnapshot(workflowCanvasNodes, workflowHiddenNodeIds, nextEdges),
     );
@@ -6712,10 +6734,33 @@ export default function AgentWorkbenchPage() {
                         重置位置
                       </button>
                     </div>
-                    <div className="grid grid-cols-[1fr_auto] gap-1.5">
+                    <div className="grid grid-cols-[1fr_1fr_auto] gap-1.5">
                       <label className="block">
                         <span className="mb-1 block text-[10px] text-on-surface-variant">
-                          连接到
+                          从
+                        </span>
+                        <select
+                          aria-label="Workflow link source"
+                          value={workflowLinkSourceId || activeWorkflowNode?.id || ""}
+                          onChange={(event) => {
+                            setWorkflowLinkSourceId(event.target.value);
+                            setActiveWorkflowNodeId(event.target.value);
+                            if (event.target.value === workflowLinkTargetId) {
+                              setWorkflowLinkTargetId("");
+                            }
+                          }}
+                          className="w-full rounded-md border border-outline-variant/30 bg-surface px-2 py-1 text-[11px] text-on-surface outline-none focus:border-primary disabled:opacity-50"
+                        >
+                          {workflowCanvasNodes.map((node) => (
+                            <option key={node.id} value={node.id}>
+                              {node.title}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="block">
+                        <span className="mb-1 block text-[10px] text-on-surface-variant">
+                          到
                         </span>
                         <select
                           aria-label="Workflow link target"
@@ -6728,7 +6773,13 @@ export default function AgentWorkbenchPage() {
                         >
                           <option value="">选择目标节点</option>
                           {workflowCanvasNodes
-                            .filter((node) => node.id !== activeWorkflowNode?.id)
+                            .filter(
+                              (node) =>
+                                node.id !==
+                                (workflowLinkSourceId ||
+                                  activeWorkflowNode?.id ||
+                                  ""),
+                            )
                             .map((node) => (
                               <option key={node.id} value={node.id}>
                                 {node.title}
@@ -6739,7 +6790,10 @@ export default function AgentWorkbenchPage() {
                       <button
                         type="button"
                         onClick={connectActiveWorkflowNode}
-                        disabled={!activeWorkflowNode || !workflowLinkTargetId}
+                        disabled={
+                          !(workflowLinkSourceId || activeWorkflowNode) ||
+                          !workflowLinkTargetId
+                        }
                         className="mt-5 inline-flex items-center justify-center rounded-md border border-outline-variant/25 bg-surface px-2 py-1 text-[10px] text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
                       >
                         连接节点
@@ -7518,13 +7572,18 @@ export default function AgentWorkbenchPage() {
                     )}
                   </div>
                 )}
-                <textarea
-                  value={workflowJson}
-                  onChange={(event) => setWorkflowJson(event.target.value)}
-                  className="mt-3 h-64 max-h-[42vh] w-full resize-y rounded-lg border border-outline-variant/30 bg-surface p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
-                  aria-label="Workflow JSON"
-                  spellCheck={false}
-                />
+                <details className="mt-3 rounded-lg border border-outline-variant/30 bg-surface-container/70 p-2">
+                  <summary className="cursor-pointer text-xs font-medium text-on-surface">
+                    高级 Workflow JSON
+                  </summary>
+                  <textarea
+                    value={workflowJson}
+                    onChange={(event) => setWorkflowJson(event.target.value)}
+                    className="mt-2 h-64 max-h-[42vh] w-full resize-y rounded-lg border border-outline-variant/30 bg-surface p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
+                    aria-label="Workflow JSON"
+                    spellCheck={false}
+                  />
+                </details>
               </aside>
             </div>
           </Panel>
@@ -7639,6 +7698,47 @@ export default function AgentWorkbenchPage() {
                     ) : (
                       <span className="text-[11px] text-on-surface-variant">
                         尚未声明输出
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div
+                  aria-label="Run constraints"
+                  className="mt-2 rounded-md border border-outline-variant/20 bg-surface px-2 py-1.5"
+                >
+                  <p className="mb-1 text-[11px] font-medium text-on-surface">
+                    运行约束
+                  </p>
+                  <div className="grid gap-1.5 text-[10px] text-on-surface-variant sm:grid-cols-2">
+                    <span className="rounded bg-surface-container px-1.5 py-0.5 font-data">
+                      MCP: {selectedRunMcpProfile || "未启用"}
+                    </span>
+                    <span className="rounded bg-surface-container px-1.5 py-0.5 font-data">
+                      Agent: {selectedRunProvider}
+                    </span>
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap gap-1.5">
+                    {selectedAgentSkillInstructions.length > 0 ? (
+                      selectedAgentSkillInstructions.slice(0, 8).map((skill) => (
+                        <span
+                          key={String(skill.id ?? skill.label ?? "skill")}
+                          className="rounded bg-surface-container px-1.5 py-0.5 text-[10px] text-on-surface-variant"
+                        >
+                          {String(skill.label ?? skill.id ?? "skill")}
+                        </span>
+                      ))
+                    ) : selectedAgentSkillIds.length > 0 ? (
+                      selectedAgentSkillIds.slice(0, 8).map((skillId) => (
+                        <span
+                          key={skillId}
+                          className="rounded bg-surface-container px-1.5 py-0.5 font-data text-[10px] text-on-surface-variant"
+                        >
+                          {skillId}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-[11px] text-on-surface-variant">
+                        未声明 skills
                       </span>
                     )}
                   </div>

@@ -839,6 +839,11 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.locator(".ct-workflow-node")).toHaveCount(nodeCountBeforeCopy);
   await page.getByRole("button", { name: "重置位置" }).click();
   await expect(page.getByText(/节点位置已重置|节点布局已重置/)).toBeVisible();
+  await expect(page.getByLabel("Workflow link source")).toBeVisible();
+  await page.getByLabel("Workflow link source").selectOption("inputs");
+  await page.getByLabel("Workflow link target").selectOption("agent-task");
+  await page.getByRole("button", { name: "连接节点" }).click();
+  await expect(page.getByText(/连线已添加: 输入 ->/)).toBeVisible();
   await expect(page.getByLabel("Workflow builder scenario")).toBeVisible();
   const builderScenarioOptions = await page
     .getByLabel("Workflow builder scenario")
@@ -900,12 +905,19 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await page.getByLabel("New workflow input type").selectOption("file");
   await page.getByRole("button", { name: "添加输入契约" }).click();
   await expect(page.getByText(/iSCSI 登录脚本\s+iscsi_login_script/)).toBeVisible();
+  await page.getByLabel("New workflow input name").fill("变更 MR");
+  await page.getByLabel("New workflow input id").fill("change_mr");
+  await page.getByLabel("New workflow input type").selectOption("mr_link");
+  await page.getByLabel("New workflow input resolver").selectOption("agent_mcp");
+  await page.getByRole("button", { name: "添加输入契约" }).click();
+  await expect(page.getByText(/变更 MR\s+change_mr:mr_link/)).toBeVisible();
   await openWorkbenchView(page, "运行驾驶舱");
   await expect(page.getByLabel("Workspace selector")).toBeVisible();
   await expect(page.getByLabel("Repo path")).toHaveCount(0);
   await page.getByLabel("Workspace selector").selectOption("ws_spdk");
   await expect(page.getByText("源码路径: /Volumes/Media/dpdk/spdk")).toBeVisible();
   await expect(page.getByLabel("Workflow input iscsi_login_script")).toBeVisible();
+  await expect(page.getByLabel("Workflow input change_mr")).toBeVisible();
   await openWorkbenchView(page, "工作流设计");
   await page.getByLabel("New workflow output name").fill("登录 SFMEA 表");
   await page.getByLabel("New workflow output id").fill("login_sfmea");
@@ -920,8 +932,13 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await page.getByLabel("Workflow builder MCP 配置").selectOption("codehub-readonly");
   await expect(page.getByLabel("Workflow builder MCP compatibility")).toContainText("Agent 可直接使用 MCP");
   await page.getByRole("button", { name: "生成草稿" }).click();
+  await expect(page.getByText("高级 Workflow JSON")).toBeVisible();
+  await expect(page.getByLabel("Workflow JSON")).not.toBeVisible();
+  await page.getByText("高级 Workflow JSON").click();
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"id": "iscsi_login_script"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"label": "iSCSI 登录脚本"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"id": "change_mr"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"resolver": "agent_mcp"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"id": "login_sfmea"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"label": "登录 SFMEA 表"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"edges": \[/);
@@ -991,6 +1008,12 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"path_field": "file_path"/);
   await openWorkbenchView(page, "运行驾驶舱");
   await expect(page.getByText("工作流输入")).toBeVisible();
+  const runConstraints = page.getByLabel("Run constraints");
+  await expect(runConstraints.getByText("运行约束")).toBeVisible();
+  await expect(runConstraints.getByText("MCP: codehub-readonly")).toBeVisible();
+  await expect(runConstraints.getByText("SFMEA")).toBeVisible();
+  await expect(runConstraints.getByText("黑盒测试设计")).toBeVisible();
+  await expect(page.getByText(/test_cases -> black_box_cases\.json/)).toBeVisible();
   await page.getByLabel("Workflow input patch_diff").fill("E:/patches/tls.patch");
   await page.getByLabel("Upload file for patch_diff").setInputFiles({
     name: "tls.patch",
