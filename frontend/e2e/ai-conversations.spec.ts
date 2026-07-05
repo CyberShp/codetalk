@@ -1853,7 +1853,13 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
   await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
     await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
   });
+  await page.route("**/api/settings/agent-runtimes", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
   await page.route("**/api/ai/conversations?workspace_id=ws-diag&limit=50", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations?limit=100", async (route) => {
     await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
   });
   await page.route("**/api/ai/conversations/conv-diag", async (route) => {
@@ -1919,6 +1925,23 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
       },
     });
   });
+  await page.route("**/api/ai/conversations/conv-diag/events?**", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        items: [
+          {
+            event_id: 1,
+            run_id: "run-diag",
+            conversation_id: "conv-diag",
+            event_type: "status",
+            payload: { status: "running", message: "正在准备工作区源码上下文" },
+            created_at: "2026-06-28T00:00:01Z",
+          },
+        ],
+      },
+    });
+  });
   await page.route("**/api/ai/conversations/conv-diag/stream?cursor=0", async (route) => {
     completed = true;
     const diagnostics = Array.from({ length: 20 }, (_, index) => {
@@ -1954,6 +1977,15 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
   await expect(page.getByText("最终答案：覆盖 reconnect timeout 的黑盒观察点。")).toBeVisible();
   await expect(page.locator(".ct-codex-ai__reader")).not.toContainText("正在准备工作区源码上下文");
   await expect(page.locator(".ct-codex-ai__reader")).not.toContainText("诊断步骤 01");
+  const agentStatusPanel = page.getByTestId("agent-status-panel");
+  await expect(agentStatusPanel.getByText("Agent 状态")).toBeVisible();
+  await expect(agentStatusPanel.getByText("Thinking")).toBeVisible();
+  await expect(agentStatusPanel.getByText("CLI 气泡")).toBeVisible();
+  await expect(agentStatusPanel.getByText("默认折叠").first()).toBeVisible();
+  await expect(agentStatusPanel.getByText("Session")).toBeVisible();
+  await expect(agentStatusPanel.getByText("内置上下文")).toBeVisible();
+  await expect(agentStatusPanel.getByText(/最新过程：/)).toBeVisible();
+  await expect(agentStatusPanel.locator("p").filter({ hasText: "诊断步骤 01：正在读取 lib/nvmf/connect.c" })).toBeHidden();
   const processDisclosure = page.getByTestId("agent-process-disclosure");
   await expect(processDisclosure.getByText("Agent 过程")).toBeVisible();
   await expect(processDisclosure.locator("summary")).toContainText("默认折叠");
@@ -1969,6 +2001,8 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
   await expect(
     processDisclosure.locator("p").filter({ hasText: "诊断步骤 20：正在读取 lib/nvmf/connect.c" }),
   ).toBeVisible();
+  await agentStatusPanel.getByText(/最新过程：/).click();
+  await expect(agentStatusPanel.locator("p").filter({ hasText: "诊断步骤 20：正在读取 lib/nvmf/connect.c" })).toBeVisible();
   await expect(processDisclosure.locator("p").filter({ hasText: "正在准备工作区源码上下文" })).toHaveCount(1);
   await expect(processDisclosure.locator("p").filter({ hasText: "诊断步骤 01：正在读取 lib/nvmf/connect.c" })).toHaveCount(1);
 
@@ -2009,7 +2043,13 @@ test("AI conversation keeps raw tool output out of the collapsed Agent process s
   await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
     await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
   });
+  await page.route("**/api/settings/agent-runtimes", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
   await page.route("**/api/ai/conversations?workspace_id=ws-agent-summary&limit=50", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations?limit=100", async (route) => {
     await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
   });
   await page.route("**/api/ai/conversations/conv-agent-summary", async (route) => {
@@ -2150,7 +2190,13 @@ test("AI conversation collapsed Agent summary prefers friendly progress over raw
   await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
     await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
   });
+  await page.route("**/api/settings/agent-runtimes", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
   await page.route("**/api/ai/conversations?workspace_id=ws-agent-friendly-summary&limit=50", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations?limit=100", async (route) => {
     await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
   });
   await page.route("**/api/ai/conversations/conv-agent-friendly-summary", async (route) => {
@@ -2282,7 +2328,13 @@ test("AI conversation keeps the start and end of a long Agent process history", 
   await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
     await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
   });
+  await page.route("**/api/settings/agent-runtimes", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
   await page.route("**/api/ai/conversations?workspace_id=ws-agent-long-process&limit=50", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations?limit=100", async (route) => {
     await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
   });
   await page.route("**/api/ai/conversations/conv-agent-long-process", async (route) => {

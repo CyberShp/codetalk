@@ -1722,7 +1722,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   align-items: center;
   justify-content: center;
   border: 1px solid rgba(216, 227, 239, 0.9);
-  border-radius: 14px;
+  border-radius: 8px;
   background: rgba(255, 255, 255, 0.92);
   color: #64748b;
   transition:
@@ -2633,6 +2633,56 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 .ct-ai-env-card {
   display: grid;
   gap: 9px;
+}
+
+.ct-ai-agent-status {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.ct-ai-agent-status > div {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid rgba(216, 227, 239, 0.82);
+  border-radius: 14px;
+  background: #ffffff;
+  padding: 10px 11px;
+  box-shadow: 0 10px 22px rgba(15, 23, 42, 0.045);
+}
+
+.ct-ai-agent-status > div:nth-child(2),
+.ct-ai-agent-status > div:nth-child(3) {
+  grid-column: 1 / -1;
+}
+
+.ct-ai-agent-status span {
+  display: block;
+  color: #64748b;
+  font-size: 10px;
+  font-weight: 760;
+}
+
+.ct-ai-agent-status strong {
+  display: block;
+  min-width: 0;
+  margin-top: 4px;
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 12px;
+  font-weight: 760;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ct-ai-agent-process-summary {
+  margin-top: 9px;
+}
+
+.ct-ai-agent-process-summary summary {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ct-ai-env-card > div {

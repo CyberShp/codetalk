@@ -27,7 +27,7 @@ import {
   User,
 } from "lucide-react";
 import { BASE as API_BASE, api } from "@/lib/api";
-import type { AgentRuntime, AIContextReference, AIConversation, AIMessage, AIRunEvent, Workspace } from "@/lib/types";
+import type { AgentRuntime, AIContextReference, AIConversation, AIConversationRun, AIMessage, AIRunEvent, Workspace } from "@/lib/types";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 
 const QUICK_ACTIONS = [
@@ -312,6 +312,96 @@ function AgentProcessDisclosure({ diagnostics }: { diagnostics: string[] }) {
         </div>
       )}
     </details>
+  );
+}
+
+function AgentStatusPanel({
+  diagnostics,
+  latestRun,
+  streamingRunId,
+  activeRuntime,
+  runtimeType,
+}: {
+  diagnostics: string[];
+  latestRun: AIConversationRun | null;
+  streamingRunId: string | null;
+  activeRuntime: AgentRuntime | null;
+  runtimeType: string | undefined;
+}) {
+  const visibleDiagnostics = capAgentProcessDiagnostics(diagnostics);
+  const latestSummary = visibleDiagnostics.length > 0 ? latestAgentProcessSummaryText(visibleDiagnostics) : "等待 Agent 事件";
+  const status =
+    streamingRunId && latestRun?.id === streamingRunId
+      ? "生成中"
+      : latestRun?.status === "failed"
+        ? "失败"
+        : latestRun?.status === "completed"
+          ? "已完成"
+          : latestRun?.status ?? "空闲";
+  const runtimeLabel = activeRuntime
+    ? `${activeRuntime.name}${activeRuntime.enabled ? "" : "（已停用）"}`
+    : runtimeType === "agent_runtime"
+      ? "未找到执行器"
+      : "内置模型";
+  const sessionLabel =
+    activeRuntime?.session_persistence === "resume_args"
+      ? "自动续接"
+      : activeRuntime
+        ? "单轮会话"
+        : runtimeType === "agent_runtime"
+          ? "等待执行器"
+          : "内置上下文";
+  const runId = latestRun?.id ?? streamingRunId ?? "";
+  return (
+    <section data-testid="agent-status-panel">
+      <h2>
+        <Bot size={16} />
+        Agent 状态
+      </h2>
+      <div className="ct-ai-agent-status">
+        <div>
+          <span>当前模式</span>
+          <strong>{status}</strong>
+        </div>
+        <div>
+          <span>执行器</span>
+          <strong>{runtimeLabel}</strong>
+        </div>
+        <div>
+          <span>Session</span>
+          <strong>{sessionLabel}</strong>
+        </div>
+        <div>
+          <span>Thinking</span>
+          <strong>默认折叠</strong>
+        </div>
+        <div>
+          <span>CLI 气泡</span>
+          <strong>默认折叠</strong>
+        </div>
+        <div>
+          <span>过程事件</span>
+          <strong>{visibleDiagnostics.length} 条</strong>
+        </div>
+      </div>
+      <details className="ct-ai-disclosure ct-ai-agent-process-summary">
+        <summary>最新过程：{latestSummary}</summary>
+        <div className="ct-ai-diagnostic">
+          {visibleDiagnostics.length > 0 ? (
+            visibleDiagnostics.slice(-12).map((item, index) => (
+              <p key={`${index}-${item}`}>{redactDiagnosticText(item)}</p>
+            ))
+          ) : (
+            <p>Agent 过程会在这里默认折叠展示；最终答案只保留用户需要阅读的结论。</p>
+          )}
+          {runId && (
+            <p>
+              <strong>Run:</strong> {runId}
+            </p>
+          )}
+        </div>
+      </details>
+    </section>
   );
 }
 
@@ -1426,6 +1516,13 @@ export default function AIThreadPage() {
             </div>
           </div>
         </section>
+        <AgentStatusPanel
+          diagnostics={streamingDiagnostics}
+          latestRun={latestRun}
+          streamingRunId={streamingRunId}
+          activeRuntime={activeRuntime}
+          runtimeType={conversation?.runtime_type}
+        />
         <section>
           <h2>
             <FilePlus2 size={16} />
