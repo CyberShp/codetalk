@@ -2017,6 +2017,189 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
   expect(exported).not.toContain("诊断步骤 01");
 });
 
+test("AI conversation exposes Clowder-style lifecycle status and artifact-first delivery", async ({ page }) => {
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: [
+        {
+          id: "ws-clowder-parity",
+          name: "SPDK Clowder 对齐项目",
+          repo_path: "/Volumes/Media/dpdk/spdk",
+          indexed: 1,
+          index_job: null,
+          index_progress: 100,
+          analyze_status: null,
+          analyze_progress: 0,
+          last_index_error: null,
+          created_at: "2026-06-28T00:00:00Z",
+          updated_at: "2026-06-28T00:00:00Z",
+          materials: [],
+          reports: [],
+        },
+      ],
+    });
+  });
+  const agentRuntime = {
+    id: "agent-claude",
+    name: "Claude Code",
+    command: "claude",
+    args: [],
+    prompt_transport: "claude_print_arg",
+    output_mode: "stream_json",
+    working_dir_mode: "project",
+    fixed_working_dir: "",
+    env: {},
+    health_command: "",
+    timeout_seconds: 900,
+    completion_mode: "process_exit",
+    idle_complete_seconds: 5,
+    sentinel_text: "",
+    session_persistence: "resume_args",
+    resume_args: [],
+    enabled: true,
+    created_at: "2026-06-28T00:00:00Z",
+    updated_at: "2026-06-28T00:00:00Z",
+  };
+  await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [agentRuntime] } });
+  });
+  await page.route("**/api/settings/agent-runtimes", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [agentRuntime] } });
+  });
+  await page.route("**/api/ai/conversations?workspace_id=ws-clowder-parity&limit=50", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations?limit=100", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations/conv-clowder-parity", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        id: "conv-clowder-parity",
+        scope_type: "workspace",
+        scope_id: "ws-clowder-parity",
+        workspace_id: "ws-clowder-parity",
+        memory_namespace: "workspace:ws-clowder-parity",
+        runtime_type: "agent_runtime",
+        agent_runtime_id: "agent-claude",
+        title: "Clowder 对齐线程",
+        status: "idle",
+        initial_context: {},
+        created_at: "2026-06-28T00:00:00Z",
+        updated_at: "2026-06-28T00:00:42Z",
+        latest_run: {
+          id: "run-clowder-parity",
+          conversation_id: "conv-clowder-parity",
+          status: "completed",
+          cursor: 12,
+          error: null,
+          model: "agent:Claude Code",
+          token_usage: {},
+          created_at: "2026-06-28T00:00:00Z",
+          started_at: "2026-06-28T00:00:02Z",
+          completed_at: "2026-06-28T00:00:42Z",
+        },
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-clowder-parity/messages", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        items: [
+          {
+            id: "msg-clowder-user",
+            conversation_id: "conv-clowder-parity",
+            run_id: "run-clowder-parity",
+            role: "user",
+            content: "完整生成代码分析、流程梳理、SFMEA、黑盒测试用例",
+            references: [],
+            actions: [],
+            created_at: "2026-06-28T00:00:01Z",
+          },
+          {
+            id: "msg-clowder-assistant",
+            conversation_id: "conv-clowder-parity",
+            run_id: "run-clowder-parity",
+            role: "assistant",
+            content: "## SPDK 测试设计\n\n已生成结构化产物（42 条步骤/用例），正文只展示摘要。\n\n---\n完整测试设计/SFMEA/黑盒用例已保存为下载产物。",
+            references: [],
+            actions: [
+              {
+                id: "download_run_artifact",
+                label: "下载完整产物",
+                href: "/api/ai/conversations/conv-clowder-parity/runs/run-clowder-parity/artifact",
+                kind: "download",
+              },
+            ],
+            created_at: "2026-06-28T00:00:42Z",
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-clowder-parity/events?**", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        items: [
+          {
+            event_id: 1,
+            run_id: "run-clowder-parity",
+            conversation_id: "conv-clowder-parity",
+            event_type: "status",
+            payload: { status: "running", message: "正在读取 GitNexus/CGC 图谱产物、工作区源码上下文。" },
+            created_at: "2026-06-28T00:00:02Z",
+          },
+          {
+            event_id: 2,
+            run_id: "run-clowder-parity",
+            conversation_id: "conv-clowder-parity",
+            event_type: "delta",
+            payload: { kind: "diagnostic", content: "CodeTalk 已启动 Claude Code。" },
+            created_at: "2026-06-28T00:00:03Z",
+          },
+          {
+            event_id: 3,
+            run_id: "run-clowder-parity",
+            conversation_id: "conv-clowder-parity",
+            event_type: "delta",
+            payload: { kind: "diagnostic", content: "会话已延续：沿用当前线程的 Agent 上下文。" },
+            created_at: "2026-06-28T00:00:04Z",
+          },
+          {
+            event_id: 4,
+            run_id: "run-clowder-parity",
+            conversation_id: "conv-clowder-parity",
+            event_type: "delta",
+            payload: { kind: "diagnostic", content: "下载产物已准备：约 48000 bytes，正文区仅保留摘要。" },
+            created_at: "2026-06-28T00:00:42Z",
+          },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/ai/conv-clowder-parity", { waitUntil: "domcontentloaded" });
+
+  const agentStatusPanel = page.getByTestId("agent-status-panel");
+  await expect(agentStatusPanel.getByText("生命周期")).toBeVisible();
+  await expect(agentStatusPanel.getByText("产物就绪")).toBeVisible();
+  await expect(agentStatusPanel.getByText("耗时")).toBeVisible();
+  await expect(agentStatusPanel.getByText("40 秒")).toBeVisible();
+  await expect(agentStatusPanel.getByText("自动续接")).toBeVisible();
+  await expect(agentStatusPanel.getByText("取消/失败")).toBeVisible();
+  await expect(agentStatusPanel.getByText("无阻塞")).toBeVisible();
+  await expect(agentStatusPanel.locator(".ct-ai-agent-status strong").filter({ hasText: "run-clowder-parity" })).toBeVisible();
+  await expect(page.locator(".ct-codex-ai__reader")).toContainText("已生成结构化产物");
+  await expect(page.locator(".ct-codex-ai__reader")).not.toContainText("CodeTalk 已启动 Claude Code");
+  await expect(page.getByText("附件与产物")).toBeVisible();
+  await expect(page.getByRole("link", { name: /下载完整产物/ })).toBeVisible();
+});
+
 test("AI conversation keeps raw tool output out of the collapsed Agent process summary", async ({ page }) => {
   await page.route("**/api/workspaces", async (route) => {
     await route.fulfill({

@@ -330,6 +330,7 @@ function AgentStatusPanel({
 }) {
   const visibleDiagnostics = capAgentProcessDiagnostics(diagnostics);
   const latestSummary = visibleDiagnostics.length > 0 ? latestAgentProcessSummaryText(visibleDiagnostics) : "等待 Agent 事件";
+  const diagnosticText = visibleDiagnostics.join("\n");
   const status =
     streamingRunId && latestRun?.id === streamingRunId
       ? "生成中"
@@ -352,6 +353,18 @@ function AgentStatusPanel({
           ? "等待执行器"
           : "内置上下文";
   const runId = latestRun?.id ?? streamingRunId ?? "";
+  const lifecycleLabel = agentLifecycleLabel({
+    runStatus: latestRun?.status,
+    streaming: Boolean(streamingRunId && latestRun?.id === streamingRunId),
+    diagnostics: diagnosticText,
+  });
+  const elapsedLabel = agentRunElapsedLabel(latestRun);
+  const interruptionLabel =
+    latestRun?.status === "failed"
+      ? "失败待重试"
+      : latestRun?.status === "cancelled"
+        ? "用户已取消"
+        : "无阻塞";
   return (
     <section data-testid="agent-status-panel">
       <h2>
@@ -383,6 +396,22 @@ function AgentStatusPanel({
           <span>过程事件</span>
           <strong>{visibleDiagnostics.length} 条</strong>
         </div>
+        <div>
+          <span>生命周期</span>
+          <strong>{lifecycleLabel}</strong>
+        </div>
+        <div>
+          <span>耗时</span>
+          <strong>{elapsedLabel}</strong>
+        </div>
+        <div>
+          <span>取消/失败</span>
+          <strong>{interruptionLabel}</strong>
+        </div>
+        <div>
+          <span>Run</span>
+          <strong title={runId || "暂无 Run"}>{runId || "等待创建"}</strong>
+        </div>
       </div>
       <details className="ct-ai-disclosure ct-ai-agent-process-summary">
         <summary>最新过程：{latestSummary}</summary>
@@ -403,6 +432,38 @@ function AgentStatusPanel({
       </details>
     </section>
   );
+}
+
+function agentLifecycleLabel({
+  runStatus,
+  streaming,
+  diagnostics,
+}: {
+  runStatus: string | undefined;
+  streaming: boolean;
+  diagnostics: string;
+}): string {
+  const text = diagnostics.toLowerCase();
+  if (runStatus === "failed") return "失败";
+  if (runStatus === "cancelled") return "已取消";
+  if (diagnostics.includes("下载产物已准备")) return "产物就绪";
+  if (runStatus === "completed") return "已完成";
+  if (text.includes("gitnexus") || text.includes("cgc") || diagnostics.includes("源码")) return "读取证据";
+  if (diagnostics.includes("已启动")) return "Agent 已启动";
+  if (streaming || runStatus === "running" || runStatus === "queued") return "生成中";
+  return "等待任务";
+}
+
+function agentRunElapsedLabel(run: AIConversationRun | null): string {
+  if (!run?.started_at) return "等待开始";
+  const started = Date.parse(run.started_at);
+  const ended = Date.parse(run.completed_at || new Date().toISOString());
+  if (!Number.isFinite(started) || !Number.isFinite(ended) || ended < started) return "计算中";
+  const seconds = Math.max(0, Math.round((ended - started) / 1000));
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest > 0 ? `${minutes} 分 ${rest} 秒` : `${minutes} 分`;
 }
 
 function agentProcessSummaryText(value: string): string {

@@ -2645,14 +2645,15 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   min-width: 0;
   overflow: hidden;
   border: 1px solid rgba(216, 227, 239, 0.82);
-  border-radius: 14px;
+  border-radius: 8px;
   background: #ffffff;
   padding: 10px 11px;
   box-shadow: 0 10px 22px rgba(15, 23, 42, 0.045);
 }
 
 .ct-ai-agent-status > div:nth-child(2),
-.ct-ai-agent-status > div:nth-child(3) {
+.ct-ai-agent-status > div:nth-child(3),
+.ct-ai-agent-status > div:nth-child(10) {
   grid-column: 1 / -1;
 }
 
