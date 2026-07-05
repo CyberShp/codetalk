@@ -185,23 +185,26 @@ test("workbench tabs and panels share one typography scale", async ({ page }) =>
 
   const tabMetrics = await page.locator(".ct-workbench-tab").evaluateAll((tabs) =>
     tabs.map((tab) => {
-      const title = tab.querySelector("span.truncate.text-sm");
+      const title = tab.querySelector(":scope > span:first-child > span:first-child > span:last-child");
       const description = tab.querySelector(":scope > span:last-child");
       const badge = tab.querySelector(":scope > span:first-child > span:last-child");
+      const box = tab.getBoundingClientRect();
       return {
         titleSize: title ? getComputedStyle(title).fontSize : null,
         titleWeight: title ? getComputedStyle(title).fontWeight : null,
         descriptionSize: description ? getComputedStyle(description).fontSize : null,
         badgeSize: badge ? getComputedStyle(badge).fontSize : null,
+        height: box.height,
       };
     }),
   );
 
   for (const metric of tabMetrics) {
-    expect(metric.titleSize).toBe("14px");
+    expect(metric.titleSize).toBe("12px");
     expect(Number(metric.titleWeight)).toBeGreaterThanOrEqual(600);
-    expect(metric.descriptionSize).toBe("12px");
-    expect(metric.badgeSize).toBe("11px");
+    expect(metric.descriptionSize).toBe("11px");
+    expect(metric.badgeSize).toBe("10px");
+    expect(metric.height).toBeLessThanOrEqual(54);
   }
 
   await page.getByRole("button", { name: /工作流设计/ }).click();
@@ -225,11 +228,11 @@ test("workbench tabs and panels share one typography scale", async ({ page }) =>
   });
 
   expect(panelMetrics).not.toBeNull();
-  expect(panelMetrics!.labelSize).toBe("12px");
+  expect(panelMetrics!.labelSize).toBe("11px");
   expect(Number(panelMetrics!.labelWeight)).toBeGreaterThanOrEqual(580);
-  expect(panelMetrics!.selectSize).toBe("14px");
-  expect(panelMetrics!.inputSize).toBe("14px");
-  expect(panelMetrics!.buttonSize).toBe("14px");
+  expect(panelMetrics!.selectSize).toBe("12px");
+  expect(panelMetrics!.inputSize).toBe("12px");
+  expect(panelMetrics!.buttonSize).toBe("12px");
 });
 
 test("workbench keeps executor diagnostics out of the primary cockpit", async ({ page }) => {
@@ -367,7 +370,8 @@ test("workbench hero title and intro are crisp above decorative layers", async (
     const introColor = intro ? getComputedStyle(intro).color : "";
     const titleZ = title ? getComputedStyle(title).zIndex : "";
     const afterZ = hero ? getComputedStyle(hero, "::after").zIndex : "";
-    return { titleColor, introColor, titleZ, afterZ };
+    const heroBox = hero?.getBoundingClientRect();
+    return { titleColor, introColor, titleZ, afterZ, heroHeight: heroBox?.height ?? 0 };
   });
 
   const titleRgb = parseRgb(metrics.titleColor);
@@ -380,6 +384,7 @@ test("workbench hero title and intro are crisp above decorative layers", async (
   expect(introRgb!.a, "intro must not be translucent").toBeGreaterThanOrEqual(0.9);
   expect(introRgb!.r, "intro should be darker than washed helper text").toBeLessThanOrEqual(75);
   expect(Number(metrics.titleZ)).toBeGreaterThan(Number(metrics.afterZ));
+  expect(metrics.heroHeight, "hero should not steal vertical workspace").toBeLessThanOrEqual(120);
 });
 
 test("workbench hero stays visible across reloads after motion setup", async ({ page }) => {

@@ -632,6 +632,51 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByRole("heading", { name: "执行器矩阵" })).toHaveCount(0);
   await openWorkbenchView(page, "工作流设计");
   await expect(page.getByRole("heading", { name: "工作流编排" })).toBeVisible();
+  await expect(page.getByLabel("Workflow module palette")).toBeVisible();
+  await expect(page.getByLabel("Workflow canvas")).toBeVisible();
+  await expect(page.getByLabel("Workflow inspector")).toBeVisible();
+  for (const moduleName of ["输入模块", "智能体模块", "MCP 模块", "Skills 模块", "GitNexus 模块", "CGC 模块", "输出模块"]) {
+    await expect(page.getByRole("button", { name: moduleName })).toBeVisible();
+  }
+  await expect(page.locator(".ct-workflow-link")).toHaveCount(5);
+  await expect(page.getByText("repo_path").first()).toBeVisible();
+  await expect(page.getByText("sfmea").first()).toBeVisible();
+  const canvasMetrics = await page.evaluate(() => {
+    const heroTitle = document.querySelector(".ct-workbench-hero h1");
+    const canvas = document.querySelector(".ct-workflow-canvas");
+    const board = document.querySelector(".ct-workflow-board");
+    const firstNode = document.querySelector(".ct-workflow-node");
+    const activeTab = document.querySelector(".ct-workbench-tab.is-active");
+    const firstPaletteButton = document.querySelector("[aria-label='Workflow module palette'] button");
+    const panelTitle = document.querySelector(".ct-workbench-panel-title");
+    const nodeBox = firstNode?.getBoundingClientRect();
+    const activeTabBox = activeTab?.getBoundingClientRect();
+    const paletteButtonBox = firstPaletteButton?.getBoundingClientRect();
+    return {
+      heroTitleSize: heroTitle ? parseFloat(getComputedStyle(heroTitle).fontSize) : 0,
+      panelTitleSize: panelTitle ? parseFloat(getComputedStyle(panelTitle).fontSize) : 0,
+      canvasClientWidth: canvas?.clientWidth ?? 0,
+      viewportWidth: window.innerWidth,
+      boardScrollWidth: board?.scrollWidth ?? 0,
+      boardScrollHeight: board?.scrollHeight ?? 0,
+      boardClientHeight: board?.clientHeight ?? 0,
+      nodeHeight: nodeBox?.height ?? 0,
+      activeTabHeight: activeTabBox?.height ?? 0,
+      paletteButtonHeight: paletteButtonBox?.height ?? 0,
+      paletteFontSize: firstPaletteButton
+        ? parseFloat(getComputedStyle(firstPaletteButton).fontSize)
+        : 0,
+    };
+  });
+  expect(canvasMetrics.heroTitleSize).toBeLessThanOrEqual(18);
+  expect(canvasMetrics.panelTitleSize).toBeLessThanOrEqual(14);
+  expect(canvasMetrics.paletteFontSize).toBeLessThanOrEqual(12);
+  expect(canvasMetrics.paletteButtonHeight).toBeLessThanOrEqual(42);
+  expect(canvasMetrics.nodeHeight).toBeLessThanOrEqual(100);
+  expect(canvasMetrics.activeTabHeight).toBeLessThanOrEqual(54);
+  expect(canvasMetrics.canvasClientWidth).toBeGreaterThan(canvasMetrics.viewportWidth * 0.56);
+  expect(canvasMetrics.boardScrollWidth).toBeGreaterThan(canvasMetrics.canvasClientWidth + 600);
+  expect(canvasMetrics.boardScrollHeight).toBeGreaterThan(canvasMetrics.boardClientHeight + 200);
   await expect(page.getByLabel("Workflow builder scenario")).toBeVisible();
   const builderScenarioOptions = await page
     .getByLabel("Workflow builder scenario")
@@ -679,7 +724,7 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByRole("button", { name: "应用预设" })).toBeVisible();
   await expect(page.getByRole("button", { name: "安装预设" })).toBeVisible();
   await expect(page.getByRole("button", { name: "恢复内置预设" })).toBeVisible();
-  await expect(page.getByText("codehub-mcp")).toBeVisible();
+  await expect(page.getByText("codehub-mcp").first()).toBeVisible();
   await expect(page.getByLabel("Workflow builder provider preset")).toBeVisible();
   await page.getByLabel("Workflow builder provider preset").selectOption("corp-agent");
   await expect(
