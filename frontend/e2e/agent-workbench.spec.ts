@@ -1924,12 +1924,18 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(preparePanel.getByRole("button", { name: "准备运行" })).toBeEnabled();
   await preparePanel.getByRole("button", { name: "准备运行" }).click();
   await expect(preparePanel.getByText("Agent 运行阶段")).toBeVisible();
-  await expect(preparePanel.getByText("准备上下文")).toBeVisible();
-  await expect(preparePanel.getByText("执行 Agent")).toBeVisible();
-  await expect(preparePanel.getByText("校验证据")).toBeVisible();
-  await expect(preparePanel.getByText("固化交付物")).toBeVisible();
+  await expect(preparePanel.getByText("准备上下文").first()).toBeVisible();
+  await expect(preparePanel.getByText("执行 Agent").first()).toBeVisible();
+  await expect(preparePanel.getByText("校验证据").first()).toBeVisible();
+  await expect(preparePanel.getByText("固化交付物").first()).toBeVisible();
   await expect(preparePanel.getByText("可信度与可用性")).toBeVisible();
   await expect(preparePanel.getByText("交付物状态")).toBeVisible();
+  const resultPanel = page.getByLabel("运行结果面板");
+  await expect(resultPanel).toBeVisible();
+  await expect(resultPanel.getByText("演示状态")).toBeVisible();
+  await expect(resultPanel.getByText("进行中")).toBeVisible();
+  await expect(resultPanel.getByText("准备上下文")).toBeVisible();
+  await expect(resultPanel.getByText("产物与结果")).toBeVisible();
   await expect(
     preparePanel.getByRole("button", { name: /task_bundle\.json.*task_bundle/ }),
   ).toBeVisible();
@@ -1968,9 +1974,18 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(
     page.getByText("manual:POST /api/tools/claude-code/startup-probe", { exact: false }),
   ).toBeVisible();
-  await expect(page.getByText("运行产物")).toBeVisible();
-  await expect(page.getByText("交付文件: 1 · 输入材料: 0 · 内部诊断: 8")).toBeVisible();
-  await page.getByText("内部诊断 8").click();
+  await expect(resultPanel.getByText("失败", { exact: true }).first()).toBeVisible();
+  await expect(resultPanel.getByText("失败原因", { exact: true })).toBeVisible();
+  await expect(resultPanel.getByText("缺少 2 个必需验收项").first()).toBeVisible();
+  await expect(resultPanel.getByText("Agent 指令策略缺失")).toBeVisible();
+  await expect(resultPanel.getByText("输入脱敏标记缺失")).toBeVisible();
+  await expect(resultPanel.getByText("运行产物")).toBeVisible();
+  await expect(resultPanel.getByText("交付文件 1")).toBeVisible();
+  await expect(resultPanel.getByText("内部诊断 8")).toBeVisible();
+  await expect(resultPanel.getByText("missing-required")).toHaveCount(0);
+  await expect(resultPanel.getByText("agent_instruction_policy_missing")).toHaveCount(0);
+  await expect(resultPanel.getByText("stdin_redacted_flag_missing")).toHaveCount(0);
+  await resultPanel.getByText("内部诊断 8").click();
   await expect(
     page.getByRole("button", {
       name: /agent_failure_retry_context:agent_runs\/discover\/failure_retry_context\.json\s*redacted/,
@@ -2001,6 +2016,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     .getByRole("button", {
       name: "workflow_output_materialization:workflow_output_materialization.json",
     })
+    .last()
     .click();
   await expect(page.getByText("Materialized evidence: 2")).toBeVisible();
   await expect(page.getByText("Rejected outputs: 1")).toBeVisible();
@@ -2057,7 +2073,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.getByText("file:tls-design.md")).toBeVisible();
   await expect(page.getByText("sha:1234567890ab")).toBeVisible();
 
-  await page.getByText("支撑文件 2").click();
+  await page.getByText("支撑文件 2").last().click();
   await page
     .getByRole("button", {
       name: "black_box_generation_policy:black_box_generation_policy.json",
@@ -2109,7 +2125,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(
     page.getByText("do-not:do not treat raw stdout/stderr as accepted evidence"),
   ).toBeVisible();
-  await expect(page.getByText("redacted", { exact: true }).nth(1)).toBeVisible();
+  await expect(page.getByText("redacted", { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "下载脱敏预览" })).toBeVisible();
   await expect(page.locator("body")).not.toContainText(redactedArtifactSecret);
 
@@ -2194,9 +2210,9 @@ test("agent workbench prevents duplicate artifact preview requests from a real d
   await preparePanel.getByLabel("Workspace selector").selectOption("ws_spdk");
   await preparePanel.getByRole("button", { name: "准备运行" }).hover();
   await preparePanel.getByRole("button", { name: "准备运行" }).click();
-  await expect(page.getByText("运行产物")).toBeVisible();
+  await expect(page.getByText("运行产物", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("交付文件: 0 · 输入材料: 0 · 内部诊断: 1")).toBeVisible();
-  await page.getByText("内部诊断 1").click();
+  await page.getByText("内部诊断 1").last().click();
 
   const previewButton = page.getByRole("button", {
     name: "task_bundle:task_bundle.json",

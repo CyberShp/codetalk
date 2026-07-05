@@ -3188,6 +3188,107 @@ function artifactAudienceLabel(audience: string): string {
   return "支撑文件";
 }
 
+function runStatusDisplayLabel(status: string): string {
+  const normalized = status.trim().toLowerCase();
+  if (!normalized) return "未知";
+  if (
+    [
+      "ready",
+      "passed",
+      "pass",
+      "ok",
+      "completed",
+      "complete",
+      "success",
+      "accepted",
+      "done",
+    ].includes(normalized)
+  ) {
+    return "已完成";
+  }
+  if (
+    [
+      "running",
+      "pending",
+      "processing",
+      "in_progress",
+      "queued",
+      "prepared",
+    ].includes(normalized)
+  ) {
+    return "进行中";
+  }
+  if (
+    [
+      "incomplete",
+      "error",
+      "failed",
+      "failure",
+      "degraded",
+      "unavailable",
+      "missing_config",
+      "invalid",
+    ].includes(normalized)
+  ) {
+    return "失败";
+  }
+  if (["waiting", "skipped", "not_started", "idle"].includes(normalized)) {
+    return "等待";
+  }
+  return status;
+}
+
+function compactReasonLabel(reason: string): string {
+  const normalized = reason.trim();
+  const exactLabels: Record<string, string> = {
+    agent_instruction_policy_missing: "Agent 指令策略缺失",
+    stdin_redacted_flag_missing: "输入脱敏标记缺失",
+    "codetalk_provider_unavailable:gitnexus": "GitNexus 暂不可用",
+    "codetalk_provider_unavailable:cgc": "CGC 暂不可用",
+    "agent_cli_unavailable:claude-code": "Claude Code 执行器不可用",
+    "primary command unavailable; using fallback: claude":
+      "主执行器不可用，已尝试备用命令",
+  };
+  if (exactLabels[normalized]) return exactLabels[normalized];
+  if (normalized.startsWith("codetalk_provider_unavailable:")) {
+    return `${normalized.split(":")[1] ?? "CodeTalk 工具"} 暂不可用`;
+  }
+  if (normalized.startsWith("agent_cli_unavailable:")) {
+    return `${normalized.split(":")[1] ?? "Agent"} 执行器不可用`;
+  }
+  return normalized || "未提供失败原因";
+}
+
+function acceptanceIssueLabel(issue: Record<string, unknown>): string {
+  const id = String(issue.id ?? "");
+  const reason = String(issue.reason ?? "");
+  if (id.includes("agent_instruction_policy")) {
+    return "Agent 指令策略缺失";
+  }
+  if (id.includes("agent_stdin_redaction")) {
+    return "输入脱敏标记缺失";
+  }
+  return compactReasonLabel(reason || id);
+}
+
+function groupArtifactsByAudience(artifacts: WorkbenchTaskArtifact[]) {
+  const sortedArtifacts = prioritizedAuditArtifacts(artifacts);
+  return {
+    deliverable: sortedArtifacts.filter(
+      (artifact) => artifactAudience(artifact) === "deliverable",
+    ),
+    input: sortedArtifacts.filter(
+      (artifact) => artifactAudience(artifact) === "input",
+    ),
+    support: sortedArtifacts.filter(
+      (artifact) => artifactAudience(artifact) === "support",
+    ),
+    diagnostic: sortedArtifacts.filter(
+      (artifact) => artifactAudience(artifact) === "diagnostic",
+    ),
+  };
+}
+
 function Panel({
   title,
   icon,
@@ -3770,29 +3871,30 @@ export function AgentWorkbenchExperience({
       {
         label: "执行 Agent",
         status: workflowExecution
-          ? workflowExecution.status
+          ? runStatusDisplayLabel(workflowExecution.status)
           : preparedRun
-            ? "待执行"
+            ? "等待"
             : "等待",
         detail: `${selectedRunProvider} · ${selectedRunMcpProfile}`,
       },
       {
         label: "校验证据",
         status: taskAcceptanceAudit
-          ? taskAcceptanceAudit.status
+          ? runStatusDisplayLabel(taskAcceptanceAudit.status)
           : workflowExecution?.evidence_materialization?.status ??
             (preparedRun ? "待审计" : "等待"),
         detail: taskAcceptanceAudit
-          ? `missing-required:${taskAcceptanceAudit.summary.missing_required}`
-          : "schema / evidence / redaction",
+          ? `缺少 ${taskAcceptanceAudit.summary.missing_required} 个必需验收项`
+          : "等待校验 schema、证据和脱敏",
       },
       {
         label: "固化交付物",
-        status:
+        status: runStatusDisplayLabel(
           workflowOutputMaterialize?.status ??
-          workflowExecution?.evidence_materialization?.status ??
-          (artifactManifest ? "可预览" : "等待"),
-        detail: `${artifactManifest?.artifacts.length ?? 0} artifacts`,
+            workflowExecution?.evidence_materialization?.status ??
+            (artifactManifest ? "ready" : "waiting"),
+        ),
+        detail: `${artifactManifest?.artifacts.length ?? 0} 个产物`,
       },
     ],
     [
@@ -3806,6 +3908,56 @@ export function AgentWorkbenchExperience({
       workflowOutputMaterialize,
     ],
   );
+  const artifactAudienceGroups = useMemo(
+    () => groupArtifactsByAudience(artifactManifest?.artifacts ?? []),
+    [artifactManifest],
+  );
+  const runPanelStatus = useMemo(() => {
+    if (!preparedRun) return "空";
+    if (
+      (taskAcceptanceAudit?.summary.missing_required ?? 0) > 0 ||
+      ["incomplete", "error", "failed", "failure"].includes(
+        String(taskAcceptanceAudit?.status ?? "").toLowerCase(),
+      )
+    ) {
+      return "失败";
+    }
+    if (
+      workflowOutputMaterialize?.status ||
+      ["ready", "passed", "ok", "completed", "success"].includes(
+        String(workflowExecution?.status ?? "").toLowerCase(),
+      )
+    ) {
+      return "已完成";
+    }
+    return "进行中";
+  }, [
+    preparedRun,
+    taskAcceptanceAudit,
+    workflowExecution,
+    workflowOutputMaterialize,
+  ]);
+  const runPanelFailureReasons = useMemo(() => {
+    const reasons: string[] = [];
+    const missingRequired = taskAcceptanceAudit?.summary.missing_required ?? 0;
+    if (missingRequired > 0) {
+      reasons.push(`缺少 ${missingRequired} 个必需验收项`);
+    }
+    taskAcceptanceAudit?.missing_required
+      .map((issue) => acceptanceIssueLabel(issue))
+      .filter(Boolean)
+      .forEach((reason) => reasons.push(reason));
+    preparedProviderReadiness?.blockingReasons
+      .map(compactReasonLabel)
+      .forEach((reason) => reasons.push(reason));
+    if (!taskAcceptanceAudit && preparedProviderReadiness?.warnings.length) {
+      preparedProviderReadiness.warnings
+        .slice(0, 3)
+        .map(compactReasonLabel)
+        .forEach((reason) => reasons.push(reason));
+    }
+    return Array.from(new Set(reasons)).slice(0, 5);
+  }, [preparedProviderReadiness, taskAcceptanceAudit]);
   const visibleDeliveryArtifacts = useMemo(() => {
     const manifestArtifacts = artifactManifest?.artifacts ?? [];
     const outputArtifacts = new Set(
@@ -7724,7 +7876,8 @@ export function AgentWorkbenchExperience({
 
         {activeWorkbenchView === "run" && (
           <Panel title="任务运行" icon={<PlayCircle size={16} />}>
-            <div className="space-y-3">
+            <div className="grid gap-4 xl:grid-cols-[minmax(380px,0.95fr)_minmax(440px,1.05fr)] xl:items-start">
+              <div className="min-w-0 space-y-3">
               <label className="block">
                 <span className="mb-1 block text-xs text-on-surface-variant">
                   工作流
@@ -8283,6 +8436,224 @@ export function AgentWorkbenchExperience({
                 )}
                 导入语义
               </button>
+              </div>
+              <aside
+                aria-label="运行结果面板"
+                className="min-w-0 rounded-xl border border-outline-variant/30 bg-surface/90 p-3 text-xs shadow-sm"
+              >
+                <div className="flex flex-wrap items-start justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold text-on-surface">
+                      运行结果
+                    </p>
+                    <p className="mt-0.5 text-[11px] text-on-surface-variant">
+                      状态、失败原因和产物集中显示
+                    </p>
+                  </div>
+                  <span
+                    className={[
+                      "rounded-full px-2 py-0.5 text-[11px] font-medium",
+                      runPanelStatus === "失败"
+                        ? "bg-amber-400/10 text-warning"
+                        : runPanelStatus === "已完成"
+                          ? "bg-green-500/10 text-green-600"
+                          : runPanelStatus === "进行中"
+                            ? "bg-primary/10 text-primary"
+                            : "bg-surface-container text-on-surface-variant",
+                    ].join(" ")}
+                  >
+                    {runPanelStatus}
+                  </span>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-1 rounded-lg border border-dashed border-outline-variant/40 bg-surface-container/40 p-1">
+                  {["空", "进行中", "失败", "已完成"].map((status) => (
+                    <span
+                      key={status}
+                      className={[
+                        "rounded-md px-2 py-1 text-[11px] font-medium",
+                        runPanelStatus === status
+                          ? "bg-surface text-primary shadow-sm"
+                          : "text-on-surface-variant",
+                      ].join(" ")}
+                    >
+                      {status === "进行中" ? "运行中" : status}
+                    </span>
+                  ))}
+                </div>
+                {!preparedRun ? (
+                  <div className="mt-3 rounded-lg border border-dashed border-outline-variant/40 bg-surface-container/40 px-3 py-8 text-center">
+                    <PlayCircle
+                      size={26}
+                      className="mx-auto text-on-surface-variant/60"
+                    />
+                    <p className="mt-3 text-sm font-semibold text-on-surface">
+                      尚无运行记录
+                    </p>
+                    <p className="mx-auto mt-1 max-w-sm leading-5 text-on-surface-variant">
+                      完成左侧输入后启动运行。状态、失败原因和产物会显示在这里。
+                    </p>
+                  </div>
+                ) : (
+                  <div className="mt-3 space-y-3">
+                    <section className="rounded-lg border border-outline-variant/25 bg-surface-container/60 p-3">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <p className="font-semibold text-on-surface">
+                          演示状态
+                        </p>
+                        <span className="rounded bg-surface px-1.5 py-0.5 text-[11px] text-primary">
+                          {runPanelStatus === "空"
+                            ? "等待"
+                            : runPanelStatus === "进行中"
+                              ? "运行中"
+                              : runPanelStatus}
+                        </span>
+                      </div>
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        {runPhaseCards.map((phase) => (
+                          <div
+                            key={phase.label}
+                            className="min-w-0 rounded-md border border-outline-variant/20 bg-surface px-2 py-1.5"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="truncate font-medium text-on-surface">
+                                {phase.label}
+                              </span>
+                              <span className="shrink-0 text-[10px] text-primary">
+                                {phase.status}
+                              </span>
+                            </div>
+                            <p className="mt-0.5 truncate text-[10px] text-on-surface-variant">
+                              {phase.detail}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                    {runPanelFailureReasons.length > 0 && (
+                      <section className="rounded-lg border border-amber-400/25 bg-amber-400/5 p-3">
+                        <p className="mb-2 font-semibold text-on-surface">
+                          失败原因
+                        </p>
+                        <div className="space-y-1.5">
+                          {runPanelFailureReasons.map((reason) => (
+                            <div
+                              key={reason}
+                              className="flex items-start gap-2 rounded-md bg-surface px-2 py-1.5 text-on-surface-variant"
+                            >
+                              <AlertTriangle
+                                size={13}
+                                className="mt-0.5 shrink-0 text-warning"
+                              />
+                              <span className="min-w-0 break-words">
+                                {reason}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )}
+                    <section className="rounded-lg border border-outline-variant/25 bg-surface-container/60 p-3">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div>
+                          <p className="font-semibold text-on-surface">
+                            运行产物
+                          </p>
+                          <p className="text-[10px] text-on-surface-variant">
+                            产物与结果
+                          </p>
+                        </div>
+                        <span className="text-[11px] text-on-surface-variant">
+                          {artifactManifest?.artifacts.length ?? 0} 个文件
+                        </span>
+                      </div>
+                      <div className="space-y-1.5">
+                        {(
+                          [
+                            ["deliverable", artifactAudienceGroups.deliverable],
+                            ["input", artifactAudienceGroups.input],
+                            ["support", artifactAudienceGroups.support],
+                            [
+                              "diagnostic",
+                              artifactAudienceGroups.diagnostic,
+                            ],
+                          ] as const
+                        ).map(([audience, artifacts]) => {
+                          if (artifacts.length === 0) return null;
+                          const label = `${artifactAudienceLabel(audience)} ${artifacts.length}`;
+                          const artifactButtons = artifacts
+                            .slice(0, 10)
+                            .map((artifact) => (
+                              <button
+                                key={artifact.relative_path}
+                                type="button"
+                                aria-label={`快速预览 ${artifact.kind}:${artifact.relative_path}${
+                                  artifact.preview_redacted ? " redacted" : ""
+                                }`}
+                                onClick={() =>
+                                  previewArtifact(artifact.relative_path)
+                                }
+                                disabled={
+                                  taskRunActionBusy ||
+                                  busyAction ===
+                                    `preview-artifact-${artifact.relative_path}`
+                                }
+                                className="rounded bg-surface px-1.5 py-0.5 text-left font-data text-[10px] text-on-surface-variant transition-colors hover:bg-surface-container-high disabled:opacity-50"
+                              >
+                                {artifact.kind}:{artifact.relative_path}
+                                {artifact.preview_redacted && (
+                                  <span className="ml-1 text-warning">
+                                    redacted
+                                  </span>
+                                )}
+                              </button>
+                            ));
+                          return (
+                            <details
+                              key={audience}
+                              className="rounded-md border border-outline-variant/20 bg-surface px-2 py-1.5"
+                              open={audience === "deliverable"}
+                            >
+                              <summary className="cursor-pointer select-none font-medium text-on-surface">
+                                {label}
+                              </summary>
+                              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                                {artifactButtons}
+                              </div>
+                            </details>
+                          );
+                        })}
+                        {!artifactManifest?.artifacts.length && (
+                          <p className="rounded-md border border-dashed border-outline-variant/30 bg-surface px-2 py-3 text-center text-on-surface-variant">
+                            准备运行后展示运行产物
+                          </p>
+                        )}
+                      </div>
+                    </section>
+                    <details className="rounded-lg border border-outline-variant/25 bg-surface-container/60 p-3">
+                      <summary className="cursor-pointer font-semibold text-on-surface">
+                        技术诊断
+                      </summary>
+                      <div className="mt-2 space-y-1 font-data text-[10px] text-on-surface-variant">
+                        <p className="break-words">
+                          task_run_id:{preparedRun.task_run_id}
+                        </p>
+                        <p className="break-words">
+                          provider:
+                          {preparedProviderReadiness?.status ?? "pending"}
+                        </p>
+                        {preparedProviderReadiness?.warnings
+                          .slice(0, 4)
+                          .map((warning) => (
+                            <p key={warning} className="break-words">
+                              warning:{warning}
+                            </p>
+                          ))}
+                      </div>
+                    </details>
+                  </div>
+                )}
+              </aside>
+              <div className="min-w-0 space-y-3 xl:col-span-2">
               {preparedRun && (
                 <div className="grid gap-3 lg:grid-cols-[1.2fr_1fr]">
                   <div className="rounded-lg border border-outline-variant/30 bg-surface-container/70 p-3">
@@ -10352,6 +10723,7 @@ export function AgentWorkbenchExperience({
                   </div>
                 </div>
               )}
+            </div>
             </div>
           </Panel>
         )}
