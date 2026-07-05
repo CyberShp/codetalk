@@ -8655,6 +8655,14 @@ export function AgentWorkbenchExperience({
               </aside>
               <div className="min-w-0 space-y-3 xl:col-span-2">
               {preparedRun && (
+                <details
+                  aria-label="运行详细诊断"
+                  className="rounded-xl border border-outline-variant/30 bg-surface/80 p-3 text-xs"
+                >
+                  <summary className="cursor-pointer select-none text-sm font-semibold text-on-surface">
+                    查看详细诊断与原始产物
+                  </summary>
+                  <div className="mt-3 space-y-3">
                 <div className="grid gap-3 lg:grid-cols-[1.2fr_1fr]">
                   <div className="rounded-lg border border-outline-variant/30 bg-surface-container/70 p-3">
                     <div className="mb-2 flex items-center justify-between gap-2">
@@ -8713,7 +8721,7 @@ export function AgentWorkbenchExperience({
                             : "text-on-surface",
                         ].join(" ")}
                       >
-                        missing-required:
+                        缺少必需项:
                         {taskAcceptanceAudit?.summary.missing_required ?? 0}
                       </span>
                       <span className="rounded bg-surface px-1.5 py-0.5">
@@ -8765,8 +8773,6 @@ export function AgentWorkbenchExperience({
                     </div>
                   </div>
                 </div>
-              )}
-              {preparedRun && (
                 <div className="min-w-0 rounded-xl border border-outline-variant/30 bg-surface/80 p-4 text-xs">
                   <p className="font-medium text-on-surface">
                     {preparedRun.task_run_id}
@@ -8823,7 +8829,7 @@ export function AgentWorkbenchExperience({
                                 : ""
                             }`}
                           >
-                            missing-required:
+                            缺少必需项:
                             {taskAcceptanceAudit.summary.missing_required}
                           </span>
                           <span className="rounded bg-surface px-1.5 py-0.5">
@@ -8838,7 +8844,7 @@ export function AgentWorkbenchExperience({
                                 : ""
                             }`}
                           >
-                            missing-recommended:
+                            缺少建议项:
                             {taskAcceptanceAudit.summary.missing_recommended}
                           </span>
                         </div>
@@ -8849,7 +8855,7 @@ export function AgentWorkbenchExperience({
                           return (
                             <div className="mt-1 rounded border border-warning/30 bg-surface px-2 py-1.5">
                               <p className="text-[11px] font-medium text-warning">
-                                Agent provider readiness
+                                Agent 执行器就绪度
                               </p>
                               <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
                                 {providerIssues.slice(0, 4).map((issue) => (
@@ -8857,22 +8863,22 @@ export function AgentWorkbenchExperience({
                                     key={issue.provider}
                                     className="break-words"
                                   >
-                                    {issue.provider}:{issue.status}
-                                    {issue.usedFallback ? " fallback" : ""}
+                                    {issue.provider}:{runStatusDisplayLabel(issue.status)}
+                                    {issue.usedFallback ? " 已使用备用命令" : ""}
                                     {issue.deploymentTaskProbeStatus
-                                      ? ` deployment:${issue.deploymentTaskProbeStatus}`
+                                      ? ` 部署探测:${runStatusDisplayLabel(issue.deploymentTaskProbeStatus)}`
                                       : ""}
                                     {issue.deploymentEvidenceConflict
-                                      ? " conflict"
+                                      ? " 部署证据冲突"
                                       : ""}
                                     {issue.deploymentProbeId
-                                      ? ` probe-id:${issue.deploymentProbeId}`
+                                      ? ` 探测编号:${issue.deploymentProbeId}`
                                       : ""}
                                     {issue.reason
-                                      ? ` reason:${issue.reason}`
+                                      ? ` 原因:${compactReasonLabel(issue.reason)}`
                                       : ""}
                                     {issue.startupProbeEndpoint
-                                      ? ` probe:${issue.startupProbeEndpoint}`
+                                      ? ` 探测:${issue.startupProbeEndpoint}`
                                       : ""}
                                   </div>
                                 ))}
@@ -8889,7 +8895,7 @@ export function AgentWorkbenchExperience({
                           return (
                             <div className="mt-1 rounded border border-warning/30 bg-surface px-2 py-1.5">
                               <p className="text-[11px] font-medium text-warning">
-                                CodeTalk provider readiness
+                                CodeTalk 工具就绪度
                               </p>
                               <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
                                 {providerIssues.slice(0, 4).map((issue) => (
@@ -8897,12 +8903,12 @@ export function AgentWorkbenchExperience({
                                     key={issue.provider}
                                     className="break-words"
                                   >
-                                    {issue.provider}:{issue.status}
+                                    {issue.provider}:{runStatusDisplayLabel(issue.status)}
                                     {issue.reason
-                                      ? ` reason:${issue.reason}`
+                                      ? ` 原因:${compactReasonLabel(issue.reason)}`
                                       : ""}
                                     {issue.startupProbeEndpoint
-                                      ? ` check:${issue.startupProbeEndpoint}`
+                                      ? ` 检查:${issue.startupProbeEndpoint}`
                                       : ""}
                                   </div>
                                 ))}
@@ -8925,15 +8931,15 @@ export function AgentWorkbenchExperience({
                                     key={issue.outputId}
                                     className="break-words"
                                   >
-                                    {issue.outputId}:{issue.status}
+                                    {issue.outputId}:{runStatusDisplayLabel(issue.status)}
                                     {issue.reason
-                                      ? ` reason:${issue.reason}`
+                                      ? ` 原因:${compactReasonLabel(issue.reason)}`
                                       : ""}
                                     {issue.artifact
-                                      ? ` artifact:${issue.artifact}`
+                                      ? ` 产物:${issue.artifact}`
                                       : ""}
                                     {issue.schemaErrorCount > 0
-                                      ? ` schema-errors:${issue.schemaErrorCount}`
+                                      ? ` Schema 错误:${issue.schemaErrorCount}`
                                       : ""}
                                   </div>
                                 ))}
@@ -8948,20 +8954,20 @@ export function AgentWorkbenchExperience({
                           return (
                             <div className="mt-1 rounded border border-warning/30 bg-surface px-2 py-1.5">
                               <p className="text-[11px] font-medium text-warning">
-                                Agent input redaction
+                                Agent 输入脱敏
                               </p>
                               <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
                                 {redactionIssues.slice(0, 4).map((issue) => (
                                   <div key={issue.id} className="break-words">
                                     {issue.label}
                                     {issue.reason
-                                      ? ` reason:${issue.reason}`
+                                      ? ` 原因:${compactReasonLabel(issue.reason)}`
                                       : ""}
                                     {issue.stdinSha
                                       ? ` stdin-sha:${issue.stdinSha.slice(0, 12)}`
                                       : ""}
                                     {issue.relativePath
-                                      ? ` artifact:${issue.relativePath}`
+                                      ? ` 产物:${issue.relativePath}`
                                       : ""}
                                   </div>
                                 ))}
@@ -8978,20 +8984,20 @@ export function AgentWorkbenchExperience({
                           return (
                             <div className="mt-1 rounded border border-warning/30 bg-surface px-2 py-1.5">
                               <p className="text-[11px] font-medium text-warning">
-                                Agent instruction policy
+                                Agent 指令策略
                               </p>
                               <div className="mt-1 space-y-0.5 font-data text-[10px] text-warning">
                                 {policyIssues.slice(0, 4).map((issue) => (
                                   <div key={issue.id} className="break-words">
                                     {issue.label}
                                     {issue.reason
-                                      ? ` reason:${issue.reason}`
+                                      ? ` 原因:${compactReasonLabel(issue.reason)}`
                                       : ""}
                                     {issue.expectedFiles.length > 0
-                                      ? ` expected:${issue.expectedFiles.slice(0, 3).join(",")}`
+                                      ? ` 期望文件:${issue.expectedFiles.slice(0, 3).join(",")}`
                                       : ""}
                                     {issue.relativePath
-                                      ? ` artifact:${issue.relativePath}`
+                                      ? ` 产物:${issue.relativePath}`
                                       : ""}
                                   </div>
                                 ))}
@@ -9007,12 +9013,7 @@ export function AgentWorkbenchExperience({
                                 <div
                                   key={`${String(item.id ?? index)}:${index}`}
                                 >
-                                  {String(item.id ?? "check")}:
-                                  {String(
-                                    item.reason ??
-                                      item.relative_path ??
-                                      "missing",
-                                  )}
+                                  缺失项 {index + 1}: {acceptanceIssueLabel(item)}
                                 </div>
                               ))}
                           </div>
@@ -9233,17 +9234,17 @@ export function AgentWorkbenchExperience({
                                 >
                                   {provider.provider}
                                   {provider.configuredCommand
-                                    ? ` command:${provider.configuredCommand}`
+                                    ? ` 命令:${provider.configuredCommand}`
                                     : ""}
-                                  {provider.usedFallback ? " fallback" : ""}
+                                  {provider.usedFallback ? " 已使用备用命令" : ""}
                                   {provider.reason
-                                    ? ` reason:${provider.reason}`
+                                    ? ` 原因:${compactReasonLabel(provider.reason)}`
                                     : ""}
                                   {provider.startupProbeEndpoint
-                                    ? ` probe:${provider.startupProbeEndpoint}`
+                                    ? ` 探测:${provider.startupProbeEndpoint}`
                                     : ""}
                                   {provider.manualProbeCommand
-                                    ? ` manual:${provider.manualProbeCommand}`
+                                    ? ` 手动检查:${provider.manualProbeCommand}`
                                     : ""}
                                 </div>
                               ))}
@@ -10689,13 +10690,26 @@ export function AgentWorkbenchExperience({
                     })}
                   </div>
                 </div>
+                  </div>
+                </details>
               )}
               {taskRuns.length > 0 && (
-                <div className="min-w-0 rounded-xl border border-outline-variant/30 bg-surface/80 p-4 text-xs">
-                  <p className="mb-2 font-medium text-on-surface">
-                    最近任务运行
-                  </p>
-                  <div className="space-y-2">
+                <div
+                  aria-label="最近任务运行"
+                  className="min-w-0 rounded-xl border border-outline-variant/30 bg-surface/80 p-4 text-xs"
+                >
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <p className="font-medium text-on-surface">
+                      最近任务运行
+                    </p>
+                    <span className="rounded bg-surface-container px-1.5 py-0.5 text-[11px] text-on-surface-variant">
+                      {taskRuns.length} 条
+                    </span>
+                  </div>
+                  <div
+                    aria-label="最近任务运行列表"
+                    className="max-h-80 space-y-2 overflow-y-auto pr-1"
+                  >
                     {taskRuns.map((run) => (
                       <button
                         key={run.task_run_id}

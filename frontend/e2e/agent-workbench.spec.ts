@@ -1923,6 +1923,10 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(preparePanel.getByText("工作空间: ws_spdk")).toBeVisible();
   await expect(preparePanel.getByRole("button", { name: "准备运行" })).toBeEnabled();
   await preparePanel.getByRole("button", { name: "准备运行" }).click();
+  const diagnosticsDetails = page.getByLabel("运行详细诊断");
+  await expect(diagnosticsDetails).toBeVisible();
+  await expect(preparePanel.getByText("Agent 运行阶段")).toBeHidden();
+  await diagnosticsDetails.getByText("查看详细诊断与原始产物").click();
   await expect(preparePanel.getByText("Agent 运行阶段")).toBeVisible();
   await expect(preparePanel.getByText("准备上下文").first()).toBeVisible();
   await expect(preparePanel.getByText("执行 Agent").first()).toBeVisible();
@@ -1950,15 +1954,11 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.getByText("cgc:unavailable")).toBeVisible();
   await expect(page.getByText("claude-code:unavailable")).toBeVisible();
   await expect(
-    page.getByText("claude-code command:ccr code fallback", { exact: false }),
+    page.getByText("claude-code 命令:ccr code 已使用备用命令", { exact: false }),
   ).toBeVisible();
+  await expect(page.getByText("主执行器不可用，已尝试备用命令")).toBeVisible();
   await expect(
-    page.getByText("reason:primary command unavailable; using fallback: claude", {
-      exact: false,
-    }),
-  ).toBeVisible();
-  await expect(
-    page.getByText("probe:/api/tools/claude-code/startup-probe", { exact: false }),
+    page.getByText("探测:/api/tools/claude-code/startup-probe", { exact: false }),
   ).toBeVisible();
   await preparePanel.getByRole("button", { name: "验收审计" }).click();
   await expect(preparePanel.getByText("交付物状态")).toBeVisible();
@@ -1970,9 +1970,9 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
       name: /workflow_output_materialization\.json.*workflow_output_materialization/,
     }),
   ).toBeVisible();
-  await expect(preparePanel.getByText(/missing-required:\s*2/).first()).toBeVisible();
+  await expect(preparePanel.getByText(/缺少必需项:\s*2/).first()).toBeVisible();
   await expect(
-    page.getByText("manual:POST /api/tools/claude-code/startup-probe", { exact: false }),
+    page.getByText("手动检查:POST /api/tools/claude-code/startup-probe", { exact: false }),
   ).toBeVisible();
   await expect(resultPanel.getByText("失败", { exact: true }).first()).toBeVisible();
   await expect(resultPanel.getByText("失败原因", { exact: true })).toBeVisible();
@@ -1985,6 +1985,8 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(resultPanel.getByText("missing-required")).toHaveCount(0);
   await expect(resultPanel.getByText("agent_instruction_policy_missing")).toHaveCount(0);
   await expect(resultPanel.getByText("stdin_redacted_flag_missing")).toHaveCount(0);
+  await expect(preparePanel.getByText("reason:agent_instruction_policy_missing")).toHaveCount(0);
+  await expect(preparePanel.getByText("reason:stdin_redacted_flag_missing")).toHaveCount(0);
   await resultPanel.getByText("内部诊断 8").click();
   await expect(
     page.getByRole("button", {
@@ -2130,11 +2132,13 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.locator("body")).not.toContainText(redactedArtifactSecret);
 
   await page.getByRole("button", { name: "验收审计" }).click();
-  await expect(page.getByText("Agent instruction policy")).toBeVisible();
-  await expect(page.getByText("reason:agent_instruction_policy_missing")).toBeVisible();
-  await expect(page.getByText("expected:AGENTS.md")).toBeVisible();
-  await expect(page.getByText("Agent input redaction")).toBeVisible();
-  await expect(page.getByText("reason:stdin_redacted_flag_missing")).toBeVisible();
+  await expect(page.getByText("Agent 指令策略", { exact: true })).toBeVisible();
+  await expect(page.getByText("原因:Agent 指令策略缺失")).toBeVisible();
+  await expect(page.getByText("期望文件:AGENTS.md")).toBeVisible();
+  await expect(page.getByText("Agent 输入脱敏")).toBeVisible();
+  await expect(page.getByText("原因:输入脱敏标记缺失")).toBeVisible();
+  await expect(page.getByText("agent_turn_instruction_policy")).toHaveCount(0);
+  await expect(page.getByText("agent_turn_stdin_redaction")).toHaveCount(0);
   await expect(page.getByText("stdin-sha:stdinsha1234")).toBeVisible();
 });
 
@@ -2211,6 +2215,7 @@ test("agent workbench prevents duplicate artifact preview requests from a real d
   await preparePanel.getByRole("button", { name: "准备运行" }).hover();
   await preparePanel.getByRole("button", { name: "准备运行" }).click();
   await expect(page.getByText("运行产物", { exact: true }).first()).toBeVisible();
+  await page.getByLabel("运行详细诊断").getByText("查看详细诊断与原始产物").click();
   await expect(page.getByText("交付文件: 0 · 输入材料: 0 · 内部诊断: 1")).toBeVisible();
   await page.getByText("内部诊断 1").last().click();
 
@@ -2296,9 +2301,41 @@ test("agent workbench opens one AI review thread on double click", async ({ page
     .getByLabel("Workspace selector")
     .selectOption("ws_spdk");
   await page.getByRole("button", { name: "准备运行" }).click();
+  await page.getByLabel("运行详细诊断").getByText("查看详细诊断与原始产物").click();
   await expect(page.getByRole("paragraph").filter({ hasText: /^task_run_ai_review$/ })).toBeVisible();
 
   await page.getByRole("button", { name: "围绕本次运行继续追问" }).dblclick();
 
   await expect.poll(() => createConversationCalls).toBe(1);
+});
+
+test("recent task runs stay bounded when history is large", async ({ page }) => {
+  await routeWorkbenchShell(page);
+  const runs = Array.from({ length: 28 }, (_, index) => ({
+    task_run_id: `task_run_history_${index}`,
+    workflow_id: `history_workflow_${index}`,
+    workspace_id: "ws_spdk",
+    repo_path: "/Volumes/Media/dpdk/spdk",
+    artifact_dir: `/tmp/task_run_history_${index}`,
+    workflow_snapshot: {},
+    input_snapshot: {},
+    task_bundle: {},
+    agent_runs: [],
+    created_at: `2026-07-05T00:${String(index).padStart(2, "0")}:00Z`,
+  }));
+  await page.route("**/api/workbench/task-runs**", async (route) => {
+    await route.fulfill({
+      json: { items: runs },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+
+  await gotoWorkbench(page);
+  await openWorkbenchView(page, "运行驾驶舱");
+
+  await expect(page.getByLabel("最近任务运行", { exact: true })).toBeVisible();
+  const recentList = page.getByLabel("最近任务运行列表");
+  await expect(recentList).toBeVisible();
+  const recentListBox = await recentList.boundingBox();
+  expect(recentListBox?.height ?? 9999).toBeLessThanOrEqual(340);
 });
