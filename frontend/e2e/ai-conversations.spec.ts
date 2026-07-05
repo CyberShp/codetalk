@@ -521,6 +521,85 @@ test("AI conversation rail filters dense projects and thread histories", async (
   expect(layout.threadOverflowY).toBe("auto");
 });
 
+test("AI conversation home keeps dense project and thread histories in bounded panes", async ({ page }) => {
+  const workspaces = Array.from({ length: 12 }, (_, index) => ({
+    id: index === 0 ? "ws-1" : `home-ws-${index + 1}`,
+    name: index === 0 ? "SPDK" : `Home project ${index + 1}`,
+    repo_path: `/repo/home-project-${index + 1}`,
+    indexed: 1,
+    index_job: null,
+    index_progress: 100,
+    analyze_status: null,
+    analyze_progress: 0,
+    last_index_error: null,
+    created_at: "2026-06-28T00:00:00Z",
+    updated_at: "2026-06-28T00:00:00Z",
+    materials: [],
+    reports: [],
+  }));
+  const threads = Array.from({ length: 80 }, (_, index) => ({
+    id: `home-conv-${index + 1}`,
+    scope_type: "workspace",
+    scope_id: "ws-1",
+    workspace_id: "ws-1",
+    memory_namespace: "workspace:ws-1",
+    title: `SPDK long AI thread ${index + 1}`,
+    status: "idle",
+    latest_run: null,
+    initial_context: {},
+    created_at: "2026-06-28T00:00:00Z",
+    updated_at: `2026-06-28T00:${String(index % 60).padStart(2, "0")}:00Z`,
+  }));
+
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: workspaces });
+  });
+  await page.route("**/api/ai/conversations?limit=100", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: threads } });
+  });
+  await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/ai", { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByRole("heading", { name: "SPDK long AI thread 1", exact: true })).toBeVisible();
+  const layout = await page.locator(".ct-ai-home").evaluate((element) => {
+    const root = element as HTMLElement;
+    const grid = root.querySelector(".ct-ai-home__grid") as HTMLElement | null;
+    const projectList = root.querySelector(".ct-ai-home__project-list") as HTMLElement | null;
+    const threadPane = root.querySelector(".ct-ai-home__threads") as HTMLElement | null;
+    const timeline = root.querySelector(".ct-thread-timeline") as HTMLElement | null;
+    const rootRect = root.getBoundingClientRect();
+    const paneRect = threadPane?.getBoundingClientRect();
+    const timelineRect = timeline?.getBoundingClientRect();
+    return {
+      documentScrollHeight: document.documentElement.scrollHeight,
+      viewportHeight: window.innerHeight,
+      rootBottom: rootRect.bottom,
+      paneBottom: paneRect?.bottom ?? 0,
+      timelineBottom: timelineRect?.bottom ?? 0,
+      gridOverflowY: grid ? window.getComputedStyle(grid).overflowY : "",
+      threadPaneOverflowY: threadPane ? window.getComputedStyle(threadPane).overflowY : "",
+      timelineOverflowY: timeline ? window.getComputedStyle(timeline).overflowY : "",
+      timelineClientHeight: timeline?.clientHeight ?? 0,
+      timelineScrollHeight: timeline?.scrollHeight ?? 0,
+      projectOverflowY: projectList ? window.getComputedStyle(projectList).overflowY : "",
+    };
+  });
+
+  expect(layout.documentScrollHeight).toBeLessThanOrEqual(layout.viewportHeight + 24);
+  expect(layout.rootBottom).toBeLessThanOrEqual(layout.viewportHeight + 1);
+  expect(layout.paneBottom).toBeLessThanOrEqual(layout.viewportHeight + 1);
+  expect(layout.timelineBottom).toBeLessThanOrEqual(layout.viewportHeight + 1);
+  expect(layout.gridOverflowY).toBe("hidden");
+  expect(layout.threadPaneOverflowY).toBe("hidden");
+  expect(layout.timelineOverflowY).toBe("auto");
+  expect(layout.projectOverflowY).toBe("auto");
+  expect(layout.timelineScrollHeight).toBeGreaterThan(layout.timelineClientHeight + 160);
+});
+
 test("AI conversation mobile rail keeps dense project and thread lists contained", async ({ page }) => {
   const workspaces = Array.from({ length: 36 }, (_, index) => ({
     id: index === 0 ? "ws-1" : `ws-mobile-${index + 1}`,

@@ -1867,7 +1867,9 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   grid-template-columns: minmax(260px, 340px) minmax(0, 1fr);
   gap: 18px;
   align-items: stretch;
+  height: 100%;
   min-height: 0;
+  overflow: hidden;
 }
 
 .ct-ai-home__projects,
@@ -1893,6 +1895,8 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
 .ct-ai-home__threads {
   display: flex;
+  height: 100%;
+  max-height: 100%;
   min-height: 0;
   flex-direction: column;
   overflow: hidden;
