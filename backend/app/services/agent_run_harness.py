@@ -78,6 +78,11 @@ def _agent_output_contract_payload(
         if isinstance(task_bundle.get("input_materials"), dict)
         else {}
     )
+    skills = [str(item) for item in task_bundle.get("skills") or [] if str(item)]
+    skill_instructions = [
+        item for item in task_bundle.get("skill_instructions") or []
+        if isinstance(item, dict)
+    ]
     return {
         "contract_version": 1,
         "run_id": run.run_id,
@@ -87,6 +92,14 @@ def _agent_output_contract_payload(
         "goal": str(task_bundle.get("goal") or ""),
         "workflow_id": str(task_bundle.get("workflow_id") or workflow_snapshot.get("id") or ""),
         "mcp_profile": run.mcp_profile,
+        "skills": skills,
+        "skill_injection": {
+            "enabled": bool(skills),
+            "source": "workflow_agent_step",
+            "ids": skills,
+            "instructions": skill_instructions,
+            "rule": "Selected skills are task-method constraints injected through task_bundle and must shape the final artifacts.",
+        },
         "artifact_dir": run.artifact_dir,
         "required_artifacts": required_artifacts,
         "expected_output_schemas": expected_output_schemas,

@@ -26,7 +26,7 @@ import {
   Trash2,
   User,
 } from "lucide-react";
-import { BASE as API_BASE, api } from "@/lib/api";
+import { api, currentApiBase } from "@/lib/api";
 import type { AgentRuntime, AIContextReference, AIConversation, AIConversationRun, AIMessage, AIRunEvent, Workspace } from "@/lib/types";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 
@@ -79,7 +79,7 @@ function actionHref(action: AIMessage["actions"][number]): string {
 
 function resolvedActionHref(action: AIMessage["actions"][number]): string {
   const href = actionHref(action);
-  if (href.startsWith("/api/")) return `${API_BASE}${href}`;
+  if (href.startsWith("/api/")) return `${currentApiBase()}${href}`;
   return href;
 }
 

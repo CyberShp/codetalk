@@ -43,6 +43,7 @@ import type {
   WorkflowDefinition,
   WorkflowExecutionResult,
   WorkflowPreset,
+  WorkbenchWorkflowCapabilities,
   WorkbenchAcceptanceAudit,
   WorkbenchProviderCapabilitiesMatrix,
   WorkbenchProviderTaskProbeResult,
@@ -190,6 +191,7 @@ const WORKFLOW_NAME_ZH: Record<string, string> = {
   "MR Black-box Test Workflow": "MR 黑盒测试工作流",
   "MR Black-box Test Design": "MR 黑盒测试工作流",
   "MR Blackbox Test Workflow": "MR 黑盒测试工作流",
+  "Testing Activity Orchestration": "测试活动编排工作流",
   "Module Analysis": "模块分析工作流",
   "Resource Leak and Error Branch Hunt": "资源/异常路径排查工作流",
   "Resource Leak Hunt": "资源/异常路径排查工作流",
@@ -197,6 +199,7 @@ const WORKFLOW_NAME_ZH: Record<string, string> = {
   custom_mr_blackbox: "自定义 MR 黑盒测试工作流",
   "mr-blackbox-workflow": "MR 黑盒测试工作流",
   mr_blackbox_test: "MR 黑盒测试工作流",
+  testing_activity_orchestration: "测试活动编排工作流",
   module_analysis: "模块分析工作流",
   resource_leak_hunt: "资源/异常路径排查工作流",
   source_flow_sfmea_blackbox: "代码分析-流程-SFMEA-黑盒用例工作流",
@@ -315,6 +318,25 @@ const WORKFLOW_BUILDER_SCENARIOS = {
     goal: "优先检查 GitNexus 和 CGC 产物；使用智能体自持 MCP 凭证或本地 patch 输入读取变更，识别变更行为和影响范围，并生成黑盒测试用例。",
     artifacts:
       "mr_snapshot.json, diff.patch, changed_files.json, black_box_cases.json",
+  },
+  testing_activity_orchestration: {
+    name: "测试活动编排",
+    inputs:
+      "test_goal:free_text, repo_path:directory@local, requirements:file, coverage_report:coverage_report, defect_report:file, environment_notes:long_text",
+    outputs:
+      "test_strategy:markdown=test_strategy.md, test_plan:json=test_plan.json, execution_matrix:json=execution_matrix.json, coverage_gap_report:json=coverage_gap_report.json, defect_triage:markdown=defect_triage.md, release_readiness:markdown=release_readiness.md",
+    goal: "优先检查工作区源码、GitNexus、CGC、输入文件和历史证据；围绕测试目标组织完整测试活动，覆盖测试策略、范围与风险、环境准备、测试设计、执行矩阵、覆盖率缺口、缺陷分诊、回归范围、性能/可靠性活动、验收准入准出和可下载报告。",
+    artifacts:
+      "test_strategy.md, test_plan.json, execution_matrix.json, coverage_gap_report.json, defect_triage.md, release_readiness.md",
+    skills: [
+      "source-evidence-first",
+      "test-strategy-planning",
+      "coverage-gap-analysis",
+      "test-execution-orchestration",
+      "defect-triage-regression",
+      "performance-reliability-testing",
+      "artifact-contract",
+    ],
   },
   patch_impact_review: {
     name: "补丁影响面评审",
@@ -943,6 +965,36 @@ const DEFAULT_BUILDER_OUTPUT_SCHEMAS = {
       cases: { type: "array" },
     },
   },
+  test_plan: {
+    type: "object",
+    required: ["scope", "risks", "activities", "entry_criteria", "exit_criteria"],
+    properties: {
+      scope: { type: "array" },
+      risks: { type: "array" },
+      activities: { type: "array" },
+      entry_criteria: { type: "array" },
+      exit_criteria: { type: "array" },
+    },
+  },
+  execution_matrix: {
+    type: "object",
+    required: ["batches"],
+    properties: {
+      batches: { type: "array" },
+      environments: { type: "array" },
+      observability: { type: "array" },
+      rerun_policy: { type: "array" },
+    },
+  },
+  coverage_gap_report: {
+    type: "object",
+    required: ["gaps", "recommendations"],
+    properties: {
+      gaps: { type: "array" },
+      recommendations: { type: "array" },
+      source_evidence: { type: "array" },
+    },
+  },
 };
 
 const DEFAULT_BUILDER_EVIDENCE_MAPPINGS = {
@@ -1089,6 +1141,18 @@ function parseCommaSeparated(value: string): string[] {
     .filter(Boolean);
 }
 
+function uniqueWorkflowStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  values.forEach((value) => {
+    const text = value.trim();
+    if (!text || seen.has(text)) return;
+    seen.add(text);
+    result.push(text);
+  });
+  return result;
+}
+
 function parseWorkflowSpecList(
   value: string,
   defaultType: string,
@@ -1166,6 +1230,12 @@ type WorkflowCanvasNode = {
   y: number;
   source: "contract" | "canvas";
 };
+type WorkflowCanvasEdge = {
+  id: string;
+  source: string;
+  target: string;
+  label?: string;
+};
 type WorkflowNodePosition = { x: number; y: number };
 type WorkflowCanvasLayout = {
   nodes: Array<{
@@ -1177,6 +1247,7 @@ type WorkflowCanvasLayout = {
     y: number;
     source: "contract" | "canvas";
   }>;
+  edges?: WorkflowCanvasEdge[];
   hidden_node_ids: string[];
 };
 
@@ -1187,6 +1258,97 @@ const WORKFLOW_NODE_TONE: Record<WorkflowCanvasNodeKind, string> = {
   output: "border-rose-300/45 bg-rose-400/10",
   verify: "border-amber-300/45 bg-amber-400/10",
 };
+
+type WorkflowSkillOption = NonNullable<
+  WorkbenchWorkflowCapabilities["skill_catalog"]
+>[number];
+
+const FALLBACK_WORKFLOW_SKILLS: WorkflowSkillOption[] = [
+  {
+    id: "source-evidence-first",
+    label: "源码证据优先",
+    source: "codetalk_builtin",
+    default_enabled: true,
+    description: "先查工作区源码、GitNexus 和 CGC，再生成结论。",
+    prompt_hint: "优先读取工作区源码、GitNexus 和 CGC 产物；关键结论必须引用真实文件或产物证据。",
+  },
+  {
+    id: "storage-flow-analysis",
+    label: "存储流程梳理",
+    source: "codetalk_builtin",
+    default_enabled: true,
+    description: "梳理入口、状态、异常分支、恢复路径和外部行为。",
+    prompt_hint: "按入口、前置条件、关键状态、正常流程、异常流程、恢复路径和外部可观测行为组织分析。",
+  },
+  {
+    id: "sfmea",
+    label: "SFMEA",
+    source: "codetalk_builtin",
+    default_enabled: true,
+    description: "生成结构化 failure mode、评分和 mitigation。",
+    prompt_hint: "SFMEA 每条必须包含 failure mode、cause、effect、detection、severity、occurrence、detection score、RPN、mitigation，并解释评分依据。",
+  },
+  {
+    id: "black-box-test-design",
+    label: "黑盒测试设计",
+    source: "codetalk_builtin",
+    default_enabled: true,
+    description: "只描述外部输入、操作、预期结果和观测点。",
+    prompt_hint: "黑盒用例不得要求修改内部代码或调用内部函数；每条包含前置条件、步骤、预期、观测点和失败诊断线索。",
+  },
+  {
+    id: "test-strategy-planning",
+    label: "测试策略与计划",
+    source: "codetalk_builtin",
+    default_enabled: false,
+    description: "拆解范围、风险、资源、环境、准入/准出和里程碑。",
+    prompt_hint: "输出测试策略、范围、风险优先级、准入/准出标准、资源/环境依赖、里程碑和未决问题。",
+  },
+  {
+    id: "coverage-gap-analysis",
+    label: "覆盖率与缺口分析",
+    source: "codetalk_builtin",
+    default_enabled: false,
+    description: "分析覆盖率、低覆盖入口、灰盒/黑盒边界和补充建议。",
+    prompt_hint: "结合覆盖率文件、源码入口和现有测试目录，标出覆盖缺口、补充测试建议和证据映射。",
+  },
+  {
+    id: "test-execution-orchestration",
+    label: "测试执行编排",
+    source: "codetalk_builtin",
+    default_enabled: false,
+    description: "生成执行矩阵、批次、环境、观测点、失败处置和复跑策略。",
+    prompt_hint: "输出可执行测试矩阵，包含环境、前置条件、批次顺序、并发/长跑安排、观测指标、失败诊断和复跑规则。",
+  },
+  {
+    id: "defect-triage-regression",
+    label: "缺陷分诊与回归",
+    source: "codetalk_builtin",
+    default_enabled: false,
+    description: "基于失败、日志、patch、风险和历史证据判断分级与回归范围。",
+    prompt_hint: "输出缺陷分级、复现线索、影响范围、回归测试范围、阻塞/放行建议和需要补充的证据。",
+  },
+  {
+    id: "performance-reliability-testing",
+    label: "性能与可靠性测试",
+    source: "codetalk_builtin",
+    default_enabled: false,
+    description: "覆盖性能基线、压力、soak、故障恢复、资源泄漏和指标。",
+    prompt_hint: "输出性能/可靠性测试计划，包含基线、负载模型、时延/吞吐/资源指标、故障注入、soak、退化阈值和诊断数据。",
+  },
+  {
+    id: "artifact-contract",
+    label: "产物契约",
+    source: "codetalk_builtin",
+    default_enabled: true,
+    description: "要求 Agent 写入声明的可下载 artifact。",
+    prompt_hint: "必须把结果写入 required_artifacts 声明的文件；终端文字只能作为进度说明，不能替代 artifact。",
+  },
+];
+
+const DEFAULT_BUILDER_SKILL_IDS = FALLBACK_WORKFLOW_SKILLS.filter(
+  (skill) => skill.default_enabled,
+).map((skill) => skill.id);
 
 function workflowPaletteKind(moduleId: WorkflowPaletteModuleId): WorkflowCanvasNodeKind {
   if (moduleId === "input" || moduleId === "agent" || moduleId === "output") {
@@ -1248,6 +1410,7 @@ function workflowLayoutFromPayload(payload: unknown): WorkflowCanvasLayout | nul
   const layout = (ui as { layout?: unknown }).layout;
   if (!layout || typeof layout !== "object") return null;
   const rawNodes = (layout as { nodes?: unknown }).nodes;
+  const rawEdges = (layout as { edges?: unknown }).edges;
   const rawHidden = (layout as { hidden_node_ids?: unknown }).hidden_node_ids;
   const nodes = Array.isArray(rawNodes)
     ? rawNodes
@@ -1274,7 +1437,25 @@ function workflowLayoutFromPayload(payload: unknown): WorkflowCanvasLayout | nul
   const hidden_node_ids = Array.isArray(rawHidden)
     ? rawHidden.map((item) => String(item)).filter(Boolean)
     : [];
-  return { nodes, hidden_node_ids };
+  const edges = Array.isArray(rawEdges)
+    ? rawEdges
+        .map((item) => {
+          if (!item || typeof item !== "object") return null;
+          const record = item as Record<string, unknown>;
+          const source = String(record.source ?? "").trim();
+          const target = String(record.target ?? "").trim();
+          if (!source || !target || source === target) return null;
+          const label = String(record.label ?? "").trim();
+          return {
+            id: String(record.id ?? `${source}->${target}`).trim(),
+            source,
+            target,
+            ...(label ? { label } : {}),
+          };
+        })
+        .filter((item): item is WorkflowCanvasEdge => Boolean(item))
+    : [];
+  return { nodes, edges, hidden_node_ids };
 }
 
 function safeWorkflowSpecList(
@@ -1286,6 +1467,27 @@ function safeWorkflowSpecList(
   } catch {
     return [];
   }
+}
+
+function workflowSpecToText(spec: {
+  id: string;
+  type: string;
+  resolver?: string;
+  artifact?: string;
+}): string {
+  const base = `${spec.id}:${spec.type}${spec.resolver ? "@" + spec.resolver : ""}`;
+  return spec.artifact ? `${base}=${spec.artifact}` : base;
+}
+
+function workflowItemLabel(
+  labels: Record<string, string>,
+  id: string,
+): string {
+  return (labels[id] || id).trim();
+}
+
+function workflowInputDisplayName(input: Record<string, unknown>): string {
+  return String(input.label ?? input.role ?? input.id ?? "输入");
 }
 
 function safeArtifactDownloadFilename(relativePath: string): string {
@@ -1418,6 +1620,40 @@ function workflowInputsFromJson(value: string): Array<Record<string, unknown>> {
   } catch {
     return [];
   }
+}
+
+function workflowOutputsFromJson(value: string): Array<Record<string, unknown>> {
+  try {
+    const payload = parseJsonObject(value);
+    return Array.isArray(payload.outputs)
+      ? payload.outputs.filter((item): item is Record<string, unknown> =>
+          Boolean(item && typeof item === "object" && !Array.isArray(item)),
+        )
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function workflowStepsFromJson(value: string): Array<Record<string, unknown>> {
+  try {
+    const payload = parseJsonObject(value);
+    return Array.isArray(payload.steps)
+      ? payload.steps.filter((item): item is Record<string, unknown> =>
+          Boolean(item && typeof item === "object" && !Array.isArray(item)),
+        )
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function workflowOutputDisplayName(output: Record<string, unknown>): string {
+  return String(output.label ?? output.id ?? output.artifact ?? "输出");
+}
+
+function artifactShortName(path: string): string {
+  return path.split("/").filter(Boolean).at(-1) || path;
 }
 
 type WorkflowDraftAudit = {
@@ -3028,6 +3264,9 @@ export default function AgentWorkbenchPage() {
   const [builderArtifacts, setBuilderArtifacts] = useState<string>(
     WORKFLOW_BUILDER_SCENARIOS.mr_blackbox_test.artifacts,
   );
+  const [builderSkillIds, setBuilderSkillIds] = useState<string[]>(
+    DEFAULT_BUILDER_SKILL_IDS,
+  );
   const [builderOutputSchemas, setBuilderOutputSchemas] = useState(
     pretty(DEFAULT_BUILDER_OUTPUT_SCHEMAS),
   );
@@ -3040,6 +3279,26 @@ export default function AgentWorkbenchPage() {
   const [builderInputSchemas, setBuilderInputSchemas] = useState(
     pretty(DEFAULT_BUILDER_INPUT_SCHEMAS),
   );
+  const [builderInputLabels, setBuilderInputLabels] = useState<
+    Record<string, string>
+  >({});
+  const [builderOutputLabels, setBuilderOutputLabels] = useState<
+    Record<string, string>
+  >({});
+  const [newWorkflowInputName, setNewWorkflowInputName] = useState("");
+  const [newWorkflowInputId, setNewWorkflowInputId] = useState("");
+  const [newWorkflowInputType, setNewWorkflowInputType] = useState("file");
+  const [newWorkflowInputResolver, setNewWorkflowInputResolver] =
+    useState("manual");
+  const [newWorkflowOutputName, setNewWorkflowOutputName] = useState("");
+  const [newWorkflowOutputId, setNewWorkflowOutputId] = useState("");
+  const [newWorkflowOutputType, setNewWorkflowOutputType] = useState("json");
+  const [newWorkflowOutputArtifact, setNewWorkflowOutputArtifact] =
+    useState("");
+  const [workflowCanvasEdges, setWorkflowCanvasEdges] = useState<
+    WorkflowCanvasEdge[]
+  >([]);
+  const [workflowLinkTargetId, setWorkflowLinkTargetId] = useState("");
   const [workflowNodePositions, setWorkflowNodePositions] = useState<
     Record<string, WorkflowNodePosition>
   >({});
@@ -3085,6 +3344,8 @@ export default function AgentWorkbenchPage() {
   >({});
   const [providerMatrix, setProviderMatrix] =
     useState<WorkbenchProviderCapabilitiesMatrix | null>(null);
+  const [workflowCapabilities, setWorkflowCapabilities] =
+    useState<WorkbenchWorkflowCapabilities | null>(null);
   const [systemAudit, setSystemAudit] = useState<WorkbenchSystemAudit | null>(
     null,
   );
@@ -3220,6 +3481,100 @@ export default function AgentWorkbenchPage() {
     }
     return providers;
   }, [providerMatrix]);
+  const workflowSkillOptions = useMemo<WorkflowSkillOption[]>(() => {
+    const catalog = workflowCapabilities?.skill_catalog ?? [];
+    const merged = [...catalog, ...FALLBACK_WORKFLOW_SKILLS];
+    const seen = new Set<string>();
+    return merged.filter((skill) => {
+      if (!skill.id || seen.has(skill.id)) return false;
+      seen.add(skill.id);
+      return true;
+    });
+  }, [workflowCapabilities]);
+  const selectedBuilderSkillOptions = useMemo(
+    () =>
+      workflowSkillOptions.filter((skill) =>
+        builderSkillIds.includes(skill.id),
+      ),
+    [builderSkillIds, workflowSkillOptions],
+  );
+  const builderProviderItem = useMemo(
+    () =>
+      (providerMatrix?.providers ?? []).find(
+        (provider) => provider.provider === builderProvider,
+      ) ?? null,
+    [builderProvider, providerMatrix],
+  );
+  const builderMcpOptions = useMemo(() => {
+    const profiles = uniqueWorkflowStrings([
+      ...((builderProviderItem?.capabilities?.mcp_profiles ?? []) as string[]),
+      ...(providerMatrix?.providers ?? []).flatMap((provider) =>
+        (provider.capabilities?.mcp_profiles ?? []).map(String),
+      ),
+      "gitnexus",
+      "cgc",
+      "codehub-mcp",
+      "codehub-readonly",
+      builderMcpProfile,
+    ]);
+    return profiles;
+  }, [builderMcpProfile, builderProviderItem, providerMatrix]);
+  const builderMcpCompatibility = useMemo(() => {
+    const profile = builderMcpProfile.trim();
+    if (!profile) {
+      return {
+        level: "muted",
+        label: "未启用 MCP",
+        detail: "Agent 会使用工作区输入和 CodeTalk 预取上下文。",
+      };
+    }
+    if (!builderProvider.trim()) {
+      return {
+        level: "pending",
+        label: "等待选择执行器",
+        detail: "MCP 需求会保留，选择执行器后再校验兼容性。",
+      };
+    }
+    if (!builderProviderItem) {
+      return {
+        level: "pending",
+        label: "自定义执行器待探测",
+        detail: "保存和运行前会通过执行器探测确认 MCP 能力。",
+      };
+    }
+    const capabilities = builderProviderItem.capabilities;
+    const mcpProfiles = (capabilities?.mcp_profiles ?? []).map(String);
+    if (mcpProfiles.includes(profile)) {
+      return {
+        level: "ok",
+        label: "Agent 可直接使用 MCP",
+        detail: `${builderProviderItem.display_name || builderProvider} 声明了 ${profile}。`,
+      };
+    }
+    if (capabilities?.supports_mcp && mcpProfiles.length === 0) {
+      return {
+        level: "pending",
+        label: "Agent 支持 MCP，profile 待确认",
+        detail: "该执行器支持 MCP 但未声明 profile，建议先运行探测。",
+      };
+    }
+    if (
+      profile === "gitnexus" ||
+      profile === "cgc" ||
+      profile === "codehub-mcp"
+    ) {
+      return {
+        level: "fallback",
+        label: "CodeTalk 预取后注入",
+        detail: "当前执行器未声明该 MCP；CodeTalk 会优先查源码/GitNexus/CGC 后把证据交给 Agent。",
+      };
+    }
+    return {
+      level: "warn",
+      label: "MCP 与执行器不匹配",
+      detail: "当前执行器未声明该 MCP profile，运行前需要更换执行器或改成 CodeTalk 预取。",
+    };
+  }, [builderMcpProfile, builderProvider, builderProviderItem]);
   const semanticImportOutputIds = useMemo(
     () =>
       (workflowExecution?.outputs ?? [])
@@ -3242,6 +3597,13 @@ export default function AgentWorkbenchPage() {
         .filter(Boolean),
     [workflowExecution],
   );
+  const parsedPrepareInputs = useMemo(() => {
+    try {
+      return parseJsonObject(inputsJson || "{}");
+    } catch {
+      return {};
+    }
+  }, [inputsJson]);
   const selectedWorkflowInputs = useMemo(() => {
     const registered = workflows.find(
       (workflow) => workflow.id === selectedWorkflowId,
@@ -3253,6 +3615,150 @@ export default function AgentWorkbenchPage() {
     if (preset?.definition.inputs?.length) return preset.definition.inputs;
     return workflowInputsFromJson(workflowJson);
   }, [selectedWorkflowId, workflowJson, workflowPresets, workflows]);
+  const selectedWorkflowOutputs = useMemo(() => {
+    const registered = workflows.find(
+      (workflow) => workflow.id === selectedWorkflowId,
+    );
+    if (registered?.outputs?.length) return registered.outputs;
+    const preset = workflowPresets.find(
+      (item) => item.definition.id === selectedWorkflowId,
+    );
+    if (preset?.definition.outputs?.length) return preset.definition.outputs;
+    return workflowOutputsFromJson(workflowJson);
+  }, [selectedWorkflowId, workflowJson, workflowPresets, workflows]);
+  const selectedWorkflowSteps = useMemo(() => {
+    const registered = workflows.find(
+      (workflow) => workflow.id === selectedWorkflowId,
+    );
+    if (registered?.steps?.length) return registered.steps;
+    const preset = workflowPresets.find(
+      (item) => item.definition.id === selectedWorkflowId,
+    );
+    if (preset?.definition.steps?.length) return preset.definition.steps;
+    return workflowStepsFromJson(workflowJson);
+  }, [selectedWorkflowId, workflowJson, workflowPresets, workflows]);
+  const selectedAgentStep = useMemo(
+    () =>
+      selectedWorkflowSteps.find(
+        (step) => String(step.type ?? "") === "agent_task",
+      ) ?? null,
+    [selectedWorkflowSteps],
+  );
+  const selectedRunProvider = useMemo(
+    () =>
+      providerOverride.trim() ||
+      String(selectedAgentStep?.provider ?? (builderProvider || "claude-code")),
+    [builderProvider, providerOverride, selectedAgentStep],
+  );
+  const selectedRunMcpProfile = useMemo(
+    () =>
+      String(
+        selectedAgentStep?.mcp_profile ??
+          (builderMcpProfile.trim() ? builderMcpProfile : "未启用"),
+      ),
+    [builderMcpProfile, selectedAgentStep],
+  );
+  const selectedProviderCapability = useMemo(
+    () =>
+      (providerMatrix?.providers ?? []).find(
+        (provider) => provider.provider === selectedRunProvider,
+      ) ?? null,
+    [providerMatrix, selectedRunProvider],
+  );
+  const requiredInputCount = useMemo(
+    () =>
+      selectedWorkflowInputs.filter((input) => input.required === true).length,
+    [selectedWorkflowInputs],
+  );
+  const filledInputCount = useMemo(
+    () =>
+      selectedWorkflowInputs.filter((input) => {
+        const id = String(input.id ?? "");
+        if (!id) return false;
+        const value = parsedPrepareInputs[id];
+        if (value === null || value === undefined) return false;
+        if (typeof value === "string") return value.trim().length > 0;
+        if (Array.isArray(value)) return value.length > 0;
+        if (typeof value === "object") {
+          return Object.keys(value as Record<string, unknown>).length > 0;
+        }
+        return true;
+      }).length,
+    [parsedPrepareInputs, selectedWorkflowInputs],
+  );
+  const preparedProviderReadiness = useMemo(
+    () =>
+      preparedRun?.task_bundle &&
+      typeof preparedRun.task_bundle === "object" &&
+      !Array.isArray(preparedRun.task_bundle)
+        ? providerReadinessSummary(preparedRun.task_bundle)
+        : null,
+    [preparedRun],
+  );
+  const runPhaseCards = useMemo(
+    () => [
+      {
+        label: "准备上下文",
+        status: preparedRun ? "完成" : "等待",
+        detail: repoPath.trim() ? `源码路径: ${repoPath}` : "等待选择源码路径",
+      },
+      {
+        label: "执行 Agent",
+        status: workflowExecution
+          ? workflowExecution.status
+          : preparedRun
+            ? "待执行"
+            : "等待",
+        detail: `${selectedRunProvider} · ${selectedRunMcpProfile}`,
+      },
+      {
+        label: "校验证据",
+        status: taskAcceptanceAudit
+          ? taskAcceptanceAudit.status
+          : workflowExecution?.evidence_materialization?.status ??
+            (preparedRun ? "待审计" : "等待"),
+        detail: taskAcceptanceAudit
+          ? `missing-required:${taskAcceptanceAudit.summary.missing_required}`
+          : "schema / evidence / redaction",
+      },
+      {
+        label: "固化交付物",
+        status:
+          workflowOutputMaterialize?.status ??
+          workflowExecution?.evidence_materialization?.status ??
+          (artifactManifest ? "可预览" : "等待"),
+        detail: `${artifactManifest?.artifacts.length ?? 0} artifacts`,
+      },
+    ],
+    [
+      artifactManifest,
+      preparedRun,
+      repoPath,
+      selectedRunMcpProfile,
+      selectedRunProvider,
+      taskAcceptanceAudit,
+      workflowExecution,
+      workflowOutputMaterialize,
+    ],
+  );
+  const visibleDeliveryArtifacts = useMemo(() => {
+    const manifestArtifacts = artifactManifest?.artifacts ?? [];
+    const outputArtifacts = new Set(
+      selectedWorkflowOutputs
+        .map((output) => String(output.artifact ?? "").trim())
+        .filter(Boolean),
+    );
+    return manifestArtifacts
+      .filter((artifact) => {
+        if (artifact.kind === "task_bundle") return true;
+        if (artifact.kind === "workflow_output_materialization") return true;
+        if (artifact.kind === "evidence_validation") return true;
+        if (artifact.kind === "semantic_import_outputs") return true;
+        if (artifact.relative_path.startsWith("agent_runs/")) return false;
+        return outputArtifacts.has(artifact.relative_path);
+      })
+      .slice(0, 8);
+  }, [artifactManifest, selectedWorkflowOutputs]);
   const selectedWorkflowAudit = useMemo(
     () =>
       workflows.find((workflow) => workflow.id === selectedWorkflowId)?.audit,
@@ -3262,13 +3768,14 @@ export default function AgentWorkbenchPage() {
     () => workflowDraftAudit(workflowJson),
     [workflowJson],
   );
-  const parsedPrepareInputs = useMemo(() => {
-    try {
-      return parseJsonObject(inputsJson || "{}");
-    } catch {
-      return {};
-    }
-  }, [inputsJson]);
+  const builderInputItems = useMemo(
+    () => safeWorkflowSpecList(builderInputSpec, "free_text"),
+    [builderInputSpec],
+  );
+  const builderOutputItems = useMemo(
+    () => safeWorkflowSpecList(builderOutputSpec, "json"),
+    [builderOutputSpec],
+  );
   const builderOutputPreview = useMemo(() => {
     try {
       const requiredArtifacts = parseCommaSeparated(builderArtifacts);
@@ -3316,18 +3823,21 @@ export default function AgentWorkbenchPage() {
     builderSemanticImports,
   ]);
   const workflowContractNodes = useMemo<WorkflowCanvasNode[]>(() => {
-    const inputItems = safeWorkflowSpecList(builderInputSpec, "free_text");
-    const outputItems = safeWorkflowSpecList(builderOutputSpec, "json");
     const requiredArtifacts = parseCommaSeparated(builderArtifacts);
     return [
       {
         id: "inputs",
         kind: "input",
         title: "输入",
-        subtitle: inputItems.length
-          ? `${inputItems.length} 个入口`
+        subtitle: builderInputItems.length
+          ? `${builderInputItems.length} 个入口`
           : "等待输入定义",
-        body: inputItems.slice(0, 4).map((item) => `${item.id}:${item.type}`),
+        body: builderInputItems
+          .slice(0, 4)
+          .map(
+            (item) =>
+              `${workflowItemLabel(builderInputLabels, item.id)}:${item.type}`,
+          ),
         x: 36,
         y: 72,
         source: "contract",
@@ -3346,8 +3856,13 @@ export default function AgentWorkbenchPage() {
         id: "skills-mcp",
         kind: "context",
         title: "Skills / MCP",
-        subtitle: builderMcpProfile || "按执行器配置",
-        body: ["AGENTS.md / skills", "GitNexus", "CGC"],
+        subtitle: `${selectedBuilderSkillOptions.length} skills · ${builderMcpCompatibility.label}`,
+        body: [
+          ...selectedBuilderSkillOptions
+            .slice(0, 3)
+            .map((skill) => skill.label),
+          builderMcpProfile ? `MCP: ${builderMcpProfile}` : "MCP: 未启用",
+        ],
         x: 565,
         y: 88,
         source: "contract",
@@ -3368,16 +3883,16 @@ export default function AgentWorkbenchPage() {
         id: "outputs",
         kind: "output",
         title: "输出",
-        subtitle: outputItems.length
-          ? `${outputItems.length} 个契约`
+        subtitle: builderOutputItems.length
+          ? `${builderOutputItems.length} 个契约`
           : "等待输出定义",
         body: [
-          ...outputItems
+          ...builderOutputItems
             .slice(0, 3)
             .map((item) =>
               item.artifact
-                ? `${item.id} -> ${item.artifact}`
-                : `${item.id}:${item.type}`,
+                ? `${workflowItemLabel(builderOutputLabels, item.id)} -> ${item.artifact}`
+                : `${workflowItemLabel(builderOutputLabels, item.id)}:${item.type}`,
           ),
           "sfmea / black_box_cases",
         ],
@@ -3403,11 +3918,15 @@ export default function AgentWorkbenchPage() {
   }, [
     builderArtifacts,
     builderGoal,
-    builderInputSpec,
+    builderInputItems,
+    builderInputLabels,
     builderMcpProfile,
-    builderOutputSpec,
+    builderOutputItems,
+    builderOutputLabels,
     builderProvider,
     builderScenario,
+    builderMcpCompatibility.label,
+    selectedBuilderSkillOptions,
     workflowDraftAuditSummary.evidenceMemoryOutputCount,
     workflowDraftAuditSummary.semanticImportOutputCount,
     workflowDraftAuditSummary.warnings.length,
@@ -3433,6 +3952,47 @@ export default function AgentWorkbenchPage() {
       workflowNodeTitles,
     ],
   );
+  const defaultWorkflowCanvasEdges = useMemo<WorkflowCanvasEdge[]>(
+    () => [
+      {
+        id: "edge-inputs-source-context",
+        source: "inputs",
+        target: "source-context",
+        label: "源码/文件",
+      },
+      {
+        id: "edge-source-context-agent",
+        source: "source-context",
+        target: "agent-task",
+        label: "证据",
+      },
+      {
+        id: "edge-skills-agent",
+        source: "skills-mcp",
+        target: "agent-task",
+        label: "MCP/Skills",
+      },
+      {
+        id: "edge-agent-outputs",
+        source: "agent-task",
+        target: "outputs",
+        label: "产物",
+      },
+      {
+        id: "edge-outputs-validation",
+        source: "outputs",
+        target: "validation",
+        label: "验收",
+      },
+    ],
+    [],
+  );
+  const visibleWorkflowCanvasEdges = useMemo(() => {
+    const visibleNodeIds = new Set(workflowCanvasNodes.map((node) => node.id));
+    return [...defaultWorkflowCanvasEdges, ...workflowCanvasEdges].filter(
+      (edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+    );
+  }, [defaultWorkflowCanvasEdges, workflowCanvasEdges, workflowCanvasNodes]);
   const activeWorkflowNode = useMemo(
     () =>
       workflowCanvasNodes.find((node) => node.id === activeWorkflowNodeId) ??
@@ -3443,6 +4003,7 @@ export default function AgentWorkbenchPage() {
   function workflowLayoutSnapshot(
     nodes: WorkflowCanvasNode[] = workflowCanvasNodes,
     hiddenNodeIds: string[] = workflowHiddenNodeIds,
+    edges: WorkflowCanvasEdge[] = workflowCanvasEdges,
   ): WorkflowCanvasLayout {
     return {
       nodes: nodes.map((node) => ({
@@ -3454,6 +4015,7 @@ export default function AgentWorkbenchPage() {
         y: node.y,
         source: node.source,
       })),
+      edges,
       hidden_node_ids: hiddenNodeIds,
     };
   }
@@ -3488,6 +4050,7 @@ export default function AgentWorkbenchPage() {
       setWorkflowExtraNodes([]);
       setWorkflowHiddenNodeIds([]);
       setWorkflowNodeTitles({});
+      setWorkflowCanvasEdges([]);
       return;
     }
     const positions: Record<string, WorkflowNodePosition> = {};
@@ -3511,6 +4074,7 @@ export default function AgentWorkbenchPage() {
     }
     setWorkflowNodePositions(positions);
     setWorkflowNodeTitles(titles);
+    setWorkflowCanvasEdges(layout.edges ?? []);
     setWorkflowExtraNodes(extras);
     setWorkflowHiddenNodeIds(layout.hidden_node_ids);
     const firstVisible = layout.nodes.find(
@@ -3571,6 +4135,83 @@ export default function AgentWorkbenchPage() {
     return [...items, item].join(", ");
   }
 
+  function addBuilderInputContract() {
+    const id = newWorkflowInputId.trim();
+    const label = newWorkflowInputName.trim() || id;
+    const type = newWorkflowInputType.trim() || "free_text";
+    const resolver =
+      newWorkflowInputResolver && newWorkflowInputResolver !== "manual"
+        ? newWorkflowInputResolver
+        : "";
+    if (!id) {
+      setMessage("请输入输入契约 ID");
+      return;
+    }
+    const spec = workflowSpecToText({ id, type, resolver });
+    setBuilderInputSpec((current) => appendCommaSpec(current, spec));
+    setBuilderInputLabels((current) => ({ ...current, [id]: label }));
+    setNewWorkflowInputName("");
+    setNewWorkflowInputId("");
+    setMessage(`输入契约已添加: ${label}`);
+    window.setTimeout(() => mergeWorkflowLayoutIntoJson(), 0);
+  }
+
+  function addBuilderOutputContract() {
+    const id = newWorkflowOutputId.trim();
+    const label = newWorkflowOutputName.trim() || id;
+    const type = newWorkflowOutputType.trim() || "json";
+    const artifact =
+      newWorkflowOutputArtifact.trim() ||
+      outputArtifactForSpec(id, type, parseCommaSeparated(builderArtifacts));
+    if (!id) {
+      setMessage("请输入输出契约 ID");
+      return;
+    }
+    const spec = workflowSpecToText({ id, type, artifact });
+    setBuilderOutputSpec((current) => appendCommaSpec(current, spec));
+    setBuilderArtifacts((current) => appendCommaSpec(current, artifact));
+    setBuilderOutputLabels((current) => ({ ...current, [id]: label }));
+    setNewWorkflowOutputName("");
+    setNewWorkflowOutputId("");
+    setNewWorkflowOutputArtifact("");
+    setMessage(`输出契约已添加: ${label}`);
+    window.setTimeout(() => mergeWorkflowLayoutIntoJson(), 0);
+  }
+
+  function connectActiveWorkflowNode() {
+    if (!activeWorkflowNode || !workflowLinkTargetId) return;
+    if (activeWorkflowNode.id === workflowLinkTargetId) {
+      setMessage("不能连接到当前节点自身");
+      return;
+    }
+    const target = workflowCanvasNodes.find(
+      (node) => node.id === workflowLinkTargetId,
+    );
+    if (!target) return;
+    const exists = workflowCanvasEdges.some(
+      (edge) =>
+        edge.source === activeWorkflowNode.id && edge.target === target.id,
+    );
+    if (exists) {
+      setMessage("这两个节点已经连线");
+      return;
+    }
+    const nextEdges = [
+      ...workflowCanvasEdges,
+      {
+        id: `edge-${activeWorkflowNode.id}-${target.id}-${Date.now().toString(36)}`,
+        source: activeWorkflowNode.id,
+        target: target.id,
+        label: `${activeWorkflowNode.title} -> ${target.title}`,
+      },
+    ];
+    setWorkflowCanvasEdges(nextEdges);
+    setMessage(`连线已添加: ${activeWorkflowNode.title} -> ${target.title}`);
+    mergeWorkflowLayoutIntoJson(
+      workflowLayoutSnapshot(workflowCanvasNodes, workflowHiddenNodeIds, nextEdges),
+    );
+  }
+
   function addPaletteNodeToCanvas(
     moduleId: string,
     clientX: number,
@@ -3609,6 +4250,10 @@ export default function AgentWorkbenchPage() {
       setBuilderInputSpec((current) =>
         appendCommaSpec(current, `${contractId}:free_text`),
       );
+      setBuilderInputLabels((current) => ({
+        ...current,
+        [contractId]: paletteModule.label,
+      }));
     } else if (paletteModule.id === "output") {
       setBuilderOutputSpec((current) =>
         appendCommaSpec(current, `${contractId}:json=${contractId}.json`),
@@ -3616,6 +4261,10 @@ export default function AgentWorkbenchPage() {
       setBuilderArtifacts((current) =>
         appendCommaSpec(current, `${contractId}.json`),
       );
+      setBuilderOutputLabels((current) => ({
+        ...current,
+        [contractId]: paletteModule.label,
+      }));
     } else if (paletteModule.id === "agent") {
       setBuilderGoal((current) =>
         current.includes(`新增智能体节点 ${contractId}`)
@@ -3708,13 +4357,21 @@ export default function AgentWorkbenchPage() {
       delete next[activeWorkflowNode.id];
       return next;
     });
+    const nextEdges = workflowCanvasEdges.filter(
+      (edge) =>
+        edge.source !== activeWorkflowNode.id &&
+        edge.target !== activeWorkflowNode.id,
+    );
+    setWorkflowCanvasEdges(nextEdges);
     setActiveWorkflowNodeId(nextNodes[0]?.id ?? "agent-task");
     setMessage(
       activeWorkflowNode.source === "canvas"
         ? `节点已删除: ${activeWorkflowNode.title}`
         : `契约节点已从画布隐藏: ${activeWorkflowNode.title}`,
     );
-    mergeWorkflowLayoutIntoJson(workflowLayoutSnapshot(nextNodes, nextHidden));
+    mergeWorkflowLayoutIntoJson(
+      workflowLayoutSnapshot(nextNodes, nextHidden, nextEdges),
+    );
   }
 
   function resetActiveWorkflowNodePosition() {
@@ -3796,11 +4453,13 @@ export default function AgentWorkbenchPage() {
       const [
         taskRunResult,
         providerResult,
+        workflowCapabilityResult,
         systemAuditResult,
         workspaceResult,
       ] = await Promise.allSettled([
         api.workbench.taskRuns.list({ limit: 10 }),
         api.workbench.providerCapabilities(),
+        api.workbench.workflowCapabilities(),
         api.workbench.systemAudit(),
         api.workspaces.list(),
       ]);
@@ -3815,6 +4474,21 @@ export default function AgentWorkbenchPage() {
         setProviderMatrix(providerResult.value);
       } else {
         diagnosticErrors.push("执行器能力");
+      }
+      if (workflowCapabilityResult.status === "fulfilled") {
+        setWorkflowCapabilities(workflowCapabilityResult.value);
+        const defaults = (
+          workflowCapabilityResult.value.skill_catalog ?? []
+        )
+          .filter((skill) => skill.default_enabled)
+          .map((skill) => skill.id);
+        if (defaults.length > 0) {
+          setBuilderSkillIds((current) =>
+            current.length > 0 ? current : defaults,
+          );
+        }
+      } else {
+        diagnosticErrors.push("工作流能力");
       }
       if (systemAuditResult.status === "fulfilled") {
         setSystemAudit(systemAuditResult.value);
@@ -3979,14 +4653,22 @@ export default function AgentWorkbenchPage() {
     setBuilderOutputSpec(scenario.outputs);
     setBuilderGoal(scenario.goal);
     setBuilderArtifacts(scenario.artifacts);
+    setBuilderSkillIds(
+      "skills" in scenario
+        ? [...scenario.skills]
+        : DEFAULT_BUILDER_SKILL_IDS,
+    );
     setBuilderInputSchemas(pretty(DEFAULT_BUILDER_INPUT_SCHEMAS));
     setBuilderOutputSchemas(pretty(DEFAULT_BUILDER_OUTPUT_SCHEMAS));
     setBuilderEvidenceMappings(pretty(DEFAULT_BUILDER_EVIDENCE_MAPPINGS));
     setBuilderSemanticImports(pretty(DEFAULT_BUILDER_SEMANTIC_IMPORTS));
+    setBuilderInputLabels({});
+    setBuilderOutputLabels({});
     setWorkflowNodePositions({});
     setWorkflowExtraNodes([]);
     setWorkflowHiddenNodeIds([]);
     setWorkflowNodeTitles({});
+    setWorkflowCanvasEdges([]);
     setActiveWorkflowNodeId("agent-task");
   }
 
@@ -4000,8 +4682,10 @@ export default function AgentWorkbenchPage() {
     const inputs = parseWorkflowSpecList(builderInputSpec, "free_text").map(
       (input) => {
         const schema = inputSchemaForSpec(input.id, input.type, inputSchemas);
+        const label = workflowItemLabel(builderInputLabels, input.id);
         return {
           id: input.id,
+          label,
           type: input.type,
           required: input.type !== "file" && input.type !== "file_set",
           resolver:
@@ -4012,17 +4696,24 @@ export default function AgentWorkbenchPage() {
           role:
             input.resolver === "agent_mcp" || input.type === "mr_link"
               ? "由智能体 CLI 通过 MCP 凭证解析远端变更源"
-              : "用户提供的工作流输入",
+              : `用户提供: ${label}`,
           ...(schema ? { schema } : {}),
         };
       },
     );
     const requiredArtifacts = parseCommaSeparated(builderArtifacts);
+    const selectedSkills = selectedBuilderSkillOptions.map((skill) => ({
+      id: skill.id,
+      label: skill.label,
+      source: skill.source,
+      prompt_hint: skill.prompt_hint || skill.description || skill.label,
+    }));
     const outputSchemas = parseJsonObject(builderOutputSchemas || "{}");
     const evidenceMappings = parseJsonObject(builderEvidenceMappings || "{}");
     const semanticImports = parseJsonObject(builderSemanticImports || "{}");
     const outputs = parseWorkflowSpecList(builderOutputSpec, "json").map(
       (output) => {
+        const label = workflowItemLabel(builderOutputLabels, output.id);
         const artifact =
           output.artifact ||
           outputArtifactForSpec(output.id, output.type, requiredArtifacts);
@@ -4045,6 +4736,7 @@ export default function AgentWorkbenchPage() {
             : null;
         return {
           id: output.id,
+          label,
           type: output.type,
           from,
           ...(artifact ? { artifact } : {}),
@@ -4065,6 +4757,8 @@ export default function AgentWorkbenchPage() {
           type: "agent_task",
           provider: builderProvider.trim() || "claude-code",
           mcp_profile: builderMcpProfile.trim(),
+          skills: builderSkillIds,
+          skill_instructions: selectedSkills,
           goal: builderGoal.trim(),
           required_artifacts: requiredArtifacts,
         },
@@ -5789,19 +6483,43 @@ export default function AgentWorkbenchPage() {
                       preserveAspectRatio="none"
                       viewBox={`0 0 ${WORKFLOW_CANVAS_WIDTH} ${WORKFLOW_CANVAS_HEIGHT}`}
                     >
-                      {workflowCanvasNodes.slice(1).map((node, index) => (
-                        <line
-                          key={"link-" + node.id}
-                          className="ct-workflow-link"
-                          x1={workflowCanvasNodes[index].x + WORKFLOW_NODE_WIDTH - 12}
-                          y1={workflowCanvasNodes[index].y + 42}
-                          x2={node.x}
-                          y2={node.y + 42}
-                          stroke="currentColor"
-                          strokeWidth="1.4"
-                          strokeDasharray="7 5"
-                        />
-                      ))}
+                      {visibleWorkflowCanvasEdges.map((edge) => {
+                        const source = workflowCanvasNodes.find(
+                          (node) => node.id === edge.source,
+                        );
+                        const target = workflowCanvasNodes.find(
+                          (node) => node.id === edge.target,
+                        );
+                        if (!source || !target) return null;
+                        const x1 = source.x + WORKFLOW_NODE_WIDTH - 12;
+                        const y1 = source.y + 42;
+                        const x2 = target.x;
+                        const y2 = target.y + 42;
+                        return (
+                          <g key={edge.id}>
+                            <line
+                              className="ct-workflow-link"
+                              x1={x1}
+                              y1={y1}
+                              x2={x2}
+                              y2={y2}
+                              stroke="currentColor"
+                              strokeWidth="1.4"
+                              strokeDasharray="7 5"
+                            />
+                            {edge.label && (
+                              <text
+                                x={(x1 + x2) / 2}
+                                y={(y1 + y2) / 2 - 6}
+                                textAnchor="middle"
+                                className="fill-current font-data text-[9px]"
+                              >
+                                {edge.label.slice(0, 18)}
+                              </text>
+                            )}
+                          </g>
+                        );
+                      })}
                     </svg>
                     <div className="relative h-full">
                       {workflowCanvasNodes.map((node, index) => (
@@ -5921,6 +6639,39 @@ export default function AgentWorkbenchPage() {
                       >
                         <RotateCcw size={11} />
                         重置位置
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-[1fr_auto] gap-1.5">
+                      <label className="block">
+                        <span className="mb-1 block text-[10px] text-on-surface-variant">
+                          连接到
+                        </span>
+                        <select
+                          aria-label="Workflow link target"
+                          value={workflowLinkTargetId}
+                          onChange={(event) =>
+                            setWorkflowLinkTargetId(event.target.value)
+                          }
+                          disabled={!activeWorkflowNode}
+                          className="w-full rounded-md border border-outline-variant/30 bg-surface px-2 py-1 text-[11px] text-on-surface outline-none focus:border-primary disabled:opacity-50"
+                        >
+                          <option value="">选择目标节点</option>
+                          {workflowCanvasNodes
+                            .filter((node) => node.id !== activeWorkflowNode?.id)
+                            .map((node) => (
+                              <option key={node.id} value={node.id}>
+                                {node.title}
+                              </option>
+                            ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={connectActiveWorkflowNode}
+                        disabled={!activeWorkflowNode || !workflowLinkTargetId}
+                        className="mt-5 inline-flex items-center justify-center rounded-md border border-outline-variant/25 bg-surface px-2 py-1 text-[10px] text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+                      >
+                        连接节点
                       </button>
                     </div>
                   </div>
@@ -6172,16 +6923,261 @@ export default function AgentWorkbenchPage() {
                       <span className="mb-1 block text-xs text-on-surface-variant">
                         MCP 配置
                       </span>
+                      <select
+                        value={builderMcpProfile}
+                        onChange={(event) => {
+                          setBuilderMcpProfile(event.target.value);
+                        }}
+                        className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                        aria-label="Workflow builder MCP 配置"
+                      >
+                        <option value="">不启用 MCP</option>
+                        {builderMcpOptions.map((profile) => (
+                          <option key={profile} value={profile}>
+                            {profile}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    <label className="block">
+                      <span className="mb-1 block text-xs text-on-surface-variant">
+                        自定义 MCP profile
+                      </span>
                       <input
                         value={builderMcpProfile}
                         onChange={(event) =>
                           setBuilderMcpProfile(event.target.value)
                         }
+                        placeholder="例如 codehub-readonly"
                         className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
-                        aria-label="Workflow builder MCP 配置"
+                        aria-label="Workflow builder custom MCP profile"
                       />
                     </label>
                   </div>
+                  <div
+                    className={[
+                      "mt-2 rounded-lg border px-3 py-2 text-xs",
+                      builderMcpCompatibility.level === "ok"
+                        ? "border-emerald-400/25 bg-emerald-400/8 text-emerald-700"
+                        : builderMcpCompatibility.level === "fallback"
+                          ? "border-sky-400/25 bg-sky-400/8 text-sky-700"
+                          : builderMcpCompatibility.level === "warn"
+                            ? "border-amber-400/30 bg-amber-400/10 text-amber-700"
+                            : "border-outline-variant/30 bg-surface-container text-on-surface-variant",
+                    ].join(" ")}
+                    aria-label="Workflow builder MCP compatibility"
+                  >
+                    <div className="font-medium">
+                      {builderMcpCompatibility.label}
+                    </div>
+                    <div className="mt-0.5">
+                      {builderMcpCompatibility.detail}
+                    </div>
+                  </div>
+                  <div className="mt-2 rounded-lg border border-outline-variant/30 bg-surface px-3 py-2">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <span className="text-xs font-medium text-on-surface">
+                        Skills
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setBuilderSkillIds(DEFAULT_BUILDER_SKILL_IDS)}
+                        className="rounded-md bg-surface-container px-2 py-1 text-[11px] text-on-surface-variant transition-colors hover:bg-surface-container-high"
+                      >
+                        恢复默认
+                      </button>
+                    </div>
+                    <div
+                      className="grid gap-1.5"
+                      aria-label="Workflow builder skills"
+                    >
+                      {workflowSkillOptions.map((skill) => {
+                        const checked = builderSkillIds.includes(skill.id);
+                        return (
+                          <label
+                            key={skill.id}
+                            className="flex items-start gap-2 rounded-md border border-outline-variant/20 bg-surface-container/50 px-2 py-1.5 text-xs text-on-surface-variant"
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={(event) => {
+                                setBuilderSkillIds((current) =>
+                                  event.target.checked
+                                    ? uniqueWorkflowStrings([...current, skill.id])
+                                    : current.filter((id) => id !== skill.id),
+                                );
+                              }}
+                              className="mt-0.5"
+                              aria-label={`Workflow builder skill ${skill.id}`}
+                            />
+                            <span className="min-w-0">
+                              <span className="block font-medium text-on-surface">
+                                {skill.label}
+                              </span>
+                              {skill.description && (
+                                <span className="block text-[11px] leading-snug">
+                                  {skill.description}
+                                </span>
+                              )}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="mt-2 rounded-lg border border-outline-variant/30 bg-surface-container/65 p-2">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <p className="text-xs font-medium text-on-surface">输入契约</p>
+                      <span className="font-data text-[10px] text-on-surface-variant">
+                        {builderInputItems.length}
+                      </span>
+                    </div>
+                    <div className="mb-2 flex flex-wrap gap-1">
+                      {builderInputItems.map((item) => (
+                        <span
+                          key={item.id}
+                          className="rounded bg-surface px-1.5 py-1 font-data text-[10px] text-on-surface-variant"
+                        >
+                          {workflowItemLabel(builderInputLabels, item.id)}
+                          <span className="text-on-surface-variant/70">
+                            {" "}
+                            {item.id}:{item.type}
+                          </span>
+                        </span>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <input
+                        aria-label="New workflow input name"
+                        value={newWorkflowInputName}
+                        onChange={(event) =>
+                          setNewWorkflowInputName(event.target.value)
+                        }
+                        placeholder="输入名称，如 MR 链接"
+                        className="rounded-md border border-outline-variant/30 bg-surface px-2 py-1 text-[11px] text-on-surface outline-none focus:border-primary"
+                      />
+                      <input
+                        aria-label="New workflow input id"
+                        value={newWorkflowInputId}
+                        onChange={(event) =>
+                          setNewWorkflowInputId(event.target.value)
+                        }
+                        placeholder="input_id"
+                        className="rounded-md border border-outline-variant/30 bg-surface px-2 py-1 font-data text-[11px] text-on-surface outline-none focus:border-primary"
+                      />
+                      <select
+                        aria-label="New workflow input type"
+                        value={newWorkflowInputType}
+                        onChange={(event) =>
+                          setNewWorkflowInputType(event.target.value)
+                        }
+                        className="rounded-md border border-outline-variant/30 bg-surface px-2 py-1 text-[11px] text-on-surface outline-none focus:border-primary"
+                      >
+                        <option value="directory">源码目录</option>
+                        <option value="file">单个文件</option>
+                        <option value="file_set">多个文件</option>
+                        <option value="mr_link">MR 链接</option>
+                        <option value="coverage_report">覆盖率报告</option>
+                        <option value="long_text">长文本</option>
+                        <option value="free_text">短文本</option>
+                      </select>
+                      <select
+                        aria-label="New workflow input resolver"
+                        value={newWorkflowInputResolver}
+                        onChange={(event) =>
+                          setNewWorkflowInputResolver(event.target.value)
+                        }
+                        className="rounded-md border border-outline-variant/30 bg-surface px-2 py-1 text-[11px] text-on-surface outline-none focus:border-primary"
+                      >
+                        <option value="manual">用户选择/填写</option>
+                        <option value="agent_mcp">Agent 通过 MCP 解析</option>
+                        <option value="local">本地路径</option>
+                      </select>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={addBuilderInputContract}
+                      className="mt-1.5 rounded-md bg-surface px-2 py-1 text-[11px] font-medium text-on-surface transition-colors hover:bg-surface-container-high"
+                    >
+                      添加输入契约
+                    </button>
+                  </div>
+                  <div className="mt-2 rounded-lg border border-outline-variant/30 bg-surface-container/65 p-2">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <p className="text-xs font-medium text-on-surface">输出契约</p>
+                      <span className="font-data text-[10px] text-on-surface-variant">
+                        {builderOutputItems.length}
+                      </span>
+                    </div>
+                    <div className="mb-2 flex flex-wrap gap-1">
+                      {builderOutputItems.map((item) => (
+                        <span
+                          key={item.id}
+                          className="rounded bg-surface px-1.5 py-1 font-data text-[10px] text-on-surface-variant"
+                        >
+                          {workflowItemLabel(builderOutputLabels, item.id)}
+                          <span className="text-on-surface-variant/70">
+                            {" "}
+                            {item.artifact || item.type}
+                          </span>
+                        </span>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <input
+                        aria-label="New workflow output name"
+                        value={newWorkflowOutputName}
+                        onChange={(event) =>
+                          setNewWorkflowOutputName(event.target.value)
+                        }
+                        placeholder="输出名称，如 SFMEA 表"
+                        className="rounded-md border border-outline-variant/30 bg-surface px-2 py-1 text-[11px] text-on-surface outline-none focus:border-primary"
+                      />
+                      <input
+                        aria-label="New workflow output id"
+                        value={newWorkflowOutputId}
+                        onChange={(event) =>
+                          setNewWorkflowOutputId(event.target.value)
+                        }
+                        placeholder="output_id"
+                        className="rounded-md border border-outline-variant/30 bg-surface px-2 py-1 font-data text-[11px] text-on-surface outline-none focus:border-primary"
+                      />
+                      <select
+                        aria-label="New workflow output type"
+                        value={newWorkflowOutputType}
+                        onChange={(event) =>
+                          setNewWorkflowOutputType(event.target.value)
+                        }
+                        className="rounded-md border border-outline-variant/30 bg-surface px-2 py-1 text-[11px] text-on-surface outline-none focus:border-primary"
+                      >
+                        <option value="json">JSON 表</option>
+                        <option value="test_cases">测试用例</option>
+                        <option value="scope_report">分析报告</option>
+                        <option value="markdown">Markdown</option>
+                      </select>
+                      <input
+                        aria-label="New workflow output artifact"
+                        value={newWorkflowOutputArtifact}
+                        onChange={(event) =>
+                          setNewWorkflowOutputArtifact(event.target.value)
+                        }
+                        placeholder="output.json"
+                        className="rounded-md border border-outline-variant/30 bg-surface px-2 py-1 font-data text-[11px] text-on-surface outline-none focus:border-primary"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={addBuilderOutputContract}
+                      className="mt-1.5 rounded-md bg-surface px-2 py-1 text-[11px] font-medium text-on-surface transition-colors hover:bg-surface-container-high"
+                    >
+                      添加输出契约
+                    </button>
+                  </div>
+                  <details className="mt-2 rounded-lg border border-outline-variant/30 bg-surface-container/65 p-2">
+                    <summary className="cursor-pointer text-xs font-medium text-on-surface">
+                      高级 DSL / Schema
+                    </summary>
                   <label className="mt-2 block">
                     <span className="mb-1 block text-xs text-on-surface-variant">
                       输入项，格式 id:type 或 id:type@resolver
@@ -6261,9 +7257,10 @@ export default function AgentWorkbenchPage() {
                       className="h-20 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
                       aria-label="Workflow builder semantic imports"
                       spellCheck={false}
-                    />
-                  </label>
-                  {builderOutputPreview.length > 0 && (
+	                    />
+	                  </label>
+                  </details>
+	                  {builderOutputPreview.length > 0 && (
                     <div className="mt-2 rounded-lg border border-outline-variant/30 bg-surface px-2 py-1.5">
                       <p className="mb-1 text-xs font-medium text-on-surface-variant">
                         输出契约预览
@@ -6311,7 +7308,7 @@ export default function AgentWorkbenchPage() {
                       aria-label="Workflow builder input schemas"
                       spellCheck={false}
                     />
-                  </label>
+	                  </label>
                   <label className="mt-2 block">
                     <span className="mb-1 block text-xs text-on-surface-variant">
                       智能体目标
@@ -6492,6 +7489,94 @@ export default function AgentWorkbenchPage() {
                     </div>
                   </div>
                 )}
+              <div className="rounded-lg border border-outline-variant/30 bg-surface-container/70 p-3">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs font-semibold text-on-surface">
+                    测试活动运行摘要
+                  </p>
+                  <span className="rounded bg-surface px-1.5 py-0.5 font-data text-[10px] text-on-surface-variant">
+                    {workflowDisplayName(selectedWorkflowId)}
+                  </span>
+                </div>
+                <div className="grid gap-1.5 font-data text-[11px] text-on-surface-variant sm:grid-cols-2">
+                  <span className="break-words">
+                    工作空间: {workspaceId || "未选择"}
+                  </span>
+                  <span className="break-words">
+                    源码路径: {repoPath.trim() || "未填写"}
+                  </span>
+                  <span>
+                    执行器: {selectedRunProvider}
+                    {selectedProviderCapability
+                      ? ` (${selectedProviderCapability.status})`
+                      : ""}
+                  </span>
+                  <span>MCP: {selectedRunMcpProfile}</span>
+                  <span>
+                    输入: {filledInputCount}/{selectedWorkflowInputs.length}
+                    {requiredInputCount ? ` · 必填 ${requiredInputCount}` : ""}
+                  </span>
+                  <span>Agent 步骤: {selectedAgentStep ? "1" : "0"}</span>
+                </div>
+                <div className="mt-2 rounded-md border border-outline-variant/20 bg-surface px-2 py-1.5">
+                  <p className="mb-1 text-[11px] font-medium text-on-surface">
+                    输出预期
+                  </p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {selectedWorkflowOutputs.length > 0 ? (
+                      selectedWorkflowOutputs.slice(0, 8).map((output) => (
+                        <span
+                          key={`${String(output.id ?? "output")}:${String(output.artifact ?? "")}`}
+                          className="rounded bg-surface-container px-1.5 py-0.5 font-data text-[10px] text-on-surface-variant"
+                        >
+                          {workflowOutputDisplayName(output)}
+                          {output.artifact
+                            ? ` -> ${artifactShortName(String(output.artifact))}`
+                            : ""}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-[11px] text-on-surface-variant">
+                        尚未声明输出
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="mt-2 rounded-md border border-outline-variant/20 bg-surface px-2 py-1.5">
+                  <p className="mb-1 text-[11px] font-medium text-on-surface">
+                    运行前检查
+                  </p>
+                  <div className="grid gap-1 font-data text-[10px] text-on-surface-variant sm:grid-cols-3">
+                    <span
+                      className={
+                        repoPath.trim() ? "text-on-surface" : "text-warning"
+                      }
+                    >
+                      源码路径:{repoPath.trim() ? "ready" : "missing"}
+                    </span>
+                    <span
+                      className={
+                        filledInputCount >= requiredInputCount
+                          ? "text-on-surface"
+                          : "text-warning"
+                      }
+                    >
+                      输入契约:{filledInputCount}/{requiredInputCount}
+                    </span>
+                    <span
+                      className={
+                        selectedProviderCapability?.status === "available" ||
+                        selectedProviderCapability?.status === "configured"
+                          ? "text-on-surface"
+                          : "text-warning"
+                      }
+                    >
+                      执行器:
+                      {selectedProviderCapability?.status ?? "待探测"}
+                    </span>
+                  </div>
+                </div>
+              </div>
               <label className="block">
                 <span className="mb-1 block text-xs text-on-surface-variant">
                   工作空间
@@ -6556,13 +7641,19 @@ export default function AgentWorkbenchPage() {
                 <span className="mb-1 block text-xs text-on-surface-variant">
                   执行器覆盖
                 </span>
-                <input
+                <select
                   aria-label="执行器覆盖"
                   value={providerOverride}
                   onChange={(event) => setProviderOverride(event.target.value)}
-                  placeholder="claude-code / opencode / internal-agent"
                   className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
-                />
+                >
+                  <option value="">使用工作流默认执行器</option>
+                  {builderProviderOptions.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.label} ({provider.id}:{provider.status})
+                    </option>
+                  ))}
+                </select>
               </label>
               {selectedWorkflowInputs.length > 0 && (
                 <div className="rounded-lg border border-outline-variant/30 bg-surface p-3">
@@ -6575,6 +7666,7 @@ export default function AgentWorkbenchPage() {
                       const inputType = String(input.type ?? "text");
                       const required = input.required === true;
                       const role = String(input.role ?? "");
+                      const inputName = workflowInputDisplayName(input);
                       const value = inputTextValue(parsedPrepareInputs, input);
                       if (!inputId) return null;
                       if (
@@ -6585,7 +7677,7 @@ export default function AgentWorkbenchPage() {
                         return (
                           <label key={inputId} className="block">
                             <span className="mb-1 block text-xs text-on-surface-variant">
-                              {inputId}:{inputType}
+                              {inputName}
                               {required ? " *" : ""}
                             </span>
                             <select
@@ -6634,7 +7726,7 @@ export default function AgentWorkbenchPage() {
                         return (
                           <label key={inputId} className="block">
                             <span className="mb-1 block text-xs text-on-surface-variant">
-                              {inputId}:{inputType}
+                              {inputName}
                               {required ? " *" : ""}
                             </span>
                             <select
@@ -6656,7 +7748,7 @@ export default function AgentWorkbenchPage() {
                       return (
                         <label key={inputId} className="block">
                           <span className="mb-1 block text-xs text-on-surface-variant">
-                            {inputId}:{inputType}
+                            {inputName}
                             {required ? " *" : ""}
                           </span>
                           {multiline ? (
@@ -6726,18 +7818,23 @@ export default function AgentWorkbenchPage() {
                   </div>
                 </div>
               )}
-              <label className="block">
-                <span className="mb-1 block text-xs text-on-surface-variant">
-                  输入 JSON
-                </span>
-                <textarea
-                  value={inputsJson}
-                  onChange={(event) => setInputsJson(event.target.value)}
-                  className="h-40 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
-                  aria-label="Inputs JSON"
-                  spellCheck={false}
-                />
-              </label>
+              <details className="rounded-lg border border-outline-variant/30 bg-surface-container/70 p-3">
+                <summary className="cursor-pointer text-xs font-medium text-on-surface">
+                  高级输入 JSON
+                </summary>
+                <label className="mt-2 block">
+                  <span className="mb-1 block text-xs text-on-surface-variant">
+                    输入 JSON
+                  </span>
+                  <textarea
+                    value={inputsJson}
+                    onChange={(event) => setInputsJson(event.target.value)}
+                    className="h-40 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
+                    aria-label="Inputs JSON"
+                    spellCheck={false}
+                  />
+                </label>
+              </details>
               <button
                 onClick={createAndRunTaskRun}
                 disabled={taskRunActionBusy || !repoPath.trim()}
@@ -6856,6 +7953,118 @@ export default function AgentWorkbenchPage() {
                 )}
                 导入语义
               </button>
+              {preparedRun && (
+                <div className="grid gap-3 lg:grid-cols-[1.2fr_1fr]">
+                  <div className="rounded-lg border border-outline-variant/30 bg-surface-container/70 p-3">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold text-on-surface">
+                        Agent 运行阶段
+                      </p>
+                      <span className="font-data text-[10px] text-on-surface-variant">
+                        {preparedRun.task_run_id}
+                      </span>
+                    </div>
+                    <div className="grid gap-1.5 sm:grid-cols-4">
+                      {runPhaseCards.map((phase) => (
+                        <div
+                          key={phase.label}
+                          className="min-w-0 rounded-md border border-outline-variant/20 bg-surface px-2 py-1.5"
+                        >
+                          <p className="text-[11px] font-medium text-on-surface">
+                            {phase.label}
+                          </p>
+                          <p className="mt-0.5 font-data text-[10px] text-primary">
+                            {phase.status}
+                          </p>
+                          <p className="mt-0.5 truncate text-[10px] text-on-surface-variant">
+                            {phase.detail}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-outline-variant/30 bg-surface-container/70 p-3">
+                    <p className="mb-2 text-xs font-semibold text-on-surface">
+                      可信度与可用性
+                    </p>
+                    <div className="flex flex-wrap gap-1.5 font-data text-[10px] text-on-surface-variant">
+                      <span
+                        className={[
+                          "rounded bg-surface px-1.5 py-0.5",
+                          preparedProviderReadiness?.status === "ready" ||
+                          preparedProviderReadiness?.status === "ok"
+                            ? "text-on-surface"
+                            : "text-warning",
+                        ].join(" ")}
+                      >
+                        provider:
+                        {preparedProviderReadiness?.status ?? "pending"}
+                      </span>
+                      <span className="rounded bg-surface px-1.5 py-0.5">
+                        artifacts:{artifactManifest?.artifacts.length ?? 0}
+                      </span>
+                      <span
+                        className={[
+                          "rounded bg-surface px-1.5 py-0.5",
+                          (taskAcceptanceAudit?.summary.missing_required ?? 0) >
+                          0
+                            ? "text-warning"
+                            : "text-on-surface",
+                        ].join(" ")}
+                      >
+                        missing-required:
+                        {taskAcceptanceAudit?.summary.missing_required ?? 0}
+                      </span>
+                      <span className="rounded bg-surface px-1.5 py-0.5">
+                        evidence:
+                        {workflowExecution?.evidence_materialization
+                          ?.evidence_count ??
+                          workflowOutputMaterialize?.evidence_count ??
+                          0}
+                      </span>
+                    </div>
+                    {preparedProviderReadiness?.warnings.length ? (
+                      <p className="mt-1 truncate text-[10px] text-warning">
+                        {preparedProviderReadiness.warnings[0]}
+                      </p>
+                    ) : null}
+                  </div>
+                  <div className="rounded-lg border border-outline-variant/30 bg-surface-container/70 p-3 lg:col-span-2">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold text-on-surface">
+                        交付物状态
+                      </p>
+                      <span className="font-data text-[10px] text-on-surface-variant">
+                        可预览 / 可下载
+                      </span>
+                    </div>
+                    <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-4">
+                      {visibleDeliveryArtifacts.length > 0 ? (
+                        visibleDeliveryArtifacts.map((artifact) => (
+                          <button
+                            key={artifact.relative_path}
+                            type="button"
+                            onClick={() => previewArtifact(artifact.relative_path)}
+                            className="min-w-0 rounded-md border border-outline-variant/20 bg-surface px-2 py-1.5 text-left transition-colors hover:bg-surface-container-high"
+                          >
+                            <span className="block truncate text-[11px] font-medium text-on-surface">
+                              {artifactShortName(artifact.relative_path)}
+                            </span>
+                            <span className="block truncate font-data text-[10px] text-on-surface-variant">
+                              {artifact.kind} · sha:
+                              {artifact.sha256.slice(0, 8)}
+                            </span>
+                          </button>
+                        ))
+                      ) : (
+                        <span className="text-[11px] text-on-surface-variant">
+                          准备运行后展示交付物清单
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
               {preparedRun && (
                 <div className="min-w-0 rounded-xl border border-outline-variant/30 bg-surface/80 p-4 text-xs">
                   <p className="font-medium text-on-surface">

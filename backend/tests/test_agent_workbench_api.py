@@ -64,6 +64,7 @@ async def test_workbench_workflow_crud_api(workbench_client):
         "mr_blackbox_test",
         "patch_impact_review",
         "source_flow_sfmea_blackbox",
+        "testing_activity_orchestration",
     }.issubset(listed_ids)
 
     loaded = await workbench_client.get("/api/workbench/workflows/custom_mr_blackbox")
@@ -206,6 +207,7 @@ async def test_workbench_workflow_preset_api(workbench_client):
     assert "mr_blackbox_test" in preset_ids
     assert "resource_leak_hunt" in preset_ids
     assert "source_flow_sfmea_blackbox" in preset_ids
+    assert "testing_activity_orchestration" in preset_ids
     assert {
         "nvmf_connect_io_blackbox",
         "iscsi_login_session_blackbox",
@@ -324,6 +326,7 @@ async def test_restore_builtin_workflows_preserves_custom_and_restores_core_plus
             "mr_blackbox_test",
             "patch_impact_review",
             "source_flow_sfmea_blackbox",
+            "testing_activity_orchestration",
         }:
             assert item["audit"]["warnings"] == []
 
@@ -346,6 +349,17 @@ async def test_workbench_workflow_capabilities_api_documents_custom_workflows(wo
     assert body["output_features"]["json_schema_validation"] is True
     assert body["output_features"]["workflow_output_materialization"] is True
     assert body["agent_cli_features"]["agent_owned_mcp_credentials"] is True
+    assert body["agent_cli_features"]["skill_injection"] is True
+    skills_by_id = {item["id"]: item for item in body["skill_catalog"]}
+    assert skills_by_id["source-evidence-first"]["default_enabled"] is True
+    assert "GitNexus" in skills_by_id["source-evidence-first"]["prompt_hint"]
+    assert "SFMEA" in skills_by_id["sfmea"]["label"]
+    assert "black-box-test-design" in skills_by_id
+    assert "test-strategy-planning" in skills_by_id
+    assert "coverage-gap-analysis" in skills_by_id
+    assert "test-execution-orchestration" in skills_by_id
+    assert "defect-triage-regression" in skills_by_id
+    assert "performance-reliability-testing" in skills_by_id
     assert "jsonl" in body["semantic_library_import_formats"]
     assert body["artifact_contract"]["required_artifacts"] == "validated locally before outputs are accepted"
 
@@ -356,7 +370,7 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ready"
-    assert body["summary"]["workflow_count"] == 5
+    assert body["summary"]["workflow_count"] == 6
     assert body["summary"]["missing_required"] == 0
     by_id = {item["id"]: item for item in body["workflows"]}
     assert set(by_id) == {
@@ -365,10 +379,20 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
         "mr_blackbox_test",
         "patch_impact_review",
         "source_flow_sfmea_blackbox",
+        "testing_activity_orchestration",
     }
     assert by_id["module_analysis"]["scenario"] == "module_analysis"
     assert by_id["resource_leak_hunt"]["scenario"] == "risk_hunt"
     assert by_id["source_flow_sfmea_blackbox"]["scenario"] == "source_flow_sfmea_blackbox"
+    assert by_id["testing_activity_orchestration"]["agent_step_count"] == 1
+    assert by_id["testing_activity_orchestration"]["required_artifacts"] == [
+        "test_strategy.md",
+        "test_plan.json",
+        "execution_matrix.json",
+        "coverage_gap_report.json",
+        "defect_triage.md",
+        "release_readiness.md",
+    ]
     assert by_id["source_flow_sfmea_blackbox"]["required_artifacts"] == [
         "source_scope.json",
         "evidence_cards.json",
@@ -1765,6 +1789,15 @@ async def test_workbench_task_run_list_get_and_materialize_evidence_api(workbenc
                 "type": "agent_task",
                 "provider": "local-agent",
                 "mcp_profile": "codehub-readonly",
+                "skills": ["source-evidence-first", "sfmea"],
+                "skill_instructions": [
+                    {
+                        "id": "sfmea",
+                        "label": "SFMEA",
+                        "source": "codetalk_builtin",
+                        "prompt_hint": "Score concrete failure modes.",
+                    }
+                ],
                 "required_artifacts": ["mr_snapshot.json", "diff.patch", "changed_files.json"],
             }
         ],
@@ -1803,6 +1836,12 @@ async def test_workbench_task_run_list_get_and_materialize_evidence_api(workbenc
     assert loaded.json()["agent_runs"][0]["artifact_dir"] == f"agent_runs/{step_id}"
 
     artifact_dir = _task_run_dir(task_run["task_run_id"]) / "agent_runs" / step_id
+    task_bundle = json.loads((artifact_dir / "task_bundle.json").read_text("utf-8"))
+    assert task_bundle["skills"] == ["source-evidence-first", "sfmea"]
+    assert task_bundle["skill_instructions"][0]["prompt_hint"] == "Score concrete failure modes."
+    output_contract = json.loads((artifact_dir / "agent_output_contract.json").read_text("utf-8"))
+    assert output_contract["skill_injection"]["ids"] == ["source-evidence-first", "sfmea"]
+    assert output_contract["skill_injection"]["instructions"][0]["id"] == "sfmea"
     diff_text = "diff --git a/src/tls.c b/src/tls.c\n--- a/src/tls.c\n+++ b/src/tls.c\n"
     diff_sha = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
     (artifact_dir / "mr_snapshot.json").write_text(

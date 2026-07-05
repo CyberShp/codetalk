@@ -258,7 +258,82 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
           startup_probe: true,
           required_artifacts_validation: true,
           source_slice_second_turn: true,
+          skill_injection: true,
         },
+        skill_catalog: [
+          {
+            id: "source-evidence-first",
+            label: "源码证据优先",
+            source: "codetalk_builtin",
+            default_enabled: true,
+            description: "先查工作区源码、GitNexus 和 CGC，再生成结论。",
+            prompt_hint: "优先读取工作区源码、GitNexus 和 CGC 产物。",
+          },
+          {
+            id: "sfmea",
+            label: "SFMEA",
+            source: "codetalk_builtin",
+            default_enabled: true,
+            description: "生成结构化风险评分。",
+            prompt_hint: "SFMEA 每条必须包含评分和 mitigation。",
+          },
+          {
+            id: "black-box-test-design",
+            label: "黑盒测试设计",
+            source: "codetalk_builtin",
+            default_enabled: true,
+            description: "只描述外部可观测测试步骤。",
+            prompt_hint: "黑盒用例不得要求调用内部函数。",
+          },
+          {
+            id: "test-strategy-planning",
+            label: "测试策略与计划",
+            source: "codetalk_builtin",
+            default_enabled: false,
+            description: "拆解范围、风险、资源、环境、准入/准出和里程碑。",
+            prompt_hint: "输出测试策略和准入准出标准。",
+          },
+          {
+            id: "coverage-gap-analysis",
+            label: "覆盖率与缺口分析",
+            source: "codetalk_builtin",
+            default_enabled: false,
+            description: "分析覆盖率和补充建议。",
+            prompt_hint: "标出覆盖缺口和证据映射。",
+          },
+          {
+            id: "test-execution-orchestration",
+            label: "测试执行编排",
+            source: "codetalk_builtin",
+            default_enabled: false,
+            description: "生成执行矩阵和复跑策略。",
+            prompt_hint: "输出可执行测试矩阵。",
+          },
+          {
+            id: "defect-triage-regression",
+            label: "缺陷分诊与回归",
+            source: "codetalk_builtin",
+            default_enabled: false,
+            description: "判断缺陷分级和回归范围。",
+            prompt_hint: "输出缺陷分级和回归测试范围。",
+          },
+          {
+            id: "performance-reliability-testing",
+            label: "性能与可靠性测试",
+            source: "codetalk_builtin",
+            default_enabled: false,
+            description: "覆盖性能、压力、soak 和故障恢复。",
+            prompt_hint: "输出性能和可靠性测试计划。",
+          },
+          {
+            id: "artifact-contract",
+            label: "产物契约",
+            source: "codetalk_builtin",
+            default_enabled: true,
+            description: "结果必须写入声明的 artifact。",
+            prompt_hint: "终端文字不能替代 artifact。",
+          },
+        ],
         semantic_library_import_formats: ["json", "jsonl", "ndjson", "csv", "txt"],
         artifact_contract: {
           required_artifacts: "validated locally before outputs are accepted",
@@ -363,6 +438,10 @@ test("workflow run selector falls back to built-in presets when registered workf
     minimalWorkflowDefinition(
       "source_flow_sfmea_blackbox",
       "Code Analysis -> Flow -> SFMEA -> Black-box Cases",
+    ),
+    minimalWorkflowDefinition(
+      "testing_activity_orchestration",
+      "Testing Activity Orchestration",
     ),
     minimalWorkflowDefinition(
       "target_crash_restart_blackbox",
@@ -546,6 +625,10 @@ test("workflow presets stay visible when non-core diagnostics fail", async ({ pa
       "source_flow_sfmea_blackbox",
       "Code Analysis -> Flow -> SFMEA -> Black-box Cases",
     ),
+    minimalWorkflowDefinition(
+      "testing_activity_orchestration",
+      "Testing Activity Orchestration",
+    ),
     minimalWorkflowDefinition("nvmf_connect_io_blackbox", "NVMe-oF Connect / IO Black-box Scenario"),
     minimalWorkflowDefinition("iscsi_login_session_blackbox", "iSCSI Login / Session Black-box Scenario"),
     minimalWorkflowDefinition("bdev_io_reset_blackbox", "bdev IO / Reset Black-box Scenario"),
@@ -619,7 +702,7 @@ test("workflow presets stay visible when non-core diagnostics fail", async ({ pa
     .locator("option")
     .evaluateAll((options) => options.map((option) => option.getAttribute("value")));
   expect(presetValues).toEqual(expect.arrayContaining(definitions.map((item) => item.id)));
-  await expect(page.getByText("20 个内置预设，20 个已注册")).toBeVisible();
+  await expect(page.getByText("21 个内置预设，21 个已注册")).toBeVisible();
 });
 
 test("agent workbench renders workflow and task-run controls", async ({ page }) => {
@@ -723,6 +806,10 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(
     page.locator(".ct-workflow-node", { hasText: "自定义智能体节点" }),
   ).toBeVisible();
+  await page.getByLabel("Workflow link target").selectOption("outputs");
+  await page.getByRole("button", { name: "连接节点" }).click();
+  await expect(page.getByText(/连线已添加/)).toBeVisible();
+  await expect(page.locator(".ct-workflow-link")).toHaveCount(6);
   const nodeCountBeforeCopy = await page.locator(".ct-workflow-node").count();
   await page.getByRole("button", { name: "复制节点" }).click();
   await expect(page.locator(".ct-workflow-node")).toHaveCount(
@@ -745,6 +832,7 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
       "module_analysis",
       "resource_leak_hunt",
       "mr_blackbox_test",
+      "testing_activity_orchestration",
       "patch_impact_review",
       "source_flow_sfmea_blackbox",
       "nvmf_connect_io_blackbox",
@@ -784,10 +872,32 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByRole("button", { name: "恢复内置预设" })).toBeVisible();
   await expect(page.getByText("codehub-mcp").first()).toBeVisible();
   await expect(page.getByLabel("Workflow builder provider preset")).toBeVisible();
+  await expect(page.getByLabel("Workflow builder MCP compatibility")).toContainText("CodeTalk 预取后注入");
+  await expect(page.getByLabel("Workflow builder skills")).toBeVisible();
+  await expect(page.getByLabel("Workflow builder skill sfmea")).toBeChecked();
+  await page.getByLabel("New workflow input name").fill("iSCSI 登录脚本");
+  await page.getByLabel("New workflow input id").fill("iscsi_login_script");
+  await page.getByLabel("New workflow input type").selectOption("file");
+  await page.getByRole("button", { name: "添加输入契约" }).click();
+  await expect(page.getByText(/iSCSI 登录脚本\s+iscsi_login_script/)).toBeVisible();
+  await page.getByLabel("New workflow output name").fill("登录 SFMEA 表");
+  await page.getByLabel("New workflow output id").fill("login_sfmea");
+  await page.getByLabel("New workflow output type").selectOption("json");
+  await page.getByLabel("New workflow output artifact").fill("login_sfmea.json");
+  await page.getByRole("button", { name: "添加输出契约" }).click();
+  await expect(page.getByText(/登录 SFMEA 表\s+login_sfmea\.json/)).toBeVisible();
   await page.getByLabel("Workflow builder provider preset").selectOption("corp-agent");
   await expect(
     page.getByRole("textbox", { name: "Workflow builder provider" }),
   ).toHaveValue("corp-agent");
+  await page.getByLabel("Workflow builder MCP 配置").selectOption("codehub-readonly");
+  await expect(page.getByLabel("Workflow builder MCP compatibility")).toContainText("Agent 可直接使用 MCP");
+  await page.getByRole("button", { name: "生成草稿" }).click();
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"id": "iscsi_login_script"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"label": "iSCSI 登录脚本"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"id": "login_sfmea"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"label": "登录 SFMEA 表"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"edges": \[/);
   await expect(page.getByLabel("Workflow builder evidence mappings")).toHaveValue(
     /"patch_impact_scope"/,
   );
@@ -803,6 +913,19 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"layout": \{/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"nodes": \[/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"schema": \{\s+"type": "array"/);
+  await page.getByLabel("Workflow builder scenario").selectOption("testing_activity_orchestration");
+  await page.getByRole("button", { name: "生成草稿" }).click();
+  await expect(page.getByText("工作流草稿已生成: custom_mr_blackbox")).toBeVisible();
+  await expect(page.getByText("Draft:ready")).toBeVisible();
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"test_goal"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"test_plan"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"execution_matrix"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"coverage_gap_report"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"test-strategy-planning"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"test-execution-orchestration"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"performance-reliability-testing"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"artifact": "test_plan\.json"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"required": \[\s+"scope",\s+"risks",\s+"activities",\s+"entry_criteria",\s+"exit_criteria"\s+\]/);
   await page.getByLabel("Workflow builder scenario").selectOption("source_flow_sfmea_blackbox");
   await page.getByRole("button", { name: "生成草稿" }).click();
   await expect(page.getByText("工作流草稿已生成: custom_mr_blackbox")).toBeVisible();
@@ -825,6 +948,11 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByText("semantic_import", { exact: true })).toBeVisible();
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"patch_diff"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"provider": "corp-agent"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"mcp_profile": "codehub-readonly"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"skills": \[/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"sfmea"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"skill_instructions": \[/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"prompt_hint": "SFMEA/);
   await expect(page.getByLabel("Workflow builder input schemas")).toHaveValue(/"patch_diff"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"schema": \{\s+"type": "object"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"required": \[\s+"path"\s+\]/);
@@ -845,6 +973,9 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByText("Input file uploaded: tls.patch")).toBeVisible();
   await page.getByLabel("Workflow input design_doc").fill("E:/docs/tls-design.md");
   await page.getByLabel("Workflow input analysis_object").fill("nvme-tcp-tls");
+  await expect(page.getByText("高级输入 JSON")).toBeVisible();
+  await expect(page.getByLabel("Inputs JSON")).not.toBeVisible();
+  await page.getByText("高级输入 JSON").click();
   await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"patch_diff": \{\s+"path": "input_uploads\/input_patch_upload\/tls\.patch"\s+\}/);
   await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"design_doc": \{\s+"path": "E:\/docs\/tls-design\.md"\s+\}/);
   await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"analysis_object": "nvme-tcp-tls"/);
@@ -1589,19 +1720,34 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   const preparePanel = page
     .locator("section")
     .filter({ has: page.getByRole("heading", { name: "任务运行" }) });
+  await expect(preparePanel.getByText("测试活动运行摘要")).toBeVisible();
+  await expect(preparePanel.getByText("输出预期")).toBeVisible();
+  await expect(preparePanel.getByText("运行前检查")).toBeVisible();
   const repoInput = preparePanel.getByLabel("Repo path");
   await repoInput.click();
   await repoInput.pressSequentially("E:/repo");
   await expect(repoInput).toHaveValue("E:/repo");
+  await expect(preparePanel.getByText("源码路径: E:/repo")).toBeVisible();
+  await expect(preparePanel.getByText("工作空间: manual-workspace")).toBeVisible();
   await expect(preparePanel.getByRole("button", { name: "准备运行" })).toBeEnabled();
   await preparePanel.getByRole("button", { name: "准备运行" }).click();
+  await expect(preparePanel.getByText("Agent 运行阶段")).toBeVisible();
+  await expect(preparePanel.getByText("准备上下文")).toBeVisible();
+  await expect(preparePanel.getByText("执行 Agent")).toBeVisible();
+  await expect(preparePanel.getByText("校验证据")).toBeVisible();
+  await expect(preparePanel.getByText("固化交付物")).toBeVisible();
+  await expect(preparePanel.getByText("可信度与可用性")).toBeVisible();
+  await expect(preparePanel.getByText("交付物状态")).toBeVisible();
+  await expect(
+    preparePanel.getByRole("button", { name: /task_bundle\.json.*task_bundle/ }),
+  ).toBeVisible();
   await expect(page.getByText("Input context: 1 files")).toBeVisible();
   await expect(page.getByText("tls-design.md")).toBeVisible();
   await expect(page.getByText("chunks:2")).toBeVisible();
   await expect(page.getByText("warnings:preview truncated")).toBeVisible();
   await expect(page.getByText("fast-context: fallback to agent_cli")).toBeVisible();
   await expect(page.getByText("执行器就绪度:")).toBeVisible();
-  await expect(page.getByText("degraded")).toBeVisible();
+  await expect(page.getByText("degraded", { exact: true })).toBeVisible();
   await expect(page.getByText("gitnexus:missing_config")).toBeVisible();
   await expect(page.getByText("cgc:unavailable")).toBeVisible();
   await expect(page.getByText("claude-code:unavailable")).toBeVisible();
@@ -1616,6 +1762,17 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(
     page.getByText("probe:/api/tools/claude-code/startup-probe", { exact: false }),
   ).toBeVisible();
+  await preparePanel.getByRole("button", { name: "验收审计" }).click();
+  await expect(preparePanel.getByText("交付物状态")).toBeVisible();
+  await expect(
+    preparePanel.getByRole("button", { name: /task_bundle\.json.*task_bundle/ }),
+  ).toBeVisible();
+  await expect(
+    preparePanel.getByRole("button", {
+      name: /workflow_output_materialization\.json.*workflow_output_materialization/,
+    }),
+  ).toBeVisible();
+  await expect(preparePanel.getByText(/missing-required:\s*2/).first()).toBeVisible();
   await expect(
     page.getByText("manual:POST /api/tools/claude-code/startup-probe", { exact: false }),
   ).toBeVisible();

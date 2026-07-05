@@ -144,6 +144,8 @@ class Settings(BaseSettings):
         dev_origins = [
             "http://localhost:3003",
             "http://127.0.0.1:3003",
+            "http://localhost:3123",
+            "http://127.0.0.1:3123",
             "http://localhost:3218",
             "http://127.0.0.1:3218",
             "http://localhost:3219",
