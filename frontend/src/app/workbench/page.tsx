@@ -157,27 +157,9 @@ function WorkbenchStageFrame({
   );
 }
 
-const WORKBENCH_VIEWS: Array<{
-  id: WorkbenchView;
-  label: string;
-  description: string;
-}> = [
-  {
-    id: "run",
-    label: "运行驾驶舱",
-    description: "准备、执行、验收与复跑",
-  },
-  {
-    id: "workflow",
-    label: "工作流设计",
-    description: "编排输入、步骤、输出契约",
-  },
-  {
-    id: "knowledge",
-    label: "证据与语义",
-    description: "沉淀事实、复用测试语义",
-  },
-];
+export default function AgentWorkbenchPage() {
+  return <AgentWorkbenchExperience initialView="run" />;
+}
 
 const CORE_WORKFLOW_PRESET_IDS = new Set([
   "module_analysis",
@@ -3245,11 +3227,22 @@ function ProviderSectionTitle({ children }: { children: React.ReactNode }) {
   return <p className="ct-provider-section-title">{children}</p>;
 }
 
-export default function AgentWorkbenchPage() {
+export function AgentWorkbenchExperience({
+  initialView = "run",
+}: {
+  initialView?: WorkbenchView;
+}) {
   const router = useRouter();
   const workbenchRootRef = useRef<HTMLDivElement | null>(null);
   const workflowBoardRef = useRef<HTMLDivElement | null>(null);
   const workflowCanvasInnerRef = useRef<HTMLDivElement | null>(null);
+  const workspaceAutoSelectionDoneRef = useRef(false);
+  const paletteDragModuleRef = useRef<string | null>(null);
+  const palettePointerDragRef = useRef<{
+    moduleId: string;
+    startX: number;
+    startY: number;
+  } | null>(null);
   const workflowDragRef = useRef<{
     id: string;
     pointerId: number;
@@ -3414,6 +3407,7 @@ export default function AgentWorkbenchPage() {
     useState<MaterializeWorkflowOutputsResult | null>(null);
   const [workflowDraftServerAudit, setWorkflowDraftServerAudit] =
     useState<WorkflowDraftServerAudit | null>(null);
+  const [workflowInputsUpdated, setWorkflowInputsUpdated] = useState(false);
   const [semanticOutputImport, setSemanticOutputImport] =
     useState<SemanticCaseImportResult | null>(null);
   const [executionResults, setExecutionResults] = useState<
@@ -3426,7 +3420,7 @@ export default function AgentWorkbenchPage() {
     Record<string, MaterializeEvidenceResult>
   >({});
   const [activeWorkbenchView, setActiveWorkbenchView] =
-    useState<WorkbenchView>("run");
+    useState<WorkbenchView>(initialView);
   const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
   const [motionPreferenceReady, setMotionPreferenceReady] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -3435,6 +3429,10 @@ export default function AgentWorkbenchPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [openingConversation, setOpeningConversation] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setActiveWorkbenchView(initialView);
+  }, [initialView]);
 
   const workflowOptions = useMemo(() => {
     const seen = new Set<string>();
@@ -4395,6 +4393,53 @@ export default function AgentWorkbenchPage() {
     );
   }
 
+  function addPaletteNodeToCanvasViewportCenter(moduleId: string) {
+    const boardRect = workflowBoardRef.current?.getBoundingClientRect();
+    if (!boardRect) return;
+    addPaletteNodeToCanvas(
+      moduleId,
+      boardRect.left + Math.min(boardRect.width * 0.58, 560),
+      boardRect.top + Math.min(boardRect.height * 0.45, 360),
+    );
+  }
+
+  function startPalettePointerDrag(moduleId: string, event: ReactPointerEvent) {
+    palettePointerDragRef.current = {
+      moduleId,
+      startX: event.clientX,
+      startY: event.clientY,
+    };
+    const finishDrag = (pointerEvent: PointerEvent) => {
+      const drag = palettePointerDragRef.current;
+      palettePointerDragRef.current = null;
+      window.removeEventListener("pointercancel", cancelDrag);
+      if (!drag) return;
+      const moved =
+        Math.abs(pointerEvent.clientX - drag.startX) > 8 ||
+        Math.abs(pointerEvent.clientY - drag.startY) > 8;
+      const boardRect = workflowBoardRef.current?.getBoundingClientRect();
+      const droppedOnBoard =
+        boardRect &&
+        pointerEvent.clientX >= boardRect.left &&
+        pointerEvent.clientX <= boardRect.right &&
+        pointerEvent.clientY >= boardRect.top &&
+        pointerEvent.clientY <= boardRect.bottom;
+      if (moved && droppedOnBoard) {
+        addPaletteNodeToCanvas(
+          drag.moduleId,
+          pointerEvent.clientX,
+          pointerEvent.clientY,
+        );
+      }
+    };
+    const cancelDrag = () => {
+      palettePointerDragRef.current = null;
+      window.removeEventListener("pointerup", finishDrag);
+    };
+    window.addEventListener("pointerup", finishDrag, { once: true });
+    window.addEventListener("pointercancel", cancelDrag, { once: true });
+  }
+
   function renameActiveWorkflowNode(title: string) {
     if (!activeWorkflowNode) return;
     setWorkflowNodeTitles((current) => ({
@@ -4495,6 +4540,7 @@ export default function AgentWorkbenchPage() {
   }
 
   function applyWorkspaceSelection(workspace: Workspace) {
+    workspaceAutoSelectionDoneRef.current = true;
     setWorkspaceId(workspace.id);
     setRepoPath(workspace.repo_path);
     setInputsJson((current) =>
@@ -4504,6 +4550,34 @@ export default function AgentWorkbenchPage() {
         workspace.repo_path,
       ),
     );
+  }
+
+  function workflowDefinitionForRun(workflowId: string): WorkflowDefinition | null {
+    const registered = workflows.find((workflow) => workflow.id === workflowId);
+    if (registered) return registered;
+    const preset = workflowPresets.find(
+      (item) => item.definition.id === workflowId || item.id === workflowId,
+    );
+    return preset?.definition ?? null;
+  }
+
+  function workflowInputDefaults(workflowId: string): Record<string, string> {
+    const definition = workflowDefinitionForRun(workflowId);
+    const nextInputs: Record<string, string> = {};
+    for (const input of definition?.inputs ?? []) {
+      if (!input || typeof input !== "object") continue;
+      const inputId = String((input as Record<string, unknown>).id ?? "");
+      if (!inputId) continue;
+      nextInputs[inputId] = inputId === "repo_path" ? repoPath : "";
+    }
+    return nextInputs;
+  }
+
+  function selectRunWorkflow(workflowId: string) {
+    setSelectedWorkflowId(workflowId);
+    setInputsJson(pretty(workflowInputDefaults(workflowId)));
+    setWorkflowInputsUpdated(true);
+    window.setTimeout(() => setWorkflowInputsUpdated(false), 2200);
   }
 
   const loadWorkflows = useCallback(async () => {
@@ -4536,6 +4610,9 @@ export default function AgentWorkbenchPage() {
             }
             return currentJson;
           });
+          if (activeWorkbenchView === "workflow") {
+            hydrateBuilderFromWorkflow(fallbackWorkflow);
+          }
         }
       } else {
         coreErrors.push(
@@ -4607,7 +4684,11 @@ export default function AgentWorkbenchPage() {
       if (workspaceResult.status === "fulfilled") {
         const visibleWorkspaces = workspaceResult.value;
         setWorkspaces(visibleWorkspaces);
-        if (!repoPath.trim() && visibleWorkspaces.length > 0) {
+        if (
+          !workspaceAutoSelectionDoneRef.current &&
+          !repoPath.trim() &&
+          visibleWorkspaces.length > 0
+        ) {
           const preferred =
             visibleWorkspaces.find((workspace) => workspace.indexed === 1) ??
             visibleWorkspaces[0];
@@ -4631,7 +4712,7 @@ export default function AgentWorkbenchPage() {
     } finally {
       setLoading(false);
     }
-  }, [repoPath, selectedPresetId, selectedWorkflowId]);
+  }, [activeWorkbenchView, repoPath, selectedPresetId, selectedWorkflowId]);
 
   useEffect(() => {
     void loadWorkflows();
@@ -4749,6 +4830,97 @@ export default function AgentWorkbenchPage() {
         content.content || "{}",
       ) as WorkbenchAcceptanceAudit;
       setTaskAcceptanceAudit(parsed);
+    }
+  }
+
+  function hydrateBuilderFromWorkflow(workflow: {
+    id?: unknown;
+    name?: unknown;
+    inputs?: unknown;
+    outputs?: unknown;
+    steps?: unknown;
+  }) {
+    const workflowId = String(workflow.id ?? "").trim();
+    const workflowName = String(workflow.name ?? "").trim();
+    if (workflowId) setBuilderWorkflowId(workflowId);
+    if (workflowName) setBuilderWorkflowName(workflowName);
+
+    const inputs = Array.isArray(workflow.inputs)
+      ? workflow.inputs.filter(
+          (item): item is Record<string, unknown> =>
+            Boolean(item && typeof item === "object" && !Array.isArray(item)),
+        )
+      : [];
+    const inputLabels: Record<string, string> = {};
+    setBuilderInputSpec(
+      inputs
+        .map((input) => {
+          const id = String(input.id ?? "").trim();
+          if (!id) return "";
+          const type = String(input.type ?? "free_text").trim() || "free_text";
+          const resolver = String(input.resolver ?? "").trim();
+          const label = String(input.label ?? "").trim();
+          if (label && label !== id) inputLabels[id] = label;
+          return workflowSpecToText({ id, type, resolver });
+        })
+        .filter(Boolean)
+        .join(", "),
+    );
+    setBuilderInputLabels(inputLabels);
+
+    const outputs = Array.isArray(workflow.outputs)
+      ? workflow.outputs.filter(
+          (item): item is Record<string, unknown> =>
+            Boolean(item && typeof item === "object" && !Array.isArray(item)),
+        )
+      : [];
+    const outputLabels: Record<string, string> = {};
+    const outputArtifacts: string[] = [];
+    setBuilderOutputSpec(
+      outputs
+        .map((output) => {
+          const id = String(output.id ?? "").trim();
+          if (!id) return "";
+          const type = String(output.type ?? "json").trim() || "json";
+          const artifact = String(output.artifact ?? "").trim();
+          const label = String(output.label ?? "").trim();
+          if (label && label !== id) outputLabels[id] = label;
+          if (artifact) outputArtifacts.push(artifact);
+          return workflowSpecToText({ id, type, artifact });
+        })
+        .filter(Boolean)
+        .join(", "),
+    );
+    setBuilderOutputLabels(outputLabels);
+
+    const steps = Array.isArray(workflow.steps)
+      ? workflow.steps.filter(
+          (item): item is Record<string, unknown> =>
+            Boolean(item && typeof item === "object" && !Array.isArray(item)),
+        )
+      : [];
+    const agentStep = steps.find(
+      (step) => String(step.type ?? "") === "agent_task",
+    );
+    if (agentStep) {
+      const provider = String(agentStep.provider ?? "").trim();
+      const mcpProfile = String(agentStep.mcp_profile ?? "").trim();
+      const goal = String(agentStep.goal ?? "").trim();
+      const skills = Array.isArray(agentStep.skills)
+        ? agentStep.skills.map((item) => String(item)).filter(Boolean)
+        : [];
+      const requiredArtifacts = Array.isArray(agentStep.required_artifacts)
+        ? agentStep.required_artifacts.map((item) => String(item)).filter(Boolean)
+        : [];
+      if (provider) setBuilderProvider(provider);
+      if (mcpProfile) setBuilderMcpProfile(mcpProfile);
+      if (goal) setBuilderGoal(goal);
+      if (skills.length > 0) setBuilderSkillIds(skills);
+      setBuilderArtifacts(
+        uniqueWorkflowStrings([...requiredArtifacts, ...outputArtifacts]).join(", "),
+      );
+    } else {
+      setBuilderArtifacts(uniqueWorkflowStrings(outputArtifacts).join(", "));
     }
   }
 
@@ -4925,6 +5097,7 @@ export default function AgentWorkbenchPage() {
       const payload = parseJsonObject(workflowJson);
       const saved = await api.workbench.workflows.create(payload);
       setSelectedWorkflowId(saved.id);
+      hydrateBuilderFromWorkflow(saved as unknown as Record<string, unknown>);
       const warningCount = saved.audit?.warnings?.length ?? 0;
       setMessage(
         warningCount
@@ -4945,14 +5118,6 @@ export default function AgentWorkbenchPage() {
           : `工作流草稿审计: invalid`,
       );
     });
-
-  const loadSelectedWorkflowDraft = () => {
-    const workflow = workflows.find((item) => item.id === selectedWorkflowId);
-    if (!workflow) return;
-    setWorkflowJson(pretty(workflow));
-    applyWorkflowLayout(workflow);
-    setMessage(`已载入工作流: ${workflow.id}`);
-  };
 
   const duplicateSelectedWorkflowDraft = () => {
     const workflow = workflows.find((item) => item.id === selectedWorkflowId);
@@ -4975,20 +5140,8 @@ export default function AgentWorkbenchPage() {
     setWorkflowJson(pretty(preset.definition));
     setSelectedWorkflowId(preset.definition.id);
     applyWorkflowLayout(preset.definition);
-    setMessage(`已应用预设: ${workflowDisplayName(preset.definition)}`);
+    setMessage(`已从模板库导入到当前草稿: ${workflowDisplayName(preset.definition)}`);
   };
-
-  const installPreset = () =>
-    runAction("install-preset", async () => {
-      if (!selectedPresetId) return;
-      const workflow =
-        await api.workbench.workflows.installPreset(selectedPresetId);
-      setWorkflowJson(pretty(workflow));
-      setSelectedWorkflowId(workflow.id);
-      applyWorkflowLayout(workflow);
-      setMessage(`预设已安装: ${workflowDisplayName(workflow)}`);
-      await loadWorkflows();
-    });
 
   const restoreBuiltinPresets = () =>
     runAction("restore-builtin-presets", async () => {
@@ -5612,8 +5765,20 @@ export default function AgentWorkbenchPage() {
   const agentRunActionBusy = Boolean(
     busyAction?.startsWith("execute-") ||
     busyAction?.startsWith("validate-") ||
-    busyAction?.startsWith("materialize-"),
+      busyAction?.startsWith("materialize-"),
   );
+  const pageTitle =
+    activeWorkbenchView === "workflow"
+      ? "工作流设计"
+      : activeWorkbenchView === "knowledge"
+        ? "语义库"
+        : "运行驾驶舱";
+  const pageDescription =
+    activeWorkbenchView === "workflow"
+      ? "创建、编辑并保存工作流模板；保存后的模板才会出现在运行驾驶舱。"
+      : activeWorkbenchView === "knowledge"
+        ? "搜索、导入和复用测试知识、历史案例与证据片段。"
+        : "选择已建工作区和已保存工作流，填写本次输入，启动运行并下载交付文件。";
 
   return (
     <div
@@ -5628,12 +5793,11 @@ export default function AgentWorkbenchPage() {
                 Agent Workflow
               </p>
               <h1 className="font-display text-sm font-semibold text-on-surface sm:text-base">
-                智能体编排台
+                {pageTitle}
               </h1>
             </div>
             <p className="mt-1 max-w-4xl text-xs leading-4 text-on-surface-variant">
-              代码分析、流程梳理、SFMEA
-              与黑盒测试设计共用一个工作流画布；选择工作区后优先读取源码、输入文件和历史证据。
+              {pageDescription}
             </p>
           </div>
           <button
@@ -5681,64 +5845,6 @@ export default function AgentWorkbenchPage() {
           {error ?? message}
         </div>
       )}
-
-      <div className="ct-workbench-switcher mb-3 grid gap-1.5 lg:grid-cols-3">
-        {WORKBENCH_VIEWS.map((view) => {
-          const selected = activeWorkbenchView === view.id;
-          const badge =
-            view.id === "run"
-              ? preparedRun
-                ? "已准备"
-                : `${taskRuns.length} 任务`
-              : view.id === "workflow"
-                ? `${workflowPresets.length} 预设 / ${workflows.length} 已注册`
-                : `${semanticResults.length + memoryResults.length} 结果`;
-          return (
-            <button
-              key={view.id}
-              type="button"
-              onClick={() => setActiveWorkbenchView(view.id)}
-              className={`ct-workbench-tab min-w-0 rounded-lg border px-3 py-2 text-left transition-all ${
-                selected
-                  ? "is-active border-primary/35 bg-primary text-on-primary"
-                  : "border-outline-variant/40 bg-surface-container/82 text-on-surface hover:border-primary/25 hover:bg-surface-container-high"
-              }`}
-              aria-pressed={selected}
-            >
-              <span className="flex items-center justify-between gap-3">
-                <span className="flex min-w-0 items-center gap-2">
-                  {view.id === "run" ? (
-                    <PlayCircle size={16} />
-                  ) : view.id === "workflow" ? (
-                    <ClipboardList size={16} />
-                  ) : (
-                    <Library size={16} />
-                  )}
-                  <span className="truncate text-xs font-semibold">
-                    {view.label}
-                  </span>
-                </span>
-                <span
-                  className={`shrink-0 rounded-full px-2 py-0.5 font-data text-[10px] ${
-                    selected
-                      ? "bg-white/18 text-on-primary"
-                      : "bg-surface text-on-surface-variant"
-                  }`}
-                >
-                  {badge}
-                </span>
-              </span>
-              <span
-                className={`mt-0.5 block truncate text-[11px] ${
-                  selected ? "text-white/78" : "text-on-surface-variant"
-                }`}
-              >
-                {view.description}
-              </span>
-            </button>
-          );
-        })}
-      </div>
 
       <WorkbenchStageFrame
         activeWorkbenchView={activeWorkbenchView}
@@ -6386,69 +6492,49 @@ export default function AgentWorkbenchPage() {
 
         {activeWorkbenchView === "workflow" && (
           <Panel title="工作流编排" icon={<ClipboardList size={16} />}>
-            <div className="mb-3 flex flex-wrap items-center gap-2">
-              {workflowPresets.length > 0 ? (
-                <select
-                  value={selectedPresetId}
-                  onChange={(event) => setSelectedPresetId(event.target.value)}
-                  className="min-w-0 max-w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary sm:min-w-72"
-                  aria-label="工作流预设"
+            <div className="mb-3 rounded-lg border border-outline-variant/30 bg-surface/82 p-2.5">
+              <div className="flex flex-wrap items-center gap-2">
+                {workflowPresets.length > 0 ? (
+                  <select
+                    value={selectedPresetId}
+                    onChange={(event) => setSelectedPresetId(event.target.value)}
+                    className="min-w-0 max-w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary sm:min-w-72"
+                    aria-label="工作流预设"
+                  >
+                    {groupedWorkflowPresets.map((group) => (
+                      <optgroup key={group.group} label={group.group}>
+                        {group.items.map((preset) => (
+                          <option key={preset.id} value={preset.id}>
+                            {workflowDisplayName(preset.definition)}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
+                    模板库暂未加载
+                  </span>
+                )}
+                <button
+                  onClick={applyPreset}
+                  disabled={!selectedPresetId}
+                  className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
                 >
-                  {groupedWorkflowPresets.map((group) => (
-                    <optgroup key={group.group} label={group.group}>
-                      {group.items.map((preset) => (
-                        <option key={preset.id} value={preset.id}>
-                          {workflowDisplayName(preset.definition)}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </select>
-              ) : (
-                <span className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
-                  预设库暂未加载
-                </span>
-              )}
-              <button
-                onClick={applyPreset}
-                disabled={!selectedPresetId}
-                className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
-              >
-                应用预设
-              </button>
-              <button
-                onClick={installPreset}
-                disabled={Boolean(busyAction) || !selectedPresetId}
-                className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
-              >
-                {busyAction === "install-preset" ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <Save size={14} />
-                )}
-                安装预设
-              </button>
-              <button
-                onClick={restoreBuiltinPresets}
-                disabled={Boolean(busyAction)}
-                className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
-              >
-                {busyAction === "restore-builtin-presets" ? (
-                  <Loader2 size={14} className="animate-spin" />
-                ) : (
-                  <RefreshCw size={14} />
-                )}
-                恢复内置预设
-              </button>
-              <button
-                onClick={loadSelectedWorkflowDraft}
-                disabled={
-                  !workflows.some((item) => item.id === selectedWorkflowId)
-                }
-                className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
-              >
-                载入所选
-              </button>
+                  从模板库导入
+                </button>
+                <button
+                  onClick={restoreBuiltinPresets}
+                  disabled={Boolean(busyAction)}
+                  className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+                >
+                  {busyAction === "restore-builtin-presets" ? (
+                    <Loader2 size={14} className="animate-spin" />
+                  ) : (
+                    <RefreshCw size={14} />
+                  )}
+                  刷新模板库
+                </button>
               <button
                 onClick={duplicateSelectedWorkflowDraft}
                 disabled={
@@ -6482,9 +6568,13 @@ export default function AgentWorkbenchPage() {
                 )}
                 审计草稿
               </button>
-              <span className="text-xs text-on-surface-variant">
-                {workflowPresets.length} 个内置预设，{workflows.length} 个已注册
-              </span>
+                <span className="text-xs text-on-surface-variant">
+                  {workflowPresets.length} 个内置模板，{workflows.length} 个已保存
+                </span>
+              </div>
+              <p className="mt-2 text-[11px] leading-4 text-on-surface-variant">
+                导入会替换当前画布草稿，不影响已保存的工作流。保存后才会出现在运行驾驶舱。
+              </p>
             </div>
             <div className="ct-workflow-builder-grid grid gap-2.5 xl:grid-cols-[148px_minmax(820px,1fr)_320px]">
               <aside
@@ -6507,14 +6597,22 @@ export default function AgentWorkbenchPage() {
                       draggable
                       aria-label={paletteModule.label}
                       onDragStart={(event) => {
+                        paletteDragModuleRef.current = paletteModule.id;
                         event.dataTransfer.setData(
                           "application/x-codetalk-workflow-module",
                           paletteModule.id,
                         );
+                        event.dataTransfer.setData("text/plain", paletteModule.id);
                         event.dataTransfer.effectAllowed = "copy";
                       }}
+                      onDragEnd={() => {
+                        paletteDragModuleRef.current = null;
+                      }}
+                      onPointerDown={(event) =>
+                        startPalettePointerDrag(paletteModule.id, event)
+                      }
                       onClick={() =>
-                        setMessage("已选择节点模块: " + paletteModule.label)
+                        addPaletteNodeToCanvasViewportCenter(paletteModule.id)
                       }
                       className={[
                         "w-full rounded-md border px-1.5 py-1 text-left text-[10px] font-medium leading-tight transition-colors hover:bg-surface-container-high",
@@ -6582,10 +6680,16 @@ export default function AgentWorkbenchPage() {
                   onDrop={(event) => {
                     event.preventDefault();
                     event.stopPropagation();
-                    addPaletteNodeToCanvas(
+                    const moduleId =
                       event.dataTransfer.getData(
                         "application/x-codetalk-workflow-module",
-                      ),
+                      ) ||
+                      event.dataTransfer.getData("text/plain") ||
+                      paletteDragModuleRef.current ||
+                      "";
+                    paletteDragModuleRef.current = null;
+                    addPaletteNodeToCanvas(
+                      moduleId,
                       event.clientX,
                       event.clientY,
                     );
@@ -7629,7 +7733,7 @@ export default function AgentWorkbenchPage() {
                   aria-label="工作流"
                   value={selectedWorkflowId}
                   onChange={(event) =>
-                    setSelectedWorkflowId(event.target.value)
+                    selectRunWorkflow(event.target.value)
                   }
                   className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
                 >
@@ -7871,10 +7975,24 @@ export default function AgentWorkbenchPage() {
                 </select>
               </label>
               {selectedWorkflowInputs.length > 0 && (
-                <div className="rounded-lg border border-outline-variant/30 bg-surface p-3">
-                  <p className="mb-2 text-xs font-medium text-on-surface">
-                    工作流输入
-                  </p>
+                <div
+                  aria-label="Workflow run inputs"
+                  className={`rounded-lg border p-3 transition-colors ${
+                    workflowInputsUpdated
+                      ? "border-primary/35 bg-primary/10"
+                      : "border-outline-variant/30 bg-surface"
+                  }`}
+                >
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-xs font-medium text-on-surface">
+                      工作流输入
+                    </p>
+                    {workflowInputsUpdated && (
+                      <span className="rounded-full bg-primary/12 px-2 py-0.5 text-[10px] font-medium text-primary">
+                        已随所选工作流更新
+                      </span>
+                    )}
+                  </div>
                   <div className="space-y-2">
                     {selectedWorkflowInputs.map((input) => {
                       const inputId = String(input.id ?? "");
@@ -7884,6 +8002,9 @@ export default function AgentWorkbenchPage() {
                       const inputName = workflowInputDisplayName(input);
                       const value = inputTextValue(parsedPrepareInputs, input);
                       if (!inputId) return null;
+                      if (inputId === "repo_path" && inputType === "directory") {
+                        return null;
+                      }
                       if (
                         inputId === "repo_path" &&
                         inputType === "directory" &&

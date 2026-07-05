@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
+  ChevronDown,
   LayoutDashboard,
   Settings,
   Shield,
@@ -21,13 +22,23 @@ interface NavItem {
   icon: ReactNode;
 }
 
+interface OrchestrationChild {
+  label: string;
+  href: string;
+}
+
 const navItems: NavItem[] = [
   { label: "工作台", href: "/", icon: <LayoutDashboard size={18} /> },
   { label: "工作空间", href: "/workspaces", icon: <FolderOpen size={18} /> },
-  { label: "智能体编排", href: "/workbench", icon: <Workflow size={18} /> },
   { label: "AI 线程", href: "/ai", icon: <MessageSquareText size={18} /> },
   { label: "覆盖率分析", href: "/coverage", icon: <Shield size={18} /> },
   { label: "设置", href: "/settings", icon: <Settings size={18} /> },
+];
+
+const orchestrationChildren: OrchestrationChild[] = [
+  { label: "运行驾驶舱", href: "/workbench" },
+  { label: "工作流设计", href: "/workbench/designer" },
+  { label: "语义库", href: "/workbench/semantic" },
 ];
 
 function isActive(pathname: string, href: string): boolean {
@@ -85,6 +96,54 @@ export default function Sidebar() {
     }, 360);
   };
 
+  const orchestrationGroup = (
+    <div
+      className={`ct-app-sidebar__group ${pathname.startsWith("/workbench") ? "is-open" : ""}`}
+    >
+      <Link
+        href="/workbench"
+        className={`ct-app-sidebar__link ct-app-sidebar__group-root ${
+          pathname.startsWith("/workbench") ? "is-active" : ""
+        }`}
+        title={collapsed ? "智能体编排" : undefined}
+        aria-expanded={pathname.startsWith("/workbench")}
+      >
+        {pathname.startsWith("/workbench") && (
+          <>
+            <span className="ct-app-sidebar__active-bar" aria-hidden="true" />
+            <span className="ct-app-sidebar__active-glow" aria-hidden="true" />
+          </>
+        )}
+        <span className="ct-app-sidebar__icon" aria-hidden="true">
+          <Workflow size={18} />
+        </span>
+        <span className="ct-app-sidebar__label">智能体编排</span>
+        <ChevronDown
+          className="ct-app-sidebar__group-chevron"
+          size={14}
+          aria-hidden="true"
+        />
+      </Link>
+      {!collapsed && pathname.startsWith("/workbench") && (
+        <div className="ct-app-sidebar__children" aria-label="智能体编排子导航">
+          {orchestrationChildren.map((child) => {
+            const active = pathname === child.href;
+            return (
+              <Link
+                key={child.href}
+                href={child.href}
+                className={`ct-app-sidebar__child ${active ? "is-active" : ""}`}
+                aria-current={active ? "page" : undefined}
+              >
+                {child.label}
+              </Link>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+
   return (
     <aside className={`ct-app-sidebar ${collapsed ? "is-collapsed" : ""} ${isSwitching ? "is-switching" : ""}`}>
       {/* Logo */}
@@ -112,23 +171,25 @@ export default function Sidebar() {
         {navItems.map((item) => {
           const active = isActive(pathname, item.href);
           return (
-            <Link
-              key={item.href}
-              href={item.href}
-              className={`ct-app-sidebar__link ${active ? "is-active" : ""}`}
-              title={collapsed ? item.label : undefined}
-            >
-              {active && (
-                <>
-                  <span className="ct-app-sidebar__active-bar" aria-hidden="true" />
-                  <span className="ct-app-sidebar__active-glow" aria-hidden="true" />
-                </>
-              )}
-              <span className="ct-app-sidebar__icon" aria-hidden="true">
-                {item.icon}
-              </span>
-              <span className="ct-app-sidebar__label">{item.label}</span>
-            </Link>
+            <Fragment key={item.href}>
+              <Link
+                href={item.href}
+                className={`ct-app-sidebar__link ${active ? "is-active" : ""}`}
+                title={collapsed ? item.label : undefined}
+              >
+                {active && (
+                  <>
+                    <span className="ct-app-sidebar__active-bar" aria-hidden="true" />
+                    <span className="ct-app-sidebar__active-glow" aria-hidden="true" />
+                  </>
+                )}
+                <span className="ct-app-sidebar__icon" aria-hidden="true">
+                  {item.icon}
+                </span>
+                <span className="ct-app-sidebar__label">{item.label}</span>
+              </Link>
+              {item.href === "/workspaces" ? orchestrationGroup : null}
+            </Fragment>
           );
         })}
       </nav>

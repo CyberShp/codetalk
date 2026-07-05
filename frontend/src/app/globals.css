@@ -252,6 +252,60 @@ body {
   padding: 0 12px 12px;
 }
 
+.ct-app-sidebar__group {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ct-app-sidebar__group-root {
+  width: 100%;
+}
+
+.ct-app-sidebar__group-chevron {
+  position: relative;
+  z-index: 1;
+  margin-left: auto;
+  color: currentColor;
+  opacity: 0.72;
+  transition: transform var(--motion-fast) var(--motion-ease);
+}
+
+.ct-app-sidebar__group.is-open .ct-app-sidebar__group-chevron {
+  transform: rotate(0deg);
+}
+
+.ct-app-sidebar__children {
+  display: grid;
+  gap: 3px;
+  padding-left: 34px;
+  padding-right: 4px;
+}
+
+.ct-app-sidebar__child {
+  border-radius: 8px;
+  padding: 5px 8px;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 620;
+  line-height: 16px;
+  transition:
+    background var(--motion-fast) var(--motion-ease),
+    color var(--motion-fast) var(--motion-ease);
+}
+
+.ct-app-sidebar__child:hover {
+  background: rgba(255, 255, 255, 0.68);
+  color: #0f172a;
+}
+
+.ct-app-sidebar__child.is-active {
+  background: #e3f2f8;
+  color: #085b74;
+  font-weight: 720;
+}
+
 .ct-app-sidebar__link {
   position: relative;
   display: flex;
@@ -415,6 +469,8 @@ body {
 
   .ct-app-sidebar.is-collapsed .ct-app-sidebar__brand-text,
   .ct-app-sidebar.is-collapsed .ct-app-sidebar__label,
+  .ct-app-sidebar.is-collapsed .ct-app-sidebar__group-chevron,
+  .ct-app-sidebar.is-collapsed .ct-app-sidebar__children,
   .ct-app-sidebar.is-collapsed .ct-app-sidebar__footer p {
     max-width: 0;
     opacity: 0;
