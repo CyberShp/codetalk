@@ -303,6 +303,14 @@ export interface WorkbenchWorkflowCapabilities {
   input_features?: Record<string, boolean>;
   output_features: Record<string, boolean>;
   agent_cli_features: Record<string, boolean>;
+  skill_catalog?: Array<{
+    id: string;
+    label: string;
+    source: "codetalk_builtin" | "workspace" | "agent_runtime" | string;
+    default_enabled?: boolean;
+    description?: string;
+    prompt_hint?: string;
+  }>;
   semantic_library_import_formats: string[];
   artifact_contract: Record<string, string>;
 }

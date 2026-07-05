@@ -184,6 +184,11 @@ class WorkbenchTaskRunPreparer:
                 **task_bundle,
                 "step_id": step_id,
                 "goal": step.get("goal") or "",
+                "skills": [str(item) for item in step.get("skills") or []],
+                "skill_instructions": [
+                    item for item in step.get("skill_instructions") or []
+                    if isinstance(item, dict)
+                ],
                 "required_artifacts": required_artifacts_by_step.get(step_id, []),
                 "expected_output_schemas": output_schemas_by_step.get(step_id, []),
                 "expected_semantic_outputs": semantic_import_outputs_by_step.get(step_id, []),
@@ -782,6 +787,11 @@ def _workflow_contract_agent_step(
         "provider": provider,
         "mcp_profile": mcp_profile,
         "goal": str(step.get("goal") or ""),
+        "skills": [str(item) for item in step.get("skills") or []],
+        "skill_instructions": [
+            item for item in step.get("skill_instructions") or []
+            if isinstance(item, dict)
+        ],
         "required_artifacts": [str(item) for item in step.get("required_artifacts") or []],
         "prompt_transport": str(capabilities.get("prompt_transport") or ""),
         "supports_mcp": supports_mcp,

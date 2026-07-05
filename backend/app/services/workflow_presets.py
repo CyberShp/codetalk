@@ -170,6 +170,42 @@ SOURCE_FLOW_REQUIRED_ARTIFACTS = [
     "black_box_cases.json",
 ]
 
+TEST_PLAN_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["scope", "risks", "activities", "entry_criteria", "exit_criteria"],
+    "properties": {
+        "scope": {"type": "array"},
+        "risks": {"type": "array"},
+        "activities": {"type": "array"},
+        "entry_criteria": {"type": "array"},
+        "exit_criteria": {"type": "array"},
+    },
+    "additionalProperties": True,
+}
+
+EXECUTION_MATRIX_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["batches"],
+    "properties": {
+        "batches": {"type": "array"},
+        "environments": {"type": "array"},
+        "observability": {"type": "array"},
+        "rerun_policy": {"type": "array"},
+    },
+    "additionalProperties": True,
+}
+
+COVERAGE_GAP_REPORT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "required": ["gaps", "recommendations"],
+    "properties": {
+        "gaps": {"type": "array"},
+        "recommendations": {"type": "array"},
+        "source_evidence": {"type": "array"},
+    },
+    "additionalProperties": True,
+}
+
 ORIGINAL_CORE_WORKFLOW_PRESET_IDS = (
     "module_analysis",
     "resource_leak_hunt",
@@ -180,6 +216,7 @@ ORIGINAL_CORE_WORKFLOW_PRESET_IDS = (
 CORE_WORKFLOW_PRESET_IDS = (
     *ORIGINAL_CORE_WORKFLOW_PRESET_IDS,
     "source_flow_sfmea_blackbox",
+    "testing_activity_orchestration",
 )
 
 COMMON_TEST_SCENARIO_PRESET_IDS = (
@@ -607,6 +644,124 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                             },
                         },
                     },
+                    {"id": "report", "type": "markdown", "from": "render_report"},
+                ],
+            },
+        },
+        {
+            "id": "testing_activity_orchestration",
+            "name": "Testing Activity Orchestration",
+            "description": (
+                "Plan and orchestrate testing work beyond test design: strategy, scope, "
+                "environment readiness, execution matrix, coverage gaps, defect triage, "
+                "regression scope, performance/reliability activities, and release readiness."
+            ),
+            "definition": {
+                "id": "testing_activity_orchestration",
+                "name": "Testing Activity Orchestration",
+                "version": 1,
+                "inputs": [
+                    {"id": "test_goal", "type": "free_text", "required": True, "role": "testing objective or release risk"},
+                    {"id": "repo_path", "type": "directory", "required": True, "resolver": "local"},
+                    {"id": "requirements_doc", "type": "file", "required": False, "role": "requirements or acceptance criteria"},
+                    {"id": "coverage_report", "type": "coverage_report", "required": False, "role": "coverage context"},
+                    {"id": "defect_report", "type": "file", "required": False, "role": "known defects or failure summary"},
+                    {"id": "environment_notes", "type": "long_text", "required": False, "role": "test environment, constraints, resources"},
+                    {"id": "semantic_library_ref", "type": "semantic_library_ref", "required": False, "role": "testing terminology"},
+                ],
+                "steps": [
+                    {
+                        "id": "plan_testing_activity",
+                        "type": "agent_task",
+                        "provider": "claude-code",
+                        "mcp_profile": "",
+                        "skills": [
+                            "source-evidence-first",
+                            "test-strategy-planning",
+                            "coverage-gap-analysis",
+                            "test-execution-orchestration",
+                            "defect-triage-regression",
+                            "performance-reliability-testing",
+                            "artifact-contract",
+                        ],
+                        "skill_instructions": [
+                            {
+                                "id": "test-strategy-planning",
+                                "label": "测试策略与计划",
+                                "source": "codetalk_builtin",
+                                "prompt_hint": "输出测试策略、范围、风险优先级、准入/准出标准、资源/环境依赖、里程碑和未决问题。",
+                            },
+                            {
+                                "id": "coverage-gap-analysis",
+                                "label": "覆盖率与缺口分析",
+                                "source": "codetalk_builtin",
+                                "prompt_hint": "结合覆盖率文件、源码入口和现有测试目录，标出覆盖缺口、补充测试建议和证据映射。",
+                            },
+                            {
+                                "id": "test-execution-orchestration",
+                                "label": "测试执行编排",
+                                "source": "codetalk_builtin",
+                                "prompt_hint": "输出可执行测试矩阵，包含环境、前置条件、批次顺序、并发/长跑安排、观测指标、失败诊断和复跑规则。",
+                            },
+                            {
+                                "id": "defect-triage-regression",
+                                "label": "缺陷分诊与回归",
+                                "source": "codetalk_builtin",
+                                "prompt_hint": "输出缺陷分级、复现线索、影响范围、回归测试范围、阻塞/放行建议和需要补充的证据。",
+                            },
+                            {
+                                "id": "performance-reliability-testing",
+                                "label": "性能与可靠性测试",
+                                "source": "codetalk_builtin",
+                                "prompt_hint": "输出性能/可靠性测试计划，包含基线、负载模型、指标、故障注入、soak、退化阈值和诊断数据。",
+                            },
+                        ],
+                        "goal": (
+                            "First inspect workspace source, GitNexus/CGC artifacts, input files, "
+                            "coverage, semantic cases, and defect evidence unless the user explicitly "
+                            "excludes source-based analysis. Produce testing activity artifacts for "
+                            "strategy, plan, execution, coverage gaps, defect triage, regression, "
+                            "performance/reliability, and release readiness. Terminal output is only "
+                            "progress; required artifacts are authoritative."
+                        ),
+                        "required_artifacts": [
+                            "test_strategy.md",
+                            "test_plan.json",
+                            "execution_matrix.json",
+                            "coverage_gap_report.json",
+                            "defect_triage.md",
+                            "release_readiness.md",
+                        ],
+                    },
+                    {"id": "semantic_retrieve", "type": "semantic_retrieve"},
+                    {"id": "validate_evidence", "type": "evidence_validate"},
+                    {"id": "render_report", "type": "report_render"},
+                ],
+                "outputs": [
+                    {"id": "test_strategy", "type": "markdown", "from": "plan_testing_activity", "artifact": "test_strategy.md"},
+                    {
+                        "id": "test_plan",
+                        "type": "json",
+                        "from": "plan_testing_activity",
+                        "artifact": "test_plan.json",
+                        "schema": TEST_PLAN_SCHEMA,
+                    },
+                    {
+                        "id": "execution_matrix",
+                        "type": "json",
+                        "from": "plan_testing_activity",
+                        "artifact": "execution_matrix.json",
+                        "schema": EXECUTION_MATRIX_SCHEMA,
+                    },
+                    {
+                        "id": "coverage_gap_report",
+                        "type": "json",
+                        "from": "plan_testing_activity",
+                        "artifact": "coverage_gap_report.json",
+                        "schema": COVERAGE_GAP_REPORT_SCHEMA,
+                    },
+                    {"id": "defect_triage", "type": "markdown", "from": "plan_testing_activity", "artifact": "defect_triage.md"},
+                    {"id": "release_readiness", "type": "markdown", "from": "plan_testing_activity", "artifact": "release_readiness.md"},
                     {"id": "report", "type": "markdown", "from": "render_report"},
                 ],
             },

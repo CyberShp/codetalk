@@ -65,8 +65,10 @@ import type {
   AIContextReference,
 } from "./types";
 
-const CONFIGURED_API_BASE = process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "");
+const CONFIGURED_API_BASE =
+  process.env.NEXT_PUBLIC_API_URL?.replace(/\/$/, "") ?? "";
 const API_BASE_OVERRIDE_STORAGE_KEY = "codetalk.apiBaseOverride";
+let activeApiBase = "";
 
 function browserApiBaseOverride() {
   if (typeof window === "undefined") return "";
@@ -84,30 +86,85 @@ export const BASE =
     ? `${window.location.protocol}//${window.location.hostname}:3004`
     : "http://localhost:3004");
 
+function uniqueApiBases(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  values.forEach((value) => {
+    const text = value.replace(/\/$/, "").trim();
+    if (!text || seen.has(text)) return;
+    seen.add(text);
+    result.push(text);
+  });
+  return result;
+}
+
+function browserFallbackApiBases(): string[] {
+  if (typeof window === "undefined") return ["http://localhost:3004"];
+  const { protocol, hostname, port } = window.location;
+  const sameHost = (apiPort: string) => `${protocol}//${hostname}:${apiPort}`;
+  const candidates = [sameHost("3004"), sameHost("3124")];
+  if (port === "3003") candidates.unshift(sameHost("3004"));
+  if (port === "3123") candidates.unshift(sameHost("3124"));
+  return candidates;
+}
+
+function apiBaseCandidates(): string[] {
+  return uniqueApiBases([
+    activeApiBase,
+    browserApiBaseOverride(),
+    CONFIGURED_API_BASE,
+    BASE,
+    ...browserFallbackApiBases(),
+  ]);
+}
+
+export function currentApiBase(): string {
+  return activeApiBase || BASE;
+}
+
 export function apiBaseInfo() {
   const override = browserApiBaseOverride();
   return {
-    base: BASE,
+    base: currentApiBase(),
     configured: CONFIGURED_API_BASE || "",
     override,
-    source: override ? "localStorage" : CONFIGURED_API_BASE ? "NEXT_PUBLIC_API_URL" : "fallback",
+    candidates: apiBaseCandidates(),
+    source: activeApiBase
+      ? "auto-detected"
+      : override
+        ? "localStorage"
+        : CONFIGURED_API_BASE
+          ? "NEXT_PUBLIC_API_URL"
+          : "fallback",
   };
 }
 
 export async function probeApiHealth(): Promise<{ ok: boolean; message: string }> {
-  try {
-    const res = await fetch(`${BASE}/health`, { credentials: "include" });
-    const text = await res.text();
-    return {
-      ok: res.ok,
-      message: res.ok ? `后端连接正常：${BASE}` : `后端返回 ${res.status}：${text || BASE}`,
-    };
-  } catch (exc) {
-    return {
-      ok: false,
-      message: exc instanceof Error ? `网络连接失败：${exc.message}` : "网络连接失败，请检查后端服务是否运行",
-    };
+  const failures: string[] = [];
+  for (const base of apiBaseCandidates()) {
+    try {
+      const res = await fetch(`${base}/health`, { credentials: "include" });
+      const text = await res.text();
+      if (res.ok) {
+        activeApiBase = base;
+        return {
+          ok: true,
+          message: `后端连接正常：${base}`,
+        };
+      }
+      failures.push(`${base} -> ${res.status} ${text}`.trim());
+    } catch (exc) {
+      failures.push(
+        `${base} -> ${
+          exc instanceof Error ? exc.message : "网络连接失败"
+        }`,
+      );
+    }
   }
+  return {
+    ok: false,
+    message: `网络连接失败，请检查后端服务是否运行。已尝试：${failures.join("; ")}`,
+  };
 }
 
 export class DuplicateWorkspaceError extends Error {
@@ -172,21 +229,22 @@ function isRetryable(status: number): boolean {
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let lastError: Error | null = null;
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  for (const base of apiBaseCandidates()) {
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     let res: Response;
     try {
-      res = await fetch(`${BASE}${path}`, {
+      res = await fetch(`${base}${path}`, {
         credentials: "include",
         headers: { "Content-Type": "application/json", ...init?.headers },
         ...init,
       });
     } catch {
-      lastError = new Error("网络连接失败，请检查后端服务是否运行");
+      lastError = new Error(`网络连接失败，请检查后端服务是否运行 (${base})`);
       if (attempt < MAX_RETRIES) {
         await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
         continue;
       }
-      throw lastError;
+      break;
     }
 
     if (!res.ok) {
@@ -200,27 +258,43 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       throw lastError;
     }
 
+    activeApiBase = base;
     if (res.status === 204) {
       return undefined as T;
     }
 
     return res.json();
   }
+  }
 
   throw lastError ?? new Error("请求失败");
 }
 
 async function requestForm<T>(path: string, body: FormData): Promise<T> {
-  const res = await fetch(`${BASE}${path}`, {
-    method: "POST",
-    credentials: "include",
-    body,
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(friendlyErrorMessage(res.status, extractErrorMessage(text)));
+  let lastError: Error | null = null;
+  for (const base of apiBaseCandidates()) {
+    try {
+      const res = await fetch(`${base}${path}`, {
+        method: "POST",
+        credentials: "include",
+        body,
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        throw new Error(
+          friendlyErrorMessage(res.status, extractErrorMessage(text)),
+        );
+      }
+      activeApiBase = base;
+      return res.json();
+    } catch (exc) {
+      lastError =
+        exc instanceof Error
+          ? exc
+          : new Error("网络连接失败，请检查后端服务是否运行");
+    }
   }
-  return res.json();
+  throw lastError ?? new Error("请求失败");
 }
 
 export const api = {
@@ -257,12 +331,12 @@ export const api = {
       request<TaskStep[]>(`/api/tasks/${id}/steps`),
 
     exportUrl: (id: string, format: string) =>
-      `${BASE}/api/tasks/${id}/export?format=${format}`,
+      `${currentApiBase()}/api/tasks/${id}/export?format=${format}`,
 
     chatHistory: (id: string) =>
       request<ChatMessage[]>(`/api/tasks/${id}/chat`),
 
-    chatUrl: (id: string) => `${BASE}/api/tasks/${id}/chat`,
+    chatUrl: (id: string) => `${currentApiBase()}/api/tasks/${id}/chat`,
 
     cancel: (id: string) =>
       request<{ task_id: string; status: string }>(`/api/tasks/${id}/cancel`, {
@@ -422,7 +496,7 @@ export const api = {
       if (workspaceId) {
         formData.append("workspace_id", workspaceId);
       }
-      const res = await fetch(`${BASE}/api/coverage/upload`, {
+      const res = await fetch(`${currentApiBase()}/api/coverage/upload`, {
         method: "POST",
         credentials: "include",
         body: formData,
@@ -458,7 +532,7 @@ export const api = {
     },
 
     create: async (data: WorkspaceCreate): Promise<Workspace> => {
-      const res = await fetch(`${BASE}/api/workspaces`, {
+      const res = await fetch(`${currentApiBase()}/api/workspaces`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -513,7 +587,7 @@ export const api = {
     },
 
     uploadMaterial: async (wsId: string, filePath: string): Promise<Workspace["materials"][number]> => {
-      const res = await fetch(`${BASE}/api/workspaces/${wsId}/materials`, {
+      const res = await fetch(`${currentApiBase()}/api/workspaces/${wsId}/materials`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -611,7 +685,7 @@ export const api = {
       ),
 
     chatStream: (wsId: string, message: string, mode: import("./types").ChatMode, module?: string, signal?: AbortSignal): Promise<Response> =>
-      fetch(`${BASE}/api/workspaces/${wsId}/chat/stream`, {
+      fetch(`${currentApiBase()}/api/workspaces/${wsId}/chat/stream`, {
         method: "POST",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
@@ -622,7 +696,7 @@ export const api = {
     exportUrl: (wsId: string, format: "md" | "docx" | "xml", taskId?: string | null) => {
       const params = new URLSearchParams({ format });
       if (taskId) params.set("task_id", taskId);
-      return `${BASE}/api/workspaces/${wsId}/export?${params.toString()}`;
+      return `${currentApiBase()}/api/workspaces/${wsId}/export?${params.toString()}`;
     },
   },
 
@@ -739,7 +813,7 @@ export const api = {
       }),
 
     stream: (id: string, cursor = 0, signal?: AbortSignal): Promise<Response> =>
-      fetch(`${BASE}/api/ai/conversations/${encodeURIComponent(id)}/stream?cursor=${cursor}`, {
+      fetch(`${currentApiBase()}/api/ai/conversations/${encodeURIComponent(id)}/stream?cursor=${cursor}`, {
         credentials: "include",
         signal,
       }),
