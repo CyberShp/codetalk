@@ -418,7 +418,12 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
         "validate_mr_evidence",
         "render_blackbox_cases",
     ]
-    assert by_id["module_analysis"]["agent_step_count"] == 0
+    assert by_id["module_analysis"]["agent_step_count"] == 1
+    assert by_id["module_analysis"]["required_artifacts"] == [
+        "source_scope.json",
+        "evidence_cards.json",
+        "module_analysis.md",
+    ]
     assert by_id["module_analysis"]["builtin_steps"] == [
         "discover_scope",
         "validate_evidence",

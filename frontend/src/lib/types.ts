@@ -872,6 +872,7 @@ export interface WorkbenchTaskArtifact {
   relative_path: string;
   path: string;
   kind: string;
+  audience?: "deliverable" | "input" | "support" | "diagnostic";
   size_bytes: number;
   sha256: string;
   preview?: string;

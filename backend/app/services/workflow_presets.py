@@ -401,6 +401,37 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                         "required_artifacts": ["source_scope.json", "evidence_cards.json"],
                     },
                     {"id": "validate_evidence", "type": "evidence_validate"},
+                    {
+                        "id": "analyze_module",
+                        "type": "agent_task",
+                        "provider": "claude-code",
+                        "mcp_profile": "gitnexus+cgc",
+                        "goal": (
+                            "Analyze the requested module from the selected workspace source. "
+                            "Use the discovered source_scope.json and evidence_cards.json first, "
+                            "then consult GitNexus/CGC artifacts when available. Produce a concise "
+                            "module_analysis.md with scope, source evidence, key flows, risks, and "
+                            "test-design implications. Do not stop after only listing files."
+                        ),
+                        "skills": [
+                            "code-evidence",
+                            "storage-test-analysis",
+                            "flow-analysis",
+                        ],
+                        "skill_instructions": [
+                            {
+                                "id": "source_first",
+                                "label": "源码优先",
+                                "instruction": "Ground conclusions in files from the selected workspace before general explanation.",
+                            },
+                            {
+                                "id": "deliver_report_file",
+                                "label": "报告文件",
+                                "instruction": "Write the final user-facing report to module_analysis.md.",
+                            },
+                        ],
+                        "required_artifacts": ["module_analysis.md"],
+                    },
                     {"id": "render_report", "type": "report_render"},
                 ],
                 "outputs": [
@@ -417,7 +448,12 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                         "artifact": "evidence_cards.json",
                         "schema": EVIDENCE_CARDS_SCHEMA,
                     },
-                    {"id": "report", "type": "markdown", "from": "render_report"},
+                    {
+                        "id": "report",
+                        "type": "markdown",
+                        "from": "analyze_module",
+                        "artifact": "module_analysis.md",
+                    },
                 ],
             },
         },

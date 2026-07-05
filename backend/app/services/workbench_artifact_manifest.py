@@ -75,6 +75,10 @@ def build_task_artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
             "size_bytes": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
         }
+        item["audience"] = workbench_artifact_audience(
+            relative_path,
+            kind=str(item["kind"]),
+        )
         preview, preview_redacted = artifact_preview_with_redaction_status(
             resolved,
             data,
@@ -85,6 +89,82 @@ def build_task_artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
             item["preview_redacted"] = preview_redacted
         artifacts.append(item)
     return artifacts
+
+
+DELIVERABLE_ARTIFACT_NAMES = {
+    "black_box_cases.json",
+    "evidence_cards.json",
+    "flow_delta.json",
+    "flow_map.md",
+    "impact_scope.json",
+    "module_analysis.md",
+    "mr_snapshot.json",
+    "report.md",
+    "risk_findings.json",
+    "sfmea.json",
+    "source_scope.json",
+    "test_hooks.json",
+    "test_plan.json",
+    "test_recommendations.json",
+}
+
+DIAGNOSTIC_ARTIFACT_KINDS = {
+    "agent_execution_input",
+    "agent_failure_recovery",
+    "agent_failure_retry_context",
+    "agent_instructions",
+    "agent_mcp_requests",
+    "agent_output_contract",
+    "agent_provider_diagnostics",
+    "agent_raw_output",
+    "agent_replay_plan",
+    "agent_run",
+    "agent_run_lifecycle",
+    "agent_task_bundle",
+    "agent_turn_execution_input",
+    "agent_turn_execution_result",
+    "agent_turn_output_contract",
+    "agent_turn_provider_diagnostics",
+    "agent_turn_raw_output",
+    "agent_turn_replay_plan",
+    "agent_turn_run",
+    "agent_turn_source_slice_requests",
+    "agent_turn_source_slices",
+    "agent_turn_task_bundle",
+    "black_box_generation_policy",
+    "context_bundle",
+    "context_discovery_decision",
+    "degraded_retrieval",
+    "evidence_consumption_trajectory",
+    "evidence_validation",
+    "memory_retrieval",
+    "output_schemas",
+    "provider_readiness",
+    "provider_snapshot",
+    "semantic_import_outputs",
+    "source_read_chain",
+    "task_acceptance_audit",
+    "task_bundle",
+    "task_rerun_execution",
+    "task_rerun_history",
+    "task_rerun_plan",
+    "workflow_contract",
+    "workflow_execution",
+    "workflow_output_materialization",
+    "workflow_outputs",
+}
+
+
+def workbench_artifact_audience(relative_path: str, *, kind: str | None = None) -> str:
+    name = relative_path.rsplit("/", 1)[-1]
+    normalized_kind = kind or workbench_artifact_kind(relative_path)
+    if relative_path.startswith("inputs/") or normalized_kind.startswith("input_"):
+        return "input"
+    if name in DELIVERABLE_ARTIFACT_NAMES:
+        return "deliverable"
+    if normalized_kind in DIAGNOSTIC_ARTIFACT_KINDS:
+        return "diagnostic"
+    return "support"
 
 
 def workbench_artifact_kind(relative_path: str) -> str:
