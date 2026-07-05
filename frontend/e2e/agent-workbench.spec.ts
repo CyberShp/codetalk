@@ -62,7 +62,23 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
   });
   await page.route("**/api/workspaces", async (route) => {
     await route.fulfill({
-      json: [],
+      json: [
+        {
+          id: "ws_spdk",
+          name: "spdk",
+          repo_path: "/Volumes/Media/dpdk/spdk",
+          indexed: 1,
+          index_job: null,
+          index_progress: 100,
+          analyze_status: null,
+          analyze_progress: 0,
+          last_index_error: null,
+          created_at: "2026-07-05T00:00:00Z",
+          updated_at: "2026-07-05T00:00:00Z",
+          materials: [],
+          reports: [],
+        },
+      ],
       headers: corsHeaders(route.request().headers().origin),
     });
   });
@@ -512,8 +528,6 @@ test("workflow run selector falls back to built-in presets when registered workf
 
   await openWorkbenchView(page, "工作流设计");
   await expect(page.getByRole("heading", { name: "工作流编排" })).toBeVisible();
-  await expect(page.getByText("核心工作流", { exact: true })).toBeVisible();
-  await expect(page.getByText("常用测试场景", { exact: true })).toBeVisible();
   const presetGroups = await page
     .getByLabel("工作流预设")
     .locator("optgroup")
@@ -609,7 +623,8 @@ test("workflow run can select an existing workspace and sync repo_path input", a
 
   await gotoWorkbench(page);
   await page.getByLabel("Workspace selector").selectOption("ws_spdk");
-  await expect(page.getByLabel("Repo path")).toHaveValue("/Volumes/Media/dpdk/spdk");
+  await expect(page.getByLabel("Repo path")).toHaveCount(0);
+  await expect(page.getByText("源码路径: /Volumes/Media/dpdk/spdk")).toBeVisible();
   await expect(page.getByLabel("Workflow input repo_path")).toHaveValue(
     "/Volumes/Media/dpdk/spdk",
   );
@@ -771,12 +786,14 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
       textareaSize: textarea ? parseFloat(getComputedStyle(textarea).fontSize) : 0,
       relationSize: relation ? parseFloat(getComputedStyle(relation).fontSize) : 0,
       relationText: relation?.textContent ?? "",
+      inspectorWidth: inspector.getBoundingClientRect().width,
     };
   });
   expect(inspectorMetrics.labelSize).toBeLessThanOrEqual(11);
-  expect(inspectorMetrics.selectSize).toBeLessThanOrEqual(11);
-  expect(inspectorMetrics.textareaSize).toBeLessThanOrEqual(11);
+  expect(inspectorMetrics.selectSize).toBeLessThanOrEqual(10.5);
+  expect(inspectorMetrics.textareaSize).toBeLessThanOrEqual(10.5);
   expect(inspectorMetrics.relationSize).toBeLessThanOrEqual(11);
+  expect(inspectorMetrics.inspectorWidth).toBeGreaterThanOrEqual(300);
   expect(inspectorMetrics.relationText).toContain("字段契约");
   expect(inspectorMetrics.relationText).toContain("画布布局");
   const firstNode = page.locator(".ct-workflow-node").first();
@@ -874,12 +891,22 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow builder provider preset")).toBeVisible();
   await expect(page.getByLabel("Workflow builder MCP compatibility")).toContainText("CodeTalk 预取后注入");
   await expect(page.getByLabel("Workflow builder skills")).toBeVisible();
+  await expect(page.getByLabel("Workflow builder skill search")).toBeVisible();
+  await expect(page.getByText(/已选\s+\d+/)).toBeVisible();
+  await expect(page.getByLabel("Workflow builder visible skill count")).toContainText(/\d+\/\d+/);
   await expect(page.getByLabel("Workflow builder skill sfmea")).toBeChecked();
   await page.getByLabel("New workflow input name").fill("iSCSI 登录脚本");
   await page.getByLabel("New workflow input id").fill("iscsi_login_script");
   await page.getByLabel("New workflow input type").selectOption("file");
   await page.getByRole("button", { name: "添加输入契约" }).click();
   await expect(page.getByText(/iSCSI 登录脚本\s+iscsi_login_script/)).toBeVisible();
+  await openWorkbenchView(page, "运行驾驶舱");
+  await expect(page.getByLabel("Workspace selector")).toBeVisible();
+  await expect(page.getByLabel("Repo path")).toHaveCount(0);
+  await page.getByLabel("Workspace selector").selectOption("ws_spdk");
+  await expect(page.getByText("源码路径: /Volumes/Media/dpdk/spdk")).toBeVisible();
+  await expect(page.getByLabel("Workflow input iscsi_login_script")).toBeVisible();
+  await openWorkbenchView(page, "工作流设计");
   await page.getByLabel("New workflow output name").fill("登录 SFMEA 表");
   await page.getByLabel("New workflow output id").fill("login_sfmea");
   await page.getByLabel("New workflow output type").selectOption("json");
@@ -981,7 +1008,8 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"analysis_object": "nvme-tcp-tls"/);
   await expect(page.getByRole("button", { name: "准备运行" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "执行工作流" })).toBeDisabled();
-  await expect(page.getByLabel("Repo path")).toBeVisible();
+  await expect(page.getByLabel("Workspace selector")).toBeVisible();
+  await expect(page.getByLabel("Repo path")).toHaveCount(0);
 });
 
 test("agent workbench searches semantic cases and evidence memory", async ({ page }) => {
@@ -1723,12 +1751,9 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(preparePanel.getByText("测试活动运行摘要")).toBeVisible();
   await expect(preparePanel.getByText("输出预期")).toBeVisible();
   await expect(preparePanel.getByText("运行前检查")).toBeVisible();
-  const repoInput = preparePanel.getByLabel("Repo path");
-  await repoInput.click();
-  await repoInput.pressSequentially("E:/repo");
-  await expect(repoInput).toHaveValue("E:/repo");
-  await expect(preparePanel.getByText("源码路径: E:/repo")).toBeVisible();
-  await expect(preparePanel.getByText("工作空间: manual-workspace")).toBeVisible();
+  await preparePanel.getByLabel("Workspace selector").selectOption("ws_spdk");
+  await expect(preparePanel.getByText("源码路径: /Volumes/Media/dpdk/spdk")).toBeVisible();
+  await expect(preparePanel.getByText("工作空间: ws_spdk")).toBeVisible();
   await expect(preparePanel.getByRole("button", { name: "准备运行" })).toBeEnabled();
   await preparePanel.getByRole("button", { name: "准备运行" }).click();
   await expect(preparePanel.getByText("Agent 运行阶段")).toBeVisible();
@@ -1992,7 +2017,7 @@ test("agent workbench prevents duplicate artifact preview requests from a real d
   const preparePanel = page
     .locator("section")
     .filter({ has: page.getByRole("heading", { name: "任务运行" }) });
-  await preparePanel.getByLabel("Repo path").fill("E:/repo");
+  await preparePanel.getByLabel("Workspace selector").selectOption("ws_spdk");
   await preparePanel.getByRole("button", { name: "准备运行" }).hover();
   await preparePanel.getByRole("button", { name: "准备运行" }).click();
   await expect(page.getByText(/审计产物:\s*1/)).toBeVisible();
@@ -2070,11 +2095,11 @@ test("agent workbench opens one AI review thread on double click", async ({ page
 
   await gotoWorkbench(page);
   await openWorkbenchView(page, "运行驾驶舱");
-  const repoInput = page
+  await page
     .locator("section")
     .filter({ has: page.getByRole("heading", { name: "任务运行" }) })
-    .getByLabel("Repo path");
-  await repoInput.fill("E:/repo");
+    .getByLabel("Workspace selector")
+    .selectOption("ws_spdk");
   await page.getByRole("button", { name: "准备运行" }).click();
   await expect(page.getByRole("paragraph").filter({ hasText: /^task_run_ai_review$/ })).toBeVisible();
 
