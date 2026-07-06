@@ -19,7 +19,6 @@ import {
   Search,
   MessageSquareText,
   Trash2,
-  WandSparkles,
   X,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
@@ -55,7 +54,6 @@ import type {
   WorkbenchTaskArtifactManifest,
   Workspace,
   WorkflowDraftServerAudit,
-  WorkflowGenerationDraftResult,
 } from "@/lib/types";
 
 const MIN_VISIBLE_BUSY_ACTION_MS = 600;
@@ -1215,6 +1213,13 @@ type WorkflowCanvasEdge = {
   target: string;
   label?: string;
 };
+type WorkflowDraftEdge = {
+  sourceId: string;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+};
 type WorkflowNodePosition = { x: number; y: number };
 type WorkflowCanvasLayout = {
   nodes: Array<{
@@ -1227,6 +1232,7 @@ type WorkflowCanvasLayout = {
     source: "contract" | "canvas";
   }>;
   edges?: WorkflowCanvasEdge[];
+  hidden_edge_ids?: string[];
   hidden_node_ids: string[];
 };
 
@@ -1399,6 +1405,7 @@ function workflowLayoutFromPayload(payload: unknown): WorkflowCanvasLayout | nul
   const rawNodes = (layout as { nodes?: unknown }).nodes;
   const rawEdges = (layout as { edges?: unknown }).edges;
   const rawHidden = (layout as { hidden_node_ids?: unknown }).hidden_node_ids;
+  const rawHiddenEdges = (layout as { hidden_edge_ids?: unknown }).hidden_edge_ids;
   const nodes = Array.isArray(rawNodes)
     ? rawNodes
         .map((item) => {
@@ -1424,6 +1431,9 @@ function workflowLayoutFromPayload(payload: unknown): WorkflowCanvasLayout | nul
   const hidden_node_ids = Array.isArray(rawHidden)
     ? rawHidden.map((item) => String(item)).filter(Boolean)
     : [];
+  const hidden_edge_ids = Array.isArray(rawHiddenEdges)
+    ? rawHiddenEdges.map((item) => String(item)).filter(Boolean)
+    : [];
   const edges = Array.isArray(rawEdges)
     ? rawEdges
         .map((item) => {
@@ -1442,7 +1452,7 @@ function workflowLayoutFromPayload(payload: unknown): WorkflowCanvasLayout | nul
         })
         .filter((item): item is WorkflowCanvasEdge => Boolean(item))
     : [];
-  return { nodes, edges, hidden_node_ids };
+  return { nodes, edges, hidden_node_ids, hidden_edge_ids };
 }
 
 function safeWorkflowSpecList(
@@ -3382,21 +3392,19 @@ export function AgentWorkbenchExperience({
     startY: number;
     moved: boolean;
   } | null>(null);
+  const workflowConnectionDragRef = useRef<WorkflowDraftEdge | null>(null);
+  const workflowBoardPanRef = useRef<{
+    pointerId: number;
+    startClientX: number;
+    startClientY: number;
+    startScrollLeft: number;
+    startScrollTop: number;
+    moved: boolean;
+  } | null>(null);
   const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([]);
   const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [workflowJson, setWorkflowJson] = useState(pretty(DEFAULT_WORKFLOW));
-  const [aiWorkflowPrompt, setAiWorkflowPrompt] = useState(
-    "针对 SPDK iSCSI login 生成灰白盒测试设计工作流：先查 GitNexus/CGC 和源码证据，再输出流程、SFMEA、黑盒用例，并保存可下载产物。",
-  );
-  const [aiWorkflowPreferredId, setAiWorkflowPreferredId] = useState(
-    "iscsi_login_gray_white_test",
-  );
-  const [aiWorkflowPreferredName, setAiWorkflowPreferredName] = useState(
-    "iSCSI Login 灰白盒测试设计",
-  );
-  const [aiWorkflowGeneration, setAiWorkflowGeneration] =
-    useState<WorkflowGenerationDraftResult | null>(null);
   const [builderScenario, setBuilderScenario] =
     useState<keyof typeof WORKFLOW_BUILDER_SCENARIOS>("mr_blackbox_test");
   const [builderWorkflowId, setBuilderWorkflowId] =
@@ -3452,8 +3460,11 @@ export function AgentWorkbenchExperience({
   const [workflowCanvasEdges, setWorkflowCanvasEdges] = useState<
     WorkflowCanvasEdge[]
   >([]);
-  const [workflowLinkSourceId, setWorkflowLinkSourceId] = useState("");
-  const [workflowLinkTargetId, setWorkflowLinkTargetId] = useState("");
+  const [workflowHiddenEdgeIds, setWorkflowHiddenEdgeIds] = useState<string[]>(
+    [],
+  );
+  const [workflowDraftEdge, setWorkflowDraftEdge] =
+    useState<WorkflowDraftEdge | null>(null);
   const [workflowNodePositions, setWorkflowNodePositions] = useState<
     Record<string, WorkflowNodePosition>
   >({});
@@ -4259,10 +4270,19 @@ export function AgentWorkbenchExperience({
   );
   const visibleWorkflowCanvasEdges = useMemo(() => {
     const visibleNodeIds = new Set(workflowCanvasNodes.map((node) => node.id));
+    const hiddenEdgeIds = new Set(workflowHiddenEdgeIds);
     return [...defaultWorkflowCanvasEdges, ...workflowCanvasEdges].filter(
-      (edge) => visibleNodeIds.has(edge.source) && visibleNodeIds.has(edge.target),
+      (edge) =>
+        visibleNodeIds.has(edge.source) &&
+        visibleNodeIds.has(edge.target) &&
+        !hiddenEdgeIds.has(edge.id),
     );
-  }, [defaultWorkflowCanvasEdges, workflowCanvasEdges, workflowCanvasNodes]);
+  }, [
+    defaultWorkflowCanvasEdges,
+    workflowCanvasEdges,
+    workflowCanvasNodes,
+    workflowHiddenEdgeIds,
+  ]);
   const activeWorkflowNode = useMemo(
     () =>
       workflowCanvasNodes.find((node) => node.id === activeWorkflowNodeId) ??
@@ -4274,6 +4294,7 @@ export function AgentWorkbenchExperience({
     nodes: WorkflowCanvasNode[] = workflowCanvasNodes,
     hiddenNodeIds: string[] = workflowHiddenNodeIds,
     edges: WorkflowCanvasEdge[] = workflowCanvasEdges,
+    hiddenEdgeIds: string[] = workflowHiddenEdgeIds,
   ): WorkflowCanvasLayout {
     return {
       nodes: nodes.map((node) => ({
@@ -4286,6 +4307,7 @@ export function AgentWorkbenchExperience({
         source: node.source,
       })),
       edges,
+      hidden_edge_ids: hiddenEdgeIds,
       hidden_node_ids: hiddenNodeIds,
     };
   }
@@ -4321,6 +4343,7 @@ export function AgentWorkbenchExperience({
       setWorkflowHiddenNodeIds([]);
       setWorkflowNodeTitles({});
       setWorkflowCanvasEdges([]);
+      setWorkflowHiddenEdgeIds([]);
       return;
     }
     const positions: Record<string, WorkflowNodePosition> = {};
@@ -4345,6 +4368,7 @@ export function AgentWorkbenchExperience({
     setWorkflowNodePositions(positions);
     setWorkflowNodeTitles(titles);
     setWorkflowCanvasEdges(layout.edges ?? []);
+    setWorkflowHiddenEdgeIds(layout.hidden_edge_ids ?? []);
     setWorkflowExtraNodes(extras);
     setWorkflowHiddenNodeIds(layout.hidden_node_ids);
     const firstVisible = layout.nodes.find(
@@ -4498,22 +4522,48 @@ export function AgentWorkbenchExperience({
     }, 0);
   }
 
-  function connectActiveWorkflowNode() {
-    const source =
-      workflowCanvasNodes.find((node) => node.id === workflowLinkSourceId) ??
-      activeWorkflowNode;
-    if (!source || !workflowLinkTargetId) return;
-    if (source.id === workflowLinkTargetId) {
+  function workflowCanvasPointFromClient(
+    clientX: number,
+    clientY: number,
+  ): WorkflowNodePosition {
+    const rect = workflowCanvasInnerRef.current?.getBoundingClientRect();
+    return {
+      x: rect ? clientX - rect.left : 0,
+      y: rect ? clientY - rect.top : 0,
+    };
+  }
+
+  function workflowEdgePoints(source: WorkflowCanvasNode, target: WorkflowCanvasNode) {
+    return {
+      x1: source.x + WORKFLOW_NODE_WIDTH - 2,
+      y1: source.y + 42,
+      x2: target.x + 2,
+      y2: target.y + 42,
+    };
+  }
+
+  function workflowEdgePath(x1: number, y1: number, x2: number, y2: number) {
+    const control = Math.max(88, Math.min(220, Math.abs(x2 - x1) * 0.52));
+    const direction = x2 >= x1 ? 1 : -1;
+    return `M ${x1} ${y1} C ${x1 + direction * control} ${y1}, ${x2 - direction * control} ${y2}, ${x2} ${y2}`;
+  }
+
+  function connectWorkflowNodes(sourceId: string, targetId: string) {
+    if (sourceId === targetId) {
       setMessage("不能连接到当前节点自身");
       return;
     }
+    const source = workflowCanvasNodes.find((node) => node.id === sourceId);
     const target = workflowCanvasNodes.find(
-      (node) => node.id === workflowLinkTargetId,
+      (node) => node.id === targetId,
     );
-    if (!target) return;
-    const exists = workflowCanvasEdges.some(
+    if (!source || !target) return;
+    const allEdges = [...defaultWorkflowCanvasEdges, ...workflowCanvasEdges];
+    const exists = allEdges.some(
       (edge) =>
-        edge.source === source.id && edge.target === target.id,
+        edge.source === sourceId &&
+        edge.target === targetId &&
+        !workflowHiddenEdgeIds.includes(edge.id),
     );
     if (exists) {
       setMessage("这两个节点已经连线");
@@ -4522,18 +4572,136 @@ export function AgentWorkbenchExperience({
     const nextEdges = [
       ...workflowCanvasEdges,
       {
-        id: `edge-${source.id}-${target.id}-${Date.now().toString(36)}`,
-        source: source.id,
-        target: target.id,
+        id: `edge-${sourceId}-${targetId}-${Date.now().toString(36)}`,
+        source: sourceId,
+        target: targetId,
         label: `${source.title} -> ${target.title}`,
       },
     ];
     setWorkflowCanvasEdges(nextEdges);
-    setActiveWorkflowNodeId(source.id);
+    setActiveWorkflowNodeId(sourceId);
     setMessage(`连线已添加: ${source.title} -> ${target.title}`);
     mergeWorkflowLayoutIntoJson(
-      workflowLayoutSnapshot(workflowCanvasNodes, workflowHiddenNodeIds, nextEdges),
+      workflowLayoutSnapshot(
+        workflowCanvasNodes,
+        workflowHiddenNodeIds,
+        nextEdges,
+        workflowHiddenEdgeIds,
+      ),
     );
+  }
+
+  function deleteWorkflowEdge(edge: WorkflowCanvasEdge) {
+    const isCustomEdge = workflowCanvasEdges.some((item) => item.id === edge.id);
+    const nextEdges = workflowCanvasEdges.filter((item) => item.id !== edge.id);
+    const nextHiddenEdgeIds = isCustomEdge
+      ? workflowHiddenEdgeIds
+      : Array.from(new Set([...workflowHiddenEdgeIds, edge.id]));
+    setWorkflowCanvasEdges(nextEdges);
+    setWorkflowHiddenEdgeIds(nextHiddenEdgeIds);
+    setMessage(`连线已删除: ${edge.label || edge.id}`);
+    mergeWorkflowLayoutIntoJson(
+      workflowLayoutSnapshot(
+        workflowCanvasNodes,
+        workflowHiddenNodeIds,
+        nextEdges,
+        nextHiddenEdgeIds,
+      ),
+    );
+  }
+
+  function startWorkflowConnectionDrag(
+    event: ReactPointerEvent<HTMLElement>,
+    source: WorkflowCanvasNode,
+  ) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    const start = {
+      sourceId: source.id,
+      x1: source.x + WORKFLOW_NODE_WIDTH - 2,
+      y1: source.y + 42,
+      ...workflowCanvasPointFromClient(event.clientX, event.clientY),
+    };
+    const draft = {
+      sourceId: source.id,
+      x1: start.x1,
+      y1: start.y1,
+      x2: start.x,
+      y2: start.y,
+    };
+    workflowConnectionDragRef.current = draft;
+    setWorkflowDraftEdge(draft);
+    const moveDraft = (pointerEvent: PointerEvent) => {
+      const drag = workflowConnectionDragRef.current;
+      if (!drag) return;
+      const point = workflowCanvasPointFromClient(
+        pointerEvent.clientX,
+        pointerEvent.clientY,
+      );
+      const next = { ...drag, x2: point.x, y2: point.y };
+      workflowConnectionDragRef.current = next;
+      setWorkflowDraftEdge(next);
+    };
+    const finishDraft = (pointerEvent: PointerEvent) => {
+      window.removeEventListener("pointermove", moveDraft);
+      window.removeEventListener("pointerup", finishDraft);
+      const drag = workflowConnectionDragRef.current;
+      workflowConnectionDragRef.current = null;
+      setWorkflowDraftEdge(null);
+      if (!drag) return;
+      const targetElement = document
+        .elementFromPoint(pointerEvent.clientX, pointerEvent.clientY)
+        ?.closest("[data-workflow-target-node-id]");
+      const targetId =
+        targetElement instanceof HTMLElement
+          ? targetElement.dataset.workflowTargetNodeId
+          : "";
+      if (targetId) {
+        connectWorkflowNodes(drag.sourceId, targetId);
+      }
+    };
+    window.addEventListener("pointermove", moveDraft);
+    window.addEventListener("pointerup", finishDraft, { once: true });
+  }
+
+  function startWorkflowBoardPan(event: ReactPointerEvent<HTMLElement>) {
+    if (event.button !== 0 || event.target !== event.currentTarget) return;
+    const board = workflowBoardRef.current;
+    if (!board) return;
+    event.preventDefault();
+    setActiveWorkflowNodeId("");
+    const element = event.currentTarget;
+    element.setPointerCapture(event.pointerId);
+    workflowBoardPanRef.current = {
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startScrollLeft: board.scrollLeft,
+      startScrollTop: board.scrollTop,
+      moved: false,
+    };
+  }
+
+  function moveWorkflowBoardPan(event: ReactPointerEvent<HTMLElement>) {
+    const drag = workflowBoardPanRef.current;
+    const board = workflowBoardRef.current;
+    if (!drag || !board || drag.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    const dx = event.clientX - drag.startClientX;
+    const dy = event.clientY - drag.startClientY;
+    if (Math.abs(dx) > 2 || Math.abs(dy) > 2) drag.moved = true;
+    board.scrollLeft = drag.startScrollLeft - dx;
+    board.scrollTop = drag.startScrollTop - dy;
+  }
+
+  function endWorkflowBoardPan(event: ReactPointerEvent<HTMLElement>) {
+    const drag = workflowBoardPanRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    workflowBoardPanRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
   }
 
   function addPaletteNodeToCanvas(
@@ -5290,23 +5458,6 @@ export function AgentWorkbenchExperience({
   const generateWorkflowDraft = () =>
     runAction("generate-workflow", async () => {
       generateWorkflowFromBuilder();
-    });
-
-  const generateAiWorkflowDraft = () =>
-    runAction("generate-ai-workflow", async () => {
-      const result = await api.workbench.workflows.generateDraft({
-        prompt: aiWorkflowPrompt.trim(),
-        preferred_id: aiWorkflowPreferredId.trim() || undefined,
-        preferred_name: aiWorkflowPreferredName.trim() || undefined,
-      });
-      setAiWorkflowGeneration(result);
-      setWorkflowJson(pretty(result.workflow));
-      setSelectedWorkflowId(result.workflow.id);
-      applyWorkflowLayout(result.workflow);
-      setWorkflowDraftServerAudit(result.audit);
-      setMessage(
-        `AI 工作流草稿已生成: ${workflowDisplayName(result.workflow)} · ${result.generation_id}`,
-      );
     });
 
   const saveWorkflow = () =>
@@ -6893,7 +7044,6 @@ export function AgentWorkbenchExperience({
                   onPointerDown={(event) => {
                     if (event.target === event.currentTarget) {
                       setActiveWorkflowNodeId("");
-                      setWorkflowLinkTargetId("");
                     }
                   }}
                   onDragOver={(event) => {
@@ -6921,20 +7071,17 @@ export function AgentWorkbenchExperience({
                   <div
                     ref={workflowCanvasInnerRef}
                     className="relative"
-                    onPointerDown={(event) => {
-                      if (event.target === event.currentTarget) {
-                        setActiveWorkflowNodeId("");
-                        setWorkflowLinkTargetId("");
-                      }
-                    }}
+                    onPointerDown={startWorkflowBoardPan}
+                    onPointerMove={moveWorkflowBoardPan}
+                    onPointerUp={endWorkflowBoardPan}
+                    onPointerCancel={endWorkflowBoardPan}
                     style={{
                       height: WORKFLOW_CANVAS_HEIGHT,
                       width: WORKFLOW_CANVAS_WIDTH,
                     }}
                   >
                     <svg
-                      aria-hidden="true"
-                      className="pointer-events-none absolute inset-0 h-full w-full text-primary/45"
+                      className="pointer-events-none absolute inset-0 h-full w-full"
                       preserveAspectRatio="none"
                       viewBox={`0 0 ${WORKFLOW_CANVAS_WIDTH} ${WORKFLOW_CANVAS_HEIGHT}`}
                     >
@@ -6946,44 +7093,37 @@ export function AgentWorkbenchExperience({
                           (node) => node.id === edge.target,
                         );
                         if (!source || !target) return null;
-                        const x1 = source.x + WORKFLOW_NODE_WIDTH - 12;
-                        const y1 = source.y + 42;
-                        const x2 = target.x;
-                        const y2 = target.y + 42;
+                        const { x1, y1, x2, y2 } = workflowEdgePoints(
+                          source,
+                          target,
+                        );
                         return (
                           <g key={edge.id}>
-                            <line
+                            <path
                               className="ct-workflow-link"
-                              x1={x1}
-                              y1={y1}
-                              x2={x2}
-                              y2={y2}
-                              stroke="currentColor"
-                              strokeWidth="1.4"
-                              strokeDasharray="7 5"
+                              d={workflowEdgePath(x1, y1, x2, y2)}
                             />
-                            {edge.label && (
-                              <text
-                                x={(x1 + x2) / 2}
-                                y={(y1 + y2) / 2 - 6}
-                                textAnchor="middle"
-                                className="fill-current font-data text-[9px]"
-                              >
-                                {edge.label.slice(0, 18)}
-                              </text>
-                            )}
                           </g>
                         );
                       })}
+                      {workflowDraftEdge && (
+                        <path
+                          className="ct-workflow-link ct-workflow-link-draft"
+                          d={workflowEdgePath(
+                            workflowDraftEdge.x1,
+                            workflowDraftEdge.y1,
+                            workflowDraftEdge.x2,
+                            workflowDraftEdge.y2,
+                          )}
+                        />
+                      )}
                     </svg>
                     <div
-                      className="relative h-full"
-                      onPointerDown={(event) => {
-                        if (event.target === event.currentTarget) {
-                          setActiveWorkflowNodeId("");
-                          setWorkflowLinkTargetId("");
-                        }
-                      }}
+                      className="relative z-20 h-full"
+                      onPointerDown={startWorkflowBoardPan}
+                      onPointerMove={moveWorkflowBoardPan}
+                      onPointerUp={endWorkflowBoardPan}
+                      onPointerCancel={endWorkflowBoardPan}
                     >
                       {workflowCanvasNodes.map((node, index) => (
                         <article
@@ -7000,7 +7140,7 @@ export function AgentWorkbenchExperience({
                           onPointerUp={endWorkflowNodeDrag}
                           onPointerCancel={endWorkflowNodeDrag}
                           className={[
-                            "ct-workflow-node absolute h-24 cursor-move select-none overflow-hidden rounded-md border bg-surface p-1.5 shadow-sm",
+                            "ct-workflow-node absolute h-24 cursor-move select-none rounded-md border bg-surface p-1.5 shadow-sm",
                             activeWorkflowNodeId === node.id
                               ? "ct-workflow-node-active"
                               : "hover:border-outline/35",
@@ -7008,6 +7148,21 @@ export function AgentWorkbenchExperience({
                               "border-outline-variant/30 bg-surface",
                           ].join(" ")}
                         >
+                          <button
+                            type="button"
+                            aria-label={`连线目标 ${node.title}`}
+                            data-workflow-target-node-id={node.id}
+                            className="ct-workflow-port ct-workflow-port-in"
+                            onPointerDown={(event) => event.stopPropagation()}
+                          />
+                          <button
+                            type="button"
+                            aria-label={`从 ${node.title} 拉出连线`}
+                            className="ct-workflow-port ct-workflow-port-out"
+                            onPointerDown={(event) =>
+                              startWorkflowConnectionDrag(event, node)
+                            }
+                          />
                           <div className="mb-1.5 flex items-start justify-between gap-1.5">
                             <div className="min-w-0">
                               <div className="mb-1 flex items-center gap-1.5">
@@ -7045,6 +7200,37 @@ export function AgentWorkbenchExperience({
                         </article>
                       ))}
                     </div>
+                    <div className="pointer-events-none absolute inset-0 z-30">
+                      {visibleWorkflowCanvasEdges.map((edge) => {
+                        const source = workflowCanvasNodes.find(
+                          (node) => node.id === edge.source,
+                        );
+                        const target = workflowCanvasNodes.find(
+                          (node) => node.id === edge.target,
+                        );
+                        if (!source || !target) return null;
+                        const { x1, y1, x2, y2 } = workflowEdgePoints(
+                          source,
+                          target,
+                        );
+                        return (
+                          <button
+                            key={edge.id}
+                            type="button"
+                            aria-label={`删除连线 ${edge.label || edge.id}`}
+                            className="ct-workflow-edge-delete pointer-events-auto"
+                            style={{
+                              left: (x1 + x2) / 2 - 11,
+                              top: (y1 + y2) / 2 - 11,
+                            }}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={() => deleteWorkflowEdge(edge)}
+                          >
+                            <X size={11} />
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 </div>
               </section>
@@ -7068,7 +7254,6 @@ export function AgentWorkbenchExperience({
                     aria-label="关闭属性面板"
                     onClick={() => {
                       setActiveWorkflowNodeId("");
-                      setWorkflowLinkTargetId("");
                     }}
                     className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-outline-variant/30 bg-surface text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface"
                   >
@@ -7134,70 +7319,8 @@ export function AgentWorkbenchExperience({
                         重置位置
                       </button>
                     </div>
-                    <div className="grid grid-cols-[1fr_1fr_auto] gap-1.5">
-                      <label className="block">
-                        <span className="mb-1 block text-[10px] text-on-surface-variant">
-                          从
-                        </span>
-                        <select
-                          aria-label="Workflow link source"
-                          value={workflowLinkSourceId || activeWorkflowNode?.id || ""}
-                          onChange={(event) => {
-                            setWorkflowLinkSourceId(event.target.value);
-                            setActiveWorkflowNodeId(event.target.value);
-                            if (event.target.value === workflowLinkTargetId) {
-                              setWorkflowLinkTargetId("");
-                            }
-                          }}
-                          className="w-full rounded-md border border-outline-variant/30 bg-surface px-2 py-1 text-[11px] text-on-surface outline-none focus:border-primary disabled:opacity-50"
-                        >
-                          {workflowCanvasNodes.map((node) => (
-                            <option key={node.id} value={node.id}>
-                              {node.title}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="block">
-                        <span className="mb-1 block text-[10px] text-on-surface-variant">
-                          到
-                        </span>
-                        <select
-                          aria-label="Workflow link target"
-                          value={workflowLinkTargetId}
-                          onChange={(event) =>
-                            setWorkflowLinkTargetId(event.target.value)
-                          }
-                          disabled={!activeWorkflowNode}
-                          className="w-full rounded-md border border-outline-variant/30 bg-surface px-2 py-1 text-[11px] text-on-surface outline-none focus:border-primary disabled:opacity-50"
-                        >
-                          <option value="">选择目标节点</option>
-                          {workflowCanvasNodes
-                            .filter(
-                              (node) =>
-                                node.id !==
-                                (workflowLinkSourceId ||
-                                  activeWorkflowNode?.id ||
-                                  ""),
-                            )
-                            .map((node) => (
-                              <option key={node.id} value={node.id}>
-                                {node.title}
-                              </option>
-                            ))}
-                        </select>
-                      </label>
-                      <button
-                        type="button"
-                        onClick={connectActiveWorkflowNode}
-                        disabled={
-                          !(workflowLinkSourceId || activeWorkflowNode) ||
-                          !workflowLinkTargetId
-                        }
-                        className="mt-5 inline-flex items-center justify-center rounded-md border border-outline-variant/25 bg-surface px-2 py-1 text-[10px] text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
-                      >
-                        连接节点
-                      </button>
+                    <div className="rounded-md border border-outline-variant/25 bg-surface px-2 py-1.5 text-[10px] leading-4 text-on-surface-variant">
+                      从节点右侧圆点拖到目标节点左侧圆点即可连线；点击线中间的关闭按钮删除连线。按住画布空白处拖动可平移画布。
                     </div>
                   </div>
                 </div>
@@ -7254,89 +7377,6 @@ export function AgentWorkbenchExperience({
                     </div>
                   </details>
                 )}
-
-                <div className="mb-3 rounded-lg border border-outline-variant/30 bg-surface-container/70 p-2">
-                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-sm font-medium text-on-surface">
-                      AI 生成工作流
-                    </p>
-                    <button
-                      onClick={generateAiWorkflowDraft}
-                      disabled={
-                        Boolean(busyAction) ||
-                        aiWorkflowPrompt.trim().length < 8
-                      }
-                      className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-1.5 text-xs font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
-                    >
-                      {busyAction === "generate-ai-workflow" ? (
-                        <Loader2 size={13} className="animate-spin" />
-                      ) : (
-                        <WandSparkles size={13} />
-                      )}
-                      AI 生成
-                    </button>
-                  </div>
-                  <div className="grid gap-2">
-                    <label className="block">
-                      <span className="mb-1 block text-xs text-on-surface-variant">
-                        偏好 ID
-                      </span>
-                      <input
-                        value={aiWorkflowPreferredId}
-                        onChange={(event) =>
-                          setAiWorkflowPreferredId(event.target.value)
-                        }
-                        className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 font-data text-xs text-on-surface outline-none focus:border-primary"
-                        aria-label="AI workflow preferred id"
-                      />
-                    </label>
-                    <label className="block">
-                      <span className="mb-1 block text-xs text-on-surface-variant">
-                        偏好名称
-                      </span>
-                      <input
-                        value={aiWorkflowPreferredName}
-                        onChange={(event) =>
-                          setAiWorkflowPreferredName(event.target.value)
-                        }
-                        className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
-                        aria-label="AI workflow preferred name"
-                      />
-                    </label>
-                  </div>
-                  <label className="mt-2 block">
-                    <span className="mb-1 block text-xs text-on-surface-variant">
-                      工作流话术
-                    </span>
-                    <textarea
-                      value={aiWorkflowPrompt}
-                      onChange={(event) =>
-                        setAiWorkflowPrompt(event.target.value)
-                      }
-                      className="h-20 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface p-3 text-xs text-on-surface outline-none focus:border-primary"
-                      aria-label="AI workflow prompt"
-                    />
-                  </label>
-                  {aiWorkflowGeneration && (
-                    <div className="mt-2 rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-xs text-on-surface-variant">
-                      <div className="flex flex-wrap gap-2">
-                        <span className="font-medium text-on-surface">
-                          generation:{aiWorkflowGeneration.generation_id}
-                        </span>
-                        <span>audit:{aiWorkflowGeneration.audit.status}</span>
-                        <span>
-                          warnings:{aiWorkflowGeneration.audit.warnings.length}
-                        </span>
-                        {aiWorkflowGeneration.artifact?.path && (
-                          <span className="break-all">
-                            artifact:{aiWorkflowGeneration.artifact.path}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
                 <div className="rounded-lg border border-outline-variant/30 bg-surface-container/70 p-2">
                   <div className="mb-3 flex flex-wrap items-end gap-2">
                     <label className="min-w-0 flex-1">

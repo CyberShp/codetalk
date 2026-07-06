@@ -5455,6 +5455,12 @@ textarea:focus-visible {
 
 .ct-workbench-shell .ct-workflow-board {
   min-height: max(640px, calc(100vh - 270px));
+  cursor: grab;
+  user-select: none;
+}
+
+.ct-workbench-shell .ct-workflow-board:active {
+  cursor: grabbing;
 }
 
 .ct-workbench-shell .ct-workflow-inspector {
@@ -5479,6 +5485,80 @@ textarea:focus-visible {
 }
 
 .ct-workbench-shell .ct-workflow-link {
+  fill: none;
+  stroke: rgba(100, 116, 139, 0.68);
   stroke-linecap: round;
-  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.55));
+  stroke-linejoin: round;
+  stroke-width: 2;
+  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.65));
+  pointer-events: none;
+}
+
+.ct-workbench-shell .ct-workflow-link-draft {
+  stroke: rgba(14, 116, 144, 0.72);
+  stroke-dasharray: 5 5;
+}
+
+.ct-workbench-shell .ct-workflow-edge-delete {
+  position: absolute;
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid rgba(148, 163, 184, 0.38);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.92);
+  color: rgba(71, 85, 105, 0.86);
+  opacity: 0.46;
+  pointer-events: auto;
+  transition:
+    background-color 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+
+.ct-workbench-shell .ct-workflow-edge-delete:focus-visible {
+  opacity: 1;
+}
+
+.ct-workbench-shell .ct-workflow-edge-delete:hover {
+  border-color: rgba(220, 38, 38, 0.38);
+  background: #fff7f7;
+  color: rgb(220, 38, 38);
+  opacity: 1;
+  transform: scale(1.04);
+}
+
+.ct-workbench-shell .ct-workflow-port {
+  position: absolute;
+  top: 37px;
+  z-index: 3;
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(148, 163, 184, 0.74);
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.12);
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.ct-workbench-shell .ct-workflow-port:hover {
+  border-color: rgb(14, 116, 144);
+  box-shadow: 0 0 0 4px rgba(14, 116, 144, 0.12);
+  transform: scale(1.08);
+}
+
+.ct-workbench-shell .ct-workflow-port-in {
+  left: -8px;
+}
+
+.ct-workbench-shell .ct-workflow-port-out {
+  right: -8px;
+  cursor: crosshair;
 }
