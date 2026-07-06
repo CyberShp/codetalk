@@ -702,6 +702,7 @@ export interface WorkflowExecutionResult {
   status: string;
   started_at: string;
   completed_at: string;
+  run_ui_summary?: WorkbenchRunUiSummary;
   evidence_materialization?: MaterializeWorkflowOutputsResult;
   semantic_output_import?: SemanticCaseImportResult;
   context_discovery_decision?: Record<string, unknown>;
@@ -754,6 +755,7 @@ export interface WorkbenchTaskRunRunResult {
   evidence_materialization: MaterializeWorkflowOutputsResult;
   semantic_output_import?: SemanticCaseImportResult;
   acceptance_audit: WorkbenchAcceptanceAudit;
+  run_ui_summary?: WorkbenchRunUiSummary;
   artifact?: {
     path?: string;
     manifest_path?: string;
@@ -790,6 +792,7 @@ export interface TaskRerunExecutionResult {
   semantic_output_import?: SemanticCaseImportResult;
   acceptance_audit?: WorkbenchAcceptanceAudit;
   validation_after?: TaskRerunPlanValidation;
+  run_ui_summary?: WorkbenchRunUiSummary;
 }
 
 export interface TaskRerunHistory {
@@ -911,7 +914,63 @@ export interface PreparedWorkbenchTaskRun {
   input_snapshot: Record<string, unknown>;
   task_bundle: Record<string, unknown>;
   agent_runs: PreparedAgentRun[];
+  run_ui_summary?: WorkbenchRunUiSummary;
   created_at: string;
+}
+
+export interface WorkbenchRunUiSummary {
+  status: string;
+  status_label: string;
+  workflow?: {
+    id?: string;
+    name?: string;
+    version?: number;
+  };
+  current_node?: WorkbenchRunUiNodeSummary;
+  nodes: WorkbenchRunUiNodeSummary[];
+  failure?: {
+    failed_node_id?: string;
+    reasons?: string[];
+    can_retry?: boolean;
+    actions?: string[];
+  };
+  deliverables?: Array<{
+    id: string;
+    label?: string;
+    from?: string;
+    artifact?: string;
+    path?: string;
+    type?: string;
+    status_label?: string;
+  }>;
+  debug_default_collapsed?: boolean;
+  debug_sections?: string[];
+}
+
+export interface WorkbenchRunUiNodeSummary {
+  id: string;
+  label: string;
+  type?: string;
+  status?: string;
+  status_label: string;
+  provider?: string;
+  inputs?: Array<{ id: string; role?: string; type?: string }>;
+  mcp_profiles?: string[];
+  mcp_inputs?: Array<{
+    id: string;
+    role?: string;
+    type?: string;
+    credential_owner_label?: string;
+  }>;
+  skills?: Array<{ id: string; label?: string }>;
+  outputs?: Array<{
+    id: string;
+    artifact?: string;
+    type?: string;
+    path?: string;
+    status_label?: string;
+  }>;
+  failure_reasons?: string[];
 }
 
 export type ExportFormat = "md" | "docx" | "xml";

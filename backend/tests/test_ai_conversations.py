@@ -1377,6 +1377,28 @@ class TestAIConversationsAPI:
         assert "CGC" in prompt
         assert "除非用户明确要求不要基于源码" in prompt
 
+    async def test_agent_prompt_source_artifact_contract_is_not_duplicated_without_refs(self):
+        from app.services.ai_conversations import _build_agent_prompt
+
+        prompt = _build_agent_prompt(
+            {
+                "id": "conv-source-artifact-no-refs",
+                "title": "图谱优先无引用",
+                "scope_type": "workspace",
+                "scope_id": "ws-source-artifact-no-refs",
+                "workspace_id": "ws-source-artifact-no-refs",
+                "initial_context": {},
+            },
+            [],
+            [],
+            "分析 iSCSI login 并输出测试设计",
+            {"id": "runtime-source-artifact-no-refs", "name": "Runtime"},
+        )
+
+        assert prompt.count("SOURCE_ARTIFACT_PRIORITY:") == 1
+        assert "SOURCE_FIRST_CONTRACT:" in prompt
+        assert "未找到直接源码或输入材料时，必须说明未验证" in prompt
+
     async def test_agent_prompt_tells_runtime_not_to_write_download_artifacts_into_source_repo(self):
         from app.services.ai_conversations import _build_agent_prompt
 

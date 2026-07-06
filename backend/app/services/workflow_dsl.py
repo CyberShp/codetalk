@@ -236,8 +236,8 @@ def audit_workflow_definition(payload: dict[str, Any]) -> dict[str, Any]:
                 "code": "agent_task_missing_required_artifacts",
                 "path": f"steps.{step.id}.required_artifacts",
                 "message": (
-                    "Agent task has no required_artifacts; CodeTalk can run it, "
-                    "but artifact validation and evidence replay will be weak."
+                    "Agent 节点未声明必需交付文件；CodeTalk 仍可运行，"
+                    "但产物验收和证据回放能力会变弱。"
                 ),
             })
 
@@ -249,8 +249,8 @@ def audit_workflow_definition(payload: dict[str, Any]) -> dict[str, Any]:
                 "code": "json_output_missing_schema",
                 "path": f"outputs.{output.id}.schema",
                 "message": (
-                    "JSON output has no schema; Agent output can still be captured, "
-                    "but structured validation will be limited."
+                    "JSON 输出缺少 Schema；Agent 产物仍会被保存，"
+                    "但结构化校验能力会受限。建议在输出模板中补充 schema。"
                 ),
             })
         if "semantic_import" in output.raw and output.type != "test_cases":
@@ -259,8 +259,8 @@ def audit_workflow_definition(payload: dict[str, Any]) -> dict[str, Any]:
                 "code": "semantic_import_on_non_test_cases_output",
                 "path": f"outputs.{output.id}.semantic_import",
                 "message": (
-                    "semantic_import is intended for test_cases outputs; CodeTalk may reject "
-                    "this output during semantic library import."
+                    "semantic_import 主要用于测试用例输出；"
+                    "该输出导入语义库时可能被拒绝。"
                 ),
             })
         if "evidence_memory" in output.raw and output.type != "json":
@@ -269,8 +269,8 @@ def audit_workflow_definition(payload: dict[str, Any]) -> dict[str, Any]:
                 "code": "evidence_memory_on_non_json_output",
                 "path": f"outputs.{output.id}.evidence_memory",
                 "message": (
-                    "evidence_memory mapping is intended for json outputs; CodeTalk can only "
-                    "materialize structured evidence from locally validated JSON artifacts."
+                    "evidence_memory 主要用于 JSON 输出；"
+                    "CodeTalk 只能从本地校验过的结构化 JSON 产物中固化证据。"
                 ),
             })
 
@@ -281,8 +281,8 @@ def audit_workflow_definition(payload: dict[str, Any]) -> dict[str, Any]:
                 "code": "agent_mcp_input_without_mcp_step",
                 "path": f"inputs.{workflow_input.id}.resolver",
                 "message": (
-                    "Input is marked agent_mcp, but no agent_task declares an mcp_profile; "
-                    "Agent CLI may not know which MCP credential profile to use."
+                    "该输入标记为由 Agent MCP 读取，但没有 Agent 节点声明 mcp_profile；"
+                    "Agent CLI 可能无法判断应使用哪个 MCP 凭据配置。"
                 ),
             })
 

@@ -45,9 +45,49 @@ async def test_workbench_workflow_crud_api(workbench_client):
         "id": "custom_mr_blackbox",
         "name": "MR black-box workflow",
         "version": 1,
-        "inputs": [{"id": "mr_link", "type": "external_link", "resolver": "agent_mcp"}],
-        "steps": [{"id": "collect", "type": "agent_task", "mcp_profile": "codehub-readonly"}],
-        "outputs": [{"id": "report", "type": "markdown"}],
+        "inputs": [
+            {
+                "id": "analysis_target",
+                "label": "分析目标",
+                "type": "free_text",
+                "required": True,
+                "role": "用户输入的测试目标",
+            },
+            {
+                "id": "mr_link",
+                "label": "MR 链接",
+                "type": "mr_link",
+                "resolver": "agent_mcp",
+                "role": "由 Agent MCP 读取的变更链接",
+            },
+        ],
+        "steps": [
+            {
+                "id": "collect",
+                "type": "agent_task",
+                "provider": "claude-code",
+                "mcp_profile": "codehub-readonly",
+                "skills": ["source-evidence-first", "black-box-test-design"],
+                "goal": "按用户定义的输入生成黑盒测试交付件",
+                "required_artifacts": ["report.md", "cases.md"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "report",
+                "label": "测试设计报告",
+                "type": "markdown",
+                "from": "collect",
+                "artifact": "report.md",
+            },
+            {
+                "id": "cases",
+                "label": "黑盒测试用例",
+                "type": "test_cases",
+                "from": "collect",
+                "artifact": "cases.md",
+            },
+        ],
     }
 
     created = await workbench_client.post("/api/workbench/workflows", json=workflow)
@@ -70,10 +110,66 @@ async def test_workbench_workflow_crud_api(workbench_client):
     loaded = await workbench_client.get("/api/workbench/workflows/custom_mr_blackbox")
     assert loaded.status_code == 200
     assert loaded.json()["steps"][0]["mcp_profile"] == "codehub-readonly"
+    assert [item["label"] for item in loaded.json()["inputs"]] == ["分析目标", "MR 链接"]
+    assert [item["label"] for item in loaded.json()["outputs"]] == ["测试设计报告", "黑盒测试用例"]
 
     frozen = await workbench_client.get("/api/workbench/workflows/custom_mr_blackbox/snapshot")
     assert frozen.status_code == 200
     assert frozen.json()["version"] == 1
+
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "custom_mr_blackbox",
+            "workspace_id": "ws-crud-custom",
+            "repo_path": "/Volumes/Media/dpdk/spdk",
+            "inputs": {
+                "analysis_target": "iSCSI login CHAP failure\nreconnect path",
+                "mr_link": "https://codehub.local/storage/spdk/-/merge_requests/11",
+            },
+        },
+    )
+    assert prepared.status_code == 201
+    body = prepared.json()
+    contract = body["task_bundle"]["workflow_contract"]
+    assert [item["id"] for item in contract["inputs"]] == ["analysis_target", "mr_link"]
+    assert contract["agent_mcp_inputs"][0]["input_id"] == "mr_link"
+    assert body["task_bundle"]["agent_mcp_requests"][0]["value"] == (
+        "https://codehub.local/storage/spdk/-/merge_requests/11"
+    )
+    step_bundle = json.loads(
+        (
+            _task_run_dir(body["task_run_id"])
+            / "agent_runs"
+            / "collect"
+            / "task_bundle.json"
+        ).read_text(encoding="utf-8")
+    )
+    execution_contract = step_bundle["execution_contract"]
+    assert execution_contract["analysis_targets"][0]["value"] == (
+        "iSCSI login CHAP failure\nreconnect path"
+    )
+    assert execution_contract["mcp"]["profile"] == "codehub-readonly"
+    assert execution_contract["skills"]["ids"] == [
+        "source-evidence-first",
+        "black-box-test-design",
+    ]
+    assert execution_contract["outputs"]["required_artifacts"] == ["report.md", "cases.md"]
+    summary = body["run_ui_summary"]
+    assert summary["nodes"][0]["inputs"] == [
+        {"id": "analysis_target", "role": "用户输入的测试目标", "type": "free_text"},
+        {"id": "mr_link", "role": "由 Agent MCP 读取的变更链接", "type": "mr_link"},
+    ]
+    assert summary["nodes"][0]["mcp_profiles"] == ["codehub-readonly"]
+    assert summary["nodes"][0]["mcp_inputs"][0]["id"] == "mr_link"
+    assert summary["nodes"][0]["skills"] == [
+        {"id": "source-evidence-first", "label": "source-evidence-first"},
+        {"id": "black-box-test-design", "label": "black-box-test-design"},
+    ]
+    assert [item["artifact"] for item in summary["nodes"][0]["outputs"]] == [
+        "report.md",
+        "cases.md",
+    ]
 
 
 async def test_workbench_workflow_draft_audit_api_reports_warnings_and_invalid(
@@ -267,6 +363,255 @@ async def test_workbench_workflow_preset_api(workbench_client):
     )
     assert installed.status_code == 201
     assert installed.json()["id"] == "mr_blackbox_test"
+
+
+async def test_task_run_public_payload_includes_chinese_ui_summary_for_workflow_contract(
+    workbench_client,
+    tmp_path,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    requirements = tmp_path / "requirements.md"
+    requirements.write_text(
+        "iSCSI login must reject invalid CHAP credentials and expose diagnostics.",
+        encoding="utf-8",
+    )
+    workflow = {
+        "id": "ui_summary_contract_workflow",
+        "name": "UI summary contract workflow",
+        "version": 1,
+        "inputs": [
+            {"id": "analysis_target", "type": "free_text", "required": True, "role": "分析目标"},
+            {"id": "requirements", "type": "file", "required": True, "role": "需求文件"},
+            {"id": "mr_link", "type": "mr_link", "resolver": "agent_mcp", "role": "MR 链接"},
+        ],
+        "steps": [
+            {
+                "id": "agent_collect",
+                "type": "agent_task",
+                "provider": "builtin-llm",
+                "mcp_profile": "gitnexus+cgc",
+                "skills": ["sfmea", "black-box-test-design"],
+                "goal": "针对 iSCSI login 生成测试活动产物",
+                "required_artifacts": ["sfmea.json", "black_box_cases.md"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "sfmea",
+                "type": "json",
+                "from": "agent_collect",
+                "artifact": "sfmea.json",
+                "schema": {"type": "array"},
+            },
+            {
+                "id": "black_box_cases",
+                "type": "markdown",
+                "from": "agent_collect",
+                "artifact": "black_box_cases.md",
+            },
+        ],
+    }
+    created = await workbench_client.post("/api/workbench/workflows", json=workflow)
+    assert created.status_code == 201
+
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": workflow["id"],
+            "workspace_id": "ws-spdk",
+            "repo_path": str(repo),
+            "inputs": {
+                "analysis_target": "iSCSI login CHAP failure\n第二行不得截断",
+                "requirements": {"path": str(requirements)},
+                "mr_link": "https://codehub.local/storage/spdk/-/merge_requests/9",
+            },
+        },
+    )
+    assert prepared.status_code == 201
+    body = prepared.json()
+    summary = body["run_ui_summary"]
+
+    assert summary["status_label"] == "等待运行"
+    assert summary["debug_default_collapsed"] is True
+    assert summary["nodes"][0]["label"] == "agent_collect"
+    assert summary["nodes"][0]["status_label"] == "等待运行"
+    assert summary["nodes"][0]["inputs"] == [
+        {"id": "analysis_target", "role": "分析目标", "type": "free_text"},
+        {"id": "requirements", "role": "需求文件", "type": "file"},
+        {"id": "mr_link", "role": "MR 链接", "type": "mr_link"},
+    ]
+    assert summary["nodes"][0]["mcp_profiles"] == ["gitnexus+cgc"]
+    assert summary["nodes"][0]["mcp_inputs"] == [
+        {
+            "id": "mr_link",
+            "role": "MR 链接",
+            "type": "mr_link",
+            "credential_owner_label": "由 Agent 使用自身 MCP 凭据读取",
+        }
+    ]
+    assert summary["nodes"][0]["skills"] == [
+        {"id": "sfmea", "label": "sfmea"},
+        {"id": "black-box-test-design", "label": "black-box-test-design"},
+    ]
+    assert summary["nodes"][0]["outputs"] == [
+        {"id": "sfmea", "artifact": "sfmea.json", "type": "json", "status_label": "等待生成"},
+        {
+            "id": "black_box_cases",
+            "artifact": "black_box_cases.md",
+            "type": "markdown",
+            "status_label": "等待生成",
+        },
+    ]
+    assert summary["deliverables"] == []
+
+    task_dir = _task_run_dir(body["task_run_id"])
+    (task_dir / "workflow_execution.json").write_text(
+        json.dumps(
+            {
+                "task_run_id": body["task_run_id"],
+                "status": "invalid",
+                "step_results": [
+                    {
+                        "step_id": "agent_collect",
+                        "type": "agent_task",
+                        "status": "invalid",
+                        "provider": "builtin-llm",
+                        "execution": {"status": "completed", "error": ""},
+                        "validation": {
+                            "status": "missing",
+                            "missing_artifacts": ["black_box_cases.md"],
+                        },
+                        "required_artifacts": ["sfmea.json", "black_box_cases.md"],
+                    }
+                ],
+                "outputs": [
+                    {
+                        "id": "sfmea",
+                        "from": "agent_collect",
+                        "artifact": "sfmea.json",
+                        "status": "ok",
+                        "path": "agent_runs/agent_collect/sfmea.json",
+                    },
+                    {
+                        "id": "black_box_cases",
+                        "from": "agent_collect",
+                        "artifact": "black_box_cases.md",
+                        "status": "missing",
+                        "path": "agent_runs/agent_collect/black_box_cases.md",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = await workbench_client.get(f"/api/workbench/task-runs/{body['task_run_id']}")
+    assert loaded.status_code == 200
+    failed_summary = loaded.json()["run_ui_summary"]
+    assert failed_summary["status_label"] == "运行失败"
+    assert failed_summary["current_node"]["id"] == "agent_collect"
+    assert failed_summary["failure"]["failed_node_id"] == "agent_collect"
+    assert failed_summary["failure"]["reasons"] == [
+        "Agent 没有生成工作流要求的交付文件：black_box_cases.md。请从失败节点重试，或检查输出契约。"
+    ]
+    assert "missing" not in json.dumps(failed_summary["failure"], ensure_ascii=False).lower()
+    assert failed_summary["nodes"][0]["outputs"][0]["status_label"] == "已生成"
+    assert failed_summary["nodes"][0]["outputs"][1]["status_label"] == "缺少交付文件"
+
+    execution = json.loads((task_dir / "workflow_execution.json").read_text(encoding="utf-8"))
+    execution["step_results"][0]["execution"]["error"] = "agent run timed out after 90s"
+    (task_dir / "workflow_execution.json").write_text(
+        json.dumps(execution, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    timed_out = await workbench_client.get(f"/api/workbench/task-runs/{body['task_run_id']}")
+    assert timed_out.status_code == 200
+    timeout_reasons = timed_out.json()["run_ui_summary"]["failure"]["reasons"]
+    assert "Agent 运行超时（90 秒）。请缩小分析范围、延长运行超时，或从失败节点重试。" in timeout_reasons
+    assert "timed out" not in json.dumps(timeout_reasons, ensure_ascii=False).lower()
+
+
+async def test_task_run_run_response_includes_current_chinese_ui_summary(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.llm.base import LLMResponse
+    import app.services.workbench_workflow_runner as runner_module
+
+    class FakeLLM:
+        async def complete(self, messages, max_tokens=4096, temperature=0.3):
+            del messages, max_tokens, temperature
+            return LLMResponse(
+                content=json.dumps(
+                    {
+                        "summary": "ok",
+                        "artifacts": [
+                            {
+                                "path": "report.md",
+                                "content": "# 报告\n\n已完成。",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                model="fake-ui-summary-model",
+                usage={},
+            )
+
+    async def fake_factory():
+        return FakeLLM()
+
+    monkeypatch.setattr(runner_module, "create_llm_client_from_active", fake_factory)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    workflow = {
+        "id": "ui_summary_run_workflow",
+        "name": "UI summary run workflow",
+        "version": 1,
+        "inputs": [{"id": "analysis_target", "type": "free_text", "required": True}],
+        "steps": [
+            {
+                "id": "agent_collect",
+                "type": "agent_task",
+                "provider": "builtin-llm",
+                "goal": "生成报告",
+                "required_artifacts": ["report.md"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "report",
+                "type": "markdown",
+                "from": "agent_collect",
+                "artifact": "report.md",
+            }
+        ],
+    }
+    created = await workbench_client.post("/api/workbench/workflows", json=workflow)
+    assert created.status_code == 201
+
+    resp = await workbench_client.post(
+        "/api/workbench/task-runs/run",
+        json={
+            "workflow_id": workflow["id"],
+            "workspace_id": "ws-spdk",
+            "repo_path": str(repo),
+            "inputs": {"analysis_target": "iSCSI login 多行\n第二行"},
+            "timeout_sec": 30,
+            "stop_on_error": True,
+        },
+    )
+
+    assert resp.status_code == 201
+    body = resp.json()
+    assert body["run_ui_summary"]["status_label"] == "运行完成"
+    assert body["run_ui_summary"]["nodes"][0]["status_label"] == "已完成"
+    assert body["run_ui_summary"]["nodes"][0]["outputs"][0]["status_label"] == "已生成"
+    assert body["task_run"]["run_ui_summary"]["status_label"] == "运行完成"
+    assert body["execution"]["run_ui_summary"]["deliverables"][0]["artifact"] == "report.md"
 
 
 async def test_restore_builtin_workflows_preserves_custom_and_restores_core_plus_scenarios(
