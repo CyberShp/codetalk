@@ -5371,6 +5371,22 @@ textarea:focus-visible {
 
 .ct-workbench-shell .ct-workflow-node {
   min-height: 0 !important;
+  box-shadow:
+    0 10px 22px rgba(15, 23, 42, 0.05),
+    inset 0 1px 0 rgba(255, 255, 255, 0.85) !important;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.ct-workbench-shell .ct-workflow-node-active {
+  border-color: rgba(15, 118, 145, 0.55) !important;
+  box-shadow:
+    0 16px 32px rgba(15, 23, 42, 0.1),
+    0 0 0 2px rgba(15, 118, 145, 0.16),
+    inset 0 1px 0 rgba(255, 255, 255, 0.9) !important;
+  transform: translateY(-1px);
 }
 
 .ct-workbench-shell .ct-workflow-node h4 {
@@ -5443,6 +5459,23 @@ textarea:focus-visible {
 
 .ct-workbench-shell .ct-workflow-inspector {
   max-height: max(720px, calc(100vh - 170px));
+}
+
+.ct-workbench-shell .ct-workflow-inspector-popover {
+  position: fixed;
+  top: 136px;
+  right: 28px;
+  z-index: 40;
+  width: min(380px, calc(100vw - 56px));
+  max-height: calc(100vh - 164px);
+}
+
+@media (max-width: 900px) {
+  .ct-workbench-shell .ct-workflow-inspector-popover {
+    inset: auto 14px 14px 14px;
+    width: auto;
+    max-height: min(70vh, 620px);
+  }
 }
 
 .ct-workbench-shell .ct-workflow-link {

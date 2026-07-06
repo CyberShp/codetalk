@@ -20,6 +20,7 @@ import {
   MessageSquareText,
   Trash2,
   WandSparkles,
+  X,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { api } from "@/lib/api";
@@ -1162,37 +1163,37 @@ const WORKFLOW_MODULE_PALETTE = [
   {
     id: "input",
     label: "输入模块",
-    tone: "border-sky-300/35 bg-sky-400/8 text-sky-700",
+    tone: "border-outline-variant/35 bg-surface text-on-surface",
   },
   {
     id: "agent",
     label: "智能体模块",
-    tone: "border-primary/35 bg-primary/10 text-primary",
+    tone: "border-outline-variant/35 bg-surface text-on-surface",
   },
   {
     id: "mcp",
     label: "MCP 模块",
-    tone: "border-teal-300/35 bg-teal-400/10 text-teal-700",
+    tone: "border-outline-variant/35 bg-surface text-on-surface",
   },
   {
     id: "skills",
     label: "Skills 模块",
-    tone: "border-violet-300/35 bg-violet-400/10 text-violet-700",
+    tone: "border-outline-variant/35 bg-surface text-on-surface",
   },
   {
     id: "gitnexus",
     label: "GitNexus 模块",
-    tone: "border-emerald-300/35 bg-emerald-400/10 text-emerald-700",
+    tone: "border-outline-variant/35 bg-surface text-on-surface",
   },
   {
     id: "cgc",
     label: "CGC 模块",
-    tone: "border-amber-300/35 bg-amber-400/10 text-amber-700",
+    tone: "border-outline-variant/35 bg-surface text-on-surface",
   },
   {
     id: "output",
     label: "输出模块",
-    tone: "border-rose-300/35 bg-rose-400/10 text-rose-700",
+    tone: "border-outline-variant/35 bg-surface text-on-surface",
   },
 ];
 
@@ -1230,11 +1231,19 @@ type WorkflowCanvasLayout = {
 };
 
 const WORKFLOW_NODE_TONE: Record<WorkflowCanvasNodeKind, string> = {
-  input: "border-sky-300/45 bg-sky-400/10",
-  context: "border-emerald-300/45 bg-emerald-400/10",
-  agent: "border-primary/35 bg-primary/10",
-  output: "border-rose-300/45 bg-rose-400/10",
-  verify: "border-amber-300/45 bg-amber-400/10",
+  input: "border-outline-variant/35 bg-surface",
+  context: "border-outline-variant/35 bg-surface",
+  agent: "border-outline-variant/35 bg-surface",
+  output: "border-outline-variant/35 bg-surface",
+  verify: "border-outline-variant/35 bg-surface",
+};
+
+const WORKFLOW_NODE_ACCENT: Record<WorkflowCanvasNodeKind, string> = {
+  input: "bg-cyan-600",
+  context: "bg-blue-600",
+  agent: "bg-indigo-600",
+  output: "bg-slate-500",
+  verify: "bg-amber-700",
 };
 
 type WorkflowSkillOption = NonNullable<
@@ -3371,6 +3380,7 @@ export function AgentWorkbenchExperience({
     startClientY: number;
     startX: number;
     startY: number;
+    moved: boolean;
   } | null>(null);
   const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([]);
   const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
@@ -3456,8 +3466,7 @@ export function AgentWorkbenchExperience({
   const [workflowNodeTitles, setWorkflowNodeTitles] = useState<
     Record<string, string>
   >({});
-  const [activeWorkflowNodeId, setActiveWorkflowNodeId] =
-    useState<string>("agent-task");
+  const [activeWorkflowNodeId, setActiveWorkflowNodeId] = useState("");
   const [selectedPresetId, setSelectedPresetId] = useState("");
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(
     DEFAULT_WORKFLOW.id,
@@ -4257,7 +4266,7 @@ export function AgentWorkbenchExperience({
   const activeWorkflowNode = useMemo(
     () =>
       workflowCanvasNodes.find((node) => node.id === activeWorkflowNodeId) ??
-      workflowCanvasNodes[0],
+      null,
     [activeWorkflowNodeId, workflowCanvasNodes],
   );
 
@@ -4341,7 +4350,11 @@ export function AgentWorkbenchExperience({
     const firstVisible = layout.nodes.find(
       (node) => !layout.hidden_node_ids.includes(node.id),
     );
-    if (firstVisible) setActiveWorkflowNodeId(firstVisible.id);
+    if (firstVisible && activeWorkflowNodeId === firstVisible.id) {
+      setActiveWorkflowNodeId(firstVisible.id);
+    } else {
+      setActiveWorkflowNodeId("");
+    }
   }
 
   function startWorkflowNodeDrag(
@@ -4359,6 +4372,7 @@ export function AgentWorkbenchExperience({
       startClientY: event.clientY,
       startX: node.x,
       startY: node.y,
+      moved: false,
     };
   }
 
@@ -4366,6 +4380,12 @@ export function AgentWorkbenchExperience({
     const drag = workflowDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     event.preventDefault();
+    if (
+      Math.abs(event.clientX - drag.startClientX) > 2 ||
+      Math.abs(event.clientY - drag.startClientY) > 2
+    ) {
+      drag.moved = true;
+    }
     const nextPosition = clampWorkflowNodePosition({
       x: drag.startX + event.clientX - drag.startClientX,
       y: drag.startY + event.clientY - drag.startClientY,
@@ -4383,6 +4403,7 @@ export function AgentWorkbenchExperience({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    if (!drag.moved) return;
     const node = workflowCanvasNodes.find((item) => item.id === drag.id);
     if (node) {
       setMessage(`节点位置已更新: ${node.title}`);
@@ -4713,7 +4734,7 @@ export function AgentWorkbenchExperience({
         edge.target !== activeWorkflowNode.id,
     );
     setWorkflowCanvasEdges(nextEdges);
-    setActiveWorkflowNodeId(nextNodes[0]?.id ?? "agent-task");
+    setActiveWorkflowNodeId("");
     setMessage(
       activeWorkflowNode.source === "canvas"
         ? `节点已删除: ${activeWorkflowNode.title}`
@@ -6772,7 +6793,7 @@ export function AgentWorkbenchExperience({
                 导入会替换当前画布草稿，不影响已保存的工作流。保存后才会出现在运行驾驶舱。
               </p>
             </div>
-            <div className="ct-workflow-builder-grid grid gap-2.5 xl:grid-cols-[136px_minmax(0,1fr)_360px]">
+            <div className="ct-workflow-builder-grid grid gap-2.5 xl:grid-cols-[136px_minmax(0,1fr)]">
               <aside
                 aria-label="Workflow module palette"
                 className="min-w-0 rounded-lg border border-outline-variant/30 bg-surface/82 p-1.5"
@@ -6869,6 +6890,12 @@ export function AgentWorkbenchExperience({
                 <div
                   ref={workflowBoardRef}
                   className="ct-workflow-board max-h-[720px] overflow-auto rounded-lg border border-outline-variant/20 bg-surface-container/55"
+                  onPointerDown={(event) => {
+                    if (event.target === event.currentTarget) {
+                      setActiveWorkflowNodeId("");
+                      setWorkflowLinkTargetId("");
+                    }
+                  }}
                   onDragOver={(event) => {
                     event.preventDefault();
                     event.dataTransfer.dropEffect = "copy";
@@ -6894,6 +6921,12 @@ export function AgentWorkbenchExperience({
                   <div
                     ref={workflowCanvasInnerRef}
                     className="relative"
+                    onPointerDown={(event) => {
+                      if (event.target === event.currentTarget) {
+                        setActiveWorkflowNodeId("");
+                        setWorkflowLinkTargetId("");
+                      }
+                    }}
                     style={{
                       height: WORKFLOW_CANVAS_HEIGHT,
                       width: WORKFLOW_CANVAS_WIDTH,
@@ -6943,7 +6976,15 @@ export function AgentWorkbenchExperience({
                         );
                       })}
                     </svg>
-                    <div className="relative h-full">
+                    <div
+                      className="relative h-full"
+                      onPointerDown={(event) => {
+                        if (event.target === event.currentTarget) {
+                          setActiveWorkflowNodeId("");
+                          setWorkflowLinkTargetId("");
+                        }
+                      }}
+                    >
                       {workflowCanvasNodes.map((node, index) => (
                         <article
                           key={node.id}
@@ -6959,19 +7000,27 @@ export function AgentWorkbenchExperience({
                           onPointerUp={endWorkflowNodeDrag}
                           onPointerCancel={endWorkflowNodeDrag}
                           className={[
-                            "ct-workflow-node absolute h-24 cursor-move select-none overflow-hidden rounded-md border p-1.5 shadow-sm",
+                            "ct-workflow-node absolute h-24 cursor-move select-none overflow-hidden rounded-md border bg-surface p-1.5 shadow-sm",
                             activeWorkflowNodeId === node.id
-                              ? "ring-2 ring-primary/35"
-                              : "",
+                              ? "ct-workflow-node-active"
+                              : "hover:border-outline/35",
                             WORKFLOW_NODE_TONE[node.kind] ??
                               "border-outline-variant/30 bg-surface",
                           ].join(" ")}
                         >
                           <div className="mb-1.5 flex items-start justify-between gap-1.5">
                             <div className="min-w-0">
-                              <p className="font-data text-[9px] uppercase text-on-surface-variant">
-                                node {index + 1}
-                              </p>
+                              <div className="mb-1 flex items-center gap-1.5">
+                                <span
+                                  className={[
+                                    "h-2.5 w-2.5 shrink-0 rounded-[3px]",
+                                    WORKFLOW_NODE_ACCENT[node.kind],
+                                  ].join(" ")}
+                                />
+                                <p className="font-data text-[9px] uppercase text-on-surface-variant">
+                                  node {index + 1}
+                                </p>
+                              </div>
                               <h4 className="truncate text-[11px] font-semibold text-on-surface">
                                 {node.title}
                               </h4>
@@ -6979,7 +7028,7 @@ export function AgentWorkbenchExperience({
                                 {node.subtitle}
                               </p>
                             </div>
-                            <span className="rounded bg-surface/80 px-1.5 py-0.5 font-data text-[9px] text-on-surface-variant">
+                            <span className="rounded bg-surface-container px-1.5 py-0.5 font-data text-[9px] text-on-surface-variant">
                               {node.kind}
                             </span>
                           </div>
@@ -7000,10 +7049,32 @@ export function AgentWorkbenchExperience({
                 </div>
               </section>
 
+              {activeWorkflowNode && (
               <aside
                 aria-label="Workflow inspector"
-                className="ct-workflow-inspector min-w-0 overflow-y-auto rounded-lg border border-outline-variant/30 bg-surface/86 p-2 [&_input]:!text-[10px] [&_select]:!text-[10px] [&_textarea]:!text-[10px]"
+                className="ct-workflow-inspector ct-workflow-inspector-popover min-w-0 overflow-y-auto rounded-lg border border-outline-variant/30 bg-surface/95 p-2 shadow-xl backdrop-blur [&_input]:!text-[10px] [&_select]:!text-[10px] [&_textarea]:!text-[10px]"
               >
+                <div className="mb-2 flex items-start justify-between gap-2 border-b border-outline-variant/20 pb-2">
+                  <div className="min-w-0">
+                    <p className="font-data text-[10px] uppercase tracking-[0.12em] text-on-surface-variant">
+                      属性
+                    </p>
+                    <h3 className="truncate text-sm font-semibold text-on-surface">
+                      {activeWorkflowNode.title}
+                    </h3>
+                  </div>
+                  <button
+                    type="button"
+                    aria-label="关闭属性面板"
+                    onClick={() => {
+                      setActiveWorkflowNodeId("");
+                      setWorkflowLinkTargetId("");
+                    }}
+                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-outline-variant/30 bg-surface text-on-surface-variant transition-colors hover:bg-surface-container-high hover:text-on-surface"
+                  >
+                    <X size={13} />
+                  </button>
+                </div>
                 <div
                   data-testid="workflow-canvas-relation"
                   className="mb-2 rounded-lg border border-outline-variant/30 bg-surface-container/70 px-2 py-1.5 text-[11px] leading-4 text-on-surface-variant"
@@ -7914,6 +7985,7 @@ export function AgentWorkbenchExperience({
                   />
                 </details>
               </aside>
+              )}
             </div>
           </Panel>
         )}
