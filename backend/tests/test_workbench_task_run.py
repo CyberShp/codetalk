@@ -305,12 +305,35 @@ def test_workbench_runner_builtin_llm_uses_handoff_contract_and_writes_outputs(
     from app.services.workbench_task_run import (
         BUILTIN_LLM_PROVIDER_ID,
         WorkbenchTaskRunPreparer,
+        WorkbenchTaskRunStore,
     )
     import app.services.workbench_workflow_runner as runner_module
 
     requirements = tmp_path / "requirements.md"
     requirements.write_text(
         "iSCSI login shall reject invalid CHAP credentials and expose a clear error.",
+        encoding="utf-8",
+    )
+    source_file = tmp_path / "lib" / "iscsi" / "login.c"
+    source_file.parent.mkdir(parents=True)
+    source_file.write_text(
+        "\n".join([
+            "/* header line */",
+            "#include \"spdk/stdinc.h\"",
+            "",
+            "int unrelated_bootstrap(void) {",
+            "    return 0;",
+            "}",
+            "",
+            "static int iscsi_login_check_chap(void) {",
+            "    SPDK_ERRLOG(\"CHAP authentication failed during login\\n\");",
+            "    return -1;",
+            "}",
+            "",
+            "int iscsi_login_session_reset(void) {",
+            "    return iscsi_login_check_chap();",
+            "}",
+        ]),
         encoding="utf-8",
     )
     workflow_store = WorkflowStore(tmp_path / "workflows.db")
@@ -367,11 +390,15 @@ def test_workbench_runner_builtin_llm_uses_handoff_contract_and_writes_outputs(
                                     "cause": "login state validation error",
                                     "effect": "unauthorized session",
                                     "detection": "negative login attempt",
-                                    "severity": 9,
-                                    "occurrence": 3,
+                                    "severity": "Unauthorized login would expose target data.",
+                                    "severity_score": 9,
+                                    "occurrence_score": 3,
                                     "detection_score": 4,
                                     "rpn": 108,
-                                    "mitigation": "add black-box CHAP failure case",
+                                    "score_explanation": "High security impact, uncommon but observable by negative CHAP login.",
+                                    "mitigation": "Add black-box CHAP failure test case and monitor login failure metrics.",
+                                        "file_path": "lib/iscsi/login.c",
+                                    "line_start": 1,
                                 }
                             ],
                         },
@@ -421,17 +448,44 @@ def test_workbench_runner_builtin_llm_uses_handoff_contract_and_writes_outputs(
     assert isinstance(messages, list)
     prompt = json.dumps(messages, ensure_ascii=False)
     assert "iSCSI login CHAP failure" in prompt
+    assert "execution_contract.source_context.files" in prompt
+    assert "lib/iscsi/login.c" in prompt
+    assert "iscsi_login_check_chap" in prompt
     assert "https://codehub.local/storage/spdk/-/merge_requests/8" in prompt
     assert "sfmea" in prompt
     assert "black_box_cases.md" in prompt
     llm_execution_input = json.loads(
         (agent_dir / "builtin_llm_execution_input.json").read_text(encoding="utf-8")
     )
+    source_context = llm_execution_input["execution_contract"]["source_context"]
+    assert source_context["source_first"] is True
+    assert source_context["files"][0]["file_path"] == "lib/iscsi/login.c"
+    assert "iscsi_login_check_chap" in source_context["files"][0]["excerpt"]
+    assert "unrelated_bootstrap" not in source_context["files"][0]["excerpt"]
+    assert source_context["files"][0]["start_line"] > 1
     assert llm_execution_input["execution_contract"]["mcp"]["profile"] == "gitnexus+cgc"
     assert llm_execution_input["execution_contract"]["skills"]["ids"] == [
         "sfmea",
         "black-box-test-design",
     ]
+    source_read_chain = json.loads(
+        Path(task_run.artifact_dir, "source_read_chain.json").read_text(encoding="utf-8")
+    )
+    assert source_read_chain["reads"][0]["event"] == "local_source_file_read"
+    assert source_read_chain["reads"][0]["file_path"] == "lib/iscsi/login.c"
+    from app.api.agent_workbench import _build_task_acceptance_audit
+
+    executed_task_run = WorkbenchTaskRunStore(tmp_path / "task_runs").load(
+        task_run.task_run_id
+    )
+    acceptance = _build_task_acceptance_audit(executed_task_run)
+    checks = {item["id"]: item for item in acceptance["checks"]}
+    assert acceptance["status"] == "ready"
+    assert acceptance["summary"]["missing_required"] == 0
+    assert checks["agent_builtin_llm_execution_input:agent_collect"]["status"] == "ok"
+    assert "agent_execution_input:agent_collect" not in checks
+    assert "agent_agent_replay_plan:agent_collect" not in checks
+    assert "agent_provider_diagnostics:agent_collect" not in checks
 
 
 def test_prepare_workbench_task_run_extracts_docx_file_inputs(tmp_path):
@@ -646,6 +700,48 @@ def test_prepare_workbench_task_run_ingests_file_set_inputs(tmp_path):
     assert input_context["inputs"][0]["count"] == 2
     assert input_context["inputs"][0]["files"][0]["filename"] == "requirements.md"
     assert "TLS must fail closed" in input_context["inputs"][0]["files"][0]["text_preview"]
+
+
+def test_prepare_workbench_task_run_file_input_keeps_path_for_schema(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    design = tmp_path / "design.md"
+    design.write_text("# Design\n\nKeep observable diagnostics.\n", encoding="utf-8")
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "file_schema_workflow",
+        "name": "File schema workflow",
+        "version": 1,
+        "inputs": [
+            {
+                "id": "design_doc",
+                "type": "file",
+                "required": True,
+                "schema": {
+                    "type": "object",
+                    "required": ["path"],
+                    "properties": {"path": {"type": "string", "minLength": 1}},
+                },
+            }
+        ],
+        "steps": [{"id": "render", "type": "report_render"}],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    })
+
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="file_schema_workflow",
+        workspace_id="ws-file-schema",
+        repo_path=str(tmp_path),
+        inputs={"design_doc": {"path": str(design)}},
+    )
+
+    design_snapshot = result.input_snapshot["design_doc"]
+    assert design_snapshot["path"] == str(design)
+    assert design_snapshot["original_path"] == str(design)
 
 
 def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_path):

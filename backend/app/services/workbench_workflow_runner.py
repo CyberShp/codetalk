@@ -836,7 +836,9 @@ def _builtin_llm_messages(
             "role": "system",
             "content": (
                 "你是 CodeTalk 工作流执行器。必须按 execution_contract 读取输入材料、"
-                "遵守 skills 和 MCP 边界，并输出可落盘的工作流产物。"
+                "优先阅读 execution_contract.source_context.files 中的当前工作区源码片段，"
+                "回答中的源码判断必须引用 file_path 与行号范围；只有当 source_context 为空时，"
+                "才可以说明未获得源码片段。遵守 skills 和 MCP 边界，并输出可落盘的工作流产物。"
                 "只返回 JSON：{\"summary\": string, \"artifacts\": [{\"path\": string, \"content\": string|object|array}]}。"
                 "path 必须等于 required_artifacts 或 declared_outputs 中声明的 artifact。"
             ),

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -28,6 +29,15 @@ from app.services.workflow_dsl import WorkflowStore
 
 AGENT_RUNTIME_PROVIDER_PREFIX = "agent-runtime:"
 BUILTIN_LLM_PROVIDER_ID = "builtin-llm"
+SOURCE_EXTENSIONS = frozenset({
+    ".c", ".h", ".cc", ".cpp", ".hpp", ".py", ".go", ".rs", ".java",
+    ".ts", ".tsx", ".js", ".jsx", ".sh", ".json",
+})
+SOURCE_SCAN_IGNORED_DIRS = frozenset({
+    ".git", ".hg", ".svn", "node_modules", ".next", "dist", "build",
+    "out", "target", "__pycache__", ".venv", "venv", "task_runs",
+    "workbench", ".codetalk", ".codehub",
+})
 
 
 def _now() -> str:
@@ -106,6 +116,11 @@ class WorkbenchTaskRunPreparer:
             evidence_memory=self.evidence_memory,
             semantic_library=self.semantic_library,
         )
+        local_source_context = build_local_source_context(
+            repo_path=repo_path,
+            query=str(context_bundle.get("query") or ""),
+        )
+        context_bundle["local_source_context"] = local_source_context
         agent_instructions = collect_agent_instructions(
             repo_path=repo_path,
             input_snapshot=input_snapshot,
@@ -132,6 +147,7 @@ class WorkbenchTaskRunPreparer:
             workflow_snapshot=workflow_snapshot,
             provider_snapshot=provider_snapshot,
         )
+        workflow_contract["local_source_context"] = local_source_context
         agent_mcp_requests = build_agent_mcp_requests(
             workflow_snapshot=workflow_snapshot,
             input_snapshot=input_snapshot,
@@ -165,6 +181,7 @@ class WorkbenchTaskRunPreparer:
             "provider_readiness": provider_readiness,
             "context_discovery_decision": context_discovery_decision,
             "context_bundle": context_bundle,
+            "local_source_context": local_source_context,
             "memory_retrieval": context_artifacts["memory_retrieval"],
             "source_read_chain": context_artifacts["source_read_chain"],
             "evidence_consumption_trajectory": context_artifacts["evidence_consumption_trajectory"],
@@ -253,6 +270,7 @@ class WorkbenchTaskRunPreparer:
         _write_json(artifact_dir / "provider_readiness.json", provider_readiness)
         _write_json(artifact_dir / "context_discovery_decision.json", context_discovery_decision)
         _write_json(artifact_dir / "context_bundle.json", context_bundle)
+        _write_json(artifact_dir / "local_source_context.json", local_source_context)
         _write_json(artifact_dir / "output_schemas_by_step.json", output_schemas_by_step)
         _write_json(
             artifact_dir / "semantic_import_outputs_by_step.json",
@@ -362,6 +380,230 @@ def build_workbench_context_bundle(
             "semantic_cases": limit,
         },
     }
+
+
+def build_local_source_context(
+    *,
+    repo_path: str,
+    query: str,
+    limit: int = 8,
+    max_candidates_to_read: int = 80,
+    max_files_scanned: int = 5000,
+    max_file_bytes: int = 768 * 1024,
+    excerpt_radius: int = 4,
+) -> dict[str, Any]:
+    repo = Path(str(repo_path or ""))
+    tokens = _source_query_tokens(query)
+    base = {
+        "provider": "local-source-search",
+        "query": query[:2000],
+        "repo_path": str(repo_path or ""),
+        "files": [],
+        "file_count": 0,
+        "rules": {
+            "source_first": True,
+            "authority": "current local source files are hash-validated during prepare",
+            "bounded_scan": True,
+        },
+    }
+    if not repo_path:
+        return {**base, "status": "skipped", "reason": "repo_path_missing"}
+    try:
+        root = repo.resolve()
+    except OSError:
+        return {**base, "status": "skipped", "reason": "repo_path_unresolved"}
+    if not root.exists() or not root.is_dir():
+        return {**base, "status": "skipped", "reason": "repo_path_not_directory"}
+    candidates = _rank_source_candidates_by_path(
+        root=root,
+        tokens=tokens,
+        max_files_scanned=max_files_scanned,
+        max_file_bytes=max_file_bytes,
+    )
+    scored: list[dict[str, Any]] = []
+    for item in candidates[:max_candidates_to_read]:
+        rel_path = str(item["file_path"])
+        source_path = root / rel_path
+        try:
+            data = source_path.read_bytes()
+        except OSError:
+            continue
+        text = data.decode("utf-8", errors="replace")
+        content_terms = [token for token in tokens if token in text.lower()]
+        score = int(item["score"]) + len(content_terms) * 4
+        rel_lower = rel_path.lower()
+        if rel_lower.startswith(("lib/", "src/", "app/", "include/")):
+            score += 12
+        if rel_lower.startswith(("test/", "tests/", "spec/")):
+            score -= 4
+        if tokens and score <= 0:
+            continue
+        excerpt, start_line, end_line = _source_excerpt(
+            text,
+            tokens=tokens,
+            radius=excerpt_radius,
+        )
+        sha256 = hashlib.sha256(data).hexdigest()
+        matched_terms = _unique_strings([
+            *[str(term) for term in item.get("matched_terms") or []],
+            *content_terms,
+        ])
+        scored.append({
+            "file_path": rel_path,
+            "score": score,
+            "matched_terms": matched_terms,
+            "start_line": start_line,
+            "end_line": end_line,
+            "excerpt": excerpt,
+            "sha256": sha256,
+            "size_bytes": len(data),
+            "line_count": _line_count_text(text),
+            "symbols": _source_symbols(text)[:12],
+            "status": "validated_source_file",
+        })
+    scored.sort(key=lambda item: (-int(item.get("score") or 0), str(item.get("file_path") or "")))
+    files = scored[:limit]
+    return {
+        **base,
+        "status": "ready" if files else "empty",
+        "file_count": len(files),
+        "files": files,
+        "scanned_file_count": min(len(candidates), max_files_scanned),
+        "token_count": len(tokens),
+        "tokens": tokens[:24],
+    }
+
+
+def _rank_source_candidates_by_path(
+    *,
+    root: Path,
+    tokens: list[str],
+    max_files_scanned: int,
+    max_file_bytes: int,
+) -> list[dict[str, Any]]:
+    candidates: list[dict[str, Any]] = []
+    scanned = 0
+    for source_path in _iter_source_files(root):
+        if scanned >= max_files_scanned:
+            break
+        scanned += 1
+        try:
+            stat = source_path.stat()
+        except OSError:
+            continue
+        if stat.st_size > max_file_bytes:
+            continue
+        try:
+            rel_path = source_path.relative_to(root).as_posix()
+        except ValueError:
+            continue
+        lower_path = rel_path.lower()
+        matched = [token for token in tokens if token in lower_path]
+        score = len(matched) * 8
+        if not tokens:
+            score = 1
+        if score <= 0:
+            continue
+        candidates.append({
+            "file_path": rel_path,
+            "score": score,
+            "matched_terms": matched,
+        })
+    candidates.sort(key=lambda item: (-int(item["score"]), str(item["file_path"])))
+    return candidates
+
+
+def _iter_source_files(root: Path):
+    stack = [root]
+    while stack:
+        current = stack.pop()
+        try:
+            entries = sorted(current.iterdir(), key=lambda item: item.name)
+        except OSError:
+            continue
+        for entry in entries:
+            if entry.is_dir():
+                if entry.name in SOURCE_SCAN_IGNORED_DIRS:
+                    continue
+                stack.append(entry)
+                continue
+            if entry.suffix.lower() in SOURCE_EXTENSIONS:
+                yield entry
+
+
+def _source_query_tokens(query: str) -> list[str]:
+    raw_tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", str(query or "").lower())
+    stop = {
+        "the", "and", "for", "with", "from", "this", "that", "shall",
+        "must", "should", "when", "then", "only", "path", "file",
+        "tmp", "volumes", "media",
+    }
+    return _unique_strings(token for token in raw_tokens if token not in stop)[:32]
+
+
+def _source_excerpt(
+    text: str,
+    *,
+    tokens: list[str],
+    radius: int,
+    max_chars: int = 3000,
+) -> tuple[str, int, int]:
+    lines = text.splitlines()
+    if not lines:
+        return "", 0, 0
+    lower_lines = [line.lower() for line in lines]
+    token_weights = {
+        "chap": 8,
+        "login": 7,
+        "auth": 7,
+        "authenticate": 7,
+        "failure": 6,
+        "failed": 6,
+        "reject": 6,
+        "reset": 5,
+        "reconnect": 5,
+        "session": 4,
+        "timeout": 4,
+    }
+    best_index = 0
+    best_score = -1
+    for index, line in enumerate(lower_lines):
+        matched = [token for token in tokens if token in line]
+        if not matched:
+            continue
+        score = sum(token_weights.get(token, 1) for token in matched)
+        if re.search(r"^\s*(?:static\s+)?(?:inline\s+)?[A-Za-z_][\w\s\*\(\)]{0,80}\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", line):
+            score += 3
+        if re.search(r"\b(if|case|return|SPDK_ERRLOG|SPDK_NOTICELOG)\b", line):
+            score += 2
+        if score > best_score:
+            best_score = score
+            best_index = index
+    hit_index = best_index
+    start = max(0, hit_index - radius)
+    end = min(len(lines), hit_index + radius + 1)
+    excerpt = "\n".join(lines[start:end])
+    if len(excerpt) > max_chars:
+        excerpt = excerpt[:max_chars]
+    return excerpt, start + 1, end
+
+
+def _source_symbols(text: str) -> list[str]:
+    symbols: list[str] = []
+    pattern = re.compile(
+        r"^\s*(?:static\s+)?(?:inline\s+)?[A-Za-z_][\w\s\*\(\)]{0,80}\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+        flags=re.MULTILINE,
+    )
+    for match in pattern.finditer(text[:20000]):
+        name = match.group(1)
+        if name in {"if", "for", "while", "switch", "return", "sizeof"}:
+            continue
+        symbols.append(name)
+    return _unique_strings(symbols)
+
+
+def _line_count_text(text: str) -> int:
+    return len(text.splitlines()) if text else 0
 
 
 def build_input_context(input_snapshot: dict[str, Any], *, preview_chars: int = 4000) -> dict[str, Any]:
@@ -787,6 +1029,11 @@ def build_executor_handoff_contract(
         input_snapshot=input_snapshot,
         input_defs=input_defs,
     )
+    source_context = (
+        workflow_contract.get("local_source_context")
+        if isinstance(workflow_contract.get("local_source_context"), dict)
+        else {}
+    )
     return {
         "contract_version": 1,
         "workflow": {
@@ -819,6 +1066,9 @@ def build_executor_handoff_contract(
                 else {}
             ),
         },
+        "source_context": _execution_source_context(
+            source_context=source_context,
+        ),
         "mcp": {
             "profile": str(step.get("mcp_profile") or ""),
             "requests": [
@@ -856,6 +1106,34 @@ def build_executor_handoff_contract(
                 "JSON artifacts must satisfy their declared schemas."
             ),
         },
+    }
+
+
+def _execution_source_context(*, source_context: dict[str, Any]) -> dict[str, Any]:
+    files = [
+        item for item in source_context.get("files") or []
+        if isinstance(item, dict)
+    ]
+    return {
+        "provider": str(source_context.get("provider") or "local-source-search"),
+        "status": str(source_context.get("status") or "unknown"),
+        "source_first": bool((source_context.get("rules") or {}).get("source_first", False)),
+        "rule": (
+            "Read and cite these current repo source excerpts before making source-based claims. "
+            "If no source files are available, say so explicitly and keep conclusions limited."
+        ),
+        "files": [
+            {
+                "file_path": str(item.get("file_path") or ""),
+                "start_line": item.get("start_line"),
+                "end_line": item.get("end_line"),
+                "sha256": str(item.get("sha256") or ""),
+                "matched_terms": [str(term) for term in item.get("matched_terms") or []],
+                "symbols": [str(symbol) for symbol in item.get("symbols") or []],
+                "excerpt": str(item.get("excerpt") or ""),
+            }
+            for item in files
+        ],
     }
 
 
@@ -1918,6 +2196,15 @@ def build_context_artifact_payloads(
         item for item in context_bundle.get("semantic_cases") or []
         if isinstance(item, dict)
     ]
+    local_source_context = (
+        context_bundle.get("local_source_context")
+        if isinstance(context_bundle.get("local_source_context"), dict)
+        else {}
+    )
+    local_source_files = [
+        item for item in local_source_context.get("files") or []
+        if isinstance(item, dict)
+    ]
     memory_retrieval = {
         "provider": "evidence-memory",
         "query": query,
@@ -2008,6 +2295,26 @@ def build_context_artifact_payloads(
             "case_id": item.get("case_id") or "",
             "terms": item.get("terms") or [],
             "reuse_reason": "query matched semantic library case; use terms to align black-box wording",
+        })
+    for item in local_source_files:
+        read = {
+            "event": "local_source_file_read",
+            "provider": str(local_source_context.get("provider") or "local-source-search"),
+            "file_path": item.get("file_path") or "",
+            "start_line": item.get("start_line"),
+            "end_line": item.get("end_line"),
+            "sha256": item.get("sha256") or "",
+            "current_sha256": item.get("sha256") or "",
+            "status": "validated_source_file",
+            "symbols": item.get("symbols") or [],
+            "excerpt_chars": len(str(item.get("excerpt") or "")),
+            "matched_terms": item.get("matched_terms") or [],
+            "reason": "current local source excerpt attached during task preparation",
+        }
+        reads.append(read)
+        events.append({
+            **read,
+            "reuse_reason": "current local source file was scanned and hash-validated during task preparation",
         })
     source_read_chain = {
         "query": query,

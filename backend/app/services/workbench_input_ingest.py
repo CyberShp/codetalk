@@ -141,6 +141,7 @@ def _ingest_file(*, input_id: str, value: Any, root: Path) -> dict[str, Any]:
     metadata = {
         "kind": "file",
         "input_id": input_id,
+        "path": str(source),
         "original_path": str(source),
         "copied_path": str(copied),
         "filename": source.name,

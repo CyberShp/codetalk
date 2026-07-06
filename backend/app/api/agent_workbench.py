@@ -274,6 +274,7 @@ def _public_task_run_payload(task_run: Any) -> dict[str, Any]:
     payload = asdict(task_run)
     task_root = Path(str(payload.get("artifact_dir") or "")).resolve()
     payload.update(_public_task_run_runtime_summary(task_root))
+    payload["run_ui_summary"] = _build_task_run_ui_summary(task_run, task_root)
     if "repo_path" in payload:
         payload["repo_path"] = _public_repo_path_label(payload.get("repo_path"))
     if "artifact_dir" in payload:
@@ -351,6 +352,414 @@ def _public_workflow_output_summaries(outputs: list[Any]) -> list[dict[str, Any]
             continue
         summaries.append({key: item[key] for key in public_keys if key in item})
     return summaries
+
+
+def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]:
+    workflow = task_run.workflow_snapshot if isinstance(task_run.workflow_snapshot, dict) else {}
+    contract = (
+        task_run.task_bundle.get("workflow_contract")
+        if isinstance(task_run.task_bundle, dict)
+        and isinstance(task_run.task_bundle.get("workflow_contract"), dict)
+        else {}
+    )
+    execution = _read_json(task_root / "workflow_execution.json")
+    if not isinstance(execution, dict):
+        execution = {}
+    step_results = {
+        str(item.get("step_id") or ""): item
+        for item in execution.get("step_results") or []
+        if isinstance(item, dict) and str(item.get("step_id") or "")
+    }
+    outputs = [
+        item for item in execution.get("outputs") or []
+        if isinstance(item, dict)
+    ]
+    output_by_key = {
+        (
+            str(item.get("from") or ""),
+            str(item.get("id") or ""),
+            str(item.get("artifact") or ""),
+        ): item
+        for item in outputs
+    }
+    nodes = [
+        _task_run_ui_node_summary(
+            task_run=task_run,
+            task_root=task_root,
+            step=step,
+            workflow_contract=contract,
+            step_result=step_results.get(str(step.get("id") or "")),
+            output_by_key=output_by_key,
+        )
+        for step in workflow.get("steps") or []
+        if isinstance(step, dict)
+    ]
+    status = _task_run_ui_status(execution=execution, nodes=nodes)
+    failed_node = next((node for node in nodes if node.get("status_label") == "运行失败"), None)
+    running_node = next((node for node in nodes if node.get("status_label") == "运行中"), None)
+    waiting_node = next((node for node in nodes if node.get("status_label") == "等待运行"), None)
+    current_node = failed_node or running_node or waiting_node or (nodes[-1] if nodes else {})
+    failure_reasons = _task_run_ui_failure_reasons(failed_node)
+    return {
+        "status": status["status"],
+        "status_label": status["label"],
+        "workflow": {
+            "id": str(workflow.get("id") or task_run.workflow_id),
+            "name": str(workflow.get("name") or task_run.workflow_id),
+            "version": workflow.get("version", 1),
+        },
+        "current_node": current_node,
+        "nodes": nodes,
+        "failure": {
+            "failed_node_id": str((failed_node or {}).get("id") or ""),
+            "reasons": failure_reasons,
+            "can_retry": bool(failed_node),
+            "actions": (
+                ["从失败节点重试", "查看内部诊断", "编辑工作流输出契约"]
+                if failed_node
+                else []
+            ),
+        },
+        "deliverables": _task_run_ui_deliverables(
+            workflow_contract=contract,
+            outputs=outputs,
+        ),
+        "debug_default_collapsed": True,
+        "debug_sections": ["raw JSON", "prompt", "diagnostic", "replay plan"],
+    }
+
+
+def _task_run_ui_node_summary(
+    *,
+    task_run: Any,
+    task_root: Path,
+    step: dict[str, Any],
+    workflow_contract: dict[str, Any],
+    step_result: dict[str, Any] | None,
+    output_by_key: dict[tuple[str, str, str], dict[str, Any]],
+) -> dict[str, Any]:
+    step_id = str(step.get("id") or "")
+    execution_contract = _agent_step_execution_contract(task_root=task_root, step_id=step_id)
+    status_value = str((step_result or {}).get("status") or "prepared")
+    node_outputs = _task_run_ui_node_outputs(
+        workflow_contract=workflow_contract,
+        step_id=step_id,
+        output_by_key=output_by_key,
+    )
+    return {
+        "id": step_id,
+        "label": str(step.get("name") or step_id),
+        "type": str(step.get("type") or ""),
+        "status": status_value,
+        "status_label": _task_run_ui_status_label(status_value),
+        "provider": str(step.get("provider") or ""),
+        "inputs": _task_run_ui_step_inputs(
+            workflow_contract=workflow_contract,
+            execution_contract=execution_contract,
+        ),
+        "mcp_profiles": _task_run_ui_step_mcp_profiles(
+            step=step,
+            execution_contract=execution_contract,
+        ),
+        "mcp_inputs": _task_run_ui_step_mcp_inputs(
+            workflow_contract=workflow_contract,
+            execution_contract=execution_contract,
+        ),
+        "skills": _task_run_ui_step_skills(step=step, execution_contract=execution_contract),
+        "outputs": node_outputs,
+        "failure_reasons": _task_run_ui_step_failure_reasons(
+            step_result=step_result or {},
+            outputs=node_outputs,
+        ),
+    }
+
+
+def _agent_step_execution_contract(*, task_root: Path, step_id: str) -> dict[str, Any]:
+    payload = _read_json(task_root / "agent_runs" / _safe_segment(step_id, "step_id") / "task_bundle.json")
+    if isinstance(payload, dict) and isinstance(payload.get("execution_contract"), dict):
+        return payload["execution_contract"]
+    return {}
+
+
+def _task_run_ui_step_inputs(
+    *,
+    workflow_contract: dict[str, Any],
+    execution_contract: dict[str, Any],
+) -> list[dict[str, str]]:
+    input_defs = {
+        str(item.get("id") or ""): item
+        for item in workflow_contract.get("inputs") or []
+        if isinstance(item, dict) and str(item.get("id") or "")
+    }
+    ordered_ids: list[str] = []
+    for item in execution_contract.get("user_inputs") or []:
+        if isinstance(item, dict):
+            ordered_ids.append(str(item.get("input_id") or ""))
+    input_materials = execution_contract.get("input_materials")
+    if isinstance(input_materials, dict):
+        for material in input_materials.get("materials") or []:
+            if isinstance(material, dict):
+                ordered_ids.append(str(material.get("input_id") or ""))
+    mcp = execution_contract.get("mcp")
+    if isinstance(mcp, dict):
+        for request in mcp.get("requests") or []:
+            if isinstance(request, dict):
+                ordered_ids.append(str(request.get("input_id") or ""))
+    if not ordered_ids:
+        ordered_ids = [str(item.get("id") or "") for item in workflow_contract.get("inputs") or [] if isinstance(item, dict)]
+    results: list[dict[str, str]] = []
+    for input_id in ordered_ids:
+        if not input_id or any(item["id"] == input_id for item in results):
+            continue
+        definition = input_defs.get(input_id, {})
+        results.append({
+            "id": input_id,
+            "role": str(definition.get("role") or input_id),
+            "type": str(definition.get("type") or ""),
+        })
+    return results
+
+
+def _task_run_ui_step_mcp_profiles(
+    *,
+    step: dict[str, Any],
+    execution_contract: dict[str, Any],
+) -> list[str]:
+    profiles: list[str] = []
+    mcp = execution_contract.get("mcp")
+    if isinstance(mcp, dict) and str(mcp.get("profile") or ""):
+        profiles.append(str(mcp.get("profile") or ""))
+    if str(step.get("mcp_profile") or ""):
+        profiles.append(str(step.get("mcp_profile") or ""))
+    return _dedupe_strings(profiles)
+
+
+def _task_run_ui_step_mcp_inputs(
+    *,
+    workflow_contract: dict[str, Any],
+    execution_contract: dict[str, Any],
+) -> list[dict[str, str]]:
+    input_defs = {
+        str(item.get("id") or ""): item
+        for item in workflow_contract.get("inputs") or []
+        if isinstance(item, dict) and str(item.get("id") or "")
+    }
+    mcp = execution_contract.get("mcp")
+    requests = mcp.get("requests") if isinstance(mcp, dict) else []
+    results: list[dict[str, str]] = []
+    for request in requests or []:
+        if not isinstance(request, dict):
+            continue
+        input_id = str(request.get("input_id") or "")
+        definition = input_defs.get(input_id, {})
+        owner = str(request.get("credential_owner") or "")
+        results.append({
+            "id": input_id,
+            "role": str(definition.get("role") or input_id),
+            "type": str(definition.get("type") or request.get("input_type") or ""),
+            "credential_owner_label": (
+                "由 Agent 使用自身 MCP 凭据读取"
+                if owner == "agent_cli"
+                else "由 CodeTalk 本地预取"
+            ),
+        })
+    return results
+
+
+def _task_run_ui_step_skills(
+    *,
+    step: dict[str, Any],
+    execution_contract: dict[str, Any],
+) -> list[dict[str, str]]:
+    skill_ids: list[str] = []
+    skills = execution_contract.get("skills")
+    if isinstance(skills, dict):
+        skill_ids.extend(str(item) for item in skills.get("ids") or [])
+    skill_ids.extend(str(item) for item in step.get("skills") or [])
+    return [{"id": item, "label": item} for item in _dedupe_strings(skill_ids)]
+
+
+def _task_run_ui_node_outputs(
+    *,
+    workflow_contract: dict[str, Any],
+    step_id: str,
+    output_by_key: dict[tuple[str, str, str], dict[str, Any]],
+) -> list[dict[str, str]]:
+    results: list[dict[str, str]] = []
+    for output in workflow_contract.get("outputs") or []:
+        if not isinstance(output, dict) or str(output.get("from") or "") != step_id:
+            continue
+        output_id = str(output.get("id") or "")
+        artifact = str(output.get("artifact") or output.get("path") or "")
+        resolved = output_by_key.get((step_id, output_id, artifact), {})
+        status = str(resolved.get("status") or "waiting")
+        item = {
+            "id": output_id,
+            "artifact": artifact,
+            "type": str(output.get("type") or ""),
+            "status_label": _task_run_ui_output_status_label(status),
+        }
+        if str(resolved.get("path") or ""):
+            item["path"] = str(resolved.get("path") or "")
+        results.append(item)
+    return results
+
+
+def _task_run_ui_deliverables(
+    *,
+    workflow_contract: dict[str, Any],
+    outputs: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    output_defs = {
+        (str(item.get("from") or ""), str(item.get("id") or ""), str(item.get("artifact") or item.get("path") or "")): item
+        for item in workflow_contract.get("outputs") or []
+        if isinstance(item, dict)
+    }
+    deliverables: list[dict[str, str]] = []
+    for output in outputs:
+        status = str(output.get("status") or "")
+        if status not in {"ok", "completed", "ready", "success"}:
+            continue
+        key = (
+            str(output.get("from") or ""),
+            str(output.get("id") or ""),
+            str(output.get("artifact") or ""),
+        )
+        definition = output_defs.get(key, {})
+        deliverables.append({
+            "id": str(output.get("id") or ""),
+            "label": str(definition.get("name") or definition.get("id") or output.get("id") or ""),
+            "from": str(output.get("from") or ""),
+            "artifact": str(output.get("artifact") or ""),
+            "path": str(output.get("path") or ""),
+            "type": str(definition.get("type") or output.get("type") or ""),
+            "status_label": "已生成",
+        })
+    return deliverables
+
+
+def _task_run_ui_status(*, execution: dict[str, Any], nodes: list[dict[str, Any]]) -> dict[str, str]:
+    status = str(execution.get("status") or "")
+    if any(node.get("status_label") == "运行失败" for node in nodes):
+        return {"status": "failed", "label": "运行失败"}
+    if status in {"completed", "ok", "ready", "success"}:
+        return {"status": "completed", "label": "运行完成"}
+    if status in {"invalid", "error", "failed", "failure"}:
+        return {"status": "failed", "label": "运行失败"}
+    if status in {"running", "queued", "prepared"}:
+        return {"status": "running", "label": "运行中"}
+    return {"status": "prepared", "label": "等待运行"}
+
+
+def _task_run_ui_status_label(status: str) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized in {"completed", "ok", "ready", "success"}:
+        return "已完成"
+    if normalized in {"running", "queued"}:
+        return "运行中"
+    if normalized in {"invalid", "error", "failed", "failure", "missing"}:
+        return "运行失败"
+    if normalized in {"prepared", "waiting", "not_started", "idle", ""}:
+        return "等待运行"
+    if normalized in {"skipped", "cancelled", "canceled"}:
+        return "已跳过"
+    return "状态待确认"
+
+
+def _task_run_ui_output_status_label(status: str) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized in {"ok", "completed", "ready", "success"}:
+        return "已生成"
+    if normalized in {"missing", "not_found"}:
+        return "缺少交付文件"
+    if normalized in {"invalid", "error", "failed", "failure"}:
+        return "生成失败"
+    return "等待生成"
+
+
+def _task_run_ui_step_failure_reasons(
+    *,
+    step_result: dict[str, Any],
+    outputs: list[dict[str, str]],
+) -> list[str]:
+    reasons: list[str] = []
+    validation = step_result.get("validation")
+    if isinstance(validation, dict):
+        missing = [
+            str(item) for item in validation.get("missing_artifacts") or []
+            if str(item)
+        ]
+        if missing:
+            reasons.append(
+                "Agent 没有生成工作流要求的交付文件："
+                f"{'、'.join(missing)}。请从失败节点重试，或检查输出契约。"
+            )
+        if str(validation.get("reason") or ""):
+            reasons.append(_task_run_ui_reason_label(str(validation.get("reason") or "")))
+    execution = step_result.get("execution")
+    if isinstance(execution, dict) and str(execution.get("error") or ""):
+        reasons.append(_task_run_ui_reason_label(str(execution.get("error") or "")))
+    if str(step_result.get("error") or ""):
+        reasons.append(_task_run_ui_reason_label(str(step_result.get("error") or "")))
+    for output in outputs:
+        if output.get("status_label") == "缺少交付文件" and output.get("artifact"):
+            reasons.append(
+                "Agent 没有生成工作流要求的交付文件："
+                f"{output['artifact']}。请从失败节点重试，或检查输出契约。"
+            )
+    return _dedupe_strings(reasons)
+
+
+def _task_run_ui_failure_reasons(failed_node: dict[str, Any] | None) -> list[str]:
+    if not failed_node:
+        return []
+    return [
+        str(item) for item in failed_node.get("failure_reasons") or []
+        if str(item)
+    ] or ["该节点运行失败。请查看内部诊断或从失败节点重试。"]
+
+
+def _task_run_ui_reason_label(reason: str) -> str:
+    normalized = str(reason or "").strip()
+    lower = normalized.lower()
+    if not normalized:
+        return ""
+    if (
+        "missing_artifact" in lower
+        or "missing artifact" in lower
+        or "artifact file was not produced" in lower
+    ):
+        return "Agent 没有生成工作流要求的交付文件。请从失败节点重试，或检查输出契约。"
+    if "schema" in lower:
+        return "结构化产物未通过 Schema 校验。请查看对应 JSON 产物和工作流输出模板。"
+    if "command not found" in lower:
+        return "找不到执行器命令。请在设置中检查 Agent 命令、PATH 或填写完整可执行文件路径。"
+    if "timed out" in lower or "timeout" in lower or "超时" in lower:
+        seconds = re.search(r"after\s+(\d+)s", normalized, flags=re.I)
+        return (
+            f"Agent 运行超时{f'（{seconds.group(1)} 秒）' if seconds else ''}。"
+            "请缩小分析范围、延长运行超时，或从失败节点重试。"
+        )
+    if "outofmemoryerror" in lower or "heap" in lower:
+        return "内存不足，当前分析对象超过可用堆内存。建议缩小模块范围或调整执行器资源。"
+    if "exit code" in lower:
+        code = re.search(r"exit code\D*(\d+)", normalized, flags=re.I)
+        return f"执行器异常退出{f'，退出码 {code.group(1)}' if code else ''}。请查看内部诊断确认失败节点。"
+    exact = {
+        "missing_agent_run": "没有找到该节点对应的 Agent 运行记录。请重新准备运行。",
+        "missing_run_id": "Agent 运行记录缺少 run id。请重新准备运行。",
+        "artifact_json_unreadable": "产物 JSON 无法读取。请检查生成文件是否完整。",
+    }
+    return exact.get(normalized, normalized)
+
+
+def _dedupe_strings(items: list[str]) -> list[str]:
+    results: list[str] = []
+    for item in items:
+        value = str(item or "").strip()
+        if value and value not in results:
+            results.append(value)
+    return results
 
 
 def _agent_run_dir(run_id: str) -> Path:
@@ -1203,6 +1612,7 @@ def _execute_task_run_with_closure(
     _write_json(task_dir / "task_acceptance_audit.json", acceptance)
     write_task_artifact_manifest(task_dir, task_run_id=refreshed.task_run_id)
     response["acceptance_audit"] = acceptance
+    response["run_ui_summary"] = _build_task_run_ui_summary(refreshed, task_dir)
     return response
 
 
@@ -1631,6 +2041,7 @@ async def execute_task_run_rerun_plan(
         "semantic_output_import": semantic_output_import,
         "acceptance_audit": acceptance,
         "validation_after": validation_after,
+        "run_ui_summary": _build_task_run_ui_summary(refreshed_task_run, task_dir),
     }
     _write_task_rerun_execution_artifacts(
         task_dir=task_dir,
@@ -1737,6 +2148,7 @@ async def prepare_and_execute_task_run(payload: RunTaskRunRequest) -> dict[str, 
         "evidence_materialization": execution.get("evidence_materialization") or {},
         "semantic_output_import": execution.get("semantic_output_import") or {},
         "acceptance_audit": execution.get("acceptance_audit") or {},
+        "run_ui_summary": execution.get("run_ui_summary") or {},
         "artifact": {
             "path": _public_task_artifact_path(task_dir, task_dir / "task_run.json"),
             "manifest_path": _public_task_artifact_path(task_dir, task_dir / "task_artifact_manifest.json"),
@@ -4790,19 +5202,30 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
         step_id = str(agent_run.get("step_id") or "")
         if not step_id:
             continue
+        provider = str(agent_run.get("provider") or "")
+        is_builtin_llm_run = provider == BUILTIN_LLM_PROVIDER_ID
         base = f"agent_runs/{step_id}"
-        for suffix, description in [
+        required_agent_artifacts = [
             ("agent_run.json", "Agent run envelope and session policy"),
             ("task_bundle.json", "per-step Agent task bundle"),
             ("workflow_snapshot.json", "per-step workflow snapshot"),
             ("agent_output_contract.json", "per-step Agent output contract"),
-            ("execution_input.json", "actual Agent stdin and launch envelope"),
             ("execution_result.json", "Agent process result"),
-            ("agent_replay_plan.json", "Agent replay plan and audit hashes"),
             ("raw_output.txt", "redacted Agent stdout/stderr"),
-            ("provider_diagnostics.json", "provider launch/readiness diagnostics"),
             ("agent_run_lifecycle.json", "Agent run lifecycle and validation summary"),
-        ]:
+        ]
+        if is_builtin_llm_run:
+            required_agent_artifacts.append((
+                "builtin_llm_execution_input.json",
+                "built-in LLM prompt and execution contract",
+            ))
+        else:
+            required_agent_artifacts.extend([
+                ("execution_input.json", "actual Agent stdin and launch envelope"),
+                ("agent_replay_plan.json", "Agent replay plan and audit hashes"),
+                ("provider_diagnostics.json", "provider launch/readiness diagnostics"),
+            ])
+        for suffix, description in required_agent_artifacts:
             relative_path = f"{base}/{suffix}"
             check_name = suffix.removesuffix(".json").removesuffix(".txt")
             if check_name == "agent_run":
@@ -4816,7 +5239,7 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
                 description=description,
                 severity="required",
             ))
-        if agent_instruction_policy_expected:
+        if agent_instruction_policy_expected and not is_builtin_llm_run:
             checks.extend([
                 _acceptance_agent_instruction_policy_check(
                     check_id=f"agent_instruction_policy:{step_id}:execution_input",
@@ -4833,12 +5256,13 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
                     description=f"Agent instruction policy in step {step_id} replay plan",
                 ),
             ])
-        checks.append(_acceptance_agent_stdin_redaction_check(
-            check_id=f"agent_stdin_redaction:{step_id}:execution_input",
-            relative_path=f"{base}/execution_input.json",
-            task_dir=task_dir,
-            description=f"Persisted Agent stdin is redacted for step {step_id}",
-        ))
+        if not is_builtin_llm_run:
+            checks.append(_acceptance_agent_stdin_redaction_check(
+                check_id=f"agent_stdin_redaction:{step_id}:execution_input",
+                relative_path=f"{base}/execution_input.json",
+                task_dir=task_dir,
+                description=f"Persisted Agent stdin is redacted for step {step_id}",
+            ))
         for artifact_name in agent_run.get("required_artifacts") or []:
             artifact = str(artifact_name)
             checks.append(_acceptance_file_check(
@@ -5053,7 +5477,7 @@ def _acceptance_provider_readiness_checks(payload: Any) -> list[dict[str, Any]]:
             if not isinstance(item, dict):
                 continue
             status = str(item.get("status") or "unknown")
-            ok = status in {"available", "configured"}
+            ok = status in {"available", "configured", "workflow_callable"}
             checks.append({
                 "id": f"provider_readiness_codetalk:{provider}",
                 "status": "ok" if ok else "missing",
@@ -5078,7 +5502,7 @@ def _acceptance_provider_readiness_checks(payload: Any) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         status = str(item.get("status") or "unknown")
-        ok = status in {"available", "configured"}
+        ok = status in {"available", "configured", "workflow_callable"}
         reason = str(item.get("reason") or "")
         deployment_evidence = (
             item.get("deployment_evidence")

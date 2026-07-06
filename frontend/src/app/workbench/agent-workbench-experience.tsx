@@ -1503,10 +1503,84 @@ function downloadTextFile(filename: string, content: string, type: string) {
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
+  link.rel = "noopener";
   document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  window.setTimeout(() => {
+    link.click();
+    window.setTimeout(() => {
+      link.remove();
+      URL.revokeObjectURL(url);
+    }, 30_000);
+  }, 0);
+}
+
+function ArtifactPreviewCard({
+  artifactContent,
+}: {
+  artifactContent: WorkbenchTaskArtifactContent;
+}) {
+  return (
+    <div className="rounded-lg border border-outline-variant/30 bg-surface p-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold text-on-surface">
+            当前预览
+          </p>
+          <p className="mt-0.5 break-all font-data text-[11px] text-on-surface">
+            {artifactContent.relative_path}
+          </p>
+          <div className="mt-1 flex flex-wrap gap-1.5 text-[10px] text-on-surface-variant">
+            <span className="rounded bg-surface-container px-1.5 py-0.5 font-data">
+              {artifactContent.kind}
+            </span>
+            <span className="rounded bg-surface-container px-1.5 py-0.5 font-data">
+              sha:{artifactContent.sha256.slice(0, 12)}
+            </span>
+            {artifactContent.truncated && (
+              <span className="rounded bg-warning-container px-1.5 py-0.5 text-on-warning-container">
+                已截断
+              </span>
+            )}
+            {artifactContent.content_redacted && (
+              <span className="rounded bg-warning-container px-1.5 py-0.5 text-on-warning-container">
+                已脱敏
+              </span>
+            )}
+          </div>
+        </div>
+        {artifactContent.is_text && (
+          <button
+            type="button"
+            title={
+              artifactContent.content_redacted
+                ? "下载当前脱敏后的预览内容"
+                : "下载当前预览内容"
+            }
+            onClick={() =>
+              downloadTextFile(
+                safeArtifactDownloadFilename(artifactContent.relative_path),
+                artifactContent.content,
+                "text/plain;charset=utf-8",
+              )
+            }
+            className="inline-flex items-center gap-1 rounded-md bg-surface-container px-2 py-1 text-[11px] font-medium text-on-surface transition-colors hover:bg-surface-container-high"
+          >
+            <Download size={13} />
+            {artifactContent.content_redacted ? "下载脱敏预览" : "下载预览"}
+          </button>
+        )}
+      </div>
+      {artifactContent.is_text ? (
+        <pre className="mt-2 max-h-72 overflow-auto rounded-md bg-surface-container p-2 font-data text-[10px] leading-relaxed text-on-surface-variant">
+          {artifactContent.content || "此产物暂无可预览文本。"}
+        </pre>
+      ) : (
+        <p className="mt-2 rounded-md bg-surface-container px-2 py-2 text-[11px] text-on-surface-variant">
+          此产物不是文本文件，可在完整产物包中下载查看。
+        </p>
+      )}
+    </div>
+  );
 }
 
 function outputArtifactForSpec(
@@ -3206,6 +3280,12 @@ function artifactAudienceLabel(audience: string): string {
 function runStatusDisplayLabel(status: string): string {
   const normalized = status.trim().toLowerCase();
   if (!normalized) return "未知";
+  if (["已完成", "运行完成"].includes(status)) return "已完成";
+  if (["进行中", "运行中"].includes(status)) return "进行中";
+  if (["失败", "运行失败", "缺少交付文件", "生成失败"].includes(status)) {
+    return "失败";
+  }
+  if (["等待", "待运行", "等待运行"].includes(status)) return "等待";
   if (
     [
       "ready",
@@ -3220,6 +3300,9 @@ function runStatusDisplayLabel(status: string): string {
     ].includes(normalized)
   ) {
     return "已完成";
+  }
+  if (["partial", "partially_completed"].includes(normalized)) {
+    return "部分完成";
   }
   if (
     [
@@ -3247,13 +3330,28 @@ function runStatusDisplayLabel(status: string): string {
   ) {
     return "失败";
   }
-  if (["waiting", "skipped", "not_started", "idle"].includes(normalized)) {
+  if (["waiting", "not_started", "idle"].includes(normalized)) {
     return "等待";
+  }
+  if (["skipped", "skip"].includes(normalized)) {
+    return "已跳过";
   }
   if (["cancelled", "canceled"].includes(normalized)) {
     return "已取消";
   }
   return status;
+}
+
+function providerStatusDisplayLabel(status: string | undefined): string {
+  const normalized = String(status ?? "").trim().toLowerCase();
+  if (!normalized) return "待探测";
+  if (normalized === "workflow_callable") return "工作流可调用";
+  if (normalized === "configured") return "已配置";
+  if (normalized === "available") return "可用";
+  if (normalized === "missing_config") return "缺少配置";
+  if (normalized === "unavailable") return "不可用";
+  if (normalized === "degraded") return "降级可用";
+  return runStatusDisplayLabel(status ?? "");
 }
 
 function compactReasonLabel(reason: string): string {
@@ -3289,13 +3387,50 @@ function compactReasonLabel(reason: string): string {
   if (lower.includes("command not found") || lower.includes("找不到命令")) {
     return "找不到执行器命令。请在设置中检查 Agent 命令、PATH 或填写完整可执行文件路径。";
   }
-  if (lower.includes("missing_artifact") || lower.includes("missing artifacts")) {
+  if (
+    lower.includes("missing_artifact") ||
+    lower.includes("missing artifacts") ||
+    lower.includes("artifact file was not produced")
+  ) {
     return "Agent 没有生成工作流要求的交付文件。请从失败节点重试，或检查输出契约。";
+  }
+  if (lower === "artifact_missing") {
+    return "声明的验收产物尚未生成。";
+  }
+  if (lower === "workflow_callable") {
+    return "执行器可被工作流调用，但不需要单独的启动探测。";
+  }
+  if (lower === "artifact_json_unreadable") {
+    return "验收产物不是可读取的 JSON。";
   }
   if (lower.includes("schema")) {
     return "结构化产物未通过 Schema 校验。请查看对应 JSON 产物和工作流输出模板。";
   }
   return normalized || "未提供失败原因";
+}
+
+function workflowAuditWarningLabel(warning: {
+  code?: string;
+  path?: string;
+  message?: string;
+}): string {
+  const code = String(warning.code ?? "").trim();
+  const path = String(warning.path ?? "").trim();
+  const message = String(warning.message ?? "").trim();
+  const labels: Record<string, string> = {
+    agent_task_missing_required_artifacts:
+      "Agent 节点未声明必需交付文件；CodeTalk 仍可运行，但产物验收和证据回放能力会变弱。",
+    json_output_missing_schema:
+      "JSON 输出缺少 Schema；Agent 产物仍会被保存，但结构化校验能力会受限。建议在输出模板中补充 schema。",
+    semantic_import_on_non_test_cases_output:
+      "semantic_import 主要用于测试用例输出；该输出导入语义库时可能被拒绝。",
+    evidence_memory_on_non_json_output:
+      "evidence_memory 主要用于 JSON 输出；CodeTalk 只能从本地校验过的结构化 JSON 产物中固化证据。",
+    agent_mcp_input_without_mcp_step:
+      "该输入标记为由 Agent MCP 读取，但没有 Agent 节点声明 mcp_profile；Agent CLI 可能无法判断应使用哪个 MCP 凭据配置。",
+  };
+  const translated = labels[code] ?? compactReasonLabel(message || code);
+  return path ? `${translated}（位置：${path}）` : translated;
 }
 
 function acceptanceIssueLabel(issue: Record<string, unknown>): string {
@@ -3307,7 +3442,39 @@ function acceptanceIssueLabel(issue: Record<string, unknown>): string {
   if (id.includes("agent_stdin_redaction")) {
     return "输入脱敏标记缺失";
   }
+  if (id.includes("provider_readiness_agent")) {
+    const provider = String(issue.provider ?? "执行器");
+    const status = String(issue.provider_status ?? issue.reason ?? "");
+    if (status === "workflow_callable") {
+      return `${provider} 可被工作流调用，无需额外 Agent 启动探测`;
+    }
+    return `${provider} 执行器未就绪：${compactReasonLabel(status || reason)}`;
+  }
+  if (reason === "artifact_missing") {
+    const path = String(issue.relative_path ?? "");
+    return path ? `缺少验收产物：${path}` : "缺少声明的验收产物";
+  }
   return compactReasonLabel(reason || id);
+}
+
+function workflowRunResultMessage(
+  prefix: string,
+  result: {
+    status?: string;
+    task_run_id?: string;
+    evidence_materialization?: { status?: string } | null;
+    semantic_output_import?: { status?: string } | null;
+    acceptance_audit?: { status?: string } | null;
+  },
+): string {
+  const parts = [
+    `${prefix}${runStatusDisplayLabel(String(result.status ?? ""))}`,
+    result.task_run_id ? `任务 ${result.task_run_id}` : "",
+    `证据固化 ${runStatusDisplayLabel(String(result.evidence_materialization?.status ?? "skipped"))}`,
+    `语义导入 ${runStatusDisplayLabel(String(result.semantic_output_import?.status ?? "skipped"))}`,
+    `验收 ${runStatusDisplayLabel(String(result.acceptance_audit?.status ?? "skipped"))}`,
+  ].filter(Boolean);
+  return parts.join(" · ");
 }
 
 function groupArtifactsByAudience(artifacts: WorkbenchTaskArtifact[]) {
@@ -3910,43 +4077,72 @@ export function AgentWorkbenchExperience({
         : null,
     [preparedRun],
   );
+  const activeRunUiSummary = useMemo(
+    () => workflowExecution?.run_ui_summary ?? preparedRun?.run_ui_summary ?? null,
+    [preparedRun, workflowExecution],
+  );
   const runPhaseCards = useMemo(
-    () => [
-      {
-        label: "准备上下文",
-        status: preparedRun ? "完成" : "等待",
-        detail: repoPath.trim() ? `源码路径: ${repoPath}` : "等待选择源码路径",
-      },
-      {
-        label: "执行 Agent",
-        status: workflowExecution
-          ? runStatusDisplayLabel(workflowExecution.status)
-          : preparedRun
-            ? "等待"
-            : "等待",
-        detail: `${selectedRunProvider} · ${selectedRunMcpProfile}`,
-      },
-      {
-        label: "校验证据",
-        status: taskAcceptanceAudit
-          ? runStatusDisplayLabel(taskAcceptanceAudit.status)
-          : workflowExecution?.evidence_materialization?.status ??
-            (preparedRun ? "待审计" : "等待"),
-        detail: taskAcceptanceAudit
-          ? `缺少 ${taskAcceptanceAudit.summary.missing_required} 个必需验收项`
-          : "等待校验 schema、证据和脱敏",
-      },
-      {
-        label: "固化交付物",
-        status: runStatusDisplayLabel(
-          workflowOutputMaterialize?.status ??
-            workflowExecution?.evidence_materialization?.status ??
-            (artifactManifest ? "ready" : "waiting"),
-        ),
-        detail: `${artifactManifest?.artifacts.length ?? 0} 个产物`,
-      },
-    ],
+    () => {
+      if (activeRunUiSummary?.nodes?.length) {
+        return activeRunUiSummary.nodes.map((node) => {
+          const inputCount = node.inputs?.length ?? 0;
+          const mcpCount = node.mcp_inputs?.length ?? 0;
+          const skillCount = node.skills?.length ?? 0;
+          const outputCount = node.outputs?.length ?? 0;
+          const details = [
+            inputCount ? `输入 ${inputCount}` : "",
+            mcpCount ? `MCP ${mcpCount}` : "",
+            skillCount ? `技能 ${skillCount}` : "",
+            outputCount ? `输出 ${outputCount}` : "",
+          ].filter(Boolean);
+          return {
+            label: node.label || node.id,
+            status: node.status_label,
+            detail:
+              details.length > 0
+                ? details.join(" · ")
+                : node.provider || node.type || "等待节点执行",
+          };
+        });
+      }
+      return [
+        {
+          label: "准备上下文",
+          status: preparedRun ? "完成" : "等待",
+          detail: repoPath.trim() ? `源码路径: ${repoPath}` : "等待选择源码路径",
+        },
+        {
+          label: "执行 Agent",
+          status: workflowExecution
+            ? runStatusDisplayLabel(workflowExecution.status)
+            : preparedRun
+              ? "等待"
+              : "等待",
+          detail: `${selectedRunProvider} · ${selectedRunMcpProfile}`,
+        },
+        {
+          label: "校验证据",
+          status: taskAcceptanceAudit
+            ? runStatusDisplayLabel(taskAcceptanceAudit.status)
+            : workflowExecution?.evidence_materialization?.status ??
+              (preparedRun ? "待审计" : "等待"),
+          detail: taskAcceptanceAudit
+            ? `缺少 ${taskAcceptanceAudit.summary.missing_required} 个必需验收项`
+            : "等待校验 schema、证据和脱敏",
+        },
+        {
+          label: "固化交付物",
+          status: runStatusDisplayLabel(
+            workflowOutputMaterialize?.status ??
+              workflowExecution?.evidence_materialization?.status ??
+              (artifactManifest ? "ready" : "waiting"),
+          ),
+          detail: `${artifactManifest?.artifacts.length ?? 0} 个产物`,
+        },
+      ];
+    },
     [
+      activeRunUiSummary,
       artifactManifest,
       preparedRun,
       repoPath,
@@ -3963,6 +4159,12 @@ export function AgentWorkbenchExperience({
   );
   const runPanelStatus = useMemo(() => {
     if (!preparedRun) return "空";
+    if (activeRunUiSummary?.status_label) {
+      const label = activeRunUiSummary.status_label;
+      if (label === "运行失败") return "失败";
+      if (label === "运行完成") return "已完成";
+      return "进行中";
+    }
     if (
       (taskAcceptanceAudit?.summary.missing_required ?? 0) > 0 ||
       ["incomplete", "error", "failed", "failure"].includes(
@@ -3985,8 +4187,13 @@ export function AgentWorkbenchExperience({
     taskAcceptanceAudit,
     workflowExecution,
     workflowOutputMaterialize,
+    activeRunUiSummary,
   ]);
   const runPanelFailureReasons = useMemo(() => {
+    const summaryReasons = activeRunUiSummary?.failure?.reasons ?? [];
+    if (summaryReasons.length > 0) {
+      return Array.from(new Set(summaryReasons)).slice(0, 5);
+    }
     const reasons: string[] = [];
     const missingRequired = taskAcceptanceAudit?.summary.missing_required ?? 0;
     if (missingRequired > 0) {
@@ -4006,7 +4213,7 @@ export function AgentWorkbenchExperience({
         .forEach((reason) => reasons.push(reason));
     }
     return Array.from(new Set(reasons)).slice(0, 5);
-  }, [preparedProviderReadiness, taskAcceptanceAudit]);
+  }, [activeRunUiSummary, preparedProviderReadiness, taskAcceptanceAudit]);
   const runPanelProgress = useMemo(() => {
     const completed = runPhaseCards.filter(
       (phase) => runStatusDisplayLabel(phase.status) === "已完成",
@@ -4049,6 +4256,13 @@ export function AgentWorkbenchExperience({
       })
       .slice(0, 8);
   }, [artifactManifest, selectedWorkflowOutputs]);
+  const runPanelDeliverables = useMemo(
+    () =>
+      (activeRunUiSummary?.deliverables ?? []).filter(
+        (item) => item.path || item.artifact,
+      ),
+    [activeRunUiSummary],
+  );
   const selectedWorkflowAudit = useMemo(
     () =>
       workflows.find((workflow) => workflow.id === selectedWorkflowId)?.audit,
@@ -5145,6 +5359,25 @@ export function AgentWorkbenchExperience({
     setArtifactManifest(manifest);
   }
 
+  function mergePreparedRunSummary(
+    taskRunId: string,
+    runUiSummary: PreparedWorkbenchTaskRun["run_ui_summary"] | null | undefined,
+  ) {
+    if (!runUiSummary) return;
+    setPreparedRun((current) =>
+      current?.task_run_id === taskRunId
+        ? { ...current, run_ui_summary: runUiSummary }
+        : current,
+    );
+    setTaskRuns((current) =>
+      current.map((item) =>
+        item.task_run_id === taskRunId
+          ? { ...item, run_ui_summary: runUiSummary }
+          : item,
+      ),
+    );
+  }
+
   async function restoreTaskRun(taskRunId: string) {
     const run = await api.workbench.taskRuns.get(taskRunId);
     const manifest = await api.workbench.taskRuns.artifacts(taskRunId);
@@ -5460,8 +5693,8 @@ export function AgentWorkbenchExperience({
       },
     };
     setWorkflowJson(pretty(workflow));
-    setSelectedWorkflowId(workflow.id);
     setMessage(`工作流草稿已生成: ${workflow.id}`);
+    return workflow;
   }
 
   const generateWorkflowDraft = () =>
@@ -5471,7 +5704,7 @@ export function AgentWorkbenchExperience({
 
   const saveWorkflow = () =>
     runAction("save-workflow", async () => {
-      const payload = parseJsonObject(workflowJson);
+      const payload = generateWorkflowFromBuilder();
       const saved = await api.workbench.workflows.create(payload);
       setSelectedWorkflowId(saved.id);
       hydrateBuilderFromWorkflow(saved as unknown as Record<string, unknown>);
@@ -5567,7 +5800,7 @@ export function AgentWorkbenchExperience({
       setSemanticOutputImport(null);
       setArtifactContent(null);
       await refreshArtifactManifest(result.task_run_id);
-      setMessage(`Task run prepared: ${result.task_run_id}`);
+      setMessage(`任务已准备 · ${result.task_run_id}`);
     });
 
   const createAndRunTaskRun = () =>
@@ -5592,6 +5825,10 @@ export function AgentWorkbenchExperience({
         ].slice(0, 10),
       );
       setWorkflowExecution(result.execution);
+      mergePreparedRunSummary(
+        result.task_run_id,
+        result.run_ui_summary ?? result.execution.run_ui_summary,
+      );
       setWorkflowOutputMaterialize(result.evidence_materialization ?? null);
       setSemanticOutputImport(result.semantic_output_import ?? null);
       setTaskAcceptanceAudit(result.acceptance_audit ?? null);
@@ -5609,15 +5846,13 @@ export function AgentWorkbenchExperience({
       setArtifactContent(null);
       await refreshArtifactManifest(result.task_run_id);
       await loadWorkflows();
-      setMessage(
-        `Task run ${result.status}: ${result.task_run_id}; evidence ${result.evidence_materialization?.status ?? "skipped"}; semantics ${result.semantic_output_import?.status ?? "skipped"}; audit ${result.acceptance_audit?.status ?? "skipped"}`,
-      );
+      setMessage(workflowRunResultMessage("任务运行", result));
     });
 
   const restoreExistingTaskRun = (taskRunId: string) =>
     runAction(`restore-task-run-${taskRunId}`, async () => {
       await restoreTaskRun(taskRunId);
-      setMessage(`Task run restored: ${taskRunId}`);
+      setMessage(`任务已恢复 · ${taskRunId}`);
     });
 
   const runProviderStartupProbe = (provider: string) =>
@@ -5870,7 +6105,7 @@ export function AgentWorkbenchExperience({
       setTaskAcceptanceAudit(result);
       await refreshArtifactManifest(preparedRun.task_run_id);
       setMessage(
-        `Acceptance audit ${result.status}: ${result.summary.missing_required} missing required`,
+        `验收审计${runStatusDisplayLabel(result.status)} · 缺少 ${result.summary.missing_required} 个必需项`,
       );
     });
 
@@ -5894,7 +6129,13 @@ export function AgentWorkbenchExperience({
             result.execution.semantic_output_import,
           acceptance_audit:
             result.acceptance_audit ?? result.execution.acceptance_audit,
+          run_ui_summary:
+            result.run_ui_summary ?? result.execution.run_ui_summary,
         });
+        mergePreparedRunSummary(
+          preparedRun.task_run_id,
+          result.run_ui_summary ?? result.execution.run_ui_summary,
+        );
         setTaskRerunPlan(
           (result.execution.rerun_plan as TaskRerunPlan | undefined) ?? null,
         );
@@ -5908,7 +6149,13 @@ export function AgentWorkbenchExperience({
       setTaskAcceptanceAudit(result.acceptance_audit ?? null);
       await refreshArtifactManifest(preparedRun.task_run_id);
       setMessage(
-        `Rerun execution ${result.execution?.status ?? result.status}: ${preparedRun.task_run_id}; evidence ${result.evidence_materialization?.status ?? "skipped"}; semantics ${result.semantic_output_import?.status ?? "skipped"}; audit ${result.acceptance_audit?.status ?? "skipped"}`,
+        workflowRunResultMessage("复跑执行", {
+          status: result.execution?.status ?? result.status,
+          task_run_id: preparedRun.task_run_id,
+          evidence_materialization: result.evidence_materialization,
+          semantic_output_import: result.semantic_output_import,
+          acceptance_audit: result.acceptance_audit,
+        }),
       );
     });
 
@@ -5932,6 +6179,7 @@ export function AgentWorkbenchExperience({
         true,
       );
       setWorkflowExecution(result);
+      mergePreparedRunSummary(preparedRun.task_run_id, result.run_ui_summary);
       setWorkflowOutputMaterialize(result.evidence_materialization ?? null);
       setSemanticOutputImport(result.semantic_output_import ?? null);
       setTaskRerunPlan(
@@ -5944,9 +6192,7 @@ export function AgentWorkbenchExperience({
       );
       setTaskAcceptanceAudit(result.acceptance_audit ?? null);
       await refreshArtifactManifest(preparedRun.task_run_id);
-      setMessage(
-        `Workflow execution ${result.status}: ${result.task_run_id}; evidence ${result.evidence_materialization?.status ?? "skipped"}; semantics ${result.semantic_output_import?.status ?? "skipped"}; audit ${result.acceptance_audit?.status ?? "skipped"}`,
-      );
+      setMessage(workflowRunResultMessage("工作流执行", result));
       await loadWorkflows();
     });
 
@@ -5960,7 +6206,7 @@ export function AgentWorkbenchExperience({
       setSemanticOutputImport(result.semantic_output_import ?? null);
       await refreshArtifactManifest(preparedRun.task_run_id);
       setMessage(
-        `Workflow outputs materialized: ${result.evidence_count}; semantics ${result.semantic_output_import?.status ?? "skipped"}`,
+        `输出已固化 · 证据 ${result.evidence_count} 条 · 语义导入 ${runStatusDisplayLabel(result.semantic_output_import?.status ?? "skipped")}`,
       );
     });
 
@@ -6379,7 +6625,7 @@ export function AgentWorkbenchExperience({
                       </p>
                     </div>
                     <span className="ct-provider-status-badge shrink-0 rounded bg-surface-container px-2 py-0.5 font-data text-[10px] text-on-surface-variant">
-                      {provider.status}
+                      {providerStatusDisplayLabel(provider.status)}
                     </span>
                   </div>
                   <div className="mt-3 flex flex-wrap gap-1.5">
@@ -7475,7 +7721,8 @@ export function AgentWorkbenchExperience({
                         <option value="">自定义执行器</option>
                         {builderProviderOptions.map((provider) => (
                           <option key={provider.id} value={provider.id}>
-                            {provider.label} ({provider.owner}:{provider.status})
+                            {provider.label} ({provider.owner}:
+                            {providerStatusDisplayLabel(provider.status)})
                           </option>
                         ))}
                       </select>
@@ -7973,7 +8220,7 @@ export function AgentWorkbenchExperience({
                       {workflowDraftAuditSummary.warnings
                         .slice(0, 3)
                         .map((item) => (
-                          <div key={item}>warning:{item}</div>
+                          <div key={item}>提醒：{compactReasonLabel(item)}</div>
                         ))}
                     </div>
                   )}
@@ -7991,18 +8238,18 @@ export function AgentWorkbenchExperience({
                   >
                     <div className="flex flex-wrap gap-2">
                       <span className="font-medium">
-                        Server audit:{workflowDraftServerAudit.status}
+                        服务端审计：{runStatusDisplayLabel(workflowDraftServerAudit.status)}
                       </span>
                       <span>
-                        valid:{String(workflowDraftServerAudit.valid)}
+                        {workflowDraftServerAudit.valid ? "可运行" : "需修复"}
                       </span>
                       <span>
-                        warnings:{workflowDraftServerAudit.warnings.length}
+                        提醒：{workflowDraftServerAudit.warnings.length}
                       </span>
                     </div>
                     {workflowDraftServerAudit.error && (
                       <div className="mt-1 break-words font-data text-[10px]">
-                        error:{workflowDraftServerAudit.error}
+                        错误：{compactReasonLabel(workflowDraftServerAudit.error)}
                       </div>
                     )}
                     {workflowDraftServerAudit.warnings.length > 0 && (
@@ -8014,7 +8261,7 @@ export function AgentWorkbenchExperience({
                               key={warning.code + ":" + warning.path}
                               className="break-words"
                             >
-                              {warning.code}:{warning.message}
+                              {workflowAuditWarningLabel(warning)}
                             </div>
                           ))}
                       </div>
@@ -8089,10 +8336,10 @@ export function AgentWorkbenchExperience({
                             .slice(0, 3)
                             .map((warning) => (
                               <p
-                                key={`${warning.code}-${warning.path}`}
-                                className="break-words"
-                              >
-                                {warning.code}: {warning.message}
+                              key={`${warning.code}-${warning.path}`}
+                              className="break-words"
+                            >
+                                {workflowAuditWarningLabel(warning)}
                               </p>
                             ))}
                         </div>
@@ -8119,7 +8366,7 @@ export function AgentWorkbenchExperience({
                   <span>
                     执行器: {selectedRunProvider}
                     {selectedProviderCapability
-                      ? ` (${selectedProviderCapability.status})`
+                      ? ` (${providerStatusDisplayLabel(selectedProviderCapability.status)})`
                       : ""}
                   </span>
                   <span>MCP: {selectedRunMcpProfile}</span>
@@ -8224,7 +8471,9 @@ export function AgentWorkbenchExperience({
                       }
                     >
                       执行器:
-                      {selectedProviderCapability?.status ?? "待探测"}
+                      {providerStatusDisplayLabel(
+                        selectedProviderCapability?.status,
+                      )}
                     </span>
                   </div>
                 </div>
@@ -8287,7 +8536,8 @@ export function AgentWorkbenchExperience({
                   <option value="">使用工作流默认执行器</option>
                   {builderProviderOptions.map((provider) => (
                     <option key={provider.id} value={provider.id}>
-                      {provider.label} ({provider.owner}:{provider.status})
+                      {provider.label} ({provider.owner}:
+                      {providerStatusDisplayLabel(provider.status)})
                     </option>
                   ))}
                 </select>
@@ -8320,9 +8570,6 @@ export function AgentWorkbenchExperience({
                       const inputName = workflowInputDisplayName(input);
                       const value = inputTextValue(parsedPrepareInputs, input);
                       if (!inputId) return null;
-                      if (inputId === "repo_path" && inputType === "directory") {
-                        return null;
-                      }
                       if (
                         inputId === "repo_path" &&
                         inputType === "directory" &&
@@ -8392,7 +8639,9 @@ export function AgentWorkbenchExperience({
                         );
                       }
                       const multiline =
-                        inputType === "file_set" || inputType === "long_text";
+                        inputType === "file_set" ||
+                        inputType === "long_text" ||
+                        inputType === "free_text";
                       return (
                         <label key={inputId} className="block">
                           <span className="mb-1 block text-xs text-on-surface-variant">
@@ -8412,7 +8661,7 @@ export function AgentWorkbenchExperience({
                                     ? "每行一个本地文件路径"
                                     : role || "输入文本"
                                 }
-                                className="h-20 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
+                                className="h-24 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
                                 spellCheck={false}
                               />
                               {inputType === "file_set" && (
@@ -8612,7 +8861,7 @@ export function AgentWorkbenchExperience({
                       运行控制台
                     </p>
                     <p className="mt-0.5 text-[11px] text-on-surface-variant">
-                      当前节点、失败原因和交付件集中显示
+                      当前节点、运行状态和交付件集中显示
                     </p>
                   </div>
                   <span
@@ -8655,7 +8904,7 @@ export function AgentWorkbenchExperience({
                       尚无运行记录
                     </p>
                     <p className="mx-auto mt-1 max-w-sm leading-5 text-on-surface-variant">
-                      完成左侧输入后启动运行。状态、失败原因和产物会显示在这里。
+                      完成左侧输入后启动运行。状态、问题提示和产物会显示在这里。
                     </p>
                   </div>
                 ) : (
@@ -8680,7 +8929,7 @@ export function AgentWorkbenchExperience({
                                 : `运行中 · ${workflowDisplayName(preparedRun.workflow_id)}`}
                           </p>
                           <p className="mt-0.5 font-data text-[11px] text-on-surface-variant">
-                            Run {preparedRun.task_run_id.slice(0, 8)} · {runPanelProgress.completed}/{runPanelProgress.total} 节点 · {runPanelProgress.percent}%
+                            任务 {preparedRun.task_run_id.slice(0, 8)} · {runPanelProgress.completed}/{runPanelProgress.total} 节点 · {runPanelProgress.percent}%
                           </p>
                         </div>
                         {runPanelStatus === "失败" ? (
@@ -8750,45 +8999,79 @@ export function AgentWorkbenchExperience({
                       </div>
                     </section>
                     {runPanelFailureReasons.length > 0 && (
-                      <section className="rounded-lg border border-red-300/70 bg-red-50 p-3">
+                      <section
+                        className={`rounded-lg border p-3 ${
+                          runPanelStatus === "失败"
+                            ? "border-red-300/70 bg-red-50"
+                            : "border-amber-300/70 bg-amber-50"
+                        }`}
+                      >
                         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                          <p className="font-semibold text-red-800">
-                            失败原因
+                          <p
+                            className={`font-semibold ${
+                              runPanelStatus === "失败"
+                                ? "text-red-800"
+                                : "text-amber-800"
+                            }`}
+                          >
+                            {runPanelStatus === "失败"
+                              ? "失败原因"
+                              : "验收提醒"}
                           </p>
-                          <div className="flex flex-wrap gap-1.5">
-                            <button
-                              type="button"
-                              onClick={executeTaskRerunPlan}
-                              disabled={
-                                taskRunActionBusy ||
-                                !preparedRun ||
-                                !taskRerunPlanValidation?.can_rerun
-                              }
-                              className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[11px] font-medium text-red-700 disabled:opacity-50"
-                            >
-                              <RefreshCw size={12} />
-                              从失败节点重试
-                            </button>
+                          {runPanelStatus === "失败" ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              <button
+                                type="button"
+                                onClick={executeTaskRerunPlan}
+                                disabled={
+                                  taskRunActionBusy ||
+                                  !preparedRun ||
+                                  !taskRerunPlanValidation?.can_rerun
+                                }
+                                className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[11px] font-medium text-red-700 disabled:opacity-50"
+                              >
+                                <RefreshCw size={12} />
+                                从失败节点重试
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setActiveWorkbenchView("workflow");
+                                }}
+                                className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[11px] font-medium text-red-700"
+                              >
+                                编辑工作流
+                              </button>
+                            </div>
+                          ) : (
                             <button
                               type="button"
                               onClick={() => {
                                 setActiveWorkbenchView("workflow");
                               }}
-                              className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[11px] font-medium text-red-700"
+                              className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[11px] font-medium text-amber-800"
                             >
-                              编辑工作流
+                              调整验收规则
                             </button>
-                          </div>
+                          )}
                         </div>
                         <div className="space-y-1.5">
                           {runPanelFailureReasons.map((reason) => (
                             <div
                               key={reason}
-                              className="flex items-start gap-2 rounded-md bg-white px-2 py-1.5 text-red-800"
+                              className={`flex items-start gap-2 rounded-md bg-white px-2 py-1.5 ${
+                                runPanelStatus === "失败"
+                                  ? "text-red-800"
+                                  : "text-amber-900"
+                              }`}
                             >
                               <AlertTriangle
                                 size={13}
-                                className="mt-0.5 shrink-0 text-red-600"
+                                className={`mt-0.5 shrink-0 ${
+                                  runPanelStatus === "失败"
+                                    ? "text-red-600"
+                                    : "text-amber-600"
+                                }`}
                               />
                               <span className="min-w-0 break-words">
                                 {reason}
@@ -8809,10 +9092,42 @@ export function AgentWorkbenchExperience({
                           </p>
                         </div>
                         <span className="text-[11px] text-on-surface-variant">
-                          {artifactManifest?.artifacts.length ?? 0} 个文件
+                          {runPanelDeliverables.length > 0
+                            ? `${runPanelDeliverables.length} 个交付件`
+                            : `${artifactManifest?.artifacts.length ?? 0} 个文件`}
                         </span>
                       </div>
                       <div className="space-y-1.5">
+                        {runPanelDeliverables.length > 0 && (
+                          <div className="grid gap-1.5 sm:grid-cols-2">
+                            {runPanelDeliverables.map((deliverable) => {
+                              const path =
+                                deliverable.path || deliverable.artifact || "";
+                              return (
+                                <button
+                                  key={`${deliverable.id}:${path}`}
+                                  type="button"
+                                  aria-label={`预览交付件 ${path}`}
+                                  onClick={() => previewArtifact(path)}
+                                  disabled={!path || taskRunActionBusy}
+                                  className="rounded-md border border-outline-variant/25 bg-surface px-2 py-2 text-left transition-colors hover:bg-surface-container-high disabled:opacity-50"
+                                >
+                                  <span className="block truncate text-sm font-medium text-on-surface">
+                                    {deliverable.label ||
+                                      deliverable.artifact ||
+                                      deliverable.id}
+                                  </span>
+                                  <span className="mt-0.5 block truncate font-data text-[10px] text-on-surface-variant">
+                                    {path}
+                                  </span>
+                                  <span className="mt-1 inline-flex rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium text-emerald-700">
+                                    {deliverable.status_label || "已生成"}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        )}
                         {(
                           [
                             ["deliverable", artifactAudienceGroups.deliverable],
@@ -8862,10 +9177,15 @@ export function AgentWorkbenchExperience({
                             <details
                               key={audience}
                               className="rounded-md border border-outline-variant/20 bg-surface px-2 py-1.5"
-                              open={audience === "deliverable"}
+                              open={
+                                audience === "deliverable" &&
+                                runPanelDeliverables.length === 0
+                              }
                             >
                               <summary className="cursor-pointer select-none font-medium text-on-surface">
-                                {label}
+                                {runPanelDeliverables.length > 0
+                                  ? `全部运行文件 · ${label}`
+                                  : label}
                               </summary>
                               <div className="mt-1.5 flex flex-wrap gap-1.5">
                                 {artifactButtons}
@@ -8873,10 +9193,16 @@ export function AgentWorkbenchExperience({
                             </details>
                           );
                         })}
-                        {!artifactManifest?.artifacts.length && (
+                        {!artifactManifest?.artifacts.length &&
+                          runPanelDeliverables.length === 0 && (
                           <p className="rounded-md border border-dashed border-outline-variant/30 bg-surface px-2 py-3 text-center text-on-surface-variant">
                             准备运行后展示运行产物
                           </p>
+                        )}
+                        {artifactContent && (
+                          <ArtifactPreviewCard
+                            artifactContent={artifactContent}
+                          />
                         )}
                       </div>
                     </section>
@@ -9419,7 +9745,8 @@ export function AgentWorkbenchExperience({
                               }`}
                               title={provider.nextCheck}
                             >
-                              {provider.provider}:{provider.status}
+                              {provider.provider}:
+                              {providerStatusDisplayLabel(provider.status)}
                             </span>
                           ))}
                           {readiness.agentProviders.map((provider) => (
@@ -9440,7 +9767,8 @@ export function AgentWorkbenchExperience({
                                 .filter(Boolean)
                                 .join(" / ")}
                             >
-                              {provider.provider}:{provider.status}
+                              {provider.provider}:
+                              {providerStatusDisplayLabel(provider.status)}
                               {provider.deploymentTaskProbeStatus && (
                                 <span className="ml-1">
                                   probe:{provider.deploymentTaskProbeStatus}
