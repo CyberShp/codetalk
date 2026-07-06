@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -284,7 +285,61 @@ class AgentRuntimeStore:
             await db.close()
 
 
-def _runtime_from_row(row: aiosqlite.Row) -> dict[str, Any]:
+def list_agent_runtimes_sync(
+    *, enabled: bool | None = None, db_path: str | Path | None = None
+) -> list[dict[str, Any]]:
+    """Read configured Agent runtimes from sync workbench preparation paths."""
+    path = str(db_path or settings.sqlite_db)
+    clauses: list[str] = []
+    params: list[Any] = []
+    if enabled is not None:
+        clauses.append("enabled = ?")
+        params.append(1 if enabled else 0)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    try:
+        with sqlite3.connect(path) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                f"""
+                SELECT * FROM agent_runtimes
+                {where}
+                ORDER BY
+                    CASE id
+                        WHEN 'default-claude-code' THEN 0
+                        WHEN 'default-codex' THEN 1
+                        WHEN 'default-opencode' THEN 2
+                        ELSE 10
+                    END,
+                    updated_at DESC
+                """,
+                params,
+            ).fetchall()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            return []
+        raise
+    return [_runtime_from_row(row) for row in rows]
+
+
+def get_agent_runtime_sync(
+    runtime_id: str, *, db_path: str | Path | None = None
+) -> dict[str, Any] | None:
+    path = str(db_path or settings.sqlite_db)
+    try:
+        with sqlite3.connect(path) as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                "SELECT * FROM agent_runtimes WHERE id = ?",
+                (runtime_id,),
+            ).fetchone()
+    except sqlite3.OperationalError as exc:
+        if "no such table" in str(exc).lower():
+            return None
+        raise
+    return _runtime_from_row(row) if row is not None else None
+
+
+def _runtime_from_row(row: aiosqlite.Row | sqlite3.Row) -> dict[str, Any]:
     data = dict(row)
     data["args"] = _json_loads(data.pop("args_json", "[]"), [])
     data["resume_args"] = _json_loads(data.pop("resume_args_json", "[]"), [])

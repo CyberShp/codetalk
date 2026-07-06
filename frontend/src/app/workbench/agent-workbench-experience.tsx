@@ -3636,17 +3636,26 @@ export function AgentWorkbenchExperience({
   }, [selectedWorkflowId, workflowPresets]);
   const builderProviderOptions = useMemo(() => {
     const providers = (providerMatrix?.providers ?? [])
-      .filter((provider) => provider.agent_owned || provider.command.length > 0)
+      .filter(
+        (provider) =>
+          provider.agent_owned ||
+          provider.codetalk_callable ||
+          provider.command.length > 0 ||
+          provider.owner === "agent_runtime" ||
+          provider.provider === "builtin-llm",
+      )
       .map((provider) => ({
         id: provider.provider,
         label: provider.display_name || provider.provider,
         status: provider.status,
+        owner: provider.owner,
       }));
     if (!providers.some((provider) => provider.id === "claude-code")) {
       providers.unshift({
         id: "claude-code",
         label: "Claude Code",
         status: "configured",
+        owner: "agent_cli",
       });
     }
     return providers;
@@ -7466,7 +7475,7 @@ export function AgentWorkbenchExperience({
                         <option value="">自定义执行器</option>
                         {builderProviderOptions.map((provider) => (
                           <option key={provider.id} value={provider.id}>
-                            {provider.label} ({provider.id}:{provider.status})
+                            {provider.label} ({provider.owner}:{provider.status})
                           </option>
                         ))}
                       </select>
@@ -8278,7 +8287,7 @@ export function AgentWorkbenchExperience({
                   <option value="">使用工作流默认执行器</option>
                   {builderProviderOptions.map((provider) => (
                     <option key={provider.id} value={provider.id}>
-                      {provider.label} ({provider.id}:{provider.status})
+                      {provider.label} ({provider.owner}:{provider.status})
                     </option>
                   ))}
                 </select>

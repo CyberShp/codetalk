@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from app.config import settings
 from app.services.agent_run_harness import AgentRunHarness, ArtifactValidationHarness
 from app.services.agent_provider_settings import apply_persisted_agent_provider_settings
+from app.services.agent_runtimes import list_agent_runtimes_sync
 from app.services.evidence_memory import EvidenceMemoryStore
 from app.services.external_agent_discovery import (
     external_agent_provider_capabilities,
@@ -42,6 +43,9 @@ from app.services.workbench_artifact_manifest import (
 )
 from app.services.workbench_task_run import WorkbenchTaskRunPreparer
 from app.services.workbench_task_run import WorkbenchTaskRunStore
+from app.services.workbench_task_run import BUILTIN_LLM_PROVIDER_ID
+from app.services.workbench_task_run import _agent_runtime_provider_snapshot_item
+from app.services.workbench_task_run import _builtin_llm_provider_snapshot_item
 from app.services.workbench_task_run import build_agent_cli_provider_diagnostics
 from app.services.workbench_task_run import build_codetalk_provider_snapshot
 from app.services.workbench_task_run import _evidence_item_payload
@@ -735,6 +739,11 @@ async def list_provider_capabilities() -> dict[str, Any]:
         _agent_cli_provider_matrix_item(provider_id, spec)
         for provider_id, spec in external_agent_provider_specs().items()
     ]
+    providers.extend(
+        _agent_runtime_provider_matrix_item(runtime)
+        for runtime in list_agent_runtimes_sync(enabled=True)
+    )
+    providers.append(_builtin_llm_provider_matrix_item())
     providers.append(_fast_context_provider_matrix_item())
     providers.sort(key=lambda item: (str(item.get("owner")), str(item.get("provider"))))
     return {
@@ -1876,6 +1885,25 @@ def _agent_cli_provider_matrix_item(provider_id: str, spec: Any) -> dict[str, An
             "Workflow preparation continues; execution records unavailable or failed "
             "Agent diagnostics without trusting unvalidated output."
         ),
+    }
+
+
+def _agent_runtime_provider_matrix_item(runtime: dict[str, Any]) -> dict[str, Any]:
+    item = _agent_runtime_provider_snapshot_item(runtime)
+    return {
+        **item,
+        "non_blocking": True,
+        "readonly_args": list(item.get("readonly_args") or []),
+    }
+
+
+def _builtin_llm_provider_matrix_item() -> dict[str, Any]:
+    item = _builtin_llm_provider_snapshot_item()
+    return {
+        **item,
+        "provider": BUILTIN_LLM_PROVIDER_ID,
+        "non_blocking": True,
+        "readonly_args": [],
     }
 
 

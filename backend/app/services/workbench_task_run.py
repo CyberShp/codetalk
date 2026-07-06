@@ -12,6 +12,7 @@ from typing import Any
 
 from app.config import settings
 from app.services.agent_run_harness import AgentRunHarness
+from app.services.agent_runtimes import get_agent_runtime_sync
 from app.services.evidence_memory import EvidenceMemoryStore
 from app.services.external_agent_discovery import (
     check_provider_health,
@@ -24,6 +25,9 @@ from app.services.test_semantic_library import TestSemanticLibraryStore
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_input_ingest import ingest_workbench_inputs
 from app.services.workflow_dsl import WorkflowStore
+
+AGENT_RUNTIME_PROVIDER_PREFIX = "agent-runtime:"
+BUILTIN_LLM_PROVIDER_ID = "builtin-llm"
 
 
 def _now() -> str:
@@ -178,8 +182,7 @@ class WorkbenchTaskRunPreparer:
                 continue
             step_id = str(step.get("id") or f"step_{len(agent_runs) + 1}")
             provider = str(provider_override or step.get("provider") or "claude-code")
-            spec = external_agent_provider_spec(provider)
-            command = split_agent_command(spec.command) if spec and spec.command else [provider]
+            command = _agent_task_provider_command(provider)
             step_bundle = {
                 **task_bundle,
                 "step_id": step_id,
@@ -856,6 +859,13 @@ def build_agent_provider_snapshot(
         }
         if provider in providers:
             continue
+        runtime = _agent_runtime_for_provider(provider)
+        if runtime is not None:
+            providers[provider] = _agent_runtime_provider_snapshot_item(runtime)
+            continue
+        if provider == BUILTIN_LLM_PROVIDER_ID:
+            providers[provider] = _builtin_llm_provider_snapshot_item()
+            continue
         spec = external_agent_provider_spec(provider)
         if spec is None:
             providers[provider] = {
@@ -910,6 +920,132 @@ def build_agent_provider_snapshot(
         "codetalk_providers": build_codetalk_provider_snapshot(),
         "steps": steps,
         "warnings": warnings,
+    }
+
+
+def agent_runtime_provider_id(runtime_id: str) -> str:
+    return f"{AGENT_RUNTIME_PROVIDER_PREFIX}{runtime_id}"
+
+
+def agent_runtime_id_from_provider(provider: str | None) -> str:
+    value = str(provider or "").strip()
+    if value.startswith(AGENT_RUNTIME_PROVIDER_PREFIX):
+        return value[len(AGENT_RUNTIME_PROVIDER_PREFIX):]
+    return ""
+
+
+def _agent_runtime_for_provider(provider: str | None) -> dict[str, Any] | None:
+    runtime_id = agent_runtime_id_from_provider(provider)
+    if not runtime_id:
+        return None
+    runtime = get_agent_runtime_sync(runtime_id)
+    if not runtime or not runtime.get("enabled", True):
+        return None
+    return runtime
+
+
+def _agent_task_provider_command(provider: str) -> list[str]:
+    runtime = _agent_runtime_for_provider(provider)
+    if runtime is not None:
+        command = split_agent_command(str(runtime.get("command") or ""))
+        return [*command, *[str(item) for item in runtime.get("args") or []]] or [provider]
+    spec = external_agent_provider_spec(provider)
+    return split_agent_command(spec.command) if spec and spec.command else [provider]
+
+
+def _agent_runtime_provider_capabilities(runtime: dict[str, Any]) -> dict[str, Any]:
+    prompt_transport = str(runtime.get("prompt_transport") or "stdin")
+    return {
+        "provider": agent_runtime_provider_id(str(runtime.get("id") or "")),
+        "supports_mcp": prompt_transport in {"claude_print_arg", "opencode_run_arg", "codex_exec_json"},
+        "mcp_profiles": [],
+        "supports_artifact_export": True,
+        "supports_json_output": True,
+        "prompt_transport": prompt_transport,
+        "supports_source_discovery": True,
+        "supports_call_graph": False,
+        "supports_source_slices": True,
+        "supports_black_box_terms": True,
+    }
+
+
+def _agent_runtime_provider_snapshot_item(runtime: dict[str, Any]) -> dict[str, Any]:
+    provider = agent_runtime_provider_id(str(runtime.get("id") or ""))
+    command = [
+        *split_agent_command(str(runtime.get("command") or "")),
+        *[str(item) for item in runtime.get("args") or []],
+    ]
+    return {
+        "provider": provider,
+        "status": "configured" if command else "missing_command",
+        "owner": "agent_runtime",
+        "codetalk_callable": False,
+        "agent_owned": True,
+        "display_name": str(runtime.get("name") or runtime.get("id") or provider),
+        "command": command,
+        "fallback_commands": [],
+        "readonly_args": [],
+        "env_hint_keys": sorted(str(key) for key in (runtime.get("env") or {})),
+        "env_hints": {
+            str(key): redact_agent_diagnostic_text(str(value))
+            for key, value in sorted((runtime.get("env") or {}).items())
+        },
+        "command_hint_env": "",
+        "prompt_transport": str(runtime.get("prompt_transport") or "stdin"),
+        "capabilities": _agent_runtime_provider_capabilities(runtime),
+        "credential_boundary": (
+            "用户在设置页配置的 Agent Runtime 持有自身 CLI、环境变量和可能的 MCP 凭证；"
+            "CodeTalk 只下发任务包并校验返回产物。"
+        ),
+        "diagnostics": {
+            "owner": "agent_runtime",
+            "configured_command_text": " ".join(command),
+            "fallback_command_texts": [],
+            "prompt_transport": str(runtime.get("prompt_transport") or "stdin"),
+            "startup_probe_endpoint": f"/api/settings/agent-runtimes/{runtime.get('id')}/probe",
+            "runtime_id": str(runtime.get("id") or ""),
+            "working_dir_mode": str(runtime.get("working_dir_mode") or "project"),
+        },
+        "unavailable_behavior": (
+            "Workflow preparation continues; execution uses the Agent Runtime configured in Settings."
+        ),
+    }
+
+
+def _builtin_llm_provider_snapshot_item() -> dict[str, Any]:
+    return {
+        "provider": BUILTIN_LLM_PROVIDER_ID,
+        "status": "ai_thread_only",
+        "owner": "codetalk_builtin_llm",
+        "codetalk_callable": True,
+        "agent_owned": False,
+        "display_name": "内置模型（AI 线程）",
+        "command": [],
+        "fallback_commands": [],
+        "readonly_args": [],
+        "env_hint_keys": [],
+        "env_hints": {},
+        "command_hint_env": "",
+        "prompt_transport": "builtin_llm",
+        "capabilities": {
+            "provider": BUILTIN_LLM_PROVIDER_ID,
+            "supports_mcp": False,
+            "mcp_profiles": [],
+            "supports_artifact_export": True,
+            "supports_json_output": True,
+            "prompt_transport": "builtin_llm",
+            "supports_source_discovery": True,
+            "supports_call_graph": False,
+            "supports_source_slices": True,
+            "supports_black_box_terms": True,
+        },
+        "credential_boundary": "内置模型使用 CodeTalk 当前模型配置；当前 workflow agent_task 仍以外部 Agent Runtime 为主。",
+        "diagnostics": {
+            "owner": "codetalk_builtin_llm",
+            "status": "ai_thread_only",
+            "reason": "AI 线程支持内置模型；工作流 agent_task 的内置 LLM 执行适配尚未接入。",
+        },
+        "unavailable_behavior": "请选择设置页里的 Agent Runtime 执行完整工作流；内置模型可用于 AI 线程。",
     }
 
 

@@ -454,6 +454,31 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
 
 
 async def test_workbench_provider_capabilities_matrix_api(workbench_client, monkeypatch):
+    import aiosqlite
+    from app.database import _MIGRATIONS, _SCHEMA
+    from app.services.agent_runtimes import AgentRuntimeStore
+
+    db_path = settings.data_path / "provider_matrix.db"
+    async with aiosqlite.connect(db_path) as db:
+        await db.executescript(_SCHEMA)
+        for stmt in _MIGRATIONS:
+            try:
+                await db.execute(stmt)
+            except aiosqlite.OperationalError as exc:
+                if "duplicate column" not in str(exc).lower():
+                    raise
+        await db.commit()
+    monkeypatch.setattr(settings, "sqlite_db", str(db_path))
+    runtime = await AgentRuntimeStore(str(db_path)).create_runtime(
+        {
+            "name": "NGA 内网 Agent",
+            "command": "nga",
+            "args": ["run"],
+            "prompt_transport": "stdin",
+            "enabled": True,
+        }
+    )
+
     monkeypatch.setattr(settings, "claude_code_command", "ccr code")
     monkeypatch.setattr(settings, "claude_code_fallback_commands", ["claude"])
     monkeypatch.setattr(settings, "claude_code_mcp_profiles", ["codehub-readonly"])
@@ -507,6 +532,18 @@ async def test_workbench_provider_capabilities_matrix_api(workbench_client, monk
     assert by_id["corp-agent"]["capabilities"]["prompt_transport"] == "stdin"
     assert by_id["corp-agent"]["diagnostics"]["startup_probe_transport"] == "stdin"
     assert by_id["corp-agent"]["diagnostics"]["health_endpoint"] == "/api/tools/corp-agent/health"
+
+    runtime_provider = f"agent-runtime:{runtime['id']}"
+    assert by_id[runtime_provider]["owner"] == "agent_runtime"
+    assert by_id[runtime_provider]["display_name"] == "NGA 内网 Agent"
+    assert by_id[runtime_provider]["command"] == ["nga", "run"]
+    assert by_id[runtime_provider]["diagnostics"]["startup_probe_endpoint"] == (
+        f"/api/settings/agent-runtimes/{runtime['id']}/probe"
+    )
+
+    assert by_id["builtin-llm"]["owner"] == "codetalk_builtin_llm"
+    assert by_id["builtin-llm"]["status"] == "ai_thread_only"
+    assert by_id["builtin-llm"]["capabilities"]["prompt_transport"] == "builtin_llm"
 
     assert by_id["fast-context"]["owner"] == "codetalk_mcp_bridge"
     assert by_id["fast-context"]["status"] == "bridge_disabled"

@@ -885,6 +885,64 @@ def test_prepare_workbench_task_run_embeds_agent_provider_snapshot(tmp_path, mon
     assert step_bundle["provider_snapshot"]["codetalk_providers"]["gitnexus"]["owner"] == "codetalk_index"
 
 
+async def test_prepare_workbench_task_run_uses_settings_agent_runtime(
+    tmp_path,
+    sqlite_db,
+):
+    from app.services.agent_runtimes import AgentRuntimeStore
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import (
+        WorkbenchTaskRunPreparer,
+        agent_runtime_provider_id,
+    )
+
+    runtime = await AgentRuntimeStore(sqlite_db).create_runtime(
+        {
+            "name": "NGA 内网 Agent",
+            "command": "nga",
+            "args": ["run", "--json"],
+            "prompt_transport": "stdin",
+            "enabled": True,
+        }
+    )
+    provider = agent_runtime_provider_id(runtime["id"])
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "runtime_provider_workflow",
+        "name": "Runtime provider workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {"id": "collect", "type": "agent_task", "provider": provider},
+        ],
+        "outputs": [{"id": "report", "type": "markdown"}],
+    })
+
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="runtime_provider_workflow",
+        workspace_id="ws1",
+        repo_path=str(tmp_path),
+        inputs={"module": "iscsi"},
+    )
+
+    snapshot = result.task_bundle["provider_snapshot"]
+    configured = snapshot["providers"][provider]
+    assert configured["owner"] == "agent_runtime"
+    assert configured["display_name"] == "NGA 内网 Agent"
+    assert configured["command"] == ["nga", "run", "--json"]
+    assert configured["capabilities"]["prompt_transport"] == "stdin"
+    agent_run = json.loads(
+        Path(result.artifact_dir, "agent_runs", "collect", "agent_run.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert agent_run["provider"] == provider
+    assert agent_run["command"] == ["nga", "run", "--json"]
+
+
 def test_agent_execution_persists_provider_diagnostics_snapshot(tmp_path, monkeypatch):
     from app.config import settings
     from app.services.workflow_dsl import WorkflowStore
