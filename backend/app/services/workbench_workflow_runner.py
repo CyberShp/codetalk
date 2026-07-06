@@ -2,20 +2,24 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import hashlib
 import re
 import shutil
+import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.llm.factory import create_llm_client_from_active
 from app.services.agent_run_harness import (
     AgentRunHarness,
     ArtifactValidationHarness,
 )
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
+from app.services.workbench_task_run import BUILTIN_LLM_PROVIDER_ID
 from app.services.workbench_task_run import WorkbenchTaskRunStore
 
 
@@ -151,6 +155,16 @@ class WorkbenchWorkflowRunner:
                 "status": "error",
                 "error": "missing_run_id",
             }
+        provider = str(agent_run.get("provider") or (run_payload or {}).get("provider") or "")
+        if provider == BUILTIN_LLM_PROVIDER_ID:
+            return self._execute_builtin_llm_step(
+                step=step,
+                agent_run=agent_run,
+                artifact_dir=artifact_dir,
+                run_payload=run_payload if isinstance(run_payload, dict) else {},
+                run_id=run_id,
+                timeout_sec=timeout_sec,
+            )
 
         _inject_prior_step_context(
             artifact_dir=artifact_dir,
@@ -203,7 +217,7 @@ class WorkbenchWorkflowRunner:
             "step_id": step_id,
             "type": "agent_task",
             "status": status,
-            "provider": agent_run.get("provider") or (run_payload or {}).get("provider") or "",
+            "provider": provider,
             "provider_diagnostics": _provider_diagnostics_summary(artifact_dir),
             "artifact_dir": str(artifact_dir),
             "execution": asdict(execution),
@@ -249,6 +263,126 @@ class WorkbenchWorkflowRunner:
         step_payload["lifecycle"] = lifecycle
         _write_json(artifact_dir / "agent_run_lifecycle.json", lifecycle)
         return step_payload
+
+    def _execute_builtin_llm_step(
+        self,
+        *,
+        step: dict[str, Any],
+        agent_run: dict[str, Any],
+        artifact_dir: Path,
+        run_payload: dict[str, Any],
+        run_id: str,
+        timeout_sec: int,
+    ) -> dict[str, Any]:
+        del timeout_sec
+        step_id = str(step.get("id") or agent_run.get("step_id") or "")
+        task_bundle = _read_json(artifact_dir / "task_bundle.json")
+        workflow_snapshot = _read_json(artifact_dir / "workflow_snapshot.json")
+        output_contract = _read_json(artifact_dir / "agent_output_contract.json")
+        if not isinstance(task_bundle, dict):
+            task_bundle = {}
+        if not isinstance(workflow_snapshot, dict):
+            workflow_snapshot = {}
+        if not isinstance(output_contract, dict):
+            output_contract = {}
+        execution_contract = (
+            task_bundle.get("execution_contract")
+            if isinstance(task_bundle.get("execution_contract"), dict)
+            else {}
+        )
+        messages = _builtin_llm_messages(
+            execution_contract=execution_contract,
+            task_bundle=task_bundle,
+            output_contract=output_contract,
+        )
+        _write_json(
+            artifact_dir / "builtin_llm_execution_input.json",
+            {
+                "run_id": run_id,
+                "provider": BUILTIN_LLM_PROVIDER_ID,
+                "messages": messages,
+                "execution_contract": execution_contract,
+                "agent_output_contract": output_contract,
+            },
+        )
+        started_at = _now()
+        status = "completed"
+        error = ""
+        model = ""
+        try:
+            llm = _run_async_blocking(create_llm_client_from_active())
+            response = _run_async_blocking(
+                llm.complete(messages, max_tokens=12000, temperature=0.2)
+            )
+            raw_output = str(getattr(response, "content", "") or "")
+            model = str(getattr(response, "model", "") or "")
+            written_artifacts = _write_builtin_llm_artifacts(
+                artifact_dir=artifact_dir,
+                raw_output=raw_output,
+                required_artifacts=[
+                    str(item)
+                    for item in (
+                        step.get("required_artifacts")
+                        or agent_run.get("required_artifacts")
+                        or []
+                    )
+                ],
+            )
+        except Exception as exc:
+            raw_output = ""
+            written_artifacts = []
+            status = "error"
+            error = str(exc)
+        (artifact_dir / "raw_output.txt").write_text(raw_output, encoding="utf-8")
+        required_artifacts = [
+            str(item)
+            for item in (
+                step.get("required_artifacts")
+                or agent_run.get("required_artifacts")
+                or []
+            )
+        ]
+        validation = asdict(_validate_step_artifacts(artifact_dir, required_artifacts))
+        if status == "completed" and validation["status"] != "ok":
+            status = "invalid"
+        execution = {
+            "run_id": run_id,
+            "status": status,
+            "exit_code": 0 if status == "completed" else None,
+            "started_at": started_at,
+            "completed_at": _now(),
+            "duration_ms": 0,
+            "timed_out": False,
+            "error": error,
+            "provider_diagnostics": {
+                "owner": "codetalk_builtin_llm",
+                "model": model,
+            },
+        }
+        _write_json(artifact_dir / "execution_result.json", execution)
+        lifecycle = {
+            "step_id": step_id,
+            "status": status,
+            "provider": BUILTIN_LLM_PROVIDER_ID,
+            "artifact_dir": str(artifact_dir),
+            "execution_input": "builtin_llm_execution_input.json",
+            "written_artifacts": written_artifacts,
+            "validation": validation,
+        }
+        _write_json(artifact_dir / "agent_run_lifecycle.json", lifecycle)
+        _write_json(artifact_dir / "agent_run.json", {**run_payload, "status": status})
+        return {
+            "step_id": step_id,
+            "type": "agent_task",
+            "status": status,
+            "provider": BUILTIN_LLM_PROVIDER_ID,
+            "artifact_dir": str(artifact_dir),
+            "execution": execution,
+            "validation": validation,
+            "required_artifacts": required_artifacts,
+            "artifacts": written_artifacts,
+            "lifecycle": lifecycle,
+        }
 
     def _execute_builtin_step(
         self,
@@ -689,6 +823,140 @@ class WorkbenchWorkflowRunner:
             encoding="utf-8",
         )
         write_task_artifact_manifest(task_dir, task_run_id=result.task_run_id)
+
+
+def _builtin_llm_messages(
+    *,
+    execution_contract: dict[str, Any],
+    task_bundle: dict[str, Any],
+    output_contract: dict[str, Any],
+) -> list[dict[str, str]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "你是 CodeTalk 工作流执行器。必须按 execution_contract 读取输入材料、"
+                "遵守 skills 和 MCP 边界，并输出可落盘的工作流产物。"
+                "只返回 JSON：{\"summary\": string, \"artifacts\": [{\"path\": string, \"content\": string|object|array}]}。"
+                "path 必须等于 required_artifacts 或 declared_outputs 中声明的 artifact。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "execution_contract": execution_contract,
+                    "input_context": task_bundle.get("input_context") or {},
+                    "input_materials": task_bundle.get("input_materials") or {},
+                    "agent_mcp_requests": task_bundle.get("agent_mcp_requests") or [],
+                    "workflow_contract": task_bundle.get("workflow_contract") or {},
+                    "agent_output_contract": output_contract,
+                },
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            ),
+        },
+    ]
+
+
+def _run_async_blocking(awaitable: Any) -> Any:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(awaitable)
+
+    result: dict[str, Any] = {}
+
+    def _target() -> None:
+        try:
+            result["value"] = asyncio.run(awaitable)
+        except BaseException as exc:  # pragma: no cover - re-raised in caller thread
+            result["error"] = exc
+
+    thread = threading.Thread(target=_target, daemon=True)
+    thread.start()
+    thread.join()
+    if "error" in result:
+        raise result["error"]
+    return result.get("value")
+
+
+def _write_builtin_llm_artifacts(
+    *,
+    artifact_dir: Path,
+    raw_output: str,
+    required_artifacts: list[str],
+) -> list[str]:
+    payload = _parse_builtin_llm_artifact_payload(raw_output)
+    artifacts = payload.get("artifacts") if isinstance(payload, dict) else None
+    written: list[str] = []
+    if isinstance(artifacts, list):
+        for item in artifacts:
+            if not isinstance(item, dict):
+                continue
+            artifact_name = str(item.get("path") or item.get("artifact") or "").strip()
+            content = item.get("content", "")
+            if _write_builtin_llm_artifact(
+                artifact_dir=artifact_dir,
+                artifact_name=artifact_name,
+                content=content,
+            ):
+                written.append(artifact_name)
+    if written:
+        return written
+    fallback = next((str(item) for item in required_artifacts if str(item)), "llm_output.md")
+    if _write_builtin_llm_artifact(
+        artifact_dir=artifact_dir,
+        artifact_name=fallback,
+        content=raw_output,
+    ):
+        return [fallback]
+    return []
+
+
+def _parse_builtin_llm_artifact_payload(raw_output: str) -> dict[str, Any]:
+    text = str(raw_output or "").strip()
+    if not text:
+        return {}
+    try:
+        payload = json.loads(text)
+        return payload if isinstance(payload, dict) else {}
+    except json.JSONDecodeError:
+        pass
+    fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
+    if fenced:
+        try:
+            payload = json.loads(fenced.group(1))
+            return payload if isinstance(payload, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        try:
+            payload = json.loads(text[start : end + 1])
+            return payload if isinstance(payload, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def _write_builtin_llm_artifact(
+    *,
+    artifact_dir: Path,
+    artifact_name: str,
+    content: Any,
+) -> bool:
+    path = _resolve_artifact_path(artifact_dir, artifact_name)
+    if path is None:
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(content, str):
+        path.write_text(content, encoding="utf-8")
+    else:
+        _write_json(path, content)
+    return True
 
 
 def _validate_output_schema(

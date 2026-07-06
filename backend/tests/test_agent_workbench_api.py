@@ -542,7 +542,7 @@ async def test_workbench_provider_capabilities_matrix_api(workbench_client, monk
     )
 
     assert by_id["builtin-llm"]["owner"] == "codetalk_builtin_llm"
-    assert by_id["builtin-llm"]["status"] == "ai_thread_only"
+    assert by_id["builtin-llm"]["status"] == "workflow_callable"
     assert by_id["builtin-llm"]["capabilities"]["prompt_transport"] == "builtin_llm"
 
     assert by_id["fast-context"]["owner"] == "codetalk_mcp_bridge"

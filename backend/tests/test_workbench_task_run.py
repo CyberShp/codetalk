@@ -164,6 +164,276 @@ def test_prepare_workbench_task_run_ingests_file_inputs(tmp_path):
     assert checks["input_materials_contract"]["actual_material_ids"] == ["patch_plan"]
 
 
+def test_prepare_workbench_task_run_builds_executor_handoff_contract(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    requirements = tmp_path / "requirements.md"
+    requirements.write_text(
+        "# Login requirements\n\nReject CHAP failure and keep externally visible diagnostics.",
+        encoding="utf-8",
+    )
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "iscsi_login_test_design",
+        "name": "iSCSI login test design",
+        "version": 1,
+        "inputs": [
+            {
+                "id": "analysis_target",
+                "type": "free_text",
+                "required": True,
+                "role": "分析目标",
+            },
+            {
+                "id": "requirements",
+                "type": "file",
+                "required": True,
+                "role": "需求文件",
+            },
+            {
+                "id": "mr_link",
+                "type": "mr_link",
+                "resolver": "agent_mcp",
+                "role": "MR 链接",
+            },
+        ],
+        "steps": [
+            {
+                "id": "agent_collect",
+                "type": "agent_task",
+                "provider": "claude-code",
+                "mcp_profile": "gitnexus+cgc",
+                "skills": ["storage-flow-analysis", "sfmea", "black-box-test-design"],
+                "skill_instructions": [
+                    {"id": "sfmea", "title": "SFMEA", "body": "输出 RPN 和 mitigation。"}
+                ],
+                "goal": "围绕 iSCSI login 做灰白盒测试设计",
+                "required_artifacts": ["sfmea.json", "black_box_cases.md"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "sfmea",
+                "type": "json",
+                "from": "agent_collect",
+                "artifact": "sfmea.json",
+                "schema": {"type": "array"},
+            },
+            {
+                "id": "black_box_cases",
+                "type": "markdown",
+                "from": "agent_collect",
+                "artifact": "black_box_cases.md",
+            },
+        ],
+    })
+
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="iscsi_login_test_design",
+        workspace_id="ws-spdk",
+        repo_path="/Volumes/Media/dpdk/spdk",
+        inputs={
+            "analysis_target": "iSCSI login CHAP failure and reconnect",
+            "requirements": {"path": str(requirements)},
+            "mr_link": "https://codehub.local/storage/spdk/-/merge_requests/7",
+        },
+        provider_override=None,
+    )
+
+    step_bundle = json.loads(
+        Path(
+            result.artifact_dir,
+            "agent_runs",
+            "agent_collect",
+            "task_bundle.json",
+        ).read_text(encoding="utf-8")
+    )
+    contract = step_bundle["execution_contract"]
+    assert contract["executor"]["provider"] == "claude-code"
+    assert contract["goal"] == "围绕 iSCSI login 做灰白盒测试设计"
+    assert contract["analysis_targets"] == [
+        {
+            "input_id": "analysis_target",
+            "role": "分析目标",
+            "type": "free_text",
+            "value": "iSCSI login CHAP failure and reconnect",
+        }
+    ]
+    assert contract["mcp"]["profile"] == "gitnexus+cgc"
+    assert contract["mcp"]["requests"][0]["input_id"] == "mr_link"
+    assert contract["mcp"]["requests"][0]["value"] == (
+        "https://codehub.local/storage/spdk/-/merge_requests/7"
+    )
+    assert contract["skills"]["ids"] == [
+        "storage-flow-analysis",
+        "sfmea",
+        "black-box-test-design",
+    ]
+    assert contract["input_materials"]["read_order"] == ["requirements"]
+    assert contract["outputs"]["required_artifacts"] == [
+        "sfmea.json",
+        "black_box_cases.md",
+    ]
+    assert [item["artifact"] for item in contract["outputs"]["declared_outputs"]] == [
+        "sfmea.json",
+        "black_box_cases.md",
+    ]
+    output_contract = json.loads(
+        Path(
+            result.artifact_dir,
+            "agent_runs",
+            "agent_collect",
+            "agent_output_contract.json",
+        ).read_text(encoding="utf-8")
+    )
+    assert output_contract["execution_contract"]["outputs"]["required_artifacts"] == [
+        "sfmea.json",
+        "black_box_cases.md",
+    ]
+
+
+def test_workbench_runner_builtin_llm_uses_handoff_contract_and_writes_outputs(
+    tmp_path,
+    monkeypatch,
+):
+    from app.llm.base import LLMResponse
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import (
+        BUILTIN_LLM_PROVIDER_ID,
+        WorkbenchTaskRunPreparer,
+    )
+    import app.services.workbench_workflow_runner as runner_module
+
+    requirements = tmp_path / "requirements.md"
+    requirements.write_text(
+        "iSCSI login shall reject invalid CHAP credentials and expose a clear error.",
+        encoding="utf-8",
+    )
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "builtin_llm_test_design",
+        "name": "Builtin LLM test design",
+        "version": 1,
+        "inputs": [
+            {"id": "analysis_target", "type": "free_text", "required": True, "role": "分析目标"},
+            {"id": "requirements", "type": "file", "required": True, "role": "需求文件"},
+            {"id": "mr_link", "type": "mr_link", "resolver": "agent_mcp", "role": "MR 链接"},
+        ],
+        "steps": [
+            {
+                "id": "agent_collect",
+                "type": "agent_task",
+                "provider": BUILTIN_LLM_PROVIDER_ID,
+                "mcp_profile": "gitnexus+cgc",
+                "skills": ["sfmea", "black-box-test-design"],
+                "goal": "生成 iSCSI login SFMEA 和黑盒测试用例",
+                "required_artifacts": ["sfmea.json", "black_box_cases.md"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "sfmea",
+                "type": "json",
+                "from": "agent_collect",
+                "artifact": "sfmea.json",
+                "schema": {"type": "array"},
+            },
+            {
+                "id": "black_box_cases",
+                "type": "markdown",
+                "from": "agent_collect",
+                "artifact": "black_box_cases.md",
+            },
+        ],
+    })
+    captured: dict[str, object] = {}
+
+    class FakeLLM:
+        async def complete(self, messages, max_tokens=4096, temperature=0.3):
+            captured["messages"] = messages
+            content = json.dumps(
+                {
+                    "summary": "已生成测试设计产物",
+                    "artifacts": [
+                        {
+                            "path": "sfmea.json",
+                            "content": [
+                                {
+                                    "failure_mode": "CHAP authentication bypass",
+                                    "cause": "login state validation error",
+                                    "effect": "unauthorized session",
+                                    "detection": "negative login attempt",
+                                    "severity": 9,
+                                    "occurrence": 3,
+                                    "detection_score": 4,
+                                    "rpn": 108,
+                                    "mitigation": "add black-box CHAP failure case",
+                                }
+                            ],
+                        },
+                        {
+                            "path": "black_box_cases.md",
+                            "content": "# 黑盒测试用例\n\n- 输入错误 CHAP 凭据，预期 login 失败并记录诊断。",
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            )
+            return LLMResponse(content=content, model="fake-workflow-llm", usage={})
+
+    async def fake_factory():
+        return FakeLLM()
+
+    monkeypatch.setattr(runner_module, "create_llm_client_from_active", fake_factory)
+
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="builtin_llm_test_design",
+        workspace_id="ws-spdk",
+        repo_path=str(tmp_path),
+        inputs={
+            "analysis_target": "iSCSI login CHAP failure",
+            "requirements": {"path": str(requirements)},
+            "mr_link": "https://codehub.local/storage/spdk/-/merge_requests/8",
+        },
+    )
+
+    execution = runner_module.WorkbenchWorkflowRunner(
+        tmp_path / "task_runs"
+    ).execute_task_run(task_run.task_run_id)
+
+    assert execution.status == "completed"
+    assert [item["status"] for item in execution.outputs] == ["ok", "ok"]
+    agent_dir = Path(task_run.artifact_dir, "agent_runs", "agent_collect")
+    assert json.loads((agent_dir / "sfmea.json").read_text(encoding="utf-8"))[0][
+        "failure_mode"
+    ] == "CHAP authentication bypass"
+    assert "错误 CHAP 凭据" in (agent_dir / "black_box_cases.md").read_text(
+        encoding="utf-8"
+    )
+    messages = captured["messages"]
+    assert isinstance(messages, list)
+    prompt = json.dumps(messages, ensure_ascii=False)
+    assert "iSCSI login CHAP failure" in prompt
+    assert "https://codehub.local/storage/spdk/-/merge_requests/8" in prompt
+    assert "sfmea" in prompt
+    assert "black_box_cases.md" in prompt
+    llm_execution_input = json.loads(
+        (agent_dir / "builtin_llm_execution_input.json").read_text(encoding="utf-8")
+    )
+    assert llm_execution_input["execution_contract"]["mcp"]["profile"] == "gitnexus+cgc"
+    assert llm_execution_input["execution_contract"]["skills"]["ids"] == [
+        "sfmea",
+        "black-box-test-design",
+    ]
+
+
 def test_prepare_workbench_task_run_extracts_docx_file_inputs(tmp_path):
     from docx import Document
 

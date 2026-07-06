@@ -83,6 +83,11 @@ def _agent_output_contract_payload(
         item for item in task_bundle.get("skill_instructions") or []
         if isinstance(item, dict)
     ]
+    execution_contract = (
+        task_bundle.get("execution_contract")
+        if isinstance(task_bundle.get("execution_contract"), dict)
+        else {}
+    )
     return {
         "contract_version": 1,
         "run_id": run.run_id,
@@ -100,6 +105,7 @@ def _agent_output_contract_payload(
             "instructions": skill_instructions,
             "rule": "Selected skills are task-method constraints injected through task_bundle and must shape the final artifacts.",
         },
+        "execution_contract": execution_contract,
         "artifact_dir": run.artifact_dir,
         "required_artifacts": required_artifacts,
         "expected_output_schemas": expected_output_schemas,

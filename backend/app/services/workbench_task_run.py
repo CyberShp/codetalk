@@ -183,6 +183,20 @@ class WorkbenchTaskRunPreparer:
             step_id = str(step.get("id") or f"step_{len(agent_runs) + 1}")
             provider = str(provider_override or step.get("provider") or "claude-code")
             command = _agent_task_provider_command(provider)
+            execution_contract = build_executor_handoff_contract(
+                workflow_snapshot=workflow_snapshot,
+                workflow_contract=workflow_contract,
+                input_snapshot=input_snapshot,
+                input_materials=input_materials,
+                agent_mcp_requests=agent_mcp_requests,
+                repo_path=repo_path,
+                step=step,
+                step_id=step_id,
+                provider=provider,
+                required_artifacts=required_artifacts_by_step.get(step_id, []),
+                expected_output_schemas=output_schemas_by_step.get(step_id, []),
+                expected_semantic_outputs=semantic_import_outputs_by_step.get(step_id, []),
+            )
             step_bundle = {
                 **task_bundle,
                 "step_id": step_id,
@@ -196,6 +210,7 @@ class WorkbenchTaskRunPreparer:
                 "expected_output_schemas": output_schemas_by_step.get(step_id, []),
                 "expected_semantic_outputs": semantic_import_outputs_by_step.get(step_id, []),
                 "mcp_profile": step.get("mcp_profile") or "",
+                "execution_contract": execution_contract,
             }
             agent_run = AgentRunHarness(artifact_dir / "agent_runs" / step_id).create_run(
                 provider=provider,
@@ -747,6 +762,151 @@ def build_agent_mcp_requests(
     return requests
 
 
+def build_executor_handoff_contract(
+    *,
+    workflow_snapshot: dict[str, Any],
+    workflow_contract: dict[str, Any],
+    input_snapshot: dict[str, Any],
+    input_materials: dict[str, Any],
+    agent_mcp_requests: list[dict[str, Any]],
+    repo_path: str,
+    step: dict[str, Any],
+    step_id: str,
+    provider: str,
+    required_artifacts: list[str],
+    expected_output_schemas: list[dict[str, Any]],
+    expected_semantic_outputs: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Build the user-facing execution contract passed to an Agent or builtin LLM."""
+    input_defs = {
+        str(item.get("id") or ""): item
+        for item in workflow_snapshot.get("inputs") or []
+        if isinstance(item, dict) and str(item.get("id") or "")
+    }
+    scalar_inputs = _scalar_execution_inputs(
+        input_snapshot=input_snapshot,
+        input_defs=input_defs,
+    )
+    return {
+        "contract_version": 1,
+        "workflow": {
+            "id": str(workflow_snapshot.get("id") or ""),
+            "name": str(workflow_snapshot.get("name") or ""),
+            "version": workflow_snapshot.get("version", 1),
+        },
+        "executor": {
+            "provider": provider,
+            "step_id": step_id,
+            "step_type": str(step.get("type") or ""),
+        },
+        "repo_path": str(repo_path or ""),
+        "goal": str(step.get("goal") or ""),
+        "analysis_targets": [
+            item for item in scalar_inputs
+            if _looks_like_analysis_target(item)
+        ],
+        "user_inputs": scalar_inputs,
+        "input_materials": {
+            "material_count": int(input_materials.get("material_count") or 0),
+            "read_order": [str(item) for item in input_materials.get("read_order") or []],
+            "materials": [
+                item for item in input_materials.get("materials") or []
+                if isinstance(item, dict)
+            ],
+            "rules": (
+                input_materials.get("rules")
+                if isinstance(input_materials.get("rules"), dict)
+                else {}
+            ),
+        },
+        "mcp": {
+            "profile": str(step.get("mcp_profile") or ""),
+            "requests": [
+                request for request in agent_mcp_requests
+                if isinstance(request, dict)
+                and (
+                    step_id in [str(value) for value in request.get("agent_step_ids") or []]
+                    or not request.get("agent_step_ids")
+                )
+            ],
+            "rule": (
+                "Use the selected MCP profile for agent_mcp inputs. If the executor cannot call MCP "
+                "directly, state the limitation and rely on provided local materials only."
+            ),
+        },
+        "skills": {
+            "ids": [str(item) for item in step.get("skills") or []],
+            "instructions": [
+                item for item in step.get("skill_instructions") or []
+                if isinstance(item, dict)
+            ],
+            "rule": "Apply these skills as method constraints when producing the declared artifacts.",
+        },
+        "outputs": {
+            "required_artifacts": [str(item) for item in required_artifacts],
+            "declared_outputs": _declared_outputs_for_step(
+                workflow_contract=workflow_contract,
+                step_id=step_id,
+                required_artifacts=required_artifacts,
+            ),
+            "expected_output_schemas": expected_output_schemas,
+            "expected_semantic_outputs": expected_semantic_outputs,
+            "rule": (
+                "Produce every required artifact under the executor artifact directory. "
+                "JSON artifacts must satisfy their declared schemas."
+            ),
+        },
+    }
+
+
+def _scalar_execution_inputs(
+    *,
+    input_snapshot: dict[str, Any],
+    input_defs: dict[str, dict[str, Any]],
+) -> list[dict[str, Any]]:
+    inputs: list[dict[str, Any]] = []
+    for input_id, value in input_snapshot.items():
+        definition = input_defs.get(str(input_id), {})
+        if isinstance(value, (dict, list)):
+            continue
+        if str(definition.get("resolver") or "") == "agent_mcp":
+            continue
+        inputs.append({
+            "input_id": str(input_id),
+            "type": str(definition.get("type") or ""),
+            "role": str(definition.get("role") or ""),
+            "value": value,
+        })
+    return inputs
+
+
+def _looks_like_analysis_target(item: dict[str, Any]) -> bool:
+    marker = " ".join(
+        str(item.get(key) or "").lower()
+        for key in ("input_id", "role", "type")
+    )
+    return any(token in marker for token in ("analysis", "target", "目标", "对象", "范围"))
+
+
+def _declared_outputs_for_step(
+    *,
+    workflow_contract: dict[str, Any],
+    step_id: str,
+    required_artifacts: list[str],
+) -> list[dict[str, Any]]:
+    required = {str(item) for item in required_artifacts}
+    outputs: list[dict[str, Any]] = []
+    for output in workflow_contract.get("outputs") or []:
+        if not isinstance(output, dict):
+            continue
+        artifact = str(output.get("artifact") or "")
+        source_step = str(output.get("from") or "")
+        if source_step != step_id and artifact not in required:
+            continue
+        outputs.append(dict(output))
+    return outputs
+
+
 def _workflow_contract_provider_payload(
     step: dict[str, Any],
     *,
@@ -1015,11 +1175,11 @@ def _agent_runtime_provider_snapshot_item(runtime: dict[str, Any]) -> dict[str, 
 def _builtin_llm_provider_snapshot_item() -> dict[str, Any]:
     return {
         "provider": BUILTIN_LLM_PROVIDER_ID,
-        "status": "ai_thread_only",
+        "status": "workflow_callable",
         "owner": "codetalk_builtin_llm",
         "codetalk_callable": True,
         "agent_owned": False,
-        "display_name": "内置模型（AI 线程）",
+        "display_name": "内置模型",
         "command": [],
         "fallback_commands": [],
         "readonly_args": [],
@@ -1039,13 +1199,13 @@ def _builtin_llm_provider_snapshot_item() -> dict[str, Any]:
             "supports_source_slices": True,
             "supports_black_box_terms": True,
         },
-        "credential_boundary": "内置模型使用 CodeTalk 当前模型配置；当前 workflow agent_task 仍以外部 Agent Runtime 为主。",
+        "credential_boundary": "内置模型使用 CodeTalk 当前活跃聊天模型配置；CodeTalk 负责把工作流合同转成模型消息并落盘产物。",
         "diagnostics": {
             "owner": "codetalk_builtin_llm",
-            "status": "ai_thread_only",
-            "reason": "AI 线程支持内置模型；工作流 agent_task 的内置 LLM 执行适配尚未接入。",
+            "status": "workflow_callable",
+            "reason": "工作流 runner 会把 execution_contract 发送给当前活跃聊天模型，并按声明产物落盘。",
         },
-        "unavailable_behavior": "请选择设置页里的 Agent Runtime 执行完整工作流；内置模型可用于 AI 线程。",
+        "unavailable_behavior": "如果未配置活跃聊天模型，运行时会给出 LLM 配置错误。",
     }
 
 
