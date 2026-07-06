@@ -34,6 +34,7 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
         command = validate_agent_command(command)
     except ValueError as exc:
         return {"success": False, "message": str(exc)}
+    command = _resolve_agent_command(command)
     args = list(runtime.get("args") or [])
     probe_args = _probe_args(runtime, args)
     try:
@@ -77,6 +78,7 @@ async def stream_agent_runtime(
         command = validate_agent_command(command)
     except ValueError as exc:
         raise AgentRuntimeError(str(exc)) from exc
+    command = _resolve_agent_command(command)
     args = _runtime_args(runtime, resume_session_id=resume_session_id)
     prompt_transport = str(runtime.get("prompt_transport") or "stdin")
     write_prompt_to_stdin = False
@@ -278,6 +280,18 @@ def _stderr_progress_lines(text: str) -> list[str]:
             continue
         lines.append(line)
     return lines[-20:]
+
+
+def _resolve_agent_command(command: str, *, platform_name: str | None = None) -> str:
+    """Resolve Windows npm/cmd shims before asyncio hands off to CreateProcess."""
+    value = str(command or "").strip()
+    if (platform_name or os.name) != "nt":
+        return value
+    path = Path(value)
+    if path.is_absolute() or path.parent != Path("."):
+        return value
+    resolved = shutil.which(value)
+    return resolved or value
 
 
 async def _missing_command_message(command: str) -> str:

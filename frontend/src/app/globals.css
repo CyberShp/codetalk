@@ -5407,3 +5407,45 @@ textarea:focus-visible {
 .ct-workbench-shell .ct-workflow-inspector button {
   padding: 5px 8px !important;
 }
+
+.ct-workbench-shell .ct-run-console {
+  position: sticky;
+  top: 72px;
+  max-height: max(620px, calc(100vh - 180px));
+  overflow: auto;
+}
+
+.ct-workbench-shell .ct-run-state-card {
+  box-shadow:
+    0 12px 32px rgba(15, 23, 42, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.76);
+}
+
+.ct-workbench-shell .ct-run-console summary {
+  list-style-position: outside;
+}
+
+.ct-workbench-shell .ct-run-console button {
+  max-width: 100%;
+}
+
+.ct-workbench-shell .ct-workflow-builder-grid {
+  align-items: stretch;
+}
+
+.ct-workbench-shell .ct-workflow-canvas {
+  min-height: max(720px, calc(100vh - 190px));
+}
+
+.ct-workbench-shell .ct-workflow-board {
+  min-height: max(640px, calc(100vh - 270px));
+}
+
+.ct-workbench-shell .ct-workflow-inspector {
+  max-height: max(720px, calc(100vh - 170px));
+}
+
+.ct-workbench-shell .ct-workflow-link {
+  stroke-linecap: round;
+  filter: drop-shadow(0 1px 0 rgba(255, 255, 255, 0.55));
+}

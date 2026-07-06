@@ -1,5 +1,6 @@
 from app.services.agent_cli_bridge import (
     _looks_like_unattended_permission_request,
+    _resolve_agent_command,
     clean_agent_output_text,
 )
 
@@ -50,3 +51,29 @@ def test_unattended_permission_request_is_detected_before_agent_hangs():
         "Claude requested permissions to write to /repo/report.md, but you haven't granted it yet."
     )
     assert not _looks_like_unattended_permission_request("permission model: readonly; final answer ready")
+
+
+def test_windows_agent_command_resolution_uses_pathext_cmd_shims(monkeypatch):
+    import app.services.agent_cli_bridge as bridge
+
+    seen: list[str] = []
+
+    monkeypatch.setattr(
+        bridge.shutil,
+        "which",
+        lambda command: seen.append(command) or "C:/Users/dev/AppData/Roaming/npm/opencode.cmd",
+    )
+
+    assert (
+        _resolve_agent_command("opencode", platform_name="nt")
+        == "C:/Users/dev/AppData/Roaming/npm/opencode.cmd"
+    )
+    assert seen == ["opencode"]
+
+
+def test_windows_agent_command_resolution_keeps_explicit_paths(monkeypatch):
+    import app.services.agent_cli_bridge as bridge
+
+    monkeypatch.setattr(bridge.shutil, "which", lambda command: (_ for _ in ()).throw(AssertionError(command)))
+
+    assert _resolve_agent_command("C:/tools/opencode.cmd", platform_name="nt") == "C:/tools/opencode.cmd"
