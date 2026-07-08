@@ -22,6 +22,7 @@ from app.services.external_agent_discovery import (
     redact_agent_diagnostic_text,
     split_agent_command,
 )
+from app.services.test_activity_contract import build_test_activity_contract
 from app.services.test_semantic_library import TestSemanticLibraryStore
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_input_ingest import ingest_workbench_inputs
@@ -166,6 +167,20 @@ class WorkbenchTaskRunPreparer:
         black_box_generation_policy = build_black_box_generation_policy(
             context_bundle=context_bundle,
         )
+        test_activity_contract = build_test_activity_contract(
+            target=_test_activity_target(
+                workflow_snapshot=workflow_snapshot,
+                input_snapshot=input_snapshot,
+                context_bundle=context_bundle,
+            ),
+            repo_path=repo_path,
+            workflow_outputs=_test_activity_requested_outputs(workflow_snapshot),
+            user_requirements=_test_activity_user_requirements(
+                workflow_snapshot=workflow_snapshot,
+                input_snapshot=input_snapshot,
+            ),
+        )
+        workflow_contract["test_activity_contract"] = test_activity_contract
         task_bundle = {
             "task_run_id": task_run_id,
             "workflow_id": workflow_id,
@@ -187,6 +202,7 @@ class WorkbenchTaskRunPreparer:
             "evidence_consumption_trajectory": context_artifacts["evidence_consumption_trajectory"],
             "degraded_retrieval": context_artifacts["degraded_retrieval"],
             "black_box_generation_policy": black_box_generation_policy,
+            "test_activity_contract": test_activity_contract,
             "required_artifacts_by_step": required_artifacts_by_step,
             "output_schemas_by_step": output_schemas_by_step,
             "semantic_import_outputs_by_step": semantic_import_outputs_by_step,
@@ -213,6 +229,7 @@ class WorkbenchTaskRunPreparer:
                 required_artifacts=required_artifacts_by_step.get(step_id, []),
                 expected_output_schemas=output_schemas_by_step.get(step_id, []),
                 expected_semantic_outputs=semantic_import_outputs_by_step.get(step_id, []),
+                test_activity_contract=test_activity_contract,
             )
             step_bundle = {
                 **task_bundle,
@@ -284,6 +301,7 @@ class WorkbenchTaskRunPreparer:
         )
         _write_json(artifact_dir / "degraded_retrieval.json", context_artifacts["degraded_retrieval"])
         _write_json(artifact_dir / "black_box_generation_policy.json", black_box_generation_policy)
+        _write_json(artifact_dir / "test_activity_contract.json", test_activity_contract)
         _write_json(artifact_dir / "task_bundle.json", task_bundle)
         write_task_artifact_manifest(artifact_dir, task_run_id=task_run_id)
         return result
@@ -854,6 +872,68 @@ def build_semantic_import_outputs_by_step(
     return outputs
 
 
+def _test_activity_target(
+    *,
+    workflow_snapshot: dict[str, Any],
+    input_snapshot: dict[str, Any],
+    context_bundle: dict[str, Any],
+) -> str:
+    preferred_keys = (
+        "analysis_object",
+        "target_scope",
+        "module",
+        "test_target",
+        "requirements",
+        "design",
+        "mr_link",
+        "patch_diff",
+    )
+    parts = [
+        str(input_snapshot.get(key) or "").strip()
+        for key in preferred_keys
+        if str(input_snapshot.get(key) or "").strip()
+    ]
+    query = str(context_bundle.get("query") or "").strip()
+    if query:
+        parts.append(query)
+    if not parts:
+        parts.append(str(workflow_snapshot.get("name") or workflow_snapshot.get("id") or ""))
+    return " ".join(_unique_strings(parts))[:2000]
+
+
+def _test_activity_user_requirements(
+    *,
+    workflow_snapshot: dict[str, Any],
+    input_snapshot: dict[str, Any],
+) -> str:
+    parts: list[str] = []
+    for item in workflow_snapshot.get("inputs") or []:
+        if not isinstance(item, dict):
+            continue
+        input_id = str(item.get("id") or "")
+        value = input_snapshot.get(input_id)
+        if isinstance(value, (str, int, float)) and str(value).strip():
+            role = str(item.get("role") or item.get("label") or input_id)
+            parts.append(f"{role}: {value}")
+    for step in workflow_snapshot.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        goal = str(step.get("goal") or "").strip()
+        if goal:
+            parts.append(f"step:{step.get('id')}: {goal}")
+        for instruction in step.get("skill_instructions") or []:
+            if isinstance(instruction, dict) and str(instruction.get("body") or "").strip():
+                parts.append(str(instruction.get("body")).strip())
+    return "\n".join(parts)[:6000]
+
+
+def _test_activity_requested_outputs(workflow_snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    return [
+        output for output in workflow_snapshot.get("outputs") or []
+        if isinstance(output, dict)
+    ]
+
+
 def build_workflow_contract(
     *,
     workflow_snapshot: dict[str, Any],
@@ -1018,6 +1098,7 @@ def build_executor_handoff_contract(
     required_artifacts: list[str],
     expected_output_schemas: list[dict[str, Any]],
     expected_semantic_outputs: list[dict[str, Any]],
+    test_activity_contract: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the user-facing execution contract passed to an Agent or builtin LLM."""
     input_defs = {
@@ -1069,6 +1150,7 @@ def build_executor_handoff_contract(
         "source_context": _execution_source_context(
             source_context=source_context,
         ),
+        "test_activity_contract": dict(test_activity_contract or {}),
         "mcp": {
             "profile": str(step.get("mcp_profile") or ""),
             "requests": [

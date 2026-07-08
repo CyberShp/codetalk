@@ -2489,6 +2489,125 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   color: #0f172a;
 }
 
+.ct-test-activity-card {
+  display: grid;
+  gap: 9px;
+  width: min(100%, 560px);
+  margin-top: 10px;
+  border: 1px solid rgba(14, 116, 144, 0.2);
+  border-radius: 12px;
+  background: #f8fcfd;
+  padding: 11px 12px;
+  color: #172033;
+  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.045);
+}
+
+.ct-test-activity-card__header,
+.ct-test-activity-card__actions,
+.ct-test-activity-card__outputs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.ct-test-activity-card__header span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 820;
+}
+
+.ct-test-activity-card__header small {
+  border-radius: 999px;
+  background: #e0f2fe;
+  padding: 3px 8px;
+  color: #0369a1;
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.ct-test-activity-card p {
+  margin: 0;
+  color: #475569;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.ct-test-activity-card__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.ct-test-activity-card__chips span {
+  border: 1px solid rgba(148, 163, 184, 0.42);
+  border-radius: 999px;
+  background: #ffffff;
+  padding: 3px 7px;
+  color: #334155;
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.ct-test-activity-card__outputs {
+  align-items: flex-start;
+  border-top: 1px solid rgba(203, 213, 225, 0.66);
+  padding-top: 8px;
+}
+
+.ct-test-activity-card__outputs span {
+  flex: 0 0 auto;
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 760;
+}
+
+.ct-test-activity-card__outputs p {
+  text-align: right;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.ct-test-activity-card__details {
+  border-top: 1px solid rgba(203, 213, 225, 0.66);
+  padding-top: 8px;
+  color: #475569;
+  font-size: 12px;
+}
+
+.ct-test-activity-card__details summary {
+  cursor: pointer;
+  color: #0369a1;
+  font-weight: 760;
+}
+
+.ct-test-activity-card__details ul {
+  margin: 7px 0 0;
+  padding-left: 17px;
+}
+
+.ct-test-activity-card__actions a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 34px;
+  border: 1px solid rgba(14, 116, 144, 0.28);
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 7px 10px;
+  color: #075985;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.ct-test-activity-card__actions a:hover {
+  border-color: rgba(14, 116, 144, 0.42);
+  background: #ecfeff;
+}
+
 .ct-agent-process {
   position: relative;
   z-index: 2;

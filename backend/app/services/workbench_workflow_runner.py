@@ -18,6 +18,7 @@ from app.services.agent_run_harness import (
     AgentRunHarness,
     ArtifactValidationHarness,
 )
+from app.services.test_activity_contract import audit_test_activity_artifacts
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_task_run import BUILTIN_LLM_PROVIDER_ID
 from app.services.workbench_task_run import WorkbenchTaskRunStore
@@ -38,6 +39,7 @@ class WorkbenchWorkflowExecutionResult:
     rerun_plan: dict[str, Any] = field(default_factory=dict)
     step_results: list[dict[str, Any]] = field(default_factory=list)
     outputs: list[dict[str, Any]] = field(default_factory=list)
+    test_activity_quality: dict[str, Any] = field(default_factory=dict)
 
 
 class WorkbenchWorkflowRunner:
@@ -112,6 +114,12 @@ class WorkbenchWorkflowRunner:
             item.get("status") in {"missing", "invalid"} for item in outputs
         ):
             status = "invalid"
+        test_activity_quality = self._audit_test_activity_quality(task_run=task_run)
+        if (
+            status == "completed"
+            and test_activity_quality.get("status") in {"needs_rework", "invalid"}
+        ):
+            status = "needs_rework"
         result = WorkbenchWorkflowExecutionResult(
             task_run_id=task_run.task_run_id,
             status=status,
@@ -131,9 +139,27 @@ class WorkbenchWorkflowRunner:
             ),
             step_results=step_results,
             outputs=outputs,
+            test_activity_quality=test_activity_quality,
         )
         self._write_execution_artifact(task_run.task_run_id, result)
         return result
+
+    def _audit_test_activity_quality(self, *, task_run: Any) -> dict[str, Any]:
+        contract = (
+            task_run.task_bundle.get("test_activity_contract")
+            if isinstance(task_run.task_bundle.get("test_activity_contract"), dict)
+            else {}
+        )
+        if not contract:
+            return {}
+        artifact_dir = Path(str(task_run.artifact_dir))
+        audit = audit_test_activity_artifacts(
+            artifact_dir=artifact_dir,
+            contract=contract,
+            repo_path=str(task_run.repo_path or ""),
+        )
+        _write_json(artifact_dir / "test_activity_quality_audit.json", audit)
+        return audit
 
     def _execute_agent_step(
         self,
@@ -1385,6 +1411,8 @@ def _source_flow_sfmea_item(
             f"Add or extend tests in {test_directory} for normal path, invalid input, timeout, reconnect/reset, "
             "concurrency, recovery, and performance degradation without calling internal functions."
         ),
+        "source_evidence": [file_path] if file_path != "repo" else [],
+        "test_mapping": [test_directory],
         "evidence": {
             "source": "local-source-flow-sfmea-blackbox",
             "file_path": file_path,
@@ -1688,6 +1716,7 @@ def _black_box_case_for_changed_file(
     return {
         "case_id": f"local_mr_black_box_{index:03d}",
         "title": f"{module} changed path black-box regression",
+        "scenario_name": f"{module} changed path black-box regression",
         "module": module,
         "file_path": file_path,
         "case_type": "black_box_ready",
@@ -1696,7 +1725,7 @@ def _black_box_case_for_changed_file(
             f"SPDK is built with the affected {module} component enabled",
             f"Existing tests or scripts under {test_directory} are available as execution harnesses",
         ],
-        "inputs": f"public workflow for {focus}; no direct internal function invocation",
+        "inputs": f"public workflow for {focus}",
         "steps": [
             "start the relevant SPDK target, tool, or RPC service with normal configuration",
             "exercise the public success path that reaches the changed behavior",
@@ -1708,7 +1737,18 @@ def _black_box_case_for_changed_file(
             "invalid or disruptive inputs fail cleanly with actionable logs",
             "no stale device, session, queue, or configuration state remains after retry",
         ],
+        "expected_result": [
+            "normal path completes with compatible external behavior",
+            "invalid or disruptive inputs fail cleanly with actionable logs",
+            "no stale device, session, queue, or configuration state remains after retry",
+        ],
         "observable_signals": [
+            observable,
+            "SPDK log messages",
+            "process exit/RPC response status",
+            "persistent state or reconnect behavior",
+        ],
+        "observability": [
             observable,
             "SPDK log messages",
             "process exit/RPC response status",
@@ -1719,6 +1759,13 @@ def _black_box_case_for_changed_file(
             "capture before/after logs and public result payloads",
             "triage failures by changed file path, not by calling internal functions",
         ],
+        "failure_diagnostics": [
+            f"compare against tests in {test_directory}",
+            "capture before/after logs and public result payloads",
+            "triage failures by changed file path, not by calling internal functions",
+        ],
+        "mapped_test_dir": test_directory,
+        "source_or_test_evidence": [file_path, test_directory] if file_path else [test_directory],
         "source": "local-mr-blackbox",
         "trace": {
             "task_run_id": str(task_run.task_run_id),
@@ -1731,6 +1778,7 @@ def _fallback_black_box_case(*, task_run: Any) -> dict[str, Any]:
     return {
         "case_id": "local_mr_black_box_001",
         "title": "Patch black-box smoke regression",
+        "scenario_name": "Patch black-box smoke regression",
         "module": "repo",
         "case_type": "black_box_hypothesis",
         "scenario": "Patch diff did not expose changed files; run public smoke workflows and inspect logs.",
@@ -1742,8 +1790,13 @@ def _fallback_black_box_case(*, task_run: Any) -> dict[str, Any]:
             "collect logs, exit status, and externally visible state",
         ],
         "expected": ["smoke workflow remains compatible or fails with clear diagnostics"],
+        "expected_result": ["smoke workflow remains compatible or fails with clear diagnostics"],
         "observable_signals": ["logs", "exit status", "RPC or tool output"],
+        "observability": ["logs", "exit status", "RPC or tool output"],
         "diagnostics": ["provide a unified diff with changed paths for sharper scope"],
+        "failure_diagnostics": ["provide a unified diff with changed paths for sharper scope"],
+        "mapped_test_dir": "test",
+        "source_or_test_evidence": ["test"],
         "source": "local-mr-blackbox",
         "trace": {"task_run_id": str(task_run.task_run_id)},
     }
@@ -2458,10 +2511,23 @@ def _failure_recovery_summary(
     validation_status = str(validation.get("status") or "")
     if execution_status == "completed" and validation_status == "ok":
         return {}
-    if execution.get("timed_out"):
+    raw_output = _read_text(artifact_dir / "raw_output.txt", max_chars=12000)
+    provider_diagnostics = _provider_failure_diagnostics_summary(artifact_dir)
+    provider_unavailable = provider_diagnostics.get("health_status") in {
+        "unavailable",
+        "configuration_error",
+        "error",
+    }
+    if provider_unavailable:
+        failure_kind = "agent_error"
+    elif execution.get("timed_out"):
         failure_kind = "agent_timeout"
     elif execution_status and execution_status != "completed":
         failure_kind = "agent_error"
+    elif _execution_unhelpful_output_likely(raw_output):
+        failure_kind = "agent_unhelpful_output"
+    elif _execution_stopped_after_source_search_likely(raw_output):
+        failure_kind = "agent_stopped_after_source_search"
     elif validation_status and validation_status != "ok":
         failure_kind = "artifact_validation_failed"
     else:
@@ -2482,14 +2548,24 @@ def _failure_recovery_summary(
         )
     if validation_status != "ok":
         actions.append("do not materialize outputs until required artifacts validate")
-    provider_diagnostics = _provider_failure_diagnostics_summary(artifact_dir)
     if provider_diagnostics.get("health_status") in {"unavailable", "configuration_error", "error"}:
         endpoint = str(provider_diagnostics.get("startup_probe_endpoint") or "").strip()
         if endpoint:
             actions.append(f"run startup probe {endpoint} to verify backend launch context")
+    recommended_actions = _failure_recovery_recommended_actions(
+        failure_kind=failure_kind,
+        validation_status=validation_status,
+        provider_diagnostics=provider_diagnostics,
+    )
     return {
         "failure_kind": failure_kind,
-        "retryable": failure_kind in {"agent_error", "agent_timeout", "artifact_validation_failed"},
+        "retryable": failure_kind in {
+            "agent_error",
+            "agent_timeout",
+            "artifact_validation_failed",
+            "agent_unhelpful_output",
+            "agent_stopped_after_source_search",
+        },
         "raw_output_artifact": "raw_output.txt" if (artifact_dir / "raw_output.txt").exists() else "",
         "execution_result_artifact": (
             "execution_result.json" if (artifact_dir / "execution_result.json").exists() else ""
@@ -2497,8 +2573,114 @@ def _failure_recovery_summary(
         "validation_status": validation_status,
         "missing_artifacts": missing_artifacts,
         "suggested_actions": actions,
+        "user_message": _failure_recovery_user_message(
+            failure_kind=failure_kind,
+            provider_diagnostics=provider_diagnostics,
+        ),
+        "recommended_actions": recommended_actions,
         "provider_diagnostics": provider_diagnostics,
     }
+
+
+def _execution_unhelpful_output_likely(raw_output: str) -> bool:
+    text = _plain_agent_output(raw_output)
+    if not text:
+        return False
+    compact = re.sub(r"\s+", "", text.lower())
+    greeting_markers = (
+        "你好",
+        "您好",
+        "有什么需要帮助",
+        "howcan i help",
+        "how can i help",
+        "what can i help",
+    )
+    has_greeting = any(marker.replace(" ", "") in compact for marker in greeting_markers)
+    has_artifact_signal = any(
+        marker in text.lower()
+        for marker in ("sfmea", "failure_mode", "black_box", "黑盒", "测试用例", "前置条件", "预期结果")
+    )
+    return has_greeting and not has_artifact_signal and len(text) <= 240
+
+
+def _execution_stopped_after_source_search_likely(raw_output: str) -> bool:
+    text = _plain_agent_output(raw_output)
+    if not text:
+        return False
+    lower = text.lower()
+    has_source_signal = bool(re.search(r"\b(?:lib|test|include)/[A-Za-z0-9_./-]+", text)) or any(
+        marker in text
+        for marker in ("已读取", "源码", "源代码", "工作区")
+    )
+    has_future_signal = any(
+        marker in text
+        for marker in ("接下来", "下一步", "需要分析", "将会", "准备")
+    )
+    has_delivery_signal = any(
+        marker in lower
+        for marker in ("sfmea", "failure_mode", "black_box_cases", "case_id")
+    ) or any(marker in text for marker in ("黑盒测试用例", "前置条件", "预期结果", "RPN"))
+    return has_source_signal and has_future_signal and not has_delivery_signal and len(text) <= 1200
+
+
+def _plain_agent_output(raw_output: str) -> str:
+    text = str(raw_output or "")
+    text = re.sub(r"(?m)^\s*(STDOUT|STDERR)\s*:\s*", "", text)
+    return text.strip()
+
+
+def _failure_recovery_user_message(
+    *,
+    failure_kind: str,
+    provider_diagnostics: dict[str, Any],
+) -> str:
+    if provider_diagnostics.get("health_status") in {"unavailable", "configuration_error", "error"}:
+        return "执行器不可用，当前节点无法启动 Agent。"
+    messages = {
+        "agent_timeout": "Agent 执行超时，当前节点还没有产出可交付结果。",
+        "agent_error": "Agent 执行失败，当前节点没有产出可交付结果。",
+        "artifact_validation_failed": "Agent 没有生成工作流要求的完整交付件。",
+        "agent_unhelpful_output": "Agent 只返回了问候语，没有完成测试活动任务。",
+        "agent_stopped_after_source_search": "Agent 查了源码后提前停止，没有生成要求的交付件。",
+    }
+    return messages.get(failure_kind, "当前节点失败，尚未形成可交付结果。")
+
+
+def _failure_recovery_recommended_actions(
+    *,
+    failure_kind: str,
+    validation_status: str,
+    provider_diagnostics: dict[str, Any],
+) -> list[str]:
+    if provider_diagnostics.get("health_status") in {"unavailable", "configuration_error", "error"}:
+        return [
+            "请在设置页检查该执行器命令、PATH 或改成完整可执行文件路径。",
+            "也可以切换到内置模型重跑，先确认工作流输入和输出契约没有问题。",
+        ]
+    if failure_kind == "agent_unhelpful_output":
+        return [
+            "从失败节点自动重试或切换执行器；CodeTalk 会保留完整任务契约并要求直接生成交付件。",
+            "如果连续出现问候语，请检查执行器的 prompt 传输方式或会话恢复配置。",
+        ]
+    if failure_kind == "agent_stopped_after_source_search":
+        return [
+            "从失败节点续跑，要求 Agent 复用已读源码并直接输出缺失的交付件。",
+            "如果仍然停在源码检索阶段，请缩小分析目标或切换到内置模型。",
+        ]
+    if failure_kind == "agent_timeout":
+        return [
+            "缩小分析范围或增加超时时间后从当前节点重试。",
+            "如果任务需要长时间运行，请观察心跳和部分产物，不要把未校验输出当成交付件。",
+        ]
+    if failure_kind == "agent_error":
+        return [
+            "从失败节点重试；如果仍失败，请检查执行器命令、MCP 凭据或切换到内置模型。",
+            "先不要固化交付件，直到必需产物通过校验。",
+        ]
+    actions = ["按缺失交付件重跑当前节点，要求执行器写入声明的 artifact 文件。"]
+    if validation_status != "ok":
+        actions.append("先不要下载或交付结果，直到 schema 和质量审计通过。")
+    return actions
 
 
 def _failure_retry_context_payload(
@@ -3293,7 +3475,7 @@ def _black_box_focus_for_path(file_path: str) -> str:
         return "reactor scheduling, poller timing, and long-running task responsiveness workflows"
     if "lib/thread" in path or "/thread" in path:
         return "thread message, poller scheduling, timeout, and queue drain workflows"
-    return "public workflow that exercises the changed file without internal function calls"
+    return "public workflow that exercises the changed file through external commands, RPC, connection, or I/O behavior"
 
 
 def _patch_input_payloads(input_snapshot: dict[str, Any]) -> list[dict[str, Any]]:

@@ -281,7 +281,7 @@ test("installs a workflow preset and validates required inputs through the real 
   await page.getByRole("button", { name: "准备运行" }).hover();
   await page.getByRole("button", { name: "准备运行" }).click();
 
-  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/任务已准备/)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/Agent runs:/)).toBeVisible();
   await expect(page.getByText(repo)).toBeVisible();
 
@@ -366,7 +366,7 @@ test("locks conflicting task run actions while a real prepare request is in flig
   await expect(page.getByRole("button", { name: "执行工作流" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "审计产物" })).toBeDisabled();
 
-  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/任务已准备/)).toBeVisible({ timeout: 15_000 });
   await expect.poll(() => prepareRequests.length).toBe(1);
 });
 
@@ -566,42 +566,45 @@ test("executes source-flow SFMEA black-box workflow through the real workbench U
     "utf8",
   );
 
-  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  const workspaceName = `source-flow-${Date.now()}`;
+  await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "创建工作空间" }).hover();
+  await page.getByPlaceholder(/项目 A/).fill(workspaceName);
+  await page.getByPlaceholder(/本地文件夹路径/).fill(repo);
+  await page.getByRole("button", { name: "创建工作空间" }).click();
+  await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
+
+  await page.goto("/workbench/designer", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "工作流设计", exact: true })).toBeVisible();
   await page.getByLabel("工作流预设").selectOption("source_flow_sfmea_blackbox");
-  await page.getByRole("button", { name: "安装预设" }).hover();
-  await page.getByRole("button", { name: "安装预设" }).click();
-  await expect(page.getByText("预设已安装: 代码分析-流程-SFMEA-黑盒用例工作流")).toBeVisible({
+  await page.getByRole("button", { name: "从模板库导入" }).hover();
+  await page.getByRole("button", { name: "从模板库导入" }).click();
+  await expect(page.getByText(/已从模板库导入到当前草稿/)).toBeVisible({
     timeout: 15_000,
   });
+  await page.getByRole("button", { name: "保存工作流" }).hover();
+  await page.getByRole("button", { name: "保存工作流" }).click();
+  await expect(page.getByText(/工作流已保存/)).toBeVisible({ timeout: 15_000 });
 
-  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-  await page.getByRole("button", { name: "运行驾驶舱" }).click();
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByLabel("Inputs JSON").fill(
-    JSON.stringify(
-      {
-        analysis_object: "lib/nvmf connect to IO submit flow",
-        repo_path: repo,
-      },
-      null,
-      2,
-    ),
-  );
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "运行驾驶舱", exact: true })).toBeVisible();
+  await page.getByLabel("工作流").selectOption("source_flow_sfmea_blackbox");
+  await page.getByLabel("Workspace selector").selectOption({ label: `${workspaceName} · ${repo}` });
+  await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf connect to IO submit flow");
+  await page.getByLabel("Workflow input repo_path").selectOption(repo);
 
   await page.getByRole("button", { name: "准备运行" }).hover();
   await page.getByRole("button", { name: "准备运行" }).click();
-  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/任务已准备/)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole("button", { name: "执行工作流" })).toBeEnabled({
     timeout: 15_000,
   });
   await page.getByRole("button", { name: "执行工作流" }).hover();
   await page.getByRole("button", { name: "执行工作流" }).click();
-  await expect(page.getByText(/Workflow execution completed:/)).toBeVisible({
+  await expect(page.getByText(/工作流执行已完成/)).toBeVisible({
     timeout: 30_000,
   });
-  await expect(page.getByText(/工作流: completed/)).toBeVisible();
+  await expect(page.getByText(/质量审计 · 可交付/)).toBeVisible({ timeout: 15_000 });
 
   const hiddenArtifactsToggle = page.getByText(/展开其余 \d+ 个产物/);
   if (await hiddenArtifactsToggle.isVisible()) {
@@ -676,11 +679,11 @@ test("executes source-flow SFMEA black-box workflow through the real workbench U
     expect.arrayContaining([expect.stringMatching(/spdk_nvmf_ctrlr_connect|spdk_nvmf_ctrlr_submit_io/)]),
   );
 
-  await expect(page.getByText(/source_scope:accepted artifact:source_scope\.json/)).toBeVisible();
-  await expect(page.getByText(/sfmea:accepted artifact:sfmea\.json/)).toBeVisible();
-  await expect(page.getByText(/black_box_cases:ok/)).toBeVisible();
-  await expect(page.getByText(new RegExp(`Semantic import: ok / ${cases.length} imported`))).toBeVisible();
-  await expect(page.getByText(/source:task_run:task_run_[a-f0-9]+:black_box_cases/)).toBeVisible();
+  await expect(page.getByText(/source_scope:accepted artifact:source_scope\.json/)).toHaveCount(1);
+  await expect(page.getByText(/sfmea:accepted artifact:sfmea\.json/)).toHaveCount(1);
+  await expect(page.getByText(/black_box_cases:ok/)).toHaveCount(1);
+  await expect(page.getByText(new RegExp(`Semantic import: ok / ${cases.length} imported`))).toHaveCount(1);
+  await expect(page.getByText(/source:task_run:task_run_[a-f0-9]+:black_box_cases/)).toHaveCount(1);
 });
 
 test("executes SPDK CLI RPC smoke preset through the real workbench UI", async ({

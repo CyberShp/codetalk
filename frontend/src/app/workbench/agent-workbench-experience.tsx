@@ -4157,8 +4157,15 @@ export function AgentWorkbenchExperience({
     () => groupArtifactsByAudience(artifactManifest?.artifacts ?? []),
     [artifactManifest],
   );
+  const testActivityQuality = workflowExecution?.test_activity_quality;
   const runPanelStatus = useMemo(() => {
     if (!preparedRun) return "空";
+    if (
+      testActivityQuality?.status &&
+      ["needs_rework", "invalid"].includes(String(testActivityQuality.status).toLowerCase())
+    ) {
+      return "失败";
+    }
     if (activeRunUiSummary?.status_label) {
       const label = activeRunUiSummary.status_label;
       if (label === "运行失败") return "失败";
@@ -4169,6 +4176,9 @@ export function AgentWorkbenchExperience({
       (taskAcceptanceAudit?.summary.missing_required ?? 0) > 0 ||
       ["incomplete", "error", "failed", "failure"].includes(
         String(taskAcceptanceAudit?.status ?? "").toLowerCase(),
+      ) ||
+      ["needs_rework", "invalid", "failed", "error", "timeout"].includes(
+        String(workflowExecution?.status ?? "").toLowerCase(),
       )
     ) {
       return "失败";
@@ -4188,6 +4198,7 @@ export function AgentWorkbenchExperience({
     workflowExecution,
     workflowOutputMaterialize,
     activeRunUiSummary,
+    testActivityQuality,
   ]);
   const runPanelFailureReasons = useMemo(() => {
     const summaryReasons = activeRunUiSummary?.failure?.reasons ?? [];
@@ -4195,6 +4206,26 @@ export function AgentWorkbenchExperience({
       return Array.from(new Set(summaryReasons)).slice(0, 5);
     }
     const reasons: string[] = [];
+    workflowExecution?.step_results
+      .map((step) => step.failure_recovery)
+      .filter(Boolean)
+      .forEach((recovery) => {
+        if (recovery?.user_message) reasons.push(recovery.user_message);
+        recovery?.recommended_actions?.slice(0, 2).forEach((action) => {
+          reasons.push(action);
+        });
+      });
+    if (
+      testActivityQuality?.status &&
+      ["needs_rework", "invalid"].includes(String(testActivityQuality.status).toLowerCase())
+    ) {
+      reasons.push(
+        `质量审计需要补证据：${Number(testActivityQuality.score ?? 0)} 分，${Number(testActivityQuality.issue_count ?? 0)} 个问题`,
+      );
+      testActivityQuality.recommendations?.slice(0, 2).forEach((item) => {
+        reasons.push(item);
+      });
+    }
     const missingRequired = taskAcceptanceAudit?.summary.missing_required ?? 0;
     if (missingRequired > 0) {
       reasons.push(`缺少 ${missingRequired} 个必需验收项`);
@@ -4213,7 +4244,13 @@ export function AgentWorkbenchExperience({
         .forEach((reason) => reasons.push(reason));
     }
     return Array.from(new Set(reasons)).slice(0, 5);
-  }, [activeRunUiSummary, preparedProviderReadiness, taskAcceptanceAudit]);
+  }, [
+    activeRunUiSummary,
+    preparedProviderReadiness,
+    taskAcceptanceAudit,
+    testActivityQuality,
+    workflowExecution,
+  ]);
   const runPanelProgress = useMemo(() => {
     const completed = runPhaseCards.filter(
       (phase) => runStatusDisplayLabel(phase.status) === "已完成",
@@ -9081,6 +9118,42 @@ export function AgentWorkbenchExperience({
                         </div>
                       </section>
                     )}
+                    {testActivityQuality?.status && (
+                      <section
+                        className={[
+                          "rounded-lg border p-3",
+                          ["needs_rework", "invalid"].includes(
+                            String(testActivityQuality.status).toLowerCase(),
+                          )
+                            ? "border-amber-300/70 bg-amber-50"
+                            : "border-emerald-300/70 bg-emerald-50",
+                        ].join(" ")}
+                      >
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <div>
+                            <p className="font-semibold text-on-surface">
+                              质量审计 · {testActivityQuality.deliverable ? "可交付" : "需要补证据"}
+                            </p>
+                            <p className="text-[10px] text-on-surface-variant">
+                              分数 {Number(testActivityQuality.score ?? 0)} · 问题 {Number(testActivityQuality.issue_count ?? 0)}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => previewArtifact("test_activity_quality_audit.json")}
+                            disabled={taskRunActionBusy}
+                            className="rounded-md bg-white px-2 py-1 text-[11px] font-medium text-primary disabled:opacity-50"
+                          >
+                            查看详情
+                          </button>
+                        </div>
+                        {testActivityQuality.recommendations?.[0] && (
+                          <p className="rounded-md bg-white px-2 py-1.5 text-[12px] text-on-surface">
+                            {testActivityQuality.recommendations[0]}
+                          </p>
+                        )}
+                      </section>
+                    )}
                     <section className="rounded-lg border border-outline-variant/25 bg-surface-container/60 p-3">
                       <div className="mb-2 flex items-center justify-between gap-2">
                         <div>
@@ -10885,23 +10958,26 @@ export function AgentWorkbenchExperience({
                                 {recovery && (
                                   <div className="mt-1 text-warning">
                                     <span>
-                                      recovery:
-                                      {recovery.failure_kind || "unknown"}
+                                      {recovery.user_message ||
+                                        `诊断类型:${recovery.failure_kind || "unknown"}`}
                                     </span>
                                     {recovery.validation_status && (
                                       <span className="ml-1">
-                                        validation:{recovery.validation_status}
+                                        校验:{recovery.validation_status}
                                       </span>
                                     )}
                                     {recovery.missing_artifacts?.length ? (
                                       <span className="ml-1">
-                                        missing:
+                                        缺少:
                                         {recovery.missing_artifacts.join(",")}
                                       </span>
                                     ) : null}
-                                    {recovery.suggested_actions?.[0] && (
+                                    {(recovery.recommended_actions?.[0] ||
+                                      recovery.suggested_actions?.[0]) && (
                                       <span className="ml-1">
-                                        next:{recovery.suggested_actions[0]}
+                                        下一步:
+                                        {recovery.recommended_actions?.[0] ||
+                                          recovery.suggested_actions?.[0]}
                                       </span>
                                     )}
                                     {recoveryDiagnostics?.configured_command_text && (
