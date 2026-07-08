@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -460,4 +461,9 @@ async def test_ai_thread_delivery_adds_test_activity_task_card_action(tmp_path, 
     assert "sfmea.json" in task_card["recommended_outputs"]
     assert "black_box_cases.json" in task_card["recommended_outputs"]
     assert task_card["evidence_policy"]["source_first"] is True
-    assert task_card["href"] == "/workbench?workflow=source_flow_sfmea_blackbox"
+    parsed_href = urlparse(task_card["href"])
+    query = parse_qs(parsed_href.query)
+    assert parsed_href.path == "/workbench"
+    assert query["workflow"] == ["source_flow_sfmea_blackbox"]
+    assert query["target"] == ["针对 iSCSI login 输出 SFMEA 和黑盒测试用例"]
+    assert query["outputs"] == ["sfmea.json,black_box_cases.json"]

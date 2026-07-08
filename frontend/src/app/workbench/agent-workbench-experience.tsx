@@ -119,6 +119,28 @@ const DEFAULT_INPUTS = {
 
 type WorkbenchView = "run" | "workflow" | "knowledge" | "diagnostics";
 
+function workbenchInputsFromSearchParams(
+  searchParams: Pick<URLSearchParams, "get">,
+): Record<string, string> {
+  const inputs: Record<string, string> = {};
+  const target =
+    searchParams.get("target") ||
+    searchParams.get("analysis_object") ||
+    searchParams.get("module") ||
+    "";
+  const outputs = searchParams.get("outputs") || searchParams.get("output_files") || "";
+  const mrLink = searchParams.get("mr_link") || searchParams.get("mr") || "";
+  const repoPath = searchParams.get("repo_path") || "";
+  if (target.trim()) inputs.analysis_object = target.trim();
+  if (outputs.trim()) {
+    inputs.requested_outputs = outputs.trim();
+    inputs.output_files = outputs.trim();
+  }
+  if (mrLink.trim()) inputs.mr_link = mrLink.trim();
+  if (repoPath.trim()) inputs.repo_path = repoPath.trim();
+  return inputs;
+}
+
 function WorkbenchStageFrame({
   activeWorkbenchView,
   reducedMotion,
@@ -3544,6 +3566,7 @@ export function AgentWorkbenchExperience({
   const workflowBoardRef = useRef<HTMLDivElement | null>(null);
   const workflowCanvasInnerRef = useRef<HTMLDivElement | null>(null);
   const workspaceAutoSelectionDoneRef = useRef(false);
+  const queryPrefillAppliedRef = useRef(false);
   const paletteDragModuleRef = useRef<string | null>(null);
   const palettePointerDragRef = useRef<{
     moduleId: string;
@@ -3741,6 +3764,25 @@ export function AgentWorkbenchExperience({
   useEffect(() => {
     setActiveWorkbenchView(initialView);
   }, [initialView]);
+
+  useEffect(() => {
+    if (queryPrefillAppliedRef.current || typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const workflowId = params.get("workflow")?.trim() || "";
+    const queryInputs = workbenchInputsFromSearchParams(params);
+    if (!workflowId && Object.keys(queryInputs).length === 0) return;
+    queryPrefillAppliedRef.current = true;
+    if (workflowId) setSelectedWorkflowId(workflowId);
+    if (queryInputs.repo_path) setRepoPath(queryInputs.repo_path);
+    setInputsJson((current) =>
+      pretty({
+        ...parseJsonObject(current || "{}"),
+        ...queryInputs,
+      }),
+    );
+    setWorkflowInputsUpdated(true);
+    window.setTimeout(() => setWorkflowInputsUpdated(false), 2200);
+  }, []);
 
   const workflowOptions = useMemo(() => {
     const seen = new Set<string>();
@@ -5243,7 +5285,10 @@ export function AgentWorkbenchExperience({
             (item) => item.id === selectedWorkflowId,
           );
           const fallbackWorkflow = selectedWorkflow ?? nextWorkflowData[0];
-          if (!selectedWorkflow) {
+          const selectedLooksLikeKnownPreset =
+            CORE_WORKFLOW_PRESET_IDS.has(selectedWorkflowId) ||
+            selectedWorkflowId in WORKFLOW_BUILDER_SCENARIOS;
+          if (!selectedWorkflow && !selectedLooksLikeKnownPreset) {
             setSelectedWorkflowId(fallbackWorkflow.id);
           }
           setWorkflowJson((currentJson) => {

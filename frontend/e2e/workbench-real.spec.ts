@@ -686,6 +686,24 @@ test("executes source-flow SFMEA black-box workflow through the real workbench U
   await expect(page.getByText(/source:task_run:task_run_[a-f0-9]+:black_box_cases/)).toHaveCount(1);
 });
 
+test("prefills workbench workflow inputs from AI thread task-card query", async ({
+  page,
+}) => {
+  const target = "iSCSI login 灰白盒测试设计，输出 SFMEA 和黑盒测试用例";
+  const outputs = "sfmea.json,black_box_cases.json,test_design.md";
+  await page.goto(
+    `/workbench?workflow=source_flow_sfmea_blackbox&target=${encodeURIComponent(target)}&outputs=${encodeURIComponent(outputs)}`,
+    { waitUntil: "domcontentloaded" },
+  );
+
+  await expect(page.getByRole("heading", { name: "运行驾驶舱", exact: true })).toBeVisible();
+  await expect(page.getByLabel("工作流")).toHaveValue("source_flow_sfmea_blackbox");
+  await expect(page.getByLabel("Workflow input analysis_object")).toHaveValue(target);
+  await page.getByText("高级输入 JSON").click();
+  await expect(page.getByLabel("Inputs JSON")).toHaveValue(/requested_outputs/);
+  await expect(page.getByLabel("Inputs JSON")).toHaveValue(/black_box_cases\.json/);
+});
+
 test("executes SPDK CLI RPC smoke preset through the real workbench UI", async ({
   page,
 }, testInfo) => {
