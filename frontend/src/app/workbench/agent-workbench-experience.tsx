@@ -9197,6 +9197,33 @@ export function AgentWorkbenchExperience({
                             {testActivityQuality.recommendations[0]}
                           </p>
                         )}
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={loadTaskRerunPlan}
+                            disabled={taskRunActionBusy || !preparedRun}
+                            className="rounded-md bg-white px-2 py-1 text-[11px] font-medium text-primary disabled:opacity-50"
+                          >
+                            生成补证据计划
+                          </button>
+                          <button
+                            type="button"
+                            onClick={executeTaskRerunPlan}
+                            disabled={
+                              taskRunActionBusy ||
+                              !preparedRun ||
+                              !taskRerunPlanValidation?.can_rerun
+                            }
+                            className="rounded-md bg-white px-2 py-1 text-[11px] font-medium text-primary disabled:opacity-50"
+                            title={
+                              taskRerunPlanValidation?.can_rerun
+                                ? "按复跑计划只重跑低质量或阻塞节点"
+                                : "请先生成补证据计划并通过复跑校验"
+                            }
+                          >
+                            只重跑低质量交付件
+                          </button>
+                        </div>
                       </section>
                     )}
                     <section className="rounded-lg border border-outline-variant/25 bg-surface-container/60 p-3">

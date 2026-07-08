@@ -2017,6 +2017,74 @@ class TestAIConversationsAPI:
         assert not Path(str(manifest_refs[0].metadata["path"])).is_absolute()
         assert "task_bundle.json" in manifest_refs[0].excerpt
 
+    async def test_workbench_task_thread_references_test_activity_contract_and_quality_audit(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        from app.config import settings
+        from app.services.ai_conversations import build_context_references
+
+        data_root = tmp_path / "data"
+        task_run_id = "task_run_test_activity_context"
+        task_dir = data_root / "workbench" / "task_runs" / task_run_id
+        task_dir.mkdir(parents=True)
+        (task_dir / "task_run.json").write_text(
+            json.dumps({"task_run_id": task_run_id, "status": "completed"}),
+            encoding="utf-8",
+        )
+        (task_dir / "task_bundle.json").write_text(
+            json.dumps({"workflow_id": "source_flow_sfmea_blackbox", "repo_path": "/repo/spdk"}),
+            encoding="utf-8",
+        )
+        (task_dir / "test_activity_contract.json").write_text(
+            json.dumps(
+                {
+                    "target": "iSCSI login 测试设计",
+                    "domain_profiles": ["iscsi_login"],
+                    "required_outputs": ["sfmea.json", "black_box_cases.json"],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (task_dir / "test_activity_quality_audit.json").write_text(
+            json.dumps(
+                {
+                    "status": "needs_rework",
+                    "score": 62,
+                    "issues": [{"code": "missing_source_evidence", "artifact": "sfmea.json"}],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+        (task_dir / "task_artifact_manifest.json").write_text(
+            json.dumps({"task_run_id": task_run_id, "artifacts": []}),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(settings, "data_dir", str(data_root))
+
+        refs = await build_context_references(
+            conversation={
+                "id": "conv-workbench-test-activity",
+                "scope_type": "workbench_task_run",
+                "scope_id": task_run_id,
+                "workspace_id": "ws-workbench",
+                "memory_namespace": "workspace:ws-workbench",
+                "initial_context": {"workspace_id": "ws-workbench"},
+            },
+            user_message="请继续复盘本次测试活动契约和质量审计问题",
+            db_path=sqlite_db,
+        )
+
+        refs_by_title = {ref.title: ref for ref in refs if ref.source_type == "workbench_task_artifact"}
+        assert "test_activity_contract.json" in refs_by_title
+        assert "test_activity_quality_audit.json" in refs_by_title
+        assert "iscsi_login" in refs_by_title["test_activity_contract.json"].excerpt
+        assert "needs_rework" in refs_by_title["test_activity_quality_audit.json"].excerpt
+
     async def test_workbench_task_thread_uses_task_repo_for_source_refs_when_workspace_row_is_missing(
         self,
         sqlite_db,
