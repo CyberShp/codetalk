@@ -137,16 +137,15 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
     module_preset = next(item for item in presets if item["id"] == "module_analysis")
     module_steps = {item["id"]: item for item in module_preset["definition"]["steps"]}
     assert module_steps["discover_scope"]["type"] == "local_scope_discover"
-    assert module_steps["analyze_module"]["type"] == "agent_task"
-    assert module_steps["analyze_module"]["required_artifacts"] == ["module_analysis.md"]
-    assert module_steps["analyze_module"]["mcp_profile"] == "gitnexus+cgc"
+    assert module_steps["validate_evidence"]["type"] == "evidence_validate"
+    assert module_steps["render_report"]["type"] == "report_render"
+    assert "analyze_module" not in module_steps
     module_report = next(
         item
         for item in module_preset["definition"]["outputs"]
         if item["id"] == "report"
     )
-    assert module_report["from"] == "analyze_module"
-    assert module_report["artifact"] == "module_analysis.md"
+    assert module_report["from"] == "render_report"
 
     patch_preset = next(item for item in presets if item["id"] == "patch_impact_review")
     patch_step = next(

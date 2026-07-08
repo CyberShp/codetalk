@@ -443,6 +443,7 @@ async def test_ai_thread_delivery_adds_test_activity_task_card_action(tmp_path, 
         conversation={
             "id": "conv-test-activity",
             "title": "SPDK 测试设计",
+            "workspace_id": "ws-spdk",
             "initial_context": {"repo_path": "/Volumes/Media/dpdk/spdk"},
         },
         content="请针对 iSCSI login 输出 SFMEA 和黑盒测试用例。",
@@ -456,6 +457,7 @@ async def test_ai_thread_delivery_adds_test_activity_task_card_action(tmp_path, 
     assert task_card["kind"] == "test_activity"
     assert task_card["label"] == "测试活动任务卡"
     assert task_card["workflow_template_id"] == "source_flow_sfmea_blackbox"
+    assert task_card["workspace_id"] == "ws-spdk"
     assert task_card["target"] == "针对 iSCSI login 输出 SFMEA 和黑盒测试用例"
     assert "iscsi_login" in task_card["domain_profiles"]
     assert "sfmea.json" in task_card["recommended_outputs"]
@@ -465,5 +467,6 @@ async def test_ai_thread_delivery_adds_test_activity_task_card_action(tmp_path, 
     query = parse_qs(parsed_href.query)
     assert parsed_href.path == "/workbench"
     assert query["workflow"] == ["source_flow_sfmea_blackbox"]
+    assert query["workspace_id"] == ["ws-spdk"]
     assert query["target"] == ["针对 iSCSI login 输出 SFMEA 和黑盒测试用例"]
     assert query["outputs"] == ["sfmea.json,black_box_cases.json"]

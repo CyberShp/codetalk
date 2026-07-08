@@ -18,7 +18,7 @@ from app.services.agent_run_harness import (
     AgentRunHarness,
     ArtifactValidationHarness,
 )
-from app.services.test_activity_contract import audit_test_activity_artifacts
+from app.services.test_activity_contract import ARTIFACT_TEMPLATES, audit_test_activity_artifacts
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_task_run import BUILTIN_LLM_PROVIDER_ID
 from app.services.workbench_task_run import WorkbenchTaskRunStore
@@ -152,6 +152,16 @@ class WorkbenchWorkflowRunner:
         )
         if not contract:
             return {}
+        if not _workflow_declares_test_activity_deliverables(task_run.workflow_snapshot):
+            return {
+                "kind": "test_activity_quality_audit",
+                "status": "not_applicable",
+                "deliverable": True,
+                "score": 100,
+                "issue_count": 0,
+                "issues": [],
+                "recommendations": ["当前工作流未声明测试活动交付件，跳过测试活动质量门禁。"],
+            }
         artifact_dir = Path(str(task_run.artifact_dir))
         audit = audit_test_activity_artifacts(
             artifact_dir=artifact_dir,
@@ -1765,7 +1775,7 @@ def _black_box_case_for_changed_file(
             "triage failures by changed file path, not by calling internal functions",
         ],
         "mapped_test_dir": test_directory,
-        "source_or_test_evidence": [file_path, test_directory] if file_path else [test_directory],
+        "source_or_test_evidence": [file_path] if file_path else [],
         "source": "local-mr-blackbox",
         "trace": {
             "task_run_id": str(task_run.task_run_id),
@@ -4207,6 +4217,46 @@ def _redact_workbench_public_text(text: str, *, task_run: Any) -> str:
         if needle:
             redacted = redacted.replace(needle, marker)
     return redacted
+
+
+_TEST_ACTIVITY_AUDIT_ARTIFACTS = {
+    "sfmea.json",
+    "black_box_cases.json",
+    "black_box_cases.md",
+    "test_strategy.md",
+    "test_design.md",
+    "coverage_gap_report.md",
+    "risk_review.md",
+    "execution_checklist.md",
+}
+
+
+def _workflow_declares_test_activity_deliverables(workflow_snapshot: dict[str, Any]) -> bool:
+    """Only apply strict test-activity gates to workflows that declare those files."""
+
+    declared: set[str] = set()
+    for output in workflow_snapshot.get("outputs") or []:
+        if not isinstance(output, dict):
+            continue
+        artifact = str(output.get("artifact") or output.get("path") or "").strip()
+        if artifact:
+            declared.add(artifact)
+        output_type = str(output.get("type") or "").strip()
+        if output_type in {"test_cases", "sfmea", "test_design", "test_strategy"}:
+            return True
+    for step in workflow_snapshot.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        declared.update(
+            str(item).strip()
+            for item in step.get("required_artifacts") or []
+            if str(item).strip()
+        )
+    return any(
+        artifact in _TEST_ACTIVITY_AUDIT_ARTIFACTS
+        and artifact in ARTIFACT_TEMPLATES
+        for artifact in declared
+    )
 
 
 def _safe_segment(value: str) -> str:

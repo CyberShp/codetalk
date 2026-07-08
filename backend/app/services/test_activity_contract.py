@@ -443,7 +443,7 @@ def _audit_json_artifact(
         evidence_values = _evidence_strings(row)
         if artifact in {"sfmea.json", "black_box_cases.json"} and not evidence_values:
             issues.append(_issue("missing_source_or_test_evidence", artifact, f"{artifact} 第 {index} 项缺少源码或测试证据", index=index))
-        for evidence in evidence_values:
+        for evidence in _strict_evidence_path_strings(row):
             if _looks_like_repo_path(evidence) and not _repo_path_exists(repo, evidence):
                 issues.append(_issue("evidence_path_not_found", artifact, f"证据路径不存在: {evidence}", index=index))
     return issues
@@ -480,6 +480,19 @@ def _field_present(row: dict[str, Any], field: str) -> bool:
 def _evidence_strings(row: dict[str, Any]) -> list[str]:
     values: list[str] = []
     for key in ("source_evidence", "test_mapping", "source_or_test_evidence", "mapped_test_dir", "file_path", "test_directory"):
+        value = row.get(key)
+        if isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, list):
+            values.extend(str(item) for item in value if str(item).strip())
+        elif isinstance(value, dict):
+            values.extend(str(item) for item in value.values() if str(item).strip())
+    return values
+
+
+def _strict_evidence_path_strings(row: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for key in ("source_evidence", "source_or_test_evidence", "file_path", "test_directory"):
         value = row.get(key)
         if isinstance(value, str):
             values.append(value)

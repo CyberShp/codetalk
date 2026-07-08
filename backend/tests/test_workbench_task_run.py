@@ -931,6 +931,7 @@ def test_prepare_workbench_task_run_injects_evidence_and_semantic_context(tmp_pa
         "source_slice_attached",
         "deployment_evidence_retrieved",
         "semantic_case_retrieved",
+        "local_source_file_read",
     ]
     output_contract = json.loads(
         Path(

@@ -1990,7 +1990,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await resultPanel.getByText("内部诊断 8").click();
   await expect(
     page.getByRole("button", {
-      name: /agent_failure_retry_context:agent_runs\/discover\/failure_retry_context\.json\s*redacted/,
+      name: /agent_failure_retry_context:agent_runs\/discover\/failure_retry_context\.json\s*已脱敏/,
     }),
   ).toBeVisible();
 
@@ -2010,8 +2010,8 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     })
     .click();
 
-  await expect(page.getByText("Accepted artifacts: 2")).toBeVisible();
-  await expect(page.getByText("Rejected artifacts: 1")).toBeVisible();
+  await expect(page.getByText("已接收产物: 2")).toBeVisible();
+  await expect(page.getByText("被拒绝产物: 1")).toBeVisible();
   await expect(page.getByText("source_scope.json sha:111122223333")).toBeVisible();
 
   await page
@@ -2020,21 +2020,21 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     })
     .last()
     .click();
-  await expect(page.getByText("Materialized evidence: 2")).toBeVisible();
-  await expect(page.getByText("Rejected outputs: 1")).toBeVisible();
-  await expect(page.getByText("Declared outputs: 3")).toBeVisible();
-  await expect(page.getByText("First rejected: bad")).toBeVisible();
-  await expect(page.getByText("reason:output_not_ok")).toBeVisible();
-  await expect(page.getByText("status:invalid")).toBeVisible();
-  await expect(page.getByText("schema errors:1")).toBeVisible();
-  await expect(page.getByText("workflow_outputs sha:999988887777")).toBeVisible();
+  await expect(page.getByText("已固化证据: 2")).toBeVisible();
+  await expect(page.getByText("被拒绝输出: 1")).toBeVisible();
+  await expect(page.getByText("声明输出: 3")).toBeVisible();
+  await expect(page.getByText("首个拒绝项: bad")).toBeVisible();
+  await expect(page.getByText("原因:output_not_ok")).toBeVisible();
+  await expect(page.getByText("状态:无效")).toBeVisible();
+  await expect(page.getByText("Schema 错误:1")).toBeVisible();
+  await expect(page.getByText("工作流输出 sha:999988887777")).toBeVisible();
   await expect(
     page.getByText("workflow_output:task_run_preview/black_box_cases", { exact: false }),
   ).toBeVisible();
   await expect(
     page.getByText("changed_behavior:tls_handshake_retry", { exact: false }),
   ).toBeVisible();
-  await expect(page.getByText("mapping:changed_behavior", { exact: false })).toBeVisible();
+  await expect(page.getByText("映射:changed_behavior", { exact: false })).toBeVisible();
 
   await page
     .getByRole("button", {
@@ -2049,30 +2049,30 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
       name: "memory_retrieval:memory_retrieval.json",
     })
     .click();
-  await expect(page.getByText("Memory retrieval")).toBeVisible();
-  await expect(page.getByText("evidence:1")).toBeVisible();
-  await expect(page.getByText("deployment:1").first()).toBeVisible();
-  await expect(page.getByText("semantics:1")).toBeVisible();
-  await expect(page.getByText("slices:2")).toBeVisible();
-  await expect(page.getByText("query:nvme tcp tls")).toBeVisible();
+  await expect(page.getByText("记忆检索")).toBeVisible();
+  await expect(page.getByText("证据:1")).toBeVisible();
+  await expect(page.getByText("部署证据:1").first()).toBeVisible();
+  await expect(page.getByText("语义:1")).toBeVisible();
+  await expect(page.getByText("源码片段:2")).toBeVisible();
+  await expect(page.getByText("查询:nvme tcp tls")).toBeVisible();
   await expect(
-    page.getByText("first:nof/nvmf_tcp/transport/tls/tls.c"),
+    page.getByText("首项:nof/nvmf_tcp/transport/tls/tls.c"),
   ).toBeVisible();
-  await expect(page.getByText("reuse:source slices attached and locally verified")).toBeVisible();
+  await expect(page.getByText("复用原因:source slices attached and locally verified")).toBeVisible();
 
   await page
     .getByRole("button", {
       name: "input_materials:input_materials.json",
     })
     .click();
-  await expect(page.getByText("Input materials")).toBeVisible();
-  await expect(page.getByText("materials:1")).toBeVisible();
-  await expect(page.getByText("must-read:true")).toBeVisible();
-  await expect(page.getByText("source-truth:false")).toBeVisible();
-  await expect(page.getByText("read-order:design_doc")).toBeVisible();
-  await expect(page.getByText("first:design_doc")).toBeVisible();
-  await expect(page.getByText("role:design context")).toBeVisible();
-  await expect(page.getByText("file:tls-design.md")).toBeVisible();
+  await expect(page.getByText("输入材料")).toBeVisible();
+  await expect(page.getByText("材料数:1")).toBeVisible();
+  await expect(page.getByText("必读:true")).toBeVisible();
+  await expect(page.getByText("源码真相:false")).toBeVisible();
+  await expect(page.getByText("阅读顺序:design_doc")).toBeVisible();
+  await expect(page.getByText("首项:design_doc")).toBeVisible();
+  await expect(page.getByText("角色:design context")).toBeVisible();
+  await expect(page.getByText("文件:tls-design.md")).toBeVisible();
   await expect(page.getByText("sha:1234567890ab")).toBeVisible();
 
   await page.getByText("支撑文件 2").last().click();
@@ -2092,42 +2092,42 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
       name: "agent_replay_plan:agent_runs/discover/agent_replay_plan.json",
     })
     .click();
-  await expect(page.getByText("Replay status: ready")).toBeVisible();
-  await expect(page.getByText("provider:claude-code")).toBeVisible();
-  await expect(page.getByText("prompt:execution_input.json:stdin")).toBeVisible();
-  await expect(page.getByText("readonly:true")).toBeVisible();
-  await expect(page.getByText("hashes:3")).toBeVisible();
-  await expect(page.getByText("task_bundle sha:taskhash1234")).toBeVisible();
+  await expect(page.getByText("回放状态: 已就绪")).toBeVisible();
+  await expect(page.getByText("执行器:claude-code")).toBeVisible();
+  await expect(page.getByText("提示词:execution_input.json:stdin")).toBeVisible();
+  await expect(page.getByText("只读:true")).toBeVisible();
+  await expect(page.getByText("哈希:3")).toBeVisible();
+  await expect(page.getByText("任务包 sha:taskhash1234")).toBeVisible();
 
   await page
     .getByRole("button", {
       name: "agent_execution_input:agent_runs/discover/execution_input.json",
     })
     .click();
-  await expect(page.getByText("Execution input")).toBeVisible();
-  await expect(page.getByText("provider:claude-code")).toBeVisible();
-  await expect(page.getByText("transport:stdin")).toBeVisible();
-  await expect(page.getByText("reason:transport_fallback_from_argv")).toBeVisible();
-  await expect(page.getByText("stdin redacted:true")).toBeVisible();
+  await expect(page.getByText("执行输入")).toBeVisible();
+  await expect(page.getByText("执行器:claude-code")).toBeVisible();
+  await expect(page.getByText("传输:stdin")).toBeVisible();
+  await expect(page.getByText("原因:transport_fallback_from_argv")).toBeVisible();
+  await expect(page.getByText("标准输入已脱敏:true")).toBeVisible();
   await expect(page.getByText("stdin sha:stdinsha1234")).toBeVisible();
-  await expect(page.getByText("contract sha:contracthash")).toBeVisible();
+  await expect(page.getByText("契约 sha:contracthash")).toBeVisible();
 
   await page
     .getByRole("button", {
       name: "agent_failure_retry_context:agent_runs/discover/failure_retry_context.json",
     })
     .click();
-  await expect(page.getByText("Failure retry")).toBeVisible();
-  await expect(page.getByText("step:discover")).toBeVisible();
-  await expect(page.getByText("kind:agent_error")).toBeVisible();
-  await expect(page.getByText("retryable:true")).toBeVisible();
-  await expect(page.getByText("exit:7")).toBeVisible();
-  await expect(page.getByText("missing:source_scope.json")).toBeVisible();
-  await expect(page.getByText("must-produce:source_scope.json")).toBeVisible();
+  await expect(page.getByText("失败重试")).toBeVisible();
+  await expect(page.getByText("节点:discover")).toBeVisible();
+  await expect(page.getByText("类型:agent_error")).toBeVisible();
+  await expect(page.getByText("可重试:true")).toBeVisible();
+  await expect(page.getByText("退出码:7")).toBeVisible();
+  await expect(page.getByText("缺失产物:source_scope.json")).toBeVisible();
+  await expect(page.getByText("必须生成:source_scope.json")).toBeVisible();
   await expect(
-    page.getByText("do-not:do not treat raw stdout/stderr as accepted evidence"),
+    page.getByText("避免重复:do not treat raw stdout/stderr as accepted evidence"),
   ).toBeVisible();
-  await expect(page.getByText("redacted", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("已脱敏", { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "下载脱敏预览" })).toBeVisible();
   await expect(page.locator("body")).not.toContainText(redactedArtifactSecret);
 

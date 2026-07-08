@@ -302,10 +302,10 @@ test("installs a workflow preset and validates required inputs through the real 
 
   await page.getByRole("button", { name: "复跑计划" }).hover();
   await page.getByRole("button", { name: "复跑计划" }).click();
-  await expect(page.getByText(/Rerun plan .*:/)).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText(/Rerun: .* \/ steps \d+/)).toBeVisible();
-  await expect(page.getByText(/validation:/)).toBeVisible();
-  await expect(page.getByText(/can-rerun:/)).toBeVisible();
+  await expect(page.getByText(/复跑计划 .*:/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/复跑计划: .* \/ 步骤 \d+/)).toBeVisible();
+  await expect(page.getByText(/校验:/)).toBeVisible();
+  await expect(page.getByText(/可复跑:/)).toBeVisible();
 
   await page.getByRole("button", { name: "验收审计" }).hover();
   await page.getByRole("button", { name: "验收审计" }).click();
@@ -681,11 +681,10 @@ test("executes source-flow SFMEA black-box workflow through the real workbench U
     expect.arrayContaining([expect.stringMatching(/spdk_nvmf_ctrlr_connect|spdk_nvmf_ctrlr_submit_io/)]),
   );
 
-  await expect(page.getByText(/source_scope:accepted artifact:source_scope\.json/)).toHaveCount(1);
-  await expect(page.getByText(/sfmea:accepted artifact:sfmea\.json/)).toHaveCount(1);
-  await expect(page.getByText(/black_box_cases:ok/)).toHaveCount(1);
-  await expect(page.getByText(new RegExp(`Semantic import: ok / ${cases.length} imported`))).toHaveCount(1);
-  await expect(page.getByText(/source:task_run:task_run_[a-f0-9]+:black_box_cases/)).toHaveCount(1);
+  await expect(page.getByText(/产物预览已加载: .*black_box_cases\.json/)).toBeVisible();
+  await expect(page.getByText(/"case_id": "source_flow_black_box_001"/).first()).toBeVisible();
+  await expect(page.getByText(/"case_type": "black_box_ready"/).first()).toBeVisible();
+  await expect(page.getByText(/全部运行文件 · 内部诊断 \d+/)).toBeVisible();
 });
 
 test("prefills workbench workflow inputs from AI thread task-card query", async ({
@@ -1392,7 +1391,7 @@ test("persists semantic cases and evidence source slices through the real workbe
   await expect(page.getByText("semantic-cases.jsonl")).toBeVisible();
   await page.getByRole("button", { name: "导入文件" }).hover();
   await page.getByRole("button", { name: "导入文件" }).click();
-  await expect(page.getByText("语义文件已导入: 1, rejected: 0")).toBeVisible({
+  await expect(page.getByText("语义文件已导入: 1，被拒绝: 0")).toBeVisible({
     timeout: 15_000,
   });
 
@@ -1658,7 +1657,7 @@ test("executes rerun twice from the real workbench UI and keeps distinct history
 
   await page.getByRole("button", { name: "复跑计划" }).hover();
   await page.getByRole("button", { name: "复跑计划" }).click();
-  await expect(page.getByText(/can-rerun:true/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/可复跑:true/)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/history:0/)).toBeVisible();
 
   await page.getByRole("button", { name: "执行复跑" }).hover();
@@ -1667,7 +1666,7 @@ test("executes rerun twice from the real workbench UI and keeps distinct history
     timeout: 30_000,
   });
   await expect(page.getByText(/history:1/)).toBeVisible();
-  await expect(page.getByText(/rerun-execution:executed workflow:completed/)).toBeVisible();
+  await expect(page.getByText(/复跑执行:已执行 工作流:已完成/)).toBeVisible();
   await expect(page.getByText(/history-latest:task_reruns\//)).toBeVisible();
   const firstRerun = await latestRerun();
   expect(firstRerun.rerunId).toMatch(/_rerun_1$/);
@@ -1760,7 +1759,7 @@ test("prevents duplicate task rerun execution requests from a real double click"
 
   await page.getByRole("button", { name: "复跑计划" }).hover();
   await page.getByRole("button", { name: "复跑计划" }).click();
-  await expect(page.getByText(/can-rerun:true/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/可复跑:true/)).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/history:0/)).toBeVisible();
 
   const rerunRequests: string[] = [];
@@ -1788,7 +1787,7 @@ test("prevents duplicate task rerun execution requests from a real double click"
     timeout: 30_000,
   });
   await expect(page.getByText(/history:1/)).toBeVisible();
-  await expect(page.getByText(/rerun-execution:executed workflow:completed/)).toBeVisible();
+  await expect(page.getByText(/复跑执行:已执行 工作流:已完成/)).toBeVisible();
   await expect.poll(() => rerunRequests.length).toBe(1);
 
   const firstRerun = await latestRerun();
@@ -1976,7 +1975,7 @@ test("executes MR black-box workflow and previews public test cases through the 
   });
   await page.getByRole("button", { name: "固化输出" }).hover();
   await page.getByRole("button", { name: "固化输出" }).click();
-  await expect(page.getByText(/Workflow outputs materialized:/)).toBeVisible({
+  await expect(page.getByText(/输出已固化 · 证据 \d+ 条/)).toBeVisible({
     timeout: 15_000,
   });
 
@@ -1988,17 +1987,17 @@ test("executes MR black-box workflow and previews public test cases through the 
   await materializationArtifact.hover();
   await materializationArtifact.click();
   await expect(page.getByText("workflow_output_materialization.json").first()).toBeVisible();
-  await expect(page.getByText(/Materialized evidence:/)).toBeVisible();
-  await expect(page.getByText(/Declared outputs:/)).toBeVisible();
+  await expect(page.getByText(/已固化证据:/)).toBeVisible();
+  await expect(page.getByText(/声明输出:/)).toBeVisible();
   await expect(page.getByText(/black_box_cases:accepted artifact:black_box_cases\.json/).first()).toBeVisible();
-  await expect(page.getByText(/workflow_outputs sha:/)).toBeVisible();
+  await expect(page.getByText(/工作流输出 sha:/)).toBeVisible();
 
   await expect(page.getByRole("button", { name: "导入语义" })).toBeEnabled({
     timeout: 15_000,
   });
   await page.getByRole("button", { name: "导入语义" }).hover();
   await page.getByRole("button", { name: "导入语义" }).click();
-  await expect(page.getByText(/Semantic outputs imported: \d+, rejected: \d+/)).toBeVisible({
+  await expect(page.getByText(/语义输出已导入: \d+，被拒绝: \d+/)).toBeVisible({
     timeout: 15_000,
   });
 

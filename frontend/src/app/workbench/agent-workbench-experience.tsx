@@ -141,6 +141,17 @@ function workbenchInputsFromSearchParams(
   return inputs;
 }
 
+function workbenchWorkspaceIdFromSearchParams(
+  searchParams: Pick<URLSearchParams, "get">,
+): string {
+  return (
+    searchParams.get("workspace_id") ||
+    searchParams.get("workspace") ||
+    searchParams.get("workspaceId") ||
+    ""
+  ).trim();
+}
+
 function WorkbenchStageFrame({
   activeWorkbenchView,
   reducedMotion,
@@ -3310,7 +3321,6 @@ function runStatusDisplayLabel(status: string): string {
   if (["等待", "待运行", "等待运行"].includes(status)) return "等待";
   if (
     [
-      "ready",
       "passed",
       "pass",
       "ok",
@@ -3319,10 +3329,13 @@ function runStatusDisplayLabel(status: string): string {
       "success",
       "accepted",
       "done",
+      "executed",
     ].includes(normalized)
   ) {
-    return "已完成";
+    return normalized === "executed" ? "已执行" : "已完成";
   }
+  if (normalized === "ready") return "已就绪";
+  if (normalized === "invalid") return "无效";
   if (["partial", "partially_completed"].includes(normalized)) {
     return "部分完成";
   }
@@ -3347,7 +3360,6 @@ function runStatusDisplayLabel(status: string): string {
       "degraded",
       "unavailable",
       "missing_config",
-      "invalid",
     ].includes(normalized)
   ) {
     return "失败";
@@ -5374,6 +5386,21 @@ export function AgentWorkbenchExperience({
       if (workspaceResult.status === "fulfilled") {
         const visibleWorkspaces = workspaceResult.value;
         setWorkspaces(visibleWorkspaces);
+        const queryWorkspaceId =
+          typeof window === "undefined"
+            ? ""
+            : workbenchWorkspaceIdFromSearchParams(
+                new URLSearchParams(window.location.search),
+              );
+        const queryWorkspace = queryWorkspaceId
+          ? visibleWorkspaces.find((workspace) => workspace.id === queryWorkspaceId)
+          : null;
+        if (
+          queryWorkspace &&
+          !workspaceAutoSelectionDoneRef.current
+        ) {
+          applyWorkspaceSelection(queryWorkspace);
+        }
         if (
           !workspaceAutoSelectionDoneRef.current &&
           !repoPath.trim() &&
@@ -6175,7 +6202,7 @@ export function AgentWorkbenchExperience({
       setTaskRerunPlan(result);
       setTaskRerunPlanValidation(validation);
       setTaskRerunHistory(history);
-      setMessage(`Rerun plan ${result.status}: ${result.task_run_id}`);
+      setMessage(`复跑计划 ${runStatusDisplayLabel(result.status)}: ${result.task_run_id}`);
     });
 
   const generateTaskAcceptanceAudit = () =>
@@ -6249,7 +6276,7 @@ export function AgentWorkbenchExperience({
         relativePath,
       );
       setArtifactContent(result);
-      setMessage(`Artifact preview loaded: ${relativePath}`);
+      setMessage(`产物预览已加载: ${relativePath}`);
     });
 
   const executePreparedWorkflow = () =>
@@ -6302,7 +6329,7 @@ export function AgentWorkbenchExperience({
       setSemanticOutputImport(result);
       await refreshArtifactManifest(preparedRun.task_run_id);
       setMessage(
-        `Semantic outputs imported: ${result.imported_count}, rejected: ${result.rejected_count}`,
+        `语义输出已导入: ${result.imported_count}，被拒绝: ${result.rejected_count}`,
       );
     });
 
@@ -6355,7 +6382,7 @@ export function AgentWorkbenchExperience({
       if (isBulkSemanticImportPayload(payload)) {
         const result = await api.workbench.semanticCases.importMany(payload);
         setMessage(
-          `语义用例已导入: ${result.imported_count}, rejected: ${result.rejected_count}`,
+          `语义用例已导入: ${result.imported_count}，被拒绝: ${result.rejected_count}`,
         );
         return;
       }
@@ -6404,7 +6431,7 @@ export function AgentWorkbenchExperience({
         },
       );
       setMessage(
-        `语义文件已导入: ${result.imported_count}, rejected: ${result.rejected_count}`,
+        `语义文件已导入: ${result.imported_count}，被拒绝: ${result.rejected_count}`,
       );
       setSemanticFile(null);
     });
@@ -9293,7 +9320,7 @@ export function AgentWorkbenchExperience({
                               key={artifact.relative_path}
                               type="button"
                               aria-label={`快速预览 ${artifact.kind}:${artifact.relative_path}${
-                                artifact.preview_redacted ? " redacted" : ""
+                                artifact.preview_redacted ? " 已脱敏" : ""
                               }`}
                                 onClick={() =>
                                   previewArtifact(artifact.relative_path)
@@ -9313,7 +9340,7 @@ export function AgentWorkbenchExperience({
                               </span>
                               {artifact.preview_redacted && (
                                 <span className="ml-1 text-warning">
-                                  redacted
+                                  已脱敏
                                   </span>
                                 )}
                               </button>
@@ -9746,24 +9773,24 @@ export function AgentWorkbenchExperience({
                     taskRerunPlan.task_run_id === preparedRun.task_run_id && (
                       <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
                         <p>
-                          Rerun: {taskRerunPlan.status} / steps{" "}
+                          复跑计划: {runStatusDisplayLabel(taskRerunPlan.status)} / 步骤{" "}
                           {taskRerunPlan.steps?.length ?? 0}
                         </p>
                         <div className="mt-1 flex flex-wrap gap-1.5 font-data text-[10px]">
                           <span className="rounded bg-surface px-1.5 py-0.5">
-                            preserve-inputs:
+                            保留输入:
                             {String(taskRerunPlan.preserve_inputs ?? false)}
                           </span>
                           <span className="rounded bg-surface px-1.5 py-0.5">
-                            reuse-bundle:
+                            复用任务包:
                             {String(taskRerunPlan.reuse_task_bundle ?? false)}
                           </span>
                           <span className="rounded bg-surface px-1.5 py-0.5">
-                            history:{taskRerunHistory?.count ?? 0}
+                            历史:{taskRerunHistory?.count ?? 0}
                           </span>
                           {(taskRerunPlan.blocked_outputs?.length ?? 0) > 0 ? (
                             <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
-                              blocked:
+                              阻塞:
                               {taskRerunPlan.blocked_outputs?.length ?? 0}
                             </span>
                           ) : null}
@@ -9779,18 +9806,18 @@ export function AgentWorkbenchExperience({
                                     : "text-warning"
                                 }`}
                               >
-                                validation:{taskRerunPlanValidation.status}
+                                校验:{runStatusDisplayLabel(taskRerunPlanValidation.status)}
                               </span>
                               <span className="rounded bg-surface px-1.5 py-0.5">
-                                can-rerun:
+                                可复跑:
                                 {String(taskRerunPlanValidation.can_rerun)}
                               </span>
                               <span className="rounded bg-surface px-1.5 py-0.5">
-                                checks:
+                                检查项:
                                 {taskRerunPlanValidation.checks?.length ?? 0}
                               </span>
                               <span className="rounded bg-surface px-1.5 py-0.5">
-                                steps:
+                                步骤:
                                 {taskRerunPlanValidation.steps?.length ?? 0}
                               </span>
                             </div>
@@ -9798,10 +9825,9 @@ export function AgentWorkbenchExperience({
                         {taskRerunExecution && (
                           <div className="mt-1 space-y-0.5 font-data text-[10px] text-on-surface-variant">
                             <p>
-                              rerun-execution:{taskRerunExecution.status}{" "}
-                              workflow:
-                              {taskRerunExecution.execution?.status ??
-                                "unknown"}
+                              复跑执行:{runStatusDisplayLabel(taskRerunExecution.status)}{" "}
+                              工作流:
+                              {runStatusDisplayLabel(taskRerunExecution.execution?.status ?? "")}
                             </p>
                             {(() => {
                               const latest = taskRerunHistory?.records?.at(-1);
@@ -10199,7 +10225,7 @@ export function AgentWorkbenchExperience({
                               {artifact.kind}:{artifact.relative_path}
                               {artifact.preview_redacted && (
                                 <span className="ml-1 text-warning">
-                                  redacted
+                                  已脱敏
                                 </span>
                               )}
                             </button>
@@ -10259,10 +10285,10 @@ export function AgentWorkbenchExperience({
                                 sha:{artifactContent.sha256.slice(0, 12)}
                               </span>
                               {artifactContent.truncated && (
-                                <span className="text-warning">truncated</span>
+                                <span className="text-warning">已截断</span>
                               )}
                               {artifactContent.content_redacted && (
-                                <span className="text-warning">redacted</span>
+                                <span className="text-warning">已脱敏</span>
                               )}
                               {artifactContent.is_text && (
                                 <button
@@ -10298,11 +10324,11 @@ export function AgentWorkbenchExperience({
                                 <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-[11px] text-on-surface-variant">
                                   <div className="flex flex-wrap gap-2">
                                     <span>
-                                      Accepted artifacts:{" "}
+                                      已接收产物:{" "}
                                       {summary.acceptedCount}
                                     </span>
                                     <span>
-                                      Rejected artifacts:{" "}
+                                      被拒绝产物:{" "}
                                       {summary.rejectedCount}
                                     </span>
                                   </div>
@@ -10329,7 +10355,7 @@ export function AgentWorkbenchExperience({
                                             key={`${item.sourceStepId}:${item.artifact}:${item.reason}`}
                                           >
                                             {item.artifact || "artifact"}{" "}
-                                            rejected:{item.reason || "unknown"}
+                                            被拒绝:{item.reason || "unknown"}
                                           </div>
                                         ))}
                                     </div>
@@ -10347,19 +10373,19 @@ export function AgentWorkbenchExperience({
                                 <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-[11px] text-on-surface-variant">
                                   <div className="flex flex-wrap gap-2">
                                     <span>
-                                      Materialized evidence:{" "}
+                                      已固化证据:{" "}
                                       {summary.evidenceCount}
                                     </span>
                                     <span>
-                                      Rejected outputs: {summary.rejectedCount}
+                                      被拒绝输出: {summary.rejectedCount}
                                     </span>
                                     <span>
-                                      Declared outputs: {summary.outputCount}
+                                      声明输出: {summary.outputCount}
                                     </span>
                                     {summary.auditSummary
                                       .evidenceMemoryDeclaredCount > 0 && (
                                       <span>
-                                        evidence memory:
+                                        证据记忆:
                                         {
                                           summary.auditSummary
                                             .evidenceMemoryDeclaredCount
@@ -10388,19 +10414,19 @@ export function AgentWorkbenchExperience({
                                             {item.materializationStatus ||
                                               "unknown"}
                                             {item.artifact
-                                              ? ` artifact:${item.artifact}`
+                                              ? ` 产物:${item.artifact}`
                                               : ""}
                                             {item.mappingKind
-                                              ? ` mapping:${item.mappingKind}`
+                                              ? ` 映射:${item.mappingKind}`
                                               : ""}
                                             {item.materializedCount
-                                              ? ` evidence:${item.materializedCount}`
+                                              ? ` 证据:${item.materializedCount}`
                                               : ""}
                                             {item.rejectedCount
-                                              ? ` rejected:${item.rejectedCount}`
+                                              ? ` 被拒绝:${item.rejectedCount}`
                                               : ""}
                                             {item.rejectionReasons.length > 0
-                                              ? ` reason:${item.rejectionReasons[0]}`
+                                              ? ` 原因:${item.rejectionReasons[0]}`
                                               : ""}
                                           </div>
                                         ))}
@@ -10409,21 +10435,21 @@ export function AgentWorkbenchExperience({
                                   {summary.firstRejected && (
                                     <div className="mt-1 flex flex-wrap gap-2">
                                       <span>
-                                        First rejected:{" "}
+                                        首个拒绝项:{" "}
                                         {summary.firstRejected.output}
                                       </span>
                                       <span>
-                                        reason:{summary.firstRejected.reason}
+                                        原因:{summary.firstRejected.reason}
                                       </span>
                                       {summary.firstRejected.status && (
                                         <span>
-                                          status:{summary.firstRejected.status}
+                                          状态:{runStatusDisplayLabel(summary.firstRejected.status)}
                                         </span>
                                       )}
                                       {summary.firstRejected.schemaErrorCount >
                                         0 && (
                                         <span>
-                                          schema errors:
+                                          Schema 错误:
                                           {
                                             summary.firstRejected
                                               .schemaErrorCount
@@ -10434,7 +10460,7 @@ export function AgentWorkbenchExperience({
                                   )}
                                   {summary.workflowOutputsSha && (
                                     <div className="mt-1 font-data text-[10px]">
-                                      workflow_outputs sha:
+                                      工作流输出 sha:
                                       {summary.workflowOutputsSha.slice(0, 12)}
                                     </div>
                                   )}
@@ -10519,41 +10545,41 @@ export function AgentWorkbenchExperience({
                                   <div className="flex flex-wrap gap-2">
                                     <span>
                                       {summary.kind === "memory_retrieval"
-                                        ? "Memory retrieval"
-                                        : "Context bundle"}
+                                        ? "记忆检索"
+                                        : "上下文包"}
                                     </span>
                                     <span>
-                                      evidence:{summary.evidenceCount}
+                                      证据:{summary.evidenceCount}
                                     </span>
                                     <span>
-                                      deployment:{summary.deploymentCount}
+                                      部署证据:{summary.deploymentCount}
                                     </span>
                                     <span>
-                                      semantics:{summary.semanticCount}
+                                      语义:{summary.semanticCount}
                                     </span>
                                     <span>
-                                      slices:{summary.sourceSliceCount}
+                                      源码片段:{summary.sourceSliceCount}
                                     </span>
                                   </div>
                                   {summary.query && (
                                     <div className="mt-1 break-words font-data text-[10px]">
-                                      query:{summary.query}
+                                      查询:{summary.query}
                                     </div>
                                   )}
                                   <div className="mt-1 flex flex-wrap gap-2 font-data text-[10px]">
                                     {summary.firstSubject && (
-                                      <span>first:{summary.firstSubject}</span>
+                                      <span>首项:{summary.firstSubject}</span>
                                     )}
                                     {summary.firstDeploymentSubject && (
                                       <span>
-                                        deployment:
+                                        部署:
                                         {summary.firstDeploymentSubject}
                                       </span>
                                     )}
                                   </div>
                                   {summary.firstReuseReason && (
                                     <div className="mt-1 break-words text-[10px]">
-                                      reuse:{summary.firstReuseReason}
+                                      复用原因:{summary.firstReuseReason}
                                     </div>
                                   )}
                                 </div>
@@ -10566,33 +10592,33 @@ export function AgentWorkbenchExperience({
                               return (
                                 <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-[11px] text-on-surface-variant">
                                   <div className="flex flex-wrap gap-2">
-                                    <span>Input materials</span>
+                                    <span>输入材料</span>
                                     <span>
-                                      materials:{summary.materialCount}
+                                      材料数:{summary.materialCount}
                                     </span>
                                     <span>
-                                      must-read:{String(summary.mustRead)}
+                                      必读:{String(summary.mustRead)}
                                     </span>
                                     <span>
-                                      source-truth:
+                                      源码真相:
                                       {String(summary.materialsAreSourceTruth)}
                                     </span>
                                   </div>
                                   {summary.readOrder.length > 0 && (
                                     <div className="mt-1 break-words font-data text-[10px]">
-                                      read-order:
+                                      阅读顺序:
                                       {summary.readOrder.slice(0, 6).join(",")}
                                     </div>
                                   )}
                                   <div className="mt-1 flex flex-wrap gap-2 font-data text-[10px]">
                                     {summary.firstInputId && (
-                                      <span>first:{summary.firstInputId}</span>
+                                      <span>首项:{summary.firstInputId}</span>
                                     )}
                                     {summary.firstRole && (
-                                      <span>role:{summary.firstRole}</span>
+                                      <span>角色:{summary.firstRole}</span>
                                     )}
                                     {summary.firstFilename && (
-                                      <span>file:{summary.firstFilename}</span>
+                                      <span>文件:{summary.firstFilename}</span>
                                     )}
                                     {summary.firstSha && (
                                       <span>
@@ -10602,7 +10628,7 @@ export function AgentWorkbenchExperience({
                                   </div>
                                   {summary.firstChunksPath && (
                                     <div className="mt-1 break-words font-data text-[10px]">
-                                      chunks:{summary.firstChunksPath}
+                                      分片:{summary.firstChunksPath}
                                     </div>
                                   )}
                                 </div>
@@ -10615,23 +10641,23 @@ export function AgentWorkbenchExperience({
                               return (
                                 <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-[11px] text-on-surface-variant">
                                   <div className="flex flex-wrap gap-2">
-                                    <span>Failure retry</span>
+                                    <span>失败重试</span>
                                     {summary.stepId && (
-                                      <span>step:{summary.stepId}</span>
+                                      <span>节点:{summary.stepId}</span>
                                     )}
                                     {summary.failureKind && (
-                                      <span>kind:{summary.failureKind}</span>
+                                      <span>类型:{summary.failureKind}</span>
                                     )}
                                     <span>
-                                      retryable:{String(summary.retryable)}
+                                      可重试:{String(summary.retryable)}
                                     </span>
                                     {summary.exitCode && (
-                                      <span>exit:{summary.exitCode}</span>
+                                      <span>退出码:{summary.exitCode}</span>
                                     )}
                                   </div>
                                   {summary.missingArtifacts.length > 0 && (
                                     <div className="mt-1 break-words font-data text-[10px]">
-                                      missing:
+                                      缺失产物:
                                       {summary.missingArtifacts
                                         .slice(0, 6)
                                         .join(",")}
@@ -10639,7 +10665,7 @@ export function AgentWorkbenchExperience({
                                   )}
                                   {summary.mustProduceArtifacts.length > 0 && (
                                     <div className="mt-1 break-words font-data text-[10px]">
-                                      must-produce:
+                                      必须生成:
                                       {summary.mustProduceArtifacts
                                         .slice(0, 6)
                                         .join(",")}
@@ -10650,19 +10676,19 @@ export function AgentWorkbenchExperience({
                                       {summary.doNotRepeat
                                         .slice(0, 3)
                                         .map((item) => (
-                                          <span key={item}>do-not:{item}</span>
+                                          <span key={item}>避免重复:{item}</span>
                                         ))}
                                     </div>
                                   )}
                                   {summary.stderrExcerpt && (
                                     <div className="mt-1 break-words text-[10px]">
-                                      stderr:
+                                      错误输出:
                                       {summary.stderrExcerpt.slice(0, 180)}
                                     </div>
                                   )}
                                   {summary.stdoutExcerpt && (
                                     <div className="mt-1 break-words text-[10px]">
-                                      stdout:
+                                      标准输出:
                                       {summary.stdoutExcerpt.slice(0, 180)}
                                     </div>
                                   )}
@@ -10677,58 +10703,58 @@ export function AgentWorkbenchExperience({
                                 <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-[11px] text-on-surface-variant">
                                   <div className="flex flex-wrap gap-2">
                                     <span>
-                                      Replay status: {summary.replayStatus}
+                                      回放状态: {runStatusDisplayLabel(summary.replayStatus)}
                                     </span>
                                     {summary.provider && (
-                                      <span>provider:{summary.provider}</span>
+                                      <span>执行器:{summary.provider}</span>
                                     )}
                                     {summary.turnId && (
-                                      <span>turn:{summary.turnId}</span>
+                                      <span>轮次:{summary.turnId}</span>
                                     )}
                                     {summary.promptSource && (
-                                      <span>prompt:{summary.promptSource}</span>
+                                      <span>提示词:{summary.promptSource}</span>
                                     )}
                                     {summary.promptTransport && (
                                       <span>
-                                        transport:{summary.promptTransport}
+                                        传输:{summary.promptTransport}
                                       </span>
                                     )}
                                     {summary.timeoutSec > 0 && (
-                                      <span>timeout:{summary.timeoutSec}s</span>
+                                      <span>超时:{summary.timeoutSec}s</span>
                                     )}
                                     <span>
-                                      readonly:
+                                      只读:
                                       {String(summary.readonlyRequired)}
                                     </span>
                                     <span>
-                                      validates:
+                                      校验输出:
                                       {String(summary.validatesOutputs)}
                                     </span>
-                                    <span>hashes:{summary.hashCount}</span>
+                                    <span>哈希:{summary.hashCount}</span>
                                   </div>
                                   <div className="mt-1 flex flex-wrap gap-2 font-data text-[10px]">
                                     {summary.taskBundleSha && (
                                       <span>
-                                        task_bundle sha:
+                                        任务包 sha:
                                         {summary.taskBundleSha.slice(0, 12)}
                                       </span>
                                     )}
                                     {summary.executionInputSha && (
                                       <span>
-                                        execution_input sha:
+                                        执行输入 sha:
                                         {summary.executionInputSha.slice(0, 12)}
                                       </span>
                                     )}
                                     {summary.contractSha && (
                                       <span>
-                                        contract sha:
+                                        契约 sha:
                                         {summary.contractSha.slice(0, 12)}
                                       </span>
                                     )}
                                   </div>
                                   {summary.cwd && (
                                     <div className="mt-1 break-words font-data text-[10px]">
-                                      cwd:{summary.cwd}
+                                      工作目录:{summary.cwd}
                                     </div>
                                   )}
                                 </div>
@@ -10741,33 +10767,33 @@ export function AgentWorkbenchExperience({
                               return (
                                 <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-[11px] text-on-surface-variant">
                                   <div className="flex flex-wrap gap-2">
-                                    <span>Execution input</span>
+                                    <span>执行输入</span>
                                     {summary.provider && (
-                                      <span>provider:{summary.provider}</span>
+                                      <span>执行器:{summary.provider}</span>
                                     )}
                                     {summary.turnId && (
-                                      <span>turn:{summary.turnId}</span>
+                                      <span>轮次:{summary.turnId}</span>
                                     )}
                                     {summary.promptTransport && (
                                       <span>
-                                        transport:{summary.promptTransport}
+                                        传输:{summary.promptTransport}
                                       </span>
                                     )}
                                     {summary.promptTransportReason && (
                                       <span>
-                                        reason:{summary.promptTransportReason}
+                                        原因:{summary.promptTransportReason}
                                       </span>
                                     )}
                                     {summary.timeoutSec > 0 && (
-                                      <span>timeout:{summary.timeoutSec}s</span>
+                                      <span>超时:{summary.timeoutSec}s</span>
                                     )}
                                     <span>
-                                      stdin redacted:
+                                      标准输入已脱敏:
                                       {String(summary.stdinRedacted)}
                                     </span>
                                     {summary.readonlyEnv && (
                                       <span>
-                                        readonly env:{summary.readonlyEnv}
+                                        只读环境:{summary.readonlyEnv}
                                       </span>
                                     )}
                                   </div>
@@ -10795,8 +10821,7 @@ export function AgentWorkbenchExperience({
                             })()}
                             {artifactContent.content_redacted ? (
                               <p className="mt-2 rounded bg-surface-container p-2 text-[11px] text-warning">
-                                Artifact content is redacted and hidden from
-                                inline preview.
+                                产物内容已脱敏，内联预览已隐藏。
                               </p>
                             ) : artifactContent.is_text ? (
                               <pre className="mt-2 max-h-52 overflow-auto whitespace-pre-wrap break-words rounded bg-surface-container p-2 font-data text-[10px] text-on-surface">
@@ -10804,7 +10829,7 @@ export function AgentWorkbenchExperience({
                               </pre>
                             ) : (
                               <p className="mt-2 text-[11px] text-on-surface-variant">
-                                Binary artifact content is not rendered inline.
+                                二进制产物不在页面内直接渲染。
                               </p>
                             )}
                           </div>
@@ -10813,33 +10838,33 @@ export function AgentWorkbenchExperience({
                     )}
                   {workflowExecution && (
                     <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
-                      工作流: {workflowExecution.status} / steps{" "}
-                      {workflowExecution.step_results.length} / outputs{" "}
+                      工作流: {runStatusDisplayLabel(workflowExecution.status)} / 步骤{" "}
+                      {workflowExecution.step_results.length} / 输出{" "}
                       {workflowExecution.outputs?.length ?? 0}
                       {workflowExecution.audit_summary && (
                         <div className="mt-1 flex flex-wrap gap-1.5 font-data text-[10px]">
                           <span className="rounded bg-surface px-1.5 py-0.5">
-                            agent:
+                            智能体:
                             {workflowExecution.audit_summary.agent_step_count ??
                               0}
                           </span>
                           <span className="rounded bg-surface px-1.5 py-0.5">
-                            invalid:
+                            无效:
                             {workflowExecution.audit_summary.invalid_steps ?? 0}
                           </span>
                           <span className="rounded bg-surface px-1.5 py-0.5">
-                            errors:
+                            错误:
                             {workflowExecution.audit_summary.error_steps ?? 0}
                           </span>
                           <span className="rounded bg-surface px-1.5 py-0.5">
-                            lifecycle:
+                            生命周期:
                             {workflowExecution.audit_summary
                               .agent_lifecycle_artifacts?.length ?? 0}
                           </span>
                           {workflowExecution.audit_summary.failure_kinds
                             ?.length ? (
                             <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
-                              failure:
+                              失败类型:
                               {workflowExecution.audit_summary.failure_kinds.join(
                                 ",",
                               )}
@@ -10848,7 +10873,7 @@ export function AgentWorkbenchExperience({
                           {workflowExecution.audit_summary.missing_artifacts
                             ?.length ? (
                             <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
-                              missing:
+                              缺失产物:
                               {workflowExecution.audit_summary.missing_artifacts.join(
                                 ",",
                               )}
@@ -10859,17 +10884,17 @@ export function AgentWorkbenchExperience({
                       {workflowExecution.rerun_plan && (
                         <div className="mt-1 flex flex-wrap gap-1.5 font-data text-[10px]">
                           <span className="rounded bg-surface px-1.5 py-0.5">
-                            rerun:
-                            {workflowExecution.rerun_plan.status ?? "unknown"}
+                            复跑:
+                            {runStatusDisplayLabel(workflowExecution.rerun_plan.status ?? "")}
                           </span>
                           <span className="rounded bg-surface px-1.5 py-0.5">
-                            rerun-steps:
+                            复跑步骤:
                             {workflowExecution.rerun_plan.steps?.length ?? 0}
                           </span>
                           {(workflowExecution.rerun_plan.blocked_outputs
                             ?.length ?? 0) > 0 ? (
                             <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
-                              blocked-outputs:
+                              阻塞输出:
                               {workflowExecution.rerun_plan.blocked_outputs
                                 ?.length ?? 0}
                             </span>
@@ -10886,11 +10911,11 @@ export function AgentWorkbenchExperience({
                                 : "text-warning"
                             }`}
                           >
-                            evidence:
-                            {workflowExecution.evidence_materialization.status}
+                            证据:
+                            {runStatusDisplayLabel(workflowExecution.evidence_materialization.status)}
                           </span>
                           <span className="rounded bg-surface px-1.5 py-0.5">
-                            evidence-items:
+                            证据项:
                             {
                               workflowExecution.evidence_materialization
                                 .evidence_count
@@ -10899,7 +10924,7 @@ export function AgentWorkbenchExperience({
                           {workflowExecution.evidence_materialization
                             .rejected_outputs.length > 0 ? (
                             <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
-                              rejected:
+                              被拒绝:
                               {
                                 workflowExecution.evidence_materialization
                                   .rejected_outputs.length
@@ -10920,12 +10945,11 @@ export function AgentWorkbenchExperience({
                                 : "text-warning"
                             }`}
                           >
-                            semantics:
-                            {workflowExecution.semantic_output_import.status ??
-                              "unknown"}
+                            语义:
+                            {runStatusDisplayLabel(workflowExecution.semantic_output_import.status ?? "")}
                           </span>
                           <span className="rounded bg-surface px-1.5 py-0.5">
-                            semantic-cases:
+                            语义用例:
                             {
                               workflowExecution.semantic_output_import
                                 .imported_count
@@ -10934,7 +10958,7 @@ export function AgentWorkbenchExperience({
                           {workflowExecution.semantic_output_import
                             .rejected_count > 0 ? (
                             <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
-                              rejected:
+                              被拒绝:
                               {
                                 workflowExecution.semantic_output_import
                                   .rejected_count
@@ -11084,12 +11108,12 @@ export function AgentWorkbenchExperience({
                   {workflowOutputMaterialize && (
                     <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
                       <p>
-                        Output evidence: {workflowOutputMaterialize.status} /{" "}
-                        {workflowOutputMaterialize.evidence_count} items
+                        输出证据: {runStatusDisplayLabel(workflowOutputMaterialize.status)} /{" "}
+                        {workflowOutputMaterialize.evidence_count} 项
                         {workflowOutputMaterialize.rejected_outputs.length >
                           0 && (
                           <span className="ml-2 text-warning">
-                            rejected{" "}
+                            被拒绝{" "}
                             {workflowOutputMaterialize.rejected_outputs.length}
                           </span>
                         )}
@@ -11104,7 +11128,7 @@ export function AgentWorkbenchExperience({
                                 key={`${rejectedOutputLabel(item)}:${index}`}
                                 className="break-words"
                               >
-                                {rejectedOutputLabel(item)} rejected:
+                                {rejectedOutputLabel(item)} 被拒绝:
                                 {rejectedOutputReason(item)}
                               </div>
                             ))}
@@ -11114,7 +11138,7 @@ export function AgentWorkbenchExperience({
                               +
                               {workflowOutputMaterialize.rejected_outputs
                                 .length - 4}{" "}
-                              more
+                              个更多
                             </div>
                           )}
                         </div>
@@ -11138,15 +11162,15 @@ export function AgentWorkbenchExperience({
                                 }
                               >
                                 {item.outputId}:
-                                {item.materializationStatus || "unknown"}
+                                {runStatusDisplayLabel(item.materializationStatus || "")}
                                 {item.artifact
-                                  ? ` artifact:${item.artifact}`
+                                  ? ` 产物:${item.artifact}`
                                   : ""}
                                 {item.materializedCount
-                                  ? ` evidence:${item.materializedCount}`
+                                  ? ` 证据:${item.materializedCount}`
                                   : ""}
                                 {item.rejectedCount
-                                  ? ` rejected:${item.rejectedCount}`
+                                  ? ` 被拒绝:${item.rejectedCount}`
                                   : ""}
                               </div>
                             ))}
@@ -11158,18 +11182,18 @@ export function AgentWorkbenchExperience({
                   {semanticOutputImport && (
                     <div className="mt-2 rounded bg-surface-container px-2 py-1.5 text-on-surface-variant">
                       <p>
-                        Semantic import:{" "}
-                        {semanticOutputImport.status ?? "unknown"} /{" "}
-                        {semanticOutputImport.imported_count} imported
+                        语义导入:{" "}
+                        {runStatusDisplayLabel(semanticOutputImport.status ?? "")} /{" "}
+                        {semanticOutputImport.imported_count} 条
                         {semanticOutputImport.rejected_count > 0 && (
                           <span className="ml-2 text-warning">
-                            rejected {semanticOutputImport.rejected_count}
+                            被拒绝 {semanticOutputImport.rejected_count}
                           </span>
                         )}
                       </p>
                       {semanticOutputImport.source_ref && (
                         <p className="mt-1 break-words font-data text-[10px]">
-                          source:{semanticOutputImport.source_ref}
+                          来源:{semanticOutputImport.source_ref}
                         </p>
                       )}
                       {semanticOutputImport.rejected.length > 0 && (
@@ -11182,13 +11206,13 @@ export function AgentWorkbenchExperience({
                                 className="break-words"
                               >
                                 {String(item.output ?? item.case_id ?? "case")}{" "}
-                                rejected:
+                                被拒绝:
                                 {item.reason}
                               </div>
                             ))}
                           {semanticOutputImport.rejected.length > 4 && (
                             <div>
-                              +{semanticOutputImport.rejected.length - 4} more
+                              +{semanticOutputImport.rejected.length - 4} 个更多
                             </div>
                           )}
                         </div>
@@ -11396,7 +11420,7 @@ export function AgentWorkbenchExperience({
                                         key={`${String(item.artifact ?? "artifact")}:${String(item.reason ?? "rejected")}`}
                                       >
                                         {String(item.artifact ?? "artifact")}{" "}
-                                        rejected:
+                                        被拒绝:
                                         {String(item.reason ?? "unknown")}
                                       </div>
                                     ))}
@@ -11407,8 +11431,8 @@ export function AgentWorkbenchExperience({
                           {materialized && (
                             <div className="mt-2 rounded bg-surface px-2 py-1.5 text-on-surface-variant">
                               <p>
-                                Evidence: {materialized.status} /{" "}
-                                {materialized.evidence_count} items
+                                证据: {runStatusDisplayLabel(materialized.status)} /{" "}
+                                {materialized.evidence_count} 项
                               </p>
                             </div>
                           )}

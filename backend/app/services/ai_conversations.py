@@ -4027,13 +4027,15 @@ def _test_activity_task_card_actions(*, conversation: dict[str, Any], user_messa
         workflow_outputs=requested_outputs,
         user_requirements=user_message,
     )
-    workflow_href = "/workbench?" + urlencode(
-        {
+    workspace_id = _conversation_workspace_id(conversation)
+    workflow_query = {
             "workflow": "source_flow_sfmea_blackbox",
             "target": contract["target"],
             "outputs": ",".join(str(item) for item in contract["required_outputs"]),
-        }
-    )
+    }
+    if workspace_id and workspace_id != "global":
+        workflow_query["workspace_id"] = workspace_id
+    workflow_href = "/workbench?" + urlencode(workflow_query)
     return [
         {
             "id": "test_activity_task_card",
@@ -4045,6 +4047,7 @@ def _test_activity_task_card_actions(*, conversation: dict[str, Any], user_messa
             "evidence_policy": contract["evidence_policy"],
             "focus_rationale": contract["focus_rationale"][:6],
             "workflow_template_id": "source_flow_sfmea_blackbox",
+            "workspace_id": workspace_id if workspace_id != "global" else "",
             "href": workflow_href,
             "edit_contract_href": "/workbench/designer",
         }
