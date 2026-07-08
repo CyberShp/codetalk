@@ -3760,6 +3760,8 @@ async def _workbench_task_refs(scope_type: str, scope_id: str) -> list[ContextRe
     candidates = [
         "task_run.json",
         "task_bundle.json",
+        "test_activity_contract.json",
+        "test_activity_quality_audit.json",
         "task_artifact_manifest.json",
         "workflow_execution.json",
         "artifact_manifest.json",
@@ -3782,7 +3784,7 @@ async def _workbench_task_refs(scope_type: str, scope_id: str) -> list[ContextRe
                 metadata={"task_run_id": scope_id, "path": name},
             )
         )
-    return refs[:3]
+    return refs[:6]
 
 
 async def _evidence_memory_refs(workspace_id: str, query: str) -> list[ContextReference]:

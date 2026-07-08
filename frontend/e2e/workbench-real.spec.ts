@@ -605,6 +605,8 @@ test("executes source-flow SFMEA black-box workflow through the real workbench U
     timeout: 30_000,
   });
   await expect(page.getByText(/质量审计 · 可交付/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "生成补证据计划" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "只重跑低质量交付件" })).toBeVisible();
 
   const hiddenArtifactsToggle = page.getByText(/展开其余 \d+ 个产物/);
   if (await hiddenArtifactsToggle.isVisible()) {
