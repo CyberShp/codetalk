@@ -2504,7 +2504,8 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
 .ct-test-activity-card__header,
 .ct-test-activity-card__actions,
-.ct-test-activity-card__outputs {
+.ct-test-activity-card__outputs,
+.ct-test-activity-card__policy {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2552,22 +2553,35 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   font-weight: 720;
 }
 
-.ct-test-activity-card__outputs {
+.ct-test-activity-card__outputs,
+.ct-test-activity-card__policy {
   align-items: flex-start;
   border-top: 1px solid rgba(203, 213, 225, 0.66);
   padding-top: 8px;
 }
 
-.ct-test-activity-card__outputs span {
+.ct-test-activity-card__outputs span,
+.ct-test-activity-card__policy span {
   flex: 0 0 auto;
   color: #64748b;
   font-size: 11px;
   font-weight: 760;
 }
 
-.ct-test-activity-card__outputs p {
+.ct-test-activity-card__outputs p,
+.ct-test-activity-card__policy p {
   text-align: right;
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+}
+
+.ct-test-activity-card__policy small {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: #eef6ff;
+  padding: 2px 7px;
+  color: #0369a1;
+  font-size: 11px;
+  font-weight: 760;
 }
 
 .ct-test-activity-card__details {

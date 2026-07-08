@@ -129,6 +129,36 @@ function actionRecordField(action: AIMessage["actions"][number], field: string):
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
 }
 
+function evidenceSourceLabel(source: string): string {
+  const normalized = source.trim().toLowerCase();
+  if (normalized === "workspace_source" || normalized === "source" || normalized === "local_source") return "工作区源码";
+  if (normalized === "gitnexus") return "GitNexus";
+  if (normalized === "cgc" || normalized === "joern" || normalized === "cpg") return "CGC";
+  if (normalized === "coverage") return "覆盖率";
+  if (normalized === "semantic_memory" || normalized === "memory") return "语义库";
+  return source;
+}
+
+function evidencePolicySources(policy: Record<string, unknown> | null): string[] {
+  const raw = policy?.required_sources;
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  return raw
+    .map((item) => evidenceSourceLabel(String(item || "").trim()))
+    .filter(Boolean)
+    .filter((item) => {
+      if (seen.has(item)) return false;
+      seen.add(item);
+      return true;
+    });
+}
+
+function evidenceMinimumLabel(policy: Record<string, unknown> | null): string {
+  const raw = policy?.minimum_evidence;
+  const value = typeof raw === "number" ? raw : Number.parseInt(String(raw ?? ""), 10);
+  return Number.isFinite(value) && value > 0 ? `至少 ${value} 条证据` : "证据数量按契约校验";
+}
+
 function testActivityActions(actions: AIMessage["actions"] | null | undefined): AIMessage["actions"] {
   return (actions ?? []).filter((action) => actionKind(action) === "test_activity" || actionId(action) === "test_activity_task_card");
 }
@@ -1471,6 +1501,7 @@ export default function AIThreadPage() {
                         const rationale = actionArrayField(action, "focus_rationale").slice(0, 3);
                         const evidencePolicy = actionRecordField(action, "evidence_policy");
                         const sourceFirst = evidencePolicy?.source_first === true;
+                        const evidenceSources = evidencePolicySources(evidencePolicy);
                         const workflowHref = actionHref(action) || "/workbench";
                         const editHref = actionTextField(action, "edit_contract_href") || "/workbench/designer";
 
@@ -1500,6 +1531,16 @@ export default function AIThreadPage() {
                                 <p>{outputs.join(" · ")}</p>
                               </div>
                             )}
+                            <div className="ct-test-activity-card__policy">
+                              <span>证据策略</span>
+                              <p>
+                                {sourceFirst ? "先查" : "优先使用"}
+                                {evidenceSources.length > 0
+                                  ? evidenceSources.join("、")
+                                  : "工作区源码"}
+                              </p>
+                              <small>{evidenceMinimumLabel(evidencePolicy)}</small>
+                            </div>
                             {rationale.length > 0 && (
                               <details className="ct-test-activity-card__details">
                                 <summary>为什么这样定测试方向</summary>
@@ -1513,7 +1554,7 @@ export default function AIThreadPage() {
                             <div className="ct-test-activity-card__actions">
                               <Link href={workflowHref}>
                                 <PlayCircle size={14} />
-                                切换为工作流
+                                启动工作流
                               </Link>
                               <Link href={editHref}>编辑契约</Link>
                             </div>

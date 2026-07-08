@@ -387,6 +387,84 @@ test("AI conversation evidence cards prioritize latest assistant precise source 
   await expect(cards.nth(1)).toContainText("lib/iscsi/conn.c:L180-L232");
 });
 
+test("AI test activity task card explains contract and opens workflow with parameters", async ({
+  page,
+}) => {
+  const target = "针对 iSCSI login 输出 SFMEA 和黑盒测试用例";
+  const outputs = "sfmea.json,black_box_cases.json";
+  await mockReadableConversation(page, {
+    extraMessages: [
+      {
+        id: "msg-test-activity-user",
+        conversation_id: "conv-1",
+        run_id: "run-test-activity",
+        role: "user",
+        content: target,
+        references: [],
+        actions: [],
+        created_at: "2026-06-28T00:00:02Z",
+      },
+      {
+        id: "msg-test-activity-assistant",
+        conversation_id: "conv-1",
+        run_id: "run-test-activity",
+        role: "assistant",
+        content: "已生成测试活动契约，可切换到工作流运行并产出文件。",
+        references: [],
+        actions: [
+          {
+            id: "test_activity_task_card",
+            kind: "test_activity",
+            label: "测试活动任务卡",
+            target,
+            domain_profiles: ["iscsi_login", "resource_lifecycle"],
+            recommended_outputs: ["sfmea.json", "black_box_cases.json"],
+            evidence_policy: {
+              source_first: true,
+              required_sources: ["workspace_source", "gitnexus", "cgc"],
+              minimum_evidence: 3,
+            },
+            focus_rationale: [
+              "用户显式要求 iSCSI login、SFMEA、黑盒用例",
+              "领域画像 iscsi_login 要覆盖 CHAP、digest、session reset",
+              "项目画像建议优先读取 lib/iscsi 与 test/iscsi_tgt",
+            ],
+            workflow_template_id: "source_flow_sfmea_blackbox",
+            workspace_id: "ws-1",
+            href: `/workbench?workflow=source_flow_sfmea_blackbox&workspace_id=ws-1&target=${encodeURIComponent(
+              target,
+            )}&outputs=${encodeURIComponent(outputs)}`,
+            edit_contract_href: "/workbench/designer",
+          },
+        ],
+        created_at: "2026-06-28T00:00:03Z",
+      },
+    ],
+  });
+
+  await page.goto("/ai/conv-1", { waitUntil: "domcontentloaded" });
+
+  const taskCard = page.locator(".ct-test-activity-card").filter({ hasText: "测试活动任务卡" });
+  await expect(taskCard).toBeVisible();
+  await expect(taskCard).toContainText(target);
+  await expect(taskCard.getByLabel("识别到的测试画像")).toContainText("iscsi_login");
+  await expect(taskCard.getByText("推荐交付件")).toBeVisible();
+  await expect(taskCard.getByText("sfmea.json · black_box_cases.json")).toBeVisible();
+  await expect(taskCard.getByText("证据策略")).toBeVisible();
+  await expect(taskCard.getByText("先查工作区源码、GitNexus、CGC")).toBeVisible();
+  await expect(taskCard.getByText("至少 3 条证据")).toBeVisible();
+  await taskCard.getByText("为什么这样定测试方向").click();
+  await expect(taskCard.getByText("领域画像 iscsi_login 要覆盖 CHAP")).toBeVisible();
+
+  await taskCard.getByRole("link", { name: /启动工作流/ }).click();
+  await expect(page).toHaveURL(/\/workbench\?/);
+  const url = new URL(page.url());
+  expect(url.searchParams.get("workflow")).toBe("source_flow_sfmea_blackbox");
+  expect(url.searchParams.get("workspace_id")).toBe("ws-1");
+  expect(url.searchParams.get("target")).toBe(target);
+  expect(url.searchParams.get("outputs")).toBe(outputs);
+});
+
 test("AI conversation evidence cards keep long source excerpts folded", async ({ page }) => {
   const longSourceExcerpt = Array.from({ length: 26 }, (_, index) =>
     `${index + 1}: if (login_phase_${index} && chap_state_${index}) { return iscsi_login_error_${index}; }`,
