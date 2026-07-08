@@ -6171,6 +6171,92 @@ export function AgentWorkbenchExperience({
       );
     });
 
+  const buildPreparedConversationInitialContext = () => {
+    if (!preparedRun) return {};
+    const stepResults = workflowExecution?.step_results ?? [];
+    const auditSummary = workflowExecution?.audit_summary ?? {};
+    const completedSteps =
+      auditSummary.completed_steps ??
+      stepResults.filter((step) =>
+        ["ok", "success", "completed", "ready", "passed"].includes(
+          String(step.status ?? "").toLowerCase(),
+        ),
+      ).length;
+    const failedSteps =
+      (auditSummary.error_steps ?? 0) +
+        (auditSummary.invalid_steps ?? 0) ||
+      stepResults.filter((step) =>
+        ["error", "failed", "failure", "invalid", "timeout"].includes(
+          String(step.status ?? "").toLowerCase(),
+        ),
+      ).length;
+    const deliverables = (workflowExecution?.outputs ?? []).map((output) => ({
+      id: String(output.id ?? output.name ?? output.artifact ?? ""),
+      status: String(output.status ?? ""),
+      artifact: String(output.artifact ?? output.path ?? ""),
+    }));
+    const artifacts = artifactManifest?.artifacts ?? [];
+    const artifactSummary = {
+      artifact_count: artifacts.length,
+      user_deliverable_count: artifacts.filter(
+        (artifact) => artifactAudience(artifact) === "deliverable",
+      ).length,
+      diagnostic_count: artifacts.filter(
+        (artifact) => artifactAudience(artifact) === "diagnostic",
+      ).length,
+    };
+    const quality = workflowExecution?.test_activity_quality;
+    const failureRecovery = stepResults
+      .map((step) => step.failure_recovery)
+      .filter(Boolean)
+      .map((recovery) => ({
+        failure_kind: recovery?.failure_kind,
+        retryable: recovery?.retryable,
+        user_message: recovery?.user_message,
+        recommended_actions: recovery?.recommended_actions ?? [],
+        suggested_actions: recovery?.suggested_actions ?? [],
+        missing_artifacts: recovery?.missing_artifacts ?? [],
+      }));
+
+    return {
+      workflow_id: preparedRun.workflow_id,
+      task_run_id: preparedRun.task_run_id,
+      workspace_id: preparedRun.workspace_id,
+      memory_namespace: `workspace:${preparedRun.workspace_id}`,
+      repo_path: preparedRun.repo_path,
+      artifact_dir: preparedRun.artifact_dir,
+      agent_runs_count: preparedRun.agent_runs.length,
+      agent_runs: preparedRun.agent_runs.map((agentRun) => ({
+        step_id: agentRun.step_id,
+        run_id: agentRun.run_id,
+        artifact_dir: agentRun.artifact_dir,
+      })),
+      workflow_execution_summary: workflowExecution
+        ? {
+            status: workflowExecution.status,
+            started_at: workflowExecution.started_at,
+            completed_at: workflowExecution.completed_at,
+            completed_steps: completedSteps,
+            failed_steps: failedSteps,
+            output_count: workflowExecution.outputs?.length ?? 0,
+            failure_kinds: auditSummary.failure_kinds ?? [],
+          }
+        : undefined,
+      deliverables,
+      artifact_manifest_summary: artifactSummary,
+      test_activity_quality: quality
+        ? {
+            status: quality.status,
+            deliverable: quality.deliverable,
+            score: quality.score,
+            issue_count: quality.issue_count,
+            recommendations: quality.recommendations ?? [],
+          }
+        : undefined,
+      failure_recovery: failureRecovery,
+    };
+  };
+
   const openPreparedConversation = async () => {
     if (!preparedRun || taskRunActionBusy) return;
     setOpeningConversation(true);
@@ -6181,20 +6267,7 @@ export function AgentWorkbenchExperience({
         workspace_id: preparedRun.workspace_id,
         memory_namespace: `workspace:${preparedRun.workspace_id}`,
         title: `${workflowDisplayName(preparedRun.workflow_id)} · AI 复盘`,
-        initial_context: {
-          workflow_id: preparedRun.workflow_id,
-          task_run_id: preparedRun.task_run_id,
-          workspace_id: preparedRun.workspace_id,
-          memory_namespace: `workspace:${preparedRun.workspace_id}`,
-          repo_path: preparedRun.repo_path,
-          artifact_dir: preparedRun.artifact_dir,
-          agent_runs_count: preparedRun.agent_runs.length,
-          agent_runs: preparedRun.agent_runs.map((agentRun) => ({
-            step_id: agentRun.step_id,
-            run_id: agentRun.run_id,
-            artifact_dir: agentRun.artifact_dir,
-          })),
-        },
+        initial_context: buildPreparedConversationInitialContext(),
       });
       router.push(`/ai/${conversation.id}`);
     } catch (exc) {

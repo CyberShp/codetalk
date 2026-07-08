@@ -2237,6 +2237,7 @@ test("agent workbench prevents duplicate artifact preview requests from a real d
 test("agent workbench opens one AI review thread on double click", async ({ page }) => {
   await routeWorkbenchShell(page);
   let createConversationCalls = 0;
+  let createConversationBody: Record<string, unknown> | null = null;
 
   await page.route("**/api/workbench/task-runs/prepare", async (route) => {
     await route.fulfill({
@@ -2255,13 +2256,94 @@ test("agent workbench opens one AI review thread on double click", async ({ page
       },
     });
   });
+  await page.route("**/api/workbench/task-runs/task_run_ai_review/execute", async (route) => {
+    await route.fulfill({
+      headers: corsHeaders(route.request().headers().origin),
+      json: {
+        task_run_id: "task_run_ai_review",
+        workflow_id: "mr-blackbox-workflow",
+        status: "completed",
+        started_at: "2026-06-23T00:01:00Z",
+        completed_at: "2026-06-23T00:02:30Z",
+        step_results: [
+          {
+            step_id: "collect",
+            step_label: "收集证据",
+            status: "ok",
+            duration_ms: 1200,
+          },
+          {
+            step_id: "test_design",
+            step_label: "生成测试设计",
+            status: "ok",
+            duration_ms: 3600,
+          },
+        ],
+        outputs: [
+          {
+            id: "sfmea",
+            status: "ok",
+            artifact: "sfmea.json",
+          },
+          {
+            id: "black_box_cases",
+            status: "ok",
+            artifact: "black_box_cases.json",
+          },
+        ],
+        audit_summary: {
+          completed_steps: 2,
+          failed_steps: 0,
+          failure_kinds: [],
+        },
+        test_activity_quality: {
+          status: "deliverable",
+          score: 88,
+          issue_count: 1,
+          recommendations: ["补充 iSCSI CHAP 异常恢复观测点"],
+        },
+      },
+    });
+  });
+  await page.route(
+    "**/api/workbench/task-runs/task_run_ai_review/rerun-plan/validate",
+    async (route) => {
+      await route.fulfill({
+        headers: corsHeaders(route.request().headers().origin),
+        json: { can_rerun: false, blockers: [], warnings: [] },
+      });
+    },
+  );
   await page.route("**/api/workbench/task-runs/task_run_ai_review/artifacts", async (route) => {
     await route.fulfill({
       headers: corsHeaders(route.request().headers().origin),
       json: {
         task_run_id: "task_run_ai_review",
         artifact_dir: "E:/data/workbench/task_runs/task_run_ai_review",
-        artifacts: [],
+        artifacts: [
+          {
+            task_run_id: "task_run_ai_review",
+            artifact_dir: "E:/data/workbench/task_runs/task_run_ai_review",
+            relative_path: "sfmea.json",
+            kind: "workflow_output",
+            size_bytes: 1024,
+            sha256: "sfmea-sha",
+            audience: "deliverable",
+            is_text: true,
+            truncated: false,
+          },
+          {
+            task_run_id: "task_run_ai_review",
+            artifact_dir: "E:/data/workbench/task_runs/task_run_ai_review",
+            relative_path: "black_box_cases.json",
+            kind: "workflow_output",
+            size_bytes: 2048,
+            sha256: "cases-sha",
+            audience: "deliverable",
+            is_text: true,
+            truncated: false,
+          },
+        ],
       },
     });
   });
@@ -2278,6 +2360,7 @@ test("agent workbench opens one AI review thread on double click", async ({ page
       return;
     }
     createConversationCalls += 1;
+    createConversationBody = await route.request().postDataJSON();
     await route.fulfill({
       headers: corsHeaders(route.request().headers().origin),
       json: {
@@ -2306,10 +2389,38 @@ test("agent workbench opens one AI review thread on double click", async ({ page
   await page.getByRole("button", { name: "准备运行" }).click();
   await page.getByLabel("运行详细诊断").getByText("查看详细诊断与原始产物").click();
   await expect(page.getByRole("paragraph").filter({ hasText: /^task_run_ai_review$/ })).toBeVisible();
+  await page.getByRole("button", { name: "执行工作流" }).click();
+  await expect(page.getByText("运行完成", { exact: false }).first()).toBeVisible();
 
   await page.getByRole("button", { name: "围绕本次运行继续追问" }).dblclick();
 
   await expect.poll(() => createConversationCalls).toBe(1);
+  expect(createConversationBody?.initial_context).toMatchObject({
+    workflow_id: "mr-blackbox-workflow",
+    task_run_id: "task_run_ai_review",
+    workflow_execution_summary: {
+      status: "completed",
+      completed_steps: 2,
+      failed_steps: 0,
+      output_count: 2,
+      failure_kinds: [],
+    },
+    test_activity_quality: {
+      status: "deliverable",
+      score: 88,
+      issue_count: 1,
+      recommendations: ["补充 iSCSI CHAP 异常恢复观测点"],
+    },
+    deliverables: [
+      { id: "sfmea", status: "ok", artifact: "sfmea.json" },
+      { id: "black_box_cases", status: "ok", artifact: "black_box_cases.json" },
+    ],
+    artifact_manifest_summary: {
+      artifact_count: 2,
+      user_deliverable_count: 2,
+      diagnostic_count: 0,
+    },
+  });
 });
 
 test("recent task runs stay bounded when history is large", async ({ page }) => {
