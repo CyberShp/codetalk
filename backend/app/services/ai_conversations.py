@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import aiosqlite
 
@@ -4024,6 +4025,13 @@ def _test_activity_task_card_actions(*, conversation: dict[str, Any], user_messa
         workflow_outputs=requested_outputs,
         user_requirements=user_message,
     )
+    workflow_href = "/workbench?" + urlencode(
+        {
+            "workflow": "source_flow_sfmea_blackbox",
+            "target": contract["target"],
+            "outputs": ",".join(str(item) for item in contract["required_outputs"]),
+        }
+    )
     return [
         {
             "id": "test_activity_task_card",
@@ -4035,7 +4043,7 @@ def _test_activity_task_card_actions(*, conversation: dict[str, Any], user_messa
             "evidence_policy": contract["evidence_policy"],
             "focus_rationale": contract["focus_rationale"][:6],
             "workflow_template_id": "source_flow_sfmea_blackbox",
-            "href": "/workbench?workflow=source_flow_sfmea_blackbox",
+            "href": workflow_href,
             "edit_contract_href": "/workbench/designer",
         }
     ]
