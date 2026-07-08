@@ -1949,12 +1949,12 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(page.getByText("warnings:preview truncated")).toBeVisible();
   await expect(page.getByText("fast-context: fallback to agent_cli")).toBeVisible();
   await expect(page.getByText("执行器就绪度:")).toBeVisible();
-  await expect(page.getByText("degraded", { exact: true })).toBeVisible();
-  await expect(page.getByText("gitnexus:missing_config")).toBeVisible();
-  await expect(page.getByText("cgc:unavailable")).toBeVisible();
-  await expect(page.getByText("claude-code:unavailable")).toBeVisible();
+  await expect(page.getByText(/执行器就绪度:\s*降级可用/)).toBeVisible();
+  await expect(page.getByText("GitNexus：缺少配置")).toBeVisible();
+  await expect(page.getByText("CGC：不可用")).toBeVisible();
+  await expect(page.getByText("Claude Code：不可用")).toBeVisible();
   await expect(
-    page.getByText("claude-code 命令:ccr code 已使用备用命令", { exact: false }),
+    page.getByText("Claude Code 命令:ccr code 已使用备用命令", { exact: false }),
   ).toBeVisible();
   await expect(page.getByText("主执行器不可用，已尝试备用命令")).toBeVisible();
   await expect(
@@ -1979,9 +1979,12 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(resultPanel.getByText("缺少 2 个必需验收项").first()).toBeVisible();
   await expect(resultPanel.getByText("Agent 指令策略缺失")).toBeVisible();
   await expect(resultPanel.getByText("输入脱敏标记缺失")).toBeVisible();
-  await expect(resultPanel.getByText("运行产物")).toBeVisible();
+  await expect(resultPanel.getByText("产物与结果")).toBeVisible();
   await expect(resultPanel.getByText("交付文件 1")).toBeVisible();
   await expect(resultPanel.getByText("内部诊断 8")).toBeVisible();
+  await expect(page.getByText("gitnexus:missing_config")).toHaveCount(0);
+  await expect(page.getByText("cgc:unavailable")).toHaveCount(0);
+  await expect(page.getByText("claude-code:unavailable")).toHaveCount(0);
   await expect(resultPanel.getByText("missing-required")).toHaveCount(0);
   await expect(resultPanel.getByText("agent_instruction_policy_missing")).toHaveCount(0);
   await expect(resultPanel.getByText("stdin_redacted_flag_missing")).toHaveCount(0);
@@ -2000,9 +2003,9 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(taskBundlePreviewButton).toBeEnabled();
   await taskBundlePreviewButton.click();
 
-  await expect(page.getByText("sha:abc123abc123")).toBeVisible();
-  await expect(page.getByText("\"provider\":\"claude-code\"", { exact: false })).toBeVisible();
-  await expect(page.getByRole("button", { name: "下载预览" })).toBeVisible();
+  await expect(page.getByText("sha:abc123abc123").first()).toBeVisible();
+  await expect(page.getByText("\"provider\":\"claude-code\"", { exact: false }).first()).toBeVisible();
+  await expect(resultPanel.getByRole("button", { name: "下载预览" })).toBeVisible();
 
   await page
     .getByRole("button", {
@@ -2041,8 +2044,8 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
       name: "semantic_import_outputs:semantic_import_outputs_by_step.json",
     })
     .click();
-  await expect(page.getByText("\"output_id\":\"black_box_cases\"", { exact: false })).toBeVisible();
-  await expect(page.getByText("\"module\":\"nvmf_tcp_tls\"", { exact: false })).toBeVisible();
+  await expect(page.getByText("\"output_id\":\"black_box_cases\"", { exact: false }).first()).toBeVisible();
+  await expect(page.getByText("\"module\":\"nvmf_tcp_tls\"", { exact: false }).first()).toBeVisible();
 
   await page
     .getByRole("button", {
@@ -2050,7 +2053,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     })
     .click();
   await expect(page.getByText("记忆检索")).toBeVisible();
-  await expect(page.getByText("证据:1")).toBeVisible();
+  await expect(page.getByText(/^证据:1$/)).toBeVisible();
   await expect(page.getByText("部署证据:1").first()).toBeVisible();
   await expect(page.getByText("语义:1")).toBeVisible();
   await expect(page.getByText("源码片段:2")).toBeVisible();
@@ -2065,7 +2068,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
       name: "input_materials:input_materials.json",
     })
     .click();
-  await expect(page.getByText("输入材料")).toBeVisible();
+  await expect(page.getByText("输入材料", { exact: true })).toBeVisible();
   await expect(page.getByText("材料数:1")).toBeVisible();
   await expect(page.getByText("必读:true")).toBeVisible();
   await expect(page.getByText("源码真相:false")).toBeVisible();
@@ -2128,7 +2131,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     page.getByText("避免重复:do not treat raw stdout/stderr as accepted evidence"),
   ).toBeVisible();
   await expect(page.getByText("已脱敏", { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole("button", { name: "下载脱敏预览" })).toBeVisible();
+  await expect(resultPanel.getByRole("button", { name: "下载脱敏预览" })).toBeVisible();
   await expect(page.locator("body")).not.toContainText(redactedArtifactSecret);
 
   await page.getByRole("button", { name: "验收审计" }).click();

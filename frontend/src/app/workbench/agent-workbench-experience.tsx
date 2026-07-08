@@ -1552,6 +1552,9 @@ function ArtifactPreviewCard({
 }: {
   artifactContent: WorkbenchTaskArtifactContent;
 }) {
+  const safePreviewText = artifactContent.content_redacted
+    ? "产物内容已脱敏，内联预览已隐藏。"
+    : artifactContent.content;
   return (
     <div className="rounded-lg border border-outline-variant/30 bg-surface p-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -1592,7 +1595,7 @@ function ArtifactPreviewCard({
             onClick={() =>
               downloadTextFile(
                 safeArtifactDownloadFilename(artifactContent.relative_path),
-                artifactContent.content,
+                safePreviewText,
                 "text/plain;charset=utf-8",
               )
             }
@@ -1603,9 +1606,13 @@ function ArtifactPreviewCard({
           </button>
         )}
       </div>
-      {artifactContent.is_text ? (
+      {artifactContent.content_redacted ? (
+        <p className="mt-2 rounded-md bg-warning-container/60 px-2 py-2 text-[11px] text-on-warning-container">
+          产物内容已脱敏，内联预览已隐藏。
+        </p>
+      ) : artifactContent.is_text ? (
         <pre className="mt-2 max-h-72 overflow-auto rounded-md bg-surface-container p-2 font-data text-[10px] leading-relaxed text-on-surface-variant">
-          {artifactContent.content || "此产物暂无可预览文本。"}
+          {safePreviewText || "此产物暂无可预览文本。"}
         </pre>
       ) : (
         <p className="mt-2 rounded-md bg-surface-container px-2 py-2 text-[11px] text-on-surface-variant">
@@ -3386,6 +3393,21 @@ function providerStatusDisplayLabel(status: string | undefined): string {
   if (normalized === "unavailable") return "不可用";
   if (normalized === "degraded") return "降级可用";
   return runStatusDisplayLabel(status ?? "");
+}
+
+function providerDisplayLabel(provider: string | undefined): string {
+  const normalized = String(provider ?? "").trim().toLowerCase();
+  const labels: Record<string, string> = {
+    "local-search": "本地源码检索",
+    gitnexus: "GitNexus",
+    cgc: "CGC",
+    "claude-code": "Claude Code",
+    opencode: "OpenCode",
+    codex: "Codex",
+    nga: "NGA",
+    repo: "源码工作区",
+  };
+  return labels[normalized] ?? String(provider ?? "执行器");
 }
 
 function compactReasonLabel(reason: string): string {
@@ -8988,7 +9010,10 @@ export function AgentWorkbenchExperience({
                     {runPanelStatus}
                   </span>
                 </div>
-                <div className="mt-3 flex flex-wrap gap-1 rounded-lg border border-dashed border-outline-variant/40 bg-surface-container/40 p-1">
+                <p className="mt-3 text-[11px] font-semibold text-on-surface-variant">
+                  演示状态
+                </p>
+                <div className="mt-1 flex flex-wrap gap-1 rounded-lg border border-dashed border-outline-variant/40 bg-surface-container/40 p-1">
                   {["空", "进行中", "失败", "已完成"].map((status) => (
                     <span
                       key={status}
@@ -9257,7 +9282,7 @@ export function AgentWorkbenchExperience({
                       <div className="mb-2 flex items-center justify-between gap-2">
                         <div>
                           <p className="font-semibold text-on-surface">
-                            {runPanelStatus === "已完成" ? "交付件" : "运行产物"}
+                            产物与结果
                           </p>
                           <p className="text-[10px] text-on-surface-variant">
                             最终结果优先展示，诊断信息默认折叠
@@ -9402,7 +9427,7 @@ export function AgentWorkbenchExperience({
                   </div>
                 )}
               </aside>
-              <div className="min-w-0 space-y-3 xl:col-span-2">
+              <div className="min-w-0 space-y-3">
               {preparedRun && (
                 <details
                   aria-label="运行详细诊断"
@@ -9455,11 +9480,11 @@ export function AgentWorkbenchExperience({
                             : "text-warning",
                         ].join(" ")}
                       >
-                        provider:
-                        {preparedProviderReadiness?.status ?? "pending"}
+                        执行器：
+                        {providerStatusDisplayLabel(preparedProviderReadiness?.status)}
                       </span>
                       <span className="rounded bg-surface px-1.5 py-0.5">
-                        artifacts:{artifactManifest?.artifacts.length ?? 0}
+                        产物：{artifactManifest?.artifacts.length ?? 0}
                       </span>
                       <span
                         className={[
@@ -9474,7 +9499,7 @@ export function AgentWorkbenchExperience({
                         {taskAcceptanceAudit?.summary.missing_required ?? 0}
                       </span>
                       <span className="rounded bg-surface px-1.5 py-0.5">
-                        evidence:
+                        证据：
                         {workflowExecution?.evidence_materialization
                           ?.evidence_count ??
                           workflowOutputMaterialize?.evidence_count ??
@@ -9483,7 +9508,7 @@ export function AgentWorkbenchExperience({
                     </div>
                     {preparedProviderReadiness?.warnings.length ? (
                       <p className="mt-1 truncate text-[10px] text-warning">
-                        {preparedProviderReadiness.warnings[0]}
+                        {compactReasonLabel(preparedProviderReadiness.warnings[0])}
                       </p>
                     ) : null}
                   </div>
@@ -9898,10 +9923,10 @@ export function AgentWorkbenchExperience({
                                 : "text-warning"
                             }
                           >
-                            {readiness.status}
+                            {providerStatusDisplayLabel(readiness.status)}
                           </span>
                           <span className="ml-2">
-                            repo:{readiness.repoStatus}
+                            源码工作区：{providerStatusDisplayLabel(readiness.repoStatus)}
                           </span>
                         </p>
                         <div className="mt-1 flex flex-wrap gap-1.5 font-data text-[10px]">
@@ -9916,7 +9941,7 @@ export function AgentWorkbenchExperience({
                               }`}
                               title={provider.nextCheck}
                             >
-                              {provider.provider}:
+                              {providerDisplayLabel(provider.provider)}：
                               {providerStatusDisplayLabel(provider.status)}
                             </span>
                           ))}
@@ -9938,26 +9963,26 @@ export function AgentWorkbenchExperience({
                                 .filter(Boolean)
                                 .join(" / ")}
                             >
-                              {provider.provider}:
+                              {providerDisplayLabel(provider.provider)}：
                               {providerStatusDisplayLabel(provider.status)}
                               {provider.deploymentTaskProbeStatus && (
                                 <span className="ml-1">
-                                  probe:{provider.deploymentTaskProbeStatus}
+                                  部署探测：{runStatusDisplayLabel(provider.deploymentTaskProbeStatus)}
                                 </span>
                               )}
                               {provider.deploymentEvidenceConflict && (
-                                <span className="ml-1">conflict</span>
+                                <span className="ml-1">部署证据冲突</span>
                               )}
                             </span>
                           ))}
                           {readiness.blockingReasons.length > 0 && (
                             <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
-                              blocked:{readiness.blockingReasons.join(",")}
+                              阻塞项：{readiness.blockingReasons.map(compactReasonLabel).join("、")}
                             </span>
                           )}
                           {readiness.warnings.length > 0 && (
                             <span className="rounded bg-surface px-1.5 py-0.5 text-warning">
-                              warnings:{readiness.warnings.length}
+                              提醒：{readiness.warnings.length} 条
                             </span>
                           )}
                         </div>
@@ -9982,7 +10007,7 @@ export function AgentWorkbenchExperience({
                                   key={`${provider.provider}:readiness-detail`}
                                   className="break-words"
                                 >
-                                  {provider.provider}
+                                  {providerDisplayLabel(provider.provider)}
                                   {provider.configuredCommand
                                     ? ` 命令:${provider.configuredCommand}`
                                     : ""}
@@ -10299,13 +10324,15 @@ export function AgentWorkbenchExperience({
                                       : "下载当前预览内容"
                                   }
                                   onClick={() =>
-                                    downloadTextFile(
-                                      safeArtifactDownloadFilename(
-                                        artifactContent.relative_path,
-                                      ),
-                                      artifactContent.content,
-                                      "text/plain;charset=utf-8",
-                                    )
+                                      downloadTextFile(
+                                        safeArtifactDownloadFilename(
+                                          artifactContent.relative_path,
+                                        ),
+                                        artifactContent.content_redacted
+                                          ? "产物内容已脱敏，内联预览已隐藏。"
+                                          : artifactContent.content,
+                                        "text/plain;charset=utf-8",
+                                      )
                                   }
                                   className="inline-flex items-center gap-1 rounded bg-surface-container px-1.5 py-0.5 font-medium text-on-surface transition-colors hover:bg-surface-container-high"
                                 >
@@ -10475,13 +10502,13 @@ export function AgentWorkbenchExperience({
                                             {item.kind}:
                                             {item.subjectKey || item.evidenceId}
                                             {item.outputId
-                                              ? ` output:${item.outputId}`
+                                              ? ` 输出:${item.outputId}`
                                               : ""}
                                             {item.mappingKind
-                                              ? ` mapping:${item.mappingKind}`
+                                              ? ` 映射:${item.mappingKind}`
                                               : ""}
                                             {item.sourceStepId
-                                              ? ` step:${item.sourceStepId}`
+                                              ? ` 步骤:${item.sourceStepId}`
                                               : ""}
                                           </div>
                                         ))}
@@ -10806,7 +10833,7 @@ export function AgentWorkbenchExperience({
                                     )}
                                     {summary.outputContractSha && (
                                       <span>
-                                        contract sha:
+                                        契约 sha:
                                         {summary.outputContractSha.slice(0, 12)}
                                       </span>
                                     )}
