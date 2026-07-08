@@ -28,6 +28,7 @@ from app.services.agent_cli_bridge import (
     stream_agent_runtime,
 )
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
+from app.services.test_activity_contract import build_test_activity_contract
 
 logger = logging.getLogger(__name__)
 
@@ -997,7 +998,7 @@ class AIConversationStore:
         evidence_content: str | None = None,
         model: str | None = None,
         token_usage: dict[str, Any] | None = None,
-        actions: list[dict[str, str]] | None = None,
+        actions: list[dict[str, Any]] | None = None,
     ) -> None:
         run = await self.get_run(run_id)
         now = _now()
@@ -1417,6 +1418,7 @@ async def run_generation(
             run_id=run_id,
             conversation=conversation,
             content=content,
+            user_message=user_message["content"],
             force_artifact=_agent_task_requests_downloadable_artifact(user_message["content"], content),
         )
         await store.complete_run(
@@ -1693,6 +1695,7 @@ async def run_agent_generation(
             run_id=run_id,
             conversation=conversation,
             content=content,
+            user_message=user_message["content"],
             force_artifact=adopted_agent_artifact
             or _agent_task_requests_downloadable_artifact(user_message["content"], content),
             artifact_only=adopted_agent_artifact,
@@ -2587,6 +2590,7 @@ def _build_prompt(
         "不要声称读过未出现在引用里的文件。\n\n"
         f"{_codex_style_answer_instruction()}\n\n"
         f"{_source_first_contract(references, user_message)}\n\n"
+        f"{_test_activity_contract_prompt(user_message=user_message, repo_path=_conversation_initial_repo_path(conversation))}\n\n"
         f"线程范围: {conversation['scope_type']} / {conversation['scope_id']}\n"
         f"上下文引用:\n{chr(10).join(context_lines) if context_lines else '（暂无可用引用）'}"
     )
@@ -2613,6 +2617,7 @@ def _build_agent_prompt(
         _codex_style_answer_instruction(),
         _agent_artifact_delivery_contract(user_message),
         _source_first_contract(references, user_message),
+        _test_activity_contract_prompt(user_message=user_message, repo_path=repo_path or _conversation_initial_repo_path(conversation)),
         "",
     ]
     sentinel = str(runtime.get("sentinel_text") or "").strip()
@@ -2652,6 +2657,78 @@ def _agent_artifact_delivery_contract(user_message: str) -> str:
     if wants_downloadable_artifact:
         lines.append("  current_task: 用户正在请求结构化/可下载产物；本轮必须遵守 final_answer 规则，不要发起交互式文件写入权限请求。")
     return "\n".join(lines)
+
+
+def _test_activity_contract_prompt(*, user_message: str, repo_path: str | None = None) -> str:
+    if not _looks_like_test_activity_request(user_message):
+        return (
+            "TEST_ACTIVITY_CONTRACT:\n"
+            "  active: false\n"
+            "  rule: 当前问题未识别为测试活动交付件请求；如涉及源码仍遵守 SOURCE_FIRST_CONTRACT。"
+        )
+    requested_outputs = [
+        {"id": artifact.replace(".", "_"), "artifact": artifact, "type": "json" if artifact.endswith(".json") else "markdown"}
+        for artifact in _requested_test_activity_outputs(user_message)
+    ]
+    contract = build_test_activity_contract(
+        target=user_message,
+        repo_path=repo_path or "",
+        workflow_outputs=requested_outputs,
+        user_requirements=user_message,
+    )
+    payload = json.dumps(contract, ensure_ascii=False, sort_keys=True)
+    return "\n".join([
+        "TEST_ACTIVITY_CONTRACT:",
+        "  active: true",
+        "  rule: AI/Agent 只能在契约范围内填充内容，不能自由决定交付件骨架；未验证关注点必须标为 ai_suggested_unverified。",
+        "  payload_json: |",
+        *[f"    {line}" for line in payload.splitlines()],
+    ])
+
+
+def _looks_like_test_activity_request(text: str) -> bool:
+    lower = str(text or "").lower()
+    markers = (
+        "测试",
+        "sfmea",
+        "fmea",
+        "黑盒",
+        "用例",
+        "测试设计",
+        "测试策略",
+        "覆盖率",
+        "风险",
+        "failure mode",
+        "black box",
+        "test case",
+        "test design",
+    )
+    return any(marker in lower or marker in text for marker in markers)
+
+
+def _requested_test_activity_outputs(text: str) -> list[str]:
+    outputs: list[str] = []
+    lower = str(text or "").lower()
+    if "sfmea" in lower or "fmea" in lower:
+        outputs.append("sfmea.json")
+    if "黑盒" in text or "用例" in text or "black box" in lower or "test case" in lower:
+        outputs.append("black_box_cases.json")
+    if "测试策略" in text or "strategy" in lower:
+        outputs.append("test_strategy.md")
+    if "测试设计" in text or "test design" in lower:
+        outputs.append("test_design.md")
+    if "流程" in text or "flow" in lower:
+        outputs.append("business_flow.md")
+    return outputs or ["business_flow.md", "sfmea.json", "black_box_cases.json"]
+
+
+def _conversation_initial_repo_path(conversation: dict[str, Any]) -> str:
+    initial_context = (
+        conversation.get("initial_context")
+        if isinstance(conversation.get("initial_context"), dict)
+        else {}
+    )
+    return str(initial_context.get("repo_path") or initial_context.get("workspace_path") or "")
 
 
 def _agent_prompt_history(
@@ -3885,10 +3962,15 @@ async def _prepare_assistant_delivery(
     run_id: str,
     conversation: dict[str, Any],
     content: str,
+    user_message: str = "",
     force_artifact: bool = False,
     artifact_only: bool = False,
-) -> tuple[str, list[dict[str, str]]]:
-    actions = _default_actions()
+) -> tuple[str, list[dict[str, Any]]]:
+    test_activity_actions = _test_activity_task_card_actions(
+        conversation=conversation,
+        user_message=user_message,
+    )
+    actions: list[dict[str, Any]] = [*test_activity_actions, *_default_actions()]
     if not force_artifact and not _should_materialize_thread_artifact(content):
         return content, actions
     artifact_path = ai_thread_artifact_path(str(conversation["id"]), run_id)
@@ -3927,6 +4009,36 @@ async def _prepare_assistant_delivery(
         f"{visible}\n\n---\n{suffix}",
         actions,
     )
+
+
+def _test_activity_task_card_actions(*, conversation: dict[str, Any], user_message: str) -> list[dict[str, Any]]:
+    if not _looks_like_test_activity_request(user_message):
+        return []
+    requested_outputs = [
+        {"id": artifact.replace(".", "_"), "artifact": artifact, "type": "json" if artifact.endswith(".json") else "markdown"}
+        for artifact in _requested_test_activity_outputs(user_message)
+    ]
+    contract = build_test_activity_contract(
+        target=user_message,
+        repo_path=_conversation_initial_repo_path(conversation),
+        workflow_outputs=requested_outputs,
+        user_requirements=user_message,
+    )
+    return [
+        {
+            "id": "test_activity_task_card",
+            "kind": "test_activity",
+            "label": "测试活动任务卡",
+            "target": contract["target"],
+            "domain_profiles": contract["domain_profiles"],
+            "recommended_outputs": contract["required_outputs"],
+            "evidence_policy": contract["evidence_policy"],
+            "focus_rationale": contract["focus_rationale"][:6],
+            "workflow_template_id": "source_flow_sfmea_blackbox",
+            "href": "/workbench?workflow=source_flow_sfmea_blackbox",
+            "edit_contract_href": "/workbench/designer",
+        }
+    ]
 
 
 def sanitize_ai_thread_artifact_markdown(markdown: str) -> str | None:
@@ -4374,7 +4486,7 @@ def _kind_event_should_be_reclassified_as_answer(
     )
 
 
-def _default_actions() -> list[dict[str, str]]:
+def _default_actions() -> list[dict[str, Any]]:
     return [
         {"id": "save_memory", "label": "沉淀到记忆"},
         {"id": "add_test_design", "label": "加入测试设计"},

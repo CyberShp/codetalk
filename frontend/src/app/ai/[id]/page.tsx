@@ -118,6 +118,25 @@ function actionKind(action: AIMessage["actions"][number]): string {
   return actionTextField(action, "kind");
 }
 
+function actionArrayField(action: AIMessage["actions"][number], field: string): string[] {
+  const value = (action as Record<string, unknown>)[field];
+  if (!Array.isArray(value)) return [];
+  return value.map((item) => String(item || "").trim()).filter(Boolean);
+}
+
+function actionRecordField(action: AIMessage["actions"][number], field: string): Record<string, unknown> | null {
+  const value = (action as Record<string, unknown>)[field];
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : null;
+}
+
+function testActivityActions(actions: AIMessage["actions"] | null | undefined): AIMessage["actions"] {
+  return (actions ?? []).filter((action) => actionKind(action) === "test_activity" || actionId(action) === "test_activity_task_card");
+}
+
+function attachmentActions(actions: AIMessage["actions"] | null | undefined): AIMessage["actions"] {
+  return (actions ?? []).filter((action) => resolvedActionHref(action) && actionKind(action) !== "test_activity");
+}
+
 function isDiagnosticEvent(event: AIRunEvent): boolean {
   return ["diagnostic", "thinking", "reasoning", "trace"].includes(eventKind(event));
 }
@@ -615,7 +634,7 @@ function buildThreadMarkdown(conversation: AIConversation | null, messages: AIMe
       lines.push("");
     }
     lines.push(message.content ? redactDiagnosticText(message.content) : "_空消息_");
-    const actionLinks = (message.actions ?? [])
+    const actionLinks = attachmentActions(message.actions)
       .map((action) => {
         const href = resolvedActionHref(action);
         if (!href) return null;
@@ -1445,14 +1464,69 @@ export default function AIThreadPage() {
                         <p className="whitespace-pre-wrap">{redactDiagnosticText(message.content)}</p>
                       )}
                     </div>
-                    {message.actions?.some((action) => resolvedActionHref(action)) && (
+                    {message.role === "assistant" &&
+                      testActivityActions(message.actions).map((action) => {
+                        const profiles = actionArrayField(action, "domain_profiles").slice(0, 6);
+                        const outputs = actionArrayField(action, "recommended_outputs").slice(0, 8);
+                        const rationale = actionArrayField(action, "focus_rationale").slice(0, 3);
+                        const evidencePolicy = actionRecordField(action, "evidence_policy");
+                        const sourceFirst = evidencePolicy?.source_first === true;
+                        const workflowHref = actionHref(action) || "/workbench";
+                        const editHref = actionTextField(action, "edit_contract_href") || "/workbench/designer";
+
+                        return (
+                          <section key={`${message.id}-${actionId(action) || "test-activity"}`} className="ct-test-activity-card">
+                            <div className="ct-test-activity-card__header">
+                              <span>
+                                <FilePlus2 size={14} />
+                                {actionLabel(action) || "测试活动任务卡"}
+                              </span>
+                              <small>{sourceFirst ? "源码优先" : "证据优先"}</small>
+                            </div>
+                            <p>
+                              <strong>目标：</strong>
+                              {redactDiagnosticText(actionTextField(action, "target") || "按当前线程问题生成测试活动契约")}
+                            </p>
+                            {profiles.length > 0 && (
+                              <div className="ct-test-activity-card__chips" aria-label="识别到的测试画像">
+                                {profiles.map((profile) => (
+                                  <span key={profile}>{profile}</span>
+                                ))}
+                              </div>
+                            )}
+                            {outputs.length > 0 && (
+                              <div className="ct-test-activity-card__outputs">
+                                <span>推荐交付件</span>
+                                <p>{outputs.join(" · ")}</p>
+                              </div>
+                            )}
+                            {rationale.length > 0 && (
+                              <details className="ct-test-activity-card__details">
+                                <summary>为什么这样定测试方向</summary>
+                                <ul>
+                                  {rationale.map((item) => (
+                                    <li key={item}>{redactDiagnosticText(item)}</li>
+                                  ))}
+                                </ul>
+                              </details>
+                            )}
+                            <div className="ct-test-activity-card__actions">
+                              <Link href={workflowHref}>
+                                <PlayCircle size={14} />
+                                切换为工作流
+                              </Link>
+                              <Link href={editHref}>编辑契约</Link>
+                            </div>
+                          </section>
+                        );
+                      })}
+                    {attachmentActions(message.actions).length > 0 && (
                       <div className="ct-codex-message__actions">
                         <span className="ct-codex-message__actions-title">
                           <FileText size={14} />
                           附件与产物
                         </span>
-                        {message.actions
-                          .filter((action) => resolvedActionHref(action))
+                        {attachmentActions(message.actions)
                           .map((action) => (
                             <a
                               key={`${message.id}-${actionId(action) || resolvedActionHref(action)}`}

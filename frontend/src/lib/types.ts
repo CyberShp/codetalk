@@ -737,11 +737,21 @@ export interface WorkflowExecutionResult {
         validation_status?: string;
         missing_artifacts?: string[];
         suggested_actions?: string[];
+        user_message?: string;
+        recommended_actions?: string[];
         provider_diagnostics?: AgentProviderDiagnosticsSummary;
       };
     }
   >;
   outputs?: Array<Record<string, unknown>>;
+  test_activity_quality?: {
+    status?: string;
+    deliverable?: boolean;
+    score?: number;
+    issue_count?: number;
+    issues?: Array<Record<string, unknown>>;
+    recommendations?: string[];
+  };
   acceptance_audit?: WorkbenchAcceptanceAudit;
 }
 

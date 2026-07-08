@@ -88,6 +88,13 @@ def _agent_output_contract_payload(
         if isinstance(task_bundle.get("execution_contract"), dict)
         else {}
     )
+    test_activity_contract = (
+        task_bundle.get("test_activity_contract")
+        if isinstance(task_bundle.get("test_activity_contract"), dict)
+        else execution_contract.get("test_activity_contract")
+        if isinstance(execution_contract.get("test_activity_contract"), dict)
+        else {}
+    )
     return {
         "contract_version": 1,
         "run_id": run.run_id,
@@ -106,6 +113,7 @@ def _agent_output_contract_payload(
             "rule": "Selected skills are task-method constraints injected through task_bundle and must shape the final artifacts.",
         },
         "execution_contract": execution_contract,
+        "test_activity_contract": test_activity_contract,
         "artifact_dir": run.artifact_dir,
         "required_artifacts": required_artifacts,
         "expected_output_schemas": expected_output_schemas,
