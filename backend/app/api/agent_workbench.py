@@ -721,6 +721,10 @@ def _task_run_ui_status(*, execution: dict[str, Any], nodes: list[dict[str, Any]
         return {"status": "failed", "label": "运行失败"}
     if status in {"completed", "ok", "ready", "success"}:
         return {"status": "completed", "label": "运行完成"}
+    if status in {"completed_empty"}:
+        return {"status": "completed_empty", "label": "完成但信息不足"}
+    if status in {"needs_review"}:
+        return {"status": "needs_review", "label": "需要复核"}
     if status in {"cancelled", "canceled"}:
         return {"status": "cancelled", "label": "已取消"}
     if status in {"interrupted"}:
@@ -736,6 +740,10 @@ def _task_run_ui_status_label(status: str) -> str:
     normalized = str(status or "").strip().lower()
     if normalized in {"completed", "ok", "ready", "success"}:
         return "已完成"
+    if normalized in {"completed_empty"}:
+        return "完成但信息不足"
+    if normalized in {"needs_review"}:
+        return "需要复核"
     if normalized in {"running", "queued"}:
         return "运行中"
     if normalized in {"invalid", "error", "failed", "failure", "missing"}:
@@ -2930,6 +2938,9 @@ def _core_workflow_readiness_item(preset: dict[str, Any]) -> dict[str, Any]:
         "scenario": _core_workflow_scenario(workflow_id),
         "status": "ready" if not missing else "incomplete",
         "description": str(preset.get("description") or ""),
+        "execution_subject": str(definition.get("execution_subject") or ""),
+        "execution_label": str(definition.get("execution_label") or ""),
+        "user_message": str(definition.get("user_message") or ""),
         "input_count": len(inputs),
         "required_inputs": [
             str(item.get("id") or "")

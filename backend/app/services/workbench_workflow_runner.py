@@ -168,7 +168,11 @@ class WorkbenchWorkflowRunner:
 
     def _emit_step_finished(self, step_result: dict[str, Any]) -> None:
         status = str(step_result.get("status") or "")
-        event_type = "step_completed" if status == "completed" else "step_failed"
+        event_type = (
+            "step_completed"
+            if status in {"completed", "completed_empty", "needs_review"}
+            else "step_failed"
+        )
         self._emit_event(event_type, dict(step_result))
 
     def _emit_event(self, event_type: str, payload: dict[str, Any]) -> None:
@@ -520,16 +524,26 @@ class WorkbenchWorkflowRunner:
                 str(item) for item in step.get("required_artifacts") or []
             ]
             validation = asdict(_validate_step_artifacts(artifact_dir, required_artifacts))
+            evidence_count = len(payloads.get("evidence_cards.json") or [])
+            status = "completed" if validation["status"] == "ok" else "invalid"
+            if status == "completed" and evidence_count == 0:
+                status = "completed_empty"
             return {
                 "step_id": step_id,
                 "type": step_type,
-                "status": "completed" if validation["status"] == "ok" else "invalid",
+                "status": status,
                 "artifact_dir": str(artifact_dir),
                 "artifact": "source_scope.json",
                 "artifacts": written,
                 "required_artifacts": required_artifacts,
                 "validation": validation,
-                "count": len(payloads.get("evidence_cards.json") or []),
+                "count": evidence_count,
+                "user_message": (
+                    "本地静态扫描未找到匹配源码证据，请缩小/改写分析对象，"
+                    "或切换到智能体深度分析工作流。"
+                    if status == "completed_empty"
+                    else "本步骤只执行本地静态源码扫描，未调用 AI 或外部 Agent。"
+                ),
             }
 
         if step_type == "local_source_flow_sfmea_blackbox":
@@ -1132,6 +1146,8 @@ def _local_scope_discovery_payloads(
         "discovery": {
             "provider": "local-search",
             "method": "filesystem_source_scan",
+            "execution_subject": "local_static",
+            "user_message": "本步骤只执行本地静态源码扫描，未调用 AI 或外部 Agent。",
             "file_count": len(files),
         },
         "files": files,
@@ -3338,8 +3354,13 @@ def _overall_status(step_results: list[dict[str, Any]]) -> str:
     ]
     if not actionable:
         return "skipped"
-    if all(item.get("status") == "completed" for item in actionable):
+    statuses = {str(item.get("status") or "") for item in actionable}
+    if statuses == {"completed"}:
         return "completed"
+    if statuses.issubset({"completed", "completed_empty"}) and "completed_empty" in statuses:
+        return "completed_empty"
+    if statuses.issubset({"completed", "needs_review"}) and "needs_review" in statuses:
+        return "needs_review"
     if any(item.get("status") == "error" for item in actionable):
         return "error"
     return "invalid"

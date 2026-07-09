@@ -382,11 +382,17 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
         {
             "id": "module_analysis",
             "name": "Module Analysis",
-            "description": "Analyze a module, discover source scope, collect evidence, and render a structured report.",
+            "description": (
+                "Local static source scan: discover source scope, collect evidence cards, "
+                "and render a structured report without invoking AI or external agents."
+            ),
             "definition": {
                 "id": "module_analysis",
                 "name": "Module Analysis",
                 "version": 1,
+                "execution_subject": "local_static",
+                "execution_label": "本地静态扫描（无 AI）",
+                "user_message": "该预设只执行本地静态源码扫描，不会调用 AI 或外部 Agent。",
                 "inputs": [
                     {"id": "analysis_object", "type": "free_text", "required": True, "role": "module or feature name"},
                     {"id": "repo_path", "type": "directory", "required": True, "resolver": "local"},

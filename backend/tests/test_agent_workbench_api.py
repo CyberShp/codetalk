@@ -887,6 +887,9 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
         "render_blackbox_cases",
     ]
     assert by_id["module_analysis"]["agent_step_count"] == 0
+    assert by_id["module_analysis"]["execution_subject"] == "local_static"
+    assert by_id["module_analysis"]["execution_label"] == "本地静态扫描（无 AI）"
+    assert "不会调用 AI" in by_id["module_analysis"]["user_message"]
     assert by_id["module_analysis"]["builtin_steps"] == [
         "discover_scope",
         "validate_evidence",

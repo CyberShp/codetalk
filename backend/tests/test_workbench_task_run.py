@@ -3476,6 +3476,49 @@ def test_module_analysis_preset_executes_with_local_scope_discovery(tmp_path):
     }
 
 
+def test_module_analysis_empty_local_scope_is_completed_empty(tmp_path):
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workflow_presets import install_workflow_preset
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    install_workflow_preset(workflow_store, "module_analysis")
+
+    task_run = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="module_analysis",
+        workspace_id="ws-empty-module-analysis",
+        repo_path=str(repo),
+        inputs={
+            "analysis_object": "definitely_missing_storage_module",
+            "repo_path": str(repo),
+        },
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        task_run.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert result.status == "completed_empty"
+    step_status = {item["step_id"]: item["status"] for item in result.step_results}
+    assert step_status["discover_scope"] == "completed_empty"
+    root = Path(task_run.artifact_dir)
+    source_scope = json.loads(
+        (root / "steps" / "discover_scope" / "source_scope.json").read_text(encoding="utf-8")
+    )
+    assert source_scope["discovery"]["execution_subject"] == "local_static"
+    assert source_scope["discovery"]["user_message"] == (
+        "本步骤只执行本地静态源码扫描，未调用 AI 或外部 Agent。"
+    )
+    assert source_scope["discovery"]["file_count"] == 0
+
+
 def test_source_flow_workflow_records_validated_local_source_reads(tmp_path):
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer
     from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
