@@ -2572,6 +2572,12 @@ async def test_workbench_task_run_execute_api_schedules_background_run_and_expos
         await asyncio.sleep(0.05)
     assert "queued" in event_types
     assert any(item in event_types for item in ("running", "step_started"))
+    event_items = events.json()["items"]
+    assert [item["seq"] for item in event_items] == list(range(1, len(event_items) + 1))
+    assert {item["event_kind"] for item in event_items} >= {"status"}
+    by_type = {item["event_type"]: item for item in event_items}
+    assert by_type["queued"]["event_kind"] == "status"
+    assert by_type["step_started"]["event_kind"] == "status"
 
 
 async def test_workbench_task_run_cancel_running_execution_keeps_cancelled_status(

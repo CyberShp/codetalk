@@ -37,6 +37,7 @@ class WorkbenchTaskRunEventStore:
                 "payload": dict(payload or {}),
                 "created_at": _now(),
             }
+            event = _with_public_event_metadata(event)
             events_path.parent.mkdir(parents=True, exist_ok=True)
             with events_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
@@ -66,7 +67,7 @@ class WorkbenchTaskRunEventStore:
                 except (TypeError, ValueError):
                     continue
                 if event_id > after_id:
-                    items.append(event)
+                    items.append(_with_public_event_metadata(event))
             return items[: max(1, int(limit))]
 
     def mark_status(self, task_run_id: str, status: str, **extra: Any) -> dict[str, Any]:
@@ -180,3 +181,32 @@ def _safe_segment(value: str) -> str:
     if not text or "/" in text or "\\" in text or ".." in text:
         raise KeyError(value)
     return text
+
+
+def _with_public_event_metadata(event: dict[str, Any]) -> dict[str, Any]:
+    next_event = dict(event)
+    event_id = next_event.get("event_id")
+    seq = next_event.get("seq")
+    if isinstance(seq, int) and seq > 0:
+        next_event["seq"] = seq
+    elif isinstance(event_id, int):
+        next_event["seq"] = event_id
+    else:
+        next_event["seq"] = 0
+    next_event.setdefault("event_kind", _public_event_kind(next_event))
+    return next_event
+
+
+def _public_event_kind(event: dict[str, Any]) -> str:
+    event_type = str(event.get("event_type") or "").strip().lower()
+    if event_type in {"queued", "running", "step_started", "step_completed", "cancelled", "interrupted"}:
+        return "status"
+    if event_type in {"completed", "done"}:
+        return "done"
+    if event_type in {"artifact_created", "artifact", "artifact_progress"}:
+        return "artifact"
+    if event_type in {"step_failed", "failed", "error"}:
+        return "error"
+    if event_type in {"thinking", "reasoning", "diagnostic", "trace", "tool_use", "tool_result"}:
+        return event_type
+    return "diagnostic"

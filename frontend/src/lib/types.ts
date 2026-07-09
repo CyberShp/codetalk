@@ -931,6 +931,18 @@ export interface PreparedWorkbenchTaskRun {
 
 export interface WorkbenchTaskRunEvent {
   event_id: number;
+  seq: number;
+  event_kind:
+    | "status"
+    | "done"
+    | "artifact"
+    | "error"
+    | "thinking"
+    | "reasoning"
+    | "diagnostic"
+    | "trace"
+    | "tool_use"
+    | "tool_result";
   task_run_id: string;
   event_type: string;
   payload: Record<string, unknown>;
