@@ -569,6 +569,71 @@ test("cockpit workflow switch rebuilds the visible input form", async ({
   await expect(page.getByLabel("Advanced workflow JSON")).not.toBeVisible();
 });
 
+test("AI thread test activity task card query hydrates cockpit workflow inputs", async ({
+  page,
+}) => {
+  const workflow = {
+    ...minimalWorkflowDefinition(
+      "source_flow_sfmea_blackbox",
+      "Code Analysis -> Flow -> SFMEA -> Black-box Cases",
+    ),
+    inputs: [
+      { id: "analysis_object", type: "free_text", required: true, role: "分析目标" },
+      { id: "repo_path", type: "directory", required: true, resolver: "local" },
+      { id: "requested_outputs", type: "free_text", required: false, role: "指定输出文件" },
+    ],
+    outputs: [
+      { id: "sfmea", type: "json", from: "render_report", artifact: "sfmea.json" },
+      {
+        id: "black_box_cases",
+        type: "json",
+        from: "render_report",
+        artifact: "black_box_cases.json",
+      },
+    ],
+  };
+
+  await routeWorkbenchShell(page);
+  await page.route("**/api/workbench/workflows", async (route) => {
+    await route.fulfill({
+      json: [],
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+  await page.route("**/api/workbench/workflow-presets", async (route) => {
+    await route.fulfill({
+      json: {
+        items: [
+          {
+            id: workflow.id,
+            name: workflow.name,
+            description: "AI 线程测试活动任务卡推荐工作流",
+            definition: workflow,
+          },
+        ],
+      },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+
+  await page.goto(
+    "/workbench?workflow=source_flow_sfmea_blackbox&workspace_id=ws_spdk&target=%E9%92%88%E5%AF%B9%20iSCSI%20login%20%E8%BE%93%E5%87%BA%20SFMEA%20%E5%92%8C%E9%BB%91%E7%9B%92%E6%B5%8B%E8%AF%95%E7%94%A8%E4%BE%8B&outputs=sfmea.json,black_box_cases.json",
+    { waitUntil: "domcontentloaded" },
+  );
+
+  await expect(page.getByRole("heading", { name: "运行驾驶舱" })).toBeVisible();
+  await expect(page.getByLabel("工作流")).toHaveValue("source_flow_sfmea_blackbox");
+  await expect(page.getByLabel("Workspace selector")).toHaveValue("ws_spdk");
+  await expect(page.getByText("源码路径: /Volumes/Media/dpdk/spdk")).toBeVisible();
+  await expect(page.getByLabel("Workflow input analysis_object")).toHaveValue(
+    "针对 iSCSI login 输出 SFMEA 和黑盒测试用例",
+  );
+  await expect(page.getByLabel("Workflow input requested_outputs")).toHaveValue(
+    "sfmea.json,black_box_cases.json",
+  );
+  await expect(page.getByText("已随所选工作流更新")).toBeVisible();
+});
+
 test("workflow run selector falls back to built-in presets when registered workflows are empty", async ({
   page,
 }) => {

@@ -3856,18 +3856,36 @@ export function AgentWorkbenchExperience({
     const workflowId = params.get("workflow")?.trim() || "";
     const queryInputs = workbenchInputsFromSearchParams(params);
     if (!workflowId && Object.keys(queryInputs).length === 0) return;
+    if (workflowId && workflows.length === 0 && workflowPresets.length === 0) {
+      return;
+    }
     queryPrefillAppliedRef.current = true;
     if (workflowId) setSelectedWorkflowId(workflowId);
     if (queryInputs.repo_path) setRepoPath(queryInputs.repo_path);
+    const workflowDefinition = workflowId
+      ? workflows.find((workflow) => workflow.id === workflowId) ??
+        workflowPresets.find(
+          (preset) => preset.definition.id === workflowId || preset.id === workflowId,
+        )?.definition ??
+        null
+      : null;
+    const workflowDefaults: Record<string, string> = {};
+    for (const input of workflowDefinition?.inputs ?? []) {
+      if (!input || typeof input !== "object") continue;
+      const inputId = String((input as Record<string, unknown>).id ?? "");
+      if (!inputId) continue;
+      workflowDefaults[inputId] = inputId === "repo_path" ? repoPath : "";
+    }
     setInputsJson((current) =>
       pretty({
+        ...workflowDefaults,
         ...parseJsonObject(current || "{}"),
         ...queryInputs,
       }),
     );
     setWorkflowInputsUpdated(true);
     window.setTimeout(() => setWorkflowInputsUpdated(false), 2200);
-  }, []);
+  }, [repoPath, workflowPresets, workflows]);
 
   const workflowOptions = useMemo(() => {
     const seen = new Set<string>();
