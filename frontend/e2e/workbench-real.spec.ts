@@ -565,6 +565,12 @@ test("executes source-flow SFMEA black-box workflow through the real workbench U
     "# public nvmf connect to IO workflow\n",
     "utf8",
   );
+  const coveragePath = path.join(repo, "coverage.info");
+  fs.writeFileSync(
+    coveragePath,
+    "TN:\nSF:lib/nvmf/ctrlr.c\nFN:1,spdk_nvmf_ctrlr_connect\nFNDA:1,spdk_nvmf_ctrlr_connect\nend_of_record\n",
+    "utf8",
+  );
 
   const workspaceName = `source-flow-${Date.now()}`;
   await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
@@ -584,14 +590,26 @@ test("executes source-flow SFMEA black-box workflow through the real workbench U
   });
   await page.getByRole("button", { name: "保存工作流" }).hover();
   await page.getByRole("button", { name: "保存工作流" }).click();
-  await expect(page.getByText(/工作流已保存/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/内置模板已另存为自定义工作流/)).toBeVisible({ timeout: 15_000 });
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
   await expect(page.getByRole("heading", { name: "运行驾驶舱", exact: true })).toBeVisible();
-  await page.getByLabel("工作流").selectOption("source_flow_sfmea_blackbox");
+  await page.getByLabel("工作流").selectOption("source_flow_sfmea_blackbox_custom");
   await page.getByLabel("Workspace selector").selectOption({ label: `${workspaceName} · ${repo}` });
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf connect to IO submit flow");
   await page.getByLabel("Workflow input repo_path").selectOption(repo);
+  const coverageInput = page.getByLabel("Workflow input coverage_report");
+  if ((await coverageInput.count()) > 0) {
+    await coverageInput.fill(coveragePath);
+  }
+  const semanticInput = page.getByLabel("Workflow input semantic_library_ref");
+  if ((await semanticInput.count()) > 0) {
+    await semanticInput.fill("SPDK NVMe-oF target semantics");
+  }
+  const freeformInputs = page.getByLabel("Workflow input inputs");
+  if ((await freeformInputs.count()) > 0) {
+    await freeformInputs.fill("Use the workspace source files and nvmf shell smoke scenario.");
+  }
 
   await page.getByRole("button", { name: "准备运行" }).hover();
   await page.getByRole("button", { name: "准备运行" }).click();

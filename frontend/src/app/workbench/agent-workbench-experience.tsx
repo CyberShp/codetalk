@@ -3581,6 +3581,27 @@ function workflowRunResultMessage(
   return parts.join(" · ");
 }
 
+function suggestedWorkflowIdFromError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return message.match(/"suggested_id"\s*:\s*"([^"]+)"/)?.[1] ?? "";
+}
+
+function workflowHasSpecializedStep(payload: Record<string, unknown>): boolean {
+  const steps = Array.isArray(payload.steps)
+    ? payload.steps.filter(
+        (step): step is Record<string, unknown> =>
+          Boolean(step && typeof step === "object" && !Array.isArray(step)),
+      )
+    : [];
+  return steps.some((step) => {
+    const stepType = String(step.type ?? "").trim();
+    return Boolean(
+      stepType &&
+        !["agent_task", "evidence_validate", "report_render"].includes(stepType),
+    );
+  });
+}
+
 function groupArtifactsByAudience(artifacts: WorkbenchTaskArtifact[]) {
   const sortedArtifacts = prioritizedAuditArtifacts(artifacts);
   return {
@@ -5571,6 +5592,22 @@ export function AgentWorkbenchExperience({
     return ["queued", "running", "prepared"].includes(status.trim().toLowerCase());
   }
 
+  function taskRunSettledMessage(run: PreparedWorkbenchTaskRun): string {
+    const status = runStatusDisplayLabel(
+      run.run_ui_summary?.status_label || run.run_ui_summary?.status || run.status || "",
+    );
+    if (status === "已完成") {
+      return `工作流执行已完成 · 任务 ${run.task_run_id}`;
+    }
+    if (status === "失败") {
+      return `工作流执行失败 · 任务 ${run.task_run_id}`;
+    }
+    if (status === "已取消") {
+      return `工作流执行已取消 · 任务 ${run.task_run_id}`;
+    }
+    return `工作流执行${status} · 任务 ${run.task_run_id}`;
+  }
+
   function mergePreparedRunSummary(
     taskRunId: string,
     runUiSummary: PreparedWorkbenchTaskRun["run_ui_summary"] | null | undefined,
@@ -5642,6 +5679,9 @@ export function AgentWorkbenchExperience({
     void (async () => {
       try {
         await pollTaskRunUntilSettled(taskRunId);
+        const run = await api.workbench.taskRuns.get(taskRunId);
+        setPreparedRun(run);
+        setMessage(taskRunSettledMessage(run));
         setTaskRerunPlanValidation(
           await api.workbench.taskRuns.rerunPlanValidation(taskRunId),
         );
@@ -5923,15 +5963,49 @@ export function AgentWorkbenchExperience({
 
   const saveWorkflow = () =>
     runAction("save-workflow", async () => {
-      const payload = generateWorkflowFromBuilder();
-      const saved = await api.workbench.workflows.create(payload);
+      const currentDraft = parseJsonObject(workflowJson || "{}");
+      const payload = workflowHasSpecializedStep(currentDraft)
+        ? {
+            ...currentDraft,
+            ui: {
+              ...((currentDraft.ui &&
+              typeof currentDraft.ui === "object" &&
+              !Array.isArray(currentDraft.ui)
+                ? currentDraft.ui
+                : {}) as Record<string, unknown>),
+              layout: workflowLayoutSnapshot(),
+            },
+          }
+        : generateWorkflowFromBuilder();
+      let saved: WorkflowDefinition;
+      let autoClonedFromBuiltin = false;
+      try {
+        saved = await api.workbench.workflows.create(payload);
+      } catch (err: unknown) {
+        const suggestedId = suggestedWorkflowIdFromError(err);
+        if (!suggestedId) throw err;
+        const payloadRecord = payload as Record<string, unknown>;
+        const sourceName =
+          typeof payloadRecord.name === "string" && payloadRecord.name.trim()
+            ? payloadRecord.name.trim()
+            : String(payloadRecord.id || "工作流");
+        const clonedPayload = {
+          ...payload,
+          id: suggestedId,
+          name: `${sourceName} 自定义`,
+          version: Number(payloadRecord.version ?? 1) + 1,
+        };
+        saved = await api.workbench.workflows.create(clonedPayload);
+        setWorkflowJson(pretty(saved));
+        autoClonedFromBuiltin = true;
+      }
       setSelectedWorkflowId(saved.id);
       hydrateBuilderFromWorkflow(saved as unknown as Record<string, unknown>);
       const warningCount = saved.audit?.warnings?.length ?? 0;
       setMessage(
         warningCount
-          ? `工作流已保存: ${saved.id} (${warningCount} audit warning(s))`
-          : `工作流已保存: ${saved.id}`,
+          ? `${autoClonedFromBuiltin ? "内置模板已另存为自定义工作流" : "工作流已保存"}: ${saved.id} (${warningCount} audit warning(s))`
+          : `${autoClonedFromBuiltin ? "内置模板已另存为自定义工作流" : "工作流已保存"}: ${saved.id}`,
       );
       await loadWorkflows();
     });
