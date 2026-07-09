@@ -5687,6 +5687,17 @@ textarea:focus-visible {
   transform: scale(1.08);
 }
 
+.ct-workbench-shell .ct-workflow-port-pending {
+  border-color: rgba(14, 116, 144, 0.86);
+  box-shadow: 0 0 0 4px rgba(14, 116, 144, 0.1);
+}
+
+.ct-workbench-shell .ct-workflow-port-selected {
+  border-color: rgb(14, 116, 144);
+  background: rgb(14, 116, 144);
+  box-shadow: 0 0 0 5px rgba(14, 116, 144, 0.16);
+}
+
 .ct-workbench-shell .ct-workflow-port-in {
   left: -8px;
 }

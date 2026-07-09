@@ -1,9 +1,47 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function dragLocatorCenter(
+  page: Page,
+  source: Locator,
+  target: Locator,
+  targetOffset: { x: number; y: number } = { x: 0.5, y: 0.5 },
+) {
+  const sourceBox = await source.boundingBox();
+  const targetBox = await target.boundingBox();
+  expect(sourceBox, "drag source must be visible").not.toBeNull();
+  expect(targetBox, "drag target must be visible").not.toBeNull();
+  if (!sourceBox || !targetBox) return;
+  await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    targetBox.x + targetBox.width * targetOffset.x,
+    targetBox.y + targetBox.height * targetOffset.y,
+    { steps: 12 },
+  );
+  await page.mouse.up();
+}
+
+async function connectWorkflowPorts(page: Page, sourceTitle: string, targetTitle: string) {
+  const source = page.getByRole("button", {
+    name: new RegExp(`^从 ${escapeRegExp(sourceTitle)} 拉出连线$`),
+  });
+  const target = page.getByRole("button", {
+    name: new RegExp(`^连线目标 ${escapeRegExp(targetTitle)}$`),
+  });
+  await source.hover();
+  await source.click();
+  await target.hover();
+  await target.click();
+}
 
 test("lists and installs every built-in workflow preset through the real workbench UI", async ({
   page,
@@ -332,7 +370,7 @@ test("designer blank workflow drives cockpit inputs and real agent artifacts", a
     await page.getByLabel("New workflow input type").selectOption("free_text");
     await page.getByRole("button", { name: "添加输入契约" }).hover();
     await page.getByRole("button", { name: "添加输入契约" }).click();
-    await expect(page.getByText("输入契约已添加: 设计器目标")).toBeVisible({
+    await expect(page.getByText(/设计器目标\s+designer_target:free_text/)).toBeVisible({
       timeout: 15_000,
     });
 
@@ -399,6 +437,202 @@ test("designer blank workflow drives cockpit inputs and real agent artifacts", a
     });
     await expect(page.getByText("节点完成 · agent_task")).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText("designer_result.json").first()).toBeVisible();
+  } finally {
+    await request.put(`${backendBase}/api/settings/agent-providers`, {
+      data: originalSettings,
+    });
+  }
+});
+
+test("designer canvas drag connect properties drive cockpit workflow run", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(120_000);
+  const unique = Date.now();
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-canvas-flow-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "canvas workflow e2e\n", "utf8");
+  const workspaceName = `canvas-flow-${unique}`;
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  const workflowId = `canvas_flow_${unique}`;
+  const providerId = `canvas-agent-${unique}`;
+  const agentScript = path.join(repo, "canvas-agent.cjs");
+  fs.writeFileSync(
+    agentScript,
+    [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "let stdin = '';",
+      "process.stdin.on('data', (chunk) => { stdin += chunk; });",
+      "process.stdin.on('end', () => {",
+      "  const artifactDir = process.env.CODETALK_AGENT_ARTIFACT_DIR;",
+      "  fs.mkdirSync(artifactDir, { recursive: true });",
+      "  fs.writeFileSync(path.join(artifactDir, 'canvas_result.json'), JSON.stringify({",
+      "    status: 'ok',",
+      "    sawCanvasInput: stdin.includes('canvas cockpit target'),",
+      "    sawCanvasGoal: stdin.includes('Use the canvas-defined input and write canvas_result.json')",
+      "  }));",
+      "  console.log(JSON.stringify({ status: 'ok', summary: 'canvas-agent completed' }));",
+      "});",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const providersResp = await request.get(`${backendBase}/api/settings/agent-providers`);
+  expect(providersResp.ok()).toBeTruthy();
+  const originalSettings = await providersResp.json();
+  const settingsResp = await request.put(`${backendBase}/api/settings/agent-providers`, {
+    data: {
+      ...originalSettings,
+      external_agent_custom_providers: [
+        ...(originalSettings.external_agent_custom_providers ?? []).filter(
+          (provider: { id?: string }) => provider.id !== providerId,
+        ),
+        {
+          id: providerId,
+          command: `"${process.execPath}" "${agentScript}"`,
+          prompt_transport: "stdin",
+          supports_artifact_export: true,
+          supports_json_output: true,
+        },
+      ],
+    },
+  });
+  expect(settingsResp.ok()).toBeTruthy();
+
+  try {
+    await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+    await page.getByRole("link", { name: "工作流设计" }).hover();
+    await page.getByRole("link", { name: "工作流设计" }).click();
+
+    await page.getByRole("button", { name: "新建空白工作流" }).hover();
+    await page.getByRole("button", { name: "新建空白工作流" }).click();
+    await page.getByLabel("Workflow builder id").fill(workflowId);
+    await page.getByLabel("Workflow builder name").fill("Canvas Drag Workflow E2E");
+
+    const canvas = page.locator(".ct-workflow-board").first();
+    await expect(canvas).toBeVisible({ timeout: 15_000 });
+    await dragLocatorCenter(page, page.getByRole("button", { name: /输入模块/ }).first(), canvas, {
+      x: 0.18,
+      y: 0.3,
+    });
+    await expect(page.getByLabel("Workflow node contract id")).toBeVisible({ timeout: 15_000 });
+    await page.getByLabel("Workflow selected node title").fill("画布分析目标");
+    await page.getByLabel("Workflow node contract id").fill("canvas_target");
+    await page.getByLabel("Workflow node label").fill("画布分析目标");
+    await page.getByLabel("Workflow node input type").selectOption("free_text");
+
+    await dragLocatorCenter(page, page.getByRole("button", { name: /输出模块/ }).first(), canvas, {
+      x: 0.42,
+      y: 0.42,
+    });
+    await expect(page.getByLabel("Workflow node artifact")).toBeVisible({ timeout: 15_000 });
+    await page.getByLabel("Workflow selected node title").fill("画布结果");
+    await page.getByLabel("Workflow node contract id").fill("canvas_result");
+    await page.getByLabel("Workflow node label").fill("画布结果");
+    await page.getByLabel("Workflow node output type").selectOption("json");
+    await page.getByLabel("Workflow node artifact").fill("canvas_result.json");
+
+    await page.locator(".ct-workflow-node").filter({ hasText: "claude-code" }).first().click();
+    await page.getByLabel("Workflow selected node title").fill("画布执行 Agent");
+    await page.getByLabel("Workflow node contract id").fill("canvas_agent");
+    await page.getByLabel("Workflow node agent provider").fill(providerId);
+    await page
+      .getByLabel("Workflow node agent goal")
+      .fill("Use the canvas-defined input and write canvas_result.json.");
+
+    await connectWorkflowPorts(page, "画布分析目标", "画布执行 Agent");
+    await expect(page.getByRole("button", { name: /删除连线 画布分析目标 -> 画布执行 Agent/ })).toBeVisible({
+      timeout: 15_000,
+    });
+    await page.getByRole("button", { name: /删除连线 画布分析目标 -> 画布执行 Agent/ }).click();
+    await expect(page.getByText("连线已删除: 画布分析目标 -> 画布执行 Agent")).toBeVisible({
+      timeout: 15_000,
+    });
+    await connectWorkflowPorts(page, "画布分析目标", "画布执行 Agent");
+    await connectWorkflowPorts(page, "画布执行 Agent", "画布结果");
+
+    const saveResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === "/api/workbench/workflows",
+    );
+    await page.getByRole("button", { name: "保存工作流" }).hover();
+    await page.getByRole("button", { name: "保存工作流" }).click();
+    const savedWorkflowResponse = await saveResponse;
+    expect(savedWorkflowResponse.status()).toBe(201);
+    await expect(page.getByText(`工作流已保存: ${workflowId}`)).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const savedWorkflowsResp = await request.get(`${backendBase}/api/workbench/workflows`);
+    expect(savedWorkflowsResp.ok()).toBeTruthy();
+    const savedWorkflows = (await savedWorkflowsResp.json()) as Array<{
+      id?: string;
+      inputs?: Array<{ id?: string; label?: string }>;
+      outputs?: Array<{ id?: string; artifact?: string; from?: string }>;
+      steps?: Array<{ id?: string; provider?: string; goal?: string }>;
+      ui?: { layout?: { edges?: Array<{ source?: string; target?: string }> } };
+    }>;
+    const savedWorkflow = savedWorkflows.find((workflow) => workflow.id === workflowId);
+    expect(savedWorkflow?.inputs?.map((input) => input.id)).toEqual(["canvas_target"]);
+    expect(savedWorkflow?.inputs?.[0]?.label).toBe("画布分析目标");
+    expect(savedWorkflow?.steps?.find((step) => step.id === "canvas_agent")?.provider).toBe(
+      providerId,
+    );
+    expect(savedWorkflow?.steps?.find((step) => step.id === "canvas_agent")?.goal).toContain(
+      "canvas-defined input",
+    );
+    expect(savedWorkflow?.outputs?.[0]).toMatchObject({
+      id: "canvas_result",
+      artifact: "canvas_result.json",
+      from: "canvas_agent",
+    });
+    expect(savedWorkflow?.ui?.layout?.edges ?? []).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ source: expect.stringContaining("input"), target: "agent-task" }),
+      ]),
+    );
+
+    await page.getByRole("link", { name: "运行驾驶舱" }).hover();
+    await page.getByRole("link", { name: "运行驾驶舱" }).click();
+    const workflowSelect = page.locator('main select[aria-label="工作流"]').first();
+    await expect(workflowSelect.locator(`option[value="${workflowId}"]`)).toHaveCount(1, {
+      timeout: 15_000,
+    });
+    await workflowSelect.selectOption(workflowId);
+    await expect(workflowSelect).toHaveValue(workflowId);
+    await page.getByLabel("Workspace selector").selectOption(workspace.id);
+    await expect(page.getByLabel("Workflow input canvas_target")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel(/Workflow input canvas_input/)).toHaveCount(0);
+    await page.getByLabel("Workflow input canvas_target").fill("canvas cockpit target");
+    await page.getByRole("button", { name: "准备运行" }).hover();
+    await page.getByRole("button", { name: "准备运行" }).click();
+    await expect(page.getByText(/任务已准备 · task_run_/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(providerId).first()).toBeVisible();
+    await expect(page.getByText("canvas_result.json").first()).toBeVisible();
+
+    const executeResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        /\/api\/workbench\/task-runs\/[^/]+\/execute$/.test(new URL(response.url()).pathname) &&
+        response.status() < 500,
+    );
+    await page.getByRole("button", { name: "执行工作流" }).hover();
+    await page.getByRole("button", { name: "执行工作流" }).click();
+    await executeResponse;
+    await expect(page.getByText(new RegExp(`运行完成 · ${workflowId}`))).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByText("节点完成 · canvas_agent")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("canvas_result.json").first()).toBeVisible();
   } finally {
     await request.put(`${backendBase}/api/settings/agent-providers`, {
       data: originalSettings,

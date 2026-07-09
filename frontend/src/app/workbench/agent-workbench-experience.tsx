@@ -1,7 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import type {
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+} from "react";
 import { flushSync } from "react-dom";
 import { useRouter } from "next/navigation";
 import {
@@ -3800,6 +3804,8 @@ export function AgentWorkbenchExperience({
   );
   const [workflowDraftEdge, setWorkflowDraftEdge] =
     useState<WorkflowDraftEdge | null>(null);
+  const [workflowPendingConnectionSourceId, setWorkflowPendingConnectionSourceId] =
+    useState("");
   const [workflowNodePositions, setWorkflowNodePositions] = useState<
     Record<string, WorkflowNodePosition>
   >({});
@@ -3811,6 +3817,9 @@ export function AgentWorkbenchExperience({
   );
   const [workflowNodeTitles, setWorkflowNodeTitles] = useState<
     Record<string, string>
+  >({});
+  const [workflowNodeConfigs, setWorkflowNodeConfigs] = useState<
+    Record<string, Record<string, unknown>>
   >({});
   const [activeWorkflowNodeId, setActiveWorkflowNodeId] = useState("");
   const [selectedPresetId, setSelectedPresetId] = useState("");
@@ -4703,16 +4712,19 @@ export function AgentWorkbenchExperience({
         .map((node) => {
           const override = workflowNodePositions[node.id];
           const title = workflowNodeTitles[node.id];
+          const config = workflowNodeConfigs[node.id];
           return {
             ...node,
             ...(override ? override : {}),
             ...(title ? { title } : {}),
+            ...(config ? { config: { ...(node.config ?? {}), ...config } } : {}),
           };
         }),
     [
       workflowContractNodes,
       workflowExtraNodes,
       workflowHiddenNodeIds,
+      workflowNodeConfigs,
       workflowNodePositions,
       workflowNodeTitles,
     ],
@@ -4827,16 +4839,19 @@ export function AgentWorkbenchExperience({
       setWorkflowExtraNodes([]);
       setWorkflowHiddenNodeIds([]);
       setWorkflowNodeTitles({});
+      setWorkflowNodeConfigs({});
       setWorkflowCanvasEdges([]);
       setWorkflowHiddenEdgeIds([]);
       return;
     }
     const positions: Record<string, WorkflowNodePosition> = {};
     const titles: Record<string, string> = {};
+    const configs: Record<string, Record<string, unknown>> = {};
     const extras: WorkflowCanvasNode[] = [];
     for (const node of layout.nodes) {
       positions[node.id] = clampWorkflowNodePosition({ x: node.x, y: node.y });
       titles[node.id] = node.title;
+      if (node.config) configs[node.id] = node.config;
       if (node.source === "canvas") {
         extras.push({
           id: node.id,
@@ -4847,11 +4862,13 @@ export function AgentWorkbenchExperience({
           x: node.x,
           y: node.y,
           source: "canvas",
+          ...(node.config ? { config: node.config } : {}),
         });
       }
     }
     setWorkflowNodePositions(positions);
     setWorkflowNodeTitles(titles);
+    setWorkflowNodeConfigs(configs);
     setWorkflowCanvasEdges(layout.edges ?? []);
     setWorkflowHiddenEdgeIds(layout.hidden_edge_ids ?? []);
     setWorkflowExtraNodes(extras);
@@ -5036,6 +5053,7 @@ export function AgentWorkbenchExperience({
   function connectWorkflowNodes(sourceId: string, targetId: string) {
     if (sourceId === targetId) {
       setMessage("不能连接到当前节点自身");
+      setWorkflowPendingConnectionSourceId("");
       return;
     }
     const source = workflowCanvasNodes.find((node) => node.id === sourceId);
@@ -5065,6 +5083,7 @@ export function AgentWorkbenchExperience({
     ];
     setWorkflowCanvasEdges(nextEdges);
     setActiveWorkflowNodeId(sourceId);
+    setWorkflowPendingConnectionSourceId("");
     setMessage(`连线已添加: ${source.title} -> ${target.title}`);
     mergeWorkflowLayoutIntoJson(
       workflowLayoutSnapshot(
@@ -5093,6 +5112,30 @@ export function AgentWorkbenchExperience({
         nextHiddenEdgeIds,
       ),
     );
+  }
+
+  function selectWorkflowConnectionSource(
+    event: ReactMouseEvent<HTMLElement>,
+    source: WorkflowCanvasNode,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    setActiveWorkflowNodeId(source.id);
+    setWorkflowPendingConnectionSourceId(source.id);
+    setMessage(`已选择连线起点: ${source.title}`);
+  }
+
+  function connectWorkflowTargetFromPending(
+    event: ReactMouseEvent<HTMLElement>,
+    target: WorkflowCanvasNode,
+  ) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!workflowPendingConnectionSourceId) {
+      setActiveWorkflowNodeId(target.id);
+      return;
+    }
+    connectWorkflowNodes(workflowPendingConnectionSourceId, target.id);
   }
 
   function startWorkflowConnectionDrag(
@@ -5264,26 +5307,7 @@ export function AgentWorkbenchExperience({
     const nextExtraNodes = [...workflowExtraNodes, node];
     setWorkflowExtraNodes(nextExtraNodes);
     setWorkflowNodeTitles((current) => ({ ...current, [node.id]: node.title }));
-    if (paletteModule.id === "input") {
-      setBuilderInputSpec((current) =>
-        appendCommaSpec(current, `${contractId}:free_text`),
-      );
-      setBuilderInputLabels((current) => ({
-        ...current,
-        [contractId]: paletteModule.label,
-      }));
-    } else if (paletteModule.id === "output") {
-      setBuilderOutputSpec((current) =>
-        appendCommaSpec(current, `${contractId}:json=${contractId}.json`),
-      );
-      setBuilderArtifacts((current) =>
-        appendCommaSpec(current, `${contractId}.json`),
-      );
-      setBuilderOutputLabels((current) => ({
-        ...current,
-        [contractId]: paletteModule.label,
-      }));
-    } else if (paletteModule.id === "agent") {
+    if (paletteModule.id === "agent") {
       setBuilderGoal((current) =>
         current.includes(`新增智能体节点 ${contractId}`)
           ? current
@@ -5365,6 +5389,46 @@ export function AgentWorkbenchExperience({
     window.setTimeout(() => mergeWorkflowLayoutIntoJson(), 0);
   }
 
+  function updateActiveWorkflowNodeConfig(patch: Record<string, unknown>) {
+    if (!activeWorkflowNode) return;
+    const nodeId = activeWorkflowNode.id;
+    const compactPatch = Object.fromEntries(
+      Object.entries(patch).filter(([, value]) => value !== undefined),
+    );
+    setWorkflowNodeConfigs((current) => {
+      const currentConfig = current[nodeId] ?? {};
+      const nextConfig = {
+        ...(activeWorkflowNode.config ?? {}),
+        ...currentConfig,
+        ...compactPatch,
+      };
+      return { ...current, [nodeId]: nextConfig };
+    });
+    setWorkflowExtraNodes((current) =>
+      current.map((node) =>
+        node.id === nodeId
+          ? {
+              ...node,
+              config: {
+                ...(node.config ?? {}),
+                ...compactPatch,
+              },
+            }
+          : node,
+      ),
+    );
+    window.setTimeout(() => mergeWorkflowLayoutIntoJson(), 0);
+  }
+
+  function workflowNodeConfigString(key: string, fallback = "") {
+    if (!activeWorkflowNode?.config) return fallback;
+    const value = activeWorkflowNode.config[key];
+    if (Array.isArray(value)) return value.map(String).join(", ");
+    if (value === undefined || value === null) return fallback;
+    if (typeof value === "string" && !value.trim()) return fallback;
+    return String(value);
+  }
+
   function copyActiveWorkflowNode() {
     if (!activeWorkflowNode) return;
     const nodeId = `canvas-copy-${Date.now().toString(36)}`;
@@ -5418,6 +5482,11 @@ export function AgentWorkbenchExperience({
       return next;
     });
     setWorkflowNodeTitles((current) => {
+      const next = { ...current };
+      delete next[activeWorkflowNode.id];
+      return next;
+    });
+    setWorkflowNodeConfigs((current) => {
       const next = { ...current };
       delete next[activeWorkflowNode.id];
       return next;
@@ -6067,10 +6136,12 @@ export function AgentWorkbenchExperience({
       );
       const positions: Record<string, WorkflowNodePosition> = {};
       const titles: Record<string, string> = {};
+      const configs: Record<string, Record<string, unknown>> = {};
       const extraNodes: WorkflowCanvasNode[] = [];
       for (const node of layout.nodes) {
         positions[node.id] = clampWorkflowNodePosition({ x: node.x, y: node.y });
         titles[node.id] = node.title;
+        if (node.config) configs[node.id] = node.config;
         if (node.source === "canvas") {
           extraNodes.push({
             id: node.id,
@@ -6092,6 +6163,7 @@ export function AgentWorkbenchExperience({
       }
       setWorkflowNodePositions(positions);
       setWorkflowNodeTitles(titles);
+      setWorkflowNodeConfigs(configs);
       setWorkflowExtraNodes(extraNodes);
       setWorkflowHiddenNodeIds(layout.hidden_node_ids);
       setWorkflowHiddenEdgeIds(layout.hidden_edge_ids ?? []);
@@ -6105,6 +6177,7 @@ export function AgentWorkbenchExperience({
     } else {
       setWorkflowNodePositions({});
       setWorkflowNodeTitles({});
+      setWorkflowNodeConfigs({});
       setWorkflowExtraNodes([]);
       setWorkflowHiddenNodeIds([]);
       setWorkflowHiddenEdgeIds([]);
@@ -6137,6 +6210,7 @@ export function AgentWorkbenchExperience({
     setWorkflowExtraNodes([]);
     setWorkflowHiddenNodeIds([]);
     setWorkflowNodeTitles({});
+    setWorkflowNodeConfigs({});
     setWorkflowCanvasEdges([]);
     setActiveWorkflowNodeId("agent-task");
   }
@@ -6350,6 +6424,7 @@ export function AgentWorkbenchExperience({
       setWorkflowHiddenEdgeIds([]);
       setWorkflowNodePositions({});
       setWorkflowNodeTitles({});
+      setWorkflowNodeConfigs({});
       setActiveWorkflowNodeId("agent-task");
       setWorkflowJson(pretty(blankWorkflow));
     });
@@ -8115,18 +8190,34 @@ export function AgentWorkbenchExperience({
                             type="button"
                             aria-label={`连线目标 ${node.title}`}
                             data-workflow-target-node-id={node.id}
-                            className="ct-workflow-port ct-workflow-port-in"
+                            className={[
+                              "ct-workflow-port ct-workflow-port-in",
+                              workflowPendingConnectionSourceId
+                                ? "ct-workflow-port-pending"
+                                : "",
+                            ].join(" ")}
                             onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) =>
+                              connectWorkflowTargetFromPending(event, node)
+                            }
                           />
                           <button
                             type="button"
                             aria-label={`从 ${node.title} 拉出连线`}
-                            className="ct-workflow-port ct-workflow-port-out"
+                            className={[
+                              "ct-workflow-port ct-workflow-port-out",
+                              workflowPendingConnectionSourceId === node.id
+                                ? "ct-workflow-port-selected"
+                                : "",
+                            ].join(" ")}
                             onPointerDown={(event) => {
                               event.preventDefault();
                               event.stopPropagation();
                               startWorkflowConnectionDrag(event, node);
                             }}
+                            onClick={(event) =>
+                              selectWorkflowConnectionSource(event, node)
+                            }
                           />
                           <div className="mb-1.5 flex items-start justify-between gap-1.5">
                             <div className="min-w-0">
@@ -8289,6 +8380,241 @@ export function AgentWorkbenchExperience({
                     </div>
                   </div>
                 </div>
+                {["input", "agent", "output"].includes(activeWorkflowNode.kind) && (
+                  <div
+                    aria-label="Workflow node config"
+                    className="mb-3 rounded-lg border border-outline-variant/30 bg-surface-container/70 p-2"
+                  >
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <p className="text-xs font-semibold text-on-surface">
+                        节点契约
+                      </p>
+                      <span className="font-data text-[10px] text-on-surface-variant">
+                        {activeWorkflowNode.kind}
+                      </span>
+                    </div>
+                    <div className="grid gap-2">
+                      <label className="block">
+                        <span className="mb-1 block text-[10px] text-on-surface-variant">
+                          契约 ID
+                        </span>
+                        <input
+                          aria-label="Workflow node contract id"
+                          value={workflowNodeConfigString("id")}
+                          onChange={(event) =>
+                            updateActiveWorkflowNodeConfig({
+                              id: event.target.value,
+                            })
+                          }
+                          placeholder={
+                            activeWorkflowNode.kind === "agent"
+                              ? "agent_step_id"
+                              : activeWorkflowNode.kind === "output"
+                                ? "output_id"
+                                : "input_id"
+                          }
+                          className="w-full rounded-md border border-outline-variant/30 bg-surface px-2 py-1 font-data text-[10px] text-on-surface outline-none focus:border-primary"
+                        />
+                      </label>
+                      {activeWorkflowNode.kind !== "agent" && (
+                        <label className="block">
+                          <span className="mb-1 block text-[10px] text-on-surface-variant">
+                            展示名称
+                          </span>
+                          <input
+                            aria-label="Workflow node label"
+                            value={workflowNodeConfigString(
+                              "label",
+                              activeWorkflowNode.title,
+                            )}
+                            onChange={(event) =>
+                              updateActiveWorkflowNodeConfig({
+                                label: event.target.value,
+                              })
+                            }
+                            className="w-full rounded-md border border-outline-variant/30 bg-surface px-2 py-1 text-[10px] text-on-surface outline-none focus:border-primary"
+                          />
+                        </label>
+                      )}
+                      {activeWorkflowNode.kind === "input" && (
+                        <>
+                          <label className="block">
+                            <span className="mb-1 block text-[10px] text-on-surface-variant">
+                              输入类型
+                            </span>
+                            <select
+                              aria-label="Workflow node input type"
+                              value={workflowNodeConfigString("type", "free_text")}
+                              onChange={(event) =>
+                                updateActiveWorkflowNodeConfig({
+                                  type: event.target.value,
+                                })
+                              }
+                              className="w-full rounded-md border border-outline-variant/30 bg-surface px-2 py-1 text-[10px] text-on-surface outline-none focus:border-primary"
+                            >
+                              <option value="directory">源码目录</option>
+                              <option value="file">单个文件</option>
+                              <option value="file_set">多个文件</option>
+                              <option value="mr_link">MR 链接</option>
+                              <option value="coverage_report">覆盖率报告</option>
+                              <option value="long_text">长文本</option>
+                              <option value="free_text">短文本</option>
+                            </select>
+                          </label>
+                          <label className="block">
+                            <span className="mb-1 block text-[10px] text-on-surface-variant">
+                              获取方式
+                            </span>
+                            <select
+                              aria-label="Workflow node input resolver"
+                              value={workflowNodeConfigString("resolver", "manual")}
+                              onChange={(event) =>
+                                updateActiveWorkflowNodeConfig({
+                                  resolver: event.target.value,
+                                })
+                              }
+                              className="w-full rounded-md border border-outline-variant/30 bg-surface px-2 py-1 text-[10px] text-on-surface outline-none focus:border-primary"
+                            >
+                              <option value="manual">用户填写</option>
+                              <option value="agent_mcp">Agent/MCP 解析</option>
+                              <option value="local">本地路径</option>
+                            </select>
+                          </label>
+                        </>
+                      )}
+                      {activeWorkflowNode.kind === "agent" && (
+                        <>
+                          <label className="block">
+                            <span className="mb-1 block text-[10px] text-on-surface-variant">
+                              执行器
+                            </span>
+                            <input
+                              aria-label="Workflow node agent provider"
+                              value={workflowNodeConfigString(
+                                "provider",
+                                builderProvider.trim() || "claude-code",
+                              )}
+                              onChange={(event) =>
+                                updateActiveWorkflowNodeConfig({
+                                  provider: event.target.value,
+                                })
+                              }
+                              className="w-full rounded-md border border-outline-variant/30 bg-surface px-2 py-1 font-data text-[10px] text-on-surface outline-none focus:border-primary"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="mb-1 block text-[10px] text-on-surface-variant">
+                              MCP profile
+                            </span>
+                            <input
+                              aria-label="Workflow node MCP profile"
+                              value={workflowNodeConfigString(
+                                "mcp_profile",
+                                builderMcpProfile,
+                              )}
+                              onChange={(event) =>
+                                updateActiveWorkflowNodeConfig({
+                                  mcp_profile: event.target.value,
+                                })
+                              }
+                              className="w-full rounded-md border border-outline-variant/30 bg-surface px-2 py-1 font-data text-[10px] text-on-surface outline-none focus:border-primary"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="mb-1 block text-[10px] text-on-surface-variant">
+                              Skills
+                            </span>
+                            <input
+                              aria-label="Workflow node skills"
+                              value={workflowNodeConfigString(
+                                "skill_ids",
+                                builderSkillIds.join(", "),
+                              )}
+                              onChange={(event) =>
+                                updateActiveWorkflowNodeConfig({
+                                  skill_ids: parseCommaSeparated(event.target.value),
+                                })
+                              }
+                              className="w-full rounded-md border border-outline-variant/30 bg-surface px-2 py-1 font-data text-[10px] text-on-surface outline-none focus:border-primary"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="mb-1 block text-[10px] text-on-surface-variant">
+                              必需产物
+                            </span>
+                            <input
+                              aria-label="Workflow node required artifacts"
+                              value={workflowNodeConfigString("required_artifacts")}
+                              onChange={(event) =>
+                                updateActiveWorkflowNodeConfig({
+                                  required_artifacts: parseCommaSeparated(
+                                    event.target.value,
+                                  ),
+                                })
+                              }
+                              className="w-full rounded-md border border-outline-variant/30 bg-surface px-2 py-1 font-data text-[10px] text-on-surface outline-none focus:border-primary"
+                            />
+                          </label>
+                          <label className="block">
+                            <span className="mb-1 block text-[10px] text-on-surface-variant">
+                              节点目标
+                            </span>
+                            <textarea
+                              aria-label="Workflow node agent goal"
+                              value={workflowNodeConfigString("goal", builderGoal)}
+                              onChange={(event) =>
+                                updateActiveWorkflowNodeConfig({
+                                  goal: event.target.value,
+                                })
+                              }
+                              className="h-20 w-full resize-y rounded-md border border-outline-variant/30 bg-surface px-2 py-1 text-[10px] text-on-surface outline-none focus:border-primary"
+                            />
+                          </label>
+                        </>
+                      )}
+                      {activeWorkflowNode.kind === "output" && (
+                        <>
+                          <label className="block">
+                            <span className="mb-1 block text-[10px] text-on-surface-variant">
+                              输出类型
+                            </span>
+                            <select
+                              aria-label="Workflow node output type"
+                              value={workflowNodeConfigString("type", "json")}
+                              onChange={(event) =>
+                                updateActiveWorkflowNodeConfig({
+                                  type: event.target.value,
+                                })
+                              }
+                              className="w-full rounded-md border border-outline-variant/30 bg-surface px-2 py-1 text-[10px] text-on-surface outline-none focus:border-primary"
+                            >
+                              <option value="json">JSON 表</option>
+                              <option value="test_cases">测试用例</option>
+                              <option value="scope_report">分析报告</option>
+                              <option value="markdown">Markdown</option>
+                            </select>
+                          </label>
+                          <label className="block">
+                            <span className="mb-1 block text-[10px] text-on-surface-variant">
+                              产物文件
+                            </span>
+                            <input
+                              aria-label="Workflow node artifact"
+                              value={workflowNodeConfigString("artifact")}
+                              onChange={(event) =>
+                                updateActiveWorkflowNodeConfig({
+                                  artifact: event.target.value,
+                                })
+                              }
+                              placeholder="result.json"
+                              className="w-full rounded-md border border-outline-variant/30 bg-surface px-2 py-1 font-data text-[10px] text-on-surface outline-none focus:border-primary"
+                            />
+                          </label>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
                 {groupedWorkflowPresets.length > 0 && (
                   <details className="mb-3 rounded-lg border border-outline-variant/30 bg-surface-container/70 p-2">
                     <summary className="cursor-pointer text-xs font-semibold text-on-surface">
