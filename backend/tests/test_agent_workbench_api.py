@@ -1,7 +1,9 @@
 from contextlib import asynccontextmanager
+import asyncio
 import hashlib
 import json
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -33,11 +35,86 @@ async def workbench_client(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     monkeypatch.setattr(settings, "data_dir", str(data_dir))
+    monkeypatch.setattr(settings, "sqlite_db", str(data_dir / "codetalk.sqlite3"))
 
     app = FastAPI(lifespan=_no_lifespan)
     app.include_router(agent_workbench.router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         yield client
+
+
+async def _wait_for_task_run_status(
+    client: AsyncClient,
+    task_run_id: str,
+    *,
+    terminal_statuses: set[str] | None = None,
+    timeout_sec: float = 3.0,
+) -> dict:
+    terminal_statuses = terminal_statuses or {
+        "completed",
+        "invalid",
+        "needs_rework",
+        "failed",
+        "error",
+    }
+    deadline = time.monotonic() + timeout_sec
+    last_body: dict = {}
+    while time.monotonic() < deadline:
+        loaded = await client.get(f"/api/workbench/task-runs/{task_run_id}")
+        assert loaded.status_code == 200
+        last_body = loaded.json()
+        if str(last_body.get("status") or "") in terminal_statuses:
+            return last_body
+        await asyncio.sleep(0.05)
+    raise AssertionError(f"task run {task_run_id} did not finish; last body={last_body}")
+
+
+class _CompletedTaskRunResponse:
+    def __init__(self, body: dict) -> None:
+        self.status_code = 200
+        self._body = body
+
+    def json(self) -> dict:
+        return self._body
+
+
+async def _execute_task_run_and_wait(
+    client: AsyncClient,
+    task_run_id: str,
+    *,
+    timeout_sec: int = 10,
+    stop_on_error: bool = True,
+) -> _CompletedTaskRunResponse:
+    scheduled = await client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": timeout_sec, "stop_on_error": stop_on_error},
+    )
+    assert scheduled.status_code == 202
+    body = await _wait_for_task_run_status(client, task_run_id, timeout_sec=timeout_sec)
+    return _CompletedTaskRunResponse(body)
+
+
+async def _run_task_run_and_wait(
+    client: AsyncClient,
+    payload: dict,
+    *,
+    timeout_sec: int = 10,
+) -> _CompletedTaskRunResponse:
+    scheduled = await client.post("/api/workbench/task-runs/run", json=payload)
+    assert scheduled.status_code == 202
+    scheduled_body = scheduled.json()
+    assert scheduled_body["status"] in {"queued", "running"}
+    body = await _wait_for_task_run_status(
+        client,
+        scheduled_body["task_run_id"],
+        timeout_sec=timeout_sec,
+    )
+    body["task_run"] = {
+        key: value for key, value in body.items()
+        if key not in {"task_run", "artifact"}
+    }
+    body.setdefault("artifact", scheduled_body.get("artifact") or {})
+    return _CompletedTaskRunResponse(body)
 
 
 async def test_workbench_workflow_crud_api(workbench_client):
@@ -593,9 +670,9 @@ async def test_task_run_run_response_includes_current_chinese_ui_summary(
     created = await workbench_client.post("/api/workbench/workflows", json=workflow)
     assert created.status_code == 201
 
-    resp = await workbench_client.post(
-        "/api/workbench/task-runs/run",
-        json={
+    resp = await _run_task_run_and_wait(
+        workbench_client,
+        {
             "workflow_id": workflow["id"],
             "workspace_id": "ws-spdk",
             "repo_path": str(repo),
@@ -603,15 +680,16 @@ async def test_task_run_run_response_includes_current_chinese_ui_summary(
             "timeout_sec": 30,
             "stop_on_error": True,
         },
+        timeout_sec=30,
     )
 
-    assert resp.status_code == 201
+    assert resp.status_code == 200
     body = resp.json()
     assert body["run_ui_summary"]["status_label"] == "运行完成"
     assert body["run_ui_summary"]["nodes"][0]["status_label"] == "已完成"
     assert body["run_ui_summary"]["nodes"][0]["outputs"][0]["status_label"] == "已生成"
     assert body["task_run"]["run_ui_summary"]["status_label"] == "运行完成"
-    assert body["execution"]["run_ui_summary"]["deliverables"][0]["artifact"] == "report.md"
+    assert body["run_ui_summary"]["deliverables"][0]["artifact"] == "report.md"
 
 
 async def test_restore_builtin_workflows_preserves_custom_and_restores_core_plus_scenarios(
@@ -763,11 +841,15 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
         "validate_mr_evidence",
         "render_blackbox_cases",
     ]
-    assert by_id["module_analysis"]["agent_step_count"] == 1
+    assert by_id["module_analysis"]["agent_step_count"] == 0
+    assert by_id["module_analysis"]["builtin_steps"] == [
+        "discover_scope",
+        "validate_evidence",
+        "render_report",
+    ]
     assert by_id["module_analysis"]["required_artifacts"] == [
         "source_scope.json",
         "evidence_cards.json",
-        "module_analysis.md",
     ]
     assert by_id["module_analysis"]["builtin_steps"] == [
         "discover_scope",
@@ -2334,31 +2416,219 @@ async def test_workbench_task_run_execute_workflow_api(workbench_client, tmp_pat
         json={"timeout_sec": 10},
     )
 
-    assert executed.status_code == 200
-    body = executed.json()
+    assert executed.status_code == 202
+    assert executed.json()["status"] in {"queued", "running"}
+    body = await _wait_for_task_run_status(workbench_client, task_run_id)
     assert body["status"] == "completed"
-    assert body["step_results"][0]["step_id"] == "discover"
-    assert body["step_results"][0]["validation"]["status"] == "ok"
-    assert body["step_results"][0]["provider_diagnostics"]["provider"] == "local-python"
-    assert body["step_results"][0]["provider_diagnostics"]["health_status"]
+    assert body["execution"]["status"] == "completed"
+    execution_artifact = json.loads(
+        (_task_run_dir(task_run_id) / "workflow_execution.json").read_text(encoding="utf-8")
+    )
+    assert execution_artifact["step_results"][0]["step_id"] == "discover"
+    assert execution_artifact["step_results"][0]["validation"]["status"] == "ok"
+    assert execution_artifact["step_results"][0]["provider_diagnostics"]["provider"] == "local-python"
+    assert execution_artifact["step_results"][0]["provider_diagnostics"]["health_status"]
     assert (
-        body["step_results"][0]["provider_diagnostics"]["command_resolution_source"]
+        execution_artifact["step_results"][0]["provider_diagnostics"]["command_resolution_source"]
         == "provider_health"
     )
-    assert body["step_results"][0]["validation"]["accepted_artifact_details"][0]["artifact"] == (
+    assert execution_artifact["step_results"][0]["validation"]["accepted_artifact_details"][0]["artifact"] == (
         "result.json"
     )
-    assert body["step_results"][0]["validation"]["accepted_artifact_details"][0]["sha256"]
+    assert execution_artifact["step_results"][0]["validation"]["accepted_artifact_details"][0]["sha256"]
     assert body["outputs"][0]["id"] == "result"
     assert body["outputs"][0]["status"] == "ok"
     assert body["outputs"][0]["from"] == "discover"
     assert body["outputs"][0]["artifact"] == "result.json"
+    events = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/events")
+    assert events.status_code == 200
+    event_types = [item["event_type"] for item in events.json()["items"]]
+    assert "step_started" in event_types
+    assert "step_completed" in event_types
+    assert "artifact_created" in event_types
     artifact_dir = _task_run_dir(prepared.json()["task_run_id"])
     assert (artifact_dir / "workflow_execution.json").exists()
     assert (artifact_dir / "workflow_outputs.json").exists()
     assert "secret-value" not in (
         artifact_dir / "agent_runs" / "discover" / "raw_output.txt"
     ).read_text(encoding="utf-8")
+
+
+async def test_workbench_task_run_execute_api_schedules_background_run_and_exposes_events(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    script_path = tmp_path / "slow_agent.py"
+    script_path.write_text(
+        "import pathlib, os, time\n"
+        "time.sleep(0.4)\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'result.json').write_text('{\"ok\": true}', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "async_agent_workflow",
+        "name": "Async agent workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["result.json"],
+            }
+        ],
+        "outputs": [{"id": "result", "type": "json", "from": "discover", "artifact": "result.json"}],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "async_agent_workflow",
+            "workspace_id": "ws-async-execute",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+
+    started = time.monotonic()
+    scheduled = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    elapsed = time.monotonic() - started
+
+    assert scheduled.status_code == 202
+    body = scheduled.json()
+    assert elapsed < 0.25
+    assert body["status"] in {"queued", "running"}
+    assert body["task_run_id"] == task_run_id
+    assert "step_results" not in body
+    assert body["run_ui_summary"]["status"] == "running"
+
+    event_types: list[str] = []
+    for _ in range(20):
+        events = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/events")
+        assert events.status_code == 200
+        event_types = [item["event_type"] for item in events.json()["items"]]
+        if any(item in event_types for item in ("running", "step_started")):
+            break
+        await asyncio.sleep(0.05)
+    assert "queued" in event_types
+    assert any(item in event_types for item in ("running", "step_started"))
+
+
+async def test_workbench_task_run_cancel_running_execution_keeps_cancelled_status(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    script_path = tmp_path / "slow_cancel_agent.py"
+    script_path.write_text(
+        "import pathlib, os, time\n"
+        "time.sleep(0.5)\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'result.json').write_text('{\"late\": true}', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "local-python", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "cancel_agent_workflow",
+        "name": "Cancel agent workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["result.json"],
+            }
+        ],
+        "outputs": [{"id": "result", "type": "json", "from": "discover", "artifact": "result.json"}],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "cancel_agent_workflow",
+            "workspace_id": "ws-cancel-execute",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    scheduled = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert scheduled.status_code == 202
+
+    cancelled = await workbench_client.post(f"/api/workbench/task-runs/{task_run_id}/cancel")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    await asyncio.sleep(0.8)
+
+    loaded = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}")
+    assert loaded.status_code == 200
+    assert loaded.json()["status"] == "cancelled"
+    assert loaded.json()["run_ui_summary"]["status_label"] == "已取消"
+    events = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/events")
+    assert events.status_code == 200
+    assert "cancelled" in [item["event_type"] for item in events.json()["items"]]
+
+
+async def test_workbench_task_run_reconcile_marks_queued_and_running_as_interrupted(tmp_path):
+    from app.services.workbench_task_run_events import (
+        WorkbenchTaskRunEventStore,
+        reconcile_interrupted_task_runs,
+    )
+
+    root = tmp_path / "task_runs"
+    for task_run_id, status in {
+        "task_run_queued": "queued",
+        "task_run_running": "running",
+        "task_run_completed": "completed",
+    }.items():
+        task_dir = root / task_run_id
+        task_dir.mkdir(parents=True)
+        (task_dir / "task_run.json").write_text(
+            json.dumps(
+                {
+                    "task_run_id": task_run_id,
+                    "status": status,
+                    "runtime": {"status": status},
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    result = reconcile_interrupted_task_runs(root)
+
+    assert result["interrupted_count"] == 2
+    assert {
+        item["task_run_id"] for item in result["task_runs"]
+    } == {"task_run_queued", "task_run_running"}
+    store = WorkbenchTaskRunEventStore(root)
+    for task_run_id in ("task_run_queued", "task_run_running"):
+        assert store.current_status(task_run_id) == "interrupted"
+        events = store.list_after(task_run_id)
+        assert events[-1]["event_type"] == "step_failed"
+        assert events[-1]["payload"]["kind"] == "service_restart_interrupted"
+    assert store.current_status("task_run_completed") == "completed"
 
 
 async def test_workbench_task_run_materialize_workflow_outputs_api(
@@ -2405,9 +2675,10 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
     assert executed.json()["outputs"][0]["status"] == "ok"
@@ -2548,9 +2819,9 @@ async def test_workbench_task_run_run_api_prepares_executes_and_audits(
     }
     assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
 
-    response = await workbench_client.post(
-        "/api/workbench/task-runs/run",
-        json={
+    response = await _run_task_run_and_wait(
+        workbench_client,
+        {
             "workflow_id": "one_click_run_workflow",
             "workspace_id": "ws-one-click-run",
             "repo_path": str(tmp_path),
@@ -2559,7 +2830,7 @@ async def test_workbench_task_run_run_api_prepares_executes_and_audits(
         },
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
     assert body["task_run"]["task_run_id"] == body["task_run_id"]
@@ -2567,19 +2838,20 @@ async def test_workbench_task_run_run_api_prepares_executes_and_audits(
     assert not Path(body["artifact"]["path"]).is_absolute()
     assert body["artifact"]["path"] == "task_run.json"
     assert body["artifact"]["manifest_path"] == "task_artifact_manifest.json"
+    task_run_id = body["task_run"]["task_run_id"]
     assert body["execution"]["status"] == "completed"
-    assert body["execution"]["outputs"][0]["status"] == "ok"
+    assert body["outputs"][0]["status"] == "ok"
     assert body["evidence_materialization"]["status"] == "ok"
     assert body["evidence_materialization"]["evidence_count"] == 1
     assert body["acceptance_audit"]["status"] == "ready"
-    task_dir = _task_run_dir(body["task_run"]["task_run_id"])
+    task_dir = _task_run_dir(task_run_id)
     assert (task_dir / "workflow_execution.json").exists()
     assert (task_dir / "workflow_output_materialization.json").exists()
     assert (task_dir / "task_acceptance_audit.json").exists()
     assert (task_dir / "task_artifact_manifest.json").exists()
 
     loaded = await workbench_client.get(
-        f"/api/workbench/task-runs/{body['task_run']['task_run_id']}"
+        f"/api/workbench/task-runs/{task_run_id}"
     )
     assert loaded.status_code == 200
     loaded_body = loaded.json()
@@ -2595,7 +2867,7 @@ async def test_workbench_task_run_run_api_prepares_executes_and_audits(
     )
     assert listed.status_code == 200
     listed_item = listed.json()["items"][0]
-    assert listed_item["task_run_id"] == body["task_run"]["task_run_id"]
+    assert listed_item["task_run_id"] == task_run_id
     assert listed_item["status"] == "completed"
     assert listed_item["outputs"][0]["status"] == "ok"
     assert listed_item["artifact_summary"]["artifact_count"] >= 4
@@ -2636,9 +2908,9 @@ async def test_builtin_mr_blackbox_run_produces_executable_black_box_case_contra
     )
     assert installed.status_code == 201
 
-    response = await workbench_client.post(
-        "/api/workbench/task-runs/run",
-        json={
+    response = await _run_task_run_and_wait(
+        workbench_client,
+        {
             "workflow_id": "mr_blackbox_test",
             "workspace_id": "ws-mr-blackbox-contract",
             "repo_path": str(repo),
@@ -2650,11 +2922,11 @@ async def test_builtin_mr_blackbox_run_produces_executable_black_box_case_contra
         },
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
-    assert body["execution"]["outputs"][1]["id"] == "black_box_cases"
-    assert body["execution"]["outputs"][1]["status"] == "ok"
+    assert body["outputs"][1]["id"] == "black_box_cases"
+    assert body["outputs"][1]["status"] == "ok"
     assert body["semantic_output_import"]["status"] == "ok"
     assert body["semantic_output_import"]["imported_count"] == 1
     assert body["acceptance_audit"]["status"] == "ready"
@@ -2721,9 +2993,9 @@ async def test_patch_impact_uses_hunk_nearest_symbol_for_source_evidence(
     )
     assert installed.status_code == 201
 
-    response = await workbench_client.post(
-        "/api/workbench/task-runs/run",
-        json={
+    response = await _run_task_run_and_wait(
+        workbench_client,
+        {
             "workflow_id": "patch_impact_review",
             "workspace_id": "ws-patch-hunk-symbol",
             "repo_path": str(repo),
@@ -2733,9 +3005,10 @@ async def test_patch_impact_uses_hunk_nearest_symbol_for_source_evidence(
             },
             "timeout_sec": 10,
         },
+        timeout_sec=10,
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
     task_dir = _task_run_dir(body["task_run"]["task_run_id"])
@@ -2787,9 +3060,9 @@ async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
         for warning in installed.json()["audit"]["warnings"]
     )
 
-    response = await workbench_client.post(
-        "/api/workbench/task-runs/run",
-        json={
+    response = await _run_task_run_and_wait(
+        workbench_client,
+        {
             "workflow_id": "source_flow_sfmea_blackbox",
             "workspace_id": "ws-source-flow-sfmea",
             "repo_path": str(repo),
@@ -2801,10 +3074,10 @@ async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
         },
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
-    outputs = {item["id"]: item for item in body["execution"]["outputs"]}
+    outputs = {item["id"]: item for item in body["outputs"]}
     assert outputs["code_evidence"]["status"] == "ok"
     assert outputs["flow_map"]["status"] == "ok"
     assert outputs["sfmea"]["status"] == "ok"
@@ -2861,9 +3134,9 @@ async def test_builtin_common_scenario_preset_uses_default_query_when_scope_is_e
     assert installed.status_code == 201
     assert installed.json()["id"] == "nvmf_connect_io_blackbox"
 
-    response = await workbench_client.post(
-        "/api/workbench/task-runs/run",
-        json={
+    response = await _run_task_run_and_wait(
+        workbench_client,
+        {
             "workflow_id": "nvmf_connect_io_blackbox",
             "workspace_id": "ws-nvmf-default-query",
             "repo_path": str(repo),
@@ -2873,9 +3146,10 @@ async def test_builtin_common_scenario_preset_uses_default_query_when_scope_is_e
             },
             "timeout_sec": 10,
         },
+        timeout_sec=10,
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
     outputs = {item["id"]: item for item in body["execution"]["outputs"]}
@@ -2922,9 +3196,9 @@ async def test_builtin_common_scenario_preset_merges_default_query_with_user_sco
     )
     assert installed.status_code == 201
 
-    response = await workbench_client.post(
-        "/api/workbench/task-runs/run",
-        json={
+    response = await _run_task_run_and_wait(
+        workbench_client,
+        {
             "workflow_id": "nvmf_disconnect_reconnect_blackbox",
             "workspace_id": "ws-nvmf-user-query-merge",
             "repo_path": str(repo),
@@ -2934,9 +3208,10 @@ async def test_builtin_common_scenario_preset_merges_default_query_with_user_sco
             },
             "timeout_sec": 10,
         },
+        timeout_sec=10,
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
 
@@ -2990,9 +3265,9 @@ async def test_spdk_cli_rpc_smoke_preset_discovers_test_scripts_and_config(
     )
     assert installed.status_code == 201
 
-    response = await workbench_client.post(
-        "/api/workbench/task-runs/run",
-        json={
+    response = await _run_task_run_and_wait(
+        workbench_client,
+        {
             "workflow_id": "spdk_cli_rpc_smoke_blackbox",
             "workspace_id": "ws-spdk-cli-rpc-smoke",
             "repo_path": str(repo),
@@ -3002,9 +3277,10 @@ async def test_spdk_cli_rpc_smoke_preset_discovers_test_scripts_and_config(
             },
             "timeout_sec": 10,
         },
+        timeout_sec=10,
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
     task_dir = _task_run_dir(body["task_run"]["task_run_id"])
@@ -3055,18 +3331,19 @@ async def test_builtin_rpc_config_scenario_prioritizes_source_over_test_helpers(
     )
     assert installed.status_code == 201
 
-    response = await workbench_client.post(
-        "/api/workbench/task-runs/run",
-        json={
+    response = await _run_task_run_and_wait(
+        workbench_client,
+        {
             "workflow_id": "rpc_config_negative_blackbox",
             "workspace_id": "ws-rpc-source-priority",
             "repo_path": str(repo),
             "inputs": {"repo_path": str(repo)},
             "timeout_sec": 10,
         },
+        timeout_sec=10,
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
 
@@ -3126,18 +3403,19 @@ async def test_builtin_reactor_thread_scenario_uses_scheduler_specific_wording(
     )
     assert installed.status_code == 201
 
-    response = await workbench_client.post(
-        "/api/workbench/task-runs/run",
-        json={
+    response = await _run_task_run_and_wait(
+        workbench_client,
+        {
             "workflow_id": "reactor_thread_poller_blackbox",
             "workspace_id": "ws-reactor-wording",
             "repo_path": str(repo),
             "inputs": {"repo_path": str(repo)},
             "timeout_sec": 10,
         },
+        timeout_sec=10,
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 200
     body = response.json()
     assert body["status"] == "completed"
     task_dir = _task_run_dir(body["task_run"]["task_run_id"])
@@ -3214,18 +3492,19 @@ async def test_workbench_task_run_run_auto_imports_declared_semantic_outputs(
     }
     assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
 
-    response = await workbench_client.post(
-        "/api/workbench/task-runs/run",
-        json={
+    response = await _run_task_run_and_wait(
+        workbench_client,
+        {
             "workflow_id": "auto_semantic_output_workflow",
             "workspace_id": "ws-auto-semantic-output",
             "repo_path": str(tmp_path),
             "inputs": {"module": "nvmf_tcp/transport/tls"},
             "timeout_sec": 10,
         },
+        timeout_sec=10,
     )
 
-    assert response.status_code == 201
+    assert response.status_code == 200
     body = response.json()
     assert body["semantic_output_import"]["status"] == "ok"
     assert body["semantic_output_import"]["imported_count"] == 1
@@ -3312,9 +3591,10 @@ async def test_workbench_imports_black_box_workflow_output_into_semantic_library
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
     assert executed.json()["outputs"][0]["status"] == "ok"
@@ -3415,9 +3695,10 @@ async def test_workbench_materialize_outputs_auto_imports_declared_semantic_outp
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
     assert executed.json()["outputs"][0]["status"] == "ok"
@@ -3498,9 +3779,10 @@ async def test_workbench_materialize_workflow_outputs_preserves_rejection_detail
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
     assert executed.json()["outputs"][0]["status"] == "invalid"
@@ -3586,9 +3868,10 @@ async def test_workbench_materialize_rejects_output_path_outside_task_artifacts(
     )
     assert prepared.status_code == 201
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
     assert executed.json()["outputs"][0]["status"] == "ok"
@@ -3668,9 +3951,10 @@ async def test_workbench_materialize_changed_files_output_as_structured_memory(
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
     assert executed.json()["outputs"][0]["status"] == "ok"
@@ -3762,9 +4046,10 @@ async def test_workbench_materialize_custom_json_output_with_evidence_mapping(
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
     assert executed.json()["outputs"][0]["status"] == "ok"
@@ -3888,9 +4173,10 @@ async def test_workbench_materialize_rejects_changed_files_without_repo_or_patch
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
     assert executed.json()["status"] == "completed"
@@ -3956,9 +4242,10 @@ async def test_workbench_materialize_uncovered_functions_output_as_structured_me
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
     assert executed.json()["outputs"][0]["status"] == "ok"
@@ -4054,9 +4341,10 @@ async def test_workbench_materialize_source_scope_output_as_structured_memory(
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
     assert executed.json()["outputs"][0]["status"] == "ok"
@@ -4184,9 +4472,10 @@ async def test_workbench_materialize_evidence_cards_output_as_structured_memory(
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
     assert executed.json()["outputs"][0]["status"] == "ok"
@@ -4309,9 +4598,10 @@ async def test_workbench_agent_cli_workflow_materializes_auditable_memory_end_to
     assert prepared.status_code == 201
     task_run_id = prepared.json()["task_run_id"]
 
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
     execution = executed.json()
@@ -4745,9 +5035,10 @@ async def test_workbench_task_run_artifacts_api_labels_agent_execution_input(
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -4756,7 +5047,11 @@ async def test_workbench_task_run_artifacts_api_labels_agent_execution_input(
     paths = {item["relative_path"]: item for item in artifacts.json()["artifacts"]}
     execution_input = paths["agent_runs/discover/execution_input.json"]
     assert execution_input["kind"] == "agent_execution_input"
-    assert "CODETALK_AGENT_READONLY" in execution_input["preview"]
+    execution_input_content = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/artifacts/content/agent_runs/discover/execution_input.json"
+    )
+    assert execution_input_content.status_code == 200
+    assert "CODETALK_AGENT_READONLY" in execution_input_content.json()["content"]
     replay_plan = paths["agent_runs/discover/agent_replay_plan.json"]
     assert replay_plan["kind"] == "agent_replay_plan"
     replay_plan_content = await workbench_client.get(
@@ -4820,9 +5115,10 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
     assert executed.json()["step_results"][0]["failure_recovery"]["failure_kind"] == "agent_error"
@@ -4917,9 +5213,10 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     assert missing_replay["agent_replay_plan.json"]["status"] == "blocked"
     assert missing_replay["agent_replay_plan.json"]["reason"] == "required replay artifact is missing"
 
-    await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     rerun_response = await workbench_client.post(
         f"/api/workbench/task-runs/{task_run_id}/rerun-plan/execute",
@@ -5059,9 +5356,10 @@ async def test_workbench_task_run_acceptance_audit_api_records_required_evidence
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -5155,9 +5453,10 @@ async def test_workbench_task_run_acceptance_audit_reports_missing_black_box_pol
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
     (_task_run_dir(prepared.json()["task_run_id"]) / "black_box_generation_policy.json").unlink()
@@ -5233,9 +5532,10 @@ async def test_workbench_task_run_acceptance_audit_records_semantic_import_artif
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -5316,9 +5616,10 @@ async def test_workbench_task_run_acceptance_audit_rejects_non_black_box_case_co
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -5399,9 +5700,10 @@ async def test_workbench_task_run_acceptance_audit_rejects_chinese_white_box_cas
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -5476,9 +5778,10 @@ async def test_workbench_task_run_acceptance_audit_requires_black_box_observabil
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -5557,9 +5860,10 @@ async def test_workbench_task_run_acceptance_audit_requires_black_box_test_direc
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -5637,9 +5941,10 @@ async def test_workbench_task_run_acceptance_audit_rejects_vague_black_box_expec
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -5717,9 +6022,10 @@ async def test_workbench_task_run_acceptance_audit_rejects_vague_black_box_steps
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -5797,9 +6103,10 @@ async def test_workbench_task_run_acceptance_audit_rejects_duplicate_black_box_c
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -5891,9 +6198,10 @@ async def test_workbench_task_run_acceptance_audit_requires_declared_evidence_ma
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
     assert executed.json()["acceptance_audit"]["status"] == "ready"
@@ -5980,9 +6288,10 @@ async def test_workbench_task_run_acceptance_audit_rejects_incomplete_sfmea_risk
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -6071,9 +6380,10 @@ async def test_workbench_task_run_acceptance_audit_rejects_risk_finding_with_mis
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -6165,9 +6475,10 @@ async def test_workbench_task_run_acceptance_audit_rejects_risk_finding_with_out
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -6254,9 +6565,10 @@ async def test_workbench_task_run_acceptance_audit_requires_risk_finding_source_
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -6347,9 +6659,10 @@ async def test_workbench_task_run_acceptance_audit_rejects_duplicate_sfmea_risk_
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -6440,9 +6753,10 @@ async def test_workbench_task_run_acceptance_audit_rejects_out_of_range_sfmea_sc
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -6532,9 +6846,10 @@ async def test_workbench_task_run_acceptance_audit_requires_sfmea_score_explanat
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -6626,9 +6941,10 @@ async def test_workbench_task_run_acceptance_audit_rejects_non_actionable_sfmea_
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -6690,9 +7006,10 @@ async def test_workbench_task_run_acceptance_audit_reports_missing_agent_artifac
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -6847,9 +7164,10 @@ async def test_workbench_task_run_acceptance_audit_flags_invalid_workflow_output
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 
@@ -6925,9 +7243,10 @@ async def test_workbench_task_run_artifacts_api_labels_agent_turn_snapshots(
         },
     )
     task_run_id = prepared.json()["task_run_id"]
-    executed = await workbench_client.post(
-        f"/api/workbench/task-runs/{task_run_id}/execute",
-        json={"timeout_sec": 10},
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
     )
     assert executed.status_code == 200
 

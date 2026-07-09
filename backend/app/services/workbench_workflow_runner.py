@@ -11,7 +11,7 @@ import threading
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from app.llm.factory import create_llm_client_from_active
 from app.services.agent_run_harness import (
@@ -45,9 +45,15 @@ class WorkbenchWorkflowExecutionResult:
 class WorkbenchWorkflowRunner:
     """Runs the executable steps of a previously prepared workbench task."""
 
-    def __init__(self, artifact_root: str | Path) -> None:
+    def __init__(
+        self,
+        artifact_root: str | Path,
+        *,
+        event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> None:
         self.artifact_root = Path(artifact_root)
         self.store = WorkbenchTaskRunStore(self.artifact_root)
+        self._event_sink = event_sink
 
     def execute_task_run(
         self,
@@ -70,6 +76,15 @@ class WorkbenchWorkflowRunner:
                 continue
             step_id = str(step.get("id") or "")
             step_type = str(step.get("type") or "")
+            self._emit_event(
+                "step_started",
+                {
+                    "step_id": step_id,
+                    "step_type": step_type,
+                    "executor": _step_executor_label(step),
+                    "started_at": _now(),
+                },
+            )
             if step_type != "agent_task":
                 step_result = self._execute_builtin_step(
                     task_run=task_run,
@@ -77,18 +92,21 @@ class WorkbenchWorkflowRunner:
                     prior_step_results=step_results,
                 )
                 step_results.append(step_result)
+                self._emit_step_finished(step_result)
                 if stop_on_error and step_result.get("status") in {"error", "invalid"}:
                     break
                 continue
 
             agent_run = agent_runs_by_step.get(step_id)
             if not agent_run:
-                step_results.append({
+                step_result = {
                     "step_id": step_id,
                     "type": step_type,
                     "status": "error",
                     "error": "missing_agent_run",
-                })
+                }
+                step_results.append(step_result)
+                self._emit_step_finished(step_result)
                 if stop_on_error:
                     break
                 continue
@@ -101,6 +119,7 @@ class WorkbenchWorkflowRunner:
                 timeout_sec=timeout_sec,
             )
             step_results.append(step_result)
+            self._emit_step_finished(step_result)
             if stop_on_error and step_result.get("status") != "completed":
                 break
 
@@ -114,6 +133,9 @@ class WorkbenchWorkflowRunner:
             item.get("status") in {"missing", "invalid"} for item in outputs
         ):
             status = "invalid"
+        for output in outputs:
+            if isinstance(output, dict) and output.get("status") in {"ok", "completed", "ready", "success"}:
+                self._emit_event("artifact_created", dict(output))
         test_activity_quality = self._audit_test_activity_quality(task_run=task_run)
         if (
             status == "completed"
@@ -143,6 +165,16 @@ class WorkbenchWorkflowRunner:
         )
         self._write_execution_artifact(task_run.task_run_id, result)
         return result
+
+    def _emit_step_finished(self, step_result: dict[str, Any]) -> None:
+        status = str(step_result.get("status") or "")
+        event_type = "step_completed" if status == "completed" else "step_failed"
+        self._emit_event(event_type, dict(step_result))
+
+    def _emit_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        if self._event_sink is None:
+            return
+        self._event_sink(event_type, payload)
 
     def _audit_test_activity_quality(self, *, task_run: Any) -> dict[str, Any]:
         contract = (
@@ -3311,6 +3343,22 @@ def _overall_status(step_results: list[dict[str, Any]]) -> str:
     if any(item.get("status") == "error" for item in actionable):
         return "error"
     return "invalid"
+
+
+def _step_executor_label(step: dict[str, Any]) -> str:
+    step_type = str(step.get("type") or "")
+    if step_type == "agent_task":
+        provider = str(step.get("provider") or "")
+        if provider == BUILTIN_LLM_PROVIDER_ID:
+            return "builtin_llm"
+        return f"agent_cli:{provider}" if provider else "agent_cli"
+    if step_type.startswith("local_") or step_type in {
+        "evidence_validate",
+        "report_render",
+        "semantic_retrieve",
+    }:
+        return "local_static"
+    return step_type or "workflow_step"
 
 
 def _diff_parse_payload(input_snapshot: dict[str, Any]) -> dict[str, Any]:

@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.database import init_db
 from app.services.process_manager import ProcessManager
+from app.services.workbench_task_run_events import reconcile_interrupted_task_runs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 
@@ -29,6 +30,9 @@ async def lifespan(app: FastAPI):
     settings.outputs_path.mkdir(parents=True, exist_ok=True)
     settings.tiktoken_cache_path.mkdir(parents=True, exist_ok=True)
     await init_db()
+    reconcile = reconcile_interrupted_task_runs(settings.data_path / "workbench" / "task_runs")
+    if reconcile.get("interrupted_count"):
+        logger.warning("Reconciled interrupted workbench task runs: %s", reconcile)
 
     # Initialize ProcessManager (tools are NOT auto-started -- user controls via API)
     pm = ProcessManager.get_instance()

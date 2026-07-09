@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Body, File, Form, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -49,6 +49,7 @@ from app.services.workbench_task_run import _builtin_llm_provider_snapshot_item
 from app.services.workbench_task_run import build_agent_cli_provider_diagnostics
 from app.services.workbench_task_run import build_codetalk_provider_snapshot
 from app.services.workbench_task_run import _evidence_item_payload
+from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
 from app.services.workbench_workflow_runner import build_workflow_rerun_plan
 from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
 from app.services.workflow_dsl import (
@@ -305,19 +306,53 @@ def _public_task_run_payload(task_run: Any) -> dict[str, Any]:
 
 def _public_task_run_runtime_summary(task_root: Path) -> dict[str, Any]:
     summary: dict[str, Any] = {}
+    task_status = ""
+    task_payload = _read_json(task_root / "task_run.json")
+    if isinstance(task_payload, dict):
+        task_status = str(task_payload.get("status") or "").strip()
+        if task_status:
+            summary["status"] = task_status
+        runtime = task_payload.get("runtime")
+        if isinstance(runtime, dict):
+            summary["runtime"] = {
+                "status": str(runtime.get("status") or task_status or "unknown"),
+                "updated_at": str(runtime.get("updated_at") or ""),
+                "started_at": str(runtime.get("started_at") or ""),
+                "completed_at": str(runtime.get("completed_at") or ""),
+            }
     execution = _read_json(task_root / "workflow_execution.json")
     if isinstance(execution, dict):
         status = str(execution.get("status") or "").strip()
-        if status:
+        if status and task_status not in {"queued", "running", "cancelled", "interrupted"}:
             summary["status"] = status
         outputs = execution.get("outputs")
         if isinstance(outputs, list):
             summary["outputs"] = _public_workflow_output_summaries(outputs)
+        step_results = execution.get("step_results")
+        if isinstance(step_results, list):
+            summary["step_results"] = step_results
+        audit_summary = execution.get("audit_summary")
+        if isinstance(audit_summary, dict):
+            summary["audit_summary"] = audit_summary
         summary["execution"] = {
             "status": status or "unknown",
             "step_count": len(execution.get("steps") or []),
             "output_count": len(outputs) if isinstance(outputs, list) else 0,
+            "outputs": _public_workflow_output_summaries(outputs) if isinstance(outputs, list) else [],
         }
+
+    materialization = _read_json(task_root / "workflow_output_materialization.json")
+    if isinstance(materialization, dict):
+        summary["evidence_materialization"] = materialization
+        semantic_import = materialization.get("semantic_output_import")
+        if isinstance(semantic_import, dict):
+            summary["semantic_output_import"] = semantic_import
+    semantic_import = _read_json(task_root / "semantic_output_import.json")
+    if isinstance(semantic_import, dict):
+        result = semantic_import.get("result")
+        summary["semantic_output_import"] = (
+            result if isinstance(result, dict) else semantic_import
+        )
 
     acceptance = _read_json(task_root / "task_acceptance_audit.json")
     if isinstance(acceptance, dict):
@@ -364,7 +399,13 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
     )
     execution = _read_json(task_root / "workflow_execution.json")
     if not isinstance(execution, dict):
-        execution = {}
+        task_payload = _read_json(task_root / "task_run.json")
+        task_status = (
+            str((task_payload or {}).get("status") or "").strip()
+            if isinstance(task_payload, dict)
+            else ""
+        )
+        execution = {"status": task_status or "prepared"}
     step_results = {
         str(item.get("step_id") or ""): item
         for item in execution.get("step_results") or []
@@ -644,9 +685,13 @@ def _task_run_ui_status(*, execution: dict[str, Any], nodes: list[dict[str, Any]
         return {"status": "failed", "label": "运行失败"}
     if status in {"completed", "ok", "ready", "success"}:
         return {"status": "completed", "label": "运行完成"}
+    if status in {"cancelled", "canceled"}:
+        return {"status": "cancelled", "label": "已取消"}
+    if status in {"interrupted"}:
+        return {"status": "failed", "label": "运行中断"}
     if status in {"invalid", "error", "failed", "failure"}:
         return {"status": "failed", "label": "运行失败"}
-    if status in {"running", "queued", "prepared"}:
+    if status in {"running", "queued"}:
         return {"status": "running", "label": "运行中"}
     return {"status": "prepared", "label": "等待运行"}
 
@@ -661,7 +706,11 @@ def _task_run_ui_status_label(status: str) -> str:
         return "运行失败"
     if normalized in {"prepared", "waiting", "not_started", "idle", ""}:
         return "等待运行"
-    if normalized in {"skipped", "cancelled", "canceled"}:
+    if normalized in {"cancelled", "canceled"}:
+        return "已取消"
+    if normalized in {"interrupted"}:
+        return "运行中断"
+    if normalized in {"skipped"}:
         return "已跳过"
     return "状态待确认"
 
@@ -1576,13 +1625,167 @@ async def materialize_task_agent_run_evidence(
 async def execute_task_run_workflow(
     task_run_id: str,
     payload: TaskRunExecuteRequest,
+    response: Response,
 ) -> dict[str, Any]:
     try:
-        return _execute_task_run_with_closure(task_run_id=task_run_id, payload=payload)
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+    event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
+    current_status = event_store.current_status(task_run_id)
+    if current_status in {"queued", "running"}:
+        response.status_code = 202
+        return _scheduled_task_run_response(task_run=task_run, status=current_status)
+
+    try:
+        event_store.mark_status(task_run_id, "queued")
+        event_store.append(
+            task_run_id,
+            "queued",
+            {
+                "timeout_sec": payload.timeout_sec,
+                "stop_on_error": payload.stop_on_error,
+            },
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    asyncio.create_task(_execute_task_run_background(task_run_id=task_run_id, payload=payload))
+    response.status_code = 202
+    queued_task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    return _scheduled_task_run_response(task_run=queued_task_run, status="queued")
+
+
+async def _execute_task_run_background(
+    *,
+    task_run_id: str,
+    payload: TaskRunExecuteRequest,
+) -> None:
+    event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
+    try:
+        if event_store.current_status(task_run_id) == "cancelled":
+            event_store.append(
+                task_run_id,
+                "cancelled",
+                {"status": "cancelled", "ignored_before_start": True},
+            )
+            return
+        event_store.mark_status(task_run_id, "running", started_at=datetime.now(timezone.utc).isoformat())
+        event_store.append(task_run_id, "running", {})
+        result = await asyncio.to_thread(
+            _execute_task_run_with_closure,
+            task_run_id=task_run_id,
+            payload=payload,
+        )
+        if event_store.current_status(task_run_id) == "cancelled":
+            event_store.append(
+                task_run_id,
+                "cancelled",
+                {"status": "cancelled", "ignored_late_result": True},
+            )
+            return
+        status = str(result.get("status") or "completed")
+        event_store.mark_status(
+            task_run_id,
+            status,
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        event_store.append(
+            task_run_id,
+            "completed" if status in {"completed", "ok", "ready", "success"} else "step_failed",
+            {"status": status},
+        )
+    except Exception as exc:  # pragma: no cover - defensive path is covered through API state.
+        redacted = redact_agent_diagnostic_text(str(exc))
+        try:
+            event_store.mark_status(
+                task_run_id,
+                "failed",
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                error=redacted,
+            )
+            event_store.append(
+                task_run_id,
+                "step_failed",
+                {
+                    "status": "failed",
+                    "error": redacted,
+                    "user_message": "工作流后台执行失败，请查看内部诊断后重试。",
+                },
+            )
+        except KeyError:
+            return
+
+
+@router.post("/task-runs/{task_run_id}/cancel")
+async def cancel_task_run(task_run_id: str) -> dict[str, Any]:
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
+    current_status = event_store.current_status(task_run_id)
+    if current_status not in {"queued", "running"}:
+        return {
+            "task_run_id": task_run_id,
+            "status": current_status,
+            "cancelled": False,
+            "reason": "task run is not queued or running",
+            "run_ui_summary": _build_task_run_ui_summary(task_run, Path(task_run.artifact_dir)),
+        }
+    event_store.mark_status(
+        task_run_id,
+        "cancelled",
+        completed_at=datetime.now(timezone.utc).isoformat(),
+    )
+    event_store.append(
+        task_run_id,
+        "cancelled",
+        {
+            "status": "cancelled",
+            "user_message": "已取消本次工作流运行。正在运行的外部进程可能需要少量时间退出。",
+        },
+    )
+    cancelled = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    return {
+        "task_run_id": task_run_id,
+        "status": "cancelled",
+        "cancelled": True,
+        "run_ui_summary": _build_task_run_ui_summary(cancelled, Path(cancelled.artifact_dir)),
+    }
+
+
+def _scheduled_task_run_response(*, task_run: Any, status: str) -> dict[str, Any]:
+    task_dir = Path(task_run.artifact_dir)
+    return {
+        "status": status,
+        "task_run_id": task_run.task_run_id,
+        "workflow_id": task_run.workflow_id,
+        "workspace_id": task_run.workspace_id,
+        "task_run": _public_task_run_payload(task_run),
+        "run_ui_summary": _build_task_run_ui_summary(task_run, task_dir),
+    }
+
+
+@router.get("/task-runs/{task_run_id}/events")
+async def list_task_run_events(
+    task_run_id: str,
+    after_id: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=1000),
+) -> dict[str, Any]:
+    try:
+        WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    items = WorkbenchTaskRunEventStore(_task_runs_dir()).list_after(
+        task_run_id,
+        after_id=after_id,
+        limit=limit,
+    )
+    return {
+        "task_run_id": task_run_id,
+        "items": items,
+        "last_event_id": max((int(item.get("event_id") or 0) for item in items), default=after_id),
+    }
 
 
 def _execute_task_run_with_closure(
@@ -1591,7 +1794,15 @@ def _execute_task_run_with_closure(
     payload: TaskRunExecuteRequest,
 ) -> dict[str, Any]:
     try:
-        result = WorkbenchWorkflowRunner(_task_runs_dir()).execute_task_run(
+        event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
+        result = WorkbenchWorkflowRunner(
+            _task_runs_dir(),
+            event_sink=lambda event_type, event_payload: event_store.append(
+                task_run_id,
+                event_type,
+                event_payload,
+            ),
+        ).execute_task_run(
             task_run_id,
             timeout_sec=payload.timeout_sec,
             stop_on_error=payload.stop_on_error,
@@ -2108,7 +2319,7 @@ async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
     return _public_task_run_payload(result)
 
 
-@router.post("/task-runs/run", status_code=201)
+@router.post("/task-runs/run", status_code=202)
 async def prepare_and_execute_task_run(payload: RunTaskRunRequest) -> dict[str, Any]:
     await apply_persisted_agent_provider_settings()
     try:
@@ -2124,12 +2335,25 @@ async def prepare_and_execute_task_run(payload: RunTaskRunRequest) -> dict[str, 
             inputs=payload.inputs,
             provider_override=payload.provider_override,
         )
-        execution = _execute_task_run_with_closure(
-            task_run_id=prepared.task_run_id,
-            payload=TaskRunExecuteRequest(
-                timeout_sec=payload.timeout_sec,
-                stop_on_error=payload.stop_on_error,
-            ),
+        execute_payload = TaskRunExecuteRequest(
+            timeout_sec=payload.timeout_sec,
+            stop_on_error=payload.stop_on_error,
+        )
+        event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
+        event_store.mark_status(prepared.task_run_id, "queued")
+        event_store.append(
+            prepared.task_run_id,
+            "queued",
+            {
+                "timeout_sec": execute_payload.timeout_sec,
+                "stop_on_error": execute_payload.stop_on_error,
+            },
+        )
+        asyncio.create_task(
+            _execute_task_run_background(
+                task_run_id=prepared.task_run_id,
+                payload=execute_payload,
+            )
         )
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown workflow: {payload.workflow_id}")
@@ -2137,18 +2361,15 @@ async def prepare_and_execute_task_run(payload: RunTaskRunRequest) -> dict[str, 
         raise HTTPException(status_code=422, detail=str(exc))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    task_dir = Path(prepared.artifact_dir)
+    task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(prepared.task_run_id)
+    task_dir = Path(task_run.artifact_dir)
     return {
-        "status": execution.get("status") or "unknown",
-        "task_run_id": prepared.task_run_id,
-        "workflow_id": prepared.workflow_id,
-        "workspace_id": prepared.workspace_id,
-        "task_run": _public_task_run_payload(prepared),
-        "execution": execution,
-        "evidence_materialization": execution.get("evidence_materialization") or {},
-        "semantic_output_import": execution.get("semantic_output_import") or {},
-        "acceptance_audit": execution.get("acceptance_audit") or {},
-        "run_ui_summary": execution.get("run_ui_summary") or {},
+        "status": "queued",
+        "task_run_id": task_run.task_run_id,
+        "workflow_id": task_run.workflow_id,
+        "workspace_id": task_run.workspace_id,
+        "task_run": _public_task_run_payload(task_run),
+        "run_ui_summary": _build_task_run_ui_summary(task_run, task_dir),
         "artifact": {
             "path": _public_task_artifact_path(task_dir, task_dir / "task_run.json"),
             "manifest_path": _public_task_artifact_path(task_dir, task_dir / "task_artifact_manifest.json"),
