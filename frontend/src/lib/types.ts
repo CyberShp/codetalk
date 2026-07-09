@@ -991,6 +991,10 @@ export interface WorkbenchRunUiNodeSummary {
   status?: string;
   status_label: string;
   provider?: string;
+  executor?: string;
+  executor_label?: string;
+  method?: string;
+  user_message?: string;
   inputs?: Array<{ id: string; role?: string; type?: string }>;
   mcp_profiles?: string[];
   mcp_inputs?: Array<{
@@ -1008,6 +1012,7 @@ export interface WorkbenchRunUiNodeSummary {
     status_label?: string;
   }>;
   failure_reasons?: string[];
+  review_reasons?: string[];
 }
 
 export type ExportFormat = "md" | "docx" | "xml";

@@ -3335,6 +3335,7 @@ function runStatusDisplayLabel(status: string): string {
   const normalized = status.trim().toLowerCase();
   if (!normalized) return "未知";
   if (["已完成", "运行完成"].includes(status)) return "已完成";
+  if (["完成但信息不足", "需要复核"].includes(status)) return "需复核";
   if (["进行中", "运行中"].includes(status)) return "进行中";
   if (["失败", "运行失败", "缺少交付文件", "生成失败"].includes(status)) {
     return "失败";
@@ -3356,6 +3357,8 @@ function runStatusDisplayLabel(status: string): string {
     return normalized === "executed" ? "已执行" : "已完成";
   }
   if (normalized === "ready") return "已就绪";
+  if (["completed_empty", "needs_review"].includes(normalized)) return "需复核";
+  if (normalized === "interrupted") return "失败";
   if (normalized === "invalid") return "无效";
   if (["partial", "partially_completed"].includes(normalized)) {
     return "部分完成";
@@ -3503,6 +3506,9 @@ function taskRunEventTypeLabel(eventType: string): string {
     step_failed: "节点失败",
     artifact_created: "产物生成",
     completed: "运行完成",
+    completed_empty: "完成但信息不足",
+    needs_review: "需要复核",
+    interrupted: "运行中断",
     cancelled: "已取消",
   };
   return labels[normalized] ?? runStatusDisplayLabel(eventType);
@@ -3537,7 +3543,7 @@ function taskRunEventDetail(event: WorkbenchTaskRunEvent): string {
 
 function taskRunEventTone(eventType: string): "danger" | "success" | "primary" | "muted" {
   const normalized = eventType.trim().toLowerCase();
-  if (["step_failed", "failed", "error"].includes(normalized)) return "danger";
+  if (["step_failed", "failed", "error", "interrupted"].includes(normalized)) return "danger";
   if (["step_completed", "artifact_created", "completed"].includes(normalized)) {
     return "success";
   }
@@ -4299,7 +4305,7 @@ export function AgentWorkbenchExperience({
             detail:
               details.length > 0
                 ? details.join(" · ")
-                : node.provider || node.type || "等待节点执行",
+                : node.executor_label || node.provider || node.type || "等待节点执行",
           };
         });
       }
@@ -4368,6 +4374,7 @@ export function AgentWorkbenchExperience({
       const label = activeRunUiSummary.status_label;
       if (label === "运行失败") return "失败";
       if (label === "运行完成") return "已完成";
+      if (["完成但信息不足", "需要复核"].includes(label)) return "需复核";
       return "进行中";
     }
     if (
@@ -4404,6 +4411,10 @@ export function AgentWorkbenchExperience({
       return Array.from(new Set(summaryReasons)).slice(0, 5);
     }
     const reasons: string[] = [];
+    activeRunUiSummary?.nodes
+      ?.flatMap((node) => node.review_reasons ?? [])
+      .filter(Boolean)
+      .forEach((reason) => reasons.push(compactReasonLabel(reason)));
     workflowExecution?.step_results
       .map((step) => step.failure_recovery)
       .filter(Boolean)
@@ -9377,6 +9388,8 @@ export function AgentWorkbenchExperience({
                       "rounded-full px-2 py-0.5 text-[11px] font-medium",
                       runPanelStatus === "失败"
                         ? "bg-amber-400/10 text-warning"
+                        : runPanelStatus === "需复核"
+                          ? "bg-amber-400/10 text-amber-700"
                         : runPanelStatus === "已完成"
                           ? "bg-green-500/10 text-green-600"
                           : runPanelStatus === "进行中"
@@ -9391,7 +9404,7 @@ export function AgentWorkbenchExperience({
                   演示状态
                 </p>
                 <div className="mt-1 flex flex-wrap gap-1 rounded-lg border border-dashed border-outline-variant/40 bg-surface-container/40 p-1">
-                  {["空", "进行中", "失败", "已完成"].map((status) => (
+                  {["空", "进行中", "需复核", "失败", "已完成"].map((status) => (
                     <span
                       key={status}
                       className={[
@@ -9425,6 +9438,8 @@ export function AgentWorkbenchExperience({
                         "ct-run-state-card rounded-lg border p-3",
                         runPanelStatus === "失败"
                           ? "border-red-300/70 bg-red-50"
+                          : runPanelStatus === "需复核"
+                            ? "border-amber-300/70 bg-amber-50"
                           : runPanelStatus === "已完成"
                             ? "border-emerald-300/70 bg-emerald-50"
                             : "border-sky-300/70 bg-sky-50",
@@ -9435,6 +9450,8 @@ export function AgentWorkbenchExperience({
                           <p className="font-semibold text-on-surface">
                             {runPanelStatus === "失败"
                               ? `运行失败 · ${workflowDisplayName(preparedRun.workflow_id)}`
+                              : runPanelStatus === "需复核"
+                                ? `需要复核 · ${workflowDisplayName(preparedRun.workflow_id)}`
                               : runPanelStatus === "已完成"
                                 ? `运行完成 · ${workflowDisplayName(preparedRun.workflow_id)}`
                                 : `运行中 · ${workflowDisplayName(preparedRun.workflow_id)}`}
@@ -9466,6 +9483,8 @@ export function AgentWorkbenchExperience({
                           )}
                           {runPanelStatus === "失败" ? (
                             <AlertTriangle size={22} className="text-red-600" />
+                          ) : runPanelStatus === "需复核" ? (
+                            <AlertTriangle size={22} className="text-amber-600" />
                           ) : runPanelStatus === "已完成" ? (
                             <span className="grid h-7 w-7 place-items-center rounded-full bg-emerald-100 text-emerald-700">
                               ✓
@@ -9481,6 +9500,8 @@ export function AgentWorkbenchExperience({
                             "h-full rounded-full transition-all",
                             runPanelStatus === "失败"
                               ? "bg-red-500"
+                              : runPanelStatus === "需复核"
+                                ? "bg-amber-500"
                               : runPanelStatus === "已完成"
                                 ? "bg-emerald-500"
                                 : "bg-primary",
