@@ -246,6 +246,166 @@ test("prevents duplicate workflow saves from a real double click", async ({
   await expect.poll(() => saveRequests.length).toBe(1);
 });
 
+test("designer blank workflow drives cockpit inputs and real agent artifacts", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const unique = Date.now();
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-designer-link-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "designer cockpit link e2e\n", "utf8");
+  const workspaceName = `designer-link-${unique}`;
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  const workflowId = `designer_link_${unique}`;
+  const providerId = `designer-agent-${unique}`;
+  const agentScript = path.join(repo, "designer-agent.cjs");
+  fs.writeFileSync(
+    agentScript,
+    [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "let stdin = '';",
+      "process.stdin.on('data', (chunk) => { stdin += chunk; });",
+      "process.stdin.on('end', () => {",
+      "  const artifactDir = process.env.CODETALK_AGENT_ARTIFACT_DIR;",
+      "  fs.mkdirSync(artifactDir, { recursive: true });",
+      "  fs.writeFileSync(path.join(artifactDir, 'designer_result.json'), JSON.stringify({",
+      "    status: 'ok',",
+      "    provider: 'designer-agent',",
+      "    sawNamedInput: stdin.includes('designer cockpit target'),",
+      "    sawWorkflowGoal: stdin.includes('Write designer_result.json from the named designer input')",
+      "  }));",
+      "  console.log(JSON.stringify({ status: 'ok', summary: 'designer-agent completed' }));",
+      "});",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const providersResp = await request.get(`${backendBase}/api/settings/agent-providers`);
+  expect(providersResp.ok()).toBeTruthy();
+  const originalSettings = await providersResp.json();
+  const settingsResp = await request.put(`${backendBase}/api/settings/agent-providers`, {
+    data: {
+      ...originalSettings,
+      external_agent_custom_providers: [
+        ...(originalSettings.external_agent_custom_providers ?? []).filter(
+          (provider: { id?: string }) => provider.id !== providerId,
+        ),
+        {
+          id: providerId,
+          command: `"${process.execPath}" "${agentScript}"`,
+          prompt_transport: "stdin",
+          supports_artifact_export: true,
+          supports_json_output: true,
+        },
+      ],
+    },
+  });
+  expect(settingsResp.ok()).toBeTruthy();
+
+  try {
+    await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+    await page.getByRole("link", { name: "工作流设计" }).hover();
+    await page.getByRole("link", { name: "工作流设计" }).click();
+
+    await page.getByRole("button", { name: "新建空白工作流" }).hover();
+    await page.getByRole("button", { name: "新建空白工作流" }).click();
+    await expect(page.getByText("已创建空白工作流草稿", { exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel("Workflow builder id")).toBeVisible({ timeout: 15_000 });
+
+    await page.getByLabel("Workflow builder id").fill(workflowId);
+    await page.getByLabel("Workflow builder name").fill("Designer Linked Workflow E2E");
+    await page.getByRole("textbox", { name: "Workflow builder provider" }).fill(providerId);
+    await page
+      .getByLabel("Workflow builder goal")
+      .fill("Write designer_result.json from the named designer input.");
+
+    await page.getByLabel("New workflow input name").fill("设计器目标");
+    await page.getByLabel("New workflow input id").fill("designer_target");
+    await page.getByLabel("New workflow input type").selectOption("free_text");
+    await page.getByRole("button", { name: "添加输入契约" }).hover();
+    await page.getByRole("button", { name: "添加输入契约" }).click();
+    await expect(page.getByText("输入契约已添加: 设计器目标")).toBeVisible({
+      timeout: 15_000,
+    });
+
+    await page.getByLabel("New workflow output name").fill("设计器结果");
+    await page.getByLabel("New workflow output id").fill("designer_result");
+    await page.getByLabel("New workflow output type").selectOption("json");
+    await page.getByLabel("New workflow output artifact").fill("designer_result.json");
+    await page.getByRole("button", { name: "添加输出契约" }).hover();
+    await page.getByRole("button", { name: "添加输出契约" }).click();
+    await expect(page.getByText(/设计器结果\s+designer_result\.json/)).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const saveResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === "/api/workbench/workflows",
+    );
+    await page.getByRole("button", { name: "保存工作流" }).hover();
+    await page.getByRole("button", { name: "保存工作流" }).click();
+    const savedWorkflowResponse = await saveResponse;
+    expect(savedWorkflowResponse.status()).toBe(201);
+    await expect(page.getByText(`工作流已保存: ${workflowId}`)).toBeVisible({
+      timeout: 15_000,
+    });
+    const workflowsAfterSaveResp = await request.get(`${backendBase}/api/workbench/workflows`);
+    expect(workflowsAfterSaveResp.ok()).toBeTruthy();
+    const workflowsAfterSave = (await workflowsAfterSaveResp.json()) as Array<{ id?: string }>;
+    expect(workflowsAfterSave.some((workflow) => workflow.id === workflowId)).toBeTruthy();
+
+    await page.getByRole("link", { name: "运行驾驶舱" }).hover();
+    await page.getByRole("link", { name: "运行驾驶舱" }).click();
+    await expect(page.getByRole("heading", { name: "运行驾驶舱", exact: true })).toBeVisible();
+    const workflowSelect = page.locator('main select[aria-label="工作流"]').first();
+    await expect(
+      workflowSelect.locator(`option[value="${workflowId}"]`),
+    ).toHaveCount(1, { timeout: 15_000 });
+    await workflowSelect.selectOption(workflowId, { timeout: 10_000 });
+    await expect(workflowSelect).toHaveValue(workflowId, { timeout: 10_000 });
+    await page.getByLabel("Workspace selector").selectOption(workspace.id);
+    await expect(page.getByLabel("Workflow input designer_target")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel("Workflow input analysis_object")).toHaveCount(0);
+    await page.getByLabel("Workflow input designer_target").fill("designer cockpit target");
+    await page.getByRole("button", { name: "准备运行" }).hover();
+    await page.getByRole("button", { name: "准备运行" }).click();
+    await expect(page.getByText(/任务已准备 · task_run_/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(providerId).first()).toBeVisible();
+    await expect(page.getByText("designer_result.json").first()).toBeVisible();
+
+    const executeResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        /\/api\/workbench\/task-runs\/[^/]+\/execute$/.test(new URL(response.url()).pathname) &&
+        response.status() < 500,
+    );
+    await page.getByRole("button", { name: "执行工作流" }).hover();
+    await page.getByRole("button", { name: "执行工作流" }).click();
+    await executeResponse;
+
+    await expect(page.getByText(new RegExp(`运行完成 · ${workflowId}`))).toBeVisible({
+      timeout: 30_000,
+    });
+    await expect(page.getByText("节点完成 · agent_task")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("designer_result.json").first()).toBeVisible();
+  } finally {
+    await request.put(`${backendBase}/api/settings/agent-providers`, {
+      data: originalSettings,
+    });
+  }
+});
+
 test("installs a workflow preset and validates required inputs through the real workbench UI", async ({
   page,
 }) => {

@@ -10,6 +10,7 @@ import {
   Copy,
   Database,
   Download,
+  FilePlus2,
   Library,
   Loader2,
   PlayCircle,
@@ -3734,6 +3735,7 @@ export function AgentWorkbenchExperience({
     startScrollTop: number;
     moved: boolean;
   } | null>(null);
+  const localWorkflowDraftIdRef = useRef("");
   const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([]);
   const [workflowPresets, setWorkflowPresets] = useState<WorkflowPreset[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
@@ -3815,6 +3817,7 @@ export function AgentWorkbenchExperience({
   const [selectedWorkflowId, setSelectedWorkflowId] = useState(
     DEFAULT_WORKFLOW.id,
   );
+  const selectedWorkflowIdRef = useRef(DEFAULT_WORKFLOW.id);
   const [workspaceId, setWorkspaceId] = useState("manual-workspace");
   const [repoPath, setRepoPath] = useState("");
   const [providerOverride, setProviderOverride] = useState("");
@@ -3922,7 +3925,10 @@ export function AgentWorkbenchExperience({
       return;
     }
     queryPrefillAppliedRef.current = true;
-    if (workflowId) setSelectedWorkflowId(workflowId);
+    if (workflowId) {
+      selectedWorkflowIdRef.current = workflowId;
+      setSelectedWorkflowId(workflowId);
+    }
     if (queryInputs.repo_path) setRepoPath(queryInputs.repo_path);
     const workflowDefinition = workflowId
       ? workflows.find((workflow) => workflow.id === workflowId) ??
@@ -4001,6 +4007,7 @@ export function AgentWorkbenchExperience({
     const preferredPreset =
       workflowPresets.find((preset) => preset.id === "module_analysis") ??
       workflowPresets[0];
+    selectedWorkflowIdRef.current = preferredPreset.definition.id;
     setSelectedWorkflowId(preferredPreset.definition.id);
     setWorkflowJson((currentJson) => {
       const currentId = workflowIdFromJson(currentJson);
@@ -5478,13 +5485,14 @@ export function AgentWorkbenchExperience({
   }
 
   function selectRunWorkflow(workflowId: string) {
+    selectedWorkflowIdRef.current = workflowId;
     setSelectedWorkflowId(workflowId);
     setInputsJson(pretty(workflowInputDefaults(workflowId)));
     setWorkflowInputsUpdated(true);
     window.setTimeout(() => setWorkflowInputsUpdated(false), 2200);
   }
 
-  const loadWorkflows = useCallback(async () => {
+  const loadWorkflows = useCallback(async (preferredWorkflowId = selectedWorkflowId) => {
     setLoading(true);
     setError(null);
     try {
@@ -5498,26 +5506,45 @@ export function AgentWorkbenchExperience({
         const nextWorkflowData = workflowResult.value;
         setWorkflows(nextWorkflowData);
         if (nextWorkflowData.length > 0) {
+          const selectionRequestIsCurrent =
+            preferredWorkflowId === selectedWorkflowIdRef.current;
           const selectedWorkflow = nextWorkflowData.find(
-            (item) => item.id === selectedWorkflowId,
+            (item) => item.id === preferredWorkflowId,
           );
           const fallbackWorkflow = selectedWorkflow ?? nextWorkflowData[0];
           const selectedLooksLikeKnownPreset =
-            CORE_WORKFLOW_PRESET_IDS.has(selectedWorkflowId) ||
-            selectedWorkflowId in WORKFLOW_BUILDER_SCENARIOS;
-          if (!selectedWorkflow && !selectedLooksLikeKnownPreset) {
+            CORE_WORKFLOW_PRESET_IDS.has(preferredWorkflowId) ||
+            preferredWorkflowId in WORKFLOW_BUILDER_SCENARIOS;
+          const preservingUnsavedDraft =
+            activeWorkbenchView === "workflow" &&
+            Boolean(localWorkflowDraftIdRef.current) &&
+            preferredWorkflowId === localWorkflowDraftIdRef.current &&
+            !selectedWorkflow;
+          if (
+            selectionRequestIsCurrent &&
+            !selectedWorkflow &&
+            !selectedLooksLikeKnownPreset &&
+            !preservingUnsavedDraft
+          ) {
+            selectedWorkflowIdRef.current = fallbackWorkflow.id;
             setSelectedWorkflowId(fallbackWorkflow.id);
           }
-          setWorkflowJson((currentJson) => {
-            const currentId = workflowIdFromJson(currentJson);
-            const currentIsEmpty = !currentJson.trim() || !currentId;
-            const currentIsDefault = currentId === DEFAULT_WORKFLOW.id;
-            if (currentIsDefault || currentIsEmpty) {
-              return pretty(fallbackWorkflow);
-            }
-            return currentJson;
-          });
-          if (activeWorkbenchView === "workflow") {
+          if (selectionRequestIsCurrent) {
+            setWorkflowJson((currentJson) => {
+              const currentId = workflowIdFromJson(currentJson);
+              const currentIsEmpty = !currentJson.trim() || !currentId;
+              const currentIsDefault = currentId === DEFAULT_WORKFLOW.id;
+              if (currentIsDefault || currentIsEmpty) {
+                return pretty(fallbackWorkflow);
+              }
+              return currentJson;
+            });
+          }
+          if (
+            selectionRequestIsCurrent &&
+            activeWorkbenchView === "workflow" &&
+            !preservingUnsavedDraft
+          ) {
             hydrateBuilderFromWorkflow(fallbackWorkflow);
           }
         }
@@ -6215,15 +6242,17 @@ export function AgentWorkbenchExperience({
         setWorkflowJson(pretty(saved));
         autoClonedFromBuiltin = true;
       }
+      selectedWorkflowIdRef.current = saved.id;
       setSelectedWorkflowId(saved.id);
       hydrateBuilderFromWorkflow(saved as unknown as Record<string, unknown>);
       const warningCount = saved.audit?.warnings?.length ?? 0;
+      localWorkflowDraftIdRef.current = "";
+      await loadWorkflows(saved.id);
       setMessage(
         warningCount
           ? `${autoClonedFromBuiltin ? "内置模板已另存为自定义工作流" : "工作流已保存"}: ${saved.id} (${warningCount} audit warning(s))`
           : `${autoClonedFromBuiltin ? "内置模板已另存为自定义工作流" : "工作流已保存"}: ${saved.id}`,
       );
-      await loadWorkflows();
     });
 
   const auditWorkflowDraft = () =>
@@ -6248,15 +6277,91 @@ export function AgentWorkbenchExperience({
       version: Number(workflow.version ?? 1) + 1,
     };
     setWorkflowJson(pretty(clone));
+    selectedWorkflowIdRef.current = clone.id;
     setSelectedWorkflowId(clone.id);
+    localWorkflowDraftIdRef.current = clone.id;
     applyWorkflowLayout(clone);
     setMessage(`已复制为草稿: ${clone.id}`);
+  };
+
+  const createBlankWorkflowDraft = () => {
+    const nextId = `custom_workflow_${Date.now().toString(36)}`;
+    const nextName = "空白工作流";
+    const blankWorkflow = {
+      id: nextId,
+      name: nextName,
+      version: 1,
+      inputs: [],
+      steps: [
+        {
+          id: "agent_task",
+          type: "agent_task",
+          provider: "claude-code",
+          mcp_profile: "",
+          skills: [],
+          skill_instructions: [],
+          goal: "",
+          required_artifacts: [],
+        },
+      ],
+      outputs: [],
+      ui: {
+        layout: {
+          nodes: [],
+          edges: [],
+          hidden_edge_ids: [],
+          hidden_node_ids: [],
+        },
+      },
+    };
+    flushSync(() => {
+      localWorkflowDraftIdRef.current = nextId;
+      setSelectedPresetId("");
+      selectedWorkflowIdRef.current = nextId;
+      setSelectedWorkflowId(nextId);
+      setBuilderScenario("mr_blackbox_test");
+      setBuilderWorkflowId(nextId);
+      setBuilderWorkflowName(nextName);
+      setBuilderInputSpec("");
+      setBuilderInputLabels({});
+      setBuilderOutputSpec("");
+      setBuilderOutputLabels({});
+      setBuilderArtifacts("");
+      setBuilderProvider("claude-code");
+      setBuilderMcpProfile("");
+      setBuilderSkillIds([]);
+      setBuilderSkillQuery("");
+      setBuilderGoal("");
+      setBuilderInputSchemas("{}");
+      setBuilderOutputSchemas("{}");
+      setBuilderEvidenceMappings("{}");
+      setBuilderSemanticImports("{}");
+      setNewWorkflowInputName("");
+      setNewWorkflowInputId("");
+      setNewWorkflowInputType("free_text");
+      setNewWorkflowInputResolver("manual");
+      setNewWorkflowOutputName("");
+      setNewWorkflowOutputId("");
+      setNewWorkflowOutputType("json");
+      setNewWorkflowOutputArtifact("");
+      setWorkflowExtraNodes([]);
+      setWorkflowCanvasEdges([]);
+      setWorkflowHiddenNodeIds([]);
+      setWorkflowHiddenEdgeIds([]);
+      setWorkflowNodePositions({});
+      setWorkflowNodeTitles({});
+      setActiveWorkflowNodeId("agent-task");
+      setWorkflowJson(pretty(blankWorkflow));
+    });
+    setMessage("已创建空白工作流草稿");
   };
 
   const applyPreset = () => {
     const preset = workflowPresets.find((item) => item.id === selectedPresetId);
     if (!preset) return;
+    localWorkflowDraftIdRef.current = "";
     setWorkflowJson(pretty(preset.definition));
+    selectedWorkflowIdRef.current = preset.definition.id;
     setSelectedWorkflowId(preset.definition.id);
     applyWorkflowLayout(preset.definition);
     setMessage(`已从模板库导入到当前草稿: ${workflowDisplayName(preset.definition)}`);
@@ -6271,6 +6376,7 @@ export function AgentWorkbenchExperience({
         result.items.find((item) => item.id === "module_analysis") ??
         result.items[0];
       if (preferred) {
+        selectedWorkflowIdRef.current = preferred.id;
         setSelectedWorkflowId(preferred.id);
         setWorkflowJson(pretty(preferred));
         applyWorkflowLayout(preferred);
@@ -7762,6 +7868,14 @@ export function AgentWorkbenchExperience({
                 复制
               </button>
               <button
+                onClick={createBlankWorkflowDraft}
+                disabled={Boolean(busyAction)}
+                className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
+              >
+                <FilePlus2 size={14} />
+                新建空白工作流
+              </button>
+              <button
                 onClick={saveWorkflow}
                 disabled={Boolean(busyAction)}
                 className="inline-flex items-center gap-2 rounded-lg bg-primary px-3 py-2 text-sm font-medium text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
@@ -8201,6 +8315,8 @@ export function AgentWorkbenchExperience({
                                   onClick={() => {
                                     setSelectedPresetId(preset.id);
                                     setWorkflowJson(pretty(preset.definition));
+                                    selectedWorkflowIdRef.current =
+                                      preset.definition.id;
                                     setSelectedWorkflowId(preset.definition.id);
                                   }}
                                   className={[
