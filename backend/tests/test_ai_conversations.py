@@ -914,15 +914,18 @@ class TestAIConversationsAPI:
         )
         assert first["run"]["status"] == "queued"
 
-        with pytest.raises(ValueError, match="当前线程仍在生成中"):
-            await store.create_user_message_and_run(
-                conversation_id=conversation["id"],
-                content="第二轮：不应绕过 SessionChain 串行保护",
-                references=[],
-            )
+        second = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="第二轮：进入队列等待 SessionChain 串行执行",
+            references=[],
+        )
+        assert second["run"]["status"] == "queued"
 
         messages = await store.list_messages(conversation["id"])
-        assert [item["content"] for item in messages] == ["第一轮：启动 agent 分析源码"]
+        assert [item["content"] for item in messages] == [
+            "第一轮：启动 agent 分析源码",
+            "第二轮：进入队列等待 SessionChain 串行执行",
+        ]
 
     async def test_get_message_hides_legacy_agent_process_leakage(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
@@ -2624,7 +2627,7 @@ class TestAIConversationsAPI:
             assert reconnect.status_code == 200
             assert "data:" not in reconnect.text
 
-    async def test_rejects_second_message_while_generation_is_running_without_duplication(
+    async def test_queues_second_message_while_generation_is_running_and_runs_next(
         self,
         sqlite_db,
         monkeypatch,
@@ -2647,7 +2650,7 @@ class TestAIConversationsAPI:
                 json={
                     "scope_type": "workspace",
                     "scope_id": ws_id,
-                    "title": "并发提交保护",
+                    "title": "线程内队列",
                 },
             )
             assert created.status_code == 201
@@ -2664,24 +2667,38 @@ class TestAIConversationsAPI:
                 f"/api/ai/conversations/{conversation['id']}/messages",
                 json={"content": "运行中再追问异常链路"},
             )
-            assert second.status_code == 409
-            assert second.json()["detail"] == "当前线程仍在生成中"
+            assert second.status_code == 202
+            second_payload = second.json()
+            assert second_payload["run"]["status"] == "queued"
 
             fake_llm.release.set()
-            for _ in range(20):
+            for _ in range(40):
                 messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
                 items = messages.json()["items"]
-                if len(items) == 2 and items[-1]["role"] == "assistant":
+                assistant_count = sum(1 for item in items if item["role"] == "assistant")
+                if len(items) == 4 and assistant_count == 2:
                     break
                 await asyncio.sleep(0.05)
 
             messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
             assert messages.status_code == 200
             body = messages.json()
-            assert [m["role"] for m in body["items"]] == ["user", "assistant"]
+            assert [m["role"] for m in body["items"]] == ["user", "user", "assistant", "assistant"]
             assert body["items"][0]["content"] == "先分析 SPDK nvmf connect 流程"
-            assert "运行中再追问" not in json.dumps(body["items"], ensure_ascii=False)
-            assert body["items"][1]["content"] == "第一段分析。最终结论。"
+            assert body["items"][1]["content"] == "运行中再追问异常链路"
+            assert [item["content"] for item in body["items"] if item["role"] == "assistant"] == [
+                "第一段分析。最终结论。",
+                "第一段分析。最终结论。",
+            ]
+            runs = [
+                body["items"][0]["run_id"],
+                body["items"][1]["run_id"],
+                body["items"][2]["run_id"],
+                body["items"][3]["run_id"],
+            ]
+            assert runs[0] != runs[1]
+            assert runs[0] == runs[2]
+            assert runs[1] == runs[3]
 
     async def test_cancel_running_generation_prevents_assistant_message_and_allows_retry(
         self,

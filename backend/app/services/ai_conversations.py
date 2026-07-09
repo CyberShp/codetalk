@@ -803,20 +803,6 @@ class AIConversationStore:
         refs = [item.to_dict() for item in references]
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
-            async with db.execute(
-                """
-                SELECT id
-                FROM ai_conversation_runs
-                WHERE conversation_id = ? AND status IN ('queued', 'running')
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                (conversation_id,),
-            ) as cur:
-                active = await cur.fetchone()
-            if active is not None:
-                await db.rollback()
-                raise ValueError("当前线程仍在生成中")
             await db.execute(
                 """
                 INSERT INTO ai_messages
@@ -849,6 +835,33 @@ class AIConversationStore:
             "run": await self.get_run(run_id),
             "references": refs,
         }
+
+    async def next_queued_run(self, conversation_id: str) -> dict[str, Any] | None:
+        async with self._connect() as db:
+            async with db.execute(
+                """
+                SELECT id
+                FROM ai_conversation_runs
+                WHERE conversation_id = ? AND status = 'running'
+                LIMIT 1
+                """,
+                (conversation_id,),
+            ) as cur:
+                running = await cur.fetchone()
+            if running is not None:
+                return None
+            async with db.execute(
+                """
+                SELECT *
+                FROM ai_conversation_runs
+                WHERE conversation_id = ? AND status = 'queued'
+                ORDER BY created_at ASC, id ASC
+                LIMIT 1
+                """,
+                (conversation_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        return _run_from_row(row) if row is not None else None
 
     async def get_message(self, message_id: str) -> dict[str, Any]:
         async with self._connect() as db:

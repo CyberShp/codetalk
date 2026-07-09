@@ -78,25 +78,33 @@ def schedule_conversation_run(run_id: str) -> None:
     async def _job() -> None:
         store = _store()
         run = await store.get_run(run_id)
-        conversation = await store.get_conversation(run["conversation_id"])
-        if conversation.get("runtime_type") == "agent_runtime":
-            runtime_id = str(conversation.get("agent_runtime_id") or "")
-            try:
-                runtime = await AgentRuntimeStore().get_runtime(runtime_id)
-            except Exception as exc:
-                await store.fail_run(run_id, f"Agent 执行器不可用：{exc}")
-                return
-            if not runtime.get("enabled", True):
-                await store.fail_run(run_id, "Agent 执行器已停用")
-                return
-            await run_agent_generation(store=store, run_id=run_id, runtime=runtime)
+        conversation_id = str(run["conversation_id"])
+        if run.get("status") != "queued":
             return
+        conversation = await store.get_conversation(conversation_id)
         try:
-            llm = await maybe_await(create_llm_client_from_active())
-        except Exception as exc:
-            await store.fail_run(run_id, f"LLM 不可用：{exc}")
-            return
-        await run_generation(store=store, run_id=run_id, llm=llm)
+            if conversation.get("runtime_type") == "agent_runtime":
+                runtime_id = str(conversation.get("agent_runtime_id") or "")
+                try:
+                    runtime = await AgentRuntimeStore().get_runtime(runtime_id)
+                except Exception as exc:
+                    await store.fail_run(run_id, f"Agent 执行器不可用：{exc}")
+                    return
+                if not runtime.get("enabled", True):
+                    await store.fail_run(run_id, "Agent 执行器已停用")
+                    return
+                await run_agent_generation(store=store, run_id=run_id, runtime=runtime)
+                return
+            try:
+                llm = await maybe_await(create_llm_client_from_active())
+            except Exception as exc:
+                await store.fail_run(run_id, f"LLM 不可用：{exc}")
+                return
+            await run_generation(store=store, run_id=run_id, llm=llm)
+        finally:
+            next_run = await store.next_queued_run(conversation_id)
+            if next_run and next_run["id"] != run_id:
+                schedule_conversation_run(next_run["id"])
 
     asyncio.create_task(_job())
 
@@ -232,8 +240,7 @@ async def create_message(conversation_id: str, body: CreateMessageRequest) -> di
     if conversation.get("runtime_type") == "agent_runtime":
         await _require_enabled_agent_runtime(conversation.get("agent_runtime_id"))
     latest = await store.latest_run(conversation_id)
-    if latest and latest["status"] in {"queued", "running"}:
-        raise HTTPException(status_code=409, detail="当前线程仍在生成中")
+    should_schedule_now = not latest or latest["status"] not in {"queued", "running"}
     refs = await build_context_references(
         conversation=conversation,
         user_message=body.content,
@@ -246,7 +253,8 @@ async def create_message(conversation_id: str, body: CreateMessageRequest) -> di
         )
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    schedule_conversation_run(result["run"]["id"])
+    if should_schedule_now:
+        schedule_conversation_run(result["run"]["id"])
     return _redact_payload(result)
 
 
