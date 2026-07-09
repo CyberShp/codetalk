@@ -43,7 +43,7 @@ import type {
   TaskRerunPlan,
   TaskRerunPlanValidation,
   WorkbenchTaskRunRunResult,
-  WorkflowExecutionResult,
+  WorkbenchTaskRunEventsResult,
   WorkbenchAcceptanceAudit,
   WorkbenchProviderCapabilitiesMatrix,
   WorkbenchSystemAudit,
@@ -55,6 +55,7 @@ import type {
   WorkbenchSmokeE2EResult,
   WorkbenchTaskArtifactContent,
   WorkbenchTaskArtifactManifest,
+  WorkbenchRunUiSummary,
   WorkspaceSourceFile,
   WorkspaceSourceSearchResponse,
   AIConversation,
@@ -1179,7 +1180,7 @@ export const api = {
         }),
 
       execute: (taskRunId: string, timeoutSec = 90, stopOnError = true) =>
-        request<WorkflowExecutionResult>(
+        request<WorkbenchTaskRunRunResult>(
           `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/execute`,
           {
             method: "POST",
@@ -1189,6 +1190,27 @@ export const api = {
             }),
           },
         ),
+
+      events: (taskRunId: string, params?: { after_id?: number; limit?: number }) => {
+        const query = new URLSearchParams({
+          ...(params?.after_id ? { after_id: String(params.after_id) } : {}),
+          ...(params?.limit ? { limit: String(params.limit) } : {}),
+        });
+        const suffix = query.toString() ? `?${query.toString()}` : "";
+        return request<WorkbenchTaskRunEventsResult>(
+          `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/events${suffix}`,
+        );
+      },
+
+      cancel: (taskRunId: string) =>
+        request<{
+          task_run_id: string;
+          status: string;
+          cancelled: boolean;
+          run_ui_summary?: WorkbenchRunUiSummary;
+        }>(`/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/cancel`, {
+          method: "POST",
+        }),
 
       materializeOutputs: (taskRunId: string) =>
         request<MaterializeWorkflowOutputsResult>(

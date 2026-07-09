@@ -761,10 +761,10 @@ export interface WorkbenchTaskRunRunResult {
   workflow_id: string;
   workspace_id: string;
   task_run: PreparedWorkbenchTaskRun;
-  execution: WorkflowExecutionResult;
-  evidence_materialization: MaterializeWorkflowOutputsResult;
+  execution?: WorkflowExecutionResult;
+  evidence_materialization?: MaterializeWorkflowOutputsResult;
   semantic_output_import?: SemanticCaseImportResult;
-  acceptance_audit: WorkbenchAcceptanceAudit;
+  acceptance_audit?: WorkbenchAcceptanceAudit;
   run_ui_summary?: WorkbenchRunUiSummary;
   artifact?: {
     path?: string;
@@ -919,6 +919,7 @@ export interface PreparedWorkbenchTaskRun {
   workflow_id: string;
   workspace_id: string;
   repo_path: string;
+  status?: string;
   artifact_dir: string;
   workflow_snapshot: Record<string, unknown>;
   input_snapshot: Record<string, unknown>;
@@ -926,6 +927,20 @@ export interface PreparedWorkbenchTaskRun {
   agent_runs: PreparedAgentRun[];
   run_ui_summary?: WorkbenchRunUiSummary;
   created_at: string;
+}
+
+export interface WorkbenchTaskRunEvent {
+  event_id: number;
+  task_run_id: string;
+  event_type: string;
+  payload: Record<string, unknown>;
+  created_at: string;
+}
+
+export interface WorkbenchTaskRunEventsResult {
+  task_run_id: string;
+  items: WorkbenchTaskRunEvent[];
+  last_event_id: number;
 }
 
 export interface WorkbenchRunUiSummary {

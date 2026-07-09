@@ -53,6 +53,7 @@ import type {
   WorkbenchTaskArtifact,
   WorkbenchTaskArtifactContent,
   WorkbenchTaskArtifactManifest,
+  WorkbenchTaskRunEvent,
   Workspace,
   WorkflowDraftServerAudit,
 } from "@/lib/types";
@@ -3446,6 +3447,72 @@ function compactReasonLabel(reason: string): string {
   return normalized || "未提供失败原因";
 }
 
+function payloadText(
+  payload: Record<string, unknown>,
+  keys: string[],
+): string {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "string" && value.trim()) return value.trim();
+    if (typeof value === "number" || typeof value === "boolean") {
+      return String(value);
+    }
+  }
+  return "";
+}
+
+function taskRunEventTypeLabel(eventType: string): string {
+  const normalized = eventType.trim().toLowerCase();
+  const labels: Record<string, string> = {
+    queued: "已排队",
+    running: "开始运行",
+    step_started: "节点开始",
+    step_completed: "节点完成",
+    step_failed: "节点失败",
+    artifact_created: "产物生成",
+    completed: "运行完成",
+    cancelled: "已取消",
+  };
+  return labels[normalized] ?? runStatusDisplayLabel(eventType);
+}
+
+function taskRunEventTitle(event: WorkbenchTaskRunEvent): string {
+  const stepId = payloadText(event.payload, ["step_id", "id"]);
+  const artifact = payloadText(event.payload, ["artifact", "path", "relative_path"]);
+  const base = taskRunEventTypeLabel(event.event_type);
+  if (event.event_type === "artifact_created" && artifact) {
+    return `${base} · ${artifactShortName(artifact)}`;
+  }
+  return stepId ? `${base} · ${stepId}` : base;
+}
+
+function taskRunEventDetail(event: WorkbenchTaskRunEvent): string {
+  const payload = event.payload;
+  const userMessage = payloadText(payload, ["user_message", "message"]);
+  if (userMessage) return compactReasonLabel(userMessage);
+  const error = payloadText(payload, ["error", "reason", "detail"]);
+  if (error) return compactReasonLabel(error);
+  const executor = payloadText(payload, ["executor", "provider", "step_type"]);
+  const status = payloadText(payload, ["status"]);
+  const artifact = payloadText(payload, ["artifact", "path", "relative_path"]);
+  const parts = [
+    executor ? providerDisplayLabel(executor) : "",
+    status ? runStatusDisplayLabel(status) : "",
+    artifact ? artifactShortName(artifact) : "",
+  ].filter(Boolean);
+  return parts.join(" · ");
+}
+
+function taskRunEventTone(eventType: string): "danger" | "success" | "primary" | "muted" {
+  const normalized = eventType.trim().toLowerCase();
+  if (["step_failed", "failed", "error"].includes(normalized)) return "danger";
+  if (["step_completed", "artifact_created", "completed"].includes(normalized)) {
+    return "success";
+  }
+  if (["running", "step_started", "queued"].includes(normalized)) return "primary";
+  return "muted";
+}
+
 function workflowAuditWarningLabel(warning: {
   code?: string;
   path?: string;
@@ -3738,6 +3805,9 @@ export function AgentWorkbenchExperience({
     useState<WorkbenchTaskArtifactContent | null>(null);
   const [workflowExecution, setWorkflowExecution] =
     useState<WorkflowExecutionResult | null>(null);
+  const [taskRunEvents, setTaskRunEvents] = useState<WorkbenchTaskRunEvent[]>(
+    [],
+  );
   const [taskRerunPlan, setTaskRerunPlan] = useState<TaskRerunPlan | null>(
     null,
   );
@@ -4356,6 +4426,10 @@ export function AgentWorkbenchExperience({
         (item) => item.path || item.artifact,
       ),
     [activeRunUiSummary],
+  );
+  const visibleTaskRunEvents = useMemo(
+    () => taskRunEvents.slice(-8),
+    [taskRunEvents],
   );
   const selectedWorkflowAudit = useMemo(
     () =>
@@ -5471,6 +5545,14 @@ export function AgentWorkbenchExperience({
     setArtifactManifest(manifest);
   }
 
+  function taskRunRuntimeStatus(run: PreparedWorkbenchTaskRun): string {
+    return String(run.run_ui_summary?.status || run.status || "").toLowerCase();
+  }
+
+  function isTaskRunActiveStatus(status: string): boolean {
+    return ["queued", "running", "prepared"].includes(status.trim().toLowerCase());
+  }
+
   function mergePreparedRunSummary(
     taskRunId: string,
     runUiSummary: PreparedWorkbenchTaskRun["run_ui_summary"] | null | undefined,
@@ -5490,11 +5572,77 @@ export function AgentWorkbenchExperience({
     );
   }
 
+  async function refreshTaskRunRuntime(
+    taskRunId: string,
+    afterEventId = 0,
+  ): Promise<{ run: PreparedWorkbenchTaskRun; lastEventId: number }> {
+    const [events, run] = await Promise.all([
+      api.workbench.taskRuns.events(taskRunId, {
+        after_id: afterEventId,
+        limit: 200,
+      }),
+      api.workbench.taskRuns.get(taskRunId),
+    ]);
+    if (events.items.length > 0) {
+      setTaskRunEvents((current) => {
+        const seen = new Set(current.map((item) => item.event_id));
+        return [
+          ...current,
+          ...events.items.filter((item) => !seen.has(item.event_id)),
+        ].slice(-300);
+      });
+    }
+    setPreparedRun(run);
+    setTaskRuns((current) =>
+      [
+        run,
+        ...current.filter((item) => item.task_run_id !== run.task_run_id),
+      ].slice(0, 10),
+    );
+    mergePreparedRunSummary(taskRunId, run.run_ui_summary);
+    return { run, lastEventId: events.last_event_id };
+  }
+
+  async function pollTaskRunUntilSettled(taskRunId: string) {
+    let cursor = 0;
+    let lastRun: PreparedWorkbenchTaskRun | null = null;
+    for (let attempt = 0; attempt < 180; attempt += 1) {
+      const result = await refreshTaskRunRuntime(taskRunId, cursor);
+      cursor = result.lastEventId;
+      lastRun = result.run;
+      if (!isTaskRunActiveStatus(taskRunRuntimeStatus(result.run))) {
+        break;
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 700));
+    }
+    if (lastRun && !isTaskRunActiveStatus(taskRunRuntimeStatus(lastRun))) {
+      await restoreTaskRun(taskRunId);
+    }
+  }
+
+  function startTaskRunPolling(taskRunId: string) {
+    void (async () => {
+      try {
+        await pollTaskRunUntilSettled(taskRunId);
+        setTaskRerunPlanValidation(
+          await api.workbench.taskRuns.rerunPlanValidation(taskRunId),
+        );
+        await loadWorkflows();
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : "刷新任务状态失败");
+      }
+    })();
+  }
+
   async function restoreTaskRun(taskRunId: string) {
-    const run = await api.workbench.taskRuns.get(taskRunId);
-    const manifest = await api.workbench.taskRuns.artifacts(taskRunId);
+    const [run, manifest, events] = await Promise.all([
+      api.workbench.taskRuns.get(taskRunId),
+      api.workbench.taskRuns.artifacts(taskRunId),
+      api.workbench.taskRuns.events(taskRunId),
+    ]);
     setPreparedRun(run);
     setArtifactManifest(manifest);
+    setTaskRunEvents(events.items);
     setTaskRuns((current) =>
       [
         run,
@@ -5843,6 +5991,7 @@ export function AgentWorkbenchExperience({
       setExecutionResults({});
       setValidationResults({});
       setMaterializeResults({});
+      setTaskRunEvents([]);
       setWorkflowExecution(null);
       setTaskRerunPlan(null);
       setTaskRerunPlanValidation(null);
@@ -5871,41 +6020,55 @@ export function AgentWorkbenchExperience({
         true,
       );
       setPreparedRun(result.task_run);
+      setTaskRunEvents([]);
       setTaskRuns((current) =>
         [
           result.task_run,
           ...current.filter((item) => item.task_run_id !== result.task_run_id),
         ].slice(0, 10),
       );
-      setWorkflowExecution(result.execution);
+      setWorkflowExecution(result.execution ?? null);
       mergePreparedRunSummary(
         result.task_run_id,
-        result.run_ui_summary ?? result.execution.run_ui_summary,
+        result.run_ui_summary ?? result.execution?.run_ui_summary,
       );
       setWorkflowOutputMaterialize(result.evidence_materialization ?? null);
       setSemanticOutputImport(result.semantic_output_import ?? null);
       setTaskAcceptanceAudit(result.acceptance_audit ?? null);
       setTaskRerunPlan(
-        (result.execution.rerun_plan as TaskRerunPlan | undefined) ?? null,
+        (result.execution?.rerun_plan as TaskRerunPlan | undefined) ?? null,
       );
-      setTaskRerunPlanValidation(
-        await api.workbench.taskRuns.rerunPlanValidation(result.task_run_id),
-      );
+      setTaskRerunPlanValidation(null);
       setExecutionResults({});
       setValidationResults({});
       setMaterializeResults({});
       setTaskRerunExecution(null);
       setTaskRerunHistory(null);
       setArtifactContent(null);
-      await refreshArtifactManifest(result.task_run_id);
-      await loadWorkflows();
+      await refreshTaskRunRuntime(result.task_run_id);
       setMessage(workflowRunResultMessage("任务运行", result));
+      startTaskRunPolling(result.task_run_id);
     });
 
   const restoreExistingTaskRun = (taskRunId: string) =>
     runAction(`restore-task-run-${taskRunId}`, async () => {
       await restoreTaskRun(taskRunId);
       setMessage(`任务已恢复 · ${taskRunId}`);
+    });
+
+  const cancelPreparedTaskRun = () =>
+    runAction("cancel-task-run", async () => {
+      if (!preparedRun) return;
+      const result = await api.workbench.taskRuns.cancel(
+        preparedRun.task_run_id,
+      );
+      mergePreparedRunSummary(preparedRun.task_run_id, result.run_ui_summary);
+      await refreshTaskRunRuntime(preparedRun.task_run_id);
+      setMessage(
+        result.cancelled
+          ? "已取消本次工作流运行"
+          : `当前状态不可取消：${runStatusDisplayLabel(result.status)}`,
+      );
     });
 
   const runProviderStartupProbe = (provider: string) =>
@@ -6304,22 +6467,18 @@ export function AgentWorkbenchExperience({
         90,
         true,
       );
-      setWorkflowExecution(result);
+      setTaskRunEvents([]);
+      setWorkflowExecution(result.execution ?? null);
       mergePreparedRunSummary(preparedRun.task_run_id, result.run_ui_summary);
       setWorkflowOutputMaterialize(result.evidence_materialization ?? null);
       setSemanticOutputImport(result.semantic_output_import ?? null);
       setTaskRerunPlan(
-        (result.rerun_plan as TaskRerunPlan | undefined) ?? null,
+        (result.execution?.rerun_plan as TaskRerunPlan | undefined) ?? null,
       );
-      setTaskRerunPlanValidation(
-        await api.workbench.taskRuns.rerunPlanValidation(
-          preparedRun.task_run_id,
-        ),
-      );
+      setTaskRerunPlanValidation(null);
       setTaskAcceptanceAudit(result.acceptance_audit ?? null);
-      await refreshArtifactManifest(preparedRun.task_run_id);
       setMessage(workflowRunResultMessage("工作流执行", result));
-      await loadWorkflows();
+      startTaskRunPolling(preparedRun.task_run_id);
     });
 
   const materializePreparedWorkflowOutputs = () =>
@@ -9061,15 +9220,37 @@ export function AgentWorkbenchExperience({
                             任务 {preparedRun.task_run_id.slice(0, 8)} · {runPanelProgress.completed}/{runPanelProgress.total} 节点 · {runPanelProgress.percent}%
                           </p>
                         </div>
-                        {runPanelStatus === "失败" ? (
-                          <AlertTriangle size={22} className="shrink-0 text-red-600" />
-                        ) : runPanelStatus === "已完成" ? (
-                          <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-emerald-100 text-emerald-700">
-                            ✓
-                          </span>
-                        ) : (
-                          <Loader2 size={22} className="shrink-0 animate-spin text-primary" />
-                        )}
+                        <div className="flex shrink-0 items-center gap-2">
+                          {runPanelStatus === "进行中" && (
+                            <button
+                              type="button"
+                              onClick={cancelPreparedTaskRun}
+                              disabled={
+                                busyAction === "cancel-task-run" ||
+                                !isTaskRunActiveStatus(
+                                  taskRunRuntimeStatus(preparedRun),
+                                )
+                              }
+                              className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[11px] font-medium text-red-700 shadow-sm disabled:opacity-50"
+                            >
+                              {busyAction === "cancel-task-run" ? (
+                                <Loader2 size={12} className="animate-spin" />
+                              ) : (
+                                <X size={12} />
+                              )}
+                              取消
+                            </button>
+                          )}
+                          {runPanelStatus === "失败" ? (
+                            <AlertTriangle size={22} className="text-red-600" />
+                          ) : runPanelStatus === "已完成" ? (
+                            <span className="grid h-7 w-7 place-items-center rounded-full bg-emerald-100 text-emerald-700">
+                              ✓
+                            </span>
+                          ) : (
+                            <Loader2 size={22} className="animate-spin text-primary" />
+                          )}
+                        </div>
                       </div>
                       <div className="mb-3 h-1.5 overflow-hidden rounded-full bg-white/70">
                         <div
@@ -9126,6 +9307,65 @@ export function AgentWorkbenchExperience({
                           );
                         })}
                       </div>
+                    </section>
+                    <section className="rounded-lg border border-outline-variant/25 bg-surface-container/60 p-3">
+                      <div className="mb-2 flex items-center justify-between gap-2">
+                        <div>
+                          <p className="font-semibold text-on-surface">
+                            运行动态
+                          </p>
+                          <p className="text-[10px] text-on-surface-variant">
+                            后台事件实时刷新，最新 8 条
+                          </p>
+                        </div>
+                        <span className="font-data text-[10px] text-on-surface-variant">
+                          {taskRunEvents.length} 条
+                        </span>
+                      </div>
+                      {visibleTaskRunEvents.length > 0 ? (
+                        <div className="space-y-1.5">
+                          {visibleTaskRunEvents.map((event) => {
+                            const tone = taskRunEventTone(event.event_type);
+                            const detail = taskRunEventDetail(event);
+                            return (
+                              <div
+                                key={event.event_id}
+                                className="flex min-w-0 items-start gap-2 rounded-md bg-surface px-2 py-1.5"
+                              >
+                                <span
+                                  className={[
+                                    "mt-1 h-2 w-2 shrink-0 rounded-full",
+                                    tone === "danger"
+                                      ? "bg-red-500"
+                                      : tone === "success"
+                                        ? "bg-emerald-500"
+                                        : tone === "primary"
+                                          ? "bg-primary"
+                                          : "bg-on-surface-variant/50",
+                                  ].join(" ")}
+                                />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block truncate text-[12px] font-medium text-on-surface">
+                                    {taskRunEventTitle(event)}
+                                  </span>
+                                  {detail && (
+                                    <span className="mt-0.5 block break-words text-[10px] leading-4 text-on-surface-variant">
+                                      {detail}
+                                    </span>
+                                  )}
+                                </span>
+                                <span className="shrink-0 font-data text-[10px] text-on-surface-variant">
+                                  #{event.event_id}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="rounded-md border border-dashed border-outline-variant/30 bg-surface px-2 py-3 text-center text-on-surface-variant">
+                          启动运行后展示排队、节点执行、产物生成和失败事件
+                        </p>
+                      )}
                     </section>
                     {runPanelFailureReasons.length > 0 && (
                       <section
