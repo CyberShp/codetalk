@@ -803,6 +803,16 @@ class AIConversationStore:
         refs = [item.to_dict() for item in references]
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                """
+                SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence
+                FROM ai_conversation_runs
+                WHERE conversation_id = ?
+                """,
+                (conversation_id,),
+            ) as cur:
+                sequence_row = await cur.fetchone()
+            sequence = int(sequence_row["next_sequence"] or 1) if sequence_row else 1
             await db.execute(
                 """
                 INSERT INTO ai_messages
@@ -814,10 +824,10 @@ class AIConversationStore:
             await db.execute(
                 """
                 INSERT INTO ai_conversation_runs
-                    (id, conversation_id, status, cursor, created_at)
-                VALUES (?, ?, 'queued', 0, ?)
+                    (id, conversation_id, status, sequence, cursor, created_at)
+                VALUES (?, ?, 'queued', ?, 0, ?)
                 """,
-                (run_id, conversation_id, now),
+                (run_id, conversation_id, sequence, now),
             )
             await db.execute(
                 "UPDATE ai_conversations SET status = 'running', updated_at = ? WHERE id = ?",
@@ -861,7 +871,11 @@ class AIConversationStore:
                 (conversation_id,),
             ) as cur:
                 row = await cur.fetchone()
-        return _run_from_row(row) if row is not None else None
+            if row is not None:
+                run = _run_from_row(row)
+                run["queue_position"] = await self._queue_position_for_run_row(db, row)
+                return run
+        return None
 
     async def get_message(self, message_id: str) -> dict[str, Any]:
         async with self._connect() as db:
@@ -875,9 +889,11 @@ class AIConversationStore:
         async with self._connect() as db:
             async with db.execute("SELECT * FROM ai_conversation_runs WHERE id = ?", (run_id,)) as cur:
                 row = await cur.fetchone()
-        if row is None:
-            raise KeyError(run_id)
-        return _run_from_row(row)
+            if row is None:
+                raise KeyError(run_id)
+            run = _run_from_row(row)
+            run["queue_position"] = await self._queue_position_for_run_row(db, row)
+        return run
 
     async def latest_run(self, conversation_id: str) -> dict[str, Any] | None:
         async with self._connect() as db:
@@ -892,7 +908,60 @@ class AIConversationStore:
                 (conversation_id,),
             ) as cur:
                 row = await cur.fetchone()
-        return _run_from_row(row) if row else None
+            if row:
+                run = _run_from_row(row)
+                run["queue_position"] = await self._queue_position_for_run_row(db, row)
+                return run
+        return None
+
+    async def _queue_position_for_run_row(
+        self,
+        db: aiosqlite.Connection,
+        row: aiosqlite.Row,
+    ) -> int:
+        if str(row["status"] or "") != "queued":
+            return 0
+        conversation_id = str(row["conversation_id"] or "")
+        sequence = int(row["sequence"] or 0)
+        async with db.execute(
+            """
+            SELECT 1
+            FROM ai_conversation_runs
+            WHERE conversation_id = ? AND status = 'running'
+            LIMIT 1
+            """,
+            (conversation_id,),
+        ) as cur:
+            has_running = await cur.fetchone() is not None
+        if sequence > 0:
+            async with db.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM ai_conversation_runs
+                WHERE conversation_id = ?
+                  AND status = 'queued'
+                  AND sequence > 0
+                  AND sequence <= ?
+                """,
+                (conversation_id, sequence),
+            ) as cur:
+                count_row = await cur.fetchone()
+        else:
+            async with db.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM ai_conversation_runs
+                WHERE conversation_id = ?
+                  AND status = 'queued'
+                  AND (created_at < ? OR (created_at = ? AND id <= ?))
+                """,
+                (conversation_id, row["created_at"], row["created_at"], row["id"]),
+            ) as cur:
+                count_row = await cur.fetchone()
+        queued_before_or_equal = int(count_row["count"] or 0) if count_row else 0
+        if has_running:
+            return queued_before_or_equal
+        return max(0, queued_before_or_equal - 1)
 
     async def mark_run_running(self, run_id: str) -> None:
         run = await self.get_run(run_id)
@@ -928,13 +997,24 @@ class AIConversationStore:
     ) -> dict[str, Any]:
         now = _now()
         async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                """
+                SELECT COALESCE(MAX(seq), 0) + 1 AS next_seq
+                FROM ai_run_events
+                WHERE run_id = ?
+                """,
+                (run_id,),
+            ) as seq_cur:
+                seq_row = await seq_cur.fetchone()
+            seq = int(seq_row["next_seq"] or 1) if seq_row else 1
             cur = await db.execute(
                 """
                 INSERT INTO ai_run_events
-                    (run_id, conversation_id, event_type, payload_json, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                    (run_id, conversation_id, seq, event_type, payload_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (run_id, conversation_id, event_type, _json_dumps(payload), now),
+                (run_id, conversation_id, seq, event_type, _json_dumps(payload), now),
             )
             event_id = int(cur.lastrowid)
             await db.execute(
@@ -946,6 +1026,7 @@ class AIConversationStore:
             "event_id": event_id,
             "run_id": run_id,
             "conversation_id": conversation_id,
+            "seq": seq,
             "event_type": event_type,
             "payload": payload,
             "created_at": now,
@@ -4598,8 +4679,13 @@ def _is_public_process_event(event: dict[str, Any]) -> bool:
 
 def _with_public_event_metadata(event: dict[str, Any]) -> dict[str, Any]:
     next_event = dict(event)
+    seq = next_event.get("seq")
+    if isinstance(seq, int) and seq > 0:
+        next_event["seq"] = seq
+    else:
+        next_event.pop("seq", None)
     event_id = next_event.get("event_id")
-    if isinstance(event_id, int):
+    if "seq" not in next_event and isinstance(event_id, int):
         next_event.setdefault("seq", event_id)
     next_event.setdefault("event_kind", _public_event_kind(next_event))
     return next_event

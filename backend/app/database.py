@@ -204,6 +204,7 @@ CREATE TABLE IF NOT EXISTS ai_conversation_runs (
     id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
     status TEXT NOT NULL DEFAULT 'queued',
+    sequence INTEGER DEFAULT 0,
     cursor INTEGER DEFAULT 0,
     error TEXT,
     model TEXT,
@@ -217,6 +218,7 @@ CREATE TABLE IF NOT EXISTS ai_run_events (
     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
     run_id TEXT NOT NULL REFERENCES ai_conversation_runs(id) ON DELETE CASCADE,
     conversation_id TEXT NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+    seq INTEGER DEFAULT 0,
     event_type TEXT NOT NULL,
     payload_json TEXT DEFAULT '{}',
     created_at TEXT NOT NULL
@@ -242,7 +244,9 @@ CREATE INDEX IF NOT EXISTS idx_agent_runtimes_enabled ON agent_runtimes(enabled,
 CREATE INDEX IF NOT EXISTS idx_ai_conversations_scope ON ai_conversations(scope_type, scope_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation ON ai_messages(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_runs_conversation ON ai_conversation_runs(conversation_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_runs_conversation_sequence ON ai_conversation_runs(conversation_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_ai_run_events_stream ON ai_run_events(conversation_id, event_id);
+CREATE INDEX IF NOT EXISTS idx_ai_run_events_run_seq ON ai_run_events(run_id, seq);
 CREATE INDEX IF NOT EXISTS idx_ai_agent_runtime_sessions_runtime ON ai_agent_runtime_sessions(agent_runtime_id, updated_at);
 
 """
@@ -293,6 +297,10 @@ _MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_agent_runtimes_enabled ON agent_runtimes(enabled, updated_at)",
     "CREATE TABLE IF NOT EXISTS ai_agent_runtime_sessions (conversation_id TEXT NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE, agent_runtime_id TEXT NOT NULL REFERENCES agent_runtimes(id) ON DELETE CASCADE, cli_session_id TEXT NOT NULL, resume_session_id TEXT NOT NULL, metadata_json TEXT DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (conversation_id, agent_runtime_id))",
     "CREATE INDEX IF NOT EXISTS idx_ai_agent_runtime_sessions_runtime ON ai_agent_runtime_sessions(agent_runtime_id, updated_at)",
+    "ALTER TABLE ai_conversation_runs ADD COLUMN sequence INTEGER DEFAULT 0",
+    "ALTER TABLE ai_run_events ADD COLUMN seq INTEGER DEFAULT 0",
+    "CREATE INDEX IF NOT EXISTS idx_ai_runs_conversation_sequence ON ai_conversation_runs(conversation_id, sequence)",
+    "CREATE INDEX IF NOT EXISTS idx_ai_run_events_run_seq ON ai_run_events(run_id, seq)",
 ]
 
 

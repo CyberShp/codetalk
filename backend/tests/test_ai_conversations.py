@@ -2670,6 +2670,10 @@ class TestAIConversationsAPI:
             assert second.status_code == 202
             second_payload = second.json()
             assert second_payload["run"]["status"] == "queued"
+            assert first.json()["run"]["sequence"] == 1
+            assert first.json()["run"]["queue_position"] == 0
+            assert second_payload["run"]["sequence"] == 2
+            assert second_payload["run"]["queue_position"] == 1
 
             fake_llm.release.set()
             for _ in range(40):
@@ -3541,7 +3545,7 @@ class TestAIConversationsAPI:
 
         assert normal.status_code == 200
         normal_items = normal.json()["items"]
-        assert [item["seq"] for item in normal_items] == sorted(item["seq"] for item in normal_items)
+        assert [item["seq"] for item in normal_items] == [1, 2, 3, 4, 5, 6]
         assert {item["event_kind"] for item in normal_items} >= {
             "status",
             "thinking",
@@ -3556,6 +3560,25 @@ class TestAIConversationsAPI:
         process_kinds = [item["event_kind"] for item in process_items]
         assert "answer" not in process_kinds
         assert process_kinds == ["status", "thinking", "tool_use", "tool_result", "artifact"]
+
+        second_conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="第二线程事件序号",
+        )
+        second_created = await store.create_user_message_and_run(
+            conversation_id=second_conversation["id"],
+            content="第二个 run 的事件序号也应从 1 开始",
+            references=[],
+        )
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            second_events = await client.get(
+                f"/api/ai/conversations/{second_conversation['id']}/events",
+                params={"run_id": second_created["run"]["id"], "limit": 20},
+            )
+        assert second_events.status_code == 200
+        assert [item["seq"] for item in second_events.json()["items"]] == [1]
 
     async def test_legacy_split_agent_process_events_are_publicly_diagnostic(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
