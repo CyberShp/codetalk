@@ -111,6 +111,24 @@ function schemaForSpec(id, type, allSchemas) {
   const schemas = asRecord(allSchemas);
   const direct = schemas[id];
   if (direct && typeof direct === "object" && !Array.isArray(direct)) return direct;
+  const normalized = String(id || "").replace(/[-_\s]/g, "").toLowerCase();
+  const alias =
+    normalized.includes("sfmea")
+      ? "sfmea"
+      : normalized.includes("blackbox") ||
+          normalized.includes("blackcase") ||
+          normalized.includes("testcase") ||
+          normalized.includes("cases")
+        ? "black_box_cases"
+        : normalized.includes("evidence")
+          ? "code_evidence"
+          : normalized.includes("scope")
+            ? "source_scope"
+            : "";
+  const aliased = alias ? schemas[alias] : null;
+  if (aliased && typeof aliased === "object" && !Array.isArray(aliased)) {
+    return aliased;
+  }
   const byType = schemas[`type:${type}`];
   if (byType && typeof byType === "object" && !Array.isArray(byType)) return byType;
   const wildcard = schemas["*"];
@@ -190,16 +208,17 @@ export function buildWorkflowFromDesigner(options) {
   const { nodes, edges } = visibleLayout(layout);
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const inputNodes = nodes.filter((node) => node.kind === "input");
+  const canvasInputNodes = inputNodes.filter((node) => node.source === "canvas");
   const agentNodes = nodes.filter((node) => node.kind === "agent");
   const outputNodesById = new Map(
     nodes
-      .filter((node) => node.kind === "output")
+      .filter((node) => node.kind === "output" && node.source === "canvas")
       .map((node) => [nodeContractId(node, node.id), node]),
   );
   const verifyNodes = nodes.filter((node) => node.kind === "verify");
 
   const specInputs = parseWorkflowSpecList(options.inputSpec || "", "free_text");
-  for (const node of inputNodes) {
+  for (const node of canvasInputNodes) {
     const config = nodeConfig(node);
     const nodeId = nodeContractId(node, node.id);
     if (!specInputs.some((input) => input.id === nodeId)) {

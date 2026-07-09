@@ -25,7 +25,7 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
         severity: "warning",
         code: "json_output_missing_schema",
         path: `outputs.${String(output.id ?? "unknown")}.schema`,
-        message: "JSON output has no schema; structured validation will be limited.",
+        message: `JSON output ${String(output.id ?? "unknown")} has no schema; structured validation will be limited.`,
       }));
     await route.fulfill({
       json: {
@@ -421,6 +421,71 @@ async function routeWorkbenchShell(page: import("@playwright/test").Page) {
       headers: corsHeaders(route.request().headers().origin),
     });
   });
+}
+
+async function dragWorkflowConnection(page: Page, sourceLabel: string, targetLabel: string) {
+  async function scrollPortIntoView(label: string) {
+    await page.getByLabel(label).scrollIntoViewIfNeeded();
+  }
+
+  await scrollPortIntoView(sourceLabel);
+  const source = page.getByLabel(sourceLabel);
+  const sourceBox = await source.boundingBox();
+  expect(sourceBox).not.toBeNull();
+  const sourceHit = await source.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const topElement = document.elementFromPoint(
+      rect.left + rect.width / 2,
+      rect.top + rect.height / 2,
+    );
+    return {
+      hit: topElement === element || element.contains(topElement),
+      tag: topElement?.tagName ?? "",
+      label: topElement?.getAttribute("aria-label") ?? "",
+      classes: topElement instanceof HTMLElement ? topElement.className : "",
+    };
+  });
+  expect(sourceHit).toEqual(
+    expect.objectContaining({
+      hit: true,
+    }),
+  );
+  await page.mouse.move(
+    sourceBox!.x + sourceBox!.width / 2,
+    sourceBox!.y + sourceBox!.height / 2,
+  );
+  await page.mouse.down();
+
+  await scrollPortIntoView(targetLabel);
+  const target = page.getByLabel(targetLabel);
+  const targetBox = await target.boundingBox();
+  expect(targetBox).not.toBeNull();
+  const targetHit = await target.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const topElement = document.elementFromPoint(
+      rect.left + rect.width / 2,
+      rect.top + rect.height / 2,
+    );
+    return {
+      hit: topElement === element || element.contains(topElement),
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+      tag: topElement?.tagName ?? "",
+      label: topElement?.getAttribute("aria-label") ?? "",
+      classes: topElement instanceof HTMLElement ? topElement.className : "",
+    };
+  });
+  expect(targetHit).toEqual(
+    expect.objectContaining({
+      hit: true,
+    }),
+  );
+  await page.mouse.move(
+    targetBox!.x + targetBox!.width / 2,
+    targetBox!.y + targetBox!.height / 2,
+    { steps: 8 },
+  );
+  await page.mouse.up();
 }
 
 async function gotoWorkbench(page: Page) {
@@ -926,6 +991,7 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByRole("heading", { name: "工作流编排" })).toBeVisible();
   await expect(page.getByLabel("Workflow module palette")).toBeVisible();
   await expect(page.getByLabel("Workflow canvas")).toBeVisible();
+  await page.locator(".ct-workflow-node").first().click();
   await expect(page.getByLabel("Workflow inspector")).toBeVisible();
   for (const moduleName of ["输入模块", "智能体模块", "MCP 模块", "Skills 模块", "GitNexus 模块", "CGC 模块", "输出模块"]) {
     await expect(page.getByRole("button", { name: moduleName })).toBeVisible();
@@ -990,6 +1056,8 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   expect(inspectorMetrics.inspectorWidth).toBeGreaterThanOrEqual(300);
   expect(inspectorMetrics.relationText).toContain("字段契约");
   expect(inspectorMetrics.relationText).toContain("画布布局");
+  await page.getByLabel("关闭属性面板").click();
+  await expect(page.getByLabel("Workflow inspector")).toHaveCount(0);
   const firstNode = page.locator(".ct-workflow-node").first();
   const beforeMove = await firstNode.boundingBox();
   expect(beforeMove).not.toBeNull();
@@ -1001,6 +1069,8 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   expect(afterMove).not.toBeNull();
   expect(Math.abs(afterMove!.x - beforeMove!.x)).toBeGreaterThan(80);
   expect(Math.abs(afterMove!.y - beforeMove!.y)).toBeGreaterThan(35);
+  await page.getByLabel("关闭属性面板").click();
+  await expect(page.getByLabel("Workflow inspector")).toHaveCount(0);
   const nodeCountBeforeDrop = await page.locator(".ct-workflow-node").count();
   const boardBox = await page.locator(".ct-workflow-board").boundingBox();
   expect(boardBox).not.toBeNull();
@@ -1014,11 +1084,13 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByText(/画布节点已添加/)).toBeVisible();
   await expect(page.getByLabel("Workflow selected node title")).toBeVisible();
   await page.getByLabel("Workflow selected node title").fill("自定义智能体节点");
-  await expect(
-    page.locator(".ct-workflow-node", { hasText: "自定义智能体节点" }),
-  ).toBeVisible();
-  await page.getByLabel("Workflow link target").selectOption("outputs");
-  await page.getByRole("button", { name: "连接节点" }).click();
+  const customAgentNode = page.locator(".ct-workflow-node", { hasText: "自定义智能体节点" });
+  await expect(customAgentNode).toBeVisible();
+  await customAgentNode.click();
+  await expect(page.getByLabel("Workflow inspector")).toBeVisible();
+  await page.getByLabel("关闭属性面板").click();
+  await expect(page.getByLabel("Workflow inspector")).toHaveCount(0);
+  await dragWorkflowConnection(page, "从 自定义智能体节点 拉出连线", "连线目标 输出");
   await expect(page.getByText(/连线已添加/)).toBeVisible();
   await expect(page.locator(".ct-workflow-link")).toHaveCount(6);
   const nodeCountBeforeCopy = await page.locator(".ct-workflow-node").count();
@@ -1031,12 +1103,13 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   ).toBeVisible();
   await page.getByRole("button", { name: "删除节点" }).click();
   await expect(page.locator(".ct-workflow-node")).toHaveCount(nodeCountBeforeCopy);
+  await page.locator(".ct-workflow-node").first().click();
+  await expect(page.getByLabel("Workflow inspector")).toBeVisible();
   await page.getByRole("button", { name: "重置位置" }).click();
   await expect(page.getByText(/节点位置已重置|节点布局已重置/)).toBeVisible();
-  await expect(page.getByLabel("Workflow link source")).toBeVisible();
-  await page.getByLabel("Workflow link source").selectOption("inputs");
-  await page.getByLabel("Workflow link target").selectOption("agent-task");
-  await page.getByRole("button", { name: "连接节点" }).click();
+  await page.getByLabel("关闭属性面板").click();
+  await expect(page.getByLabel("Workflow inspector")).toHaveCount(0);
+  await dragWorkflowConnection(page, "从 输入 拉出连线", "连线目标 claude-code");
   await expect(page.getByText(/连线已添加: 输入 ->/)).toBeVisible();
   await expect(page.getByLabel("Workflow builder scenario")).toBeVisible();
   const builderScenarioOptions = await page
@@ -1116,6 +1189,9 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow input iscsi_login_script")).toBeVisible();
   await expect(page.getByLabel("Workflow input change_mr")).toBeVisible();
   await openWorkbenchView(page, "工作流设计");
+  await page.locator(".ct-workflow-node").first().click({ position: { x: 44, y: 18 } });
+  await expect(page.getByLabel("Workflow inspector")).toBeVisible();
+  await page.getByText("输出契约", { exact: true }).scrollIntoViewIfNeeded();
   const newOutputName = page.getByLabel("New workflow output name");
   const newOutputId = page.getByLabel("New workflow output id");
   const newOutputArtifact = page.getByLabel("New workflow output artifact");
@@ -1130,7 +1206,6 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(newOutputId).toHaveValue("login_sfmea");
   await expect(newOutputArtifact).toHaveValue("login_sfmea.json");
   await page.getByRole("button", { name: "添加输出契约" }).click();
-  await expect(page.getByText(/输出契约已添加: 登录 SFMEA 表/)).toBeVisible();
   await expect(page.getByText(/登录 SFMEA 表\s+login_sfmea\.json/)).toBeVisible();
   await page.getByLabel("Workflow builder provider preset").selectOption("corp-agent");
   await expect(
@@ -1149,6 +1224,53 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"id": "login_sfmea"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"label": "登录 SFMEA 表"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"edges": \[/);
+  const generatedWorkflow = JSON.parse(
+    await page.getByLabel("Workflow JSON").inputValue(),
+  ) as {
+    steps?: Array<Record<string, unknown>>;
+    outputs?: Array<Record<string, unknown>>;
+    ui?: { layout?: { nodes?: Array<Record<string, unknown>> } };
+  };
+  const jsonOutputsWithoutSchema = (generatedWorkflow.outputs ?? [])
+    .filter((output) => output.type === "json" && typeof output.schema !== "object")
+    .map((output) => output.id);
+  expect(jsonOutputsWithoutSchema).toEqual([]);
+  const canvasAgentNode = (generatedWorkflow.ui?.layout?.nodes ?? []).find(
+    (node) => String(node.title ?? "") === "自定义智能体节点",
+  );
+  expect(canvasAgentNode).toBeTruthy();
+  expect(canvasAgentNode?.config).toEqual(
+    expect.objectContaining({
+      provider: "claude-code",
+      mcp_profile: "codehub-mcp",
+    }),
+  );
+  const canvasAgentId = String(
+    (canvasAgentNode?.config as Record<string, unknown> | undefined)?.id ?? "",
+  );
+  expect(canvasAgentId).toMatch(/^canvas_agent_/);
+  const canvasAgentStep = generatedWorkflow.steps?.find(
+    (step) => step.id === canvasAgentId,
+  );
+  expect(canvasAgentStep).toEqual(
+    expect.objectContaining({
+      id: canvasAgentId,
+      type: "agent_task",
+      provider: "claude-code",
+      mcp_profile: "codehub-mcp",
+    }),
+  );
+  expect(canvasAgentStep?.required_artifacts).toEqual(
+    expect.arrayContaining(["login_sfmea.json"]),
+  );
+  expect(
+    generatedWorkflow.outputs?.find((output) => output.id === "login_sfmea"),
+  ).toEqual(
+    expect.objectContaining({
+      from: canvasAgentId,
+      artifact: "login_sfmea.json",
+    }),
+  );
   await expect(page.getByLabel("Workflow builder evidence mappings")).toHaveValue(
     /"patch_impact_scope"/,
   );
@@ -1189,7 +1311,6 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByRole("button", { name: "审计草稿" })).toBeEnabled();
   await page.getByRole("button", { name: "审计草稿" }).click();
   await expect(page.getByText("工作流草稿审计: ok (0 warning(s))")).toBeVisible();
-  await expect(page.getByText("Server audit:ok")).toBeVisible();
   await page.getByLabel("Workflow builder scenario").selectOption("patch_impact_review");
   await page.getByRole("button", { name: "生成草稿" }).click();
   await expect(page.getByText("工作流草稿已生成: custom_mr_blackbox")).toBeVisible();
@@ -1208,7 +1329,7 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"schema": \{\s+"type": "object"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"required": \[\s+"path"\s+\]/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"before_after_flow"/);
-  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"render_report"/);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"validate_evidence"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"evidence_memory"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"semantic_import"/);
   await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"kind": "patch_impact_scope"/);

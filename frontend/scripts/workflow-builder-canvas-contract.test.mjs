@@ -186,3 +186,68 @@ test("workflow designer uses per-node config for inputs agents mcp skills and ou
     },
   ]);
 });
+
+test("workflow designer aliases named SFMEA outputs to the SFMEA schema", () => {
+  const workflow = buildWorkflowFromDesigner({
+    workflowId: "schema_alias_flow",
+    workflowName: "Schema Alias Flow",
+    provider: "claude-code",
+    mcpProfile: "",
+    goal: "生成登录 SFMEA",
+    skillIds: [],
+    selectedSkills: [],
+    inputSpec: "repo_path:directory@local",
+    outputSpec: "login_sfmea:json=login_sfmea.json",
+    artifacts: "login_sfmea.json",
+    inputSchemas: {},
+    outputSchemas: {
+      sfmea: { type: "array", items: { type: "object" } },
+    },
+    evidenceMappings: {},
+    semanticImports: {},
+    layout: {
+      nodes: [],
+      edges: [],
+    },
+  });
+
+  assert.deepEqual(workflow.outputs.find((output) => output.id === "login_sfmea").schema, {
+    type: "array",
+    items: { type: "object" },
+  });
+});
+
+test("workflow designer does not materialize contract display nodes as fake inputs or outputs", () => {
+  const workflow = buildWorkflowFromDesigner({
+    workflowId: "contract_display_flow",
+    workflowName: "Contract Display Flow",
+    provider: "claude-code",
+    mcpProfile: "",
+    goal: "验证默认画布节点只做展示",
+    skillIds: [],
+    selectedSkills: [],
+    inputSpec: "repo_path:directory@local",
+    outputSpec: "sfmea:json=sfmea.json",
+    artifacts: "sfmea.json",
+    inputSchemas: {},
+    outputSchemas: {
+      sfmea: { type: "array" },
+    },
+    evidenceMappings: {},
+    semanticImports: {},
+    layout: {
+      nodes: [
+        { id: "inputs", kind: "input", title: "输入", source: "contract" },
+        { id: "outputs", kind: "output", title: "输出", source: "contract" },
+        { id: "agent-task", kind: "agent", title: "Agent", source: "contract" },
+      ],
+      edges: [
+        { id: "e1", source: "inputs", target: "agent-task" },
+        { id: "e2", source: "agent-task", target: "outputs" },
+      ],
+    },
+  });
+
+  assert.deepEqual(workflow.inputs.map((input) => input.id), ["repo_path"]);
+  assert.deepEqual(workflow.outputs.map((output) => output.id), ["sfmea"]);
+});

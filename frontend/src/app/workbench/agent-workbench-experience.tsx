@@ -1668,6 +1668,30 @@ function outputSchemaForSpec(
   if (builtin && typeof builtin === "object" && !Array.isArray(builtin)) {
     return builtin as Record<string, unknown>;
   }
+  const normalizedOutputId = outputId.replace(/[-_\s]/g, "").toLowerCase();
+  const alias =
+    normalizedOutputId.includes("sfmea")
+      ? "sfmea"
+      : normalizedOutputId.includes("blackbox") ||
+          normalizedOutputId.includes("blackcase") ||
+          normalizedOutputId.includes("testcase") ||
+          normalizedOutputId.includes("cases")
+        ? "black_box_cases"
+        : normalizedOutputId.includes("evidence")
+          ? "code_evidence"
+          : normalizedOutputId.includes("scope")
+            ? "source_scope"
+            : "";
+  const aliasedBuiltin = alias
+    ? (DEFAULT_BUILDER_OUTPUT_SCHEMAS as Record<string, unknown>)[alias]
+    : null;
+  if (
+    aliasedBuiltin &&
+    typeof aliasedBuiltin === "object" &&
+    !Array.isArray(aliasedBuiltin)
+  ) {
+    return aliasedBuiltin as Record<string, unknown>;
+  }
   const wildcard = allSchemas["*"];
   if (wildcard && typeof wildcard === "object" && !Array.isArray(wildcard)) {
     return wildcard as Record<string, unknown>;
@@ -5834,6 +5858,7 @@ export function AgentWorkbenchExperience({
     inputs?: unknown;
     outputs?: unknown;
     steps?: unknown;
+    ui?: unknown;
   }) {
     const workflowId = String(workflow.id ?? "").trim();
     const workflowName = String(workflow.name ?? "").trim();
@@ -5916,6 +5941,60 @@ export function AgentWorkbenchExperience({
       );
     } else {
       setBuilderArtifacts(uniqueWorkflowStrings(outputArtifacts).join(", "));
+    }
+
+    const layout = workflowLayoutFromPayload(workflow);
+    if (layout) {
+      const defaultEdgeIds = new Set(
+        defaultWorkflowCanvasEdges.map((edge) => edge.id),
+      );
+      const defaultEdgePairs = new Set(
+        defaultWorkflowCanvasEdges.map((edge) => `${edge.source}->${edge.target}`),
+      );
+      const positions: Record<string, WorkflowNodePosition> = {};
+      const titles: Record<string, string> = {};
+      const extraNodes: WorkflowCanvasNode[] = [];
+      for (const node of layout.nodes) {
+        positions[node.id] = clampWorkflowNodePosition({ x: node.x, y: node.y });
+        titles[node.id] = node.title;
+        if (node.source === "canvas") {
+          extraNodes.push({
+            id: node.id,
+            kind: node.kind,
+            title: node.title,
+            subtitle: node.subtitle || "画布恢复节点",
+            body:
+              node.kind === "input" ||
+              node.kind === "agent" ||
+              node.kind === "output"
+                ? ["画布恢复节点", "已同步草稿契约"]
+                : ["画布恢复节点", "仅影响画布布局"],
+            x: positions[node.id].x,
+            y: positions[node.id].y,
+            source: "canvas",
+            ...(node.config ? { config: node.config } : {}),
+          });
+        }
+      }
+      setWorkflowNodePositions(positions);
+      setWorkflowNodeTitles(titles);
+      setWorkflowExtraNodes(extraNodes);
+      setWorkflowHiddenNodeIds(layout.hidden_node_ids);
+      setWorkflowHiddenEdgeIds(layout.hidden_edge_ids ?? []);
+      setWorkflowCanvasEdges(
+        (layout.edges ?? []).filter(
+          (edge) =>
+            !defaultEdgeIds.has(edge.id) &&
+            !defaultEdgePairs.has(`${edge.source}->${edge.target}`),
+        ),
+      );
+    } else {
+      setWorkflowNodePositions({});
+      setWorkflowNodeTitles({});
+      setWorkflowExtraNodes([]);
+      setWorkflowHiddenNodeIds([]);
+      setWorkflowHiddenEdgeIds([]);
+      setWorkflowCanvasEdges([]);
     }
   }
 
@@ -7841,9 +7920,11 @@ export function AgentWorkbenchExperience({
                             type="button"
                             aria-label={`从 ${node.title} 拉出连线`}
                             className="ct-workflow-port ct-workflow-port-out"
-                            onPointerDown={(event) =>
-                              startWorkflowConnectionDrag(event, node)
-                            }
+                            onPointerDown={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              startWorkflowConnectionDrag(event, node);
+                            }}
                           />
                           <div className="mb-1.5 flex items-start justify-between gap-1.5">
                             <div className="min-w-0">
@@ -7949,12 +8030,12 @@ export function AgentWorkbenchExperience({
                   <div className="grid gap-1 font-data">
                     <span>场景 / 字段契约 / 画布布局</span>
                     <span>场景会重置字段契约；字段契约用于生成与保存。</span>
-                    <span>画布布局只保存节点位置和临时节点。</span>
+                    <span>画布布局保存节点位置、连线和节点配置。</span>
                   </div>
                   <p className="mt-1 truncate text-on-surface">
                     当前节点:{activeWorkflowNode?.title ?? "未选中"} ·{" "}
                     {activeWorkflowNode?.source === "canvas"
-                      ? "画布新增，未写入字段契约"
+                      ? "画布新增，已写入节点配置"
                       : "来自字段契约"}
                   </p>
                   <div className="mt-2 grid gap-1.5">
