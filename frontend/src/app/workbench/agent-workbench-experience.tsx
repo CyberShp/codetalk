@@ -3432,8 +3432,32 @@ function providerDisplayLabel(provider: string | undefined): string {
   return labels[normalized] ?? String(provider ?? "执行器");
 }
 
-function compactReasonLabel(reason: string): string {
-  const normalized = reason.trim();
+function diagnosticValueText(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map(diagnosticValueText).filter(Boolean).join("、");
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const parts = [
+      "user_message",
+      "message",
+      "reason",
+      "code",
+      "status",
+      "provider",
+      "path",
+      "artifact",
+      "command",
+    ]
+      .map((key) => diagnosticValueText(record[key]))
+      .filter(Boolean);
+    return Array.from(new Set(parts)).join(" · ");
+  }
+  return "";
+}
+
+function compactReasonLabel(reason: unknown): string {
+  const normalized = diagnosticValueText(reason);
   const lower = normalized.toLowerCase();
   const exactLabels: Record<string, string> = {
     agent_instruction_policy_missing: "Agent 指令策略缺失",
@@ -4428,7 +4452,7 @@ export function AgentWorkbenchExperience({
   const runPanelFailureReasons = useMemo(() => {
     const summaryReasons = activeRunUiSummary?.failure?.reasons ?? [];
     if (summaryReasons.length > 0) {
-      return Array.from(new Set(summaryReasons)).slice(0, 5);
+      return Array.from(new Set(summaryReasons.map(compactReasonLabel))).slice(0, 5);
     }
     const reasons: string[] = [];
     activeRunUiSummary?.nodes
@@ -10420,9 +10444,9 @@ export function AgentWorkbenchExperience({
                         </p>
                         {preparedProviderReadiness?.warnings
                           .slice(0, 4)
-                          .map((warning) => (
-                            <p key={warning} className="break-words">
-                              warning:{warning}
+                          .map((warning, index) => (
+                            <p key={`${compactReasonLabel(warning)}:${index}`} className="break-words">
+                              warning:{compactReasonLabel(warning)}
                             </p>
                           ))}
                       </div>

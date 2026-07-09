@@ -1159,6 +1159,155 @@ test("prefills workbench workflow inputs from AI thread task-card query", async 
   await expect(page.getByLabel("Inputs JSON")).toHaveValue(/black_box_cases\.json/);
 });
 
+test("AI thread test activity card launches a real workflow cockpit run", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(120_000);
+  const unique = Date.now();
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-card-flow-")));
+  fs.mkdirSync(path.join(repo, "lib", "iscsi"), { recursive: true });
+  fs.mkdirSync(path.join(repo, "test", "iscsi_tgt"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "iscsi", "login.c"),
+    [
+      "int iscsi_login_chap_auth(void) { return 0; }",
+      "int iscsi_login_session_reset(void) { return 0; }",
+      "",
+    ].join("\n"),
+    "utf8",
+  );
+  fs.writeFileSync(path.join(repo, "test", "iscsi_tgt", "login.sh"), "# public iscsi login smoke\n", "utf8");
+
+  const workspaceName = `ai-card-flow-${unique}`;
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+
+  const runtimeScript = path.join(repo, "ai-card-agent.cjs");
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "let stdin = '';",
+      "process.stdin.on('data', (chunk) => { stdin += chunk; });",
+      "process.stdin.on('end', () => {",
+      "  console.log(`# iSCSI login 测试活动回答",
+      "",
+      "## 代码证据",
+      "- lib/iscsi/login.c:1 覆盖 iscsi login、CHAP auth、session reset 的源码证据。",
+      "- test/iscsi_tgt/login.sh:1 覆盖 public workflow 的外部测试入口。",
+      "",
+      "## 流程梳理",
+      "1. initiator 发起 login。2. target 校验 CHAP。3. 建立 session。4. digest mismatch 或 session reset 进入异常恢复。",
+      "",
+      "## SFMEA",
+      "| failure mode | cause | effect | detection | severity | occurrence | detection score | RPN | mitigation |",
+      "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+      "| CHAP 认证失败误报 | credential mismatch | initiator 无法 login | 日志和登录状态 | 8 | 4 | 3 | 96 | 增加认证失败黑盒用例 |",
+      "",
+      "## 黑盒测试用例",
+      "### 用例 1",
+      "前置条件: iSCSI target 已启动。步骤: 使用错误 CHAP 密钥 login。预期结果: login 被拒绝。观测点: CLI 状态、日志、连接状态。失败诊断: 检查认证日志和 session 状态。",
+      "### 用例 2",
+      "前置条件: target 与 initiator 已建立会话。步骤: 注入 digest mismatch 后重连。预期结果: session reset 后可恢复。观测点: 公开日志、重连状态、I/O 连续性。失败诊断: 检查 reset 和 reconnect 日志。`);",
+      "});",
+    ].join("\n"),
+    "utf8",
+  );
+  const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: `AI card runtime ${unique}`,
+      command: process.execPath,
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      completion_mode: "process_exit",
+      idle_complete_seconds: 1,
+      sentinel_text: "",
+      session_persistence: "none",
+      resume_args: [],
+      mcp_profile: "",
+      enabled: true,
+    },
+  });
+  expect(runtimeResp.status()).toBe(201);
+  const runtime = (await runtimeResp.json()) as { id: string };
+
+  const conversationResp = await request.post(`${backendBase}/api/ai/conversations`, {
+    data: {
+      scope_type: "workspace",
+      scope_id: workspace.id,
+      workspace_id: workspace.id,
+      memory_namespace: `workspace:${workspace.id}`,
+      runtime_type: "agent_runtime",
+      agent_runtime_id: runtime.id,
+      title: `AI 任务卡工作流 ${unique}`,
+      initial_context: {
+        repo_path: repo,
+        source: "playwright",
+        codetalk_internal: true,
+      },
+    },
+  });
+  expect(conversationResp.status()).toBe(201);
+  const conversation = (await conversationResp.json()) as { id: string };
+
+  try {
+    await page.goto(`/ai/${conversation.id}`, { waitUntil: "domcontentloaded" });
+    await expect(page.getByRole("heading", { name: `AI 任务卡工作流 ${unique}` })).toBeVisible({
+      timeout: 15_000,
+    });
+    const prompt = "针对 iSCSI login 输出 SFMEA 和黑盒测试用例";
+    await page.getByLabel("AI 线程消息").hover();
+    await page.getByLabel("AI 线程消息").fill(prompt);
+    await page.getByRole("button", { name: "发送" }).hover();
+    await page.getByRole("button", { name: "发送" }).click();
+
+    const taskCard = page.locator(".ct-test-activity-card").filter({ hasText: "测试活动任务卡" });
+    await expect(taskCard).toBeVisible({ timeout: 45_000 });
+    await expect(taskCard).toContainText(prompt);
+    await expect(taskCard.getByLabel("识别到的测试画像")).toContainText("iscsi_login");
+    await expect(taskCard.getByText("sfmea.json · black_box_cases.json")).toBeVisible();
+    await taskCard.getByRole("link", { name: /启动工作流/ }).hover();
+    await taskCard.getByRole("link", { name: /启动工作流/ }).click();
+
+    await expect(page.getByRole("heading", { name: "运行驾驶舱", exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel("工作流")).toHaveValue("source_flow_sfmea_blackbox", {
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel("Workspace selector")).toHaveValue(workspace.id, {
+      timeout: 15_000,
+    });
+    await expect(page.getByLabel("Workflow input analysis_object")).toHaveValue(prompt);
+    await page.getByText("高级输入 JSON").click();
+    await expect(page.getByLabel("Inputs JSON")).toHaveValue(/requested_outputs/);
+    await expect(page.getByLabel("Inputs JSON")).toHaveValue(/black_box_cases\.json/);
+
+    await page.getByRole("button", { name: "准备运行" }).hover();
+    await page.getByRole("button", { name: "准备运行" }).click();
+    await expect(page.getByText(/任务已准备 · task_run_/)).toBeVisible({ timeout: 15_000 });
+    await page.getByRole("button", { name: "执行工作流" }).hover();
+    await page.getByRole("button", { name: "执行工作流" }).click();
+    await expect(page.getByText(/运行完成 · 代码分析-流程-SFMEA-黑盒用例工作流/)).toBeVisible({
+      timeout: 45_000,
+    });
+    await expect(page.getByText("black_box_cases.json").first()).toBeVisible({
+      timeout: 15_000,
+    });
+  } finally {
+    await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`);
+  }
+});
+
 test("executes SPDK CLI RPC smoke preset through the real workbench UI", async ({
   page,
 }, testInfo) => {

@@ -101,6 +101,20 @@ function resolvedActionHref(action: AIMessage["actions"][number]): string {
   return href;
 }
 
+function displayText(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map(displayText).filter(Boolean).join("、");
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const parts = ["label", "name", "id", "type", "message", "reason", "path", "artifact"]
+      .map((key) => displayText(record[key]))
+      .filter(Boolean);
+    return Array.from(new Set(parts)).join(" · ");
+  }
+  return "";
+}
+
 function preferredEnabledAgentRuntime(runtimes: AgentRuntime[]): AgentRuntime | null {
   for (const id of DEFAULT_AGENT_RUNTIME_FALLBACKS) {
     const runtime = runtimes.find((item) => item.id === id && item.enabled);
@@ -139,7 +153,7 @@ function actionKind(action: AIMessage["actions"][number]): string {
 function actionArrayField(action: AIMessage["actions"][number], field: string): string[] {
   const value = (action as Record<string, unknown>)[field];
   if (!Array.isArray(value)) return [];
-  return value.map((item) => String(item || "").trim()).filter(Boolean);
+  return value.map(displayText).filter(Boolean);
 }
 
 function actionRecordField(action: AIMessage["actions"][number], field: string): Record<string, unknown> | null {
@@ -162,7 +176,7 @@ function evidencePolicySources(policy: Record<string, unknown> | null): string[]
   if (!Array.isArray(raw)) return [];
   const seen = new Set<string>();
   return raw
-    .map((item) => evidenceSourceLabel(String(item || "").trim()))
+    .map((item) => evidenceSourceLabel(displayText(item)))
     .filter(Boolean)
     .filter((item) => {
       if (seen.has(item)) return false;
