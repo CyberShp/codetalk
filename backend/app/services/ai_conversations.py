@@ -4388,6 +4388,17 @@ def _event_from_row(row: aiosqlite.Row) -> dict[str, Any]:
 
 
 _PUBLIC_PROCESS_EVENT_KINDS = {"diagnostic", "thinking", "reasoning", "trace"}
+_PUBLIC_TYPED_PROCESS_EVENT_KINDS = {
+    "status",
+    "error",
+    "diagnostic",
+    "thinking",
+    "reasoning",
+    "trace",
+    "tool_use",
+    "tool_result",
+    "artifact",
+}
 
 
 def _public_events_from_rows(rows: list[aiosqlite.Row]) -> list[dict[str, Any]]:
@@ -4395,7 +4406,7 @@ def _public_events_from_rows(rows: list[aiosqlite.Row]) -> list[dict[str, Any]]:
     segment_state = _AgentOutputSegmentState()
     for row in rows:
         events.extend(_public_events_from_event(_event_from_row(row), segment_state))
-    return events
+    return [_with_public_event_metadata(event) for event in events]
 
 
 def _public_events_from_event(
@@ -4443,15 +4454,45 @@ def _public_events_from_event(
 
 
 def _is_public_process_event(event: dict[str, Any]) -> bool:
+    return _public_event_kind(event) in _PUBLIC_TYPED_PROCESS_EVENT_KINDS
+
+
+def _with_public_event_metadata(event: dict[str, Any]) -> dict[str, Any]:
+    next_event = dict(event)
+    event_id = next_event.get("event_id")
+    if isinstance(event_id, int):
+        next_event.setdefault("seq", event_id)
+    next_event.setdefault("event_kind", _public_event_kind(next_event))
+    return next_event
+
+
+def _public_event_kind(event: dict[str, Any]) -> str:
     event_type = str(event.get("event_type") or "")
-    if event_type in {"status", "error"}:
-        return True
-    if event_type != "delta":
-        return False
-    payload = event.get("payload")
-    if not isinstance(payload, dict):
-        return False
-    return str(payload.get("kind") or "") in _PUBLIC_PROCESS_EVENT_KINDS
+    if event_type == "delta":
+        payload = event.get("payload")
+        if not isinstance(payload, dict):
+            return "answer"
+        payload_kind = str(payload.get("kind") or "")
+        if payload_kind == "artifact_progress":
+            return "artifact"
+        if payload_kind in _PUBLIC_PROCESS_EVENT_KINDS:
+            return payload_kind
+        return "answer"
+    if event_type in {
+        "status",
+        "error",
+        "done",
+        "answer",
+        "diagnostic",
+        "thinking",
+        "reasoning",
+        "trace",
+        "tool_use",
+        "tool_result",
+        "artifact",
+    }:
+        return event_type
+    return event_type or "event"
 
 
 def _advance_agent_segment_state_from_kind_event(

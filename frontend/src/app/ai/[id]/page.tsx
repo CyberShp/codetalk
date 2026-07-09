@@ -56,8 +56,26 @@ function eventDiagnosticText(event: AIRunEvent): string {
 }
 
 function eventKind(event: AIRunEvent): string {
-  const value = event.payload.kind ?? event.payload.channel ?? event.payload.type;
+  const value = event.event_kind ?? event.payload.kind ?? event.payload.channel ?? event.payload.type;
   return typeof value === "string" ? value : "";
+}
+
+function eventProcessText(event: AIRunEvent): string {
+  const direct = eventDiagnosticText(event) || eventError(event);
+  if (direct) return direct;
+  const kind = eventKind(event);
+  const tool = typeof event.payload.tool === "string" ? event.payload.tool : "工具";
+  const status = typeof event.payload.status === "string" ? event.payload.status : "";
+  if (kind === "tool_use") {
+    return `工具调用：${tool}`;
+  }
+  if (kind === "tool_result") {
+    return `工具结果：${tool}${status ? ` · ${status}` : ""}`;
+  }
+  if (kind === "artifact") {
+    return "产物已更新";
+  }
+  return "";
 }
 
 function actionTextField(action: AIMessage["actions"][number], field: string): string {
@@ -168,18 +186,21 @@ function attachmentActions(actions: AIMessage["actions"] | null | undefined): AI
 }
 
 function isDiagnosticEvent(event: AIRunEvent): boolean {
-  return ["diagnostic", "thinking", "reasoning", "trace"].includes(eventKind(event));
+  return ["diagnostic", "thinking", "reasoning", "trace", "tool_use", "tool_result", "artifact"].includes(eventKind(event));
 }
 
 function agentProcessDiagnosticsFromEvents(events: AIRunEvent[]): string[] {
   const diagnostics: string[] = [];
   for (const event of events) {
     if (event.event_type === "status") {
-      diagnostics.push(eventDiagnosticText(event));
-    } else if (event.event_type === "delta" && isDiagnosticEvent(event)) {
-      diagnostics.push(eventDiagnosticText(event));
+      const text = eventProcessText(event);
+      if (text) diagnostics.push(text);
+    } else if (isDiagnosticEvent(event)) {
+      const text = eventProcessText(event);
+      if (text) diagnostics.push(text);
     } else if (event.event_type === "error") {
-      diagnostics.push(eventError(event));
+      const text = eventError(event);
+      if (text) diagnostics.push(text);
     }
   }
   return capAgentProcessDiagnostics(diagnostics);
@@ -939,17 +960,20 @@ export default function AIThreadPage() {
             const event = JSON.parse(line.slice(6)) as AIRunEvent;
             if (event.run_id !== runId) continue;
             if (event.event_type === "status") {
-              const content = eventDiagnosticText(event);
-              setStreamingDiagnostics((prev) => capAgentProcessDiagnostics([...prev, content]));
+              const content = eventProcessText(event);
+              if (content) setStreamingDiagnostics((prev) => capAgentProcessDiagnostics([...prev, content]));
             }
             if (event.event_type === "delta") {
               const content = eventContent(event);
               if (isDiagnosticEvent(event)) {
-                const diagnostic = eventDiagnosticText(event);
-                setStreamingDiagnostics((prev) => capAgentProcessDiagnostics([...prev, diagnostic]));
+                const diagnostic = eventProcessText(event);
+                if (diagnostic) setStreamingDiagnostics((prev) => capAgentProcessDiagnostics([...prev, diagnostic]));
               } else {
                 setStreamingContent((prev) => prev + content);
               }
+            } else if (isDiagnosticEvent(event)) {
+              const diagnostic = eventProcessText(event);
+              if (diagnostic) setStreamingDiagnostics((prev) => capAgentProcessDiagnostics([...prev, diagnostic]));
             }
             if (event.event_type === "done" || event.event_type === "error") {
               if (event.event_type === "error") {

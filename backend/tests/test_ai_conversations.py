@@ -3462,6 +3462,84 @@ class TestAIConversationsAPI:
         assert process_items[1]["payload"]["message"] == "正在读取工作区源码上下文。"
         assert process_items[2]["payload"]["content"] == "TOOL: rg iscsi_login lib/iscsi"
 
+    async def test_run_events_expose_typed_process_kinds_and_monotonic_seq(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        app = _test_app(sqlite_db)
+
+        from app.services.ai_conversations import AIConversationStore
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="类型化 Agent 事件",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="分析 iSCSI login 并生成黑盒用例",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+        await store.append_event(
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            event_type="thinking",
+            payload={"content": "正在规划源码检索。"},
+        )
+        await store.append_event(
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            event_type="tool_use",
+            payload={"tool": "rg", "input": {"query": "iscsi login", "path": "lib/iscsi"}},
+        )
+        await store.append_event(
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            event_type="tool_result",
+            payload={"tool": "rg", "status": "ok", "content": "lib/iscsi/iscsi.c:login"},
+        )
+        await store.append_event(
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            event_type="delta",
+            payload={"content": "## 黑盒测试用例\n"},
+        )
+        await store.append_event(
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            event_type="delta",
+            payload={"kind": "artifact_progress", "content": "完整内容已保存为下载产物。"},
+        )
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            normal = await client.get(
+                f"/api/ai/conversations/{conversation['id']}/events",
+                params={"run_id": run_id, "limit": 20},
+            )
+            process = await client.get(
+                f"/api/ai/conversations/{conversation['id']}/events",
+                params={"run_id": run_id, "limit": 20, "process_only": True},
+            )
+
+        assert normal.status_code == 200
+        normal_items = normal.json()["items"]
+        assert [item["seq"] for item in normal_items] == sorted(item["seq"] for item in normal_items)
+        assert {item["event_kind"] for item in normal_items} >= {
+            "status",
+            "thinking",
+            "tool_use",
+            "tool_result",
+            "answer",
+            "artifact",
+        }
+
+        assert process.status_code == 200
+        process_items = process.json()["items"]
+        process_kinds = [item["event_kind"] for item in process_items]
+        assert "answer" not in process_kinds
+        assert process_kinds == ["status", "thinking", "tool_use", "tool_result", "artifact"]
+
     async def test_legacy_split_agent_process_events_are_publicly_diagnostic(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)

@@ -1168,9 +1168,11 @@ export interface AIConversationRun {
 
 export interface AIRunEvent {
   event_id: number;
+  seq?: number;
   run_id: string;
   conversation_id: string;
   event_type: "status" | "delta" | "done" | "error" | string;
+  event_kind?: string;
   payload: Record<string, unknown>;
   created_at: string;
 }
