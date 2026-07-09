@@ -463,6 +463,13 @@ async def test_ai_thread_delivery_adds_test_activity_task_card_action(tmp_path, 
     assert "sfmea.json" in task_card["recommended_outputs"]
     assert "black_box_cases.json" in task_card["recommended_outputs"]
     assert task_card["evidence_policy"]["source_first"] is True
+    assert task_card["test_activity_contract"]["target"] == "针对 iSCSI login 输出 SFMEA 和黑盒测试用例"
+    assert "iscsi_login" in task_card["test_activity_contract"]["domain_profiles"]
+    assert task_card["test_activity_contract"]["project_profile"]["project"] == "spdk"
+    assert task_card["test_activity_contract"]["evidence_policy"]["prefer_artifacts"] == ["GitNexus", "CGC"]
+    assert task_card["artifact_contract"]["sfmea.json"]["preview"] == "table"
+    assert "score_explanation" in task_card["artifact_contract"]["sfmea.json"]["required_fields"]
+    assert "source_or_test_evidence" in task_card["artifact_contract"]["black_box_cases.json"]["required_fields"]
     parsed_href = urlparse(task_card["href"])
     query = parse_qs(parsed_href.query)
     assert parsed_href.path == "/workbench"

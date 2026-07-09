@@ -4046,6 +4046,8 @@ def _test_activity_task_card_actions(*, conversation: dict[str, Any], user_messa
             "recommended_outputs": contract["required_outputs"],
             "evidence_policy": contract["evidence_policy"],
             "focus_rationale": contract["focus_rationale"][:6],
+            "test_activity_contract": contract,
+            "artifact_contract": contract.get("artifact_contract", {}),
             "workflow_template_id": "source_flow_sfmea_blackbox",
             "workspace_id": workspace_id if workspace_id != "global" else "",
             "href": workflow_href,
