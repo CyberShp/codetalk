@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS agent_runtimes (
     sentinel_text TEXT DEFAULT '',
     session_persistence TEXT NOT NULL DEFAULT 'none',
     resume_args_json TEXT DEFAULT '[]',
+    mcp_profile TEXT DEFAULT '',
     enabled INTEGER DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -282,6 +283,7 @@ _MIGRATIONS = [
     "ALTER TABLE agent_runtimes ADD COLUMN sentinel_text TEXT DEFAULT ''",
     "ALTER TABLE agent_runtimes ADD COLUMN session_persistence TEXT NOT NULL DEFAULT 'none'",
     "ALTER TABLE agent_runtimes ADD COLUMN resume_args_json TEXT DEFAULT '[]'",
+    "ALTER TABLE agent_runtimes ADD COLUMN mcp_profile TEXT DEFAULT ''",
     "UPDATE ai_conversations SET workspace_id = scope_id WHERE workspace_id = 'global' AND scope_type = 'workspace'",
     "UPDATE ai_conversations SET workspace_id = substr(scope_id, 1, instr(scope_id, ':') - 1) WHERE workspace_id = 'global' AND scope_type = 'module' AND instr(scope_id, ':') > 1",
     "UPDATE ai_conversations SET workspace_id = COALESCE(json_extract(initial_context_json, '$.workspace_id'), workspace_id) WHERE workspace_id = 'global' AND json_valid(initial_context_json)",

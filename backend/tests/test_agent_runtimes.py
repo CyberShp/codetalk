@@ -797,6 +797,115 @@ class TestAgentRuntimes:
             assert [item["role"] for item in body["items"]] == ["user", "assistant"]
             assert "AGENT_SOURCE_FIRST_CONTRACT_OK" in body["items"][1]["content"]
 
+    async def test_ai_thread_agent_runtime_writes_invocation_manifest(
+        self,
+        sqlite_db,
+        tmp_path,
+    ):
+        repo = tmp_path / "spdk"
+        source = repo / "lib" / "iscsi" / "iscsi.c"
+        source.parent.mkdir(parents=True)
+        source.write_text(
+            "int iscsi_login_invocation_probe(void) { return 0; }\n",
+            encoding="utf-8",
+        )
+        ws_id = await _seed_workspace(sqlite_db, "ws-agent-invocation", repo_path=str(repo))
+        app = _test_app(sqlite_db)
+        agent_code = (
+            "import sys\n"
+            "prompt = sys.stdin.read()\n"
+            "required = ['TEST_ACTIVITY_CONTRACT', 'ARTIFACT_DELIVERY_CONTRACT', 'iscsi login']\n"
+            "missing = [item for item in required if item not in prompt]\n"
+            "if missing:\n"
+            "    print('missing invocation prompt fields: ' + ', '.join(missing), file=sys.stderr)\n"
+            "    raise SystemExit(13)\n"
+            "print('## 结论\\n已基于源码分析 iSCSI login。\\n\\n## 代码证据\\n- `lib/iscsi/iscsi.c`: `iscsi_login_invocation_probe`。\\n\\n## 流程梳理\\n1. initiator 发起 login。\\n2. target 校验参数。\\n3. 返回明确 login 状态。\\n\\n## SFMEA\\n| failure mode | cause | effect | detection | severity | occurrence | detection score | RPN | mitigation |\\n| login 参数拒绝不清晰 | 参数协商边界缺失 | initiator 误判重试 | 检查 Login Response 与日志 | 7 | 3 | 4 | 84 | 增加非法参数黑盒用例 |\\n\\n## 黑盒测试用例\\n1. 前置条件：target 已启动；步骤：合法 initiator login；预期结果：进入 full feature；观测点：Login Response 与 session 状态；失败诊断线索：检查 target 配置。\\n2. 前置条件：target 已启动；步骤：提交非法 CHAP 参数；预期结果：login 失败且日志可诊断；观测点：错误码、日志和连接状态；失败诊断线索：检查认证配置。')\n"
+        )
+
+        from app.services.ai_conversations import ai_thread_agent_artifact_dir
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            runtime = await client.post(
+                "/api/settings/agent-runtimes",
+                json={
+                    "name": "Invocation Manifest Agent",
+                    "command": sys.executable,
+                    "args": ["-c", agent_code],
+                    "prompt_transport": "stdin",
+                    "output_mode": "plain",
+                    "working_dir_mode": "project",
+                    "timeout_seconds": 10,
+                    "mcp_profile": "gitnexus+cgc",
+                },
+            )
+            assert runtime.status_code == 201
+
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "workspace_id": ws_id,
+                    "title": "Agent invocation manifest",
+                    "runtime_type": "agent_runtime",
+                    "agent_runtime_id": runtime.json()["id"],
+                },
+            )
+            assert created.status_code == 201
+            conversation = created.json()
+
+            user_task = "请针对 iscsi login 输出源码证据、流程梳理、SFMEA 和黑盒测试用例"
+            posted = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": user_task},
+            )
+            assert posted.status_code == 202
+
+            for _ in range(60):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                items = messages.json()["items"]
+                if len(items) == 2:
+                    break
+                await asyncio.sleep(0.1)
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            body = messages.json()
+            assert [item["role"] for item in body["items"]] == ["user", "assistant"]
+            assert "下载完整产物" in body["items"][1]["content"]
+
+        run_id = body["items"][0]["run_id"]
+        manifest_path = ai_thread_agent_artifact_dir(conversation["id"], run_id) / "agent_invocation.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        assert manifest["source"] == "ai_thread"
+        assert manifest["conversation_id"] == conversation["id"]
+        assert manifest["run_id"] == run_id
+        assert manifest["runtime"]["id"] == runtime.json()["id"]
+        assert manifest["runtime"]["name"] == "Invocation Manifest Agent"
+        assert manifest["cwd"] == str(repo)
+        assert manifest["repo_path"] == str(repo)
+        assert manifest["prompt"]["text"].find(user_task) >= 0
+        assert manifest["prompt"]["sha256"]
+        assert manifest["execution_contract"]["runtime_type"] == "agent_runtime"
+        assert manifest["execution_contract"]["typed_events"] == [
+            "answer",
+            "thinking",
+            "diagnostic",
+            "status",
+            "tool_use",
+            "tool_result",
+            "artifact",
+            "error",
+            "done",
+        ]
+        assert manifest["test_activity_contract"]["target"] == user_task
+        assert manifest["test_activity_contract"]["executor_requirements"]["must_receive_full_user_input"] is True
+        assert "sfmea.json" in manifest["artifact_contract"]
+        assert "black_box_cases.json" in manifest["artifact_contract"]
+        assert manifest["mcp_profile"] == "gitnexus+cgc"
+        assert manifest["skills"] == []
+        assert manifest["session"]["resume_session_id"] == ""
+        assert manifest["artifact_dir"] == str(ai_thread_agent_artifact_dir(conversation["id"], run_id))
+
     async def test_ai_thread_agent_runtime_failure_redacts_stderr_secrets(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
         app = _test_app(sqlite_db)

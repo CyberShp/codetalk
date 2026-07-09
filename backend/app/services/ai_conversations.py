@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import logging
@@ -185,6 +186,14 @@ def ai_thread_artifact_path(conversation_id: str, run_id: str) -> Path:
 
 def ai_thread_agent_artifact_dir(conversation_id: str, run_id: str) -> Path:
     return ai_thread_artifact_path(conversation_id, run_id).parent / "agent-artifacts"
+
+
+async def _write_json_file(path: Path, payload: Any) -> None:
+    await _to_thread(
+        path.write_text,
+        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+        "utf-8",
+    )
 
 
 def _remove_tree_quietly(path: Path) -> None:
@@ -1494,6 +1503,21 @@ async def run_agent_generation(
     adopted_agent_artifact = False
     agent_artifact_dir = ai_thread_agent_artifact_dir(conversation["id"], run_id).resolve()
     await _to_thread(agent_artifact_dir.mkdir, parents=True, exist_ok=True)
+    await _write_json_file(
+        agent_artifact_dir / "agent_invocation.json",
+        _agent_thread_invocation_manifest(
+            conversation=conversation,
+            run_id=run_id,
+            runtime=runtime,
+            prompt=prompt,
+            cwd=cwd,
+            repo_path=repo_path,
+            user_message=user_message["content"],
+            references=references,
+            artifact_dir=agent_artifact_dir,
+            resume_session_id=resume_session_id,
+        ),
+    )
     runtime_for_turn = dict(runtime)
     runtime_env = dict(runtime_for_turn.get("env") or {})
     runtime_env["CODETALK_AGENT_ARTIFACT_DIR"] = str(agent_artifact_dir)
@@ -2685,6 +2709,107 @@ def _test_activity_contract_prompt(*, user_message: str, repo_path: str | None =
         "  payload_json: |",
         *[f"    {line}" for line in payload.splitlines()],
     ])
+
+
+def _test_activity_contract_payload(*, user_message: str, repo_path: str | None = None) -> dict[str, Any]:
+    if not _looks_like_test_activity_request(user_message):
+        return {
+            "contract_version": 1,
+            "active": False,
+            "target": str(user_message or ""),
+            "repo_path": str(repo_path or ""),
+            "artifact_contract": {},
+        }
+    requested_outputs = [
+        {"id": artifact.replace(".", "_"), "artifact": artifact, "type": "json" if artifact.endswith(".json") else "markdown"}
+        for artifact in _requested_test_activity_outputs(user_message)
+    ]
+    contract = build_test_activity_contract(
+        target=user_message,
+        repo_path=repo_path or "",
+        workflow_outputs=requested_outputs,
+        user_requirements=user_message,
+    )
+    return {"active": True, **contract}
+
+
+def _agent_thread_invocation_manifest(
+    *,
+    conversation: dict[str, Any],
+    run_id: str,
+    runtime: dict[str, Any],
+    prompt: str,
+    cwd: str,
+    repo_path: str | None,
+    user_message: str,
+    references: list[dict[str, Any]],
+    artifact_dir: Path,
+    resume_session_id: str,
+) -> dict[str, Any]:
+    test_activity_contract = _test_activity_contract_payload(
+        user_message=user_message,
+        repo_path=repo_path or _conversation_initial_repo_path(conversation),
+    )
+    mcp_profile = str(runtime.get("mcp_profile") or "").strip()
+    skills = [str(item) for item in runtime.get("skills") or [] if str(item).strip()]
+    prompt_text = redact_agent_diagnostic_text(prompt)
+    return {
+        "schema_version": 1,
+        "source": "ai_thread",
+        "conversation_id": str(conversation.get("id") or ""),
+        "run_id": run_id,
+        "workspace_id": _conversation_workspace_id(conversation),
+        "runtime": {
+            "id": str(runtime.get("id") or conversation.get("agent_runtime_id") or ""),
+            "name": str(runtime.get("name") or ""),
+            "command": redact_agent_diagnostic_text(str(runtime.get("command") or "")),
+            "args": [redact_agent_diagnostic_text(str(item)) for item in runtime.get("args") or []],
+            "prompt_transport": str(runtime.get("prompt_transport") or "stdin"),
+            "output_mode": str(runtime.get("output_mode") or "auto"),
+            "completion_mode": str(runtime.get("completion_mode") or "process_exit"),
+            "working_dir_mode": str(runtime.get("working_dir_mode") or "project"),
+        },
+        "prompt": {
+            "text": prompt_text,
+            "sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+            "chars": len(prompt),
+            "redacted": prompt_text != prompt,
+        },
+        "cwd": cwd,
+        "repo_path": str(repo_path or ""),
+        "mcp_profile": mcp_profile,
+        "skills": skills,
+        "session": {
+            "persistence": str(runtime.get("session_persistence") or "none"),
+            "resume_session_id": resume_session_id or "",
+            "mode": "resume" if resume_session_id else "fresh",
+        },
+        "execution_contract": {
+            "runtime_type": "agent_runtime",
+            "source_first": not _source_analysis_declined(user_message),
+            "must_receive_full_user_input": True,
+            "cwd": cwd,
+            "repo_path": str(repo_path or ""),
+            "typed_events": [
+                "answer",
+                "thinking",
+                "diagnostic",
+                "status",
+                "tool_use",
+                "tool_result",
+                "artifact",
+                "error",
+                "done",
+            ],
+        },
+        "test_activity_contract": test_activity_contract,
+        "artifact_contract": test_activity_contract.get("artifact_contract", {}),
+        "references": {
+            "count": len(references),
+            "source_types": sorted({str(ref.get("source_type") or "") for ref in references}),
+        },
+        "artifact_dir": str(artifact_dir),
+    }
 
 
 def _looks_like_test_activity_request(text: str) -> bool:
@@ -3881,6 +4006,7 @@ _AI_THREAD_AGENT_ARTIFACT_SUFFIX_PRIORITY = {
 }
 
 _AI_THREAD_AGENT_AUDIT_ARTIFACT_NAMES = {
+    "agent_invocation",
     "agent_replay_plan",
     "diagnostic",
     "diagnostics",

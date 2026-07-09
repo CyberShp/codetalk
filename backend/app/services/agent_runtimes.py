@@ -84,8 +84,8 @@ class AgentRuntimeStore:
                     (id, name, command, args_json, prompt_transport, output_mode,
                      working_dir_mode, fixed_working_dir, env_json, health_command,
                      timeout_seconds, completion_mode, idle_complete_seconds, sentinel_text,
-                     session_persistence, resume_args_json, enabled, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     session_persistence, resume_args_json, mcp_profile, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rid,
@@ -104,6 +104,7 @@ class AgentRuntimeStore:
                     payload["sentinel_text"],
                     payload["session_persistence"],
                     _json_dumps(payload["resume_args"]),
+                    payload["mcp_profile"],
                     int(payload["enabled"]),
                     now,
                     now,
@@ -197,6 +198,7 @@ class AgentRuntimeStore:
             "sentinel_text",
             "session_persistence",
             "resume_args",
+            "mcp_profile",
             "enabled",
         ):
             if key in data:
@@ -270,6 +272,8 @@ class AgentRuntimeStore:
             joined = "\n".join(result["resume_args"])
             if "{session_id}" not in joined and "{resume_session_id}" not in joined:
                 raise ValueError("resume_args 必须包含 {session_id} 或 {resume_session_id} 占位符")
+        if not partial or "mcp_profile" in result:
+            result["mcp_profile"] = str(result.get("mcp_profile") or "").strip()
         if not partial or "enabled" in result:
             result["enabled"] = bool(result.get("enabled", True))
 
@@ -350,5 +354,6 @@ def _runtime_from_row(row: aiosqlite.Row | sqlite3.Row) -> dict[str, Any]:
     data["idle_complete_seconds"] = int(data.get("idle_complete_seconds") or 5)
     data["sentinel_text"] = data.get("sentinel_text") or ""
     data["session_persistence"] = data.get("session_persistence") or "none"
+    data["mcp_profile"] = data.get("mcp_profile") or ""
     data["enabled"] = bool(data.get("enabled", 1))
     return data

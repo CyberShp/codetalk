@@ -36,6 +36,7 @@ class AgentRuntimeBase(BaseModel):
     sentinel_text: str = ""
     session_persistence: str = "none"
     resume_args: list[str] = Field(default_factory=list)
+    mcp_profile: str = Field(default="", max_length=200)
     enabled: bool = True
 
     @field_validator("prompt_transport")
@@ -94,6 +95,7 @@ class AgentRuntimeUpdate(BaseModel):
     sentinel_text: str | None = None
     session_persistence: str | None = None
     resume_args: list[str] | None = None
+    mcp_profile: str | None = Field(default=None, max_length=200)
     enabled: bool | None = None
 
 
