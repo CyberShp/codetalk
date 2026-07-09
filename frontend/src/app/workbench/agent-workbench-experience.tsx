@@ -3708,6 +3708,8 @@ export function AgentWorkbenchExperience({
   const workflowCanvasInnerRef = useRef<HTMLDivElement | null>(null);
   const workspaceAutoSelectionDoneRef = useRef(false);
   const queryPrefillAppliedRef = useRef(false);
+  const autoRestoredTaskRunRef = useRef<string | null>(null);
+  const startTaskRunPollingRef = useRef<(taskRunId: string) => void>(() => undefined);
   const paletteDragModuleRef = useRef<string | null>(null);
   const palettePointerDragRef = useRef<{
     moduleId: string;
@@ -5556,7 +5558,27 @@ export function AgentWorkbenchExperience({
 
       const diagnosticErrors: string[] = [];
       if (taskRunResult.status === "fulfilled") {
-        setTaskRuns(taskRunResult.value.items);
+        const recentTaskRuns = taskRunResult.value.items;
+        setTaskRuns(recentTaskRuns);
+        const recoverableRun = recentTaskRuns.find((run) =>
+          ["queued", "running"].includes(taskRunRuntimeStatus(run)),
+        );
+        if (
+          activeWorkbenchView === "run" &&
+          recoverableRun &&
+          autoRestoredTaskRunRef.current !== recoverableRun.task_run_id
+        ) {
+          autoRestoredTaskRunRef.current = recoverableRun.task_run_id;
+          void (async () => {
+            try {
+              await restoreTaskRun(recoverableRun.task_run_id);
+              setMessage(`任务已恢复 · ${recoverableRun.task_run_id}`);
+              startTaskRunPollingRef.current(recoverableRun.task_run_id);
+            } catch (err: unknown) {
+              setError(err instanceof Error ? err.message : "恢复运行中任务失败");
+            }
+          })();
+        }
       } else {
         diagnosticErrors.push("最近任务");
       }
@@ -5777,6 +5799,7 @@ export function AgentWorkbenchExperience({
       }
     })();
   }
+  startTaskRunPollingRef.current = startTaskRunPolling;
 
   async function restoreTaskRun(taskRunId: string) {
     const [run, manifest, events] = await Promise.all([

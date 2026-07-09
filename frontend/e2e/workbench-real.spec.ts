@@ -1336,6 +1336,158 @@ test("runs and cancels a real agent workflow with live cockpit events", async ({
   }
 });
 
+test("restores a running agent workflow after refreshing the cockpit", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const unique = Date.now();
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-workflow-refresh-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "workflow refresh recovery e2e\n", "utf8");
+  const workflowId = `workflow_refresh_${unique}`;
+  const workspaceName = `workflow-refresh-${unique}`;
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+  const providerId = `refresh-agent-${unique}`;
+  const agentScript = path.join(repo, "refresh-agent.cjs");
+  fs.writeFileSync(
+    agentScript,
+    [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "process.stdin.resume();",
+      "process.stdin.on('end', () => {",
+      "  const artifactDir = process.env.CODETALK_AGENT_ARTIFACT_DIR;",
+      "  setTimeout(() => {",
+      "    fs.mkdirSync(artifactDir, { recursive: true });",
+      "    fs.writeFileSync(path.join(artifactDir, 'result.json'), JSON.stringify({ status: 'ok', provider: 'refresh-agent' }));",
+      "    console.log(JSON.stringify({ status: 'ok', summary: 'refresh-agent completed' }));",
+      "  }, 20000);",
+      "});",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const providersResp = await request.get(`${backendBase}/api/settings/agent-providers`);
+  expect(providersResp.ok()).toBeTruthy();
+  const originalSettings = await providersResp.json();
+  const settingsResp = await request.put(`${backendBase}/api/settings/agent-providers`, {
+    data: {
+      ...originalSettings,
+      external_agent_custom_providers: [
+        ...(originalSettings.external_agent_custom_providers ?? []).filter(
+          (provider: { id?: string }) => provider.id !== providerId,
+        ),
+        {
+          id: providerId,
+          command: `"${process.execPath}" "${agentScript}"`,
+          prompt_transport: "stdin",
+          supports_artifact_export: true,
+          supports_json_output: true,
+        },
+      ],
+    },
+  });
+  expect(settingsResp.ok()).toBeTruthy();
+
+  try {
+    const workflowResp = await request.post(`${backendBase}/api/workbench/workflows`, {
+      data: {
+        id: workflowId,
+        name: "Workflow Refresh E2E",
+        version: 1,
+        inputs: [{ id: "analysis_object", type: "free_text", required: true }],
+        steps: [
+          {
+            id: "refresh_agent_analysis",
+            type: "agent_task",
+            provider: providerId,
+            required_artifacts: ["result.json"],
+            goal: "Stay running long enough for the browser to refresh and restore state.",
+          },
+        ],
+        outputs: [
+          {
+            id: "result",
+            type: "json",
+            artifact: "result.json",
+            schema: {
+              type: "object",
+              required: ["status", "provider"],
+              properties: {
+                status: { type: "string" },
+                provider: { type: "string" },
+              },
+              additionalProperties: true,
+            },
+          },
+        ],
+      },
+    });
+    expect(workflowResp.status()).toBe(201);
+
+    await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+    await page.getByLabel("工作流").selectOption(workflowId);
+    await page.getByLabel("Workspace selector").selectOption(workspace.id);
+    await page.getByLabel("Workflow input analysis_object").fill("refresh recovery workflow run");
+    await page.getByRole("button", { name: "准备运行" }).hover();
+    await page.getByRole("button", { name: "准备运行" }).click();
+    await expect(page.getByText(/任务已准备 · task_run_/)).toBeVisible({ timeout: 15_000 });
+
+    const bodyText = await page.locator("body").innerText();
+    const taskRunId = bodyText.match(/任务已准备 · (task_run_[a-f0-9]+)/)?.[1] ?? "";
+    expect(taskRunId).toMatch(/^task_run_[a-f0-9]+$/);
+
+    const executeResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith(`/api/workbench/task-runs/${taskRunId}/execute`) &&
+        response.status() < 500,
+    );
+    await page.getByRole("button", { name: "执行工作流" }).hover();
+    await page.getByRole("button", { name: "执行工作流" }).click();
+    await executeResponse;
+
+    await expect(page.getByText(new RegExp(`运行中 · ${workflowId}`))).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByText("节点开始 · refresh_agent_analysis")).toBeVisible({
+      timeout: 15_000,
+    });
+
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect(page.getByText(`任务已恢复 · ${taskRunId}`)).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByText(new RegExp(`运行中 · ${workflowId}`))).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByText("节点开始 · refresh_agent_analysis")).toBeVisible({
+      timeout: 15_000,
+    });
+
+    const cancelResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith(`/api/workbench/task-runs/${taskRunId}/cancel`) &&
+        response.status() < 500,
+    );
+    await page.getByRole("button", { name: "取消" }).hover();
+    await page.getByRole("button", { name: "取消" }).click();
+    await cancelResponse;
+    await expect(page.getByText("已取消本次工作流运行", { exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
+  } finally {
+    await request.put(`${backendBase}/api/settings/agent-providers`, {
+      data: originalSettings,
+    });
+  }
+});
+
 test("opens a persisted AI review thread from a prepared workbench run through the real UI", async ({
   page,
   request,
