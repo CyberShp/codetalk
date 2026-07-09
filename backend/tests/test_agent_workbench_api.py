@@ -5245,6 +5245,11 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     )
     assert executed.status_code == 200
     assert executed.json()["step_results"][0]["failure_recovery"]["failure_kind"] == "agent_error"
+    summary = (await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}")).json()["run_ui_summary"]
+    assert (
+        "执行器异常退出，退出码 3。请查看内部诊断确认失败节点。"
+        in summary["failure"]["reasons"]
+    )
 
     artifacts = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/artifacts")
 

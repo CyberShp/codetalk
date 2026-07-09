@@ -3903,6 +3903,7 @@ export function AgentWorkbenchExperience({
   const [loading, setLoading] = useState(false);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const busyActionRef = useRef<string | null>(null);
+  const activeActionsRef = useRef<Set<string>>(new Set());
   const [message, setMessage] = useState<string | null>(null);
   const [openingConversation, setOpeningConversation] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -5660,8 +5661,15 @@ export function AgentWorkbenchExperience({
   }, [loadWorkflows]);
 
   async function runAction(name: string, action: () => Promise<void>) {
-    if (busyActionRef.current) return;
+    const currentBusyAction = busyActionRef.current;
+    const canInterruptForCancel =
+      name === "cancel-task-run" &&
+      Boolean(currentBusyAction?.startsWith("execute-"));
+    if (currentBusyAction && (!canInterruptForCancel || currentBusyAction === name)) {
+      return;
+    }
     const startedAt = performance.now();
+    activeActionsRef.current.add(name);
     busyActionRef.current = name;
     flushSync(() => {
       setBusyAction(name);
@@ -5680,10 +5688,14 @@ export function AgentWorkbenchExperience({
           window.setTimeout(resolve, remainingBusyMs),
         );
       }
-      if (busyActionRef.current === name) {
-        busyActionRef.current = null;
-        setBusyAction(null);
-      }
+      activeActionsRef.current.delete(name);
+      const activeActions = Array.from(activeActionsRef.current);
+      const nextBusyAction =
+        activeActions.find((item) => item === "cancel-task-run") ??
+        activeActions[activeActions.length - 1] ??
+        null;
+      busyActionRef.current = nextBusyAction;
+      setBusyAction(nextBusyAction);
     }
   }
 
@@ -5733,6 +5745,46 @@ export function AgentWorkbenchExperience({
           : item,
       ),
     );
+  }
+
+  function submittedTaskRunSummary(
+    run: PreparedWorkbenchTaskRun,
+  ): PreparedWorkbenchTaskRun["run_ui_summary"] {
+    const currentSummary = run.run_ui_summary;
+    const nodes = (currentSummary?.nodes ?? []).map((node, index) => {
+      if (
+        index === 0 &&
+        !["completed", "ok", "success"].includes(
+          String(node.status ?? "").toLowerCase(),
+        )
+      ) {
+        return { ...node, status: "running", status_label: "运行中" };
+      }
+      return node;
+    });
+    return {
+      ...currentSummary,
+      status: "running",
+      status_label: "运行中",
+      workflow: currentSummary?.workflow ?? {
+        id: run.workflow_id,
+        name: run.workflow_id,
+      },
+      current_node: currentSummary?.current_node ?? nodes[0],
+      nodes,
+      debug_default_collapsed: currentSummary?.debug_default_collapsed ?? true,
+      debug_sections: currentSummary?.debug_sections ?? [
+        "运行已提交，正在刷新后台事件。",
+      ],
+    };
+  }
+
+  function markTaskRunSubmitted(run: PreparedWorkbenchTaskRun) {
+    const summary = submittedTaskRunSummary(run);
+    setTaskRunEvents([]);
+    mergePreparedRunSummary(run.task_run_id, summary);
+    setMessage(`工作流已提交后台运行 · 任务 ${run.task_run_id}`);
+    startTaskRunPollingRef.current(run.task_run_id);
   }
 
   async function refreshTaskRunRuntime(
@@ -6718,14 +6770,15 @@ export function AgentWorkbenchExperience({
   const executePreparedWorkflow = () =>
     runAction("execute-workflow", async () => {
       if (!preparedRun) return;
+      const taskRun = preparedRun;
+      markTaskRunSubmitted(taskRun);
       const result = await api.workbench.taskRuns.execute(
-        preparedRun.task_run_id,
+        taskRun.task_run_id,
         90,
         true,
       );
-      setTaskRunEvents([]);
       setWorkflowExecution(result.execution ?? null);
-      mergePreparedRunSummary(preparedRun.task_run_id, result.run_ui_summary);
+      mergePreparedRunSummary(taskRun.task_run_id, result.run_ui_summary);
       setWorkflowOutputMaterialize(result.evidence_materialization ?? null);
       setSemanticOutputImport(result.semantic_output_import ?? null);
       setTaskRerunPlan(
@@ -6734,7 +6787,7 @@ export function AgentWorkbenchExperience({
       setTaskRerunPlanValidation(null);
       setTaskAcceptanceAudit(result.acceptance_audit ?? null);
       setMessage(workflowRunResultMessage("工作流执行", result));
-      startTaskRunPolling(preparedRun.task_run_id);
+      startTaskRunPolling(taskRun.task_run_id);
     });
 
   const materializePreparedWorkflowOutputs = () =>

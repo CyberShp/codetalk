@@ -1068,7 +1068,7 @@ test("locks sibling agent-run actions while a real step execution is in flight",
   page,
   request,
 }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
   const unique = Date.now();
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-step-busy-")));
   fs.writeFileSync(path.join(repo, "README.md"), "step busy e2e\n", "utf8");
@@ -1196,7 +1196,7 @@ test("runs and cancels a real agent workflow with live cockpit events", async ({
   page,
   request,
 }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(90_000);
   const unique = Date.now();
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-workflow-cancel-")));
   fs.writeFileSync(path.join(repo, "README.md"), "workflow cancel e2e\n", "utf8");
@@ -1222,7 +1222,7 @@ test("runs and cancels a real agent workflow with live cockpit events", async ({
       "    fs.mkdirSync(artifactDir, { recursive: true });",
       "    fs.writeFileSync(path.join(artifactDir, 'result.json'), JSON.stringify({ status: 'ok', provider: 'cancel-agent', sawPrompt: stdin.includes('cancel a real workflow run') }));",
       "    console.log(JSON.stringify({ status: 'ok', summary: 'cancel-agent completed' }));",
-      "  }, 10000);",
+      "  }, 30000);",
       "});",
     ].join("\n"),
     "utf8",
@@ -1296,15 +1296,14 @@ test("runs and cancels a real agent workflow with live cockpit events", async ({
     await expect(page.getByText(/任务已准备 · task_run_/)).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText(providerId).first()).toBeVisible();
 
-    const executeResponse = page.waitForResponse(
-      (response) =>
-        response.request().method() === "POST" &&
-        /\/api\/workbench\/task-runs\/[^/]+\/execute$/.test(new URL(response.url()).pathname) &&
-        response.status() < 500,
+    const executeRequest = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" &&
+        /\/api\/workbench\/task-runs\/[^/]+\/execute$/.test(new URL(request.url()).pathname),
     );
     await page.getByRole("button", { name: "执行工作流" }).hover();
     await page.getByRole("button", { name: "执行工作流" }).click();
-    await executeResponse;
+    await executeRequest;
 
     await expect(page.getByText(new RegExp(`运行中 · ${workflowId}`))).toBeVisible({
       timeout: 15_000,
@@ -1479,6 +1478,135 @@ test("restores a running agent workflow after refreshing the cockpit", async ({
     await page.getByRole("button", { name: "取消" }).click();
     await cancelResponse;
     await expect(page.getByText("已取消本次工作流运行", { exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
+  } finally {
+    await request.put(`${backendBase}/api/settings/agent-providers`, {
+      data: originalSettings,
+    });
+  }
+});
+
+test("shows Chinese failure reason and recovery actions for a real failed agent workflow", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(60_000);
+  const unique = Date.now();
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-workflow-failure-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "workflow failure e2e\n", "utf8");
+  const workflowId = `workflow_failure_${unique}`;
+  const workspaceName = `workflow-failure-${unique}`;
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+  const providerId = `failure-agent-${unique}`;
+  const agentScript = path.join(repo, "failure-agent.cjs");
+  fs.writeFileSync(
+    agentScript,
+    [
+      "process.stdin.resume();",
+      "process.stdin.on('end', () => {",
+      "  console.error('provider failed with internal English diagnostic: missing artifact');",
+      "  process.exit(2);",
+      "});",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const providersResp = await request.get(`${backendBase}/api/settings/agent-providers`);
+  expect(providersResp.ok()).toBeTruthy();
+  const originalSettings = await providersResp.json();
+  const settingsResp = await request.put(`${backendBase}/api/settings/agent-providers`, {
+    data: {
+      ...originalSettings,
+      external_agent_custom_providers: [
+        ...(originalSettings.external_agent_custom_providers ?? []).filter(
+          (provider: { id?: string }) => provider.id !== providerId,
+        ),
+        {
+          id: providerId,
+          command: `"${process.execPath}" "${agentScript}"`,
+          prompt_transport: "stdin",
+          supports_artifact_export: true,
+          supports_json_output: true,
+        },
+      ],
+    },
+  });
+  expect(settingsResp.ok()).toBeTruthy();
+
+  try {
+    const workflowResp = await request.post(`${backendBase}/api/workbench/workflows`, {
+      data: {
+        id: workflowId,
+        name: "Workflow Failure E2E",
+        version: 1,
+        inputs: [{ id: "analysis_object", type: "free_text", required: true }],
+        steps: [
+          {
+            id: "failing_agent_analysis",
+            type: "agent_task",
+            provider: providerId,
+            required_artifacts: ["result.json"],
+            goal: "Fail with exit code 2 so the cockpit can explain the failure.",
+          },
+        ],
+        outputs: [
+          {
+            id: "result",
+            type: "json",
+            artifact: "result.json",
+            schema: {
+              type: "object",
+              required: ["status"],
+              properties: { status: { type: "string" } },
+              additionalProperties: true,
+            },
+          },
+        ],
+      },
+    });
+    expect(workflowResp.status()).toBe(201);
+
+    await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+    await page.getByLabel("工作流").selectOption(workflowId);
+    await page.getByLabel("Workspace selector").selectOption(workspace.id);
+    await page.getByLabel("Workflow input analysis_object").fill("failure recovery workflow run");
+    await page.getByRole("button", { name: "准备运行" }).hover();
+    await page.getByRole("button", { name: "准备运行" }).click();
+    await expect(page.getByText(/任务已准备 · task_run_/)).toBeVisible({ timeout: 15_000 });
+
+    const executeResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        /\/api\/workbench\/task-runs\/[^/]+\/execute$/.test(new URL(response.url()).pathname) &&
+        response.status() < 500,
+    );
+    await page.getByRole("button", { name: "执行工作流" }).hover();
+    await page.getByRole("button", { name: "执行工作流" }).click();
+    await executeResponse;
+
+    await expect(page.getByText(new RegExp(`运行失败 · ${workflowId}`))).toBeVisible({
+      timeout: 20_000,
+    });
+    await expect(page.getByText("节点失败 · failing_agent_analysis")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByText("失败原因", { exact: true })).toBeVisible();
+    await expect(page.getByText(/执行器异常退出，退出码 2。请查看内部诊断确认失败节点/)).toBeVisible();
+    await expect(page.getByRole("button", { name: "从失败节点重试" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "编辑工作流" })).toBeVisible();
+
+    const diagnostics = page.getByRole("group", { name: "运行详细诊断" });
+    await expect(diagnostics).toBeVisible();
+    await diagnostics.click();
+    await expect(page.getByText(/失败类型:agent_error/)).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByText(/下一步:从失败节点重试/)).toBeVisible({
       timeout: 15_000,
     });
   } finally {

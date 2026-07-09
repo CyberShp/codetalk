@@ -912,6 +912,10 @@ def _task_run_ui_step_failure_reasons(
     execution = step_result.get("execution")
     if isinstance(execution, dict) and str(execution.get("error") or ""):
         reasons.append(_task_run_ui_reason_label(str(execution.get("error") or "")))
+    if isinstance(execution, dict):
+        exit_code = execution.get("exit_code")
+        if isinstance(exit_code, int) and exit_code != 0:
+            reasons.append(_task_run_ui_reason_label(f"exit code {exit_code}"))
     if str(step_result.get("error") or ""):
         reasons.append(_task_run_ui_reason_label(str(step_result.get("error") or "")))
     for output in outputs:
