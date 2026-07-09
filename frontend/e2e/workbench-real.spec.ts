@@ -1761,6 +1761,19 @@ test("runs and cancels a real agent workflow with live cockpit events", async ({
       "process.stdin.on('data', (chunk) => { stdin += chunk; });",
       "process.stdin.on('end', () => {",
       "  const artifactDir = process.env.CODETALK_AGENT_ARTIFACT_DIR;",
+      "  const terminatedPath = path.join(artifactDir, 'terminated.json');",
+      "  const heartbeatPath = path.join(artifactDir, 'heartbeat.txt');",
+      "  const markTerminated = (signal) => {",
+      "    fs.mkdirSync(artifactDir, { recursive: true });",
+      "    fs.writeFileSync(terminatedPath, JSON.stringify({ status: 'terminated', signal }));",
+      "    process.exit(0);",
+      "  };",
+      "  process.on('SIGTERM', () => markTerminated('SIGTERM'));",
+      "  process.on('SIGINT', () => markTerminated('SIGINT'));",
+      "  setInterval(() => {",
+      "    fs.mkdirSync(artifactDir, { recursive: true });",
+      "    fs.writeFileSync(heartbeatPath, String(Date.now()));",
+      "  }, 250);",
       "  setTimeout(() => {",
       "    fs.mkdirSync(artifactDir, { recursive: true });",
       "    fs.writeFileSync(path.join(artifactDir, 'result.json'), JSON.stringify({ status: 'ok', provider: 'cancel-agent', sawPrompt: stdin.includes('cancel a real workflow run') }));",
@@ -1837,6 +1850,9 @@ test("runs and cancels a real agent workflow with live cockpit events", async ({
     await page.getByRole("button", { name: "准备运行" }).hover();
     await page.getByRole("button", { name: "准备运行" }).click();
     await expect(page.getByText(/任务已准备 · task_run_/)).toBeVisible({ timeout: 15_000 });
+    const cancelPreparedBodyText = await page.locator("body").innerText();
+    const cancelTaskRunId = cancelPreparedBodyText.match(/任务已准备 · (task_run_[a-f0-9]+)/)?.[1] ?? "";
+    expect(cancelTaskRunId).toMatch(/^task_run_[a-f0-9]+$/);
     await expect(page.getByText(providerId).first()).toBeVisible();
 
     const executeRequest = page.waitForRequest(
@@ -1870,6 +1886,19 @@ test("runs and cancels a real agent workflow with live cockpit events", async ({
       timeout: 15_000,
     });
     await expect(page.getByText("已取消").first()).toBeVisible({ timeout: 15_000 });
+    await expect
+      .poll(
+        async () => {
+          const response = await request.get(
+            `${backendBase}/api/workbench/task-runs/${cancelTaskRunId}/artifacts/content/agent_runs/slow_agent_analysis/terminated.json`,
+          );
+          if (!response.ok()) return "";
+          const payload = (await response.json()) as { content?: string };
+          return payload.content ?? "";
+        },
+        { timeout: 10_000, intervals: [250, 500, 1000] },
+      )
+      .toContain("terminated");
     await expect(page.getByText(new RegExp(`运行完成 · ${workflowId}`))).toHaveCount(0);
   } finally {
     await request.put(`${backendBase}/api/settings/agent-providers`, {

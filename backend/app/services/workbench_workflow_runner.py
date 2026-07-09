@@ -50,10 +50,12 @@ class WorkbenchWorkflowRunner:
         artifact_root: str | Path,
         *,
         event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
     ) -> None:
         self.artifact_root = Path(artifact_root)
         self.store = WorkbenchTaskRunStore(self.artifact_root)
         self._event_sink = event_sink
+        self._is_cancelled_callback = is_cancelled
 
     def execute_task_run(
         self,
@@ -74,6 +76,10 @@ class WorkbenchWorkflowRunner:
         for step in task_run.workflow_snapshot.get("steps") or []:
             if not isinstance(step, dict):
                 continue
+            if self._is_cancelled():
+                step_results.append(_cancelled_step_result(step))
+                self._emit_step_finished(step_results[-1])
+                break
             step_id = str(step.get("id") or "")
             step_type = str(step.get("type") or "")
             self._emit_event(
@@ -120,6 +126,8 @@ class WorkbenchWorkflowRunner:
             )
             step_results.append(step_result)
             self._emit_step_finished(step_result)
+            if self._is_cancelled():
+                break
             if stop_on_error and step_result.get("status") != "completed":
                 break
 
@@ -171,6 +179,8 @@ class WorkbenchWorkflowRunner:
         event_type = (
             "step_completed"
             if status in {"completed", "completed_empty", "needs_review"}
+            else "cancelled"
+            if status == "cancelled"
             else "step_failed"
         )
         self._emit_event(event_type, dict(step_result))
@@ -179,6 +189,14 @@ class WorkbenchWorkflowRunner:
         if self._event_sink is None:
             return
         self._event_sink(event_type, payload)
+
+    def _is_cancelled(self) -> bool:
+        if self._is_cancelled_callback is None:
+            return False
+        try:
+            return bool(self._is_cancelled_callback())
+        except Exception:
+            return False
 
     def _audit_test_activity_quality(self, *, task_run: Any) -> dict[str, Any]:
         contract = (
@@ -245,6 +263,7 @@ class WorkbenchWorkflowRunner:
         execution = AgentRunHarness(artifact_dir).execute_run(
             run_id,
             timeout_sec=timeout_sec,
+            is_cancelled=self._is_cancelled,
         )
         executions = [asdict(execution)]
         turn_artifacts = [_snapshot_agent_turn_artifacts(artifact_dir, turn_id="turn_1")]
@@ -266,6 +285,7 @@ class WorkbenchWorkflowRunner:
             execution = AgentRunHarness(artifact_dir).execute_run(
                 run_id,
                 timeout_sec=timeout_sec,
+                is_cancelled=self._is_cancelled,
             )
             executions.append(asdict(execution))
             turn_artifacts.append(_snapshot_agent_turn_artifacts(artifact_dir, turn_id="turn_2"))
@@ -279,6 +299,9 @@ class WorkbenchWorkflowRunner:
         ]
         validation = _validate_step_artifacts(artifact_dir, required_artifacts)
         status = (
+            "cancelled"
+            if execution.status == "cancelled"
+            else
             "completed"
             if execution.status == "completed" and validation.status == "ok"
             else "invalid"
@@ -3368,6 +3391,8 @@ def _overall_status(step_results: list[dict[str, Any]]) -> str:
     if not actionable:
         return "skipped"
     statuses = {str(item.get("status") or "") for item in actionable}
+    if "cancelled" in statuses:
+        return "cancelled"
     if statuses == {"completed"}:
         return "completed"
     if statuses.issubset({"completed", "completed_empty"}) and "completed_empty" in statuses:
@@ -3377,6 +3402,19 @@ def _overall_status(step_results: list[dict[str, Any]]) -> str:
     if any(item.get("status") == "error" for item in actionable):
         return "error"
     return "invalid"
+
+
+def _cancelled_step_result(step: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "step_id": str(step.get("id") or ""),
+        "type": str(step.get("type") or ""),
+        "status": "cancelled",
+        "error": "",
+        "failure_recovery": {
+            "user_message": "用户已取消本次工作流运行。",
+            "recommended_actions": ["确认不需要本次产物，或调整输入后重新运行。"],
+        },
+    }
 
 
 def _step_executor_label(step: dict[str, Any]) -> str:

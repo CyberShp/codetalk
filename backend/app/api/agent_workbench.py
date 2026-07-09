@@ -1980,6 +1980,7 @@ def _execute_task_run_with_closure(
                 event_type,
                 event_payload,
             ),
+            is_cancelled=lambda: event_store.current_status(task_run_id) == "cancelled",
         ).execute_task_run(
             task_run_id,
             timeout_sec=payload.timeout_sec,

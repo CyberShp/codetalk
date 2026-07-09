@@ -7,13 +7,16 @@ import json
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
+import threading
+import time
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any
+from typing import Any, Callable
 
 from app.services.agent_cli_bridge import _decode as _decode_agent_cli_output
 
@@ -295,6 +298,16 @@ class AgentRunExecutionResult:
     provider_diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass
+class _SubprocessExecutionResult:
+    exit_code: int | None
+    stdout: str
+    stderr: str
+    timed_out: bool = False
+    cancelled: bool = False
+    error: str = ""
+
+
 class AgentRunHarness:
     """Writes the reproducible envelope around an external Agent CLI run."""
 
@@ -366,7 +379,13 @@ class AgentRunHarness:
             append_jsonl=True,
         )
 
-    def execute_run(self, run_id: str, *, timeout_sec: int = 90) -> AgentRunExecutionResult:
+    def execute_run(
+        self,
+        run_id: str,
+        *,
+        timeout_sec: int = 90,
+        is_cancelled: Callable[[], bool] | None = None,
+    ) -> AgentRunExecutionResult:
         run_payload = self._read_json_file("agent_run.json")
         if not isinstance(run_payload, dict) or run_payload.get("run_id") != run_id:
             raise ValueError(f"unknown agent run: {run_id}")
@@ -593,32 +612,35 @@ class AgentRunHarness:
                 "prompt_transport_reason": prompt_transport_reason,
             }
             try:
-                completed = subprocess.run(
+                completed = _run_cancellable_subprocess(
                     process_command,
                     cwd=cwd,
-                    input=candidate_stdin,
-                    capture_output=True,
+                    input_bytes=candidate_stdin,
                     timeout=max(1, int(timeout_sec)),
                     env=env,
-                    check=False,
+                    is_cancelled=is_cancelled,
                 )
-                exit_code = completed.returncode
-                stdout = _decode_subprocess_text(completed.stdout)
-                stderr = _decode_subprocess_text(completed.stderr)
+                exit_code = completed.exit_code
+                stdout = completed.stdout
+                stderr = completed.stderr
+                timed_out = completed.timed_out
+                error = completed.error
                 attempt["exit_code"] = exit_code
-                attempt["status"] = "completed" if exit_code == 0 else "error"
+                attempt["status"] = (
+                    "cancelled"
+                    if completed.cancelled
+                    else "timeout"
+                    if completed.timed_out
+                    else "completed"
+                    if exit_code == 0
+                    else "error"
+                )
+                if completed.error:
+                    attempt["error"] = _redact(completed.error)
                 attempt["stderr_excerpt"] = _redact(stderr[:4000])
                 attempt["stdout_excerpt"] = _redact(stdout[:4000])
-            except subprocess.TimeoutExpired as exc:
-                timed_out = True
-                exit_code = None
-                stdout = _decode_subprocess_text(exc.stdout)
-                stderr = _decode_subprocess_text(exc.stderr)
-                error = f"agent run timed out after {timeout_sec}s"
-                attempt["status"] = "timeout"
-                attempt["error"] = error
-                attempt["stderr_excerpt"] = _redact(stderr[:4000])
-                attempt["stdout_excerpt"] = _redact(stdout[:4000])
+                if completed.cancelled:
+                    break
             except OSError as exc:
                 exit_code = None
                 stdout = ""
@@ -636,7 +658,8 @@ class AgentRunHarness:
 
         completed_at = _now()
         duration_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)
-        status = "timeout" if timed_out else "completed" if exit_code == 0 else "error"
+        cancelled = any(item.get("status") == "cancelled" for item in transport_attempts)
+        status = "cancelled" if cancelled else "timeout" if timed_out else "completed" if exit_code == 0 else "error"
         execution_input = self._read_json_file("execution_input.json")
         if isinstance(execution_input, dict):
             execution_input["process_command"] = process_command
@@ -1388,3 +1411,111 @@ def _decode_subprocess_text(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return _decode_agent_cli_output(value)
     return _decode_agent_cli_output(value.encode("utf-8", errors="surrogatepass"))
+
+
+def _run_cancellable_subprocess(
+    command: list[str],
+    *,
+    cwd: str,
+    input_bytes: bytes | None,
+    timeout: int,
+    env: dict[str, str],
+    is_cancelled: Callable[[], bool] | None = None,
+) -> _SubprocessExecutionResult:
+    popen_kwargs: dict[str, Any] = {}
+    if os.name == "nt":
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    else:
+        popen_kwargs["start_new_session"] = True
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=env,
+        **popen_kwargs,
+    )
+    captured: dict[str, Any] = {}
+
+    def _communicate() -> None:
+        try:
+            stdout, stderr = process.communicate(input=input_bytes)
+            captured["stdout"] = stdout
+            captured["stderr"] = stderr
+        except BaseException as exc:  # pragma: no cover - defensive bridge for OS process edge cases.
+            captured["error"] = exc
+
+    thread = threading.Thread(target=_communicate, daemon=True)
+    thread.start()
+    started = time.monotonic()
+    timed_out = False
+    cancelled = False
+    while thread.is_alive():
+        if is_cancelled is not None and _safe_is_cancelled(is_cancelled):
+            cancelled = True
+            _terminate_process_group(process)
+            break
+        if time.monotonic() - started > max(1, int(timeout)):
+            timed_out = True
+            _terminate_process_group(process)
+            break
+        thread.join(0.1)
+    thread.join(3)
+    if thread.is_alive():
+        _kill_process_group(process)
+        thread.join(3)
+    error_obj = captured.get("error")
+    if error_obj is not None:
+        raise OSError(str(error_obj))
+    return _SubprocessExecutionResult(
+        exit_code=process.returncode,
+        stdout=_decode_subprocess_text(captured.get("stdout")),
+        stderr=_decode_subprocess_text(captured.get("stderr")),
+        timed_out=timed_out,
+        cancelled=cancelled,
+        error=(
+            "agent run cancelled by user"
+            if cancelled
+            else f"agent run timed out after {timeout}s"
+            if timed_out
+            else ""
+        ),
+    )
+
+
+def _safe_is_cancelled(is_cancelled: Callable[[], bool]) -> bool:
+    try:
+        return bool(is_cancelled())
+    except Exception:
+        return False
+
+
+def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            process.terminate()
+        else:
+            os.killpg(process.pid, signal.SIGTERM)
+    except (OSError, ProcessLookupError):
+        try:
+            process.terminate()
+        except OSError:
+            pass
+
+
+def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
+    if process.poll() is not None:
+        return
+    try:
+        if os.name == "nt":
+            process.kill()
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        try:
+            process.kill()
+        except OSError:
+            pass
