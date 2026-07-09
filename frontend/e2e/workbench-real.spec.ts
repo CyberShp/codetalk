@@ -1192,6 +1192,150 @@ test("locks sibling agent-run actions while a real step execution is in flight",
   }
 });
 
+test("runs and cancels a real agent workflow with live cockpit events", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(60_000);
+  const unique = Date.now();
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-workflow-cancel-")));
+  fs.writeFileSync(path.join(repo, "README.md"), "workflow cancel e2e\n", "utf8");
+  const workflowId = `workflow_cancel_${unique}`;
+  const workspaceName = `workflow-cancel-${unique}`;
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: workspaceName, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+  const providerId = `cancel-agent-${unique}`;
+  const agentScript = path.join(repo, "cancel-agent.cjs");
+  fs.writeFileSync(
+    agentScript,
+    [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "let stdin = '';",
+      "process.stdin.on('data', (chunk) => { stdin += chunk; });",
+      "process.stdin.on('end', () => {",
+      "  const artifactDir = process.env.CODETALK_AGENT_ARTIFACT_DIR;",
+      "  setTimeout(() => {",
+      "    fs.mkdirSync(artifactDir, { recursive: true });",
+      "    fs.writeFileSync(path.join(artifactDir, 'result.json'), JSON.stringify({ status: 'ok', provider: 'cancel-agent', sawPrompt: stdin.includes('cancel a real workflow run') }));",
+      "    console.log(JSON.stringify({ status: 'ok', summary: 'cancel-agent completed' }));",
+      "  }, 10000);",
+      "});",
+    ].join("\n"),
+    "utf8",
+  );
+
+  const providersResp = await request.get(`${backendBase}/api/settings/agent-providers`);
+  expect(providersResp.ok()).toBeTruthy();
+  const originalSettings = await providersResp.json();
+  const customProviders = [
+    ...(originalSettings.external_agent_custom_providers ?? []).filter(
+      (provider: { id?: string }) => provider.id !== providerId,
+    ),
+    {
+      id: providerId,
+      command: `"${process.execPath}" "${agentScript}"`,
+      prompt_transport: "stdin",
+      supports_artifact_export: true,
+      supports_json_output: true,
+    },
+  ];
+  const settingsResp = await request.put(`${backendBase}/api/settings/agent-providers`, {
+    data: {
+      ...originalSettings,
+      external_agent_custom_providers: customProviders,
+    },
+  });
+  expect(settingsResp.ok()).toBeTruthy();
+
+  try {
+    const workflowResp = await request.post(`${backendBase}/api/workbench/workflows`, {
+      data: {
+        id: workflowId,
+        name: "Workflow Cancel E2E",
+        version: 1,
+        inputs: [{ id: "analysis_object", type: "free_text", required: true }],
+        steps: [
+          {
+            id: "slow_agent_analysis",
+            type: "agent_task",
+            provider: providerId,
+            required_artifacts: ["result.json"],
+            goal: "Keep the workflow running briefly, then write result.json.",
+          },
+        ],
+        outputs: [
+          {
+            id: "result",
+            type: "json",
+            artifact: "result.json",
+            schema: {
+              type: "object",
+              required: ["status", "provider"],
+              properties: {
+                status: { type: "string" },
+                provider: { type: "string" },
+              },
+              additionalProperties: true,
+            },
+          },
+        ],
+      },
+    });
+    expect(workflowResp.status()).toBe(201);
+
+    await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+    await page.getByLabel("工作流").selectOption(workflowId);
+    await page.getByLabel("Workspace selector").selectOption(workspace.id);
+    await page.getByLabel("Workflow input analysis_object").fill("cancel a real workflow run");
+    await page.getByRole("button", { name: "准备运行" }).hover();
+    await page.getByRole("button", { name: "准备运行" }).click();
+    await expect(page.getByText(/任务已准备 · task_run_/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(providerId).first()).toBeVisible();
+
+    const executeResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        /\/api\/workbench\/task-runs\/[^/]+\/execute$/.test(new URL(response.url()).pathname) &&
+        response.status() < 500,
+    );
+    await page.getByRole("button", { name: "执行工作流" }).hover();
+    await page.getByRole("button", { name: "执行工作流" }).click();
+    await executeResponse;
+
+    await expect(page.getByText(new RegExp(`运行中 · ${workflowId}`))).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByText("节点开始 · slow_agent_analysis")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByText(providerId).first()).toBeVisible();
+
+    const cancelResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        /\/api\/workbench\/task-runs\/[^/]+\/cancel$/.test(new URL(response.url()).pathname) &&
+        response.status() < 500,
+    );
+    await page.getByRole("button", { name: "取消" }).hover();
+    await page.getByRole("button", { name: "取消" }).click();
+    await cancelResponse;
+
+    await expect(page.getByText("已取消本次工作流运行", { exact: true })).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByText("已取消").first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(new RegExp(`运行完成 · ${workflowId}`))).toHaveCount(0);
+  } finally {
+    await request.put(`${backendBase}/api/settings/agent-providers`, {
+      data: originalSettings,
+    });
+  }
+});
+
 test("opens a persisted AI review thread from a prepared workbench run through the real UI", async ({
   page,
   request,
