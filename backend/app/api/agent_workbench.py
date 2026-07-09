@@ -8,6 +8,7 @@ import json
 import re
 import sys
 import uuid
+from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -62,6 +63,7 @@ from app.services.workflow_dsl import (
 )
 from app.services.workflow_presets import (
     builtin_workflow_presets,
+    get_workflow_preset,
     install_workflow_preset,
     restore_builtin_workflow_presets,
 )
@@ -178,10 +180,44 @@ def _workflow_store() -> WorkflowStore:
     return WorkflowStore(_workbench_dir() / "workflows.db")
 
 
-def _workflow_store_with_builtin_presets() -> WorkflowStore:
-    store = _workflow_store()
-    restore_builtin_workflow_presets(store)
-    return store
+class _WorkflowCatalog:
+    """Read-only built-in presets overlaid with user-editable workflows."""
+
+    def __init__(self, store: WorkflowStore) -> None:
+        self.store = store
+
+    def get_workflow(self, workflow_id: str):
+        if _is_builtin_workflow_id(workflow_id):
+            preset = get_workflow_preset(workflow_id)
+            return validate_workflow_definition(deepcopy(preset["definition"]))
+        return self.store.get_workflow(workflow_id)
+
+    def freeze_workflow_snapshot(self, workflow_id: str) -> dict[str, Any]:
+        return dict(self.get_workflow(workflow_id).raw)
+
+    def list_workflows(self):
+        builtin_ids = _builtin_workflow_ids()
+        builtin = [
+            validate_workflow_definition(deepcopy(preset["definition"]))
+            for preset in builtin_workflow_presets()
+        ]
+        custom = [
+            item for item in self.store.list_workflows()
+            if item.id not in builtin_ids
+        ]
+        return builtin + custom
+
+
+def _workflow_store_with_builtin_presets() -> _WorkflowCatalog:
+    return _WorkflowCatalog(_workflow_store())
+
+
+def _builtin_workflow_ids() -> set[str]:
+    return {str(preset["definition"]["id"]) for preset in builtin_workflow_presets()}
+
+
+def _is_builtin_workflow_id(workflow_id: str) -> bool:
+    return str(workflow_id or "").strip() in _builtin_workflow_ids()
 
 
 def _semantic_store() -> TestSemanticLibraryStore:
@@ -831,6 +867,16 @@ def _safe_segment(value: str, label: str) -> str:
 
 @router.post("/workflows", status_code=201)
 async def save_workflow(payload: dict[str, Any]) -> dict[str, Any]:
+    workflow_id = str(payload.get("id") or "").strip() if isinstance(payload, dict) else ""
+    if _is_builtin_workflow_id(workflow_id):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "内置工作流预设是只读的，请另存为自定义工作流后再编辑。",
+                "workflow_id": workflow_id,
+                "suggested_id": f"{workflow_id}_custom",
+            },
+        )
     try:
         workflow = _workflow_store().save_workflow(payload)
     except WorkflowValidationError as exc:

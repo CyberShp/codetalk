@@ -754,6 +754,51 @@ async def test_restore_builtin_workflows_preserves_custom_and_restores_core_plus
             assert item["audit"]["warnings"] == []
 
 
+async def test_workbench_rejects_saving_builtin_workflow_id(workbench_client):
+    overwritten_builtin = {
+        "id": "module_analysis",
+        "name": "Fake editable module analysis",
+        "version": 99,
+        "inputs": [],
+        "steps": [{"id": "render", "type": "report_render"}],
+        "outputs": [{"id": "report", "type": "markdown", "from": "render"}],
+    }
+
+    response = await workbench_client.post("/api/workbench/workflows", json=overwritten_builtin)
+
+    assert response.status_code == 409
+    assert "内置工作流预设是只读的" in str(response.json()["detail"])
+
+
+async def test_builtin_workflow_read_path_does_not_overwrite_or_trust_user_shadow(
+    workbench_client,
+):
+    from app.api import agent_workbench as workbench_api
+
+    shadow = {
+        "id": "module_analysis",
+        "name": "Shadowed Module Analysis",
+        "version": 77,
+        "inputs": [],
+        "steps": [{"id": "render", "type": "report_render"}],
+        "outputs": [{"id": "report", "type": "markdown", "from": "render"}],
+    }
+    store = workbench_api._workflow_store()
+    store.save_workflow(shadow)
+
+    loaded = await workbench_client.get("/api/workbench/workflows/module_analysis")
+    listed = await workbench_client.get("/api/workbench/workflows")
+
+    assert loaded.status_code == 200
+    assert loaded.json()["name"] != "Shadowed Module Analysis"
+    assert loaded.json()["version"] != 77
+    assert "local_scope_discover" in {
+        step["type"] for step in loaded.json()["steps"]
+    }
+    assert [item["id"] for item in listed.json()].count("module_analysis") == 1
+    assert store.get_workflow("module_analysis").raw["name"] == "Shadowed Module Analysis"
+
+
 async def test_workbench_workflow_capabilities_api_documents_custom_workflows(workbench_client):
     resp = await workbench_client.get("/api/workbench/workflow-capabilities")
 
