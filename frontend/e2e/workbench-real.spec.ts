@@ -1819,6 +1819,8 @@ test("runs and cancels a real agent workflow with live cockpit events", async ({
             id: "slow_agent_analysis",
             type: "agent_task",
             provider: providerId,
+            mcp_profile: "qa-cancel-mcp",
+            skills: ["storage-test-design"],
             required_artifacts: ["result.json"],
             goal: "Keep the workflow running briefly, then write result.json.",
           },
@@ -1871,6 +1873,8 @@ test("runs and cancels a real agent workflow with live cockpit events", async ({
       timeout: 15_000,
     });
     await expect(page.getByText(providerId).first()).toBeVisible();
+    await expect(page.getByText(/MCP: qa-cancel-mcp/).first()).toBeVisible();
+    await expect(page.getByText(/skills: storage-test-design/).first()).toBeVisible();
 
     const cancelResponse = page.waitForResponse(
       (response) =>

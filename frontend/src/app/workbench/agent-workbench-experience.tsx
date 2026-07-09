@@ -3525,6 +3525,34 @@ function payloadText(
   return "";
 }
 
+function payloadRecord(
+  payload: Record<string, unknown>,
+  key: string,
+): Record<string, unknown> {
+  const value = payload[key];
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function payloadListText(
+  payload: Record<string, unknown>,
+  keys: string[],
+): string {
+  for (const key of keys) {
+    const value = payload[key];
+    const items = Array.isArray(value)
+      ? value.map(diagnosticValueText).filter(Boolean)
+      : typeof value === "string" && value.trim()
+        ? value.split(",").map((item) => item.trim()).filter(Boolean)
+        : [];
+    if (items.length > 0) {
+      return Array.from(new Set(items)).join(", ");
+    }
+  }
+  return "";
+}
+
 function taskRunEventTypeLabel(eventType: string): string {
   const normalized = eventType.trim().toLowerCase();
   const labels: Record<string, string> = {
@@ -3555,16 +3583,35 @@ function taskRunEventTitle(event: WorkbenchTaskRunEvent): string {
 
 function taskRunEventDetail(event: WorkbenchTaskRunEvent): string {
   const payload = event.payload;
+  const runtime = payloadRecord(payload, "runtime");
   const userMessage = payloadText(payload, ["user_message", "message"]);
   if (userMessage) return compactReasonLabel(userMessage);
   const error = payloadText(payload, ["error", "reason", "detail"]);
   if (error) return compactReasonLabel(error);
-  const executor = payloadText(payload, ["executor", "provider", "step_type"]);
+  const executor =
+    payloadText(payload, ["provider", "executor", "step_type"]) ||
+    payloadText(runtime, ["provider"]);
   const status = payloadText(payload, ["status"]);
   const artifact = payloadText(payload, ["artifact", "path", "relative_path"]);
+  const mcpProfile =
+    payloadText(payload, ["mcp_profile"]) ||
+    payloadText(runtime, ["mcp_profile"]);
+  const skills =
+    payloadListText(payload, ["skills"]) ||
+    payloadListText(runtime, ["skills"]);
+  const cwdLabel =
+    payloadText(payload, ["cwd_label"]) ||
+    payloadText(runtime, ["cwd_label"]);
+  const requiredArtifacts =
+    payloadListText(payload, ["required_artifacts"]) ||
+    payloadListText(runtime, ["required_artifacts"]);
   const parts = [
     executor ? providerDisplayLabel(executor) : "",
     status ? runStatusDisplayLabel(status) : "",
+    mcpProfile ? `MCP: ${mcpProfile}` : "",
+    skills ? `skills: ${skills}` : "",
+    cwdLabel ? `cwd: ${cwdLabel}` : "",
+    requiredArtifacts ? `artifacts: ${requiredArtifacts}` : "",
     artifact ? artifactShortName(artifact) : "",
   ].filter(Boolean);
   return parts.join(" · ");

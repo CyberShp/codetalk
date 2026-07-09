@@ -84,12 +84,11 @@ class WorkbenchWorkflowRunner:
             step_type = str(step.get("type") or "")
             self._emit_event(
                 "step_started",
-                {
-                    "step_id": step_id,
-                    "step_type": step_type,
-                    "executor": _step_executor_label(step),
-                    "started_at": _now(),
-                },
+                _step_started_event_payload(
+                    task_run=task_run,
+                    step=step,
+                    agent_run=agent_runs_by_step.get(step_id),
+                ),
             )
             if step_type != "agent_task":
                 step_result = self._execute_builtin_step(
@@ -313,9 +312,18 @@ class WorkbenchWorkflowRunner:
             "type": "agent_task",
             "status": status,
             "provider": provider,
+            "runtime": _agent_runtime_observability_payload(
+                step=step,
+                agent_run=agent_run,
+                run_payload=run_payload if isinstance(run_payload, dict) else {},
+            ),
+            "mcp_profile": str(agent_run.get("mcp_profile") or step.get("mcp_profile") or ""),
+            "skills": _step_skill_ids(step=step, run_payload=run_payload if isinstance(run_payload, dict) else {}),
             "provider_diagnostics": _provider_diagnostics_summary(artifact_dir),
             "artifact_dir": str(artifact_dir),
             "execution": asdict(execution),
+            "exit_code": execution.exit_code,
+            "stderr_tail": _text_tail_from_artifact(artifact_dir / "raw_output.txt"),
             "executions": executions,
             "turn_count": len(executions),
             "turn_artifacts": turn_artifacts,
@@ -3431,6 +3439,124 @@ def _step_executor_label(step: dict[str, Any]) -> str:
     }:
         return "local_static"
     return step_type or "workflow_step"
+
+
+def _step_started_event_payload(
+    *,
+    task_run: Any,
+    step: dict[str, Any],
+    agent_run: dict[str, Any] | None,
+) -> dict[str, Any]:
+    step_id = str(step.get("id") or "")
+    step_type = str(step.get("type") or "")
+    run_payload: dict[str, Any] = {}
+    if isinstance(agent_run, dict):
+        artifact_dir = str(agent_run.get("artifact_dir") or "")
+        if artifact_dir:
+            loaded = _read_json(Path(artifact_dir) / "agent_run.json")
+            if isinstance(loaded, dict):
+                run_payload = loaded
+    runtime = _agent_runtime_observability_payload(
+        step=step,
+        agent_run=agent_run or {},
+        run_payload=run_payload,
+    )
+    payload = {
+        "step_id": step_id,
+        "step_type": step_type,
+        "executor": _step_executor_label(step),
+        "provider": runtime.get("provider") or str(step.get("provider") or ""),
+        "runtime": runtime,
+        "mcp_profile": runtime.get("mcp_profile") or str(step.get("mcp_profile") or ""),
+        "skills": _step_skill_ids(step=step, run_payload=run_payload),
+        "required_artifacts": _string_list(
+            step.get("required_artifacts")
+            or (agent_run or {}).get("required_artifacts")
+            or []
+        ),
+        "cwd_label": _repo_path_label(str(runtime.get("cwd") or task_run.repo_path or "")),
+        "started_at": _now(),
+    }
+    return {key: value for key, value in payload.items() if _has_observability_value(value)}
+
+
+def _agent_runtime_observability_payload(
+    *,
+    step: dict[str, Any],
+    agent_run: dict[str, Any],
+    run_payload: dict[str, Any],
+) -> dict[str, Any]:
+    provider = str(agent_run.get("provider") or run_payload.get("provider") or step.get("provider") or "")
+    cwd = str(run_payload.get("cwd") or "")
+    return {
+        "provider": provider,
+        "run_id": str(agent_run.get("run_id") or run_payload.get("run_id") or ""),
+        "cwd": cwd,
+        "cwd_label": _repo_path_label(cwd),
+        "mcp_profile": str(agent_run.get("mcp_profile") or run_payload.get("mcp_profile") or step.get("mcp_profile") or ""),
+        "required_artifacts": _string_list(
+            step.get("required_artifacts")
+            or agent_run.get("required_artifacts")
+            or []
+        ),
+        "skills": _step_skill_ids(step=step, run_payload=run_payload),
+    }
+
+
+def _has_observability_value(value: Any) -> bool:
+    if value is None or value == "":
+        return False
+    if isinstance(value, (list, dict, tuple, set)):
+        return len(value) > 0
+    return True
+
+
+def _step_skill_ids(*, step: dict[str, Any], run_payload: dict[str, Any]) -> list[str]:
+    values = _string_list(step.get("skills"))
+    task_bundle = run_payload.get("task_bundle")
+    if isinstance(task_bundle, dict):
+        values.extend(_string_list(task_bundle.get("skills")))
+        execution_contract = task_bundle.get("execution_contract")
+        if isinstance(execution_contract, dict):
+            skills = execution_contract.get("skills")
+            if isinstance(skills, dict):
+                values.extend(_string_list(skills.get("ids")))
+            else:
+                values.extend(_string_list(skills))
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in values:
+        if item in seen:
+            continue
+        seen.add(item)
+        result.append(item)
+    return result
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _repo_path_label(path: str) -> str:
+    text = str(path or "").strip()
+    if not text:
+        return ""
+    try:
+        return Path(text).expanduser().name or text
+    except (OSError, RuntimeError):
+        return text
+
+
+def _text_tail_from_artifact(path: Path, *, max_chars: int = 1200) -> str:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return ""
+    return text[-max_chars:]
 
 
 def _diff_parse_payload(input_snapshot: dict[str, Any]) -> dict[str, Any]:
