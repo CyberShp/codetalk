@@ -1180,18 +1180,63 @@ class AIConversationStore:
         )
 
     async def cancel_run(self, conversation_id: str) -> dict[str, Any] | None:
-        run = await self.latest_run(conversation_id)
-        if not run or run["status"] not in {"queued", "running"}:
-            return run
         now = _now()
         async with self._connect() as db:
+            async with db.execute(
+                """
+                SELECT *
+                FROM ai_conversation_runs
+                WHERE conversation_id = ? AND status = 'running'
+                ORDER BY started_at ASC, created_at ASC
+                LIMIT 1
+                """,
+                (conversation_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if row is None:
+                async with db.execute(
+                    """
+                    SELECT *
+                    FROM ai_conversation_runs
+                    WHERE conversation_id = ? AND status = 'queued'
+                    ORDER BY sequence DESC, created_at DESC
+                    LIMIT 1
+                    """,
+                    (conversation_id,),
+                ) as cur:
+                    row = await cur.fetchone()
+            if row is None:
+                async with db.execute(
+                    """
+                    SELECT *
+                    FROM ai_conversation_runs
+                    WHERE conversation_id = ?
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (conversation_id,),
+                ) as cur:
+                    row = await cur.fetchone()
+                return _run_from_row(row) if row is not None else None
+
+            run = _run_from_row(row)
             await db.execute(
                 "UPDATE ai_conversation_runs SET status = 'cancelled', completed_at = ? WHERE id = ?",
                 (now, run["id"]),
             )
+            async with db.execute(
+                """
+                SELECT 1
+                FROM ai_conversation_runs
+                WHERE conversation_id = ? AND status IN ('queued', 'running') AND id != ?
+                LIMIT 1
+                """,
+                (conversation_id, run["id"]),
+            ) as cur:
+                has_active_after_cancel = await cur.fetchone() is not None
             await db.execute(
-                "UPDATE ai_conversations SET status = 'idle', updated_at = ? WHERE id = ?",
-                (now, conversation_id),
+                "UPDATE ai_conversations SET status = ?, updated_at = ? WHERE id = ?",
+                ("running" if has_active_after_cancel else "idle", now, conversation_id),
             )
             await db.commit()
         await self.append_event(

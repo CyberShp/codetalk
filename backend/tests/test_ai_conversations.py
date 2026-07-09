@@ -2778,6 +2778,92 @@ class TestAIConversationsAPI:
             assert body["items"][1]["content"] == "取消后重新分析异常恢复路径"
             assert body["items"][2]["content"] == "第一段分析。最终结论。"
 
+    async def test_cancel_while_followup_is_queued_stops_current_run_and_preserves_queue(
+        self,
+        sqlite_db,
+        monkeypatch,
+    ):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.api import ai_conversations
+        from app.services.ai_conversations import AIConversationStore
+
+        class TwoTurnLLM:
+            def __init__(self):
+                self.started = asyncio.Event()
+                self.release = asyncio.Event()
+                self.calls = 0
+
+            async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
+                self.calls += 1
+                if self.calls == 1:
+                    self.started.set()
+                    yield "第一轮部分输出。"
+                    await self.release.wait()
+                    yield "第一轮不应落库。"
+                    return
+                yield "第二轮排队后继续执行。"
+
+        fake_llm = TwoTurnLLM()
+        monkeypatch.setattr(
+            ai_conversations,
+            "create_llm_client_from_active",
+            lambda: fake_llm,
+        )
+
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "title": "停止当前运行并保留队列",
+                },
+            )
+            assert created.status_code == 201
+            conversation = created.json()
+
+            first = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "第一轮长任务"},
+            )
+            assert first.status_code == 202
+            first_run_id = first.json()["run"]["id"]
+            await asyncio.wait_for(fake_llm.started.wait(), timeout=1)
+
+            second = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/messages",
+                json={"content": "第二轮排队追问"},
+            )
+            assert second.status_code == 202
+            second_run_id = second.json()["run"]["id"]
+            assert second.json()["run"]["status"] == "queued"
+
+            cancelled = await client.post(f"/api/ai/conversations/{conversation['id']}/cancel")
+            assert cancelled.status_code == 200
+            assert cancelled.json()["run"]["id"] == first_run_id
+            assert cancelled.json()["run"]["status"] == "cancelled"
+
+            store = AIConversationStore(sqlite_db)
+            assert (await store.get_run(second_run_id))["status"] == "queued"
+            fake_llm.release.set()
+
+            for _ in range(40):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                items = messages.json()["items"]
+                if len(items) == 3 and items[-1]["role"] == "assistant":
+                    break
+                await asyncio.sleep(0.05)
+
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            body = messages.json()
+            assert [item["role"] for item in body["items"]] == ["user", "user", "assistant"]
+            assert body["items"][2]["run_id"] == second_run_id
+            assert body["items"][2]["content"] == "第二轮排队后继续执行。"
+            assert (await store.get_run(first_run_id))["status"] == "cancelled"
+            assert (await store.get_run(second_run_id))["status"] == "completed"
+
     async def test_message_stream_timeout_falls_back_to_non_stream_completion(self, sqlite_db, monkeypatch):
         ws_id = await _seed_workspace(sqlite_db)
 
