@@ -543,6 +543,43 @@ def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_pa
     assert execution_input["launch_command"][1:] == execution_input["command"][1:]
     assert execution_input["process_command"][1:] == execution_input["command"][1:]
     assert execution_input["prompt_transport"] == "stdin"
+    invocation = json.loads((artifact_dir / "agent_invocation.json").read_text(encoding="utf-8"))
+    assert invocation["source"] == "workflow"
+    assert invocation["run_id"] == "agent_run_exec"
+    assert invocation["runtime"]["provider"] == "local-python"
+    assert invocation["runtime"]["command"][:2] == ["python", "-c"]
+    assert "secret-value" not in json.dumps(invocation["runtime"]["command"], ensure_ascii=False)
+    assert invocation["cwd"] == str(tmp_path)
+    assert invocation["repo_path"] == str(tmp_path)
+    assert invocation["workflow"]["id"] == "wf"
+    assert invocation["task_bundle"]["task_id"] == "task-42"
+    assert invocation["execution_contract"]["runtime_type"] == "agent_runtime"
+    assert invocation["execution_contract"]["typed_events"] == [
+        "answer",
+        "thinking",
+        "diagnostic",
+        "status",
+        "tool_use",
+        "tool_result",
+        "artifact",
+        "error",
+        "done",
+    ]
+    assert invocation["artifact_contract"]["run_id"] == "agent_run_exec"
+    assert "agent_invocation.json" in invocation["artifact_contract"]["audit_artifacts"]
+    assert invocation["mcp_profile"] == ""
+    assert invocation["skills"] == []
+    assert invocation["session"] == execution_input["session_policy"]
+    assert invocation["prompt"]["stdin_json_sha256"] == execution_input["stdin_json_sha256"]
+    assert invocation["prompt"]["redacted"] is True
+    assert invocation["artifact_dir"] == str(artifact_dir)
+    from app.services.workbench_artifact_manifest import (
+        workbench_artifact_audience,
+        workbench_artifact_kind,
+    )
+
+    assert workbench_artifact_kind("agent_runs/collect/agent_invocation.json") == "agent_invocation"
+    assert workbench_artifact_audience("agent_runs/collect/agent_invocation.json") == "diagnostic"
     assert execution_input["cwd"] == str(tmp_path)
     assert execution_input["timeout_sec"] == 10
     assert execution_input["turn_id"] == "turn_1"

@@ -113,6 +113,7 @@ DIAGNOSTIC_ARTIFACT_KINDS = {
     "agent_failure_recovery",
     "agent_failure_retry_context",
     "agent_instructions",
+    "agent_invocation",
     "agent_mcp_requests",
     "agent_output_contract",
     "agent_provider_diagnostics",
@@ -263,6 +264,8 @@ def workbench_artifact_kind(relative_path: str) -> str:
         return "evidence_validation"
     if name == "raw_output.txt":
         return "agent_raw_output"
+    if name == "agent_invocation.json":
+        return "agent_invocation"
     if name == "agent_run.json":
         return "agent_run"
     if name == "execution_input.json":

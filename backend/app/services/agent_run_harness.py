@@ -159,11 +159,101 @@ def _agent_output_contract_payload(
             "agent_run.json",
             "task_bundle.json",
             "agent_output_contract.json",
+            "agent_invocation.json",
             "execution_input.json",
             "execution_result.json",
             "raw_output.txt",
             "agent_run_lifecycle.json",
         ],
+    }
+
+
+def _workflow_agent_invocation_payload(
+    *,
+    run: "AgentRunRecord",
+    task_bundle: dict[str, Any],
+    workflow_snapshot: dict[str, Any],
+    agent_output_contract: dict[str, Any] | None = None,
+    stdin_payload_obj: dict[str, Any] | None = None,
+    stdin_payload: str = "",
+    prompt_transport: str = "",
+) -> dict[str, Any]:
+    contract = agent_output_contract if isinstance(agent_output_contract, dict) else _agent_output_contract_payload(
+        run=run,
+        task_bundle=task_bundle,
+        workflow_snapshot=workflow_snapshot,
+    )
+    execution_contract = (
+        task_bundle.get("execution_contract")
+        if isinstance(task_bundle.get("execution_contract"), dict)
+        else contract.get("execution_contract")
+        if isinstance(contract.get("execution_contract"), dict)
+        else {}
+    )
+    test_activity_contract = (
+        task_bundle.get("test_activity_contract")
+        if isinstance(task_bundle.get("test_activity_contract"), dict)
+        else contract.get("test_activity_contract")
+        if isinstance(contract.get("test_activity_contract"), dict)
+        else execution_contract.get("test_activity_contract")
+        if isinstance(execution_contract.get("test_activity_contract"), dict)
+        else {}
+    )
+    skills = [str(item) for item in task_bundle.get("skills") or [] if str(item)]
+    stdin_obj = stdin_payload_obj if isinstance(stdin_payload_obj, dict) else {}
+    prompt_payload: dict[str, Any] = {
+        "transport": prompt_transport or "pending_execution",
+        "redacted": True,
+    }
+    if stdin_payload:
+        prompt_payload.update({
+            "stdin_json_sha256": hashlib.sha256(stdin_payload.encode("utf-8")).hexdigest(),
+            "chars": len(stdin_payload),
+            "stdin": _redact_replay_payload(stdin_obj),
+        })
+    return {
+        "schema_version": 1,
+        "source": "workflow",
+        "run_id": run.run_id,
+        "turn_id": run.turn_id,
+        "runtime": {
+            "provider": run.provider,
+            "command": _redact_command_list(run.command),
+        },
+        "prompt": prompt_payload,
+        "cwd": run.cwd,
+        "repo_path": run.cwd,
+        "workflow": {
+            "id": str(workflow_snapshot.get("id") or ""),
+            "version": workflow_snapshot.get("version"),
+            "step_count": len(workflow_snapshot.get("steps") or []),
+        },
+        "task_bundle": task_bundle,
+        "mcp_profile": run.mcp_profile,
+        "skills": skills,
+        "session": run.session_policy,
+        "execution_contract": {
+            "runtime_type": "agent_runtime",
+            "source_first": True,
+            "must_receive_full_user_input": True,
+            "cwd": run.cwd,
+            "repo_path": run.cwd,
+            "typed_events": [
+                "answer",
+                "thinking",
+                "diagnostic",
+                "status",
+                "tool_use",
+                "tool_result",
+                "artifact",
+                "error",
+                "done",
+            ],
+            **execution_contract,
+        },
+        "test_activity_contract": test_activity_contract,
+        "artifact_contract": contract,
+        "artifact_dir": run.artifact_dir,
     }
 
 
@@ -236,12 +326,22 @@ class AgentRunHarness:
         self._write_json("agent_run.json", asdict(run))
         self._write_json("task_bundle.json", task_bundle)
         self._write_json("workflow_snapshot.json", workflow_snapshot)
+        agent_output_contract = _agent_output_contract_payload(
+            run=run,
+            task_bundle=task_bundle,
+            workflow_snapshot=workflow_snapshot,
+        )
         self._write_json(
             "agent_output_contract.json",
-            _agent_output_contract_payload(
+            agent_output_contract,
+        )
+        self._write_json(
+            "agent_invocation.json",
+            _workflow_agent_invocation_payload(
                 run=run,
                 task_bundle=task_bundle,
                 workflow_snapshot=workflow_snapshot,
+                agent_output_contract=agent_output_contract,
             ),
         )
         return run
@@ -315,6 +415,29 @@ class AgentRunHarness:
             "artifact_dir": str(self.artifact_dir),
         }
         stdin_payload = json.dumps(stdin_payload_obj, ensure_ascii=False)
+        self._write_json(
+            "agent_invocation.json",
+            _workflow_agent_invocation_payload(
+                run=AgentRunRecord(
+                    run_id=run_id,
+                    turn_id=turn_id,
+                    provider=str(run_payload.get("provider") or ""),
+                    command=configured_command,
+                    cwd=cwd,
+                    artifact_dir=str(self.artifact_dir),
+                    mcp_profile=str(run_payload.get("mcp_profile") or ""),
+                    session_policy=session_policy,
+                    status=str(run_payload.get("status") or "created"),
+                    created_at=str(run_payload.get("created_at") or _now()),
+                ),
+                task_bundle=task_bundle if isinstance(task_bundle, dict) else {},
+                workflow_snapshot=workflow_snapshot if isinstance(workflow_snapshot, dict) else {},
+                agent_output_contract=agent_output_contract if isinstance(agent_output_contract, dict) else {},
+                stdin_payload_obj=stdin_payload_obj,
+                stdin_payload=stdin_payload,
+                prompt_transport="stdin",
+            ),
+        )
         task_bundle_sha256 = _json_sha256(task_bundle if isinstance(task_bundle, dict) else {})
         workflow_snapshot_sha256 = _json_sha256(
             workflow_snapshot if isinstance(workflow_snapshot, dict) else {}

@@ -2996,6 +2996,7 @@ def _agent_run_lifecycle_summary(
                     "agent_run.json",
                     "task_bundle.json",
                     "workflow_snapshot.json",
+                    "agent_invocation.json",
                     "agent_output_contract.json",
                 )
                 if (artifact_dir / item).exists()

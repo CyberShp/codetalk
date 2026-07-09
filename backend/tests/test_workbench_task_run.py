@@ -1690,6 +1690,7 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
         "agent_run.json",
         "task_bundle.json",
         "workflow_snapshot.json",
+        "agent_invocation.json",
         "agent_output_contract.json",
     ]
     assert lifecycle["stages"][1]["turn_id"] == "turn_1"
@@ -1741,6 +1742,9 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
     assert manifest_paths[
         "agent_runs/collect_mr/agent_run_lifecycle.json"
     ]["kind"] == "agent_run_lifecycle"
+    assert manifest_paths[
+        "agent_runs/collect_mr/agent_invocation.json"
+    ]["kind"] == "agent_invocation"
     assert manifest_paths[
         "agent_runs/collect_mr/agent_output_contract.json"
     ]["kind"] == "agent_output_contract"
