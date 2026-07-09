@@ -928,6 +928,69 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
         assert not item["missing_required"]
 
 
+async def test_module_analysis_task_run_summary_is_honest_about_local_static_scan(
+    workbench_client,
+    tmp_path,
+):
+    repo = tmp_path / "empty-repo"
+    repo.mkdir()
+
+    installed = await workbench_client.post(
+        "/api/workbench/workflow-presets/module_analysis/install"
+    )
+    assert installed.status_code == 201
+
+    scheduled = await workbench_client.post(
+        "/api/workbench/task-runs/run",
+        json={
+            "workflow_id": "module_analysis",
+            "workspace_id": "ws-empty-module-analysis",
+            "repo_path": str(repo),
+            "inputs": {
+                "analysis_object": "definitely_missing_storage_module",
+                "repo_path": str(repo),
+            },
+            "timeout_sec": 10,
+        },
+    )
+    assert scheduled.status_code == 202
+    body = await _wait_for_task_run_status(
+        workbench_client,
+        scheduled.json()["task_run_id"],
+        terminal_statuses={
+            "completed",
+            "completed_empty",
+            "needs_review",
+            "invalid",
+            "failed",
+            "error",
+        },
+        timeout_sec=10,
+    )
+
+    assert body["status"] == "completed_empty"
+    summary = body["run_ui_summary"]
+    assert summary["status"] == "completed_empty"
+    assert summary["status_label"] == "完成但信息不足"
+    assert summary["execution_subject"] == "local_static"
+    assert summary["execution_label"] == "本地静态扫描（无 AI）"
+    assert "AI" in summary["user_message"]
+    assert (
+        "不会调用" in summary["user_message"]
+        or "未调用" in summary["user_message"]
+    )
+    assert summary["workflow"]["execution_subject"] == "local_static"
+    assert summary["workflow"]["execution_label"] == "本地静态扫描（无 AI）"
+    discover = summary["nodes"][0]
+    assert discover["id"] == "discover_scope"
+    assert discover["status"] == "completed_empty"
+    assert discover["status_label"] == "完成但信息不足"
+    assert discover["executor"] == "local_static"
+    assert discover["executor_label"] == "本地静态扫描（无 AI）"
+    assert discover["method"] == "filesystem_source_scan"
+    assert "未找到匹配源码证据" in discover["review_reasons"][0]
+
+
 async def test_workbench_provider_capabilities_matrix_api(workbench_client, monkeypatch):
     import aiosqlite
     from app.database import _MIGRATIONS, _SCHEMA

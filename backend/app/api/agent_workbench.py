@@ -471,6 +471,7 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
         for step in workflow.get("steps") or []
         if isinstance(step, dict)
     ]
+    execution_metadata = _task_run_ui_workflow_execution_metadata(workflow)
     status = _task_run_ui_status(execution=execution, nodes=nodes)
     failed_node = next((node for node in nodes if node.get("status_label") == "运行失败"), None)
     running_node = next((node for node in nodes if node.get("status_label") == "运行中"), None)
@@ -480,10 +481,16 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
     return {
         "status": status["status"],
         "status_label": status["label"],
+        "execution_subject": execution_metadata["execution_subject"],
+        "execution_label": execution_metadata["execution_label"],
+        "user_message": execution_metadata["user_message"],
         "workflow": {
             "id": str(workflow.get("id") or task_run.workflow_id),
             "name": str(workflow.get("name") or task_run.workflow_id),
             "version": workflow.get("version", 1),
+            "execution_subject": execution_metadata["execution_subject"],
+            "execution_label": execution_metadata["execution_label"],
+            "user_message": execution_metadata["user_message"],
         },
         "current_node": current_node,
         "nodes": nodes,
@@ -523,13 +530,22 @@ def _task_run_ui_node_summary(
         step_id=step_id,
         output_by_key=output_by_key,
     )
+    execution_metadata = _task_run_ui_step_execution_metadata(
+        task_root=task_root,
+        step=step,
+        step_result=step_result or {},
+    )
     return {
         "id": step_id,
         "label": str(step.get("name") or step_id),
         "type": str(step.get("type") or ""),
         "status": status_value,
         "status_label": _task_run_ui_status_label(status_value),
-        "provider": str(step.get("provider") or ""),
+        "provider": execution_metadata["provider"] or str(step.get("provider") or ""),
+        "executor": execution_metadata["executor"],
+        "executor_label": execution_metadata["executor_label"],
+        "method": execution_metadata["method"],
+        "user_message": execution_metadata["user_message"],
         "inputs": _task_run_ui_step_inputs(
             workflow_contract=workflow_contract,
             execution_contract=execution_contract,
@@ -548,7 +564,88 @@ def _task_run_ui_node_summary(
             step_result=step_result or {},
             outputs=node_outputs,
         ),
+        "review_reasons": _task_run_ui_step_review_reasons(step_result=step_result or {}),
     }
+
+
+def _task_run_ui_workflow_execution_metadata(workflow: dict[str, Any]) -> dict[str, str]:
+    subject = str(workflow.get("execution_subject") or "").strip()
+    label = str(workflow.get("execution_label") or "").strip()
+    user_message = str(workflow.get("user_message") or "").strip()
+    steps = [step for step in workflow.get("steps") or [] if isinstance(step, dict)]
+    step_types = {str(step.get("type") or "") for step in steps}
+    has_agent_or_llm = bool(step_types & {"agent_task", "builtin_llm", "llm_task"})
+    if not subject and steps and not has_agent_or_llm:
+        subject = "local_static"
+    if subject == "local_static" and not label:
+        label = "本地静态扫描（无 AI）"
+    if subject == "local_static" and not user_message:
+        user_message = "该工作流只执行本地静态源码扫描，未调用 AI 或外部 Agent。"
+    return {
+        "execution_subject": subject,
+        "execution_label": label,
+        "user_message": user_message,
+    }
+
+
+def _task_run_ui_step_execution_metadata(
+    *,
+    task_root: Path,
+    step: dict[str, Any],
+    step_result: dict[str, Any],
+) -> dict[str, str]:
+    step_type = str(step.get("type") or "")
+    provider = str(step.get("provider") or "")
+    method = ""
+    executor = ""
+    executor_label = ""
+    user_message = str(step_result.get("user_message") or "")
+    if step_type == "local_scope_discover":
+        executor = "local_static"
+        executor_label = "本地静态扫描（无 AI）"
+        provider = provider or "local-search"
+        method = "filesystem_source_scan"
+        source_scope = _task_run_ui_step_source_scope(step_result)
+        discovery = source_scope.get("discovery") if isinstance(source_scope, dict) else {}
+        if isinstance(discovery, dict):
+            provider = str(discovery.get("provider") or provider)
+            method = str(discovery.get("method") or method)
+            user_message = user_message or str(discovery.get("user_message") or "")
+        user_message = user_message or "本步骤只执行本地静态源码扫描，未调用 AI 或外部 Agent。"
+    elif step_type in {"local_source_flow_sfmea_blackbox", "local_blackbox_cases"}:
+        executor = "local_static"
+        executor_label = "本地静态分析与产物渲染"
+        provider = provider or "local-search"
+        method = step_type
+    elif step_type in {"evidence_validate", "semantic_retrieve", "report_render"}:
+        executor = "builtin"
+        executor_label = "CodeTalk 内置步骤"
+        method = step_type
+    elif step_type in {"builtin_llm", "llm_task"}:
+        executor = "builtin_llm"
+        executor_label = "内置大模型"
+        method = step_type
+    elif step_type == "agent_task":
+        executor = "external_agent"
+        executor_label = f"外部 Agent：{provider}" if provider else "外部 Agent"
+        method = "agent_cli"
+    return {
+        "executor": executor,
+        "executor_label": executor_label,
+        "provider": provider,
+        "method": method,
+        "user_message": user_message,
+    }
+
+
+def _task_run_ui_step_source_scope(step_result: dict[str, Any]) -> dict[str, Any]:
+    artifact_dir_value = str(step_result.get("artifact_dir") or "").strip()
+    if not artifact_dir_value:
+        return {}
+    artifact_dir = Path(artifact_dir_value)
+    artifact = str(step_result.get("artifact") or "source_scope.json")
+    payload = _read_json(artifact_dir / artifact)
+    return payload if isinstance(payload, dict) else {}
 
 
 def _agent_step_execution_contract(*, task_root: Path, step_id: str) -> dict[str, Any]:
@@ -763,11 +860,34 @@ def _task_run_ui_output_status_label(status: str) -> str:
     normalized = str(status or "").strip().lower()
     if normalized in {"ok", "completed", "ready", "success"}:
         return "已生成"
+    if normalized in {"completed_empty"}:
+        return "已生成但信息不足"
+    if normalized in {"needs_review"}:
+        return "需要复核"
     if normalized in {"missing", "not_found"}:
         return "缺少交付文件"
     if normalized in {"invalid", "error", "failed", "failure"}:
         return "生成失败"
     return "等待生成"
+
+
+def _task_run_ui_step_review_reasons(*, step_result: dict[str, Any]) -> list[str]:
+    status = str(step_result.get("status") or "").strip().lower()
+    reasons: list[str] = []
+    if status == "completed_empty":
+        if str(step_result.get("user_message") or ""):
+            reasons.append(str(step_result.get("user_message") or ""))
+        else:
+            reasons.append("该步骤完成了产物写入，但没有产出足够源码证据或有效信息。")
+    elif status == "needs_review":
+        if str(step_result.get("user_message") or ""):
+            reasons.append(str(step_result.get("user_message") or ""))
+        else:
+            reasons.append("该步骤已生成产物，但结果需要人工复核后再使用。")
+    validation = step_result.get("validation")
+    if isinstance(validation, dict) and str(validation.get("reason") or ""):
+        reasons.append(_task_run_ui_reason_label(str(validation.get("reason") or "")))
+    return _dedupe_strings(reasons)
 
 
 def _task_run_ui_step_failure_reasons(
