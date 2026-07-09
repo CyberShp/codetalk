@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { api } from "@/lib/api";
+import { buildWorkflowFromDesigner } from "@/lib/workflow-builder.mjs";
 import type {
   EvidenceMemoryItem,
   EvidenceSourceSlice,
@@ -1694,26 +1695,6 @@ function outputSemanticImportForSpec(
     return byType as Record<string, unknown>;
   }
   const wildcard = allMappings["*"];
-  if (wildcard && typeof wildcard === "object" && !Array.isArray(wildcard)) {
-    return wildcard as Record<string, unknown>;
-  }
-  return null;
-}
-
-function inputSchemaForSpec(
-  inputId: string,
-  inputType: string,
-  allSchemas: Record<string, unknown>,
-): Record<string, unknown> | null {
-  const direct = allSchemas[inputId];
-  if (direct && typeof direct === "object" && !Array.isArray(direct)) {
-    return direct as Record<string, unknown>;
-  }
-  const byType = allSchemas[`type:${inputType}`];
-  if (byType && typeof byType === "object" && !Array.isArray(byType)) {
-    return byType as Record<string, unknown>;
-  }
-  const wildcard = allSchemas["*"];
   if (wildcard && typeof wildcard === "object" && !Array.isArray(wildcard)) {
     return wildcard as Record<string, unknown>;
   }
@@ -5731,29 +5712,6 @@ export function AgentWorkbenchExperience({
     const artifactsSpec = overrides.artifacts ?? builderArtifacts;
     const inputLabels = overrides.inputLabels ?? builderInputLabels;
     const outputLabels = overrides.outputLabels ?? builderOutputLabels;
-    const inputs = parseWorkflowSpecList(inputSpec, "free_text").map(
-      (input) => {
-        const schema = inputSchemaForSpec(input.id, input.type, inputSchemas);
-        const label = workflowItemLabel(inputLabels, input.id);
-        return {
-          id: input.id,
-          label,
-          type: input.type,
-          required: input.type !== "file" && input.type !== "file_set",
-          resolver:
-            input.resolver ||
-            (input.type === "mr_link" || input.type === "external_link"
-              ? "agent_mcp"
-              : "manual"),
-          role:
-            input.resolver === "agent_mcp" || input.type === "mr_link"
-              ? "由智能体 CLI 通过 MCP 凭证解析远端变更源"
-              : `用户提供: ${label}`,
-          ...(schema ? { schema } : {}),
-        };
-      },
-    );
-    const requiredArtifacts = parseCommaSeparated(artifactsSpec);
     const selectedSkills = selectedBuilderSkillOptions.map((skill) => ({
       id: skill.id,
       label: skill.label,
@@ -5763,66 +5721,30 @@ export function AgentWorkbenchExperience({
     const outputSchemas = parseJsonObject(builderOutputSchemas || "{}");
     const evidenceMappings = parseJsonObject(builderEvidenceMappings || "{}");
     const semanticImports = parseJsonObject(builderSemanticImports || "{}");
-    const outputs = parseWorkflowSpecList(outputSpec, "json").map(
-      (output) => {
-        const label = workflowItemLabel(outputLabels, output.id);
-        const artifact =
-          output.artifact ||
-          outputArtifactForSpec(output.id, output.type, requiredArtifacts);
-        const from = artifact ? "agent_collect" : "render_report";
-        const schema =
-          output.type === "json"
-            ? outputSchemaForSpec(output.id, outputSchemas)
-            : null;
-        const evidenceMemory =
-          output.type === "json" || output.type === "scope_report"
-            ? outputEvidenceMappingForSpec(output.id, evidenceMappings)
-            : null;
-        const semanticImport =
-          output.type === "test_cases"
-            ? outputSemanticImportForSpec(
-                output.id,
-                output.type,
-                semanticImports,
-              )
-            : null;
-        return {
-          id: output.id,
-          label,
-          type: output.type,
-          from,
-          ...(artifact ? { artifact } : {}),
-          ...(schema ? { schema } : {}),
-          ...(evidenceMemory ? { evidence_memory: evidenceMemory } : {}),
-          ...(semanticImport ? { semantic_import: semanticImport } : {}),
-        };
-      },
-    );
-    const workflow = {
-      id: workflowId,
-      name: workflowName,
-      version: 1,
-      inputs,
-      steps: [
-        {
-          id: "agent_collect",
-          type: "agent_task",
-          provider: builderProvider.trim() || "claude-code",
-          mcp_profile: builderMcpProfile.trim(),
-          skills: builderSkillIds,
-          skill_instructions: selectedSkills,
-          goal: builderGoal.trim(),
-          required_artifacts: requiredArtifacts,
-        },
-        { id: "validate_evidence", type: "evidence_validate" },
-        { id: "semantic_retrieve", type: "semantic_retrieve" },
-        { id: "render_report", type: "report_render" },
-      ],
-      outputs,
-      ui: {
-        layout: workflowLayoutSnapshot(),
-      },
-    };
+    const workflow = buildWorkflowFromDesigner({
+      workflowId,
+      workflowName,
+      provider: builderProvider.trim() || "claude-code",
+      mcpProfile: builderMcpProfile.trim(),
+      goal: builderGoal.trim(),
+      skillIds: builderSkillIds,
+      selectedSkills,
+      inputSpec,
+      outputSpec,
+      artifacts: artifactsSpec,
+      inputLabels,
+      outputLabels,
+      inputSchemas,
+      outputSchemas,
+      evidenceMappings,
+      semanticImports,
+      layout: workflowLayoutSnapshot(
+        workflowCanvasNodes,
+        workflowHiddenNodeIds,
+        visibleWorkflowCanvasEdges,
+        workflowHiddenEdgeIds,
+      ),
+    });
     setWorkflowJson(pretty(workflow));
     setMessage(`工作流草稿已生成: ${workflow.id}`);
     return workflow;
