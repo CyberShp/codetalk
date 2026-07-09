@@ -4294,6 +4294,7 @@ export function AgentWorkbenchExperience({
           const skillCount = node.skills?.length ?? 0;
           const outputCount = node.outputs?.length ?? 0;
           const details = [
+            node.executor_label || "",
             inputCount ? `输入 ${inputCount}` : "",
             mcpCount ? `MCP ${mcpCount}` : "",
             skillCount ? `技能 ${skillCount}` : "",
@@ -9512,6 +9513,11 @@ export function AgentWorkbenchExperience({
                       <div className="space-y-1.5">
                         {runPhaseCards.map((phase, index) => {
                           const phaseStatus = runStatusDisplayLabel(phase.status);
+                          const phaseStatusText = ["完成但信息不足", "需要复核"].includes(
+                            phase.status,
+                          )
+                            ? phase.status
+                            : phaseStatus;
                           const isCurrent = index === runPanelProgress.currentIndex;
                           return (
                           <div
@@ -9545,7 +9551,7 @@ export function AgentWorkbenchExperience({
                               </span>
                             </span>
                             <span className="shrink-0 rounded bg-surface-container px-1.5 py-0.5 text-[10px] font-medium">
-                              {phaseStatus}
+                              {phaseStatusText}
                             </span>
                           </div>
                           );

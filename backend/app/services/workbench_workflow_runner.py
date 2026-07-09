@@ -2161,7 +2161,19 @@ def _preferred_source_roots(query_lower: str) -> list[str]:
 
 
 def _iter_source_files(base: Path, *, root: Path, limit: int) -> list[Path]:
-    skipped_dirs = {".git", ".hg", ".svn", "node_modules", "__pycache__", ".venv", "venv", "build"}
+    skipped_dirs = {
+        ".git",
+        ".hg",
+        ".svn",
+        ".gitnexus",
+        ".cgc",
+        ".codetalk",
+        "node_modules",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "build",
+    }
     files: list[Path] = []
     try:
         iterator = base.rglob("*")
@@ -2174,7 +2186,7 @@ def _iter_source_files(base: Path, *, root: Path, limit: int) -> list[Path]:
                 relative_parts = path.relative_to(root).parts
             except ValueError:
                 continue
-            if any(part in skipped_dirs for part in relative_parts):
+            if any(part in skipped_dirs or part.startswith(".") for part in relative_parts[:-1]):
                 continue
             files.append(path)
     except OSError:

@@ -425,6 +425,48 @@ test("prevents duplicate create-and-run task runs from a real double click", asy
   await expect.poll(() => runRequests.length).toBe(1);
 });
 
+test("module analysis real run shows local static scan and review state for empty evidence", async ({
+  page,
+}) => {
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-empty-module-")));
+  const workspaceName = `empty-module-${Date.now()}`;
+
+  await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "创建工作空间" }).hover();
+  await page.getByPlaceholder(/项目 A/).fill(workspaceName);
+  await page.getByPlaceholder(/本地文件夹路径/).fill(repo);
+  await page.getByRole("button", { name: "创建工作空间" }).click();
+  await expect(page.getByText(workspaceName)).toBeVisible({ timeout: 30_000 });
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "运行驾驶舱", exact: true })).toBeVisible();
+  await page.getByLabel("工作流").selectOption("module_analysis");
+  await page.getByLabel("Workspace selector").selectOption({ label: `${workspaceName} · ${repo}` });
+  await page.getByLabel("Workflow input repo_path").selectOption(repo);
+  await page
+    .getByLabel("Workflow input analysis_object")
+    .fill("definitely_missing_storage_module");
+
+  const runRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/api/workbench/task-runs/run",
+  );
+  await page.getByRole("button", { name: "创建并运行" }).hover();
+  await page.getByRole("button", { name: "创建并运行" }).click();
+  await runRequest;
+
+  const runPanel = page.getByLabel("运行结果面板");
+  await expect(runPanel.getByText("需要复核 · 模块分析工作流")).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(runPanel.getByText("完成但信息不足")).toBeVisible();
+  await expect(runPanel.getByText("本地静态扫描（无 AI）")).toBeVisible();
+  await expect(runPanel.getByText(/未找到匹配源码证据/).first()).toBeVisible();
+  await expect(runPanel.getByText("节点完成").first()).toBeVisible();
+});
+
 test("creates, runs, previews, and downloads workflow artifacts through the real workbench UI", async ({
   page,
   request,

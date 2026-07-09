@@ -934,6 +934,12 @@ async def test_module_analysis_task_run_summary_is_honest_about_local_static_sca
 ):
     repo = tmp_path / "empty-repo"
     repo.mkdir()
+    gitnexus_dir = repo / ".gitnexus"
+    gitnexus_dir.mkdir()
+    (gitnexus_dir / "meta.json").write_text(
+        '{"tool": "gitnexus", "note": "index metadata is not source evidence"}',
+        encoding="utf-8",
+    )
 
     installed = await workbench_client.post(
         "/api/workbench/workflow-presets/module_analysis/install"
