@@ -69,3 +69,120 @@ test("workflow designer canvas nodes and edges materialize into executable DSL",
   assert.ok(workflow.steps.some((step) => step.type === "evidence_validate"));
   assert.equal(workflow.ui.layout.nodes.length, 6);
 });
+
+test("workflow designer uses per-node config for inputs agents mcp skills and outputs", () => {
+  const workflow = buildWorkflowFromDesigner({
+    workflowId: "node_config_flow",
+    workflowName: "Node Config Flow",
+    provider: "claude-code",
+    mcpProfile: "",
+    goal: "全局目标会被节点目标覆盖",
+    skillIds: [],
+    selectedSkills: [],
+    inputSpec: "",
+    outputSpec: "",
+    artifacts: "",
+    inputSchemas: {},
+    outputSchemas: {},
+    evidenceMappings: {},
+    semanticImports: {},
+    layout: {
+      nodes: [
+        {
+          id: "req-node",
+          kind: "input",
+          title: "需求文件",
+          source: "canvas",
+          config: { id: "requirements_doc", type: "file", label: "需求说明书" },
+        },
+        {
+          id: "gitnexus-node",
+          kind: "context",
+          title: "GitNexus",
+          source: "canvas",
+          config: { mcp_profile: "gitnexus" },
+        },
+        {
+          id: "skills-node",
+          kind: "context",
+          title: "测试技能",
+          source: "canvas",
+          config: {
+            skill_ids: ["storage-test-design", "sfmea"],
+            skill_instructions: [
+              {
+                id: "storage-test-design",
+                label: "存储测试设计",
+                prompt_hint: "从黑盒测试人员视角拆分场景",
+              },
+            ],
+          },
+        },
+        {
+          id: "agent-node",
+          kind: "agent",
+          title: "Claude Agent",
+          source: "canvas",
+          config: {
+            id: "deep_analysis",
+            provider: "agent-runtime:default-claude-code",
+            goal: "定向阅读源码并生成测试设计",
+            required_artifacts: ["design.md"],
+          },
+        },
+        {
+          id: "design-output",
+          kind: "output",
+          title: "测试设计",
+          source: "canvas",
+          config: {
+            id: "test_design",
+            type: "markdown",
+            label: "测试设计报告",
+            artifact: "design.md",
+          },
+        },
+      ],
+      edges: [
+        { id: "e1", source: "req-node", target: "agent-node" },
+        { id: "e2", source: "gitnexus-node", target: "agent-node" },
+        { id: "e3", source: "skills-node", target: "agent-node" },
+        { id: "e4", source: "agent-node", target: "design-output" },
+      ],
+    },
+  });
+
+  assert.deepEqual(workflow.inputs, [
+    {
+      id: "requirements_doc",
+      label: "需求说明书",
+      type: "file",
+      required: false,
+      resolver: "manual",
+      role: "用户提供: 需求说明书",
+    },
+  ]);
+  assert.deepEqual(workflow.outputs, [
+    {
+      id: "test_design",
+      label: "测试设计报告",
+      type: "markdown",
+      from: "deep_analysis",
+      artifact: "design.md",
+    },
+  ]);
+  const step = workflow.steps.find((item) => item.id === "deep_analysis");
+  assert.equal(step.provider, "agent-runtime:default-claude-code");
+  assert.equal(step.mcp_profile, "gitnexus");
+  assert.deepEqual(step.skills, ["storage-test-design", "sfmea"]);
+  assert.equal(step.goal, "定向阅读源码并生成测试设计");
+  assert.deepEqual(step.required_artifacts, ["design.md"]);
+  assert.deepEqual(step.skill_instructions, [
+    {
+      id: "storage-test-design",
+      label: "存储测试设计",
+      source: "",
+      prompt_hint: "从黑盒测试人员视角拆分场景",
+    },
+  ]);
+});

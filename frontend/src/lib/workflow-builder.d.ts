@@ -6,6 +6,7 @@ export interface WorkflowDesignerNode {
   x?: number;
   y?: number;
   source?: string;
+  config?: Record<string, unknown>;
 }
 
 export interface WorkflowDesignerEdge {

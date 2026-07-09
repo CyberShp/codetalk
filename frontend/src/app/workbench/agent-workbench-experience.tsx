@@ -1241,6 +1241,7 @@ type WorkflowCanvasNode = {
   x: number;
   y: number;
   source: "contract" | "canvas";
+  config?: Record<string, unknown>;
 };
 type WorkflowCanvasEdge = {
   id: string;
@@ -1265,6 +1266,7 @@ type WorkflowCanvasLayout = {
     x: number;
     y: number;
     source: "contract" | "canvas";
+    config?: Record<string, unknown>;
   }>;
   edges?: WorkflowCanvasEdge[];
   hidden_edge_ids?: string[];
@@ -1457,6 +1459,12 @@ function workflowLayoutFromPayload(payload: unknown): WorkflowCanvasLayout | nul
             x: Number.isFinite(Number(record.x)) ? Number(record.x) : 0,
             y: Number.isFinite(Number(record.y)) ? Number(record.y) : 0,
             source: record.source === "canvas" ? "canvas" : "contract",
+            config:
+              record.config &&
+              typeof record.config === "object" &&
+              !Array.isArray(record.config)
+                ? (record.config as Record<string, unknown>)
+                : undefined,
           };
         })
         .filter((item): item is WorkflowCanvasLayout["nodes"][number] =>
@@ -4735,6 +4743,7 @@ export function AgentWorkbenchExperience({
         x: node.x,
         y: node.y,
         source: node.source,
+        ...(node.config ? { config: node.config } : {}),
       })),
       edges,
       hidden_edge_ids: hiddenEdgeIds,
@@ -5150,6 +5159,46 @@ export function AgentWorkbenchExperience({
     });
     const nodeId = `canvas-${moduleId}-${Date.now().toString(36)}`;
     const contractId = nodeId.replace(/-/g, "_");
+    const nodeConfig: Record<string, unknown> =
+      paletteModule.id === "input"
+        ? { id: contractId, type: "free_text", label: paletteModule.label }
+        : paletteModule.id === "output"
+          ? {
+              id: contractId,
+              type: "json",
+              label: paletteModule.label,
+              artifact: `${contractId}.json`,
+            }
+          : paletteModule.id === "agent"
+            ? {
+                id: contractId,
+                provider: builderProvider.trim() || "claude-code",
+                mcp_profile: builderMcpProfile.trim(),
+                skill_ids: builderSkillIds,
+                goal: builderGoal.trim(),
+              }
+            : paletteModule.id === "mcp"
+              ? { mcp_profile: builderMcpProfile.trim() || "codehub-mcp" }
+              : paletteModule.id === "gitnexus"
+                ? { mcp_profile: "gitnexus" }
+                : paletteModule.id === "cgc"
+                  ? { mcp_profile: "cgc" }
+                  : paletteModule.id === "skills"
+                    ? {
+                        skill_ids: builderSkillIds,
+                        skill_instructions: selectedBuilderSkillOptions.map(
+                          (skill) => ({
+                            id: skill.id,
+                            label: skill.label,
+                            source: skill.source,
+                            prompt_hint:
+                              skill.prompt_hint ||
+                              skill.description ||
+                              skill.label,
+                          }),
+                        ),
+                      }
+                    : {};
     const node: WorkflowCanvasNode = {
       id: nodeId,
       kind: workflowPaletteKind(paletteModule.id),
@@ -5164,6 +5213,7 @@ export function AgentWorkbenchExperience({
       x: position.x,
       y: position.y,
       source: "canvas",
+      config: nodeConfig,
     };
     const nextExtraNodes = [...workflowExtraNodes, node];
     setWorkflowExtraNodes(nextExtraNodes);

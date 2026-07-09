@@ -17,6 +17,19 @@ function uniqueStrings(values) {
   return result;
 }
 
+function uniqueSkillInstructions(values) {
+  const seen = new Set();
+  const result = [];
+  for (const value of values) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const id = String(value.id || "").trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    result.push(value);
+  }
+  return result;
+}
+
 function parseWorkflowSpecList(value, defaultType) {
   return parseCommaSeparated(value).map((item) => {
     const [specPart, artifactPart] = item.split("=").map((part) => part.trim());
@@ -48,6 +61,36 @@ function safeStepId(value, fallback) {
 
 function asRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function nodeConfig(node) {
+  return asRecord(node?.config);
+}
+
+function nodeContractId(node, fallback) {
+  return safeStepId(nodeConfig(node).id || node.id, fallback || String(node?.id || "node"));
+}
+
+function nodeLabel(node, fallback) {
+  return String(nodeConfig(node).label || node.title || fallback || node.id || "").trim();
+}
+
+function stringsFromNodeConfig(node, key) {
+  const value = nodeConfig(node)[key];
+  if (Array.isArray(value)) return value.map(String).map((item) => item.trim()).filter(Boolean);
+  if (typeof value === "string") return parseCommaSeparated(value);
+  return [];
+}
+
+function connectedContextNodesForAgent(agentNode, nodesById, edges) {
+  if (!agentNode) return [];
+  return incomingSources(edges, agentNode.id)
+    .map((source) => nodesById.get(source))
+    .filter((node) => node && node.kind === "context");
 }
 
 function outputArtifactForSpec(outputId, outputType, artifacts) {
@@ -145,23 +188,31 @@ export function buildWorkflowFromDesigner(options) {
   const outputLabels = asRecord(options.outputLabels);
   const layout = asRecord(options.layout);
   const { nodes, edges } = visibleLayout(layout);
-  const inputNodeIds = new Set(nodes.filter((node) => node.kind === "input").map((node) => safeStepId(node.id, node.id)));
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const inputNodes = nodes.filter((node) => node.kind === "input");
   const agentNodes = nodes.filter((node) => node.kind === "agent");
   const outputNodesById = new Map(
     nodes
       .filter((node) => node.kind === "output")
-      .map((node) => [safeStepId(node.id, node.id), node]),
+      .map((node) => [nodeContractId(node, node.id), node]),
   );
   const verifyNodes = nodes.filter((node) => node.kind === "verify");
 
   const specInputs = parseWorkflowSpecList(options.inputSpec || "", "free_text");
-  for (const nodeId of inputNodeIds) {
+  for (const node of inputNodes) {
+    const config = nodeConfig(node);
+    const nodeId = nodeContractId(node, node.id);
     if (!specInputs.some((input) => input.id === nodeId)) {
-      specInputs.push({ id: nodeId, type: "free_text" });
+      specInputs.push({
+        id: nodeId,
+        type: String(config.type || "free_text").trim() || "free_text",
+        ...(config.resolver ? { resolver: String(config.resolver) } : {}),
+      });
     }
   }
   const inputs = specInputs.map((input) => {
-    const label = workflowItemLabel(labels, input.id);
+    const inputNode = inputNodes.find((node) => nodeContractId(node, node.id) === input.id);
+    const label = inputNode ? nodeLabel(inputNode, input.id) : workflowItemLabel(labels, input.id);
     const schema = schemaForSpec(input.id, input.type, inputSchemas);
     return {
       id: input.id,
@@ -180,11 +231,23 @@ export function buildWorkflowFromDesigner(options) {
   });
 
   const agentIds = agentNodes.length > 0
-    ? agentNodes.map((node, index) => safeStepId(node.id, `agent_${index + 1}`))
+    ? agentNodes.map((node, index) => nodeContractId(node, `agent_${index + 1}`))
     : ["agent_collect"];
   const outputSpecs = parseWorkflowSpecList(options.outputSpec || "", "json");
+  for (const node of outputNodesById.values()) {
+    const config = nodeConfig(node);
+    const outputId = nodeContractId(node, node.id);
+    if (!outputSpecs.some((output) => output.id === outputId)) {
+      outputSpecs.push({
+        id: outputId,
+        type: String(config.type || "json").trim() || "json",
+        ...(config.artifact ? { artifact: String(config.artifact) } : {}),
+      });
+    }
+  }
   const outputs = outputSpecs.map((output) => {
-    const label = workflowItemLabel(outputLabels, output.id);
+    const outputNode = outputNodesById.get(output.id);
+    const label = outputNode ? nodeLabel(outputNode, output.id) : workflowItemLabel(outputLabels, output.id);
     const artifact = output.artifact || outputArtifactForSpec(output.id, output.type, requiredArtifacts);
     const from = artifact ? agentSourceForOutput(output, outputNodesById, agentIds, edges) : "render_report";
     const schema = output.type === "json" ? schemaForSpec(output.id, output.type, outputSchemas) : null;
@@ -223,19 +286,59 @@ export function buildWorkflowFromDesigner(options) {
     }
   }
   const steps = agentIds.map((agentId) => {
-    const sourceNode = agentNodes.find((node) => safeStepId(node.id, node.id) === agentId);
+    const sourceNode = agentNodes.find((node) => nodeContractId(node, node.id) === agentId);
+    const config = nodeConfig(sourceNode);
+    const contextNodes = connectedContextNodesForAgent(sourceNode, nodesById, edges);
+    const contextMcpProfiles = contextNodes.flatMap((node) => [
+      ...stringsFromNodeConfig(node, "mcp_profiles"),
+      ...stringsFromNodeConfig(node, "mcp_profile"),
+    ]);
+    const explicitMcpProfiles = uniqueStrings([
+      String(config.mcp_profile || "").trim(),
+      ...contextMcpProfiles,
+    ]);
+    const fallbackMcpProfiles = uniqueStrings([String(options.mcpProfile || "").trim()]);
+    const mcpProfile = (explicitMcpProfiles.length ? explicitMcpProfiles : fallbackMcpProfiles).join("+");
+    const contextSkills = contextNodes.flatMap((node) => stringsFromNodeConfig(node, "skill_ids"));
+    const nodeSkills = stringsFromNodeConfig(sourceNode, "skill_ids");
+    const skills = uniqueStrings([
+      ...nodeSkills,
+      ...contextSkills,
+      ...(Array.isArray(options.skillIds) ? options.skillIds.map(String) : []),
+    ]);
+    const nodeSkillInstructions = [
+      ...contextNodes.flatMap((node) => asArray(nodeConfig(node).skill_instructions)),
+      ...asArray(config.skill_instructions),
+    ]
+      .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+      .map((skill) => ({
+        id: String(skill.id || ""),
+        label: String(skill.label || skill.id || ""),
+        source: String(skill.source || ""),
+        prompt_hint: String(skill.prompt_hint || skill.description || skill.label || skill.id || ""),
+      }))
+      .filter((skill) => skill.id);
     const dependsOn = incomingSources(edges, sourceNode?.id || agentId)
-      .map((source) => safeStepId(source, source))
+      .map((source) => {
+        const sourceNodeForEdge = nodesById.get(source);
+        return sourceNodeForEdge && sourceNodeForEdge.kind === "agent"
+          ? nodeContractId(sourceNodeForEdge, source)
+          : safeStepId(source, source);
+      })
       .filter((source) => agentIds.includes(source));
     return {
       id: agentId,
       type: "agent_task",
-      provider: String(options.provider || "").trim() || "claude-code",
-      mcp_profile: String(options.mcpProfile || "").trim(),
-      skills: Array.isArray(options.skillIds) ? options.skillIds.map(String) : [],
-      skill_instructions: skillInstructions,
-      goal: String(options.goal || "").trim(),
-      required_artifacts: uniqueStrings(outputsByAgent.get(agentId) || requiredArtifacts),
+      provider: String(config.provider || options.provider || "").trim() || "claude-code",
+      mcp_profile: mcpProfile,
+      skills,
+      skill_instructions: uniqueSkillInstructions([...skillInstructions, ...nodeSkillInstructions]),
+      goal: String(config.goal || options.goal || "").trim(),
+      required_artifacts: uniqueStrings([
+        ...stringsFromNodeConfig(sourceNode, "required_artifacts"),
+        ...(outputsByAgent.get(agentId) || []),
+        ...requiredArtifacts,
+      ]),
       ...(dependsOn.length ? { depends_on: dependsOn } : {}),
     };
   });
