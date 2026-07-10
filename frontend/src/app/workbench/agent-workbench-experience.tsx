@@ -4762,6 +4762,21 @@ export function AgentWorkbenchExperience({
     const warnings = [
       ...(preparedProviderReadiness?.blockingReasons ?? []),
       ...(preparedProviderReadiness?.warnings ?? []),
+      ...(activeRunUiSummary?.nodes ?? [])
+        .map((node) => node.mcp_availability)
+        .filter(
+          (availability) =>
+            availability?.user_message &&
+            !["direct", "not_requested"].includes(
+              String(availability.status ?? "").toLowerCase(),
+            ),
+        )
+        .flatMap((availability) =>
+          [
+            availability?.user_message ?? "",
+            availability?.action ?? "",
+          ].filter(Boolean),
+        ),
     ].map(compactReasonLabel);
 
     return {
@@ -10589,7 +10604,7 @@ export function AgentWorkbenchExperience({
                             </span>
                           </p>
                           <p className="rounded-md bg-surface px-2 py-1 text-[11px] text-on-surface-variant">
-                            skills:
+                            技能:
                             <span className="ml-1 text-on-surface">
                               {runPanelCapabilitySummary.skills.length > 0
                                 ? runPanelCapabilitySummary.skills

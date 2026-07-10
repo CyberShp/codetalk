@@ -568,6 +568,9 @@ def _task_run_ui_node_summary(
             step=step,
             execution_contract=execution_contract,
         ),
+        "mcp_availability": _task_run_ui_step_mcp_availability(
+            execution_contract=execution_contract,
+        ),
         "mcp_inputs": _task_run_ui_step_mcp_inputs(
             workflow_contract=workflow_contract,
             execution_contract=execution_contract,
@@ -732,6 +735,21 @@ def _task_run_ui_step_mcp_profiles(
     if str(step.get("mcp_profile") or ""):
         profiles.append(str(step.get("mcp_profile") or ""))
     return _dedupe_strings(profiles)
+
+
+def _task_run_ui_step_mcp_availability(
+    *,
+    execution_contract: dict[str, Any],
+) -> dict[str, str]:
+    mcp = execution_contract.get("mcp")
+    availability = mcp.get("availability") if isinstance(mcp, dict) else {}
+    if not isinstance(availability, dict):
+        return {}
+    return {
+        "status": str(availability.get("status") or ""),
+        "user_message": str(availability.get("user_message") or ""),
+        "action": str(availability.get("action") or ""),
+    }
 
 
 def _task_run_ui_step_mcp_inputs(

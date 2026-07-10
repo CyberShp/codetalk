@@ -997,6 +997,11 @@ export interface WorkbenchRunUiNodeSummary {
   user_message?: string;
   inputs?: Array<{ id: string; role?: string; type?: string }>;
   mcp_profiles?: string[];
+  mcp_availability?: {
+    status?: string;
+    user_message?: string;
+    action?: string;
+  };
   mcp_inputs?: Array<{
     id: string;
     role?: string;

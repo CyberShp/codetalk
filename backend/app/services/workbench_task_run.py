@@ -1153,6 +1153,12 @@ def build_executor_handoff_contract(
         "test_activity_contract": dict(test_activity_contract or {}),
         "mcp": {
             "profile": str(step.get("mcp_profile") or ""),
+            "availability": _mcp_execution_availability(
+                workflow_contract=workflow_contract,
+                step_id=step_id,
+                provider=provider,
+                mcp_profile=str(step.get("mcp_profile") or ""),
+            ),
             "requests": [
                 request for request in agent_mcp_requests
                 if isinstance(request, dict)
@@ -1189,6 +1195,63 @@ def build_executor_handoff_contract(
                 "JSON artifacts must satisfy their declared schemas."
             ),
         },
+    }
+
+
+def _mcp_execution_availability(
+    *,
+    workflow_contract: dict[str, Any],
+    step_id: str,
+    provider: str,
+    mcp_profile: str,
+) -> dict[str, Any]:
+    profile = str(mcp_profile or "").strip()
+    step_contract = next(
+        (
+            item
+            for item in workflow_contract.get("agent_steps") or []
+            if isinstance(item, dict) and str(item.get("id") or "") == step_id
+        ),
+        {},
+    )
+    supported_profiles = [
+        str(item)
+        for item in (step_contract.get("mcp_profiles") if isinstance(step_contract, dict) else []) or []
+        if str(item).strip()
+    ]
+    supports_mcp = bool(step_contract.get("supports_mcp")) if isinstance(step_contract, dict) else False
+    if not profile:
+        return {
+            "status": "not_requested",
+            "user_message": "当前 Agent 节点未声明 MCP profile，将使用工作区输入和 CodeTalk 预取上下文。",
+            "action": "如需远端 MR/工具数据，请在 Agent 节点选择 MCP profile。",
+        }
+    if profile in supported_profiles:
+        return {
+            "status": "direct",
+            "user_message": f"{provider} 声明支持 MCP profile：{profile}，Agent 可直接使用自己的 MCP 凭证。",
+            "action": "保持当前执行器与 MCP 配置，运行后检查 AgentInvocation 和产物。",
+            "supported_profiles": supported_profiles,
+        }
+    if supports_mcp and not supported_profiles:
+        return {
+            "status": "direct_unverified",
+            "user_message": f"{provider} 声明支持 MCP，但未列出可用 profile；本次会把 {profile} 交给 Agent，并要求其报告是否可用。",
+            "action": "建议在设置页运行执行器探测，或在失败后切换到已声明该 MCP 的执行器。",
+            "supported_profiles": supported_profiles,
+        }
+    if profile in {"gitnexus", "cgc", "codehub-mcp"}:
+        return {
+            "status": "codetalk_prefetch",
+            "user_message": f"{provider} 未声明 {profile}；CodeTalk 会优先查工作区/GitNexus/CGC 产物，把可验证证据注入任务包。",
+            "action": "如果必须由 Agent 直接访问 MCP，请换成声明该 profile 的执行器；否则按本地证据继续运行。",
+            "supported_profiles": supported_profiles,
+        }
+    return {
+        "status": "unavailable",
+        "user_message": f"{provider} 未声明 MCP profile：{profile}，CodeTalk 也没有该 profile 的预取通道。",
+        "action": "更换执行器、修改 MCP profile，或把相关输入文件上传为普通输入材料。",
+        "supported_profiles": supported_profiles,
     }
 
 

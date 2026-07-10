@@ -631,7 +631,13 @@ test("real cockpit surfaces missing agent, MCP and skills capability before exec
   await expect(capabilityPanel.getByText(`Agent · ${missingProvider}`)).toBeVisible();
   await expect(capabilityPanel.getByText(`${missingProvider} 执行器不可用`)).toBeVisible();
   await expect(capabilityPanel.getByText(/MCP:\s*qa-source-mcp/)).toBeVisible();
-  await expect(capabilityPanel.getByText(/skills:\s*storage-test-design、sfmea/)).toBeVisible();
+  await expect(capabilityPanel.getByText(/技能:\s*storage-test-design、sfmea/)).toBeVisible();
+  await expect(
+    capabilityPanel.getByText(
+      new RegExp(`${missingProvider} 未声明 MCP profile：qa-source-mcp`),
+    ),
+  ).toBeVisible();
+  await expect(capabilityPanel.getByText(/更换执行器、修改 MCP profile/)).toBeVisible();
   await expect(capabilityPanel.getByText(/必需产物:\s*sfmea\.json、test_design\.md|必需产物:\s*test_design\.md、sfmea\.json/)).toBeVisible();
 });
 

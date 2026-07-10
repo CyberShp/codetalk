@@ -242,6 +242,13 @@ async def test_workbench_workflow_crud_api(workbench_client):
         "iSCSI login CHAP failure\nreconnect path"
     )
     assert execution_contract["mcp"]["profile"] == "codehub-readonly"
+    assert execution_contract["mcp"]["availability"]["status"] in {
+        "direct",
+        "direct_unverified",
+        "codetalk_prefetch",
+        "unavailable",
+    }
+    assert execution_contract["mcp"]["availability"]["user_message"]
     assert execution_contract["skills"]["ids"] == [
         "source-evidence-first",
         "black-box-test-design",
@@ -262,6 +269,7 @@ async def test_workbench_workflow_crud_api(workbench_client):
         {"id": "requested_outputs", "role": "用户指定的交付文件和报告小节", "type": "free_text"},
     ]
     assert summary["nodes"][0]["mcp_profiles"] == ["codehub-readonly"]
+    assert summary["nodes"][0]["mcp_availability"]["user_message"]
     assert summary["nodes"][0]["mcp_inputs"][0]["id"] == "mr_link"
     assert summary["nodes"][0]["skills"] == [
         {"id": "source-evidence-first", "label": "source-evidence-first"},
@@ -271,6 +279,50 @@ async def test_workbench_workflow_crud_api(workbench_client):
         "report.md",
         "cases.md",
     ]
+
+
+async def test_workbench_execution_contract_explains_mcp_degradation(workbench_client, tmp_path):
+    workflow = {
+        "id": "mcp_degradation_contract",
+        "name": "MCP degradation contract",
+        "version": 1,
+        "inputs": [{"id": "target", "type": "free_text", "required": True}],
+        "steps": [
+            {
+                "id": "collect",
+                "type": "agent_task",
+                "provider": "missing-agent-for-mcp",
+                "mcp_profile": "cgc",
+                "required_artifacts": ["result.json"],
+            }
+        ],
+        "outputs": [{"id": "result", "type": "json", "from": "collect", "artifact": "result.json"}],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "mcp_degradation_contract",
+            "workspace_id": "ws-mcp-degradation",
+            "repo_path": str(tmp_path),
+            "inputs": {"target": "bdev reset"},
+        },
+    )
+
+    assert prepared.status_code == 201
+    task_run_id = prepared.json()["task_run_id"]
+    step_bundle = json.loads(
+        (_task_run_dir(task_run_id) / "agent_runs" / "collect" / "task_bundle.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    availability = step_bundle["execution_contract"]["mcp"]["availability"]
+    assert availability["status"] == "codetalk_prefetch"
+    assert "CodeTalk" in availability["user_message"]
+    assert "换成声明该 profile 的执行器" in availability["action"]
+    summary_node = prepared.json()["run_ui_summary"]["nodes"][0]
+    assert summary_node["mcp_availability"]["status"] == "codetalk_prefetch"
+    assert "CodeTalk" in summary_node["mcp_availability"]["user_message"]
 
 
 async def test_workbench_workflow_draft_audit_api_reports_warnings_and_invalid(
