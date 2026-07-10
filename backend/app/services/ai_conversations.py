@@ -29,6 +29,7 @@ from app.services.agent_cli_bridge import (
     resolve_agent_cwd,
     stream_agent_runtime,
 )
+from app.services.agent_invocation_contract import build_agent_invocation_execution_contract
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
 from app.services.test_activity_contract import build_test_activity_contract
 
@@ -3005,27 +3006,14 @@ def _agent_thread_invocation_manifest(
             "resume_session_id": resume_session_id or "",
             "mode": "resume" if resume_session_id else "fresh",
         },
-        "execution_contract": {
-            "runtime_type": "agent_runtime",
-            "source_first": not _source_analysis_declined(user_message),
-            "must_receive_full_user_input": True,
-            "cwd": cwd,
-            "repo_path": str(repo_path or ""),
-            "outputs": {
+        "execution_contract": build_agent_invocation_execution_contract(
+            source_first=not _source_analysis_declined(user_message),
+            cwd=cwd,
+            repo_path=str(repo_path or ""),
+            outputs={
                 "user_requested_outputs": _user_requested_outputs_from_message(user_message),
             },
-            "typed_events": [
-                "answer",
-                "thinking",
-                "diagnostic",
-                "status",
-                "tool_use",
-                "tool_result",
-                "artifact",
-                "error",
-                "done",
-            ],
-        },
+        ),
         "test_activity_contract": test_activity_contract,
         "artifact_contract": test_activity_contract.get("artifact_contract", {}),
         "references": {

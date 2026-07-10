@@ -19,6 +19,10 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
 from app.services.agent_cli_bridge import _decode as _decode_agent_cli_output
+from app.services.agent_invocation_contract import (
+    agent_invocation_typed_events,
+    build_agent_invocation_execution_contract,
+)
 
 
 def _now() -> str:
@@ -235,25 +239,12 @@ def _workflow_agent_invocation_payload(
         "mcp_profile": run.mcp_profile,
         "skills": skills,
         "session": run.session_policy,
-        "execution_contract": {
-            "runtime_type": "agent_runtime",
-            "source_first": True,
-            "must_receive_full_user_input": True,
-            "cwd": run.cwd,
-            "repo_path": run.cwd,
-            "typed_events": [
-                "answer",
-                "thinking",
-                "diagnostic",
-                "status",
-                "tool_use",
-                "tool_result",
-                "artifact",
-                "error",
-                "done",
-            ],
-            **execution_contract,
-        },
+        "execution_contract": build_agent_invocation_execution_contract(
+            source_first=True,
+            cwd=run.cwd,
+            repo_path=run.cwd,
+            extra=execution_contract,
+        ),
         "test_activity_contract": test_activity_contract,
         "artifact_contract": contract,
         "artifact_dir": run.artifact_dir,
@@ -512,17 +503,7 @@ class AgentRunHarness:
                     if str(item).strip()
                 ],
                 "execution_contract": {
-                    "typed_events": [
-                        "answer",
-                        "thinking",
-                        "diagnostic",
-                        "status",
-                        "tool_use",
-                        "tool_result",
-                        "artifact",
-                        "error",
-                        "done",
-                    ],
+                    "typed_events": agent_invocation_typed_events(),
                     "source_first": True,
                 },
             },

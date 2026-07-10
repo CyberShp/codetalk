@@ -3652,6 +3652,10 @@ class TestAIConversationsAPI:
         ]
         assert invocation_events
         invocation_payload = invocation_events[0]["payload"]
+        from app.services.agent_invocation_contract import agent_invocation_typed_events
+
+        assert invocation_payload["execution_contract"]["typed_events"] == agent_invocation_typed_events()
+        assert invocation_payload["execution_contract"]["source_first"] is True
         assert invocation_payload["artifact_contract"]["required_outputs"] == [
             "sfmea.json",
             "black_box_cases.json",
