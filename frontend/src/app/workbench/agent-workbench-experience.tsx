@@ -4350,6 +4350,15 @@ export function AgentWorkbenchExperience({
     if (preset?.definition.inputs?.length) return preset.definition.inputs;
     return workflowInputsFromJson(workflowJson);
   }, [selectedWorkflowId, workflowJson, workflowPresets, workflows]);
+  const visibleWorkflowInputs = useMemo(
+    () =>
+      selectedWorkflowInputs.filter((input) => {
+        const inputId = String(input.id ?? "");
+        const inputType = String(input.type ?? "");
+        return !(inputId === "repo_path" && inputType === "directory");
+      }),
+    [selectedWorkflowInputs],
+  );
   const selectedWorkflowOutputs = useMemo(() => {
     const registered = workflows.find(
       (workflow) => workflow.id === selectedWorkflowId,
@@ -9844,7 +9853,7 @@ export function AgentWorkbenchExperience({
                   ))}
                 </select>
               </label>
-              {selectedWorkflowInputs.length > 0 && (
+              {visibleWorkflowInputs.length > 0 && (
                 <div
                   aria-label="Workflow run inputs"
                   className={`rounded-lg border p-3 transition-colors ${
@@ -9864,7 +9873,7 @@ export function AgentWorkbenchExperience({
                     )}
                   </div>
                   <div className="space-y-2">
-                    {selectedWorkflowInputs.map((input) => {
+                    {visibleWorkflowInputs.map((input) => {
                       const inputId = String(input.id ?? "");
                       const inputType = String(input.type ?? "text");
                       const required = input.required === true;
