@@ -2846,6 +2846,10 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   grid-column: 1 / -1;
 }
 
+.ct-ai-agent-status > .ct-ai-agent-status__wide {
+  grid-column: 1 / -1;
+}
+
 .ct-ai-agent-status span {
   display: block;
   color: #64748b;

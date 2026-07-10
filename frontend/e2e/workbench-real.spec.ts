@@ -1233,7 +1233,7 @@ test("AI thread test activity card launches a real workflow cockpit run", async 
       sentinel_text: "",
       session_persistence: "none",
       resume_args: [],
-      mcp_profile: "",
+      mcp_profile: "ai-thread-mcp",
       enabled: true,
     },
   });
@@ -1275,6 +1275,8 @@ test("AI thread test activity card launches a real workflow cockpit run", async 
     await expect(taskCard).toContainText(prompt);
     await expect(taskCard.getByLabel("识别到的测试画像")).toContainText("iscsi_login");
     await expect(taskCard.getByText("sfmea.json · black_box_cases.json")).toBeVisible();
+    await expect(page.getByText(/MCP: ai-thread-mcp/).first()).toBeVisible();
+    await expect(page.getByText(/agent_invocation\.json/).first()).toBeVisible();
     await taskCard.getByRole("link", { name: /启动工作流/ }).hover();
     await taskCard.getByRole("link", { name: /启动工作流/ }).click();
 

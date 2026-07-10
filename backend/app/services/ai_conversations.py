@@ -1642,20 +1642,27 @@ async def run_agent_generation(
     adopted_agent_artifact = False
     agent_artifact_dir = ai_thread_agent_artifact_dir(conversation["id"], run_id).resolve()
     await _to_thread(agent_artifact_dir.mkdir, parents=True, exist_ok=True)
+    invocation_manifest = _agent_thread_invocation_manifest(
+        conversation=conversation,
+        run_id=run_id,
+        runtime=runtime,
+        prompt=prompt,
+        cwd=cwd,
+        repo_path=repo_path,
+        user_message=user_message["content"],
+        references=references,
+        artifact_dir=agent_artifact_dir,
+        resume_session_id=resume_session_id,
+    )
     await _write_json_file(
         agent_artifact_dir / "agent_invocation.json",
-        _agent_thread_invocation_manifest(
-            conversation=conversation,
-            run_id=run_id,
-            runtime=runtime,
-            prompt=prompt,
-            cwd=cwd,
-            repo_path=repo_path,
-            user_message=user_message["content"],
-            references=references,
-            artifact_dir=agent_artifact_dir,
-            resume_session_id=resume_session_id,
-        ),
+        invocation_manifest,
+    )
+    await store.append_event(
+        run_id=run_id,
+        conversation_id=conversation["id"],
+        event_type="artifact",
+        payload=_agent_invocation_artifact_event_payload(invocation_manifest),
     )
     runtime_for_turn = dict(runtime)
     runtime_env = dict(runtime_for_turn.get("env") or {})
@@ -2949,6 +2956,55 @@ def _agent_thread_invocation_manifest(
         },
         "artifact_dir": str(artifact_dir),
     }
+
+
+def _agent_invocation_artifact_event_payload(manifest: dict[str, Any]) -> dict[str, Any]:
+    runtime = manifest.get("runtime") if isinstance(manifest.get("runtime"), dict) else {}
+    session = manifest.get("session") if isinstance(manifest.get("session"), dict) else {}
+    repo_path = str(manifest.get("repo_path") or manifest.get("cwd") or "")
+    return {
+        "artifact": "agent-artifacts/agent_invocation.json",
+        "artifact_kind": "agent_invocation",
+        "content": "AgentInvocation 已准备",
+        "runtime": {
+            "id": str(runtime.get("id") or ""),
+            "name": str(runtime.get("name") or ""),
+            "prompt_transport": str(runtime.get("prompt_transport") or ""),
+            "output_mode": str(runtime.get("output_mode") or ""),
+            "completion_mode": str(runtime.get("completion_mode") or ""),
+            "working_dir_mode": str(runtime.get("working_dir_mode") or ""),
+        },
+        "cwd_label": _public_path_name(str(manifest.get("cwd") or repo_path)),
+        "repo_label": _public_path_name(repo_path),
+        "mcp_profile": str(manifest.get("mcp_profile") or ""),
+        "skills": [str(item) for item in manifest.get("skills") or [] if str(item).strip()],
+        "session": {
+            "persistence": str(session.get("persistence") or ""),
+            "mode": str(session.get("mode") or ""),
+        },
+        "execution_contract": {
+            "typed_events": (
+                manifest.get("execution_contract", {}).get("typed_events")
+                if isinstance(manifest.get("execution_contract"), dict)
+                else []
+            ),
+            "source_first": (
+                manifest.get("execution_contract", {}).get("source_first")
+                if isinstance(manifest.get("execution_contract"), dict)
+                else None
+            ),
+        },
+    }
+
+
+def _public_path_name(path: str) -> str:
+    text = str(path or "").strip()
+    if not text:
+        return ""
+    try:
+        return Path(text).expanduser().name or text
+    except (OSError, RuntimeError):
+        return text
 
 
 def _looks_like_test_activity_request(text: str) -> bool:

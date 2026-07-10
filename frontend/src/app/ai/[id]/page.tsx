@@ -60,20 +60,62 @@ function eventKind(event: AIRunEvent): string {
   return typeof value === "string" ? value : "";
 }
 
+function eventRecordField(event: AIRunEvent, field: string): Record<string, unknown> {
+  const value = event.payload[field];
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function eventTextValue(value: unknown): string {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return value.map(eventTextValue).filter(Boolean).join(", ");
+  return "";
+}
+
+function eventPayloadText(event: AIRunEvent, fields: string[]): string {
+  for (const field of fields) {
+    const text = eventTextValue(event.payload[field]);
+    if (text) return text;
+  }
+  return "";
+}
+
+function eventRuntimeText(event: AIRunEvent): string {
+  const runtime = eventRecordField(event, "runtime");
+  const runtimeName = eventTextValue(runtime.name) || eventTextValue(runtime.id);
+  const mcpProfile = eventPayloadText(event, ["mcp_profile"]);
+  const skills = eventPayloadText(event, ["skills"]);
+  const cwdLabel = eventPayloadText(event, ["cwd_label", "repo_label"]);
+  const artifact = eventPayloadText(event, ["artifact", "path", "relative_path"]);
+  return [
+    runtimeName ? `runtime: ${runtimeName}` : "",
+    mcpProfile ? `MCP: ${mcpProfile}` : "",
+    skills ? `skills: ${skills}` : "",
+    cwdLabel ? `cwd: ${cwdLabel}` : "",
+    artifact ? `artifact: ${artifact}` : "",
+  ].filter(Boolean).join(" · ");
+}
+
 function eventProcessText(event: AIRunEvent): string {
-  const direct = eventDiagnosticText(event) || eventError(event);
-  if (direct) return direct;
   const kind = eventKind(event);
+  const runtimeText = eventRuntimeText(event);
   const tool = typeof event.payload.tool === "string" ? event.payload.tool : "工具";
   const status = typeof event.payload.status === "string" ? event.payload.status : "";
+  if (kind === "artifact") {
+    const base = eventDiagnosticText(event) || "产物已更新";
+    return [base, runtimeText].filter(Boolean).join(" · ");
+  }
+  if (kind === "status" && runtimeText) {
+    const base = eventDiagnosticText(event) || "状态已更新";
+    return [base, runtimeText].filter(Boolean).join(" · ");
+  }
+  const direct = eventDiagnosticText(event) || eventError(event);
+  if (direct) return direct;
   if (kind === "tool_use") {
     return `工具调用：${tool}`;
   }
   if (kind === "tool_result") {
     return `工具结果：${tool}${status ? ` · ${status}` : ""}`;
-  }
-  if (kind === "artifact") {
-    return "产物已更新";
   }
   return "";
 }
@@ -414,6 +456,7 @@ function AgentStatusPanel({
 }) {
   const visibleDiagnostics = capAgentProcessDiagnostics(diagnostics);
   const latestSummary = visibleDiagnostics.length > 0 ? latestAgentProcessSummaryText(visibleDiagnostics) : "等待 Agent 事件";
+  const runtimeContractSummary = latestAgentRuntimeContractText(visibleDiagnostics);
   const diagnosticText = visibleDiagnostics.join("\n");
   const status =
     streamingRunId && latestRun?.id === streamingRunId
@@ -496,6 +539,12 @@ function AgentStatusPanel({
           <span>Run</span>
           <strong title={runId || "暂无 Run"}>{runId || "等待创建"}</strong>
         </div>
+        {runtimeContractSummary && (
+          <div className="ct-ai-agent-status__wide">
+            <span>运行契约</span>
+            <strong title={runtimeContractSummary}>{runtimeContractSummary}</strong>
+          </div>
+        )}
       </div>
       <details className="ct-ai-disclosure ct-ai-agent-process-summary">
         <summary>最新过程：{latestSummary}</summary>
@@ -566,6 +615,15 @@ function latestAgentProcessSummaryText(values: string[]): string {
     return agentProcessSummaryText(cleaned);
   }
   return agentProcessSummaryText(values[values.length - 1] ?? "");
+}
+
+function latestAgentRuntimeContractText(values: string[]): string {
+  for (let index = values.length - 1; index >= 0; index -= 1) {
+    const cleaned = redactDiagnosticText(values[index] ?? "").replace(/\s+/g, " ").trim();
+    if (!cleaned || !cleaned.includes("artifact:")) continue;
+    return cleaned.replace(/^AgentInvocation 已准备\s*·\s*/, "");
+  }
+  return "";
 }
 
 function shouldFoldAgentProcessSummary(value: string): boolean {
