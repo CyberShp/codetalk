@@ -688,6 +688,7 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                         "skills": [
                             "source-evidence-first",
                             "test-strategy-planning",
+                            "black-box-test-design",
                             "coverage-gap-analysis",
                             "test-execution-orchestration",
                             "defect-triage-regression",
@@ -700,6 +701,15 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                                 "label": "测试策略与计划",
                                 "source": "codetalk_builtin",
                                 "prompt_hint": "输出测试策略、范围、风险优先级、准入/准出标准、资源/环境依赖、里程碑和未决问题。",
+                            },
+                            {
+                                "id": "black-box-test-design",
+                                "label": "黑盒测试设计",
+                                "source": "codetalk_builtin",
+                                "prompt_hint": (
+                                    "输出可执行黑盒用例，只描述外部输入、操作、预期结果、观测点和失败诊断，"
+                                    "并把每条用例映射到真实源码或测试目录证据。"
+                                ),
                             },
                             {
                                 "id": "coverage-gap-analysis",
@@ -730,9 +740,9 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                             "First inspect workspace source, GitNexus/CGC artifacts, input files, "
                             "coverage, semantic cases, and defect evidence unless the user explicitly "
                             "excludes source-based analysis. Produce testing activity artifacts for "
-                            "strategy, plan, execution, coverage gaps, defect triage, regression, "
-                            "performance/reliability, and release readiness. Terminal output is only "
-                            "progress; required artifacts are authoritative."
+                            "strategy, plan, black-box cases, execution, coverage gaps, defect triage, "
+                            "regression, performance/reliability, and release readiness. Terminal output "
+                            "is only progress; required artifacts are authoritative."
                         ),
                         "required_artifacts": [
                             "test_strategy.md",
@@ -741,6 +751,7 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                             "coverage_gap_report.json",
                             "defect_triage.md",
                             "release_readiness.md",
+                            "black_box_cases.json",
                         ],
                     },
                     {"id": "semantic_retrieve", "type": "semantic_retrieve"},
@@ -772,6 +783,19 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                     },
                     {"id": "defect_triage", "type": "markdown", "from": "plan_testing_activity", "artifact": "defect_triage.md"},
                     {"id": "release_readiness", "type": "markdown", "from": "plan_testing_activity", "artifact": "release_readiness.md"},
+                    {
+                        "id": "black_box_cases",
+                        "type": "test_cases",
+                        "from": "plan_testing_activity",
+                        "artifact": "black_box_cases.json",
+                        "semantic_import": {
+                            "enabled": True,
+                            "defaults": {
+                                "test_level": "black_box",
+                                "tags": ["testing_activity_orchestration"],
+                            },
+                        },
+                    },
                     {"id": "report", "type": "markdown", "from": "render_report"},
                 ],
             },

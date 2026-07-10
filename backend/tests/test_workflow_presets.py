@@ -147,6 +147,25 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
     )
     assert module_report["from"] == "render_report"
 
+    testing_activity_preset = next(
+        item for item in presets if item["id"] == "testing_activity_orchestration"
+    )
+    testing_activity_step = next(
+        item
+        for item in testing_activity_preset["definition"]["steps"]
+        if item["id"] == "plan_testing_activity"
+    )
+    assert "black-box-test-design" in testing_activity_step["skills"]
+    assert "black_box_cases.json" in testing_activity_step["required_artifacts"]
+    testing_activity_black_box_output = next(
+        item
+        for item in testing_activity_preset["definition"]["outputs"]
+        if item["id"] == "black_box_cases"
+    )
+    assert testing_activity_black_box_output["type"] == "test_cases"
+    assert testing_activity_black_box_output["artifact"] == "black_box_cases.json"
+    assert testing_activity_black_box_output["semantic_import"]["enabled"] is True
+
     patch_preset = next(item for item in presets if item["id"] == "patch_impact_review")
     patch_step = next(
         item

@@ -936,6 +936,7 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
         "coverage_gap_report.json",
         "defect_triage.md",
         "release_readiness.md",
+        "black_box_cases.json",
     ]
     assert by_id["source_flow_sfmea_blackbox"]["required_artifacts"] == [
         "source_scope.json",
