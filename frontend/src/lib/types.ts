@@ -1194,6 +1194,57 @@ export interface AIConversationRun {
   completed_at: string | null;
 }
 
+export interface AIAgentRuntimeEventPayload extends Record<string, unknown> {
+  artifact?: string;
+  artifact_kind?: "agent_invocation" | "capability_manifest" | string;
+  related_artifacts?: string[];
+  content?: string;
+  message?: string;
+  runtime?: {
+    id?: string;
+    name?: string;
+    provider?: string;
+    prompt_transport?: string;
+  };
+  mcp_profile?: string;
+  mcp?: {
+    profile?: string;
+    status?: string;
+    request_count?: number;
+    degraded?: boolean;
+    availability?: Record<string, unknown>;
+  };
+  skills?: string[] | {
+    ids?: string[];
+    instruction_count?: number;
+    rule?: string;
+  };
+  outputs?: {
+    required_artifacts?: string[];
+    declared_output_count?: number;
+    expected_schema_count?: number;
+  };
+  artifact_contract?: {
+    required_outputs?: string[];
+    templates?: string[];
+    artifact_dir_policy?: string;
+    download_delivery?: boolean;
+  };
+  execution_contract?: {
+    typed_events?: string[];
+    source_first?: boolean;
+    must_receive_full_user_input?: boolean;
+    outputs?: {
+      user_requested_outputs?: Array<{
+        source?: string;
+        items?: string[];
+      }>;
+    };
+  };
+  cwd_label?: string;
+  repo_label?: string;
+}
+
 export interface AIRunEvent {
   event_id: number;
   seq?: number;
@@ -1201,7 +1252,7 @@ export interface AIRunEvent {
   conversation_id: string;
   event_type: "status" | "delta" | "done" | "error" | string;
   event_kind?: string;
-  payload: Record<string, unknown>;
+  payload: AIAgentRuntimeEventPayload;
   created_at: string;
 }
 

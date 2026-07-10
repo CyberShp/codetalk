@@ -2695,6 +2695,37 @@ test("AI conversation runtime contract summary uses typed event payloads", async
             },
             created_at: "2026-06-28T00:00:01Z",
           },
+          {
+            event_id: 2,
+            run_id: "run-agent-contract-summary",
+            conversation_id: "conv-agent-contract-summary",
+            event_type: "artifact",
+            event_kind: "artifact",
+            payload: {
+              artifact: "agent-artifacts/capability_manifest.json",
+              artifact_kind: "capability_manifest",
+              content: "执行器能力边界已记录",
+              related_artifacts: ["agent_invocation.json"],
+              runtime: { name: "Claude Code" },
+              mcp: { profile: "codehub-readonly", status: "direct" },
+              skills: { ids: ["storage-test-design", "sfmea"] },
+              outputs: {
+                required_artifacts: ["sfmea.json", "black_box_cases.json"],
+              },
+              execution_contract: {
+                outputs: {
+                  user_requested_outputs: [
+                    {
+                      source: "user_message",
+                      items: ["项目结构", "源码定向阅读"],
+                    },
+                  ],
+                },
+              },
+              cwd_label: "/Volumes/Media/dpdk/spdk",
+            },
+            created_at: "2026-06-28T00:00:02Z",
+          },
         ],
       },
     });
@@ -2711,6 +2742,7 @@ test("AI conversation runtime contract summary uses typed event payloads", async
   await expect(contractSummary).toContainText("outputs: sfmea.json, black_box_cases.json");
   await expect(contractSummary).toContainText("requested: 项目结构, 源码定向阅读");
   await expect(contractSummary).toContainText("cwd: /Volumes/Media/dpdk/spdk");
+  await expect(contractSummary).toContainText("artifact: agent_invocation.json");
 });
 
 test("AI conversation keeps the start and end of a long Agent process history", async ({ page }) => {

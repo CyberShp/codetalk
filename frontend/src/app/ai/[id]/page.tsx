@@ -88,6 +88,16 @@ function eventPayloadText(event: AIRunEvent, fields: string[]): string {
   return "";
 }
 
+function eventSkillsText(event: AIRunEvent): string {
+  const skills = event.payload.skills;
+  if (Array.isArray(skills)) return eventTextValue(skills);
+  if (skills && typeof skills === "object") {
+    const ids = (skills as { ids?: unknown }).ids;
+    return eventTextValue(ids);
+  }
+  return "";
+}
+
 function eventRequestedOutputsText(event: AIRunEvent): string {
   const executionContract = eventRecordField(event, "execution_contract");
   const outputs =
@@ -117,7 +127,7 @@ function eventRuntimeText(event: AIRunEvent): string {
   const outputContract = eventRecordField(event, "outputs");
   const runtimeName = eventTextValue(runtime.name) || eventTextValue(runtime.id);
   const mcpProfile = eventPayloadText(event, ["mcp_profile"]) || eventTextValue(mcp.profile);
-  const skills = eventPayloadText(event, ["skills"]);
+  const skills = eventSkillsText(event);
   const cwdLabel = eventPayloadText(event, ["cwd_label", "repo_label"]);
   const artifact =
     eventPayloadText(event, ["related_artifacts"]) ||
