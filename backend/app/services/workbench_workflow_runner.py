@@ -255,6 +255,17 @@ class WorkbenchWorkflowRunner:
                 timeout_sec=timeout_sec,
             )
 
+        def emit_agent_event(event_type: str, event_payload: dict[str, Any]) -> None:
+            self._emit_event(
+                event_type,
+                {
+                    "step_id": step_id,
+                    "step_type": "agent_task",
+                    "provider": provider,
+                    **dict(event_payload or {}),
+                },
+            )
+
         _inject_prior_step_context(
             artifact_dir=artifact_dir,
             prior_step_results=prior_step_results,
@@ -263,6 +274,7 @@ class WorkbenchWorkflowRunner:
             run_id,
             timeout_sec=timeout_sec,
             is_cancelled=self._is_cancelled,
+            event_sink=emit_agent_event,
         )
         executions = [asdict(execution)]
         turn_artifacts = [_snapshot_agent_turn_artifacts(artifact_dir, turn_id="turn_1")]
@@ -285,6 +297,7 @@ class WorkbenchWorkflowRunner:
                 run_id,
                 timeout_sec=timeout_sec,
                 is_cancelled=self._is_cancelled,
+                event_sink=emit_agent_event,
             )
             executions.append(asdict(execution))
             turn_artifacts.append(_snapshot_agent_turn_artifacts(artifact_dir, turn_id="turn_2"))

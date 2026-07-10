@@ -3644,6 +3644,13 @@ function taskRunEventTypeLabel(eventType: string): string {
     step_completed: "节点完成",
     step_failed: "节点失败",
     artifact_created: "产物生成",
+    artifact: "产物更新",
+    tool_use: "调用执行器",
+    tool_result: "执行器返回",
+    diagnostic: "内部诊断",
+    thinking: "执行思路",
+    reasoning: "推理过程",
+    trace: "执行跟踪",
     completed: "运行完成",
     completed_empty: "完成但信息不足",
     needs_review: "需要复核",
@@ -3657,7 +3664,7 @@ function taskRunEventTitle(event: WorkbenchTaskRunEvent): string {
   const stepId = payloadText(event.payload, ["step_id", "id"]);
   const artifact = payloadText(event.payload, ["artifact", "path", "relative_path"]);
   const base = taskRunEventTypeLabel(event.event_type);
-  if (event.event_type === "artifact_created" && artifact) {
+  if ((event.event_type === "artifact_created" || event.event_type === "artifact") && artifact) {
     return `${base} · ${artifactShortName(artifact)}`;
   }
   return stepId ? `${base} · ${stepId}` : base;
@@ -3691,9 +3698,9 @@ function taskRunEventDetail(event: WorkbenchTaskRunEvent): string {
     executor ? providerDisplayLabel(executor) : "",
     status ? runStatusDisplayLabel(status) : "",
     mcpProfile ? `MCP: ${mcpProfile}` : "",
-    skills ? `skills: ${skills}` : "",
-    cwdLabel ? `cwd: ${cwdLabel}` : "",
-    requiredArtifacts ? `artifacts: ${requiredArtifacts}` : "",
+    skills ? `技能: ${skills}` : "",
+    cwdLabel ? `目录: ${cwdLabel}` : "",
+    requiredArtifacts ? `产物: ${requiredArtifacts}` : "",
     artifact ? artifactShortName(artifact) : "",
   ].filter(Boolean);
   return parts.join(" · ");
@@ -3702,10 +3709,10 @@ function taskRunEventDetail(event: WorkbenchTaskRunEvent): string {
 function taskRunEventTone(eventType: string): "danger" | "success" | "primary" | "muted" {
   const normalized = eventType.trim().toLowerCase();
   if (["step_failed", "failed", "error", "interrupted"].includes(normalized)) return "danger";
-  if (["step_completed", "artifact_created", "completed"].includes(normalized)) {
+  if (["step_completed", "artifact_created", "artifact", "tool_result", "completed"].includes(normalized)) {
     return "success";
   }
-  if (["running", "step_started", "queued"].includes(normalized)) return "primary";
+  if (["running", "step_started", "queued", "tool_use"].includes(normalized)) return "primary";
   return "muted";
 }
 

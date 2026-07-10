@@ -2706,6 +2706,29 @@ async def test_workbench_task_run_execute_workflow_api(workbench_client, tmp_pat
     assert "step_started" in event_types
     assert "step_completed" in event_types
     assert "artifact_created" in event_types
+    assert "artifact" in event_types
+    assert "tool_use" in event_types
+    assert "tool_result" in event_types
+    event_items = events.json()["items"]
+    assert [item["seq"] for item in event_items] == list(range(1, len(event_items) + 1))
+    assert {item["event_kind"] for item in event_items} >= {"status", "artifact", "tool_use", "tool_result"}
+    artifact_events = [
+        item["payload"]
+        for item in event_items
+        if item["event_type"] == "artifact"
+    ]
+    assert {item["artifact"] for item in artifact_events} >= {
+        "agent_invocation.json",
+        "execution_input.json",
+        "raw_output.txt",
+        "execution_result.json",
+    }
+    tool_use = next(item for item in event_items if item["event_type"] == "tool_use")
+    assert tool_use["payload"]["tool"] == "agent_cli"
+    assert tool_use["payload"]["input"]["cwd_label"] == tmp_path.name
+    tool_result = next(item for item in event_items if item["event_type"] == "tool_result")
+    assert tool_result["payload"]["tool"] == "agent_cli"
+    assert tool_result["payload"]["status"] == "completed"
     artifact_dir = _task_run_dir(prepared.json()["task_run_id"])
     assert (artifact_dir / "workflow_execution.json").exists()
     assert (artifact_dir / "workflow_outputs.json").exists()

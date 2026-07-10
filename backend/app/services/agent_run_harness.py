@@ -385,6 +385,7 @@ class AgentRunHarness:
         *,
         timeout_sec: int = 90,
         is_cancelled: Callable[[], bool] | None = None,
+        event_sink: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> AgentRunExecutionResult:
         run_payload = self._read_json_file("agent_run.json")
         if not isinstance(run_payload, dict) or run_payload.get("run_id") != run_id:
@@ -489,6 +490,43 @@ class AgentRunHarness:
                 prompt_transport="stdin",
             ),
         )
+        _emit_agent_run_event(
+            event_sink,
+            "artifact",
+            {
+                "artifact": "agent_invocation.json",
+                "artifact_kind": "agent_invocation",
+                "content": "AgentInvocation 已准备",
+                "run_id": run_id,
+                "turn_id": turn_id,
+                "provider": str(run_payload.get("provider") or ""),
+                "cwd_label": _repo_path_label(cwd),
+                "mcp_profile": str(run_payload.get("mcp_profile") or ""),
+                "skills": [
+                    str(item)
+                    for item in (
+                        (task_bundle or {}).get("skills")
+                        if isinstance(task_bundle, dict)
+                        else []
+                    )
+                    if str(item).strip()
+                ],
+                "execution_contract": {
+                    "typed_events": [
+                        "answer",
+                        "thinking",
+                        "diagnostic",
+                        "status",
+                        "tool_use",
+                        "tool_result",
+                        "artifact",
+                        "error",
+                        "done",
+                    ],
+                    "source_first": True,
+                },
+            },
+        )
         task_bundle_sha256 = _json_sha256(task_bundle if isinstance(task_bundle, dict) else {})
         workflow_snapshot_sha256 = _json_sha256(
             workflow_snapshot if isinstance(workflow_snapshot, dict) else {}
@@ -571,6 +609,21 @@ class AgentRunHarness:
                 ).hexdigest(),
             },
         )
+        _emit_agent_run_event(
+            event_sink,
+            "artifact",
+            {
+                "artifact": "execution_input.json",
+                "artifact_kind": "execution_input",
+                "content": "执行输入已准备，用户输入、工作区、MCP、skills 与输出契约已进入 Agent stdin。",
+                "run_id": run_id,
+                "turn_id": turn_id,
+                "provider": str(run_payload.get("provider") or ""),
+                "prompt_transport": prompt_transport,
+                "prompt_transport_reason": prompt_transport_reason,
+                "stdin_json_sha256": hashlib.sha256(stdin_payload.encode("utf-8")).hexdigest(),
+            },
+        )
 
         started_at = _now()
         self._write_json(
@@ -590,6 +643,22 @@ class AgentRunHarness:
                 "created_at": started_at,
             },
             append_jsonl=True,
+        )
+        _emit_agent_run_event(
+            event_sink,
+            "tool_use",
+            {
+                "tool": "agent_cli",
+                "run_id": run_id,
+                "turn_id": turn_id,
+                "provider": str(run_payload.get("provider") or ""),
+                "input": {
+                    "command": _redact_command_list(process_command),
+                    "cwd_label": _repo_path_label(cwd),
+                    "prompt_transport": prompt_transport,
+                    "mcp_profile": str(run_payload.get("mcp_profile") or ""),
+                },
+            },
         )
         self._write_json(
             "runtime_events.jsonl",
@@ -700,6 +769,33 @@ class AgentRunHarness:
             execution_input["transport_attempts"] = transport_attempts
             self._write_json("execution_input.json", execution_input)
         self.record_raw_output(run_id, stdout=stdout, stderr=stderr)
+        _emit_agent_run_event(
+            event_sink,
+            "tool_result",
+            {
+                "tool": "agent_cli",
+                "run_id": run_id,
+                "turn_id": turn_id,
+                "status": status,
+                "exit_code": exit_code,
+                "timed_out": timed_out,
+                "stdout_tail": _redact(stdout[-4000:]),
+                "stderr_tail": _redact(stderr[-4000:]),
+                "error": _redact(error),
+            },
+        )
+        _emit_agent_run_event(
+            event_sink,
+            "artifact",
+            {
+                "artifact": "raw_output.txt",
+                "artifact_kind": "agent_raw_output",
+                "content": "Agent 原始输出已保存为诊断产物，默认折叠。",
+                "run_id": run_id,
+                "turn_id": turn_id,
+                "status": status,
+            },
+        )
         result = AgentRunExecutionResult(
             run_id=run_id,
             status=status,
@@ -715,6 +811,19 @@ class AgentRunHarness:
             },
         )
         self._write_json("execution_result.json", asdict(result))
+        _emit_agent_run_event(
+            event_sink,
+            "artifact",
+            {
+                "artifact": "execution_result.json",
+                "artifact_kind": "execution_result",
+                "content": "Agent 执行结果已保存。",
+                "run_id": run_id,
+                "turn_id": turn_id,
+                "status": status,
+                "exit_code": exit_code,
+            },
+        )
         self._write_json(
             "agent_replay_plan.json",
             _agent_replay_plan_payload(
@@ -774,6 +883,26 @@ class AgentRunHarness:
             return json.loads((self.artifact_dir / filename).read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return None
+
+
+def _emit_agent_run_event(
+    event_sink: Callable[[str, dict[str, Any]], None] | None,
+    event_type: str,
+    payload: dict[str, Any],
+) -> None:
+    if event_sink is None:
+        return
+    try:
+        event_sink(event_type, {key: value for key, value in payload.items() if value not in (None, "")})
+    except Exception:
+        return
+
+
+def _repo_path_label(path: str) -> str:
+    text = str(path or "").strip()
+    if not text:
+        return ""
+    return Path(text).name or text
 
 
 class ArtifactValidationHarness:
