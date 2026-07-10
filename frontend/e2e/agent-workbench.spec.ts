@@ -2075,7 +2075,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
             prompt_transport: "stdin",
             cwd: "E:/repo",
             timeout_sec: 900,
-            idle_timeout_sec: 300,
+            idle_timeout_sec: 900,
             artifact_hashes: {
               "task_bundle.json": "taskhash1234567890",
               "execution_input.json": "inputhash1234567890",
@@ -2152,7 +2152,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
             prompt_transport_reason: "transport_fallback_from_argv",
             cwd: "E:/repo",
             timeout_sec: 900,
-            idle_timeout_sec: 300,
+            idle_timeout_sec: 900,
             env_hints: {
               CODETALK_AGENT_READONLY: "1",
             },

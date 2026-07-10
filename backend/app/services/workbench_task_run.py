@@ -1590,13 +1590,17 @@ def _agent_task_runtime_limits(provider: str) -> dict[str, Any]:
     if runtime is None:
         return {}
     timeout_seconds = _positive_int(runtime.get("timeout_seconds"), default=900)
-    idle_timeout_seconds = max(
-        300,
-        _positive_int(runtime.get("workflow_idle_timeout_seconds"), default=0)
-        or _positive_int(runtime.get("idle_timeout_seconds"), default=0)
-        or _positive_int(runtime.get("idle_complete_seconds"), default=0)
-        or 300,
-    )
+    prompt_transport = str(runtime.get("prompt_transport") or "stdin").strip()
+    if prompt_transport == "codex_exec_json":
+        idle_timeout_seconds = timeout_seconds
+    else:
+        idle_timeout_seconds = max(
+            300,
+            _positive_int(runtime.get("workflow_idle_timeout_seconds"), default=0)
+            or _positive_int(runtime.get("idle_timeout_seconds"), default=0)
+            or _positive_int(runtime.get("idle_complete_seconds"), default=0)
+            or 300,
+        )
     return {
         "timeout_seconds": timeout_seconds,
         "idle_timeout_seconds": idle_timeout_seconds,

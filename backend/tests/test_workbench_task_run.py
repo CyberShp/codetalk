@@ -349,7 +349,7 @@ def test_agent_runtime_timeout_limits_are_frozen_into_task_run(tmp_path, monkeyp
     )
 
     assert result.agent_runs[0]["timeout_seconds"] == 900
-    assert result.agent_runs[0]["idle_timeout_seconds"] == 300
+    assert result.agent_runs[0]["idle_timeout_seconds"] == 900
     assert result.agent_runs[0]["prompt_transport"] == "codex_exec_json"
     agent_run = json.loads(
         Path(
@@ -360,7 +360,7 @@ def test_agent_runtime_timeout_limits_are_frozen_into_task_run(tmp_path, monkeyp
         ).read_text(encoding="utf-8")
     )
     assert agent_run["timeout_seconds"] == 900
-    assert agent_run["idle_timeout_seconds"] == 300
+    assert agent_run["idle_timeout_seconds"] == 900
     assert agent_run["prompt_transport"] == "codex_exec_json"
 
 
@@ -442,7 +442,7 @@ def test_workbench_runner_auto_timeout_uses_agent_runtime_limit(tmp_path, monkey
         ).read_text(encoding="utf-8")
     )
     assert execution_input["timeout_sec"] == 3
-    assert execution_input["idle_timeout_sec"] == 300
+    assert execution_input["idle_timeout_sec"] == 3
     assert execution_input["prompt_transport"] == "codex_exec_json"
     expected_artifact_dir = str(
         Path(prepared.artifact_dir, "agent_runs", "agent_collect")
