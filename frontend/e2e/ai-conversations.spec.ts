@@ -2568,6 +2568,140 @@ test("AI conversation collapsed Agent summary prefers friendly progress over raw
   await expect(processDisclosure.locator("summary")).not.toContainText("213");
 });
 
+test("AI conversation runtime contract summary uses typed event payloads", async ({ page }) => {
+  await page.route("**/api/workspaces", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: [
+        {
+          id: "ws-agent-contract-summary",
+          name: "SPDK 契约摘要项目",
+          repo_path: "/Volumes/Media/dpdk/spdk",
+          indexed: 1,
+          index_job: null,
+          index_progress: 100,
+          analyze_status: null,
+          analyze_progress: 0,
+          last_index_error: null,
+          created_at: "2026-06-28T00:00:00Z",
+          updated_at: "2026-06-28T00:00:00Z",
+          materials: [],
+          reports: [],
+        },
+      ],
+    });
+  });
+  await page.route("**/api/settings/agent-runtimes?enabled=true", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/settings/agent-runtimes", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations?workspace_id=ws-agent-contract-summary&limit=50", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations?limit=100", async (route) => {
+    await route.fulfill({ headers: jsonHeaders(route.request().headers().origin), json: { items: [] } });
+  });
+  await page.route("**/api/ai/conversations/conv-agent-contract-summary", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        id: "conv-agent-contract-summary",
+        scope_type: "workspace",
+        scope_id: "ws-agent-contract-summary",
+        workspace_id: "ws-agent-contract-summary",
+        memory_namespace: "workspace:ws-agent-contract-summary",
+        title: "Agent 契约摘要线程",
+        status: "idle",
+        initial_context: {},
+        created_at: "2026-06-28T00:00:00Z",
+        updated_at: "2026-06-28T00:00:02Z",
+        latest_run: {
+          id: "run-agent-contract-summary",
+          conversation_id: "conv-agent-contract-summary",
+          status: "completed",
+          cursor: 3,
+          error: null,
+          model: "agent:Claude Code",
+          token_usage: {},
+          created_at: "2026-06-28T00:00:01Z",
+          started_at: "2026-06-28T00:00:01Z",
+          completed_at: "2026-06-28T00:00:02Z",
+        },
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-agent-contract-summary/messages", async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        items: [
+          {
+            id: "msg-agent-contract-user",
+            conversation_id: "conv-agent-contract-summary",
+            run_id: "run-agent-contract-summary",
+            role: "user",
+            content: "生成 iSCSI login SFMEA 和黑盒测试用例",
+            references: [],
+            actions: [],
+            created_at: "2026-06-28T00:00:01Z",
+          },
+          {
+            id: "msg-agent-contract-assistant",
+            conversation_id: "conv-agent-contract-summary",
+            run_id: "run-agent-contract-summary",
+            role: "assistant",
+            content: "最终答案：测试活动产物已生成。",
+            references: [],
+            actions: [],
+            created_at: "2026-06-28T00:00:02Z",
+          },
+        ],
+      },
+    });
+  });
+  await page.route("**/api/ai/conversations/conv-agent-contract-summary/events?**", async (route) => {
+    await route.fulfill({
+      headers: jsonHeaders(route.request().headers().origin),
+      json: {
+        items: [
+          {
+            event_id: 1,
+            run_id: "run-agent-contract-summary",
+            conversation_id: "conv-agent-contract-summary",
+            event_type: "status",
+            payload: {
+              status: "running",
+              message: "AgentInvocation 已准备",
+              runtime: { id: "claude-code", name: "Claude Code" },
+              mcp_profile: "codehub-readonly",
+              skills: ["storage-test-design", "sfmea"],
+              cwd_label: "/Volumes/Media/dpdk/spdk",
+              artifact_contract: {
+                required_outputs: ["sfmea.json", "black_box_cases.json"],
+              },
+            },
+            created_at: "2026-06-28T00:00:01Z",
+          },
+        ],
+      },
+    });
+  });
+
+  await page.goto("/ai/conv-agent-contract-summary", { waitUntil: "domcontentloaded" });
+
+  const statusPanel = page.getByTestId("agent-status-panel");
+  await expect(statusPanel.getByText("运行契约")).toBeVisible();
+  const contractSummary = statusPanel.locator(".ct-ai-agent-status__wide strong");
+  await expect(contractSummary).toContainText("runtime: Claude Code");
+  await expect(contractSummary).toContainText("MCP: codehub-readonly");
+  await expect(contractSummary).toContainText("skills: storage-test-design, sfmea");
+  await expect(contractSummary).toContainText("outputs: sfmea.json, black_box_cases.json");
+  await expect(contractSummary).toContainText("cwd: /Volumes/Media/dpdk/spdk");
+});
+
 test("AI conversation keeps the start and end of a long Agent process history", async ({ page }) => {
   await page.route("**/api/workspaces", async (route) => {
     await route.fulfill({

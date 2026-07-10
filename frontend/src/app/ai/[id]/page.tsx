@@ -469,7 +469,9 @@ function AgentStatusPanel({
 }) {
   const visibleDiagnostics = capAgentProcessDiagnostics(diagnostics);
   const latestSummary = visibleDiagnostics.length > 0 ? latestAgentProcessSummaryText(visibleDiagnostics) : "等待 Agent 事件";
-  const runtimeContractSummary = latestAgentRuntimeContractText(visibleDiagnostics);
+  const runtimeContractSummary =
+    latestAgentRuntimeContractFromEvents(processEvents) ||
+    latestAgentRuntimeContractText(visibleDiagnostics);
   const diagnosticText = visibleDiagnostics.join("\n");
   const status =
     streamingRunId && latestRun?.id === streamingRunId
@@ -650,6 +652,16 @@ function latestAgentRuntimeContractText(values: string[]): string {
     const cleaned = redactDiagnosticText(values[index] ?? "").replace(/\s+/g, " ").trim();
     if (!cleaned || !cleaned.includes("artifact:")) continue;
     return cleaned.replace(/^AgentInvocation 已准备\s*·\s*/, "");
+  }
+  return "";
+}
+
+function latestAgentRuntimeContractFromEvents(events: AIRunEvent[]): string {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (!event) continue;
+    const text = eventRuntimeText(event);
+    if (text) return text;
   }
   return "";
 }
