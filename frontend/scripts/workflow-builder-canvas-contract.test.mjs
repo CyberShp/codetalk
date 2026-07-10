@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { buildWorkflowFromDesigner } from "../src/lib/workflow-builder.mjs";
+import {
+  buildWorkflowFromDesigner,
+  mergeDesignerWorkflowWithDraft,
+} from "../src/lib/workflow-builder.mjs";
 
 test("workflow designer canvas nodes and edges materialize into executable DSL", () => {
   const workflow = buildWorkflowFromDesigner({
@@ -250,4 +253,85 @@ test("workflow designer does not materialize contract display nodes as fake inpu
 
   assert.deepEqual(workflow.inputs.map((input) => input.id), ["repo_path"]);
   assert.deepEqual(workflow.outputs.map((output) => output.id), ["sfmea"]);
+});
+
+test("workflow designer save preserves advanced JSON DSL extensions while applying builder changes", () => {
+  const generated = buildWorkflowFromDesigner({
+    workflowId: "advanced_json_merge_flow",
+    workflowName: "Advanced JSON Merge Flow",
+    provider: "opencode",
+    mcpProfile: "gitnexus",
+    goal: "Use the latest builder settings.",
+    skillIds: ["sfmea"],
+    selectedSkills: [],
+    inputSpec: "analysis_target:free_text",
+    outputSpec: "sfmea:json=sfmea.json",
+    artifacts: "sfmea.json",
+    inputLabels: { analysis_target: "分析对象" },
+    outputLabels: { sfmea: "SFMEA" },
+    inputSchemas: {},
+    outputSchemas: {},
+    evidenceMappings: {},
+    semanticImports: {},
+    layout: {
+      nodes: [
+        {
+          id: "agent-task",
+          kind: "agent",
+          title: "Agent",
+          source: "contract",
+          config: { id: "agent_collect" },
+        },
+      ],
+      edges: [],
+    },
+  });
+  const draft = {
+    id: "advanced_json_merge_flow",
+    name: "Advanced JSON Merge Flow",
+    version: 7,
+    x_product_note: "must survive save",
+    inputs: [
+      {
+        id: "analysis_target",
+        type: "free_text",
+        required: false,
+        x_prompt_hint: "用户手写的输入提示",
+      },
+    ],
+    steps: [
+      {
+        id: "agent_collect",
+        type: "agent_task",
+        provider: "claude-code",
+        x_timeout_policy: { soft_sec: 120 },
+      },
+    ],
+    outputs: [
+      {
+        id: "sfmea",
+        type: "json",
+        artifact: "old_sfmea.json",
+        x_download_group: "交付件",
+      },
+    ],
+    ui: {
+      collapsed_panels: ["advanced-json"],
+      layout: { nodes: [], edges: [] },
+    },
+  };
+
+  const merged = mergeDesignerWorkflowWithDraft(generated, draft);
+
+  assert.equal(merged.x_product_note, "must survive save");
+  assert.equal(merged.version, 1);
+  assert.equal(merged.inputs[0].label, "分析对象");
+  assert.equal(merged.inputs[0].required, true);
+  assert.equal(merged.inputs[0].x_prompt_hint, "用户手写的输入提示");
+  assert.equal(merged.steps[0].provider, "opencode");
+  assert.deepEqual(merged.steps[0].x_timeout_policy, { soft_sec: 120 });
+  assert.equal(merged.outputs[0].artifact, "sfmea.json");
+  assert.equal(merged.outputs[0].x_download_group, "交付件");
+  assert.deepEqual(merged.ui.collapsed_panels, ["advanced-json"]);
+  assert.equal(merged.ui.layout.nodes[0].id, "agent-task");
 });

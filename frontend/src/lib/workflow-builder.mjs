@@ -190,6 +190,42 @@ function agentSourceForOutput(output, outputNodesById, agentIds, edges) {
   return agentIds[agentIds.length - 1] || "render_report";
 }
 
+function mergeWorkflowItemsById(generatedItems, draftItems) {
+  const draftById = new Map(
+    asArray(draftItems)
+      .filter((item) => item && typeof item === "object" && !Array.isArray(item))
+      .map((item) => [String(item.id || ""), item])
+      .filter(([id]) => id),
+  );
+  return asArray(generatedItems).map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+    const draft = draftById.get(String(item.id || ""));
+    return draft && typeof draft === "object" && !Array.isArray(draft)
+      ? { ...draft, ...item }
+      : item;
+  });
+}
+
+export function mergeDesignerWorkflowWithDraft(generatedWorkflow, draftWorkflow) {
+  const generated = asRecord(generatedWorkflow);
+  const draft = asRecord(draftWorkflow);
+  if (!Object.keys(draft).length) return generated;
+  const generatedUi = asRecord(generated.ui);
+  const draftUi = asRecord(draft.ui);
+  return {
+    ...draft,
+    ...generated,
+    inputs: mergeWorkflowItemsById(generated.inputs, draft.inputs),
+    steps: mergeWorkflowItemsById(generated.steps, draft.steps),
+    outputs: mergeWorkflowItemsById(generated.outputs, draft.outputs),
+    ui: {
+      ...draftUi,
+      ...generatedUi,
+      layout: generatedUi.layout ?? draftUi.layout,
+    },
+  };
+}
+
 export function buildWorkflowFromDesigner(options) {
   const workflowId = String(options.workflowId || "").trim();
   const workflowName = String(options.workflowName || "").trim();

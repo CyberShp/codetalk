@@ -28,7 +28,10 @@ import {
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import { api, currentApiBase } from "@/lib/api";
-import { buildWorkflowFromDesigner } from "@/lib/workflow-builder.mjs";
+import {
+  buildWorkflowFromDesigner,
+  mergeDesignerWorkflowWithDraft,
+} from "@/lib/workflow-builder.mjs";
 import type {
   EvidenceMemoryItem,
   EvidenceSourceSlice,
@@ -6657,7 +6660,10 @@ export function AgentWorkbenchExperience({
               layout: workflowLayoutSnapshot(),
             },
           }
-        : generateWorkflowFromBuilder();
+        : mergeDesignerWorkflowWithDraft(
+            generateWorkflowFromBuilder(),
+            currentDraft,
+          );
       let saved: WorkflowDefinition;
       let autoClonedFromBuiltin = false;
       try {
