@@ -4498,6 +4498,25 @@ export function AgentWorkbenchExperience({
     () => workflowExecution?.run_ui_summary ?? preparedRun?.run_ui_summary ?? null,
     [preparedRun, workflowExecution],
   );
+  const runPanelExecutionNotice = useMemo(() => {
+    const label = String(
+      activeRunUiSummary?.execution_label ??
+        activeRunUiSummary?.workflow?.execution_label ??
+        "",
+    ).trim();
+    const message = String(
+      activeRunUiSummary?.user_message ??
+        activeRunUiSummary?.workflow?.user_message ??
+        "",
+    ).trim();
+    const subject = String(
+      activeRunUiSummary?.execution_subject ??
+        activeRunUiSummary?.workflow?.execution_subject ??
+        "",
+    ).trim();
+    if (!label && !message) return null;
+    return { label, message, subject };
+  }, [activeRunUiSummary]);
   const runPhaseCards = useMemo(
     () => {
       if (activeRunUiSummary?.nodes?.length) {
@@ -10430,6 +10449,25 @@ export function AgentWorkbenchExperience({
                           style={{ width: `${runPanelProgress.percent}%` }}
                         />
                       </div>
+                      {runPanelExecutionNotice && (
+                        <div
+                          className={[
+                            "mb-3 rounded-md border px-2 py-1.5 text-[11px]",
+                            runPanelExecutionNotice.subject === "local_static"
+                              ? "border-amber-200 bg-amber-50 text-amber-900"
+                              : "border-outline-variant/25 bg-white/75 text-on-surface",
+                          ].join(" ")}
+                        >
+                          <span className="font-medium">
+                            {runPanelExecutionNotice.label}
+                          </span>
+                          {runPanelExecutionNotice.message && (
+                            <span className="ml-1 text-on-surface-variant">
+                              {runPanelExecutionNotice.message}
+                            </span>
+                          )}
+                        </div>
+                      )}
                       <div className="space-y-1.5">
                         {runPhaseCards.map((phase, index) => {
                           const phaseStatus = runStatusDisplayLabel(phase.status);

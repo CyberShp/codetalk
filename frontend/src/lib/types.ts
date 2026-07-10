@@ -958,10 +958,16 @@ export interface WorkbenchTaskRunEventsResult {
 export interface WorkbenchRunUiSummary {
   status: string;
   status_label: string;
+  execution_subject?: string;
+  execution_label?: string;
+  user_message?: string;
   workflow?: {
     id?: string;
     name?: string;
     version?: number;
+    execution_subject?: string;
+    execution_label?: string;
+    user_message?: string;
   };
   current_node?: WorkbenchRunUiNodeSummary;
   nodes: WorkbenchRunUiNodeSummary[];
