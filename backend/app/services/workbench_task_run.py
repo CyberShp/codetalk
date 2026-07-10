@@ -1181,6 +1181,7 @@ def build_executor_handoff_contract(
                 step_id=step_id,
                 required_artifacts=required_artifacts,
             ),
+            "user_requested_outputs": _user_requested_outputs(scalar_inputs),
             "expected_output_schemas": expected_output_schemas,
             "expected_semantic_outputs": expected_semantic_outputs,
             "rule": (
@@ -1246,6 +1247,47 @@ def _looks_like_analysis_target(item: dict[str, Any]) -> bool:
         for key in ("input_id", "role", "type")
     )
     return any(token in marker for token in ("analysis", "target", "目标", "对象", "范围"))
+
+
+def _user_requested_outputs(inputs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    requested: list[dict[str, Any]] = []
+    for item in inputs:
+        marker = " ".join(
+            str(item.get(key) or "").lower()
+            for key in ("input_id", "role", "type")
+        )
+        if not any(
+            token in marker
+            for token in (
+                "requested_output",
+                "requested_outputs",
+                "output",
+                "outputs",
+                "deliverable",
+                "artifact",
+                "交付",
+                "输出",
+                "产物",
+                "报告",
+                "文件",
+            )
+        ):
+            continue
+        value = str(item.get("value") or "").strip()
+        if not value:
+            continue
+        requested.append({
+            "input_id": str(item.get("input_id") or ""),
+            "role": str(item.get("role") or ""),
+            "value": value,
+            "items": _split_requested_output_items(value),
+        })
+    return requested
+
+
+def _split_requested_output_items(value: str) -> list[str]:
+    parts = re.split(r"[\n,，、;；]+", str(value or ""))
+    return _unique_strings(part.strip() for part in parts if part.strip())[:40]
 
 
 def _declared_outputs_for_step(

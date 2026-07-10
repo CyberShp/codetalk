@@ -614,6 +614,29 @@ test("workflow designer template controls only affect the draft", async ({
   await expect(page.getByRole("button", { name: "载入所选" })).toHaveCount(0);
 });
 
+test("designer preset import does not change cockpit workflow until saved", async ({
+  page,
+}) => {
+  await routeSplitPageWorkflowShell(page);
+  await page.goto("/workbench/designer", { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByRole("heading", { name: "工作流设计" })).toBeVisible();
+  await page.getByLabel("工作流预设").selectOption("mr_blackbox_test");
+  await page.getByRole("button", { name: "从模板库导入" }).click();
+  await expect(
+    page.getByText(/已从模板库导入到当前草稿: MR (黑盒测试工作流|Black-box Test Design)/),
+  ).toBeVisible();
+
+  await page.getByRole("link", { name: "运行驾驶舱" }).click();
+  await expect(page).toHaveURL(/\/workbench$/);
+  await expect(page.getByLabel("工作流")).toHaveValue("module_analysis");
+
+  const inputRegion = page.getByLabel("Workflow run inputs");
+  await expect(inputRegion.getByText("需求文档")).toBeVisible();
+  await expect(inputRegion.getByText("设计文档")).toBeVisible();
+  await expect(inputRegion.getByText("MR 链接")).toHaveCount(0);
+});
+
 test("workflow JSON edits immediately hydrate the canvas draft", async ({
   page,
 }) => {

@@ -693,8 +693,20 @@ def _task_run_ui_step_inputs(
         for request in mcp.get("requests") or []:
             if isinstance(request, dict):
                 ordered_ids.append(str(request.get("input_id") or ""))
-    if not ordered_ids:
-        ordered_ids = [str(item.get("id") or "") for item in workflow_contract.get("inputs") or [] if isinstance(item, dict)]
+    workflow_order = [
+        str(item.get("id") or "")
+        for item in workflow_contract.get("inputs") or []
+        if isinstance(item, dict) and str(item.get("id") or "")
+    ]
+    if ordered_ids:
+        present_ids = {input_id for input_id in ordered_ids if input_id}
+        ordered_ids = [
+            input_id for input_id in workflow_order if input_id in present_ids
+        ] + [
+            input_id for input_id in ordered_ids if input_id and input_id not in workflow_order
+        ]
+    else:
+        ordered_ids = workflow_order
     results: list[dict[str, str]] = []
     for input_id in ordered_ids:
         if not input_id or any(item["id"] == input_id for item in results):

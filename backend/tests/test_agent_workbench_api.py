@@ -137,6 +137,12 @@ async def test_workbench_workflow_crud_api(workbench_client):
                 "resolver": "agent_mcp",
                 "role": "由 Agent MCP 读取的变更链接",
             },
+            {
+                "id": "requested_outputs",
+                "label": "指定输出",
+                "type": "free_text",
+                "role": "用户指定的交付文件和报告小节",
+            },
         ],
         "steps": [
             {
@@ -187,7 +193,11 @@ async def test_workbench_workflow_crud_api(workbench_client):
     loaded = await workbench_client.get("/api/workbench/workflows/custom_mr_blackbox")
     assert loaded.status_code == 200
     assert loaded.json()["steps"][0]["mcp_profile"] == "codehub-readonly"
-    assert [item["label"] for item in loaded.json()["inputs"]] == ["分析目标", "MR 链接"]
+    assert [item["label"] for item in loaded.json()["inputs"]] == [
+        "分析目标",
+        "MR 链接",
+        "指定输出",
+    ]
     assert [item["label"] for item in loaded.json()["outputs"]] == ["测试设计报告", "黑盒测试用例"]
 
     frozen = await workbench_client.get("/api/workbench/workflows/custom_mr_blackbox/snapshot")
@@ -203,13 +213,18 @@ async def test_workbench_workflow_crud_api(workbench_client):
             "inputs": {
                 "analysis_target": "iSCSI login CHAP failure\nreconnect path",
                 "mr_link": "https://codehub.local/storage/spdk/-/merge_requests/11",
+                "requested_outputs": "项目结构、源码定向阅读、SFMEA 表、黑盒测试用例",
             },
         },
     )
     assert prepared.status_code == 201
     body = prepared.json()
     contract = body["task_bundle"]["workflow_contract"]
-    assert [item["id"] for item in contract["inputs"]] == ["analysis_target", "mr_link"]
+    assert [item["id"] for item in contract["inputs"]] == [
+        "analysis_target",
+        "mr_link",
+        "requested_outputs",
+    ]
     assert contract["agent_mcp_inputs"][0]["input_id"] == "mr_link"
     assert body["task_bundle"]["agent_mcp_requests"][0]["value"] == (
         "https://codehub.local/storage/spdk/-/merge_requests/11"
@@ -232,10 +247,19 @@ async def test_workbench_workflow_crud_api(workbench_client):
         "black-box-test-design",
     ]
     assert execution_contract["outputs"]["required_artifacts"] == ["report.md", "cases.md"]
+    assert execution_contract["outputs"]["user_requested_outputs"] == [
+        {
+            "input_id": "requested_outputs",
+            "role": "用户指定的交付文件和报告小节",
+            "value": "项目结构、源码定向阅读、SFMEA 表、黑盒测试用例",
+            "items": ["项目结构", "源码定向阅读", "SFMEA 表", "黑盒测试用例"],
+        }
+    ]
     summary = body["run_ui_summary"]
     assert summary["nodes"][0]["inputs"] == [
         {"id": "analysis_target", "role": "用户输入的测试目标", "type": "free_text"},
         {"id": "mr_link", "role": "由 Agent MCP 读取的变更链接", "type": "mr_link"},
+        {"id": "requested_outputs", "role": "用户指定的交付文件和报告小节", "type": "free_text"},
     ]
     assert summary["nodes"][0]["mcp_profiles"] == ["codehub-readonly"]
     assert summary["nodes"][0]["mcp_inputs"][0]["id"] == "mr_link"
