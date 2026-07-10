@@ -133,6 +133,7 @@ DIAGNOSTIC_ARTIFACT_KINDS = {
     "agent_turn_source_slices",
     "agent_turn_task_bundle",
     "black_box_generation_policy",
+    "capability_manifest",
     "context_bundle",
     "context_discovery_decision",
     "degraded_retrieval",
@@ -266,6 +267,8 @@ def workbench_artifact_kind(relative_path: str) -> str:
         return "agent_raw_output"
     if name == "agent_invocation.json":
         return "agent_invocation"
+    if name == "capability_manifest.json":
+        return "capability_manifest"
     if name == "agent_run.json":
         return "agent_run"
     if name == "execution_input.json":

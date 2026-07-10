@@ -3670,6 +3670,7 @@ class TestAIConversationsAPI:
         ]
         assert capability_events
         capability_payload = capability_events[0]["payload"]
+        assert capability_payload["related_artifacts"] == ["agent_invocation.json"]
         assert capability_payload["outputs"]["required_artifacts"] == [
             "sfmea.json",
             "black_box_cases.json",

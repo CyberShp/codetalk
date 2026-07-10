@@ -1747,7 +1747,7 @@ def test_workbench_workflow_runner_executes_agent_steps_and_validates_artifacts(
     ]["kind"] == "agent_invocation"
     assert manifest_paths[
         "agent_runs/collect_mr/capability_manifest.json"
-    ]["kind"] == "json"
+    ]["kind"] == "capability_manifest"
     from app.services.agent_invocation_contract import agent_invocation_typed_events
 
     invocation = json.loads(

@@ -2789,6 +2789,7 @@ async def test_workbench_task_run_execute_workflow_api(workbench_client, tmp_pat
         item for item in artifact_events if item["artifact"] == "capability_manifest.json"
     )
     assert capability_event["artifact_kind"] == "capability_manifest"
+    assert capability_event["related_artifacts"] == ["agent_invocation.json"]
     assert capability_event["outputs"]["required_artifacts"] == ["result.json"]
     tool_use = next(item for item in event_items if item["event_type"] == "tool_use")
     assert tool_use["payload"]["tool"] == "agent_cli"
