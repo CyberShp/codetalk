@@ -2844,7 +2844,9 @@ test("AI conversation keeps long structured artifacts compact while streaming", 
     await streamRequested;
 
     const reader = page.getByLabel("AI 线程对话内容");
-    await expect(page.getByText("正在生成结构化产物，完成后会提供下载文件。")).toBeVisible();
+    const statusPanel = page.getByTestId("agent-status-panel");
+    await expect(statusPanel.getByText("最新过程：正在生成结构化产物，完成后会提供下载文件。")).toBeVisible();
+    await expect(statusPanel.getByText("产物就绪")).toBeVisible();
     await expect(reader).not.toContainText("TC-09");
     await expect(reader).not.toContainText("SFMEA 风险 3");
 

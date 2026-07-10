@@ -60,6 +60,14 @@ function eventKind(event: AIRunEvent): string {
   return typeof value === "string" ? value : "";
 }
 
+function processEventKind(event: AIRunEvent): string {
+  return (eventKind(event) || event.event_type || "").trim().toLowerCase();
+}
+
+function capAgentProcessEvents(items: AIRunEvent[]): AIRunEvent[] {
+  return items.slice(-AGENT_PROCESS_DIAGNOSTIC_LIMIT);
+}
+
 function eventRecordField(event: AIRunEvent, field: string): Record<string, unknown> {
   const value = event.payload[field];
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
@@ -245,7 +253,7 @@ function attachmentActions(actions: AIMessage["actions"] | null | undefined): AI
 }
 
 function isDiagnosticEvent(event: AIRunEvent): boolean {
-  return ["diagnostic", "thinking", "reasoning", "trace", "tool_use", "tool_result", "artifact"].includes(eventKind(event));
+  return ["diagnostic", "thinking", "reasoning", "trace", "tool_use", "tool_result", "artifact", "artifact_progress"].includes(eventKind(event));
 }
 
 function agentProcessDiagnosticsFromEvents(events: AIRunEvent[]): string[] {
@@ -446,12 +454,14 @@ function AgentProcessDisclosure({ diagnostics }: { diagnostics: string[] }) {
 
 function AgentStatusPanel({
   diagnostics,
+  processEvents,
   latestRun,
   streamingRunId,
   activeRuntime,
   runtimeType,
 }: {
   diagnostics: string[];
+  processEvents: AIRunEvent[];
   latestRun: AIConversationRun | null;
   streamingRunId: string | null;
   activeRuntime: AgentRuntime | null;
@@ -486,6 +496,7 @@ function AgentStatusPanel({
   const lifecycleLabel = agentLifecycleLabel({
     runStatus: latestRun?.status,
     streaming: Boolean(streamingRunId && latestRun?.id === streamingRunId),
+    processEvents,
     diagnostics: diagnosticText,
   });
   const elapsedLabel = agentRunElapsedLabel(latestRun);
@@ -573,15 +584,29 @@ function AgentStatusPanel({
 function agentLifecycleLabel({
   runStatus,
   streaming,
+  processEvents,
   diagnostics,
 }: {
   runStatus: string | undefined;
   streaming: boolean;
+  processEvents?: AIRunEvent[];
   diagnostics: string;
 }): string {
-  const text = diagnostics.toLowerCase();
-  if (runStatus === "failed") return "失败";
+  const latestTypedEvent = [...(processEvents ?? [])]
+    .reverse()
+    .find((event) => processEventKind(event));
+  const latestKind = latestTypedEvent ? processEventKind(latestTypedEvent) : "";
+  const latestStatus = eventTextValue(latestTypedEvent?.payload.status);
+  if (runStatus === "failed" || latestKind === "error") return "失败";
   if (runStatus === "cancelled") return "已取消";
+  if (["artifact", "artifact_progress"].includes(latestKind)) return "产物就绪";
+  if (["tool_use", "tool_result"].includes(latestKind)) return "调用工具";
+  if (["thinking", "reasoning"].includes(latestKind)) return "思考中";
+  if (latestKind === "status") {
+    if (latestStatus === "queued") return "排队中";
+    if (latestStatus === "running") return "生成中";
+  }
+  const text = diagnostics.toLowerCase();
   if (diagnostics.includes("下载产物已准备")) return "产物就绪";
   if (runStatus === "completed") return "已完成";
   if (text.includes("gitnexus") || text.includes("cgc") || diagnostics.includes("源码")) return "读取证据";
@@ -818,6 +843,7 @@ export default function AIThreadPage() {
   const [streamingRunId, setStreamingRunId] = useState<string | null>(null);
   const [streamingContent, setStreamingContent] = useState("");
   const [streamingDiagnostics, setStreamingDiagnostics] = useState<string[]>([]);
+  const [streamingProcessEvents, setStreamingProcessEvents] = useState<AIRunEvent[]>([]);
   const [contextOpen, setContextOpen] = useState(true);
   const [railProjectQuery, setRailProjectQuery] = useState("");
   const [railThreadQuery, setRailThreadQuery] = useState("");
@@ -976,8 +1002,10 @@ export default function AIThreadPage() {
         .events(conversationId, { run_id: loadedConversation.latest_run.id, limit: 200, process_only: true })
         .catch(() => ({ items: [] as AIRunEvent[] }));
       setStreamingDiagnostics(agentProcessDiagnosticsFromEvents(eventResult.items));
+      setStreamingProcessEvents(capAgentProcessEvents(eventResult.items));
     } else {
       setStreamingDiagnostics([]);
+      setStreamingProcessEvents([]);
     }
     if (loadedConversation.latest_run?.status === "queued" || loadedConversation.latest_run?.status === "running") {
       setStreamingRunId(loadedConversation.latest_run.id);
@@ -1018,6 +1046,7 @@ export default function AIThreadPage() {
       const abort = new AbortController();
       abortRef.current = abort;
       setStreamingDiagnostics([]);
+      setStreamingProcessEvents([]);
       try {
         const res = await api.aiConversations.stream(conversationId, cursor, abort.signal);
         if (!res.ok || !res.body) throw new Error(`SSE ${res.status}`);
@@ -1034,6 +1063,9 @@ export default function AIThreadPage() {
             if (!line.startsWith("data: ")) continue;
             const event = JSON.parse(line.slice(6)) as AIRunEvent;
             if (event.run_id !== runId) continue;
+            if (event.event_type === "status" || isDiagnosticEvent(event) || event.event_type === "error") {
+              setStreamingProcessEvents((prev) => capAgentProcessEvents([...prev, event]));
+            }
             if (event.event_type === "status") {
               const content = eventProcessText(event);
               if (content) setStreamingDiagnostics((prev) => capAgentProcessDiagnostics([...prev, content]));
@@ -1237,6 +1269,7 @@ export default function AIThreadPage() {
     setInput("");
     setStreamingContent("");
     setStreamingDiagnostics([]);
+    setStreamingProcessEvents([]);
     autoScrollRef.current = true;
     setShowJumpToLatest(false);
     try {
@@ -1294,6 +1327,20 @@ export default function AIThreadPage() {
         ...prev,
         "用户已停止本轮 Agent。",
       ]));
+      setStreamingProcessEvents((prev) =>
+        capAgentProcessEvents([
+          ...prev,
+          {
+            event_id: 0,
+            run_id: latestRun?.id ?? streamingRunId ?? "",
+            conversation_id: conversationId,
+            event_type: "cancelled",
+            event_kind: "status",
+            payload: { status: "cancelled", message: "用户已停止本轮 Agent。" },
+            created_at: new Date().toISOString(),
+          },
+        ]),
+      );
       await refreshMessagesAfterDone().catch(() => {});
     } finally {
       cancellingRef.current = false;
@@ -1793,6 +1840,7 @@ export default function AIThreadPage() {
         </section>
         <AgentStatusPanel
           diagnostics={streamingDiagnostics}
+          processEvents={streamingProcessEvents}
           latestRun={latestRun}
           streamingRunId={streamingRunId}
           activeRuntime={activeRuntime}
