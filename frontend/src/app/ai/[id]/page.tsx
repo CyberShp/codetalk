@@ -108,7 +108,7 @@ function eventRuntimeText(event: AIRunEvent): string {
 }
 
 function eventProcessText(event: AIRunEvent): string {
-  const kind = eventKind(event);
+  const kind = processEventKind(event);
   const runtimeText = eventRuntimeText(event);
   const tool = typeof event.payload.tool === "string" ? event.payload.tool : "工具";
   const status = typeof event.payload.status === "string" ? event.payload.status : "";
@@ -253,7 +253,7 @@ function attachmentActions(actions: AIMessage["actions"] | null | undefined): AI
 }
 
 function isDiagnosticEvent(event: AIRunEvent): boolean {
-  return ["diagnostic", "thinking", "reasoning", "trace", "tool_use", "tool_result", "artifact", "artifact_progress"].includes(eventKind(event));
+  return ["diagnostic", "thinking", "reasoning", "trace", "tool_use", "tool_result", "artifact", "artifact_progress"].includes(processEventKind(event));
 }
 
 function agentProcessDiagnosticsFromEvents(events: AIRunEvent[]): string[] {

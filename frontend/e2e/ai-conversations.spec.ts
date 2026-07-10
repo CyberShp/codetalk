@@ -2039,6 +2039,8 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
         "",
         'data: {"event_id":101,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"status","payload":{"status":"running","message":"正在准备工作区源码上下文"},"created_at":"2026-06-28T00:00:01Z"}',
         "",
+        'data: {"event_id":150,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"tool_use","payload":{"tool":"rg","input":{"query":"reconnect timeout","path":"lib/nvmf"}},"created_at":"2026-06-28T00:00:01Z"}',
+        "",
         ...diagnostics,
         'data: {"event_id":102,"run_id":"run-diag","conversation_id":"conv-diag","event_type":"delta","payload":{"kind":"diagnostic","content":"诊断步骤 01：正在读取 lib/nvmf/connect.c"},"created_at":"2026-06-28T00:00:01Z"}',
         "",
@@ -2055,6 +2057,7 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
   await expect(page.getByText("最终答案：覆盖 reconnect timeout 的黑盒观察点。")).toBeVisible();
   await expect(page.locator(".ct-codex-ai__reader")).not.toContainText("正在准备工作区源码上下文");
   await expect(page.locator(".ct-codex-ai__reader")).not.toContainText("诊断步骤 01");
+  await expect(page.locator(".ct-codex-ai__reader")).not.toContainText("工具调用：rg");
   const agentStatusPanel = page.getByTestId("agent-status-panel");
   await expect(agentStatusPanel.getByText("Agent 状态")).toBeVisible();
   await expect(agentStatusPanel.getByText("Thinking")).toBeVisible();
@@ -2068,11 +2071,13 @@ test("AI conversation keeps generation diagnostics collapsed outside the answer 
   await expect(processDisclosure.getByText("Agent 过程")).toBeVisible();
   await expect(processDisclosure.locator("summary")).toContainText("默认折叠");
   await expect(processDisclosure.locator("p").filter({ hasText: "正在准备工作区源码上下文" })).toBeHidden();
+  await expect(processDisclosure.locator("p").filter({ hasText: "工具调用：rg" })).toBeHidden();
   await expect(
     processDisclosure.locator("p").filter({ hasText: "诊断步骤 01：正在读取 lib/nvmf/connect.c" }),
   ).toBeHidden();
   await processDisclosure.getByText("Agent 过程").click();
   await expect(processDisclosure.getByText("正在准备工作区源码上下文")).toBeVisible();
+  await expect(processDisclosure.getByText("工具调用：rg")).toBeVisible();
   await expect(
     processDisclosure.locator("p").filter({ hasText: "诊断步骤 01：正在读取 lib/nvmf/connect.c" }),
   ).toBeVisible();
