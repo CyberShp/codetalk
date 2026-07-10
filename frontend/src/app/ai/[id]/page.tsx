@@ -82,15 +82,18 @@ function eventPayloadText(event: AIRunEvent, fields: string[]): string {
 
 function eventRuntimeText(event: AIRunEvent): string {
   const runtime = eventRecordField(event, "runtime");
+  const artifactContract = eventRecordField(event, "artifact_contract");
   const runtimeName = eventTextValue(runtime.name) || eventTextValue(runtime.id);
   const mcpProfile = eventPayloadText(event, ["mcp_profile"]);
   const skills = eventPayloadText(event, ["skills"]);
   const cwdLabel = eventPayloadText(event, ["cwd_label", "repo_label"]);
   const artifact = eventPayloadText(event, ["artifact", "path", "relative_path"]);
+  const outputs = eventTextValue(artifactContract.required_outputs);
   return [
     runtimeName ? `runtime: ${runtimeName}` : "",
     mcpProfile ? `MCP: ${mcpProfile}` : "",
     skills ? `skills: ${skills}` : "",
+    outputs ? `outputs: ${outputs}` : "",
     cwdLabel ? `cwd: ${cwdLabel}` : "",
     artifact ? `artifact: ${artifact}` : "",
   ].filter(Boolean).join(" · ");

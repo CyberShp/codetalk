@@ -2961,6 +2961,16 @@ def _agent_thread_invocation_manifest(
 def _agent_invocation_artifact_event_payload(manifest: dict[str, Any]) -> dict[str, Any]:
     runtime = manifest.get("runtime") if isinstance(manifest.get("runtime"), dict) else {}
     session = manifest.get("session") if isinstance(manifest.get("session"), dict) else {}
+    test_activity_contract = (
+        manifest.get("test_activity_contract")
+        if isinstance(manifest.get("test_activity_contract"), dict)
+        else {}
+    )
+    artifact_contract = (
+        manifest.get("artifact_contract")
+        if isinstance(manifest.get("artifact_contract"), dict)
+        else {}
+    )
     repo_path = str(manifest.get("repo_path") or manifest.get("cwd") or "")
     return {
         "artifact": "agent-artifacts/agent_invocation.json",
@@ -2994,6 +3004,41 @@ def _agent_invocation_artifact_event_payload(manifest: dict[str, Any]) -> dict[s
                 else None
             ),
         },
+        "test_activity_contract": _public_test_activity_contract_event_payload(test_activity_contract),
+        "artifact_contract": _public_artifact_contract_event_payload(
+            artifact_contract,
+            required_outputs=test_activity_contract.get("required_outputs"),
+        ),
+    }
+
+
+def _public_test_activity_contract_event_payload(contract: dict[str, Any]) -> dict[str, Any]:
+    if not contract:
+        return {}
+    return {
+        "target": str(contract.get("target") or ""),
+        "domain_profiles": [
+            str(item) for item in contract.get("domain_profiles") or [] if str(item).strip()
+        ],
+        "required_outputs": [
+            str(item) for item in contract.get("required_outputs") or [] if str(item).strip()
+        ],
+    }
+
+
+def _public_artifact_contract_event_payload(
+    contract: dict[str, Any],
+    *,
+    required_outputs: Any = None,
+) -> dict[str, Any]:
+    outputs = [str(item) for item in required_outputs or [] if str(item).strip()]
+    if not contract and not outputs:
+        return {}
+    return {
+        "required_outputs": outputs,
+        "templates": sorted(str(key) for key in contract.keys() if str(key).strip()),
+        "artifact_dir_policy": str(contract.get("artifact_dir_policy") or ""),
+        "download_delivery": bool(contract.get("download_delivery")),
     }
 
 

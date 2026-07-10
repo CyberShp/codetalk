@@ -3453,6 +3453,20 @@ class TestAIConversationsAPI:
         assert "/api/ai/conversations/" not in process
         assert "```" not in process
         assert "| FM-01 |" not in process
+        invocation_events = [
+            item
+            for item in response.json()["items"]
+            if item["payload"].get("artifact_kind") == "agent_invocation"
+        ]
+        assert invocation_events
+        invocation_payload = invocation_events[0]["payload"]
+        assert invocation_payload["artifact_contract"]["required_outputs"] == [
+            "sfmea.json",
+            "black_box_cases.json",
+        ]
+        assert invocation_payload["test_activity_contract"]["target"] == (
+            "请读取 lib/iscsi/iscsi.c 生成完整 SFMEA 和黑盒测试用例"
+        )
 
     async def test_list_run_events_returns_recent_redacted_agent_process(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)

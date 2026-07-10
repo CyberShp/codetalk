@@ -1280,6 +1280,7 @@ test("AI thread test activity card launches a real workflow cockpit run", async 
     await expect(taskCard.getByLabel("识别到的测试画像")).toContainText("iscsi_login");
     await expect(taskCard.getByText("sfmea.json · black_box_cases.json")).toBeVisible();
     await expect(page.getByText(/MCP: ai-thread-mcp/).first()).toBeVisible();
+    await expect(page.getByText(/outputs: sfmea\.json, black_box_cases\.json/).first()).toBeVisible();
     await expect(page.getByText(/agent_invocation\.json/).first()).toBeVisible();
     await taskCard.getByRole("link", { name: /启动工作流/ }).hover();
     await taskCard.getByRole("link", { name: /启动工作流/ }).click();
