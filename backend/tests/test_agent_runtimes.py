@@ -6072,3 +6072,134 @@ class TestAgentRuntimes:
         message = str(excinfo.value)
         assert message.endswith("源码读取失败")
         assert "�" not in message
+
+    async def test_probe_agent_runtime_resolves_windows_npm_cmd_shim_before_spawn(self, monkeypatch):
+        from app.services import agent_cli_bridge
+
+        captured: dict[str, object] = {}
+        original_resolver = agent_cli_bridge._resolve_agent_command
+
+        class FakeProbeProcess:
+            returncode = 0
+
+            async def communicate(self):
+                return b"opencode ok", b""
+
+        async def fake_create_subprocess_exec(command, *args, **kwargs):
+            captured["command"] = command
+            captured["args"] = list(args)
+            captured["kwargs"] = kwargs
+            return FakeProbeProcess()
+
+        monkeypatch.setattr(
+            agent_cli_bridge.shutil,
+            "which",
+            lambda command: "C:/Users/me/AppData/Roaming/npm/opencode.cmd"
+            if command == "opencode"
+            else None,
+        )
+        monkeypatch.setattr(
+            agent_cli_bridge,
+            "_resolve_agent_command",
+            lambda command: original_resolver(command, platform_name="nt"),
+        )
+        monkeypatch.setattr(
+            agent_cli_bridge.asyncio,
+            "create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+
+        result = await agent_cli_bridge.probe_agent_runtime(
+            {
+                "command": "opencode",
+                "args": ["run"],
+                "prompt_transport": "opencode_run_arg",
+            }
+        )
+
+        assert result == {"success": True, "message": "opencode ok"}
+        assert captured["command"] == "C:/Users/me/AppData/Roaming/npm/opencode.cmd"
+        assert captured["args"] == ["run", "--version"]
+
+    async def test_stream_agent_runtime_resolves_windows_npm_cmd_shim_before_spawn(
+        self,
+        monkeypatch,
+    ):
+        from app.services import agent_cli_bridge
+
+        captured: dict[str, object] = {}
+        original_resolver = agent_cli_bridge._resolve_agent_command
+
+        class FakeStream:
+            def __init__(self, chunks):
+                self._chunks = list(chunks)
+
+            async def read(self, _size=-1):
+                return self._chunks.pop(0) if self._chunks else b""
+
+        class FakeStreamProcess:
+            pid = 12345
+            stdin = None
+
+            def __init__(self):
+                self.returncode = None
+                self.stdout = FakeStream([b"resolved shim stream", b""])
+                self.stderr = FakeStream([b""])
+
+            async def wait(self):
+                self.returncode = 0
+                return 0
+
+            def terminate(self):
+                self.returncode = 0
+
+            def kill(self):
+                self.returncode = 0
+
+        async def fake_create_subprocess_exec(command, *args, **kwargs):
+            captured["command"] = command
+            captured["args"] = list(args)
+            captured["kwargs"] = kwargs
+            return FakeStreamProcess()
+
+        monkeypatch.setattr(
+            agent_cli_bridge.shutil,
+            "which",
+            lambda command: "C:/Users/me/AppData/Roaming/npm/opencode.cmd"
+            if command == "opencode"
+            else None,
+        )
+        monkeypatch.setattr(
+            agent_cli_bridge,
+            "_resolve_agent_command",
+            lambda command: original_resolver(command, platform_name="nt"),
+        )
+        monkeypatch.setattr(
+            agent_cli_bridge.asyncio,
+            "create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+
+        chunks: list[str] = []
+        async for chunk in agent_cli_bridge.stream_agent_runtime(
+            runtime={
+                "command": "opencode",
+                "args": [],
+                "prompt_transport": "opencode_run_arg",
+                "output_mode": "plain",
+                "timeout_seconds": 10,
+            },
+            prompt="读取工作区源码并输出结论",
+            cwd="C:/work/spdk",
+        ):
+            chunks.append(chunk)
+
+        assert "".join(chunks) == "resolved shim stream"
+        assert captured["command"] == "C:/Users/me/AppData/Roaming/npm/opencode.cmd"
+        assert captured["args"] == [
+            "run",
+            "--format",
+            "json",
+            "读取工作区源码并输出结论",
+        ]
+        assert captured["kwargs"]["cwd"] == "C:/work/spdk"
