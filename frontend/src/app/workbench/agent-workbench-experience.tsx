@@ -3456,6 +3456,82 @@ function diagnosticValueText(value: unknown): string {
   return "";
 }
 
+function workflowRunSnapshotSummary(run: PreparedWorkbenchTaskRun): {
+  workflow: string;
+  repo: string;
+  inputs: Array<{ label: string; value: string }>;
+  outputs: Array<{ label: string; artifact: string }>;
+  steps: string;
+} {
+  const workflow = run.workflow_snapshot ?? {};
+  const workflowId = String(workflow.id ?? run.workflow_id ?? "").trim();
+  const workflowName = String(workflow.name ?? "").trim();
+  const inputSnapshot = run.input_snapshot ?? {};
+  const workflowInputs = Array.isArray(workflow.inputs)
+    ? workflow.inputs.filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item) && typeof item === "object" && !Array.isArray(item),
+      )
+    : [];
+  const workflowOutputs = Array.isArray(workflow.outputs)
+    ? workflow.outputs.filter(
+        (item): item is Record<string, unknown> =>
+          Boolean(item) && typeof item === "object" && !Array.isArray(item),
+      )
+    : [];
+  const inputs =
+    workflowInputs.length > 0
+      ? workflowInputs
+          .map((input) => {
+            const id = String(input.id ?? "").trim();
+            if (!id || !(id in inputSnapshot)) return null;
+            const label = workflowSnapshotItemLabel(input, id);
+            const value = snapshotValueText(inputSnapshot[id]);
+            return value ? { label, value } : null;
+          })
+          .filter((item): item is { label: string; value: string } => Boolean(item))
+      : Object.entries(inputSnapshot)
+          .map(([id, value]) => ({
+            label: id,
+            value: snapshotValueText(value),
+          }))
+          .filter((item) => Boolean(item.value));
+  const outputs = workflowOutputs
+    .map((output) => {
+      const artifact = String(output.artifact ?? output.path ?? output.id ?? "").trim();
+      if (!artifact) return null;
+      return {
+        label: workflowSnapshotItemLabel(output, String(output.id ?? artifact)),
+        artifact,
+      };
+    })
+    .filter((item): item is { label: string; artifact: string } => Boolean(item));
+  const stepCount = Array.isArray(workflow.steps) ? workflow.steps.length : run.agent_runs.length;
+  return {
+    workflow: workflowName ? `workflow: ${workflowId} · ${workflowName}` : `workflow: ${workflowId}`,
+    repo: `workspace: ${run.workspace_id} · repo: ${artifactShortName(run.repo_path)}`,
+    inputs,
+    outputs,
+    steps: `节点: ${stepCount} · Agent: ${run.agent_runs.length}`,
+  };
+}
+
+function workflowSnapshotItemLabel(item: Record<string, unknown>, fallback: string): string {
+  return String(
+    item.name ??
+      item.label ??
+      item.title ??
+      item.role ??
+      fallback,
+  ).trim() || fallback;
+}
+
+function snapshotValueText(value: unknown): string {
+  const text = diagnosticValueText(value).replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  return text.length > 140 ? `${text.slice(0, 137)}...` : text;
+}
+
 function compactReasonLabel(reason: unknown): string {
   const normalized = diagnosticValueText(reason);
   const lower = normalized.toLowerCase();
@@ -4369,6 +4445,10 @@ export function AgentWorkbenchExperience({
       !Array.isArray(preparedRun.task_bundle)
         ? providerReadinessSummary(preparedRun.task_bundle)
         : null,
+    [preparedRun],
+  );
+  const preparedRunSnapshotSummary = useMemo(
+    () => (preparedRun ? workflowRunSnapshotSummary(preparedRun) : null),
     [preparedRun],
   );
   const activeRunUiSummary = useMemo(
@@ -10147,6 +10227,59 @@ export function AgentWorkbenchExperience({
                         })}
                       </div>
                     </section>
+                    {preparedRunSnapshotSummary && (
+                      <section className="rounded-lg border border-outline-variant/25 bg-surface-container/60 p-3">
+                        <div className="mb-2 flex items-center justify-between gap-2">
+                          <div>
+                            <p className="font-semibold text-on-surface">
+                              运行快照
+                            </p>
+                            <p className="text-[10px] text-on-surface-variant">
+                              本次 task_run 冻结的工作流、输入和输出契约
+                            </p>
+                          </div>
+                          <span className="rounded bg-surface px-2 py-0.5 font-data text-[10px] text-on-surface-variant">
+                            frozen
+                          </span>
+                        </div>
+                        <div className="space-y-1 rounded-md bg-surface px-2 py-2 text-[11px] text-on-surface">
+                          <p className="break-words font-data">
+                            {preparedRunSnapshotSummary.workflow}
+                          </p>
+                          <p className="break-words text-on-surface-variant">
+                            {preparedRunSnapshotSummary.repo}
+                          </p>
+                          <p className="text-on-surface-variant">
+                            {preparedRunSnapshotSummary.steps}
+                          </p>
+                        </div>
+                        {preparedRunSnapshotSummary.inputs.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            {preparedRunSnapshotSummary.inputs.slice(0, 5).map((input) => (
+                              <p
+                                key={`${input.label}-${input.value}`}
+                                className="rounded-md bg-surface px-2 py-1 text-[11px] text-on-surface"
+                              >
+                                {input.label}: {input.value}
+                              </p>
+                            ))}
+                          </div>
+                        )}
+                        {preparedRunSnapshotSummary.outputs.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {preparedRunSnapshotSummary.outputs.slice(0, 6).map((output) => (
+                              <span
+                                key={`${output.label}-${output.artifact}`}
+                                className="rounded-md bg-surface px-2 py-1 text-[11px] text-primary"
+                                title={output.label}
+                              >
+                                输出: {output.artifact}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </section>
+                    )}
                     <section className="rounded-lg border border-outline-variant/25 bg-surface-container/60 p-3">
                       <div className="mb-2 flex items-center justify-between gap-2">
                         <div>

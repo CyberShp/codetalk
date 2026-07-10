@@ -421,6 +421,10 @@ test("designer blank workflow drives cockpit inputs and real agent artifacts", a
     await expect(page.getByText(/任务已准备 · task_run_/)).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText(providerId).first()).toBeVisible();
     await expect(page.getByText("designer_result.json").first()).toBeVisible();
+    await expect(page.getByText("运行快照")).toBeVisible();
+    await expect(page.getByText(`workflow: ${workflowId}`)).toBeVisible();
+    await expect(page.getByText("设计器目标: designer cockpit target")).toBeVisible();
+    await expect(page.getByText("输出: designer_result.json")).toBeVisible();
 
     const executeResponse = page.waitForResponse(
       (response) =>
