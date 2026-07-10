@@ -126,6 +126,23 @@ class BlockingStreamLLM:
         yield "最终结论。"
 
 
+class MultiConversationBlockingLLM:
+    def __init__(self):
+        self.release = asyncio.Event()
+        self.started: dict[str, asyncio.Event] = {
+            "thread-a": asyncio.Event(),
+            "thread-b": asyncio.Event(),
+        }
+
+    async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
+        joined = "\n".join(str(m.get("content", "")) for m in messages)
+        label = "thread-a" if "线程 A" in joined else "thread-b"
+        self.started[label].set()
+        yield f"{label} 第一段。"
+        await self.release.wait()
+        yield f"{label} 完成。"
+
+
 class LongArtifactLLM:
     async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
         rows = [
@@ -2703,6 +2720,88 @@ class TestAIConversationsAPI:
             assert runs[0] != runs[1]
             assert runs[0] == runs[2]
             assert runs[1] == runs[3]
+
+    async def test_different_conversations_run_without_blocking_each_other(
+        self,
+        sqlite_db,
+        monkeypatch,
+    ):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.api import ai_conversations
+
+        fake_llm = MultiConversationBlockingLLM()
+        monkeypatch.setattr(
+            ai_conversations,
+            "create_llm_client_from_active",
+            lambda: fake_llm,
+        )
+
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created_a = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "title": "线程 A",
+                },
+            )
+            created_b = await client.post(
+                "/api/ai/conversations",
+                json={
+                    "scope_type": "workspace",
+                    "scope_id": ws_id,
+                    "title": "线程 B",
+                },
+            )
+            assert created_a.status_code == 201
+            assert created_b.status_code == 201
+            conversation_a = created_a.json()
+            conversation_b = created_b.json()
+
+            first = await client.post(
+                f"/api/ai/conversations/{conversation_a['id']}/messages",
+                json={"content": "线程 A 长任务：分析 nvmf connect"},
+            )
+            assert first.status_code == 202
+            await asyncio.wait_for(fake_llm.started["thread-a"].wait(), timeout=1)
+
+            second = await client.post(
+                f"/api/ai/conversations/{conversation_b['id']}/messages",
+                json={"content": "线程 B 长任务：分析 iscsi login"},
+            )
+            assert second.status_code == 202
+            await asyncio.wait_for(fake_llm.started["thread-b"].wait(), timeout=1)
+
+            assert first.json()["run"]["sequence"] == 1
+            assert second.json()["run"]["sequence"] == 1
+            assert first.json()["run"]["queue_position"] == 0
+            assert second.json()["run"]["queue_position"] == 0
+
+            fake_llm.release.set()
+            for _ in range(40):
+                messages_a = await client.get(f"/api/ai/conversations/{conversation_a['id']}/messages")
+                messages_b = await client.get(f"/api/ai/conversations/{conversation_b['id']}/messages")
+                items_a = messages_a.json()["items"]
+                items_b = messages_b.json()["items"]
+                if (
+                    len(items_a) == 2
+                    and items_a[-1]["role"] == "assistant"
+                    and len(items_b) == 2
+                    and items_b[-1]["role"] == "assistant"
+                ):
+                    break
+                await asyncio.sleep(0.05)
+
+            messages_a = await client.get(f"/api/ai/conversations/{conversation_a['id']}/messages")
+            messages_b = await client.get(f"/api/ai/conversations/{conversation_b['id']}/messages")
+            body_a = messages_a.json()
+            body_b = messages_b.json()
+            assert [item["role"] for item in body_a["items"]] == ["user", "assistant"]
+            assert [item["role"] for item in body_b["items"]] == ["user", "assistant"]
+            assert "thread-a 完成" in body_a["items"][1]["content"]
+            assert "thread-b 完成" in body_b["items"][1]["content"]
 
     async def test_cancel_running_generation_prevents_assistant_message_and_allows_retry(
         self,
