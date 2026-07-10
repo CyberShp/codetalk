@@ -88,6 +88,28 @@ function eventPayloadText(event: AIRunEvent, fields: string[]): string {
   return "";
 }
 
+function eventRequestedOutputsText(event: AIRunEvent): string {
+  const executionContract = eventRecordField(event, "execution_contract");
+  const outputs =
+    executionContract.outputs &&
+    typeof executionContract.outputs === "object" &&
+    !Array.isArray(executionContract.outputs)
+      ? (executionContract.outputs as Record<string, unknown>)
+      : {};
+  const requested = Array.isArray(outputs.user_requested_outputs)
+    ? outputs.user_requested_outputs
+    : [];
+  const items = requested.flatMap((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return [];
+    const payload = entry as Record<string, unknown>;
+    if (Array.isArray(payload.items)) {
+      return payload.items.map(eventTextValue).filter(Boolean);
+    }
+    return eventTextValue(payload.value) ? [eventTextValue(payload.value)] : [];
+  });
+  return Array.from(new Set(items)).join(", ");
+}
+
 function eventRuntimeText(event: AIRunEvent): string {
   const runtime = eventRecordField(event, "runtime");
   const artifactContract = eventRecordField(event, "artifact_contract");
@@ -97,11 +119,13 @@ function eventRuntimeText(event: AIRunEvent): string {
   const cwdLabel = eventPayloadText(event, ["cwd_label", "repo_label"]);
   const artifact = eventPayloadText(event, ["artifact", "path", "relative_path"]);
   const outputs = eventTextValue(artifactContract.required_outputs);
+  const requestedOutputs = eventRequestedOutputsText(event);
   return [
     runtimeName ? `runtime: ${runtimeName}` : "",
     mcpProfile ? `MCP: ${mcpProfile}` : "",
     skills ? `skills: ${skills}` : "",
     outputs ? `outputs: ${outputs}` : "",
+    requestedOutputs ? `requested: ${requestedOutputs}` : "",
     cwdLabel ? `cwd: ${cwdLabel}` : "",
     artifact ? `artifact: ${artifact}` : "",
   ].filter(Boolean).join(" · ");

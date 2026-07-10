@@ -2936,6 +2936,9 @@ def _agent_thread_invocation_manifest(
             "must_receive_full_user_input": True,
             "cwd": cwd,
             "repo_path": str(repo_path or ""),
+            "outputs": {
+                "user_requested_outputs": _user_requested_outputs_from_message(user_message),
+            },
             "typed_events": [
                 "answer",
                 "thinking",
@@ -3003,6 +3006,11 @@ def _agent_invocation_artifact_event_payload(manifest: dict[str, Any]) -> dict[s
                 if isinstance(manifest.get("execution_contract"), dict)
                 else None
             ),
+            "outputs": _public_execution_outputs_event_payload(
+                manifest.get("execution_contract", {})
+                if isinstance(manifest.get("execution_contract"), dict)
+                else {}
+            ),
         },
         "test_activity_contract": _public_test_activity_contract_event_payload(test_activity_contract),
         "artifact_contract": _public_artifact_contract_event_payload(
@@ -3010,6 +3018,23 @@ def _agent_invocation_artifact_event_payload(manifest: dict[str, Any]) -> dict[s
             required_outputs=test_activity_contract.get("required_outputs"),
         ),
     }
+
+
+def _public_execution_outputs_event_payload(execution_contract: dict[str, Any]) -> dict[str, Any]:
+    outputs = (
+        execution_contract.get("outputs")
+        if isinstance(execution_contract.get("outputs"), dict)
+        else {}
+    )
+    requested = [
+        {
+            "source": str(item.get("source") or ""),
+            "items": [str(value) for value in item.get("items") or [] if str(value).strip()],
+        }
+        for item in outputs.get("user_requested_outputs") or []
+        if isinstance(item, dict)
+    ]
+    return {"user_requested_outputs": requested} if requested else {}
 
 
 def _public_test_activity_contract_event_payload(contract: dict[str, Any]) -> dict[str, Any]:
@@ -3086,6 +3111,48 @@ def _requested_test_activity_outputs(text: str) -> list[str]:
     if "流程" in text or "flow" in lower:
         outputs.append("business_flow.md")
     return outputs or ["business_flow.md", "sfmea.json", "black_box_cases.json"]
+
+
+def _user_requested_outputs_from_message(text: str) -> list[dict[str, Any]]:
+    value = _explicit_requested_output_text(text)
+    if not value:
+        return []
+    return [
+        {
+            "source": "user_message",
+            "value": value,
+            "items": _split_user_requested_output_items(value),
+        }
+    ]
+
+
+def _explicit_requested_output_text(text: str) -> str:
+    source = str(text or "")
+    pattern = re.compile(
+        r"(?:指定输出|输出文件|输出产物|交付件|交付文件|需要输出|请输出)\s*[:：]\s*(?P<value>.+)",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(source)
+    if not match:
+        return ""
+    value = str(match.group("value") or "").strip()
+    value = re.split(r"\n\s*\n|(?:^|\n)\s*(?:补充要求|约束|注意|背景)\s*[:：]", value, maxsplit=1)[0]
+    return value.strip(" \t\r\n。；;")
+
+
+def _split_user_requested_output_items(value: str) -> list[str]:
+    parts = re.split(r"[\n,，、;；]+", str(value or ""))
+    seen: set[str] = set()
+    items: list[str] = []
+    for part in parts:
+        item = part.strip(" \t\r\n。；;")
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        items.append(item)
+        if len(items) >= 40:
+            break
+    return items
 
 
 def _conversation_initial_repo_path(conversation: dict[str, Any]) -> str:

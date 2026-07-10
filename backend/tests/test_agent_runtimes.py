@@ -854,7 +854,10 @@ class TestAgentRuntimes:
             assert created.status_code == 201
             conversation = created.json()
 
-            user_task = "请针对 iscsi login 输出源码证据、流程梳理、SFMEA 和黑盒测试用例"
+            user_task = (
+                "请针对 iscsi login 输出源码证据、流程梳理、SFMEA 和黑盒测试用例；"
+                "指定输出：项目结构、源码定向阅读、测试视角代码理解"
+            )
             posted = await client.post(
                 f"/api/ai/conversations/{conversation['id']}/messages",
                 json={"content": user_task},
@@ -886,6 +889,13 @@ class TestAgentRuntimes:
         assert manifest["prompt"]["text"].find(user_task) >= 0
         assert manifest["prompt"]["sha256"]
         assert manifest["execution_contract"]["runtime_type"] == "agent_runtime"
+        assert manifest["execution_contract"]["outputs"]["user_requested_outputs"] == [
+            {
+                "source": "user_message",
+                "value": "项目结构、源码定向阅读、测试视角代码理解",
+                "items": ["项目结构", "源码定向阅读", "测试视角代码理解"],
+            }
+        ]
         assert manifest["execution_contract"]["typed_events"] == [
             "answer",
             "thinking",

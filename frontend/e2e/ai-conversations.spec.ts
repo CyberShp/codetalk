@@ -2682,6 +2682,16 @@ test("AI conversation runtime contract summary uses typed event payloads", async
               artifact_contract: {
                 required_outputs: ["sfmea.json", "black_box_cases.json"],
               },
+              execution_contract: {
+                outputs: {
+                  user_requested_outputs: [
+                    {
+                      source: "user_message",
+                      items: ["项目结构", "源码定向阅读"],
+                    },
+                  ],
+                },
+              },
             },
             created_at: "2026-06-28T00:00:01Z",
           },
@@ -2699,6 +2709,7 @@ test("AI conversation runtime contract summary uses typed event payloads", async
   await expect(contractSummary).toContainText("MCP: codehub-readonly");
   await expect(contractSummary).toContainText("skills: storage-test-design, sfmea");
   await expect(contractSummary).toContainText("outputs: sfmea.json, black_box_cases.json");
+  await expect(contractSummary).toContainText("requested: 项目结构, 源码定向阅读");
   await expect(contractSummary).toContainText("cwd: /Volumes/Media/dpdk/spdk");
 });
 
