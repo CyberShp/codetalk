@@ -444,7 +444,16 @@ def test_workbench_runner_auto_timeout_uses_agent_runtime_limit(tmp_path, monkey
     assert execution_input["timeout_sec"] == 3
     assert execution_input["idle_timeout_sec"] == 120
     assert execution_input["prompt_transport"] == "codex_exec_json"
-    assert execution_input["process_command"][-2:] == ["exec", "--json"]
+    expected_artifact_dir = str(
+        Path(prepared.artifact_dir, "agent_runs", "agent_collect")
+    )
+    assert execution_input["process_command"][1:] == [
+        str(script_path),
+        "exec",
+        "--json",
+        "--add-dir",
+        expected_artifact_dir,
+    ]
     argv = json.loads(
         Path(
             prepared.artifact_dir,
@@ -453,7 +462,12 @@ def test_workbench_runner_auto_timeout_uses_agent_runtime_limit(tmp_path, monkey
             "argv.json",
         ).read_text(encoding="utf-8")
     )
-    assert argv[-2:] == ["exec", "--json"]
+    assert argv == [
+        "exec",
+        "--json",
+        "--add-dir",
+        expected_artifact_dir,
+    ]
     stdin_payload = Path(
         prepared.artifact_dir,
         "agent_runs",

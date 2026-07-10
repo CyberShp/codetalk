@@ -566,6 +566,7 @@ class AgentRunHarness:
             command=launch_command,
             prompt=stdin_payload,
             prompt_transport=str(run_payload.get("prompt_transport") or ""),
+            artifact_dir=str(self.artifact_dir),
         )
         process_command, stdin_payload_bytes, prompt_transport, prompt_transport_reason = invocation_candidates[0]
         if (
@@ -1407,6 +1408,7 @@ def _agent_process_invocation_candidates_for_harness(
     command: list[str],
     prompt: str,
     prompt_transport: str = "",
+    artifact_dir: str = "",
 ) -> list[tuple[list[str], bytes, str, str]]:
     """Reuse external-agent transport fallback rules for Workbench task runs."""
     explicit_transport = str(prompt_transport or "").strip()
@@ -1415,6 +1417,7 @@ def _agent_process_invocation_candidates_for_harness(
             command=command,
             prompt=prompt,
             prompt_transport=explicit_transport,
+            artifact_dir=artifact_dir,
         )
         if explicit_candidate is not None:
             return [explicit_candidate]
@@ -1436,6 +1439,7 @@ def _explicit_agent_runtime_invocation_candidate(
     command: list[str],
     prompt: str,
     prompt_transport: str,
+    artifact_dir: str = "",
 ) -> tuple[list[str], bytes, str, str] | None:
     if not command:
         return None
@@ -1460,8 +1464,11 @@ def _explicit_agent_runtime_invocation_candidate(
             "agent_runtime_prompt_transport",
         )
     if prompt_transport == "codex_exec_json":
+        args = _codex_exec_json_args(base_args, prompt)
+        if artifact_dir:
+            args = _append_option_value_once(args, "--add-dir", artifact_dir)
         return (
-            [executable, *_codex_exec_json_args(base_args, prompt)],
+            [executable, *args],
             prompt.encode("utf-8"),
             prompt_transport,
             "agent_runtime_prompt_transport",
@@ -1474,6 +1481,15 @@ def _explicit_agent_runtime_invocation_candidate(
             "agent_runtime_prompt_transport",
         )
     return None
+
+
+def _append_option_value_once(args: list[str], flag: str, value: str) -> list[str]:
+    result = list(args)
+    for index, item in enumerate(result[:-1]):
+        if item == flag and result[index + 1] == value:
+            return result
+    result.extend([flag, value])
+    return result
 
 
 def _agent_process_env_for_harness(*, provider: str, repo_path: str) -> dict[str, str]:
