@@ -2686,10 +2686,8 @@ async def prepare_and_execute_task_run(payload: RunTaskRunRequest) -> dict[str, 
         )
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown workflow: {payload.workflow_id}")
-    except FileNotFoundError as exc:
+    except (FileNotFoundError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
     task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(prepared.task_run_id)
     task_dir = Path(task_run.artifact_dir)
     return {

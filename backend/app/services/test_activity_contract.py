@@ -179,6 +179,20 @@ SPDK_PROJECT_PROFILE: dict[str, Any] = {
 
 
 ARTIFACT_TEMPLATES: dict[str, dict[str, Any]] = {
+    "module_analysis.md": {
+        "preview": "markdown",
+        "sections": [
+            "分析范围",
+            "模块边界",
+            "关键入口与调用链",
+            "主流程",
+            "异常与恢复路径",
+            "源码与测试证据",
+            "测试关注点",
+            "证据缺口",
+        ],
+        "required_fields": ["module", "entry_points", "flows", "evidence", "test_mapping"],
+    },
     "project_structure.md": {"preview": "markdown", "sections": ["项目结构", "测试相关目录", "入口说明"], "required_fields": ["source_roots", "test_roots"]},
     "source_reading_plan.md": {"preview": "markdown", "sections": ["阅读目标", "阅读顺序", "证据缺口"], "required_fields": ["target", "read_order", "evidence_policy"]},
     "module_map.md": {"preview": "markdown", "sections": ["模块边界", "入口", "依赖", "测试映射"], "required_fields": ["module", "entries", "test_mapping"]},

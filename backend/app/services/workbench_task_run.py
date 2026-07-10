@@ -89,6 +89,15 @@ class WorkbenchTaskRunPreparer:
         provider_override: str | None = None,
     ) -> PreparedWorkbenchTaskRun:
         workflow_snapshot = self.workflow_store.freeze_workflow_snapshot(workflow_id)
+        has_agent_step = any(
+            isinstance(step, dict) and step.get("type") == "agent_task"
+            for step in workflow_snapshot.get("steps") or []
+        )
+        if provider_override and not has_agent_step:
+            raise ValueError(
+                "provider override requires an agent_task step; "
+                "the selected workflow only contains built-in steps"
+            )
         task_run_id = _new_id("task_run")
         artifact_dir = self.artifact_root / task_run_id
         artifact_dir.mkdir(parents=True, exist_ok=True)

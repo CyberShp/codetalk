@@ -1004,23 +1004,18 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
         "validate_mr_evidence",
         "render_blackbox_cases",
     ]
-    assert by_id["module_analysis"]["agent_step_count"] == 0
-    assert by_id["module_analysis"]["execution_subject"] == "local_static"
-    assert by_id["module_analysis"]["execution_label"] == "本地静态扫描（无 AI）"
-    assert "不会调用 AI" in by_id["module_analysis"]["user_message"]
+    assert by_id["module_analysis"]["agent_step_count"] == 1
+    assert by_id["module_analysis"]["execution_subject"] == "agent"
+    assert by_id["module_analysis"]["execution_label"] == "智能体源码分析"
+    assert "所选执行器" in by_id["module_analysis"]["user_message"]
     assert by_id["module_analysis"]["builtin_steps"] == [
         "discover_scope",
         "validate_evidence",
-        "render_report",
     ]
     assert by_id["module_analysis"]["required_artifacts"] == [
         "source_scope.json",
         "evidence_cards.json",
-    ]
-    assert by_id["module_analysis"]["builtin_steps"] == [
-        "discover_scope",
-        "validate_evidence",
-        "render_report",
+        "module_analysis.md",
     ]
     assert by_id["resource_leak_hunt"]["agent_step_count"] == 0
     assert by_id["resource_leak_hunt"]["builtin_steps"] == [
@@ -1046,7 +1041,7 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
         assert not item["missing_required"]
 
 
-async def test_module_analysis_task_run_summary_is_honest_about_local_static_scan(
+async def test_module_analysis_prepare_summary_exposes_static_discovery_and_agent_analysis(
     workbench_client,
     tmp_path,
 ):
@@ -1064,8 +1059,8 @@ async def test_module_analysis_task_run_summary_is_honest_about_local_static_sca
     )
     assert installed.status_code == 201
 
-    scheduled = await workbench_client.post(
-        "/api/workbench/task-runs/run",
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
         json={
             "workflow_id": "module_analysis",
             "workspace_id": "ws-empty-module-analysis",
@@ -1074,45 +1069,62 @@ async def test_module_analysis_task_run_summary_is_honest_about_local_static_sca
                 "analysis_object": "definitely_missing_storage_module",
                 "repo_path": str(repo),
             },
-            "timeout_sec": 10,
+            "provider_override": "agent-runtime:default-codex",
         },
     )
-    assert scheduled.status_code == 202
-    body = await _wait_for_task_run_status(
-        workbench_client,
-        scheduled.json()["task_run_id"],
-        terminal_statuses={
-            "completed",
-            "completed_empty",
-            "needs_review",
-            "invalid",
-            "failed",
-            "error",
-        },
-        timeout_sec=10,
-    )
-
-    assert body["status"] == "completed_empty"
+    assert prepared.status_code == 201
+    body = prepared.json()
+    assert len(body["agent_runs"]) == 1
+    assert body["agent_runs"][0]["step_id"] == "analyze_module"
+    assert body["agent_runs"][0]["provider"] == "agent-runtime:default-codex"
     summary = body["run_ui_summary"]
-    assert summary["status"] == "completed_empty"
-    assert summary["status_label"] == "完成但信息不足"
-    assert summary["execution_subject"] == "local_static"
-    assert summary["execution_label"] == "本地静态扫描（无 AI）"
-    assert "AI" in summary["user_message"]
-    assert (
-        "不会调用" in summary["user_message"]
-        or "未调用" in summary["user_message"]
-    )
-    assert summary["workflow"]["execution_subject"] == "local_static"
-    assert summary["workflow"]["execution_label"] == "本地静态扫描（无 AI）"
+    assert summary["status"] == "prepared"
+    assert summary["execution_subject"] == "agent"
+    assert summary["execution_label"] == "智能体源码分析"
+    assert summary["workflow"]["execution_subject"] == "agent"
+    assert summary["workflow"]["execution_label"] == "智能体源码分析"
     discover = summary["nodes"][0]
     assert discover["id"] == "discover_scope"
-    assert discover["status"] == "completed_empty"
-    assert discover["status_label"] == "完成但信息不足"
+    assert discover["status"] == "prepared"
     assert discover["executor"] == "local_static"
     assert discover["executor_label"] == "本地静态扫描（无 AI）"
-    assert discover["method"] == "filesystem_source_scan"
-    assert "未找到匹配源码证据" in discover["review_reasons"][0]
+    analyze = summary["nodes"][1]
+    assert analyze["id"] == "analyze_module"
+    assert analyze["executor"] == "external_agent"
+    assert analyze["provider"] == "agent-runtime:default-codex"
+    assert [item["artifact"] for item in analyze["outputs"]] == [
+        "module_analysis.md"
+    ]
+
+
+async def test_task_run_endpoints_reject_provider_override_for_builtin_only_workflow(
+    workbench_client,
+    tmp_path,
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    installed = await workbench_client.post(
+        "/api/workbench/workflow-presets/resource_leak_hunt/install"
+    )
+    assert installed.status_code == 201
+
+    payload = {
+        "workflow_id": "resource_leak_hunt",
+        "workspace_id": "ws-static",
+        "repo_path": str(repo),
+        "inputs": {
+            "analysis_object": "lib/bdev",
+            "repo_path": str(repo),
+        },
+        "provider_override": "agent-runtime:default-codex",
+    }
+    for endpoint in ("prepare", "run"):
+        response = await workbench_client.post(
+            f"/api/workbench/task-runs/{endpoint}",
+            json=payload,
+        )
+        assert response.status_code == 422
+        assert "provider override requires an agent_task step" in response.json()["detail"]
 
 
 async def test_workbench_provider_capabilities_matrix_api(workbench_client, monkeypatch):

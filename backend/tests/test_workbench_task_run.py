@@ -777,6 +777,39 @@ def test_prepare_workbench_task_run_validates_required_inputs(tmp_path):
         raise AssertionError("missing required input should fail task preparation")
 
 
+def test_prepare_workbench_task_run_rejects_provider_override_without_agent_step(
+    tmp_path,
+):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "static_scan",
+        "name": "Static scan",
+        "version": 1,
+        "inputs": [],
+        "steps": [{"id": "render", "type": "report_render"}],
+        "outputs": [{"id": "report", "type": "markdown", "from": "render"}],
+    })
+
+    try:
+        WorkbenchTaskRunPreparer(
+            artifact_root=tmp_path / "task_runs",
+            workflow_store=workflow_store,
+        ).prepare(
+            workflow_id="static_scan",
+            workspace_id="ws1",
+            repo_path=str(tmp_path),
+            inputs={},
+            provider_override="agent-runtime:default-codex",
+        )
+    except ValueError as exc:
+        assert "provider override requires an agent_task step" in str(exc)
+    else:
+        raise AssertionError("a provider override must not be silently ignored")
+
+
 def test_prepare_workbench_task_run_enforces_user_input_schema(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer
@@ -3693,7 +3726,44 @@ def test_workbench_workflow_runner_executes_builtin_context_and_report_steps(tmp
     assert execution["context_discovery_decision"]["fast-context"]["fallback_path"][-1] == "agent_cli"
 
 
-def test_module_analysis_preset_executes_with_local_scope_discovery(tmp_path):
+def _install_module_analysis_test_runtime(tmp_path, monkeypatch):
+    import app.services.workbench_task_run as task_run_module
+
+    script_path = tmp_path / "module_analysis_agent.py"
+    script_path.write_text(
+        "import os, pathlib, sys\n"
+        "prompt = sys.stdin.read()\n"
+        "artifact_dir = pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "artifact_dir.joinpath('received_prompt.txt').write_text(prompt, encoding='utf-8')\n"
+        "artifact_dir.joinpath('module_analysis.md').write_text("
+        "'# 分析范围\\nSPDK 模块分析\\n\\n## 模块边界\\nlib/nvmf\\n\\n'"
+        "+ '## 关键入口与调用链\\nnvmf_tcp_accept\\n\\n## 主流程\\nconnect -> IO\\n\\n'"
+        "+ '## 异常与恢复路径\\ntimeout\\n\\n## 源码与测试证据\\nlib/nvmf/tcp.c test/nvmf/target.c\\n\\n'"
+        "+ '## 测试关注点\\n重连\\n\\n## 证据缺口\\n无\\n', encoding='utf-8')\n"
+        "print('module analysis complete', flush=True)\n",
+        encoding="utf-8",
+    )
+    runtime_id = "module-analysis-test"
+    monkeypatch.setattr(
+        task_run_module,
+        "get_agent_runtime_sync",
+        lambda candidate: {
+            "id": runtime_id,
+            "command": sys.executable,
+            "args": [str(script_path)],
+            "prompt_transport": "stdin",
+            "timeout_seconds": 10,
+            "idle_complete_seconds": 10,
+            "enabled": True,
+        } if candidate == runtime_id else None,
+    )
+    return f"agent-runtime:{runtime_id}"
+
+
+def test_module_analysis_preset_executes_with_local_scope_discovery(
+    tmp_path,
+    monkeypatch,
+):
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer
     from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
     from app.services.workflow_dsl import WorkflowStore
@@ -3713,6 +3783,7 @@ def test_module_analysis_preset_executes_with_local_scope_discovery(tmp_path):
     )
     workflow_store = WorkflowStore(tmp_path / "workflows.db")
     install_workflow_preset(workflow_store, "module_analysis")
+    provider = _install_module_analysis_test_runtime(tmp_path, monkeypatch)
 
     task_run = WorkbenchTaskRunPreparer(
         artifact_root=tmp_path / "task_runs",
@@ -3725,6 +3796,7 @@ def test_module_analysis_preset_executes_with_local_scope_discovery(tmp_path):
             "analysis_object": "SPDK NVMe-oF target connect to IO path",
             "repo_path": str(repo),
         },
+        provider_override=provider,
     )
 
     result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
@@ -3736,8 +3808,8 @@ def test_module_analysis_preset_executes_with_local_scope_discovery(tmp_path):
     step_status = {item["step_id"]: item["status"] for item in result.step_results}
     assert step_status == {
         "discover_scope": "completed",
+        "analyze_module": "completed",
         "validate_evidence": "completed",
-        "render_report": "completed",
     }
     root = Path(task_run.artifact_dir)
     source_scope = json.loads(
@@ -3746,11 +3818,17 @@ def test_module_analysis_preset_executes_with_local_scope_discovery(tmp_path):
     evidence_cards = json.loads(
         (root / "steps" / "discover_scope" / "evidence_cards.json").read_text(encoding="utf-8")
     )
-    report = (root / "steps" / "render_report" / "report.md").read_text(encoding="utf-8")
+    report = (
+        root / "agent_runs" / "analyze_module" / "module_analysis.md"
+    ).read_text(encoding="utf-8")
+    received_prompt = (
+        root / "agent_runs" / "analyze_module" / "received_prompt.txt"
+    ).read_text(encoding="utf-8")
     assert "lib/nvmf/tcp.c" in source_scope["files"]
     assert evidence_cards[0]["source"] == "local-search"
     assert evidence_cards[0]["sha256"]
-    assert "source_scope.json" in report
+    assert "关键入口与调用链" in report
+    assert "SPDK NVMe-oF target connect to IO path" in received_prompt
     output_status = {item["id"]: item["status"] for item in result.outputs}
     assert output_status == {
         "scope": "ok",
@@ -3759,7 +3837,7 @@ def test_module_analysis_preset_executes_with_local_scope_discovery(tmp_path):
     }
 
 
-def test_module_analysis_empty_local_scope_is_completed_empty(tmp_path):
+def test_module_analysis_empty_local_scope_is_completed_empty(tmp_path, monkeypatch):
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer
     from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
     from app.services.workflow_dsl import WorkflowStore
@@ -3769,6 +3847,7 @@ def test_module_analysis_empty_local_scope_is_completed_empty(tmp_path):
     repo.mkdir()
     workflow_store = WorkflowStore(tmp_path / "workflows.db")
     install_workflow_preset(workflow_store, "module_analysis")
+    provider = _install_module_analysis_test_runtime(tmp_path, monkeypatch)
 
     task_run = WorkbenchTaskRunPreparer(
         artifact_root=tmp_path / "task_runs",
@@ -3781,6 +3860,7 @@ def test_module_analysis_empty_local_scope_is_completed_empty(tmp_path):
             "analysis_object": "definitely_missing_storage_module",
             "repo_path": str(repo),
         },
+        provider_override=provider,
     )
 
     result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
@@ -3791,6 +3871,7 @@ def test_module_analysis_empty_local_scope_is_completed_empty(tmp_path):
     assert result.status == "completed_empty"
     step_status = {item["step_id"]: item["status"] for item in result.step_results}
     assert step_status["discover_scope"] == "completed_empty"
+    assert step_status["analyze_module"] == "completed"
     root = Path(task_run.artifact_dir)
     source_scope = json.loads(
         (root / "steps" / "discover_scope" / "source_scope.json").read_text(encoding="utf-8")

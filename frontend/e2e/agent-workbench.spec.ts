@@ -1004,6 +1004,65 @@ test("workflow run can select an existing workspace and sync repo_path input", a
   await expect(page.getByLabel("Workflow input repo_path")).toHaveCount(0);
 });
 
+test("workflow run starts without phantom demo inputs", async ({ page }) => {
+  await routeSplitPageWorkflowShell(page);
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByText("高级输入 JSON").click();
+
+  await expect(page.getByLabel("Inputs JSON")).not.toHaveValue(/mr_link/);
+  await expect(page.getByLabel("Inputs JSON")).not.toHaveValue(/codehub\.example\.local/);
+});
+
+test("executor override is unavailable for workflows without agent steps", async ({
+  page,
+}) => {
+  const moduleWorkflow = {
+    ...minimalWorkflowDefinition("module_analysis", "Module Analysis"),
+    steps: [
+      {
+        id: "analyze_module",
+        type: "agent_task",
+        provider: "claude-code",
+        required_artifacts: ["module_analysis.md"],
+      },
+    ],
+  };
+  const staticWorkflow = minimalWorkflowDefinition(
+    "resource_leak_hunt",
+    "Resource Leak and Error Branch Hunt",
+  );
+  const definitions = [moduleWorkflow, staticWorkflow];
+  await routeWorkbenchShell(page);
+  await page.route("**/api/workbench/workflows", async (route) => {
+    await route.fulfill({
+      json: definitions,
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+  await page.route("**/api/workbench/workflow-presets", async (route) => {
+    await route.fulfill({
+      json: {
+        items: definitions.map((definition) => ({
+          id: definition.id,
+          name: definition.name,
+          description: `${definition.name} preset`,
+          definition,
+        })),
+      },
+      headers: corsHeaders(route.request().headers().origin),
+    });
+  });
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await page.getByLabel("工作流").selectOption("resource_leak_hunt");
+
+  await expect(page.getByLabel("执行器覆盖")).toBeDisabled();
+  await expect(
+    page.getByText("当前工作流没有 Agent 节点，执行器覆盖不可用。"),
+  ).toBeVisible();
+});
+
 test("workflow presets stay visible when non-core diagnostics fail", async ({ page }) => {
   const definitions = [
     minimalWorkflowDefinition("module_analysis", "Module Analysis"),
@@ -1304,7 +1363,7 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow input iscsi_login_script")).toBeVisible();
   await expect(page.getByLabel("Workflow input change_mr")).toBeVisible();
   await openWorkbenchView(page, "工作流设计");
-  await page.locator(".ct-workflow-node").first().click({ position: { x: 44, y: 18 } });
+  await page.locator(".ct-workflow-node").first().click();
   await expect(page.getByLabel("Workflow inspector")).toBeVisible();
   await page.getByText("输出契约", { exact: true }).scrollIntoViewIfNeeded();
   const newOutputName = page.getByLabel("New workflow output name");
@@ -1471,7 +1530,9 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByText("高级输入 JSON")).toBeVisible();
   await expect(page.getByLabel("Inputs JSON")).not.toBeVisible();
   await page.getByText("高级输入 JSON").click();
-  await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"patch_diff": \{\s+"path": "input_uploads\/input_patch_upload\/tls\.patch"\s+\}/);
+  await expect(page.getByLabel("Inputs JSON")).toHaveValue(
+    /"patch_diff": "input_uploads\/input_patch_upload\/tls\.patch"/,
+  );
   await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"design_doc": \{\s+"path": "E:\/docs\/tls-design\.md"\s+\}/);
   await expect(page.getByLabel("Inputs JSON")).toHaveValue(/"analysis_object": "nvme-tcp-tls"/);
   await expect(page.getByRole("button", { name: "准备运行" })).toBeDisabled();
@@ -2245,7 +2306,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(preparePanel.getByText("固化交付物").first()).toBeVisible();
   await expect(preparePanel.getByText("可信度与可用性")).toBeVisible();
   await expect(preparePanel.getByText("交付物状态")).toBeVisible();
-  await expect(resultPanel.getByText("运行状态")).toBeVisible();
+  await expect(resultPanel.getByText("运行状态", { exact: true })).toBeVisible();
   await expect(resultPanel.getByText("演示状态")).toHaveCount(0);
   await expect(resultPanel.getByText("进行中")).toBeVisible();
   await expect(resultPanel.getByText("准备上下文")).toBeVisible();
@@ -2527,8 +2588,8 @@ test("agent workbench prevents duplicate artifact preview requests from a real d
   await preparePanel.getByLabel("Workspace selector").selectOption("ws_spdk");
   await preparePanel.getByRole("button", { name: "准备运行" }).hover();
   await preparePanel.getByRole("button", { name: "准备运行" }).click();
-  await expect(page.getByText("运行产物", { exact: true }).first()).toBeVisible();
   await page.getByLabel("运行详细诊断").getByText("查看详细诊断与原始产物").click();
+  await expect(page.getByText("运行产物", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("交付文件: 0 · 输入材料: 0 · 内部诊断: 1")).toBeVisible();
   await page.getByText("内部诊断 1").last().click();
 
@@ -2539,8 +2600,16 @@ test("agent workbench prevents duplicate artifact preview requests from a real d
   await previewButton.hover();
   await previewButton.dblclick();
 
-  await expect(page.getByText("sha:abc123abc123")).toBeVisible();
-  await expect(page.getByText("\"double_click_safe\":true", { exact: false })).toBeVisible();
+  await expect(
+    page
+      .getByLabel("运行结果面板")
+      .getByText("sha:abc123abc123", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByLabel("运行结果面板")
+      .getByText("\"double_click_safe\":true", { exact: false }),
+  ).toBeVisible();
   await expect.poll(() => contentRequests).toBe(1);
 });
 
@@ -2571,46 +2640,50 @@ test("agent workbench opens one AI review thread on double click", async ({ page
       headers: corsHeaders(route.request().headers().origin),
       json: {
         task_run_id: "task_run_ai_review",
-        workflow_id: "mr-blackbox-workflow",
         status: "completed",
-        started_at: "2026-06-23T00:01:00Z",
-        completed_at: "2026-06-23T00:02:30Z",
-        step_results: [
-          {
-            step_id: "collect",
-            step_label: "收集证据",
-            status: "ok",
-            duration_ms: 1200,
+        execution: {
+          task_run_id: "task_run_ai_review",
+          workflow_id: "mr-blackbox-workflow",
+          status: "completed",
+          started_at: "2026-06-23T00:01:00Z",
+          completed_at: "2026-06-23T00:02:30Z",
+          step_results: [
+            {
+              step_id: "collect",
+              step_label: "收集证据",
+              status: "ok",
+              duration_ms: 1200,
+            },
+            {
+              step_id: "test_design",
+              step_label: "生成测试设计",
+              status: "ok",
+              duration_ms: 3600,
+            },
+          ],
+          outputs: [
+            {
+              id: "sfmea",
+              status: "ok",
+              artifact: "sfmea.json",
+            },
+            {
+              id: "black_box_cases",
+              status: "ok",
+              artifact: "black_box_cases.json",
+            },
+          ],
+          audit_summary: {
+            completed_steps: 2,
+            failed_steps: 0,
+            failure_kinds: [],
           },
-          {
-            step_id: "test_design",
-            step_label: "生成测试设计",
-            status: "ok",
-            duration_ms: 3600,
+          test_activity_quality: {
+            status: "deliverable",
+            score: 88,
+            issue_count: 1,
+            recommendations: ["补充 iSCSI CHAP 异常恢复观测点"],
           },
-        ],
-        outputs: [
-          {
-            id: "sfmea",
-            status: "ok",
-            artifact: "sfmea.json",
-          },
-          {
-            id: "black_box_cases",
-            status: "ok",
-            artifact: "black_box_cases.json",
-          },
-        ],
-        audit_summary: {
-          completed_steps: 2,
-          failed_steps: 0,
-          failure_kinds: [],
-        },
-        test_activity_quality: {
-          status: "deliverable",
-          score: 88,
-          issue_count: 1,
-          recommendations: ["补充 iSCSI CHAP 异常恢复观测点"],
         },
       },
     });
@@ -2700,7 +2773,9 @@ test("agent workbench opens one AI review thread on double click", async ({ page
   await page.getByLabel("运行详细诊断").getByText("查看详细诊断与原始产物").click();
   await expect(page.getByRole("paragraph").filter({ hasText: /^task_run_ai_review$/ })).toBeVisible();
   await page.getByRole("button", { name: "执行工作流" }).click();
-  await expect(page.getByText("运行完成", { exact: false }).first()).toBeVisible();
+  await expect(
+    page.getByLabel("运行结果面板").getByText("已完成", { exact: true }).first(),
+  ).toBeVisible();
 
   await page.getByRole("button", { name: "围绕本次运行继续追问" }).dblclick();
 

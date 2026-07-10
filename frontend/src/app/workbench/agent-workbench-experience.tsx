@@ -122,11 +122,7 @@ const DEFAULT_WORKFLOW = {
   ],
 };
 
-const DEFAULT_INPUTS = {
-  mr_link: "https://codehub.example.local/group/project/-/merge_requests/1",
-  design_doc: "",
-  coverage_report: "",
-};
+const DEFAULT_INPUTS: Record<string, string> = {};
 
 type WorkbenchView = "run" | "workflow" | "knowledge" | "diagnostics";
 
@@ -4416,6 +4412,11 @@ export function AgentWorkbenchExperience({
       ) ?? null,
     [selectedWorkflowSteps],
   );
+  useEffect(() => {
+    if (!selectedAgentStep && providerOverride) {
+      setProviderOverride("");
+    }
+  }, [providerOverride, selectedAgentStep]);
   const selectedAgentSkillInstructions = useMemo(() => {
     const raw = selectedAgentStep?.skill_instructions;
     if (!Array.isArray(raw)) return [];
@@ -4435,8 +4436,10 @@ export function AgentWorkbenchExperience({
   }, [selectedAgentStep]);
   const selectedRunProvider = useMemo(
     () =>
-      providerOverride.trim() ||
-      String(selectedAgentStep?.provider ?? (builderProvider || "claude-code")),
+      selectedAgentStep
+        ? providerOverride.trim() ||
+          String(selectedAgentStep.provider ?? (builderProvider || "claude-code"))
+        : "本地内置步骤",
     [builderProvider, providerOverride, selectedAgentStep],
   );
   const selectedRunMcpProfile = useMemo(
@@ -6866,7 +6869,9 @@ export function AgentWorkbenchExperience({
         workspace_id: workspaceId,
         repo_path: repoPath,
         inputs,
-        provider_override: providerOverride.trim() || null,
+        provider_override: selectedAgentStep
+          ? providerOverride.trim() || null
+          : null,
       });
       setPreparedRun(result);
       setTaskRuns((current) =>
@@ -6901,7 +6906,9 @@ export function AgentWorkbenchExperience({
           workspace_id: workspaceId,
           repo_path: repoPath,
           inputs,
-          provider_override: providerOverride.trim() || null,
+          provider_override: selectedAgentStep
+            ? providerOverride.trim() || null
+            : null,
         },
         undefined,
         true,
@@ -9968,7 +9975,8 @@ export function AgentWorkbenchExperience({
                   aria-label="执行器覆盖"
                   value={providerOverride}
                   onChange={(event) => setProviderOverride(event.target.value)}
-                  className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
+                  disabled={!selectedAgentStep}
+                  className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-55"
                 >
                   <option value="">使用工作流默认执行器</option>
                   {builderProviderOptions.map((provider) => (
@@ -9978,6 +9986,11 @@ export function AgentWorkbenchExperience({
                     </option>
                   ))}
                 </select>
+                {!selectedAgentStep && (
+                  <span className="mt-1 block text-[11px] text-on-surface-variant">
+                    当前工作流没有 Agent 节点，执行器覆盖不可用。
+                  </span>
+                )}
               </label>
               {visibleWorkflowInputs.length > 0 && (
                 <div

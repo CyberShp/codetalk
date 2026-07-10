@@ -383,16 +383,16 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
             "id": "module_analysis",
             "name": "Module Analysis",
             "description": (
-                "Local static source scan: discover source scope, collect evidence cards, "
-                "and render a structured report without invoking AI or external agents."
+                "Collect local source evidence first, then let the selected Agent produce an "
+                "evidence-backed module analysis report with flows, abnormal paths, and test focus."
             ),
             "definition": {
                 "id": "module_analysis",
                 "name": "Module Analysis",
                 "version": 1,
-                "execution_subject": "local_static",
-                "execution_label": "本地静态扫描（无 AI）",
-                "user_message": "该预设只执行本地静态源码扫描，不会调用 AI 或外部 Agent。",
+                "execution_subject": "agent",
+                "execution_label": "智能体源码分析",
+                "user_message": "先收集本地源码证据，再由所选执行器完成深度模块分析。",
                 "inputs": [
                     {"id": "analysis_object", "type": "free_text", "required": True, "role": "module or feature name"},
                     {"id": "repo_path", "type": "directory", "required": True, "resolver": "local"},
@@ -406,8 +406,58 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                         "goal": "Discover source files, symbols, entry points, and evidence for the requested module from the local repository.",
                         "required_artifacts": ["source_scope.json", "evidence_cards.json"],
                     },
+                    {
+                        "id": "analyze_module",
+                        "type": "agent_task",
+                        "provider": "claude-code",
+                        "mcp_profile": "codehub-mcp",
+                        "skills": [
+                            "source-evidence-first",
+                            "module-analysis",
+                            "business-flow-mapping",
+                            "storage-test-analysis",
+                            "artifact-contract",
+                        ],
+                        "skill_instructions": [
+                            {
+                                "id": "module-analysis",
+                                "label": "模块分析",
+                                "source": "codetalk_builtin",
+                                "prompt_hint": (
+                                    "生成 module_analysis.md，必须包含分析范围、模块边界、关键入口与调用链、"
+                                    "主流程、异常与恢复路径、源码与测试证据、测试关注点和证据缺口。"
+                                ),
+                            },
+                            {
+                                "id": "source-evidence-first",
+                                "label": "源码证据优先",
+                                "source": "codetalk_builtin",
+                                "prompt_hint": (
+                                    "先读取工作区源码、GitNexus/CGC 产物和 discover_scope 的证据卡；"
+                                    "每个关键判断引用真实文件、符号或测试目录，不得把推测写成事实。"
+                                ),
+                            },
+                            {
+                                "id": "storage-test-analysis",
+                                "label": "存储测试视角",
+                                "source": "codetalk_builtin",
+                                "prompt_hint": (
+                                    "结合用户指定模块识别协议状态、资源生命周期、超时、并发、恢复、"
+                                    "性能和可观测性风险；测试关注点必须由源码和现有测试证据支撑。"
+                                ),
+                            },
+                        ],
+                        "goal": (
+                            "Read the complete user input and workspace source. Consume the local scope "
+                            "and evidence artifacts from the previous step, then use GitNexus/CGC when "
+                            "available to produce module_analysis.md. The report must explain module "
+                            "boundaries, concrete entry points and call paths, main and abnormal/recovery "
+                            "flows, existing test evidence, test-focused risks, and explicit evidence gaps. "
+                            "Do not modify the repository; terminal output is progress only."
+                        ),
+                        "required_artifacts": ["module_analysis.md"],
+                    },
                     {"id": "validate_evidence", "type": "evidence_validate"},
-                    {"id": "render_report", "type": "report_render"},
                 ],
                 "outputs": [
                     {
@@ -426,7 +476,8 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                     {
                         "id": "report",
                         "type": "markdown",
-                        "from": "render_report",
+                        "from": "analyze_module",
+                        "artifact": "module_analysis.md",
                     },
                 ],
             },
