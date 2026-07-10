@@ -2016,7 +2016,13 @@ test("runs and cancels a real agent workflow with live cockpit events", async ({
     });
     await expect(page.getByText(providerId).first()).toBeVisible();
     await expect(page.getByText(/MCP: qa-cancel-mcp/).first()).toBeVisible();
-    await expect(page.getByText(/skills: storage-test-design/).first()).toBeVisible();
+    await expect(page.getByText(/技能: storage-test-design/).first()).toBeVisible();
+    await expect(page.getByText("产物更新 · agent_invocation.json")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(page.getByText("调用执行器 · slow_agent_analysis")).toBeVisible({
+      timeout: 15_000,
+    });
 
     const cancelResponse = page.waitForResponse(
       (response) =>
