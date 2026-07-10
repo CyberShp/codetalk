@@ -485,6 +485,19 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
         for step in workflow.get("steps") or []
         if isinstance(step, dict)
     ]
+    active_step_id = _task_run_ui_active_step_id(task_root)
+    if active_step_id:
+        nodes = [
+            {
+                **node,
+                "status": "running",
+                "status_label": _task_run_ui_status_label("running"),
+            }
+            if node.get("id") == active_step_id
+            and node.get("status_label") == _task_run_ui_status_label("prepared")
+            else node
+            for node in nodes
+        ]
     execution_metadata = _task_run_ui_workflow_execution_metadata(workflow)
     status = _task_run_ui_status(execution=execution, nodes=nodes)
     failed_node = next((node for node in nodes if node.get("status_label") == "运行失败"), None)
@@ -525,6 +538,32 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
         "debug_default_collapsed": True,
         "debug_sections": ["raw JSON", "prompt", "diagnostic", "replay plan"],
     }
+
+
+def _task_run_ui_active_step_id(task_root: Path) -> str:
+    events_path = task_root / "task_run_events.jsonl"
+    if not events_path.is_file():
+        return ""
+    active_step_id = ""
+    try:
+        lines = events_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        event_type = str(event.get("event_type") or "")
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        step_id = str(payload.get("step_id") or "")
+        if event_type == "step_started" and step_id:
+            active_step_id = step_id
+        elif event_type in {"step_completed", "step_failed", "step_cancelled"} and step_id == active_step_id:
+            active_step_id = ""
+    return active_step_id
 
 
 def _task_run_ui_node_summary(
@@ -612,7 +651,18 @@ def _task_run_ui_step_execution_metadata(
     step_result: dict[str, Any],
 ) -> dict[str, str]:
     step_type = str(step.get("type") or "")
-    provider = str(step_result.get("provider") or step.get("provider") or "")
+    step_id = str(step.get("id") or "")
+    agent_run = (
+        _read_json(task_root / "agent_runs" / _safe_segment(step_id, "step_id") / "agent_run.json")
+        if step_type == "agent_task" and step_id
+        else {}
+    )
+    provider = str(
+        step_result.get("provider")
+        or (agent_run or {}).get("provider")
+        or step.get("provider")
+        or ""
+    )
     method = ""
     executor = ""
     executor_label = ""
@@ -6401,7 +6451,7 @@ def _black_box_case_duplicate_key(case: dict[str, Any]) -> str:
         _black_box_case_test_directory(case),
         " ".join(_semantic_string_list(case.get("preconditions") or case.get("precondition") or case.get("setup"))),
         " ".join(_semantic_string_list(case.get("steps"))),
-        " ".join(_semantic_string_list(case.get("expected"))),
+        " ".join(_black_box_case_expected(case)),
         " ".join(_semantic_string_list(
             case.get("observability")
             or case.get("observation_points")
@@ -6440,7 +6490,7 @@ def _black_box_case_test_directory(case: dict[str, Any]) -> str:
 def _black_box_case_quality_reasons(case: dict[str, Any]) -> list[str]:
     reasons: list[str] = []
     steps = _semantic_string_list(case.get("steps"))
-    expected = _semantic_string_list(case.get("expected"))
+    expected = _black_box_case_expected(case)
     preconditions = _semantic_string_list(
         case.get("preconditions")
         or case.get("precondition")
@@ -6479,7 +6529,7 @@ def _black_box_case_quality_reasons(case: dict[str, Any]) -> list[str]:
         reasons.append("missing_test_directory_mapping")
     boundary_text = " ".join([
         str(case.get("title") or ""),
-        str(case.get("scenario") or ""),
+        str(case.get("scenario") or case.get("scenario_name") or ""),
         str(case.get("inputs") or ""),
         " ".join(steps),
         " ".join(expected),
@@ -6491,6 +6541,14 @@ def _black_box_case_quality_reasons(case: dict[str, Any]) -> list[str]:
     if _BLACK_BOX_WHITE_BOX_RE.search(boundary_text):
         reasons.append("white_box_boundary")
     return _semantic_dedupe(reasons)
+
+
+def _black_box_case_expected(case: dict[str, Any]) -> list[str]:
+    return _semantic_string_list(
+        case.get("expected")
+        or case.get("expected_result")
+        or case.get("expected_results")
+    )
 
 
 def _black_box_steps_are_actionable(steps: list[str]) -> bool:

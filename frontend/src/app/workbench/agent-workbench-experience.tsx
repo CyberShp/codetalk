@@ -3879,6 +3879,7 @@ export function AgentWorkbenchExperience({
   const autoRestoredTaskRunRef = useRef<string | null>(null);
   const startTaskRunPollingRef = useRef<(taskRunId: string) => void>(() => undefined);
   const taskRunEventSourceRef = useRef<EventSource | null>(null);
+  const taskRunPollingIdRef = useRef<string | null>(null);
   const paletteDragModuleRef = useRef<string | null>(null);
   const palettePointerDragRef = useRef<{
     moduleId: string;
@@ -4090,6 +4091,7 @@ export function AgentWorkbenchExperience({
 
   useEffect(
     () => () => {
+      taskRunPollingIdRef.current = null;
       taskRunEventSourceRef.current?.close();
       taskRunEventSourceRef.current = null;
     },
@@ -6301,7 +6303,7 @@ export function AgentWorkbenchExperience({
   async function pollTaskRunUntilSettled(taskRunId: string) {
     let cursor = 0;
     let lastRun: PreparedWorkbenchTaskRun | null = null;
-    for (let attempt = 0; attempt < 180; attempt += 1) {
+    while (taskRunPollingIdRef.current === taskRunId) {
       const result = await refreshTaskRunRuntime(taskRunId, cursor);
       cursor = result.lastEventId;
       lastRun = result.run;
@@ -6316,6 +6318,7 @@ export function AgentWorkbenchExperience({
   }
 
   function startTaskRunPolling(taskRunId: string) {
+    taskRunPollingIdRef.current = taskRunId;
     void (async () => {
       startTaskRunEventStream(taskRunId);
       try {
@@ -6330,6 +6333,9 @@ export function AgentWorkbenchExperience({
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "刷新任务状态失败");
       } finally {
+        if (taskRunPollingIdRef.current === taskRunId) {
+          taskRunPollingIdRef.current = null;
+        }
         taskRunEventSourceRef.current?.close();
         taskRunEventSourceRef.current = null;
       }
@@ -6343,6 +6349,12 @@ export function AgentWorkbenchExperience({
       api.workbench.taskRuns.artifacts(taskRunId),
       api.workbench.taskRuns.events(taskRunId),
     ]);
+    selectedWorkflowIdRef.current = run.workflow_id;
+    setSelectedWorkflowId(run.workflow_id);
+    setWorkspaceId(run.workspace_id);
+    setRepoPath(run.repo_path);
+    setInputsJson(pretty(run.input_snapshot ?? {}));
+    setProviderOverride(run.agent_runs.find((item) => item.provider)?.provider ?? "");
     setPreparedRun(run);
     setArtifactManifest(manifest);
     setTaskRunEvents(events.items);
@@ -10560,7 +10572,7 @@ export function AgentWorkbenchExperience({
                         )}
                         {preparedRunSnapshotSummary.outputs.length > 0 && (
                           <div className="mt-2 flex flex-wrap gap-1.5">
-                            {preparedRunSnapshotSummary.outputs.slice(0, 6).map((output) => (
+                            {preparedRunSnapshotSummary.outputs.map((output) => (
                               <span
                                 key={`${output.label}-${output.artifact}`}
                                 className="rounded-md bg-surface px-2 py-1 text-[11px] text-primary"
@@ -10660,7 +10672,6 @@ export function AgentWorkbenchExperience({
                             <span className="ml-1 text-on-surface">
                               {runPanelCapabilitySummary.requiredArtifacts.length > 0
                                 ? runPanelCapabilitySummary.requiredArtifacts
-                                    .slice(0, 5)
                                     .join("、")
                                 : "跟随工作流输出契约"}
                             </span>

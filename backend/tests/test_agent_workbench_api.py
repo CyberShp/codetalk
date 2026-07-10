@@ -2885,6 +2885,9 @@ async def test_workbench_task_run_execute_api_schedules_background_run_and_expos
     by_type = {item["event_type"]: item for item in event_items}
     assert by_type["queued"]["event_kind"] == "status"
     assert by_type["step_started"]["event_kind"] == "status"
+    running = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}")
+    assert running.status_code == 200
+    assert running.json()["run_ui_summary"]["nodes"][0]["status_label"] == "运行中"
 
 
 async def test_workbench_task_run_events_stream_yields_incremental_events_until_terminal(
@@ -6557,6 +6560,48 @@ async def test_workbench_task_run_acceptance_audit_rejects_duplicate_black_box_c
     quality_check = checks["black_box_case_quality:design:black_box_cases.json"]
     assert quality_check["status"] == "invalid"
     assert any("duplicate_black_box_case" in item["reasons"] for item in quality_check["invalid_cases"])
+
+
+async def test_black_box_case_quality_accepts_test_activity_contract_field_names():
+    from app.api.agent_workbench import (
+        _black_box_case_duplicate_key,
+        _black_box_case_quality_reasons,
+    )
+
+    case = {
+        "case_id": "BB-ISCSI-LOGIN-001",
+        "scenario_name": "Discovery and login succeeds with CHAP disabled",
+        "preconditions": ["SPDK iscsi_tgt is running"],
+        "steps": ["Run iscsiadm discovery, login, and a short fio workload"],
+        "expected_result": "The command exit code is zero, one device connects, and fio reports success",
+        "observability": ["iscsiadm exit code", "target logs", "fio status"],
+        "failure_diagnostics": ["Collect the initiator session and target Login logs"],
+        "mapped_test_dir": "test/iscsi_tgt/filesystem",
+        "source_or_test_evidence": ["test/iscsi_tgt/filesystem/filesystem.sh:62"],
+    }
+
+    assert _black_box_case_quality_reasons(case) == []
+    assert _black_box_case_duplicate_key(case)
+
+
+async def test_run_ui_uses_frozen_agent_runtime_provider_before_step_finishes(tmp_path):
+    from app.api.agent_workbench import _task_run_ui_step_execution_metadata
+
+    agent_dir = tmp_path / "agent_runs" / "analyze"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "agent_run.json").write_text(
+        json.dumps({"provider": "agent-runtime:default-codex", "status": "created"}),
+        encoding="utf-8",
+    )
+
+    metadata = _task_run_ui_step_execution_metadata(
+        task_root=tmp_path,
+        step={"id": "analyze", "type": "agent_task", "provider": "claude-code"},
+        step_result={},
+    )
+
+    assert metadata["provider"] == "agent-runtime:default-codex"
+    assert metadata["executor_label"] == "外部 Agent：agent-runtime:default-codex"
 
 
 async def test_workbench_task_run_acceptance_audit_requires_declared_evidence_mapping(
