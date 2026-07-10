@@ -21,6 +21,8 @@ from typing import Any, Callable
 from app.services.agent_cli_bridge import _decode as _decode_agent_cli_output
 from app.services.agent_invocation_contract import (
     agent_invocation_artifact_event_payload,
+    agent_invocation_capability_event_payload,
+    agent_invocation_capability_manifest,
     build_agent_invocation_execution_contract,
 )
 
@@ -339,14 +341,16 @@ class AgentRunHarness:
             "agent_output_contract.json",
             agent_output_contract,
         )
+        invocation_manifest = _workflow_agent_invocation_payload(
+            run=run,
+            task_bundle=task_bundle,
+            workflow_snapshot=workflow_snapshot,
+            agent_output_contract=agent_output_contract,
+        )
+        self._write_json("agent_invocation.json", invocation_manifest)
         self._write_json(
-            "agent_invocation.json",
-            _workflow_agent_invocation_payload(
-                run=run,
-                task_bundle=task_bundle,
-                workflow_snapshot=workflow_snapshot,
-                agent_output_contract=agent_output_contract,
-            ),
+            "capability_manifest.json",
+            agent_invocation_capability_manifest(invocation_manifest),
         )
         return run
 
@@ -479,12 +483,27 @@ class AgentRunHarness:
             prompt_transport="stdin",
         )
         self._write_json("agent_invocation.json", invocation_manifest)
+        capability_manifest = agent_invocation_capability_manifest(invocation_manifest)
+        self._write_json("capability_manifest.json", capability_manifest)
         _emit_agent_run_event(
             event_sink,
             "artifact",
             agent_invocation_artifact_event_payload(
                 invocation_manifest,
                 artifact="agent_invocation.json",
+                extra={
+                    "run_id": run_id,
+                    "turn_id": turn_id,
+                    "provider": str(run_payload.get("provider") or ""),
+                },
+            ),
+        )
+        _emit_agent_run_event(
+            event_sink,
+            "artifact",
+            agent_invocation_capability_event_payload(
+                invocation_manifest,
+                artifact="capability_manifest.json",
                 extra={
                     "run_id": run_id,
                     "turn_id": turn_id,

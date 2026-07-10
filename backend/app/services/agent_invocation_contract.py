@@ -79,6 +79,11 @@ def agent_invocation_artifact_event_payload(
         if isinstance(manifest.get("artifact_contract"), dict)
         else {}
     )
+    test_activity_contract = (
+        manifest.get("test_activity_contract")
+        if isinstance(manifest.get("test_activity_contract"), dict)
+        else {}
+    )
     repo_path = str(manifest.get("repo_path") or manifest.get("cwd") or "")
     payload: dict[str, Any] = {
         "artifact": artifact,
@@ -115,6 +120,120 @@ def agent_invocation_artifact_event_payload(
     return payload
 
 
+def agent_invocation_capability_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Summarize what capabilities this invocation received and what is degraded."""
+
+    runtime = manifest.get("runtime") if isinstance(manifest.get("runtime"), dict) else {}
+    execution_contract = (
+        manifest.get("execution_contract")
+        if isinstance(manifest.get("execution_contract"), dict)
+        else {}
+    )
+    task_bundle = (
+        manifest.get("task_bundle")
+        if isinstance(manifest.get("task_bundle"), dict)
+        else {}
+    )
+    mcp_contract = execution_contract.get("mcp") if isinstance(execution_contract.get("mcp"), dict) else {}
+    skills_contract = (
+        execution_contract.get("skills")
+        if isinstance(execution_contract.get("skills"), dict)
+        else {}
+    )
+    outputs = (
+        execution_contract.get("outputs")
+        if isinstance(execution_contract.get("outputs"), dict)
+        else {}
+    )
+    artifact_contract = (
+        manifest.get("artifact_contract")
+        if isinstance(manifest.get("artifact_contract"), dict)
+        else {}
+    )
+    test_activity_contract = (
+        manifest.get("test_activity_contract")
+        if isinstance(manifest.get("test_activity_contract"), dict)
+        else {}
+    )
+    capability_status = _capability_status(mcp_contract)
+    return {
+        "schema_version": 1,
+        "source": str(manifest.get("source") or "agent_invocation"),
+        "run_id": str(manifest.get("run_id") or ""),
+        "turn_id": str(manifest.get("turn_id") or ""),
+        "runtime": {
+            "provider": str(runtime.get("provider") or manifest.get("provider") or ""),
+            "name": str(runtime.get("name") or ""),
+            "prompt_transport": str(runtime.get("prompt_transport") or ""),
+            "cwd_label": _public_path_name(str(manifest.get("cwd") or "")),
+            "repo_label": _public_path_name(str(manifest.get("repo_path") or manifest.get("cwd") or "")),
+        },
+        "input_contract": {
+            "must_receive_full_user_input": bool(
+                execution_contract.get("must_receive_full_user_input")
+            ),
+            "source_first": execution_contract.get("source_first"),
+            "material_count": _safe_int(
+                (task_bundle.get("input_materials") or {}).get("material_count")
+                if isinstance(task_bundle.get("input_materials"), dict)
+                else 0
+            ),
+            "user_input_count": len(_list_like(task_bundle.get("user_inputs"))),
+        },
+        "mcp": {
+            "profile": str(manifest.get("mcp_profile") or mcp_contract.get("profile") or ""),
+            "status": capability_status,
+            "availability": mcp_contract.get("availability") if mcp_contract else {},
+            "request_count": len(_list_like(mcp_contract.get("requests"))),
+            "credential_owner": "agent_cli" if manifest.get("mcp_profile") else "",
+            "degraded": capability_status in {"codetalk_prefetch", "direct_unverified", "unavailable"},
+        },
+        "skills": {
+            "ids": _unique_string_list(
+                manifest.get("skills")
+                or skills_contract.get("ids")
+                or task_bundle.get("skills")
+                or []
+            ),
+            "instruction_count": len(_list_like(skills_contract.get("instructions"))),
+            "rule": str(skills_contract.get("rule") or ""),
+        },
+        "outputs": {
+            "required_artifacts": _unique_string_list(
+                outputs.get("required_artifacts")
+                or artifact_contract.get("required_artifacts")
+                or artifact_contract.get("required_outputs")
+                or test_activity_contract.get("required_outputs")
+                or []
+            ),
+            "declared_output_count": len(_list_like(outputs.get("declared_outputs"))),
+            "expected_schema_count": len(_list_like(outputs.get("expected_output_schemas"))),
+            "artifact_dir": str(manifest.get("artifact_dir") or ""),
+        },
+        "typed_events": agent_invocation_typed_events(),
+    }
+
+
+def agent_invocation_capability_event_payload(
+    manifest: dict[str, Any],
+    *,
+    artifact: str = "capability_manifest.json",
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    capability = agent_invocation_capability_manifest(manifest)
+    payload: dict[str, Any] = {
+        "artifact": artifact,
+        "artifact_kind": "capability_manifest",
+        "content": "执行器能力边界已记录，MCP、skills、输入与输出目标可核验。",
+        "mcp": capability["mcp"],
+        "skills": capability["skills"],
+        "outputs": capability["outputs"],
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
 def _public_execution_contract_event_payload(
     execution_contract: dict[str, Any],
 ) -> dict[str, Any]:
@@ -135,6 +254,45 @@ def _public_execution_contract_event_payload(
             "reason": str(mcp.get("reason") or ""),
         }
     return payload
+
+
+def _capability_status(mcp_contract: dict[str, Any]) -> str:
+    availability = (
+        mcp_contract.get("availability")
+        if isinstance(mcp_contract.get("availability"), dict)
+        else {}
+    )
+    status = str(availability.get("status") or "").strip()
+    if status:
+        return status
+    if not mcp_contract:
+        return "not_declared"
+    if not str(mcp_contract.get("profile") or "").strip():
+        return "not_requested"
+    return "unknown"
+
+
+def _list_like(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _unique_string_list(value: Any) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for item in _list_like(value):
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        result.append(text)
+    return result
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _public_execution_outputs_event_payload(execution_contract: dict[str, Any]) -> dict[str, Any]:

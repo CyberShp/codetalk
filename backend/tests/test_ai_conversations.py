@@ -3663,6 +3663,18 @@ class TestAIConversationsAPI:
         assert invocation_payload["test_activity_contract"]["target"] == (
             "请读取 lib/iscsi/iscsi.c 生成完整 SFMEA 和黑盒测试用例"
         )
+        capability_events = [
+            item
+            for item in response.json()["items"]
+            if item["payload"].get("artifact_kind") == "capability_manifest"
+        ]
+        assert capability_events
+        capability_payload = capability_events[0]["payload"]
+        assert capability_payload["outputs"]["required_artifacts"] == [
+            "sfmea.json",
+            "black_box_cases.json",
+        ]
+        assert capability_payload["skills"]["ids"] == []
 
     async def test_list_run_events_returns_recent_redacted_agent_process(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)

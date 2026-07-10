@@ -2771,6 +2771,7 @@ async def test_workbench_task_run_execute_workflow_api(workbench_client, tmp_pat
     ]
     assert {item["artifact"] for item in artifact_events} >= {
         "agent_invocation.json",
+        "capability_manifest.json",
         "execution_input.json",
         "raw_output.txt",
         "execution_result.json",
@@ -2784,6 +2785,11 @@ async def test_workbench_task_run_execute_workflow_api(workbench_client, tmp_pat
     assert invocation_event["execution_contract"]["typed_events"] == agent_invocation_typed_events()
     assert invocation_event["execution_contract"]["must_receive_full_user_input"] is True
     assert invocation_event["artifact_contract"]["required_outputs"] == ["result.json"]
+    capability_event = next(
+        item for item in artifact_events if item["artifact"] == "capability_manifest.json"
+    )
+    assert capability_event["artifact_kind"] == "capability_manifest"
+    assert capability_event["outputs"]["required_artifacts"] == ["result.json"]
     tool_use = next(item for item in event_items if item["event_type"] == "tool_use")
     assert tool_use["payload"]["tool"] == "agent_cli"
     assert tool_use["payload"]["input"]["cwd_label"] == tmp_path.name

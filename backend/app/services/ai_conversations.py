@@ -31,6 +31,8 @@ from app.services.agent_cli_bridge import (
 )
 from app.services.agent_invocation_contract import (
     agent_invocation_artifact_event_payload,
+    agent_invocation_capability_event_payload,
+    agent_invocation_capability_manifest,
     build_agent_invocation_execution_contract,
 )
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
@@ -1737,11 +1739,25 @@ async def run_agent_generation(
         agent_artifact_dir / "agent_invocation.json",
         invocation_manifest,
     )
+    capability_manifest = agent_invocation_capability_manifest(invocation_manifest)
+    await _write_json_file(
+        agent_artifact_dir / "capability_manifest.json",
+        capability_manifest,
+    )
     await store.append_event(
         run_id=run_id,
         conversation_id=conversation["id"],
         event_type="artifact",
         payload=_agent_invocation_artifact_event_payload(invocation_manifest),
+    )
+    await store.append_event(
+        run_id=run_id,
+        conversation_id=conversation["id"],
+        event_type="artifact",
+        payload=agent_invocation_capability_event_payload(
+            invocation_manifest,
+            artifact="agent-artifacts/capability_manifest.json",
+        ),
     )
     runtime_for_turn = dict(runtime)
     runtime_env = dict(runtime_for_turn.get("env") or {})
@@ -4272,6 +4288,7 @@ _AI_THREAD_AGENT_ARTIFACT_SUFFIX_PRIORITY = {
 _AI_THREAD_AGENT_AUDIT_ARTIFACT_NAMES = {
     "agent_invocation",
     "agent_replay_plan",
+    "capability_manifest",
     "diagnostic",
     "diagnostics",
     "execution_input",
