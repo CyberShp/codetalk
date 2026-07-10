@@ -264,6 +264,7 @@ class AgentRunRecord:
     cwd: str
     artifact_dir: str
     mcp_profile: str = ""
+    prompt_transport: str = ""
     timeout_seconds: int | None = None
     idle_timeout_seconds: float | None = None
     session_policy: dict[str, Any] = field(default_factory=_default_agent_session_policy)
@@ -322,6 +323,7 @@ class AgentRunHarness:
         workflow_snapshot: dict[str, Any],
         task_bundle: dict[str, Any],
         mcp_profile: str = "",
+        prompt_transport: str = "",
         timeout_seconds: int | None = None,
         idle_timeout_seconds: float | None = None,
         run_id: str | None = None,
@@ -335,6 +337,7 @@ class AgentRunHarness:
             cwd=cwd,
             artifact_dir=str(self.artifact_dir),
             mcp_profile=mcp_profile,
+            prompt_transport=str(prompt_transport or ""),
             timeout_seconds=timeout_seconds,
             idle_timeout_seconds=idle_timeout_seconds,
         )
@@ -486,6 +489,7 @@ class AgentRunHarness:
                 cwd=cwd,
                 artifact_dir=str(self.artifact_dir),
                 mcp_profile=str(run_payload.get("mcp_profile") or ""),
+                prompt_transport=str(run_payload.get("prompt_transport") or ""),
                 session_policy=session_policy,
                 status=str(run_payload.get("status") or "created"),
                 created_at=str(run_payload.get("created_at") or _now()),
@@ -495,7 +499,7 @@ class AgentRunHarness:
             agent_output_contract=agent_output_contract if isinstance(agent_output_contract, dict) else {},
             stdin_payload_obj=stdin_payload_obj,
             stdin_payload=stdin_payload,
-            prompt_transport="stdin",
+            prompt_transport=str(run_payload.get("prompt_transport") or "stdin"),
         )
         self._write_json("agent_invocation.json", invocation_manifest)
         capability_manifest = agent_invocation_capability_manifest(invocation_manifest)
@@ -561,10 +565,11 @@ class AgentRunHarness:
             provider=str(run_payload.get("provider") or ""),
             command=launch_command,
             prompt=stdin_payload,
+            prompt_transport=str(run_payload.get("prompt_transport") or ""),
         )
         process_command, stdin_payload_bytes, prompt_transport, prompt_transport_reason = invocation_candidates[0]
         if (
-            prompt_transport != "stdin"
+            prompt_transport not in {"stdin", "codex_exec_json"}
             and len(stdin_payload.encode("utf-8")) > _MAX_ARG_PROMPT_BYTES
         ):
             process_command = list(launch_command)
@@ -1401,8 +1406,18 @@ def _agent_process_invocation_candidates_for_harness(
     provider: str,
     command: list[str],
     prompt: str,
+    prompt_transport: str = "",
 ) -> list[tuple[list[str], bytes, str, str]]:
     """Reuse external-agent transport fallback rules for Workbench task runs."""
+    explicit_transport = str(prompt_transport or "").strip()
+    if explicit_transport:
+        explicit_candidate = _explicit_agent_runtime_invocation_candidate(
+            command=command,
+            prompt=prompt,
+            prompt_transport=explicit_transport,
+        )
+        if explicit_candidate is not None:
+            return [explicit_candidate]
     try:
         from app.services.external_agent_discovery import _agent_process_invocation_candidates
 
@@ -1414,6 +1429,51 @@ def _agent_process_invocation_candidates_for_harness(
             prompt=prompt,
         )
         return [(command_value, stdin_payload, transport, "")]
+
+
+def _explicit_agent_runtime_invocation_candidate(
+    *,
+    command: list[str],
+    prompt: str,
+    prompt_transport: str,
+) -> tuple[list[str], bytes, str, str] | None:
+    if not command:
+        return None
+    executable, *base_args = [str(part) for part in command]
+    if prompt_transport == "stdin":
+        return list(command), prompt.encode("utf-8"), "stdin", "agent_runtime_prompt_transport"
+    if prompt_transport == "argv_last":
+        return [*command, prompt], b"", "argv_last", "agent_runtime_prompt_transport"
+    try:
+        from app.services.agent_cli_bridge import (
+            _claude_print_args,
+            _codex_exec_json_args,
+            _opencode_run_args,
+        )
+    except Exception:
+        return None
+    if prompt_transport == "claude_print_arg":
+        return (
+            [executable, *_claude_print_args(base_args, prompt)],
+            b"",
+            prompt_transport,
+            "agent_runtime_prompt_transport",
+        )
+    if prompt_transport == "codex_exec_json":
+        return (
+            [executable, *_codex_exec_json_args(base_args, prompt)],
+            prompt.encode("utf-8"),
+            prompt_transport,
+            "agent_runtime_prompt_transport",
+        )
+    if prompt_transport == "opencode_run_arg":
+        return (
+            [executable, *_opencode_run_args(base_args, prompt)],
+            b"",
+            prompt_transport,
+            "agent_runtime_prompt_transport",
+        )
+    return None
 
 
 def _agent_process_env_for_harness(*, provider: str, repo_path: str) -> dict[str, str]:

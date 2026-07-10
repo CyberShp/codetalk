@@ -309,6 +309,7 @@ def test_agent_runtime_timeout_limits_are_frozen_into_task_run(tmp_path, monkeyp
             "id": runtime_id,
             "command": sys.executable,
             "args": [],
+            "prompt_transport": "codex_exec_json",
             "timeout_seconds": 900,
             "idle_complete_seconds": 5,
             "enabled": True,
@@ -349,6 +350,7 @@ def test_agent_runtime_timeout_limits_are_frozen_into_task_run(tmp_path, monkeyp
 
     assert result.agent_runs[0]["timeout_seconds"] == 900
     assert result.agent_runs[0]["idle_timeout_seconds"] == 120
+    assert result.agent_runs[0]["prompt_transport"] == "codex_exec_json"
     agent_run = json.loads(
         Path(
             result.artifact_dir,
@@ -359,6 +361,7 @@ def test_agent_runtime_timeout_limits_are_frozen_into_task_run(tmp_path, monkeyp
     )
     assert agent_run["timeout_seconds"] == 900
     assert agent_run["idle_timeout_seconds"] == 120
+    assert agent_run["prompt_transport"] == "codex_exec_json"
 
 
 def test_workbench_runner_auto_timeout_uses_agent_runtime_limit(tmp_path, monkeypatch):
@@ -370,10 +373,12 @@ def test_workbench_runner_auto_timeout_uses_agent_runtime_limit(tmp_path, monkey
     script_path = tmp_path / "runtime_agent.py"
     script_path.write_text(
         "import os, pathlib, sys, time\n"
-        "sys.stdin.read()\n"
+        "payload=sys.stdin.read()\n"
         "print('runtime-agent-started', flush=True)\n"
         "time.sleep(1.2)\n"
         "artifact_dir=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "artifact_dir.joinpath('argv.json').write_text(__import__('json').dumps(sys.argv[1:]), encoding='utf-8')\n"
+        "artifact_dir.joinpath('stdin.txt').write_text(payload, encoding='utf-8')\n"
         "artifact_dir.joinpath('report.md').write_text('# ok\\n', encoding='utf-8')\n",
         encoding="utf-8",
     )
@@ -384,6 +389,7 @@ def test_workbench_runner_auto_timeout_uses_agent_runtime_limit(tmp_path, monkey
             "id": runtime_id,
             "command": sys.executable,
             "args": [str(script_path)],
+            "prompt_transport": "codex_exec_json",
             "timeout_seconds": 3,
             "idle_complete_seconds": 5,
             "enabled": True,
@@ -437,6 +443,24 @@ def test_workbench_runner_auto_timeout_uses_agent_runtime_limit(tmp_path, monkey
     )
     assert execution_input["timeout_sec"] == 3
     assert execution_input["idle_timeout_sec"] == 120
+    assert execution_input["prompt_transport"] == "codex_exec_json"
+    assert execution_input["process_command"][-2:] == ["exec", "--json"]
+    argv = json.loads(
+        Path(
+            prepared.artifact_dir,
+            "agent_runs",
+            "agent_collect",
+            "argv.json",
+        ).read_text(encoding="utf-8")
+    )
+    assert argv[-2:] == ["exec", "--json"]
+    stdin_payload = Path(
+        prepared.artifact_dir,
+        "agent_runs",
+        "agent_collect",
+        "stdin.txt",
+    ).read_text(encoding="utf-8")
+    assert "runtime_auto_timeout" in stdin_payload
 
 
 def test_workbench_runner_builtin_llm_uses_handoff_contract_and_writes_outputs(

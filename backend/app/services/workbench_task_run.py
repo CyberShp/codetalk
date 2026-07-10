@@ -217,6 +217,7 @@ class WorkbenchTaskRunPreparer:
             provider = str(provider_override or step.get("provider") or "claude-code")
             command = _agent_task_provider_command(provider)
             runtime_limits = _agent_task_runtime_limits(provider)
+            prompt_transport = _agent_task_prompt_transport(provider)
             execution_contract = build_executor_handoff_contract(
                 workflow_snapshot=workflow_snapshot,
                 workflow_contract=workflow_contract,
@@ -254,6 +255,7 @@ class WorkbenchTaskRunPreparer:
                 workflow_snapshot=workflow_snapshot,
                 task_bundle=step_bundle,
                 mcp_profile=str(step.get("mcp_profile") or ""),
+                prompt_transport=prompt_transport,
                 timeout_seconds=runtime_limits.get("timeout_seconds"),
                 idle_timeout_seconds=runtime_limits.get("idle_timeout_seconds"),
                 run_id=f"{task_run_id}_{step_id}",
@@ -264,6 +266,7 @@ class WorkbenchTaskRunPreparer:
                 "provider": provider,
                 "artifact_dir": agent_run.artifact_dir,
                 "mcp_profile": agent_run.mcp_profile,
+                "prompt_transport": agent_run.prompt_transport,
                 "required_artifacts": required_artifacts_by_step.get(step_id, []),
                 **runtime_limits,
             })
@@ -1598,6 +1601,13 @@ def _agent_task_runtime_limits(provider: str) -> dict[str, Any]:
         "timeout_seconds": timeout_seconds,
         "idle_timeout_seconds": idle_timeout_seconds,
     }
+
+
+def _agent_task_prompt_transport(provider: str) -> str:
+    runtime = _agent_runtime_for_provider(provider)
+    if runtime is None:
+        return ""
+    return str(runtime.get("prompt_transport") or "stdin").strip() or "stdin"
 
 
 def _positive_int(value: Any, *, default: int = 0) -> int:
