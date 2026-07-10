@@ -32,6 +32,7 @@ import {
   buildWorkflowFromDesigner,
   mergeDesignerWorkflowWithDraft,
 } from "@/lib/workflow-builder.mjs";
+import { deriveRunPanelStatus } from "@/lib/run-panel-status.mjs";
 import type {
   EvidenceMemoryItem,
   EvidenceSourceSlice,
@@ -4601,49 +4602,26 @@ export function AgentWorkbenchExperience({
     [artifactManifest],
   );
   const testActivityQuality = workflowExecution?.test_activity_quality;
-  const runPanelStatus = useMemo(() => {
-    if (!preparedRun) return "空";
-    if (
-      testActivityQuality?.status &&
-      ["needs_rework", "invalid"].includes(String(testActivityQuality.status).toLowerCase())
-    ) {
-      return "失败";
-    }
-    if (activeRunUiSummary?.status_label) {
-      const label = activeRunUiSummary.status_label;
-      if (label === "运行失败") return "失败";
-      if (label === "运行完成") return "已完成";
-      if (["完成但信息不足", "需要复核"].includes(label)) return "需复核";
-      return "进行中";
-    }
-    if (
-      (taskAcceptanceAudit?.summary.missing_required ?? 0) > 0 ||
-      ["incomplete", "error", "failed", "failure"].includes(
-        String(taskAcceptanceAudit?.status ?? "").toLowerCase(),
-      ) ||
-      ["needs_rework", "invalid", "failed", "error", "timeout"].includes(
-        String(workflowExecution?.status ?? "").toLowerCase(),
-      )
-    ) {
-      return "失败";
-    }
-    if (
-      workflowOutputMaterialize?.status ||
-      ["ready", "passed", "ok", "completed", "success"].includes(
-        String(workflowExecution?.status ?? "").toLowerCase(),
-      )
-    ) {
-      return "已完成";
-    }
-    return "进行中";
-  }, [
-    preparedRun,
-    taskAcceptanceAudit,
-    workflowExecution,
-    workflowOutputMaterialize,
-    activeRunUiSummary,
-    testActivityQuality,
-  ]);
+  const runPanelStatus = useMemo(
+    () =>
+      deriveRunPanelStatus({
+        hasPreparedRun: Boolean(preparedRun),
+        activeStatusLabel: activeRunUiSummary?.status_label,
+        testActivityStatus: testActivityQuality?.status,
+        acceptanceStatus: taskAcceptanceAudit?.status,
+        missingRequired: taskAcceptanceAudit?.summary.missing_required,
+        workflowStatus: workflowExecution?.status,
+        hasMaterializedOutput: Boolean(workflowOutputMaterialize?.status),
+      }),
+    [
+      preparedRun,
+      taskAcceptanceAudit,
+      workflowExecution,
+      workflowOutputMaterialize,
+      activeRunUiSummary,
+      testActivityQuality,
+    ],
+  );
   const runPanelFailureReasons = useMemo(() => {
     const summaryReasons = activeRunUiSummary?.failure?.reasons ?? [];
     if (summaryReasons.length > 0) {

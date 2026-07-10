@@ -623,6 +623,47 @@ async def test_task_run_public_payload_includes_chinese_ui_summary_for_workflow_
         json.dumps(
             {
                 "task_run_id": body["task_run_id"],
+                "status": "needs_rework",
+                "step_results": [
+                    {
+                        "step_id": "agent_collect",
+                        "type": "agent_task",
+                        "status": "completed",
+                        "provider": "builtin-llm",
+                        "execution": {"status": "completed", "error": ""},
+                    }
+                ],
+                "outputs": [
+                    {
+                        "id": "sfmea",
+                        "from": "agent_collect",
+                        "artifact": "sfmea.json",
+                        "status": "ok",
+                        "path": "agent_runs/agent_collect/sfmea.json",
+                    },
+                    {
+                        "id": "black_box_cases",
+                        "from": "agent_collect",
+                        "artifact": "black_box_cases.md",
+                        "status": "ok",
+                        "path": "agent_runs/agent_collect/black_box_cases.md",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    review = await workbench_client.get(f"/api/workbench/task-runs/{body['task_run_id']}")
+    assert review.status_code == 200
+    assert review.json()["run_ui_summary"]["status"] == "needs_rework"
+    assert review.json()["run_ui_summary"]["status_label"] == "需要复核"
+
+    (task_dir / "workflow_execution.json").write_text(
+        json.dumps(
+            {
+                "task_run_id": body["task_run_id"],
                 "status": "invalid",
                 "step_results": [
                     {
@@ -6602,6 +6643,14 @@ async def test_run_ui_uses_frozen_agent_runtime_provider_before_step_finishes(tm
 
     assert metadata["provider"] == "agent-runtime:default-codex"
     assert metadata["executor_label"] == "外部 Agent：agent-runtime:default-codex"
+
+
+async def test_run_ui_treats_needs_rework_as_terminal_review_state():
+    from app.api.agent_workbench import _task_run_ui_status
+
+    status = _task_run_ui_status(execution={"status": "needs_rework"}, nodes=[])
+
+    assert status == {"status": "needs_rework", "label": "需要复核"}
 
 
 async def test_workbench_task_run_acceptance_audit_requires_declared_evidence_mapping(

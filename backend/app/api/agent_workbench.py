@@ -914,8 +914,8 @@ def _task_run_ui_status(*, execution: dict[str, Any], nodes: list[dict[str, Any]
         return {"status": "completed", "label": "运行完成"}
     if status in {"completed_empty"}:
         return {"status": "completed_empty", "label": "完成但信息不足"}
-    if status in {"needs_review"}:
-        return {"status": "needs_review", "label": "需要复核"}
+    if status in {"needs_review", "needs_rework"}:
+        return {"status": status, "label": "需要复核"}
     if status in {"cancelled", "canceled"}:
         return {"status": "cancelled", "label": "已取消"}
     if status in {"interrupted"}:
