@@ -1179,6 +1179,81 @@ class AIConversationStore:
             payload={"status": "failed", "error": error},
         )
 
+    async def reconcile_interrupted_runs(self) -> dict[str, Any]:
+        """Mark queued/running runs from a previous process as interrupted."""
+
+        now = _now()
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                """
+                SELECT *
+                FROM ai_conversation_runs
+                WHERE status IN ('queued', 'running')
+                ORDER BY conversation_id ASC, sequence ASC, created_at ASC
+                """
+            ) as cur:
+                rows = await cur.fetchall()
+            runs = [_run_from_row(row) for row in rows]
+            for run in runs:
+                await db.execute(
+                    """
+                    UPDATE ai_conversation_runs
+                    SET status = 'interrupted', error = ?, completed_at = ?
+                    WHERE id = ?
+                    """,
+                    ("service restarted before AI run completed", now, run["id"]),
+                )
+            conversation_ids = sorted({str(run["conversation_id"]) for run in runs})
+            for conversation_id in conversation_ids:
+                async with db.execute(
+                    """
+                    SELECT 1
+                    FROM ai_conversation_runs
+                    WHERE conversation_id = ? AND status IN ('queued', 'running')
+                    LIMIT 1
+                    """,
+                    (conversation_id,),
+                ) as cur:
+                    has_active = await cur.fetchone() is not None
+                await db.execute(
+                    """
+                    UPDATE ai_conversations
+                    SET status = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    ("running" if has_active else "idle", now, conversation_id),
+                )
+            await db.commit()
+
+        for run in runs:
+            await self.append_event(
+                run_id=run["id"],
+                conversation_id=run["conversation_id"],
+                event_type="error",
+                payload={
+                    "status": "interrupted",
+                    "kind": "service_restart_interrupted",
+                    "error": "后端服务重启，本轮 AI 线程生成已中断，请重新发送或继续提问。",
+                    "technical_diagnostics": {
+                        "previous_status": run["status"],
+                    },
+                },
+            )
+        return {
+            "status": "ok",
+            "interrupted_count": len(runs),
+            "runs": [
+                {
+                    "run_id": str(run["id"]),
+                    "conversation_id": str(run["conversation_id"]),
+                    "previous_status": str(run["status"]),
+                    "sequence": int(run.get("sequence") or 0),
+                }
+                for run in runs
+            ],
+        }
+
     async def cancel_run(self, conversation_id: str) -> dict[str, Any] | None:
         now = _now()
         async with self._connect() as db:

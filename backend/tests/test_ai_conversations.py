@@ -2849,6 +2849,53 @@ class TestAIConversationsAPI:
         assert latest_run["id"] == second["run"]["id"]
         assert latest_run["sequence"] == 2
 
+    async def test_reconcile_interrupted_runs_marks_running_and_queued_idle(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.services.ai_conversations import AIConversationStore
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="重启恢复线程",
+        )
+        first = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="第一轮长任务",
+            references=[],
+        )
+        await store.mark_run_running(first["run"]["id"])
+        second = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="第二轮排队任务",
+            references=[],
+        )
+
+        result = await store.reconcile_interrupted_runs()
+
+        assert result["interrupted_count"] == 2
+        assert {
+            item["run_id"] for item in result["runs"]
+        } == {first["run"]["id"], second["run"]["id"]}
+        assert (await store.get_run(first["run"]["id"]))["status"] == "interrupted"
+        assert (await store.get_run(second["run"]["id"]))["status"] == "interrupted"
+        assert (await store.get_conversation(conversation["id"]))["status"] == "idle"
+        assert await store.next_queued_run(conversation["id"]) is None
+
+        events = await store.list_events_after(conversation["id"], cursor=0, limit=20)
+        interrupted_events = [
+            item for item in events
+            if item["event_type"] == "error"
+            and item["payload"].get("kind") == "service_restart_interrupted"
+        ]
+        assert {item["run_id"] for item in interrupted_events} == {
+            first["run"]["id"],
+            second["run"]["id"],
+        }
+        assert all("后端服务重启" in item["payload"]["error"] for item in interrupted_events)
+
     async def test_cancel_running_generation_prevents_assistant_message_and_allows_retry(
         self,
         sqlite_db,

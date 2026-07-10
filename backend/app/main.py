@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import init_db
+from app.services.ai_conversations import AIConversationStore
 from app.services.process_manager import ProcessManager
 from app.services.workbench_task_run_events import reconcile_interrupted_task_runs
 
@@ -30,6 +31,9 @@ async def lifespan(app: FastAPI):
     settings.outputs_path.mkdir(parents=True, exist_ok=True)
     settings.tiktoken_cache_path.mkdir(parents=True, exist_ok=True)
     await init_db()
+    ai_reconcile = await AIConversationStore().reconcile_interrupted_runs()
+    if ai_reconcile.get("interrupted_count"):
+        logger.warning("Reconciled interrupted AI conversation runs: %s", ai_reconcile)
     reconcile = reconcile_interrupted_task_runs(settings.data_path / "workbench" / "task_runs")
     if reconcile.get("interrupted_count"):
         logger.warning("Reconciled interrupted workbench task runs: %s", reconcile)
