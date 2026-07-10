@@ -1096,7 +1096,7 @@ test("creates an AI investigation thread from the project hub and restores it af
   await page.getByRole("button", { name: "发送" }).click();
   await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: prompt })).toHaveCount(1);
 
-  const alert = page.locator('div[role="alert"]').filter({ hasText: "deterministic AI thread failure" });
+  const alert = page.locator('div[role="alert"]').filter({ hasText: "执行器运行失败" });
   await expect(alert).toBeVisible({ timeout: 20_000 });
   const retryButton = page.getByRole("button", { name: "重试上一条" });
   await expect(retryButton).toBeVisible();
@@ -1131,7 +1131,8 @@ test("creates an AI investigation thread from the project hub and restores it af
   const exported = fs.readFileSync(exportPath, "utf8");
   expect(exported).toContain(`# ${threadTitle}`);
   expect(exported).toContain("## 最近失败");
-  expect(exported).toContain("deterministic AI thread failure");
+  expect(exported).toContain("执行器运行失败");
+  expect(exported).not.toContain("deterministic AI thread failure");
   expect(exported).toContain(prompt);
   expect(exported.match(/## 用户/g)?.length).toBe(2);
   expect(exported).not.toMatch(/sk-[A-Za-z0-9_-]{12,}/);
@@ -2874,10 +2875,10 @@ test("sends quick actions and memory actions through the real AI thread composer
   await page.getByRole("button", { name: quickPrompt }).click();
   await expect(composer).toHaveValue(quickPrompt);
   await composer.focus();
-  await page.keyboard.press("Enter");
+  await page.keyboard.press("Control+Enter");
   await quickRequest;
   await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: quickPrompt })).toHaveCount(1);
-  await expect(page.locator('div[role="alert"]').filter({ hasText: "deterministic AI thread failure" })).toBeVisible({
+  await expect(page.locator('div[role="alert"]').filter({ hasText: "执行器运行失败" })).toBeVisible({
     timeout: 20_000,
   });
 
@@ -2890,7 +2891,7 @@ test("sends quick actions and memory actions through the real AI thread composer
   await page.getByRole("button", { name: memoryPrompt }).click();
   await expect(composer).toHaveValue(memoryPrompt);
   await composer.focus();
-  await page.keyboard.press("Enter");
+  await page.keyboard.press("Control+Enter");
   await memoryRequest;
   await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: memoryPrompt })).toHaveCount(1);
   await expect.poll(() => sendRequests.length).toBe(2);
@@ -7141,7 +7142,7 @@ test("lets the user draft the next AI thread prompt while an agent is still runn
     await expect(composer).toBeEnabled();
     await composer.fill(draftPrompt);
     await expect(composer).toHaveValue(draftPrompt);
-    await composer.press("Enter");
+    await composer.press("Control+Enter");
     await expect(composer).toHaveValue(draftPrompt);
 
     const runningMessagesResp = await request.get(
@@ -10908,7 +10909,7 @@ test("redacts persisted AI thread message secrets from exported markdown", async
   }
 });
 
-test("sends an AI thread message with Enter while Shift+Enter keeps a newline", async ({
+test("keeps a newline with Enter and sends an AI thread message with Control+Enter", async ({
   page,
   request,
 }) => {
@@ -10980,11 +10981,11 @@ test("sends an AI thread message with Enter while Shift+Enter keeps a newline", 
 
     const composer = page.getByLabel("AI 线程消息");
     await composer.fill(firstLine);
-    await page.keyboard.press("Shift+Enter");
+    await page.keyboard.press("Enter");
     await composer.pressSequentially(secondLine);
     await expect(composer).toHaveValue(prompt);
 
-    await page.keyboard.press("Enter");
+    await page.keyboard.press("Control+Enter");
     await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: firstLine })).toHaveCount(1);
     await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: secondLine })).toHaveCount(1);
     await expect(page.getByText("KEYBOARD_AGENT_REPLY")).toBeVisible({ timeout: 30_000 });
@@ -11088,13 +11089,13 @@ test("passes a full multiline prompt to a managed Claude-style agent runtime", a
     const composer = page.getByLabel("AI 线程消息");
     await composer.click();
     await composer.pressSequentially(lines[0]);
-    await page.keyboard.press("Shift+Enter");
+    await page.keyboard.press("Enter");
     await composer.pressSequentially(lines[1]);
-    await page.keyboard.press("Shift+Enter");
+    await page.keyboard.press("Enter");
     await composer.pressSequentially(lines[2]);
     await expect(composer).toHaveValue(prompt);
 
-    await page.keyboard.press("Enter");
+    await page.keyboard.press("Control+Enter");
     for (const line of lines) {
       await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: line })).toHaveCount(1);
     }

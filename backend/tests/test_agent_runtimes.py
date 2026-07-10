@@ -5627,6 +5627,64 @@ class TestAgentRuntimes:
         assert "command: rg nvmf_connect lib/nvmf" in diagnostics
         assert "thread.started" not in answer + diagnostics
 
+    async def test_agent_runtime_accepts_codex_ndjson_lines_larger_than_asyncio_default(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import json, sys; "
+            "sys.stdin.read(); "
+            "text='## 结论\\n' + ('源码证据完整。' * 60000) + '\\n最终答案已生成。'; "
+            "event={'type':'item.completed','item':{'type':'agent_message','text':text}}; "
+            "print(json.dumps(event, ensure_ascii=False), flush=True)"
+        )
+        chunks = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "codex_exec_json",
+                "output_mode": "stream_json",
+                "timeout_seconds": 10,
+            },
+            prompt="读取源码后回答",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        output = "".join(chunks)
+        assert len(output.encode("utf-8")) > 1024 * 1024
+        assert output.startswith("__CODETALK_AGENT_FINAL_ANSWER__:## 结论")
+        assert output.endswith("最终答案已生成。")
+
+    async def test_agent_stream_record_rejects_beyond_configured_total_limit(self):
+        from app.services.agent_cli_bridge import AgentRuntimeError, _read_agent_stream_record
+
+        reader = asyncio.StreamReader(limit=4)
+        reader.feed_data(b"123456789\n")
+        reader.feed_eof()
+
+        with pytest.raises(AgentRuntimeError, match="单条过程事件超过安全上限"):
+            await _read_agent_stream_record(reader, max_bytes=8)
+
+    async def test_agent_runtime_hides_codex_plugin_manifest_noise_but_keeps_reconnect_progress(self):
+        from app.services.agent_cli_bridge import _stderr_progress_lines
+
+        lines = _stderr_progress_lines(
+            "2026-07-10T15:58:01Z WARN codex_core_plugins::manifest: "
+            "ignoring interface.defaultPrompt\n"
+            "Reconnecting... 2/5\n"
+            "2026-07-10T15:58:03Z WARN codex_core::responses_retry: "
+            "stream disconnected - retrying sampling request (3/5 in 400ms)\n"
+            "2026-07-10T15:58:04Z ERROR codex_core_plugins::manifest: "
+            "failed to parse plugin manifest\n"
+        )
+
+        assert lines == [
+            "Agent 连接中断，正在自动重试（2/5）。",
+            "Agent 连接中断，正在自动重试（3/5）。",
+            "2026-07-10T15:58:04Z ERROR codex_core_plugins::manifest: failed to parse plugin manifest",
+        ]
+
     async def test_ai_thread_codex_delta_final_answer_persists_without_repair(
         self,
         sqlite_db,

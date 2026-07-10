@@ -82,15 +82,22 @@ test("public runtime mutation guard prevents concurrent E2E processes from shari
   );
 });
 
-test("E2E specs that create agent runtimes declare the public-runtime mutation guard", () => {
+test("E2E specs that mutate backend data declare the public-runtime mutation guard", () => {
   const violatingSpecs = fs
     .readdirSync(e2eDir)
     .filter((name) => name.endsWith(".spec.ts"))
     .filter((name) => {
       const source = fs.readFileSync(path.join(e2eDir, name), "utf8");
+      const mutatesBackendData =
+        (source.includes("/api/settings/agent-runtimes") && source.includes("request.post")) ||
+        source.includes("request.post(`${backendBase}/api/tasks`") ||
+        source.includes('pathname === "/api/coverage/upload"') ||
+        (
+          source.includes('page.goto("/workspaces/new"') &&
+          source.includes('getByRole("button", { name: "创建工作空间" }).click()')
+        );
       return (
-        source.includes("/api/settings/agent-runtimes") &&
-        source.includes("request.post") &&
+        mutatesBackendData &&
         !source.includes("assertCanMutatePublicRuntime")
       );
     });

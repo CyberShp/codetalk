@@ -2,8 +2,11 @@ import { expect, test } from "@playwright/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { assertCanMutatePublicRuntime } from "../scripts/playwright-runtime-policy.mjs";
 
 const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
+
+assertCanMutatePublicRuntime({ env: process.env, flowName: "task detail real E2E" });
 
 test("prevents duplicate task cancellation requests from a real double click", async ({
   page,

@@ -1998,7 +1998,14 @@ async def run_agent_generation(
     except Exception as exc:
         message = redact_agent_diagnostic_text(str(exc))
         logger.exception("AI agent runtime run failed: %s", message)
-        await store.fail_run(run_id, message)
+        public_message = _public_agent_run_error(message)
+        await _record_agent_run_failure(
+            store=store,
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            technical_message=message,
+            public_message=public_message,
+        )
 
 
 async def maybe_await(value: Any) -> Any:
@@ -2111,6 +2118,63 @@ def _latest_resume_session_id(session_updates: list[dict[str, Any]]) -> str:
         if value:
             return value
     return ""
+
+
+def _public_agent_run_error(error: Exception | str) -> str:
+    message = redact_agent_diagnostic_text(str(error or "")).strip()
+    lowered = message.lower()
+    if (
+        "separator is not found" in lowered
+        or "chunk exceed the limit" in lowered
+        or "limitoverrunerror" in lowered
+    ):
+        return (
+            "执行器返回了过大的单条过程事件，CodeTalk 未能完成解析。"
+            "请重试本轮；若仍失败，请切换执行器或减少单次输出。"
+        )
+    if "403" in lowered or "forbidden" in lowered:
+        return "执行器鉴权失败（HTTP 403）。请在设置中检查账号、API Key 或代理权限后重试。"
+    if re.fullmatch(r"执行器超时（\d+s）", message):
+        return message
+    if message == "执行器单条过程事件超过安全上限，请减少单次工具输出后重试。":
+        return message
+    if message == (
+        "外部 Agent 请求交互式文件写入权限，CodeTalk 已中止本轮。"
+        "请让 Agent 输出最终 Markdown，由 CodeTalk 生成下载产物；不要写入源码工作区。"
+    ):
+        return (
+            "外部 Agent 请求交互式文件写入权限，CodeTalk 已中止本轮。"
+            "请让 Agent 输出最终 Markdown，由 CodeTalk 生成下载产物。"
+        )
+    if (
+        message.startswith("启动执行器失败")
+        or message.startswith("找不到命令")
+        or "permission denied" in lowered
+        or "file not found" in lowered
+    ):
+        return "执行器启动失败。请检查设置中的命令、工作目录和执行权限后重试。"
+    return "执行器运行失败。请展开 Agent 过程查看内部诊断，然后重试或切换执行器。"
+
+
+async def _record_agent_run_failure(
+    *,
+    store: Any,
+    run_id: str,
+    conversation_id: str,
+    technical_message: str,
+    public_message: str,
+) -> None:
+    if technical_message and technical_message != public_message:
+        try:
+            await store.append_event(
+                run_id=run_id,
+                conversation_id=conversation_id,
+                event_type="delta",
+                payload={"kind": "diagnostic", "content": f"内部诊断：{technical_message}"},
+            )
+        except Exception as exc:
+            logger.warning("Failed to persist folded agent diagnostics for %s: %s", run_id, exc)
+    await store.fail_run(run_id, public_message)
 
 
 def _agent_resume_error_can_self_heal(

@@ -3,8 +3,11 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { assertCanMutatePublicRuntime } from "../scripts/playwright-runtime-policy.mjs";
 
 const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
+
+assertCanMutatePublicRuntime({ env: process.env, flowName: "workspace smoke E2E" });
 
 test.describe("Workspace smoke tests", () => {
   test("create workspace page loads with form", async ({ page }) => {

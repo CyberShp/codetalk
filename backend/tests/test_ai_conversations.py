@@ -462,6 +462,68 @@ async def test_agent_output_segments_strip_final_answer_wrappers():
     ]
 
 
+async def test_public_agent_run_error_translates_internal_stream_parser_failure():
+    from app.services.ai_conversations import _public_agent_run_error
+
+    message = _public_agent_run_error(
+        "Separator is not found, and chunk exceed the limit"
+    )
+
+    assert message == (
+        "执行器返回了过大的单条过程事件，CodeTalk 未能完成解析。"
+        "请重试本轮；若仍失败，请切换执行器或减少单次输出。"
+    )
+    assert "Separator" not in message
+
+
+async def test_public_agent_run_error_keeps_local_path_in_folded_diagnostics_only():
+    from app.services.ai_conversations import _public_agent_run_error
+
+    message = _public_agent_run_error(
+        "启动执行器失败：[Errno 13] Permission denied: '/Users/test/private-agent'"
+    )
+
+    assert message == "执行器启动失败。请检查设置中的命令、工作目录和执行权限后重试。"
+    assert "/Users/test" not in message
+
+
+async def test_public_agent_run_error_only_allows_exact_controlled_timeout_text():
+    from app.services.ai_conversations import _public_agent_run_error
+
+    assert _public_agent_run_error("执行器超时（900s）") == "执行器超时（900s）"
+
+    spoofed = _public_agent_run_error(
+        "执行器超时：读取 /Users/alice/.config/codex/auth.json 失败"
+    )
+    assert spoofed == "执行器运行失败。请展开 Agent 过程查看内部诊断，然后重试或切换执行器。"
+    assert "/Users/alice" not in spoofed
+
+
+async def test_agent_run_failure_reaches_failed_state_when_diagnostic_event_write_fails():
+    from app.services.ai_conversations import _record_agent_run_failure
+
+    calls: list[tuple[str, str]] = []
+
+    class FailingDiagnosticStore:
+        async def fail_run(self, run_id: str, error: str) -> None:
+            calls.append(("fail", f"{run_id}:{error}"))
+
+        async def append_event(self, **_kwargs) -> None:
+            calls.append(("diagnostic", "attempted"))
+            raise RuntimeError("database is locked")
+
+    await _record_agent_run_failure(
+        store=FailingDiagnosticStore(),
+        run_id="run-1",
+        conversation_id="conv-1",
+        technical_message="internal parser failed at /private/path",
+        public_message="执行器运行失败。请重试。",
+    )
+
+    assert calls[0] == ("diagnostic", "attempted")
+    assert calls[1] == ("fail", "run-1:执行器运行失败。请重试。")
+
+
 async def test_agent_output_segments_keep_final_answer_after_json_tool_parts():
     from app.services.agent_cli_bridge import AGENT_FINAL_ANSWER_PREFIX
     from app.services.ai_conversations import _agent_output_segments

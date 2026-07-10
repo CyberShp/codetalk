@@ -12,6 +12,7 @@
 
 # testing
 /coverage
+/.next-playwright-e2e/
 
 # next.js
 /.next/

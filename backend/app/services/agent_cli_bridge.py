@@ -21,6 +21,7 @@ from app.services.agent_runtimes import MANAGED_PROVIDER_PROMPT_TRANSPORTS, vali
 AGENT_FINAL_ANSWER_PREFIX = "__CODETALK_AGENT_FINAL_ANSWER__:"
 AGENT_ANSWER_DELTA_PREFIX = "__CODETALK_AGENT_ANSWER_DELTA__:"
 CHAT_TOOL_CALL_STATE_KEY = "__codetalk_chat_tool_calls__"
+AGENT_STREAM_RECORD_LIMIT = 16 * 1024 * 1024
 
 
 class AgentRuntimeError(RuntimeError):
@@ -276,10 +277,27 @@ def _stderr_progress_lines(text: str) -> list[str]:
     lines: list[str] = []
     for raw in cleaned.splitlines():
         line = redact_agent_diagnostic_text(raw).strip()
-        if not line:
+        if not line or _looks_like_agent_initialization_noise(line):
             continue
-        lines.append(line)
+        lines.append(_public_agent_progress_line(line))
     return lines[-20:]
+
+
+def _looks_like_agent_initialization_noise(value: str) -> bool:
+    lowered = str(value or "").lower()
+    return (
+        "codex_core_plugins::manifest" in lowered
+        and "ignoring interface.defaultprompt" in lowered
+    )
+
+
+def _public_agent_progress_line(value: str) -> str:
+    reconnect = re.search(r"Reconnecting\.\.\.\s*(\d+/\d+)", value, re.IGNORECASE)
+    if reconnect is None:
+        reconnect = re.search(r"retrying sampling request\s*\((\d+/\d+)", value, re.IGNORECASE)
+    if reconnect is not None:
+        return f"Agent 连接中断，正在自动重试（{reconnect.group(1)}）。"
+    return value
 
 
 def _resolve_agent_command(command: str, *, platform_name: str | None = None) -> str:
@@ -511,7 +529,7 @@ async def _read_stdout(
         buffer = ""
         stream_state: dict[int, str] = {}
         while True:
-            raw = await read_with_idle(proc.stdout.readline)
+            raw = await read_with_idle(lambda: _read_agent_stream_record(proc.stdout))
             if raw is None:
                 break
             if not raw:
@@ -573,6 +591,31 @@ async def _read_stdout(
             text, _done = apply_completion_policy(_decode(bytes(pending)))
             if text:
                 yield text
+
+
+async def _read_agent_stream_record(
+    reader: asyncio.StreamReader,
+    *,
+    max_bytes: int = AGENT_STREAM_RECORD_LIMIT,
+) -> bytes:
+    record = bytearray()
+    while True:
+        try:
+            chunk = await reader.readuntil(b"\n")
+        except asyncio.LimitOverrunError as exc:
+            chunk = await reader.read(max(1, exc.consumed))
+        except asyncio.IncompleteReadError as exc:
+            chunk = exc.partial
+            if chunk:
+                record.extend(chunk)
+            if len(record) > max_bytes:
+                raise AgentRuntimeError("执行器单条过程事件超过安全上限，请减少单次工具输出后重试。")
+            return bytes(record)
+        record.extend(chunk)
+        if len(record) > max_bytes:
+            raise AgentRuntimeError("执行器单条过程事件超过安全上限，请减少单次工具输出后重试。")
+        if chunk.endswith(b"\n"):
+            return bytes(record)
 
 
 def _parse_event_text(

@@ -17,9 +17,42 @@ test("AI thread composer preserves multiline prompts until explicit send", () =>
   assert.doesNotMatch(threadSource, /event\.key === "Enter" && !event\.shiftKey/);
 });
 
+test("AI thread translates persisted internal parser errors before display and export", () => {
+  assert.match(threadSource, /function publicAgentErrorText/);
+  assert.match(threadSource, /separator is not found/i);
+  assert.match(threadSource, /publicAgentErrorText\(latestRun\.error\)/);
+  assert.match(threadSource, /publicAgentErrorText\(conversation\.latest_run\.error\)/);
+  assert.match(threadSource, /执行器启动失败。请检查设置中的命令、工作目录和执行权限后重试。/);
+  assert.match(threadSource, /执行器运行失败。请展开 Agent 过程查看内部诊断，然后重试或切换执行器。/);
+  assert.match(threadSource, /\^执行器超时（\\d\+s）\$/);
+});
+
+test("AI thread keeps line-numbered source output out of the latest process summary", () => {
+  assert.match(threadSource, /function looksLikeReadableNumericProgress/);
+  const looksLikeReadableNumericProgress = (value) =>
+    /^\d{1,7}\s+(?:(?:tests?|files?|items?|steps?|nodes?|cases?|warnings?|errors?|percent)\b|%)/i.test(value);
+  assert.equal(looksLikeReadableNumericProgress("3 tests passed"), true);
+  assert.equal(looksLikeReadableNumericProgress("12 files changed"), true);
+  assert.equal(looksLikeReadableNumericProgress("100 percent complete"), true);
+  assert.equal(looksLikeReadableNumericProgress("94 iscsitestfini"), false);
+  assert.equal(looksLikeReadableNumericProgress("12 files_changed++;"), false);
+  assert.equal(looksLikeReadableNumericProgress("7 item_count = 3;"), false);
+});
+
 test("AI thread layout keeps mobile reading usable and wraps long evidence text", () => {
-  assert.match(globalCss, /\.ct-codex-ai,\s*\n\s*\.ct-codex-ai\.is-context-open\s*\{[\s\S]*?height:\s*max\(660px,\s*calc\(100vh - 190px\)\);/);
-  assert.match(globalCss, /\.ct-codex-ai__reader\s*\{[\s\S]*?min-height:\s*300px;/);
+  assert.match(
+    globalCss,
+    /\.ct-page-shell:has\(\.ct-codex-ai\)\s*\{[\s\S]*?height:\s*calc\(100dvh - var\(--ct-mobile-nav-height\)\);[\s\S]*?overflow:\s*hidden;/,
+  );
+  assert.match(
+    globalCss,
+    /\.ct-codex-ai\s*\{[\s\S]*?height:\s*calc\(100vh - 48px\);[\s\S]*?overflow:\s*hidden;/,
+  );
+  assert.match(
+    globalCss,
+    /\.ct-codex-ai,\s*\n\s*\.ct-codex-ai\.is-context-open\s*\{[\s\S]*?height:\s*100%;[\s\S]*?min-height:\s*0;[\s\S]*?overflow:\s*hidden;/,
+  );
+  assert.match(globalCss, /\.ct-codex-ai__reader\s*\{[\s\S]*?min-height:\s*0;[\s\S]*?overflow:\s*auto;/);
   assert.match(globalCss, /\.ct-ai-ref\s*\{[\s\S]*?overflow-wrap:\s*anywhere;/);
   assert.match(globalCss, /\.ct-ai-ref__meta code\s*\{[\s\S]*?white-space:\s*normal;/);
   assert.match(globalCss, /\.ct-agent-process summary strong\s*\{[\s\S]*?white-space:\s*normal;/);

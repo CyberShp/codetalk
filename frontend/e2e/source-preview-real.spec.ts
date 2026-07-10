@@ -2,6 +2,9 @@ import { expect, test } from "@playwright/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { assertCanMutatePublicRuntime } from "../scripts/playwright-runtime-policy.mjs";
+
+assertCanMutatePublicRuntime({ env: process.env, flowName: "source preview real E2E" });
 
 async function noFrameworkOverlay(page: import("@playwright/test").Page) {
   await expect(

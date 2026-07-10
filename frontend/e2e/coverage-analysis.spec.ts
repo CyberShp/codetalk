@@ -1,7 +1,10 @@
 import { test, expect } from "@playwright/test";
 import fs from "node:fs";
+import { assertCanMutatePublicRuntime } from "../scripts/playwright-runtime-policy.mjs";
 
 const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
+
+assertCanMutatePublicRuntime({ env: process.env, flowName: "coverage analysis real E2E" });
 
 test.describe("Coverage analysis", () => {
   test.setTimeout(60_000);

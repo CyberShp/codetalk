@@ -315,7 +315,7 @@ function agentProcessDiagnosticsFromEvents(events: AIRunEvent[]): string[] {
 
 function eventError(event: AIRunEvent): string {
   const value = event.payload.error;
-  return typeof value === "string" ? redactDiagnosticText(value) : "";
+  return typeof value === "string" ? publicAgentErrorText(value) : "";
 }
 
 function threadWorkspaceId(thread: AIConversation | null): string {
@@ -743,11 +743,16 @@ function looksLikeRawAgentProcessOutput(value: string): boolean {
   const text = value.trim();
   if (!text) return false;
   if (/^\d{1,7}(?::|\t|\s+[{};)]\s*$)/.test(text)) return true;
+  if (/^\d{1,7}\s+\S/.test(text) && !looksLikeReadableNumericProgress(text)) return true;
   if (/^[^\s:]+\.(?:c|h|cc|cpp|cxx|hpp|py|go|rs|ts|tsx|js|java|sh|md):\d+[:\t]/i.test(text)) {
     return true;
   }
   if (/^(?:Bash|Read|Grep|Glob|Edit|Write|Task|TodoWrite)\s+\{/.test(text)) return true;
   return /(?:->|::|[{};])/.test(text) && /\b(?:spdk_\w+|struct|return|if|for|while|conn|reqh|rsph|status_detail)\b/i.test(text);
+}
+
+function looksLikeReadableNumericProgress(value: string): boolean {
+  return /^\d{1,7}\s+(?:(?:tests?|files?|items?|steps?|nodes?|cases?|warnings?|errors?|percent)\b|%)/i.test(value);
 }
 
 function capAgentProcessDiagnostics(items: string[]): string[] {
@@ -810,6 +815,38 @@ function redactDiagnosticText(value: string): string {
     .replace(/\bsk-[A-Za-z0-9_-]{12,}\b/g, "<redacted>");
 }
 
+function publicAgentErrorText(value: string): string {
+  const cleaned = redactDiagnosticText(value).trim();
+  const lowered = cleaned.toLowerCase();
+  if (
+    lowered.includes("separator is not found") ||
+    lowered.includes("chunk exceed the limit") ||
+    lowered.includes("limitoverrunerror")
+  ) {
+    return "执行器返回了过大的单条过程事件，CodeTalk 未能完成解析。请重试本轮；若仍失败，请切换执行器或减少单次输出。";
+  }
+  if (lowered.includes("403") || lowered.includes("forbidden")) {
+    return "执行器鉴权失败（HTTP 403）。请在设置中检查账号、API Key 或代理权限后重试。";
+  }
+  if (
+    cleaned.startsWith("启动执行器失败") ||
+    cleaned.startsWith("找不到命令") ||
+    lowered.includes("permission denied") ||
+    lowered.includes("file not found")
+  ) {
+    return "执行器启动失败。请检查设置中的命令、工作目录和执行权限后重试。";
+  }
+  if (
+    /^执行器超时（\d+s）$/.test(cleaned) ||
+    cleaned === "执行器单条过程事件超过安全上限，请减少单次工具输出后重试。" ||
+    cleaned === "外部 Agent 请求交互式文件写入权限，CodeTalk 已中止本轮。请让 Agent 输出最终 Markdown，由 CodeTalk 生成下载产物。" ||
+    cleaned === "Agent 返回内容不足：已自动续跑一次，但仍未产出可验收的源码分析结论。请切换可用执行器或继续追问缺失的证据、SFMEA、流程梳理和黑盒测试用例。"
+  ) {
+    return cleaned;
+  }
+  return "执行器运行失败。请展开 Agent 过程查看内部诊断，然后重试或切换执行器。";
+}
+
 function buildThreadMarkdown(conversation: AIConversation | null, messages: AIMessage[]): string {
   const title = conversation?.title ?? "AI 调查线程";
   const lines = [
@@ -825,7 +862,7 @@ function buildThreadMarkdown(conversation: AIConversation | null, messages: AIMe
   if (conversation?.latest_run?.status === "failed" && conversation.latest_run.error) {
     lines.push("## 最近失败");
     lines.push("");
-    lines.push(redactDiagnosticText(conversation.latest_run.error));
+    lines.push(publicAgentErrorText(conversation.latest_run.error));
     lines.push("");
   }
 
@@ -968,7 +1005,7 @@ export default function AIThreadPage() {
   const latestRun = conversation?.latest_run ?? null;
   const latestRunError =
     latestRun?.status === "failed" && latestRun.error
-      ? redactDiagnosticText(latestRun.error)
+      ? publicAgentErrorText(latestRun.error)
       : "";
   const visibleError = error || latestRunError;
   const isActuallyRunning = Boolean(
@@ -1817,8 +1854,8 @@ export default function AIThreadPage() {
             onChange={(event) => setInput(event.target.value)}
             onKeyDown={(event) => {
               const nativeEvent = event.nativeEvent as KeyboardEvent & { isComposing?: boolean };
-              if (nativeEvent.isComposing || event.shiftKey) return;
-              if (event.key === "Enter") {
+              if (nativeEvent.isComposing) return;
+              if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
                 event.preventDefault();
                 void send();
               }
