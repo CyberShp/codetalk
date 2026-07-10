@@ -226,9 +226,12 @@ def agent_invocation_capability_event_payload(
         "artifact_kind": "capability_manifest",
         "content": "执行器能力边界已记录，MCP、skills、输入与输出目标可核验。",
         "related_artifacts": ["agent_invocation.json"],
+        "runtime": capability["runtime"],
+        "input_contract": capability["input_contract"],
         "mcp": capability["mcp"],
         "skills": capability["skills"],
         "outputs": capability["outputs"],
+        "typed_events": capability["typed_events"],
     }
     if extra:
         payload.update(extra)

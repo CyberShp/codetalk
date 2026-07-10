@@ -3671,6 +3671,9 @@ class TestAIConversationsAPI:
         assert capability_events
         capability_payload = capability_events[0]["payload"]
         assert capability_payload["related_artifacts"] == ["agent_invocation.json"]
+        assert capability_payload["runtime"]["provider"] == "fake"
+        assert capability_payload["input_contract"]["must_receive_full_user_input"] is True
+        assert capability_payload["typed_events"] == agent_invocation_typed_events()
         assert capability_payload["outputs"]["required_artifacts"] == [
             "sfmea.json",
             "black_box_cases.json",
