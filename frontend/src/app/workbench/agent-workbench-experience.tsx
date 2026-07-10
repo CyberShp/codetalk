@@ -6519,6 +6519,23 @@ export function AgentWorkbenchExperience({
     }
   }
 
+  function updateWorkflowJsonDraft(value: string) {
+    setWorkflowJson(value);
+    try {
+      const payload = parseJsonObject(value) as {
+        id?: unknown;
+        name?: unknown;
+        inputs?: unknown;
+        outputs?: unknown;
+        steps?: unknown;
+        ui?: unknown;
+      };
+      hydrateBuilderFromWorkflow(payload);
+    } catch {
+      // Keep the raw draft while the user is still typing incomplete JSON.
+    }
+  }
+
   function applyBuilderScenario(
     scenarioId: keyof typeof WORKFLOW_BUILDER_SCENARIOS,
   ) {
@@ -8975,7 +8992,7 @@ export function AgentWorkbenchExperience({
                                   type="button"
                                   onClick={() => {
                                     setSelectedPresetId(preset.id);
-                                    setWorkflowJson(pretty(preset.definition));
+                                    updateWorkflowJsonDraft(pretty(preset.definition));
                                     selectedWorkflowIdRef.current =
                                       preset.definition.id;
                                     setSelectedWorkflowId(preset.definition.id);
@@ -9647,7 +9664,7 @@ export function AgentWorkbenchExperience({
                   </summary>
                   <textarea
                     value={workflowJson}
-                    onChange={(event) => setWorkflowJson(event.target.value)}
+                    onChange={(event) => updateWorkflowJsonDraft(event.target.value)}
                     className="mt-2 h-64 max-h-[42vh] w-full resize-y rounded-lg border border-outline-variant/30 bg-surface p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
                     aria-label="Workflow JSON"
                     spellCheck={false}

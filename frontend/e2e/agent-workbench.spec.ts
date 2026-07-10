@@ -614,6 +614,98 @@ test("workflow designer template controls only affect the draft", async ({
   await expect(page.getByRole("button", { name: "载入所选" })).toHaveCount(0);
 });
 
+test("workflow JSON edits immediately hydrate the canvas draft", async ({
+  page,
+}) => {
+  await routeSplitPageWorkflowShell(page);
+  await page.goto("/workbench/designer", { waitUntil: "domcontentloaded" });
+
+  await expect(page.getByRole("heading", { name: "工作流设计" })).toBeVisible();
+  await page.locator(".ct-workflow-node").first().click({ position: { x: 44, y: 18 } });
+  await expect(page.getByLabel("Workflow inspector")).toBeVisible();
+  await page.getByText("高级 Workflow JSON").click();
+
+  const workflow = {
+    id: "json_canvas_sync",
+    name: "JSON Canvas Sync",
+    version: 1,
+    inputs: [
+      {
+        id: "json_input",
+        type: "free_text",
+        required: true,
+        label: "JSON 输入",
+      },
+    ],
+    steps: [
+      {
+        id: "json_agent",
+        type: "agent_task",
+        provider: "claude-code",
+        goal: "Use the JSON-edited workflow canvas.",
+        required_artifacts: ["json_result.json"],
+      },
+    ],
+    outputs: [
+      {
+        id: "json_output",
+        type: "json",
+        from: "json_agent",
+        artifact: "json_result.json",
+        schema: { type: "object" },
+      },
+    ],
+    ui: {
+      layout: {
+        nodes: [
+          {
+            id: "json_input_node",
+            kind: "input",
+            title: "JSON 输入节点",
+            subtitle: "from JSON",
+            x: 120,
+            y: 140,
+            source: "canvas",
+          },
+          {
+            id: "json_agent_node",
+            kind: "agent",
+            title: "JSON Agent 节点",
+            subtitle: "from JSON",
+            x: 420,
+            y: 140,
+            source: "canvas",
+          },
+        ],
+        edges: [
+          {
+            id: "json_edge",
+            source: "json_input_node",
+            target: "json_agent_node",
+            label: "JSON 连线",
+          },
+        ],
+        hidden_node_ids: [],
+        hidden_edge_ids: [],
+      },
+    },
+  };
+
+  await page.getByLabel("Workflow JSON").fill(JSON.stringify(workflow, null, 2));
+
+  await expect(
+    page.locator(".ct-workflow-node", { hasText: "JSON 输入节点" }),
+  ).toBeVisible();
+  await expect(
+    page.locator(".ct-workflow-node", { hasText: "JSON Agent 节点" }),
+  ).toBeVisible();
+  await expect(page.getByLabel("Workflow builder id")).toHaveValue("json_canvas_sync");
+  await expect(
+    page.getByRole("textbox", { name: "Workflow builder provider" }),
+  ).toHaveValue("claude-code");
+  await expect(page.getByRole("button", { name: "删除连线 JSON 连线" })).toBeVisible();
+});
+
 test("cockpit workflow switch rebuilds the visible input form", async ({
   page,
 }) => {
