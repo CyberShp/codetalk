@@ -865,7 +865,7 @@ class AIConversationStore:
                 SELECT *
                 FROM ai_conversation_runs
                 WHERE conversation_id = ? AND status = 'queued'
-                ORDER BY created_at ASC, id ASC
+                ORDER BY sequence ASC, created_at ASC, id ASC
                 LIMIT 1
                 """,
                 (conversation_id,),
@@ -902,7 +902,7 @@ class AIConversationStore:
                 SELECT *
                 FROM ai_conversation_runs
                 WHERE conversation_id = ?
-                ORDER BY created_at DESC
+                ORDER BY sequence DESC, created_at DESC
                 LIMIT 1
                 """,
                 (conversation_id,),
@@ -1068,7 +1068,7 @@ class AIConversationStore:
                     SELECT *
                     FROM ai_run_events
                     WHERE conversation_id = ? AND run_id = ?
-                    ORDER BY event_id ASC
+                    ORDER BY seq ASC, event_id ASC
                     """,
                     (conversation_id, run_id),
                 ) as cur:
@@ -1081,10 +1081,10 @@ class AIConversationStore:
                         SELECT *
                         FROM ai_run_events
                         WHERE conversation_id = ? AND run_id = ?
-                        ORDER BY event_id DESC
+                        ORDER BY seq DESC, event_id DESC
                         LIMIT ?
                     )
-                    ORDER BY event_id ASC
+                    ORDER BY seq ASC, event_id ASC
                     """,
                     (conversation_id, run_id, capped_limit),
                 ) as cur:
@@ -1187,7 +1187,7 @@ class AIConversationStore:
                 SELECT *
                 FROM ai_conversation_runs
                 WHERE conversation_id = ? AND status = 'running'
-                ORDER BY started_at ASC, created_at ASC
+                ORDER BY sequence ASC, started_at ASC, created_at ASC
                 LIMIT 1
                 """,
                 (conversation_id,),
@@ -1211,7 +1211,7 @@ class AIConversationStore:
                     SELECT *
                     FROM ai_conversation_runs
                     WHERE conversation_id = ?
-                    ORDER BY created_at DESC
+                    ORDER BY sequence DESC, created_at DESC
                     LIMIT 1
                     """,
                     (conversation_id,),

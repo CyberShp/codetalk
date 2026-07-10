@@ -2803,6 +2803,52 @@ class TestAIConversationsAPI:
             assert "thread-a 完成" in body_a["items"][1]["content"]
             assert "thread-b 完成" in body_b["items"][1]["content"]
 
+    async def test_conversation_run_order_uses_sequence_when_timestamps_collide(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.services.ai_conversations import AIConversationStore
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="线程序号排序",
+        )
+        first = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="第一轮：分析 nvmf connect",
+            references=[],
+        )
+        second = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="第二轮：分析 iscsi login",
+            references=[],
+        )
+        assert first["run"]["sequence"] == 1
+        assert second["run"]["sequence"] == 2
+
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "UPDATE ai_conversation_runs SET created_at = ? WHERE id = ?",
+                ("2026-06-28T00:00:20Z", first["run"]["id"]),
+            )
+            await db.execute(
+                "UPDATE ai_conversation_runs SET created_at = ? WHERE id = ?",
+                ("2026-06-28T00:00:10Z", second["run"]["id"]),
+            )
+            await db.commit()
+
+        next_run = await store.next_queued_run(conversation["id"])
+        latest_run = await store.latest_run(conversation["id"])
+
+        assert next_run is not None
+        assert next_run["id"] == first["run"]["id"]
+        assert next_run["sequence"] == 1
+        assert latest_run is not None
+        assert latest_run["id"] == second["run"]["id"]
+        assert latest_run["sequence"] == 2
+
     async def test_cancel_running_generation_prevents_assistant_message_and_allows_retry(
         self,
         sqlite_db,
@@ -3778,6 +3824,74 @@ class TestAIConversationsAPI:
             )
         assert second_events.status_code == 200
         assert [item["seq"] for item in second_events.json()["items"]] == [1]
+
+    async def test_run_event_replay_uses_seq_when_event_ids_are_not_authoritative(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+        app = _test_app(sqlite_db)
+
+        from app.services.ai_conversations import AIConversationStore
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="事件序号排序",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="验证事件按 seq 回放",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+        first = await store.append_event(
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            event_type="delta",
+            payload={"content": "event-id-first"},
+        )
+        second = await store.append_event(
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            event_type="delta",
+            payload={"content": "event-id-second"},
+        )
+        third = await store.append_event(
+            run_id=run_id,
+            conversation_id=conversation["id"],
+            event_type="delta",
+            payload={"content": "event-id-third"},
+        )
+
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "UPDATE ai_run_events SET seq = 4 WHERE event_id = ?",
+                (first["event_id"],),
+            )
+            await db.execute(
+                "UPDATE ai_run_events SET seq = 2 WHERE event_id = ?",
+                (second["event_id"],),
+            )
+            await db.execute(
+                "UPDATE ai_run_events SET seq = 3 WHERE event_id = ?",
+                (third["event_id"],),
+            )
+            await db.commit()
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.get(
+                f"/api/ai/conversations/{conversation['id']}/events",
+                params={"run_id": run_id, "limit": 20},
+            )
+
+        assert response.status_code == 200
+        items = response.json()["items"]
+        assert [item["seq"] for item in items] == [1, 2, 3, 4]
+        assert [item["payload"].get("content") for item in items if item["event_type"] == "delta"] == [
+            "event-id-second",
+            "event-id-third",
+            "event-id-first",
+        ]
 
     async def test_legacy_split_agent_process_events_are_publicly_diagnostic(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
