@@ -214,6 +214,87 @@ def test_test_activity_quality_audit_flags_shallow_or_graybox_artifacts(tmp_path
     assert audit["recommendations"][0].startswith("补齐")
 
 
+def test_module_analysis_quality_audit_rejects_shallow_markdown(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_artifacts,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    artifact_dir = tmp_path / "run"
+    artifact_dir.mkdir()
+    (artifact_dir / "module_analysis.md").write_text("done\n", encoding="utf-8")
+    contract = build_test_activity_contract(
+        target="iSCSI login",
+        repo_path=str(repo),
+        workflow_outputs=[
+            {
+                "id": "report",
+                "artifact": "module_analysis.md",
+                "type": "markdown",
+            }
+        ],
+        user_requirements="分析主流程、异常恢复和测试证据",
+    )
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert audit["status"] == "needs_rework"
+    assert audit["deliverable"] is False
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert "missing_markdown_sections" in codes
+    assert "missing_source_evidence" in codes
+    assert "missing_test_evidence" in codes
+
+
+def test_module_analysis_quality_audit_rejects_combined_heading_and_path_traversal(
+    tmp_path,
+):
+    from app.services.test_activity_contract import (
+        audit_test_activity_artifacts,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    outside = tmp_path / "outside"
+    (outside / "source.c").parent.mkdir(parents=True, exist_ok=True)
+    (outside / "source.c").write_text("int outside;\n", encoding="utf-8")
+    (outside / "case.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    artifact_dir = tmp_path / "run"
+    artifact_dir.mkdir()
+    (artifact_dir / "module_analysis.md").write_text(
+        "## 分析范围 模块边界 关键入口与调用链 主流程 异常与恢复路径 "
+        "源码与测试证据 测试关注点 证据缺口\n"
+        "伪造的合并章节。lib/../../outside/source.c test/../../outside/case.sh\n",
+        encoding="utf-8",
+    )
+    contract = build_test_activity_contract(
+        target="iSCSI login",
+        repo_path=str(repo),
+        workflow_outputs=[
+            {"id": "report", "artifact": "module_analysis.md", "type": "markdown"}
+        ],
+    )
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    codes = [issue["code"] for issue in audit["issues"]]
+    assert audit["status"] == "needs_rework"
+    assert "missing_markdown_sections" in codes
+    assert codes.count("evidence_path_not_found") == 2
+
+
 def test_workbench_runner_marks_low_quality_test_activity_outputs_needs_rework(tmp_path, monkeypatch):
     from app.config import settings
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer

@@ -2168,6 +2168,24 @@ def _materialize_task_run_outputs_if_available(*, task_run: Any) -> dict[str, An
             "evidence_ids": [],
             "rejected_outputs": [],
         }
+    quality_gate_result = _workflow_output_quality_gate_result(
+        task_run=task_run,
+        workflow_outputs=workflow_outputs,
+    )
+    if quality_gate_result is not None:
+        _attach_workflow_output_materialization_audit(
+            task_run=task_run,
+            workflow_outputs=workflow_outputs,
+            result=quality_gate_result,
+        )
+        _write_workflow_output_materialization_artifact(
+            task_run=task_run,
+            workflow_outputs_path=workflow_outputs_path,
+            workflow_outputs=workflow_outputs,
+            result=quality_gate_result,
+        )
+        write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
+        return quality_gate_result
     evidence_ids, rejected = _materialize_workflow_output_evidence(
         task_run=task_run,
         workflow_outputs=workflow_outputs,
@@ -2336,6 +2354,24 @@ async def materialize_task_run_outputs(task_run_id: str) -> dict[str, Any]:
             status_code=400,
             detail="workflow outputs have not been generated",
         )
+    quality_gate_result = _workflow_output_quality_gate_result(
+        task_run=task_run,
+        workflow_outputs=workflow_outputs,
+    )
+    if quality_gate_result is not None:
+        _attach_workflow_output_materialization_audit(
+            task_run=task_run,
+            workflow_outputs=workflow_outputs,
+            result=quality_gate_result,
+        )
+        _write_workflow_output_materialization_artifact(
+            task_run=task_run,
+            workflow_outputs_path=workflow_outputs_path,
+            workflow_outputs=workflow_outputs,
+            result=quality_gate_result,
+        )
+        write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
+        return quality_gate_result
     evidence_ids, rejected = _materialize_workflow_output_evidence(
         task_run=task_run,
         workflow_outputs=workflow_outputs,
@@ -2362,6 +2398,35 @@ async def materialize_task_run_outputs(task_run_id: str) -> dict[str, Any]:
     )
     write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
     return result
+
+
+def _workflow_output_quality_gate_result(
+    *,
+    task_run: Any,
+    workflow_outputs: dict[str, Any],
+) -> dict[str, Any] | None:
+    execution = _read_json(Path(task_run.artifact_dir) / "workflow_execution.json")
+    if not isinstance(execution, dict):
+        return None
+    quality = execution.get("test_activity_quality")
+    if not isinstance(quality, dict) or quality.get("status") not in {"needs_rework", "invalid"}:
+        return None
+    rejected_outputs = [
+        {
+            "output": str(output.get("id") or ""),
+            "reason": "test_activity_quality_gate_failed",
+        }
+        for output in workflow_outputs.get("outputs") or []
+        if isinstance(output, dict) and output.get("status") == "ok"
+    ]
+    return {
+        "status": "skipped",
+        "reason": "test_activity_quality_gate_failed",
+        "evidence_count": 0,
+        "evidence_ids": [],
+        "rejected_outputs": rejected_outputs,
+        "test_activity_quality": quality,
+    }
 
 
 @router.post("/task-runs/{task_run_id}/semantic-cases/import-outputs", status_code=201)
@@ -4298,10 +4363,16 @@ def _write_workflow_output_materialization_artifact(
         "workspace_id": task_run.workspace_id,
         "repo_path": task_run.repo_path,
         "status": result.get("status"),
+        "reason": str(result.get("reason") or ""),
         "evidence_count": result.get("evidence_count", 0),
         "evidence_ids": list(result.get("evidence_ids") or []),
         "materialized_evidence": materialized_evidence,
         "rejected_outputs": rejected_outputs,
+        "test_activity_quality": (
+            result.get("test_activity_quality")
+            if isinstance(result.get("test_activity_quality"), dict)
+            else {}
+        ),
         "materialization_audit": materialization_audit,
         "workflow_outputs_artifact": {
             "path": str(workflow_outputs_path),

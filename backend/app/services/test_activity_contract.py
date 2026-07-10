@@ -294,8 +294,19 @@ def audit_test_activity_artifacts(
         if artifact.endswith(".json"):
             payload = _read_json(path)
             issues.extend(_audit_json_artifact(artifact=artifact, payload=payload, spec=spec, repo=repo))
-        elif not path.read_text(encoding="utf-8", errors="ignore").strip():
-            issues.append(_issue("empty_artifact", artifact, f"{artifact} 内容为空"))
+        else:
+            content = path.read_text(encoding="utf-8", errors="ignore").strip()
+            if not content:
+                issues.append(_issue("empty_artifact", artifact, f"{artifact} 内容为空"))
+            elif artifact.endswith(".md"):
+                issues.extend(
+                    _audit_markdown_artifact(
+                        artifact=artifact,
+                        content=content,
+                        spec=spec,
+                        repo=repo,
+                    )
+                )
     score = max(0, 100 - len(issues) * 15)
     status = "deliverable" if score >= int((contract.get("quality_gates") or {}).get("min_score") or 80) and not issues else "needs_rework"
     return {
@@ -463,6 +474,118 @@ def _audit_json_artifact(
     return issues
 
 
+def _audit_markdown_artifact(
+    *,
+    artifact: str,
+    content: str,
+    spec: dict[str, Any],
+    repo: Path,
+) -> list[dict[str, Any]]:
+    if artifact != "module_analysis.md":
+        return []
+
+    issues: list[dict[str, Any]] = []
+    heading_matches = list(
+        re.finditer(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", content, flags=re.MULTILINE)
+    )
+    required_sections = [str(item) for item in spec.get("sections") or []]
+    section_headings: dict[str, tuple[int, re.Match[str]]] = {}
+    for index, match in enumerate(heading_matches):
+        normalized = _normalized_markdown_heading(match.group(1))
+        if normalized in required_sections and normalized not in section_headings:
+            section_headings[normalized] = (index, match)
+    missing_sections = [
+        section
+        for section in required_sections
+        if section not in section_headings
+    ]
+    if missing_sections:
+        issues.append(
+            _issue(
+                "missing_markdown_sections",
+                artifact,
+                f"{artifact} 缺少章节: {', '.join(missing_sections)}",
+                sections=missing_sections,
+            )
+        )
+
+    empty_sections: list[str] = []
+    for section in required_sections:
+        section_heading = section_headings.get(section)
+        if section_heading is None:
+            continue
+        index, match = section_heading
+        end = heading_matches[index + 1].start() if index + 1 < len(heading_matches) else len(content)
+        if not content[match.end():end].strip():
+            empty_sections.append(section)
+    if empty_sections:
+        issues.append(
+            _issue(
+                "empty_markdown_sections",
+                artifact,
+                f"{artifact} 章节内容为空: {', '.join(empty_sections)}",
+                sections=empty_sections,
+            )
+        )
+
+    evidence_paths = _markdown_repo_paths(content)
+    existing_evidence_paths = [
+        path for path in evidence_paths if _repo_path_exists(repo, path)
+    ]
+    source_paths = [
+        path for path in existing_evidence_paths
+        if path.startswith(("lib/", "include/", "module/", "app/"))
+    ]
+    test_paths = [path for path in existing_evidence_paths if path.startswith("test/")]
+    if not source_paths:
+        issues.append(
+            _issue(
+                "missing_source_evidence",
+                artifact,
+                f"{artifact} 缺少可核验的源码路径证据",
+            )
+        )
+    if not test_paths:
+        issues.append(
+            _issue(
+                "missing_test_evidence",
+                artifact,
+                f"{artifact} 缺少可核验的测试目录或测试文件证据",
+            )
+        )
+    for evidence in evidence_paths:
+        if not _repo_path_exists(repo, evidence):
+            issues.append(
+                _issue(
+                    "evidence_path_not_found",
+                    artifact,
+                    f"证据路径不存在: {evidence}",
+                )
+            )
+    return issues
+
+
+def _normalized_markdown_heading(value: str) -> str:
+    text = str(value or "").strip().strip("`*_ ")
+    text = re.sub(
+        r"^(?:第?\s*\d+\s*[章节、.．:：-]?|[一二三四五六七八九十]+\s*[、.．])\s*",
+        "",
+        text,
+    )
+    return text.strip().rstrip(":：")
+
+
+def _markdown_repo_paths(content: str) -> list[str]:
+    pattern = re.compile(
+        r"(?<![A-Za-z0-9_/])(?:lib|test|include|module|app)/"
+        r"[A-Za-z0-9_.+@%/\-]+(?::L?\d+(?:-L?\d+)?)?"
+    )
+    return _unique_strings(
+        match.group(0).rstrip(".,;:)]}`'")
+        for match in pattern.finditer(content)
+    )
+
+
 def _black_box_boundary_violation(row: dict[str, Any]) -> bool:
     action_fields = [
         row.get("steps"),
@@ -550,8 +673,15 @@ def _looks_like_repo_path(value: str) -> bool:
 def _repo_path_exists(repo: Path, value: str) -> bool:
     if not repo.exists():
         return True
-    candidate = repo / value.split(":", 1)[0]
-    return candidate.exists()
+    relative = Path(value.split(":", 1)[0])
+    if relative.is_absolute() or ".." in relative.parts:
+        return False
+    try:
+        repo_root = repo.resolve()
+        candidate = (repo_root / relative).resolve()
+    except OSError:
+        return False
+    return repo_root in candidate.parents and candidate.exists()
 
 
 def _issue(code: str, artifact: str, message: str, **extra: Any) -> dict[str, Any]:

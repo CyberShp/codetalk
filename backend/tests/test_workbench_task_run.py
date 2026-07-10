@@ -3837,7 +3837,10 @@ def test_module_analysis_preset_executes_with_local_scope_discovery(
     }
 
 
-def test_module_analysis_empty_local_scope_is_completed_empty(tmp_path, monkeypatch):
+def test_module_analysis_empty_local_scope_with_unverified_report_needs_rework(
+    tmp_path,
+    monkeypatch,
+):
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer
     from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
     from app.services.workflow_dsl import WorkflowStore
@@ -3868,7 +3871,8 @@ def test_module_analysis_empty_local_scope_is_completed_empty(tmp_path, monkeypa
         timeout_sec=10,
     )
 
-    assert result.status == "completed_empty"
+    assert result.status == "needs_rework"
+    assert result.test_activity_quality["status"] == "needs_rework"
     step_status = {item["step_id"]: item["status"] for item in result.step_results}
     assert step_status["discover_scope"] == "completed_empty"
     assert step_status["analyze_module"] == "completed"

@@ -3272,6 +3272,93 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
     )
 
 
+async def test_shallow_module_analysis_is_not_materialized_as_verified_evidence(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+
+    script_path = tmp_path / "shallow_module_analysis.py"
+    script_path.write_text(
+        "import os, pathlib\n"
+        "root = pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root / 'module_analysis.md').write_text('done\\n', encoding='utf-8')\n"
+        "print('done')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "shallow-module-agent", "command": f"python {script_path}"}
+    ])
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    workflow = {
+        "id": "shallow_module_analysis",
+        "name": "Shallow module analysis",
+        "version": 1,
+        "inputs": [{"id": "analysis_object", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "analyze",
+                "type": "agent_task",
+                "provider": "shallow-module-agent",
+                "required_artifacts": ["module_analysis.md"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "report",
+                "type": "markdown",
+                "from": "analyze",
+                "artifact": "module_analysis.md",
+            }
+        ],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "shallow_module_analysis",
+            "workspace_id": "ws-shallow-module",
+            "repo_path": str(repo),
+            "inputs": {"analysis_object": "iSCSI login"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+
+    executed = await _execute_task_run_and_wait(
+        workbench_client,
+        task_run_id,
+        timeout_sec=10,
+    )
+
+    assert executed.status_code == 200
+    body = executed.json()
+    assert body["status"] == "needs_rework"
+    quality_audit = json.loads(
+        (_task_run_dir(task_run_id) / "test_activity_quality_audit.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert quality_audit["status"] == "needs_rework"
+    assert body["evidence_materialization"]["status"] == "skipped"
+    assert body["evidence_materialization"]["reason"] == "test_activity_quality_gate_failed"
+    assert body["evidence_materialization"]["evidence_count"] == 0
+    manual = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/materialize-outputs"
+    )
+    assert manual.status_code == 200
+    assert manual.json()["status"] == "skipped"
+    assert manual.json()["evidence_count"] == 0
+    search = await workbench_client.get(
+        "/api/workbench/memory/search",
+        params={"q": "done", "workspace_id": "ws-shallow-module"},
+    )
+    assert search.status_code == 200
+    assert search.json()["items"] == []
+
+
 async def test_workbench_task_run_run_api_prepares_executes_and_audits(
     workbench_client,
     tmp_path,
@@ -3935,11 +4022,19 @@ async def test_workbench_task_run_run_auto_imports_declared_semantic_outputs(
         "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
         "(root/'black_box_cases.json').write_text(json.dumps([\n"
         "  {\n"
+        "    'case_id': 'bb-tls-expired-cert',\n"
+        "    'scenario_name': 'Expired certificate handshake rejection',\n"
         "    'title': 'TLS handshake uses existing failure wording',\n"
         "    'entry_kind': 'rpc',\n"
         "    'inputs': 'connect with expired certificate',\n"
+        "    'preconditions': ['NVMe-oF TLS listener is configured'],\n"
         "    'steps': ['start TLS listener', 'connect with expired certificate'],\n"
-        "    'expected': ['handshake rejected', 'standard failure reason is reported']\n"
+        "    'expected': ['handshake rejected', 'standard failure reason is reported'],\n"
+        "    'expected_result': 'handshake is rejected with the standard failure reason',\n"
+        "    'observability': ['initiator exit code', 'target TLS log'],\n"
+        "    'failure_diagnostics': ['compare certificate validity and target log timestamp'],\n"
+        "    'mapped_test_dir': 'test/nvmf',\n"
+        "    'source_or_test_evidence': 'test/nvmf'\n"
         "  }\n"
         "]), encoding='utf-8')\n",
         encoding="utf-8",
@@ -3947,6 +4042,7 @@ async def test_workbench_task_run_run_auto_imports_declared_semantic_outputs(
     monkeypatch.setattr(settings, "external_agent_custom_providers", [
         {"id": "local-python", "command": f"python {script_path}"}
     ])
+    (tmp_path / "test" / "nvmf").mkdir(parents=True)
     workflow = {
         "id": "auto_semantic_output_workflow",
         "name": "Auto semantic output workflow",
@@ -4130,11 +4226,19 @@ async def test_workbench_materialize_outputs_auto_imports_declared_semantic_outp
         "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
         "(root/'black_box_cases.json').write_text(json.dumps([\n"
         "  {\n"
+        "    'case_id': 'bb-tls-alert-text',\n"
+        "    'scenario_name': 'Configured TLS alert is observable',\n"
         "    'title': 'TLS listener reports configured alert text',\n"
         "    'entry_kind': 'cli',\n"
         "    'inputs': 'start listener with expired peer certificate',\n"
+        "    'preconditions': ['NVMe-oF TLS listener is configured'],\n"
         "    'steps': ['configure TLS listener', 'connect expired certificate peer'],\n"
-        "    'expected': ['connection rejected', 'configured alert text is visible']\n"
+        "    'expected': ['connection rejected', 'configured alert text is visible'],\n"
+        "    'expected_result': 'connection is rejected and configured alert text is visible',\n"
+        "    'observability': ['initiator exit code', 'target TLS alert log'],\n"
+        "    'failure_diagnostics': ['compare peer certificate and alert log'],\n"
+        "    'mapped_test_dir': 'test/nvmf',\n"
+        "    'source_or_test_evidence': 'test/nvmf'\n"
         "  }\n"
         "]), encoding='utf-8')\n",
         encoding="utf-8",
@@ -4142,6 +4246,7 @@ async def test_workbench_materialize_outputs_auto_imports_declared_semantic_outp
     monkeypatch.setattr(settings, "external_agent_custom_providers", [
         {"id": "local-python", "command": f"python {script_path}"}
     ])
+    (tmp_path / "test" / "nvmf").mkdir(parents=True)
     workflow = {
         "id": "manual_materialize_semantic_output",
         "name": "Manual materialize semantic output",
@@ -5978,11 +6083,14 @@ async def test_workbench_task_run_acceptance_audit_records_semantic_import_artif
         "json.load(sys.stdin)\n"
         "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
         "(root/'black_box_cases.json').write_text(json.dumps([\n"
-        "  {'title':'TLS audit semantic case','steps':['connect'],"
-        "'expected':['observable failure'],"
+        "  {'case_id':'bb-tls-audit','scenario_name':'TLS audit semantic case',"
+        "'title':'TLS audit semantic case','steps':['connect'],"
+        "'expected':['observable failure'],'expected_result':'observable failure',"
         "'preconditions':['NVMe-oF target is configured with TLS enabled'],"
         "'observability':['initiator exit code, target log, connection state metric'],"
         "'diagnostics':['compare target log timestamps with initiator timeout window'],"
+        "'failure_diagnostics':['compare target log timestamps with initiator timeout window'],"
+        "'mapped_test_dir':'test/nvmf','source_or_test_evidence':'test/nvmf',"
         "'suggested_spdk_test_dir':'test/nvmf'}\n"
         "]), encoding='utf-8')\n",
         encoding="utf-8",
@@ -5990,6 +6098,7 @@ async def test_workbench_task_run_acceptance_audit_records_semantic_import_artif
     monkeypatch.setattr(settings, "external_agent_custom_providers", [
         {"id": "local-python", "command": f"python {script_path}"}
     ])
+    (tmp_path / "test" / "nvmf").mkdir(parents=True)
     workflow = {
         "id": "acceptance_semantic_import_workflow",
         "name": "Acceptance semantic import workflow",

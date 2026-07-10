@@ -145,7 +145,7 @@ class WorkbenchWorkflowRunner:
                 self._emit_event("artifact_created", dict(output))
         test_activity_quality = self._audit_test_activity_quality(task_run=task_run)
         if (
-            status == "completed"
+            status in {"completed", "completed_empty"}
             and test_activity_quality.get("status") in {"needs_rework", "invalid"}
         ):
             status = "needs_rework"
@@ -4542,6 +4542,7 @@ def _redact_workbench_public_text(text: str, *, task_run: Any) -> str:
 
 
 _TEST_ACTIVITY_AUDIT_ARTIFACTS = {
+    "module_analysis.md",
     "sfmea.json",
     "black_box_cases.json",
     "black_box_cases.md",
