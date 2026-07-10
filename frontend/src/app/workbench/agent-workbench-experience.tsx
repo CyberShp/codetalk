@@ -4447,6 +4447,15 @@ export function AgentWorkbenchExperience({
         : null,
     [preparedRun],
   );
+  const preparedAgentMcpRequests = useMemo(
+    () =>
+      preparedRun?.task_bundle &&
+      typeof preparedRun.task_bundle === "object" &&
+      !Array.isArray(preparedRun.task_bundle)
+        ? agentMcpRequestSummary(preparedRun.task_bundle)
+        : [],
+    [preparedRun],
+  );
   const preparedRunSnapshotSummary = useMemo(
     () => (preparedRun ? workflowRunSnapshotSummary(preparedRun) : null),
     [preparedRun],
@@ -4630,6 +4639,109 @@ export function AgentWorkbenchExperience({
     taskAcceptanceAudit,
     testActivityQuality,
     workflowExecution,
+  ]);
+  const runPanelCapabilitySummary = useMemo(() => {
+    if (!preparedRun) return null;
+    const rows: Array<{
+      id: string;
+      label: string;
+      value: string;
+      detail?: string;
+      tone: "ok" | "warning" | "muted";
+    }> = [];
+    const mcpProfiles = new Set<string>();
+    const skills = new Set<string>();
+    const requiredArtifacts = new Set<string>();
+
+    if (preparedProviderReadiness) {
+      rows.push({
+        id: "repo",
+        label: "源码工作区",
+        value: providerStatusDisplayLabel(preparedProviderReadiness.repoStatus),
+        tone:
+          ["ready", "ok", "available", "configured"].includes(
+            preparedProviderReadiness.repoStatus.toLowerCase(),
+          )
+            ? "ok"
+            : "warning",
+      });
+      preparedProviderReadiness.agentProviders.forEach((provider) => {
+        rows.push({
+          id: `agent:${provider.provider}`,
+          label: `Agent · ${providerDisplayLabel(provider.provider)}`,
+          value: providerStatusDisplayLabel(provider.status),
+          detail: provider.reason
+            ? compactReasonLabel(provider.reason)
+            : provider.deploymentEvidenceConflict
+              ? "部署探测证据与当前执行器状态冲突"
+              : "",
+          tone:
+            provider.status === "available" &&
+            !provider.deploymentEvidenceConflict
+              ? "ok"
+              : "warning",
+        });
+      });
+      preparedProviderReadiness.codetalkProviders
+        .filter((provider) => provider.provider !== "local-search")
+        .forEach((provider) => {
+          rows.push({
+            id: `codetalk:${provider.provider}`,
+            label: providerDisplayLabel(provider.provider),
+            value: providerStatusDisplayLabel(provider.status),
+            detail: provider.nextCheck,
+            tone:
+              ["available", "configured", "ready", "ok"].includes(
+                provider.status.toLowerCase(),
+              )
+                ? "ok"
+                : "warning",
+          });
+        });
+    }
+
+    preparedAgentMcpRequests.forEach((request) => {
+      request.mcpProfiles.forEach((profile) => mcpProfiles.add(profile));
+      request.requiredArtifacts.forEach((artifact) =>
+        requiredArtifacts.add(artifact),
+      );
+      if (request.inputId && request.mcpProfiles.length === 0) {
+        mcpProfiles.add(request.inputId);
+      }
+    });
+    activeRunUiSummary?.nodes.forEach((node) => {
+      node.mcp_profiles?.forEach((profile) => {
+        if (profile) mcpProfiles.add(profile);
+      });
+      node.mcp_inputs?.forEach((input) => {
+        if (input.id) mcpProfiles.add(input.id);
+      });
+      node.skills?.forEach((skill) => {
+        const label = skill.label || skill.id;
+        if (label) skills.add(label);
+      });
+      node.outputs?.forEach((output) => {
+        if (output.artifact) requiredArtifacts.add(output.artifact);
+      });
+    });
+
+    const warnings = [
+      ...(preparedProviderReadiness?.blockingReasons ?? []),
+      ...(preparedProviderReadiness?.warnings ?? []),
+    ].map(compactReasonLabel);
+
+    return {
+      rows,
+      mcpProfiles: Array.from(mcpProfiles),
+      skills: Array.from(skills),
+      requiredArtifacts: Array.from(requiredArtifacts),
+      warnings: Array.from(new Set(warnings)),
+    };
+  }, [
+    activeRunUiSummary,
+    preparedAgentMcpRequests,
+    preparedProviderReadiness,
+    preparedRun,
   ]);
   const runPanelProgress = useMemo(() => {
     const completed = runPhaseCards.filter(
@@ -10275,6 +10387,113 @@ export function AgentWorkbenchExperience({
                               >
                                 输出: {output.artifact}
                               </span>
+                            ))}
+                          </div>
+                        )}
+                      </section>
+                    )}
+                    {runPanelCapabilitySummary && (
+                      <section
+                        aria-label="能力就绪面板"
+                        className="rounded-lg border border-outline-variant/25 bg-surface-container/60 p-3"
+                      >
+                        <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <p className="font-semibold text-on-surface">
+                              能力就绪
+                            </p>
+                            <p className="text-[10px] text-on-surface-variant">
+                              执行器、MCP、skills 和产物契约会随本次运行一起传给 Agent
+                            </p>
+                          </div>
+                          <span
+                            className={[
+                              "rounded-full px-2 py-0.5 text-[10px] font-medium",
+                              preparedProviderReadiness?.status === "ready" ||
+                              preparedProviderReadiness?.status === "ok"
+                                ? "bg-emerald-100 text-emerald-700"
+                                : "bg-amber-100 text-amber-800",
+                            ].join(" ")}
+                          >
+                            {providerStatusDisplayLabel(
+                              preparedProviderReadiness?.status ?? "pending",
+                            )}
+                          </span>
+                        </div>
+                        {runPanelCapabilitySummary.rows.length > 0 && (
+                          <div className="grid gap-1.5 sm:grid-cols-2">
+                            {runPanelCapabilitySummary.rows.slice(0, 6).map((row) => (
+                              <div
+                                key={row.id}
+                                className="min-w-0 rounded-md bg-surface px-2 py-1.5"
+                              >
+                                <div className="flex min-w-0 items-center justify-between gap-2">
+                                  <span className="truncate text-[11px] font-medium text-on-surface">
+                                    {row.label}
+                                  </span>
+                                  <span
+                                    className={[
+                                      "shrink-0 rounded px-1.5 py-0.5 text-[10px] font-medium",
+                                      row.tone === "ok"
+                                        ? "bg-emerald-100 text-emerald-700"
+                                        : row.tone === "warning"
+                                          ? "bg-amber-100 text-amber-800"
+                                          : "bg-surface-container text-on-surface-variant",
+                                    ].join(" ")}
+                                  >
+                                    {row.value}
+                                  </span>
+                                </div>
+                                {row.detail && (
+                                  <p className="mt-1 line-clamp-2 break-words text-[10px] leading-4 text-on-surface-variant">
+                                    {row.detail}
+                                  </p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <div className="mt-2 space-y-1.5">
+                          <p className="rounded-md bg-surface px-2 py-1 text-[11px] text-on-surface-variant">
+                            MCP:
+                            <span className="ml-1 text-on-surface">
+                              {runPanelCapabilitySummary.mcpProfiles.length > 0
+                                ? runPanelCapabilitySummary.mcpProfiles
+                                    .slice(0, 5)
+                                    .join("、")
+                                : "未声明"}
+                            </span>
+                          </p>
+                          <p className="rounded-md bg-surface px-2 py-1 text-[11px] text-on-surface-variant">
+                            skills:
+                            <span className="ml-1 text-on-surface">
+                              {runPanelCapabilitySummary.skills.length > 0
+                                ? runPanelCapabilitySummary.skills
+                                    .slice(0, 5)
+                                    .join("、")
+                                : "未声明"}
+                            </span>
+                          </p>
+                          <p className="rounded-md bg-surface px-2 py-1 text-[11px] text-on-surface-variant">
+                            必需产物:
+                            <span className="ml-1 text-on-surface">
+                              {runPanelCapabilitySummary.requiredArtifacts.length > 0
+                                ? runPanelCapabilitySummary.requiredArtifacts
+                                    .slice(0, 5)
+                                    .join("、")
+                                : "跟随工作流输出契约"}
+                            </span>
+                          </p>
+                        </div>
+                        {runPanelCapabilitySummary.warnings.length > 0 && (
+                          <div className="mt-2 space-y-1">
+                            {runPanelCapabilitySummary.warnings.slice(0, 3).map((warning) => (
+                              <p
+                                key={warning}
+                                className="rounded-md bg-amber-50 px-2 py-1 text-[11px] leading-4 text-amber-900"
+                              >
+                                {warning}
+                              </p>
                             ))}
                           </div>
                         )}

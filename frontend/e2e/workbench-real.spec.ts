@@ -448,6 +448,96 @@ test("designer blank workflow drives cockpit inputs and real agent artifacts", a
   }
 });
 
+test("real cockpit surfaces missing agent, MCP and skills capability before execution", async ({
+  page,
+  request,
+}) => {
+  test.setTimeout(90_000);
+  const unique = Date.now();
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-capability-")));
+  fs.mkdirSync(path.join(repo, "lib", "iscsi"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "lib", "iscsi", "login.c"),
+    "int iscsi_login(void) { return 0; }\n",
+    "utf8",
+  );
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: `capability-${unique}`, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
+  const workflowId = `capability_missing_agent_${unique}`;
+  const missingProvider = `missing-agent-${unique}`;
+  const workflowResp = await request.post(`${backendBase}/api/workbench/workflows`, {
+    data: {
+      id: workflowId,
+      name: "Capability Missing Agent E2E",
+      version: 1,
+      inputs: [
+        {
+          id: "analysis_target",
+          label: "分析目标",
+          type: "free_text",
+          required: true,
+        },
+      ],
+      steps: [
+        {
+          id: "agent_design",
+          type: "agent_task",
+          provider: missingProvider,
+          mcp_profile: "qa-source-mcp",
+          skills: ["storage-test-design", "sfmea"],
+          required_artifacts: ["test_design.md", "sfmea.json"],
+          goal: "Design iSCSI login gray/black-box tests from source evidence.",
+        },
+      ],
+      outputs: [
+        {
+          id: "test_design",
+          label: "测试设计",
+          type: "markdown",
+          from: "agent_design",
+          artifact: "test_design.md",
+        },
+        {
+          id: "sfmea",
+          label: "SFMEA",
+          type: "json",
+          from: "agent_design",
+          artifact: "sfmea.json",
+          schema: {
+            type: "array",
+            items: { type: "object" },
+          },
+        },
+      ],
+    },
+  });
+  expect(workflowResp.status()).toBe(201);
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  const workflowSelect = page.locator('main select[aria-label="工作流"]').first();
+  await expect(workflowSelect.locator(`option[value="${workflowId}"]`)).toHaveCount(1, {
+    timeout: 15_000,
+  });
+  await workflowSelect.selectOption(workflowId);
+  await page.getByLabel("Workspace selector").selectOption(workspace.id);
+  await page.getByLabel("Workflow input analysis_target").fill("iSCSI login 灰白盒测试设计");
+  await page.getByRole("button", { name: "准备运行" }).hover();
+  await page.getByRole("button", { name: "准备运行" }).click();
+  await expect(page.getByText(/任务已准备 · task_run_/)).toBeVisible({ timeout: 15_000 });
+
+  const capabilityPanel = page.getByLabel("能力就绪面板");
+  await expect(capabilityPanel).toBeVisible();
+  await expect(capabilityPanel.getByText("降级可用")).toBeVisible();
+  await expect(capabilityPanel.getByText(`Agent · ${missingProvider}`)).toBeVisible();
+  await expect(capabilityPanel.getByText(`${missingProvider} 执行器不可用`)).toBeVisible();
+  await expect(capabilityPanel.getByText(/MCP:\s*qa-source-mcp/)).toBeVisible();
+  await expect(capabilityPanel.getByText(/skills:\s*storage-test-design、sfmea/)).toBeVisible();
+  await expect(capabilityPanel.getByText(/必需产物:\s*sfmea\.json、test_design\.md|必需产物:\s*test_design\.md、sfmea\.json/)).toBeVisible();
+});
+
 test("designer canvas drag connect properties drive cockpit workflow run", async ({
   page,
   request,

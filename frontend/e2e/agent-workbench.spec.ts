@@ -2111,6 +2111,14 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await preparePanel.getByRole("button", { name: "准备运行" }).click();
   const diagnosticsDetails = page.getByLabel("运行详细诊断");
   await expect(diagnosticsDetails).toBeVisible();
+  const resultPanel = page.getByLabel("运行结果面板");
+  await expect(resultPanel).toBeVisible();
+  const capabilityPanel = resultPanel.getByLabel("能力就绪面板");
+  await expect(capabilityPanel).toBeVisible();
+  await expect(capabilityPanel.getByText("降级可用")).toBeVisible();
+  await expect(capabilityPanel.getByText("GitNexus", { exact: true })).toBeVisible();
+  await expect(capabilityPanel.getByText("Agent · Claude Code")).toBeVisible();
+  await expect(capabilityPanel.getByText("Claude Code 执行器不可用")).toBeVisible();
   await expect(preparePanel.getByText("Agent 运行阶段")).toBeHidden();
   await diagnosticsDetails.getByText("查看详细诊断与原始产物").click();
   await expect(preparePanel.getByText("Agent 运行阶段")).toBeVisible();
@@ -2120,8 +2128,6 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(preparePanel.getByText("固化交付物").first()).toBeVisible();
   await expect(preparePanel.getByText("可信度与可用性")).toBeVisible();
   await expect(preparePanel.getByText("交付物状态")).toBeVisible();
-  const resultPanel = page.getByLabel("运行结果面板");
-  await expect(resultPanel).toBeVisible();
   await expect(resultPanel.getByText("演示状态")).toBeVisible();
   await expect(resultPanel.getByText("进行中")).toBeVisible();
   await expect(resultPanel.getByText("准备上下文")).toBeVisible();
@@ -2142,7 +2148,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(
     page.getByText("Claude Code 命令:ccr code 已使用备用命令", { exact: false }),
   ).toBeVisible();
-  await expect(page.getByText("主执行器不可用，已尝试备用命令")).toBeVisible();
+  await expect(page.getByText("主执行器不可用，已尝试备用命令").first()).toBeVisible();
   await expect(
     page.getByText("探测:/api/tools/claude-code/startup-probe", { exact: false }),
   ).toBeVisible();
