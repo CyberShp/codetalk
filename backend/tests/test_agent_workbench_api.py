@@ -2649,6 +2649,76 @@ async def test_workbench_task_run_execute_api_schedules_background_run_and_expos
     assert by_type["step_started"]["event_kind"] == "status"
 
 
+async def test_workbench_task_run_events_stream_yields_incremental_events_until_terminal(
+    workbench_client,
+    tmp_path,
+):
+    from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
+
+    workflow = {
+        "id": "stream_agent_workflow",
+        "name": "Stream agent workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["result.json"],
+            }
+        ],
+        "outputs": [{"id": "result", "type": "json", "from": "discover", "artifact": "result.json"}],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "stream_agent_workflow",
+            "workspace_id": "ws-stream-execute",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    event_store = WorkbenchTaskRunEventStore(settings.data_path / "workbench" / "task_runs")
+    queued = event_store.append(task_run_id, "queued", {"status": "queued"})
+
+    async def append_events() -> None:
+        await asyncio.sleep(0.05)
+        event_store.append(task_run_id, "running", {"status": "running"})
+        await asyncio.sleep(0.05)
+        event_store.append(
+            task_run_id,
+            "step_started",
+            {"step_id": "discover", "provider": "local-python"},
+        )
+        await asyncio.sleep(0.05)
+        event_store.append(task_run_id, "completed", {"status": "completed"})
+        event_store.mark_status(task_run_id, "completed", completed_at="2026-07-10T00:00:00Z")
+
+    producer = asyncio.create_task(append_events())
+    async with workbench_client.stream(
+        "GET",
+        f"/api/workbench/task-runs/{task_run_id}/events/stream",
+        params={"after_id": queued["event_id"], "poll_ms": 50},
+    ) as stream:
+        assert stream.status_code == 200
+        assert stream.headers["content-type"].startswith("text/event-stream")
+        body = (await stream.aread()).decode("utf-8")
+    await producer
+
+    assert "queued" not in body
+    assert "event: task_run_event" in body
+    assert '"event_type": "running"' in body
+    assert '"event_type": "step_started"' in body
+    assert '"event_kind": "status"' in body
+    assert '"event_type": "completed"' in body
+    assert "event: task_run_done" in body
+    assert '"status": "completed"' in body
+    assert '"last_event_id": 4' in body
+
+
 async def test_workbench_task_run_cancel_running_execution_keeps_cancelled_status(
     workbench_client,
     tmp_path,

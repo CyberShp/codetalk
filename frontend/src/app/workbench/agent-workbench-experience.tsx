@@ -27,7 +27,7 @@ import {
   X,
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
-import { api } from "@/lib/api";
+import { api, currentApiBase } from "@/lib/api";
 import { buildWorkflowFromDesigner } from "@/lib/workflow-builder.mjs";
 import type {
   EvidenceMemoryItem,
@@ -3862,6 +3862,7 @@ export function AgentWorkbenchExperience({
   const queryPrefillAppliedRef = useRef(false);
   const autoRestoredTaskRunRef = useRef<string | null>(null);
   const startTaskRunPollingRef = useRef<(taskRunId: string) => void>(() => undefined);
+  const taskRunEventSourceRef = useRef<EventSource | null>(null);
   const paletteDragModuleRef = useRef<string | null>(null);
   const palettePointerDragRef = useRef<{
     moduleId: string;
@@ -4070,6 +4071,14 @@ export function AgentWorkbenchExperience({
   useEffect(() => {
     setActiveWorkbenchView(initialView);
   }, [initialView]);
+
+  useEffect(
+    () => () => {
+      taskRunEventSourceRef.current?.close();
+      taskRunEventSourceRef.current = null;
+    },
+    [],
+  );
 
   useEffect(() => {
     if (queryPrefillAppliedRef.current || typeof window === "undefined") return;
@@ -6155,6 +6164,63 @@ export function AgentWorkbenchExperience({
     startTaskRunPollingRef.current(run.task_run_id);
   }
 
+  function mergeTaskRunEvents(items: WorkbenchTaskRunEvent[]) {
+    if (items.length === 0) return;
+    setTaskRunEvents((current) => {
+      const seen = new Set(current.map((item) => item.event_id));
+      return [
+        ...current,
+        ...items.filter((item) => !seen.has(item.event_id)),
+      ].slice(-300);
+    });
+  }
+
+  function startTaskRunEventStream(taskRunId: string, afterEventId = 0): boolean {
+    if (typeof window === "undefined" || typeof EventSource === "undefined") {
+      return false;
+    }
+    taskRunEventSourceRef.current?.close();
+    const query = new URLSearchParams({
+      after_id: String(afterEventId),
+      poll_ms: "250",
+    });
+    const source = new EventSource(
+      `${currentApiBase()}/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/events/stream?${query.toString()}`,
+      { withCredentials: true },
+    );
+    taskRunEventSourceRef.current = source;
+    source.addEventListener("task_run_event", (message) => {
+      try {
+        const event = JSON.parse((message as MessageEvent).data) as WorkbenchTaskRunEvent;
+        mergeTaskRunEvents([event]);
+      } catch {
+        // Polling remains the fallback when a browser or proxy mangles the stream.
+      }
+    });
+    source.addEventListener("task_run_done", (message) => {
+      try {
+        const payload = JSON.parse((message as MessageEvent).data) as {
+          last_event_id?: number;
+        };
+        void refreshTaskRunRuntime(taskRunId, Number(payload.last_event_id ?? 0));
+      } catch {
+        void refreshTaskRunRuntime(taskRunId);
+      } finally {
+        source.close();
+        if (taskRunEventSourceRef.current === source) {
+          taskRunEventSourceRef.current = null;
+        }
+      }
+    });
+    source.onerror = () => {
+      source.close();
+      if (taskRunEventSourceRef.current === source) {
+        taskRunEventSourceRef.current = null;
+      }
+    };
+    return true;
+  }
+
   async function refreshTaskRunRuntime(
     taskRunId: string,
     afterEventId = 0,
@@ -6166,15 +6232,7 @@ export function AgentWorkbenchExperience({
       }),
       api.workbench.taskRuns.get(taskRunId),
     ]);
-    if (events.items.length > 0) {
-      setTaskRunEvents((current) => {
-        const seen = new Set(current.map((item) => item.event_id));
-        return [
-          ...current,
-          ...events.items.filter((item) => !seen.has(item.event_id)),
-        ].slice(-300);
-      });
-    }
+    mergeTaskRunEvents(events.items);
     setPreparedRun(run);
     setTaskRuns((current) =>
       [
@@ -6205,6 +6263,7 @@ export function AgentWorkbenchExperience({
 
   function startTaskRunPolling(taskRunId: string) {
     void (async () => {
+      startTaskRunEventStream(taskRunId);
       try {
         await pollTaskRunUntilSettled(taskRunId);
         const run = await api.workbench.taskRuns.get(taskRunId);
@@ -6216,6 +6275,9 @@ export function AgentWorkbenchExperience({
         await loadWorkflows();
       } catch (err: unknown) {
         setError(err instanceof Error ? err.message : "刷新任务状态失败");
+      } finally {
+        taskRunEventSourceRef.current?.close();
+        taskRunEventSourceRef.current = null;
       }
     })();
   }

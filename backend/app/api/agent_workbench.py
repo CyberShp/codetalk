@@ -14,7 +14,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Body, File, Form, HTTPException, Query, Response, UploadFile
+from fastapi import APIRouter, Body, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -69,6 +70,19 @@ from app.services.workflow_presets import (
 )
 
 router = APIRouter(prefix="/api/workbench", tags=["agent-workbench"])
+
+_TASK_RUN_TERMINAL_STATUSES = {
+    "completed",
+    "completed_empty",
+    "needs_review",
+    "failed",
+    "error",
+    "invalid",
+    "needs_rework",
+    "cancelled",
+    "canceled",
+    "interrupted",
+}
 
 
 class AnalysisRunCreate(BaseModel):
@@ -1964,6 +1978,57 @@ async def list_task_run_events(
         "items": items,
         "last_event_id": max((int(item.get("event_id") or 0) for item in items), default=after_id),
     }
+
+
+@router.get("/task-runs/{task_run_id}/events/stream")
+async def stream_task_run_events(
+    task_run_id: str,
+    request: Request,
+    after_id: int = Query(default=0, ge=0),
+    limit: int = Query(default=200, ge=1, le=1000),
+    poll_ms: int = Query(default=250, ge=50, le=5000),
+) -> StreamingResponse:
+    try:
+        WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+
+    async def event_stream():
+        cursor = int(after_id)
+        event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
+        while True:
+            if await request.is_disconnected():
+                break
+            items = event_store.list_after(task_run_id, after_id=cursor, limit=limit)
+            for item in items:
+                cursor = max(cursor, int(item.get("event_id") or cursor))
+                yield _sse_event("task_run_event", item)
+            status = event_store.current_status(task_run_id)
+            if status in _TASK_RUN_TERMINAL_STATUSES:
+                yield _sse_event(
+                    "task_run_done",
+                    {
+                        "task_run_id": task_run_id,
+                        "status": status,
+                        "last_event_id": cursor,
+                    },
+                )
+                break
+            await asyncio.sleep(poll_ms / 1000)
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _sse_event(event_type: str, payload: dict[str, Any]) -> str:
+    data = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return f"event: {event_type}\ndata: {data}\n\n"
 
 
 def _execute_task_run_with_closure(
