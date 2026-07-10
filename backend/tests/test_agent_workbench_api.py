@@ -2254,6 +2254,125 @@ async def test_workbench_task_scoped_agent_run_execute_api(workbench_client, tmp
     assert output_file.read_text(encoding="utf-8") == f"{task_run_id}_{step_id}"
 
 
+async def test_task_scoped_agent_stdin_exposes_normalized_invocation_contract(
+    workbench_client,
+    tmp_path,
+):
+    from app.services.agent_run_harness import AgentRunHarness
+
+    task_run_id = "task_run_contract_stdin"
+    step_id = "design"
+    artifact_dir = (
+        tmp_path
+        / "data"
+        / "workbench"
+        / "task_runs"
+        / task_run_id
+        / "agent_runs"
+        / step_id
+    )
+    capture_file = artifact_dir / "stdin_contract.json"
+    script = (
+        "import json, pathlib, sys; "
+        "payload=json.load(sys.stdin); "
+        "contract=payload.get('execution_contract') or {}; "
+        "artifact=payload.get('artifact_contract') or {}; "
+        "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
+        "  'runtime': payload.get('runtime'),"
+        "  'execution_inputs': contract.get('user_inputs'),"
+        "  'requested_outputs': (contract.get('outputs') or {}).get('user_requested_outputs'),"
+        "  'mcp_profile': (contract.get('mcp') or {}).get('profile'),"
+        "  'skills': (contract.get('skills') or {}).get('ids'),"
+        "  'test_target': (payload.get('test_activity_contract') or {}).get('target'),"
+        "  'required_artifacts': artifact.get('required_artifacts'),"
+        "}), encoding='utf-8'); "
+        "print('contract captured')"
+    )
+    execution_contract = {
+        "user_inputs": [
+            {
+                "id": "analysis_target",
+                "role": "分析目标",
+                "type": "free_text",
+                "value": "iSCSI login CHAP failure",
+            },
+            {
+                "id": "mr_link",
+                "role": "MR 链接",
+                "type": "mr_link",
+                "value": "https://codehub.local/storage/spdk/-/merge_requests/7",
+            },
+        ],
+        "mcp": {
+            "profile": "codehub-readonly",
+            "requests": [
+                {
+                    "input_id": "mr_link",
+                    "value": "https://codehub.local/storage/spdk/-/merge_requests/7",
+                }
+            ],
+        },
+        "skills": {"ids": ["source-evidence-first", "black-box-test-design"]},
+        "outputs": {
+            "required_artifacts": ["report.md", "black-box-cases.md"],
+            "user_requested_outputs": [
+                {
+                    "input_id": "requested_outputs",
+                    "role": "指定输出文件",
+                    "value": "项目结构、源码定向阅读、黑盒用例",
+                    "items": ["项目结构", "源码定向阅读", "黑盒用例"],
+                }
+            ],
+        },
+    }
+    AgentRunHarness(artifact_dir).create_run(
+        run_id=f"{task_run_id}_{step_id}",
+        provider="local-python",
+        command=["python", "-c", script, str(capture_file)],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf", "steps": [{"id": step_id}]},
+        task_bundle={
+            "task_run_id": task_run_id,
+            "step_id": step_id,
+            "workflow_id": "wf",
+            "goal": "生成测试设计",
+            "skills": ["source-evidence-first", "black-box-test-design"],
+            "required_artifacts": ["report.md", "black-box-cases.md"],
+            "execution_contract": execution_contract,
+            "test_activity_contract": {
+                "target": "iSCSI login CHAP failure",
+                "repo_path": str(tmp_path),
+            },
+        },
+        mcp_profile="codehub-readonly",
+    )
+
+    executed = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/agent-runs/{step_id}/execute",
+        json={"timeout_sec": 10},
+    )
+
+    assert executed.status_code == 200
+    assert executed.json()["status"] == "completed"
+    captured = json.loads(capture_file.read_text(encoding="utf-8"))
+    assert captured["runtime"] == {
+        "provider": "local-python",
+        "cwd": str(tmp_path),
+        "repo_path": str(tmp_path),
+        "mcp_profile": "codehub-readonly",
+    }
+    assert captured["execution_inputs"][0]["value"] == "iSCSI login CHAP failure"
+    assert captured["requested_outputs"][0]["items"] == [
+        "项目结构",
+        "源码定向阅读",
+        "黑盒用例",
+    ]
+    assert captured["mcp_profile"] == "codehub-readonly"
+    assert captured["skills"] == ["source-evidence-first", "black-box-test-design"]
+    assert captured["test_target"] == "iSCSI login CHAP failure"
+    assert captured["required_artifacts"] == ["report.md", "black-box-cases.md"]
+
+
 async def test_workbench_task_scoped_agent_run_retries_stdin_when_prompt_arg_fails(
     workbench_client,
     tmp_path,

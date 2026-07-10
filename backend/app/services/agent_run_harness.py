@@ -417,15 +417,47 @@ class AgentRunHarness:
             else _default_agent_session_policy()
         )
         self._write_json("provider_diagnostics.json", provider_diagnostics)
+        execution_contract = (
+            task_bundle.get("execution_contract")
+            if isinstance(task_bundle, dict)
+            and isinstance(task_bundle.get("execution_contract"), dict)
+            else agent_output_contract.get("execution_contract")
+            if isinstance(agent_output_contract, dict)
+            and isinstance(agent_output_contract.get("execution_contract"), dict)
+            else {}
+        )
+        test_activity_contract = (
+            task_bundle.get("test_activity_contract")
+            if isinstance(task_bundle, dict)
+            and isinstance(task_bundle.get("test_activity_contract"), dict)
+            else agent_output_contract.get("test_activity_contract")
+            if isinstance(agent_output_contract, dict)
+            and isinstance(agent_output_contract.get("test_activity_contract"), dict)
+            else execution_contract.get("test_activity_contract")
+            if isinstance(execution_contract.get("test_activity_contract"), dict)
+            else {}
+        )
+        runtime_contract = {
+            "provider": str(run_payload.get("provider") or ""),
+            "cwd": cwd,
+            "repo_path": cwd,
+            "mcp_profile": str(run_payload.get("mcp_profile") or ""),
+        }
         stdin_payload_obj = {
             "run_id": run_id,
             "turn_id": turn_id,
             "provider": run_payload.get("provider") or "",
+            "runtime": runtime_contract,
             "mcp_profile": run_payload.get("mcp_profile") or "",
             "session_policy": session_policy,
             "workflow_snapshot": workflow_snapshot if isinstance(workflow_snapshot, dict) else {},
             "task_bundle": task_bundle if isinstance(task_bundle, dict) else {},
+            "execution_contract": execution_contract,
+            "test_activity_contract": test_activity_contract,
             "agent_output_contract": (
+                agent_output_contract if isinstance(agent_output_contract, dict) else {}
+            ),
+            "artifact_contract": (
                 agent_output_contract if isinstance(agent_output_contract, dict) else {}
             ),
             "context_discovery_decision_summary": context_discovery_decision_summary,
