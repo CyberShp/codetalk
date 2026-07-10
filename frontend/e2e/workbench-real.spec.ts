@@ -931,7 +931,6 @@ test("module analysis real run shows local static scan and review state for empt
   await expect(page.getByRole("heading", { name: "运行驾驶舱", exact: true })).toBeVisible();
   await page.getByLabel("工作流").selectOption("module_analysis");
   await page.getByLabel("Workspace selector").selectOption({ label: `${workspaceName} · ${repo}` });
-  await page.getByLabel("Workflow input repo_path").selectOption(repo);
   await page
     .getByLabel("Workflow input analysis_object")
     .fill("definitely_missing_storage_module");
