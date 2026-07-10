@@ -4525,8 +4525,12 @@ export function AgentWorkbenchExperience({
           const mcpCount = node.mcp_inputs?.length ?? 0;
           const skillCount = node.skills?.length ?? 0;
           const outputCount = node.outputs?.length ?? 0;
+          const executorLabel =
+            node.executor_label && node.executor_label !== activeRunUiSummary.execution_label
+              ? node.executor_label
+              : "";
           const details = [
-            node.executor_label || "",
+            executorLabel,
             inputCount ? `输入 ${inputCount}` : "",
             mcpCount ? `MCP ${mcpCount}` : "",
             skillCount ? `技能 ${skillCount}` : "",
