@@ -20,7 +20,7 @@ from typing import Any, Callable
 
 from app.services.agent_cli_bridge import _decode as _decode_agent_cli_output
 from app.services.agent_invocation_contract import (
-    agent_invocation_typed_events,
+    agent_invocation_artifact_event_payload,
     build_agent_invocation_execution_contract,
 )
 
@@ -458,55 +458,39 @@ class AgentRunHarness:
             "artifact_dir": str(self.artifact_dir),
         }
         stdin_payload = json.dumps(stdin_payload_obj, ensure_ascii=False)
-        self._write_json(
-            "agent_invocation.json",
-            _workflow_agent_invocation_payload(
-                run=AgentRunRecord(
-                    run_id=run_id,
-                    turn_id=turn_id,
-                    provider=str(run_payload.get("provider") or ""),
-                    command=configured_command,
-                    cwd=cwd,
-                    artifact_dir=str(self.artifact_dir),
-                    mcp_profile=str(run_payload.get("mcp_profile") or ""),
-                    session_policy=session_policy,
-                    status=str(run_payload.get("status") or "created"),
-                    created_at=str(run_payload.get("created_at") or _now()),
-                ),
-                task_bundle=task_bundle if isinstance(task_bundle, dict) else {},
-                workflow_snapshot=workflow_snapshot if isinstance(workflow_snapshot, dict) else {},
-                agent_output_contract=agent_output_contract if isinstance(agent_output_contract, dict) else {},
-                stdin_payload_obj=stdin_payload_obj,
-                stdin_payload=stdin_payload,
-                prompt_transport="stdin",
+        invocation_manifest = _workflow_agent_invocation_payload(
+            run=AgentRunRecord(
+                run_id=run_id,
+                turn_id=turn_id,
+                provider=str(run_payload.get("provider") or ""),
+                command=configured_command,
+                cwd=cwd,
+                artifact_dir=str(self.artifact_dir),
+                mcp_profile=str(run_payload.get("mcp_profile") or ""),
+                session_policy=session_policy,
+                status=str(run_payload.get("status") or "created"),
+                created_at=str(run_payload.get("created_at") or _now()),
             ),
+            task_bundle=task_bundle if isinstance(task_bundle, dict) else {},
+            workflow_snapshot=workflow_snapshot if isinstance(workflow_snapshot, dict) else {},
+            agent_output_contract=agent_output_contract if isinstance(agent_output_contract, dict) else {},
+            stdin_payload_obj=stdin_payload_obj,
+            stdin_payload=stdin_payload,
+            prompt_transport="stdin",
         )
+        self._write_json("agent_invocation.json", invocation_manifest)
         _emit_agent_run_event(
             event_sink,
             "artifact",
-            {
-                "artifact": "agent_invocation.json",
-                "artifact_kind": "agent_invocation",
-                "content": "AgentInvocation 已准备",
-                "run_id": run_id,
-                "turn_id": turn_id,
-                "provider": str(run_payload.get("provider") or ""),
-                "cwd_label": _repo_path_label(cwd),
-                "mcp_profile": str(run_payload.get("mcp_profile") or ""),
-                "skills": [
-                    str(item)
-                    for item in (
-                        (task_bundle or {}).get("skills")
-                        if isinstance(task_bundle, dict)
-                        else []
-                    )
-                    if str(item).strip()
-                ],
-                "execution_contract": {
-                    "typed_events": agent_invocation_typed_events(),
-                    "source_first": True,
+            agent_invocation_artifact_event_payload(
+                invocation_manifest,
+                artifact="agent_invocation.json",
+                extra={
+                    "run_id": run_id,
+                    "turn_id": turn_id,
+                    "provider": str(run_payload.get("provider") or ""),
                 },
-            },
+            ),
         )
         task_bundle_sha256 = _json_sha256(task_bundle if isinstance(task_bundle, dict) else {})
         workflow_snapshot_sha256 = _json_sha256(

@@ -29,7 +29,10 @@ from app.services.agent_cli_bridge import (
     resolve_agent_cwd,
     stream_agent_runtime,
 )
-from app.services.agent_invocation_contract import build_agent_invocation_execution_contract
+from app.services.agent_invocation_contract import (
+    agent_invocation_artifact_event_payload,
+    build_agent_invocation_execution_contract,
+)
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
 from app.services.test_activity_contract import build_test_activity_contract
 
@@ -3025,119 +3028,10 @@ def _agent_thread_invocation_manifest(
 
 
 def _agent_invocation_artifact_event_payload(manifest: dict[str, Any]) -> dict[str, Any]:
-    runtime = manifest.get("runtime") if isinstance(manifest.get("runtime"), dict) else {}
-    session = manifest.get("session") if isinstance(manifest.get("session"), dict) else {}
-    test_activity_contract = (
-        manifest.get("test_activity_contract")
-        if isinstance(manifest.get("test_activity_contract"), dict)
-        else {}
+    return agent_invocation_artifact_event_payload(
+        manifest,
+        artifact="agent-artifacts/agent_invocation.json",
     )
-    artifact_contract = (
-        manifest.get("artifact_contract")
-        if isinstance(manifest.get("artifact_contract"), dict)
-        else {}
-    )
-    repo_path = str(manifest.get("repo_path") or manifest.get("cwd") or "")
-    return {
-        "artifact": "agent-artifacts/agent_invocation.json",
-        "artifact_kind": "agent_invocation",
-        "content": "AgentInvocation 已准备",
-        "runtime": {
-            "id": str(runtime.get("id") or ""),
-            "name": str(runtime.get("name") or ""),
-            "prompt_transport": str(runtime.get("prompt_transport") or ""),
-            "output_mode": str(runtime.get("output_mode") or ""),
-            "completion_mode": str(runtime.get("completion_mode") or ""),
-            "working_dir_mode": str(runtime.get("working_dir_mode") or ""),
-        },
-        "cwd_label": _public_path_name(str(manifest.get("cwd") or repo_path)),
-        "repo_label": _public_path_name(repo_path),
-        "mcp_profile": str(manifest.get("mcp_profile") or ""),
-        "skills": [str(item) for item in manifest.get("skills") or [] if str(item).strip()],
-        "session": {
-            "persistence": str(session.get("persistence") or ""),
-            "mode": str(session.get("mode") or ""),
-        },
-        "execution_contract": {
-            "typed_events": (
-                manifest.get("execution_contract", {}).get("typed_events")
-                if isinstance(manifest.get("execution_contract"), dict)
-                else []
-            ),
-            "source_first": (
-                manifest.get("execution_contract", {}).get("source_first")
-                if isinstance(manifest.get("execution_contract"), dict)
-                else None
-            ),
-            "outputs": _public_execution_outputs_event_payload(
-                manifest.get("execution_contract", {})
-                if isinstance(manifest.get("execution_contract"), dict)
-                else {}
-            ),
-        },
-        "test_activity_contract": _public_test_activity_contract_event_payload(test_activity_contract),
-        "artifact_contract": _public_artifact_contract_event_payload(
-            artifact_contract,
-            required_outputs=test_activity_contract.get("required_outputs"),
-        ),
-    }
-
-
-def _public_execution_outputs_event_payload(execution_contract: dict[str, Any]) -> dict[str, Any]:
-    outputs = (
-        execution_contract.get("outputs")
-        if isinstance(execution_contract.get("outputs"), dict)
-        else {}
-    )
-    requested = [
-        {
-            "source": str(item.get("source") or ""),
-            "items": [str(value) for value in item.get("items") or [] if str(value).strip()],
-        }
-        for item in outputs.get("user_requested_outputs") or []
-        if isinstance(item, dict)
-    ]
-    return {"user_requested_outputs": requested} if requested else {}
-
-
-def _public_test_activity_contract_event_payload(contract: dict[str, Any]) -> dict[str, Any]:
-    if not contract:
-        return {}
-    return {
-        "target": str(contract.get("target") or ""),
-        "domain_profiles": [
-            str(item) for item in contract.get("domain_profiles") or [] if str(item).strip()
-        ],
-        "required_outputs": [
-            str(item) for item in contract.get("required_outputs") or [] if str(item).strip()
-        ],
-    }
-
-
-def _public_artifact_contract_event_payload(
-    contract: dict[str, Any],
-    *,
-    required_outputs: Any = None,
-) -> dict[str, Any]:
-    outputs = [str(item) for item in required_outputs or [] if str(item).strip()]
-    if not contract and not outputs:
-        return {}
-    return {
-        "required_outputs": outputs,
-        "templates": sorted(str(key) for key in contract.keys() if str(key).strip()),
-        "artifact_dir_policy": str(contract.get("artifact_dir_policy") or ""),
-        "download_delivery": bool(contract.get("download_delivery")),
-    }
-
-
-def _public_path_name(path: str) -> str:
-    text = str(path or "").strip()
-    if not text:
-        return ""
-    try:
-        return Path(text).expanduser().name or text
-    except (OSError, RuntimeError):
-        return text
 
 
 def _looks_like_test_activity_request(text: str) -> bool:
