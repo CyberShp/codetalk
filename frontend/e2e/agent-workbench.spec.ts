@@ -2128,7 +2128,8 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
   await expect(preparePanel.getByText("固化交付物").first()).toBeVisible();
   await expect(preparePanel.getByText("可信度与可用性")).toBeVisible();
   await expect(preparePanel.getByText("交付物状态")).toBeVisible();
-  await expect(resultPanel.getByText("演示状态")).toBeVisible();
+  await expect(resultPanel.getByText("运行状态")).toBeVisible();
+  await expect(resultPanel.getByText("演示状态")).toHaveCount(0);
   await expect(resultPanel.getByText("进行中")).toBeVisible();
   await expect(resultPanel.getByText("准备上下文")).toBeVisible();
   await expect(resultPanel.getByText("产物与结果")).toBeVisible();

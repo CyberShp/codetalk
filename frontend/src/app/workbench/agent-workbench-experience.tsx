@@ -5136,12 +5136,12 @@ export function AgentWorkbenchExperience({
     setWorkflowHiddenEdgeIds(layout.hidden_edge_ids ?? []);
     setWorkflowExtraNodes(extras);
     setWorkflowHiddenNodeIds(layout.hidden_node_ids);
-    const firstVisible = layout.nodes.find(
-      (node) => !layout.hidden_node_ids.includes(node.id),
+    const visibleNodeIds = new Set(
+      layout.nodes
+        .filter((node) => !layout.hidden_node_ids.includes(node.id))
+        .map((node) => node.id),
     );
-    if (firstVisible && activeWorkflowNodeId === firstVisible.id) {
-      setActiveWorkflowNodeId(firstVisible.id);
-    } else {
+    if (activeWorkflowNodeId && !visibleNodeIds.has(activeWorkflowNodeId)) {
       setActiveWorkflowNodeId("");
     }
   }
@@ -8440,6 +8440,7 @@ export function AgentWorkbenchExperience({
                           onPointerMove={moveWorkflowNode}
                           onPointerUp={endWorkflowNodeDrag}
                           onPointerCancel={endWorkflowNodeDrag}
+                          onClick={() => setActiveWorkflowNodeId(node.id)}
                           className={[
                             "ct-workflow-node absolute h-24 cursor-move select-none rounded-md border bg-surface p-1.5 shadow-sm",
                             activeWorkflowNodeId === node.id
@@ -10183,7 +10184,7 @@ export function AgentWorkbenchExperience({
                   </span>
                 </div>
                 <p className="mt-3 text-[11px] font-semibold text-on-surface-variant">
-                  演示状态
+                  运行状态
                 </p>
                 <div className="mt-1 flex flex-wrap gap-1 rounded-lg border border-dashed border-outline-variant/40 bg-surface-container/40 p-1">
                   {["空", "进行中", "需复核", "失败", "已完成"].map((status) => (
