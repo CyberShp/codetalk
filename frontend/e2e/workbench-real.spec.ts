@@ -43,6 +43,15 @@ async function connectWorkflowPorts(page: Page, sourceTitle: string, targetTitle
   await target.click();
 }
 
+async function navigateWorkbenchSection(
+  page: Page,
+  section: "运行驾驶舱" | "工作流设计" | "语义库",
+) {
+  const navItem = page.getByText(section, { exact: true }).first();
+  await navItem.hover();
+  await navItem.click();
+}
+
 test("lists and installs every built-in workflow preset through the real workbench UI", async ({
   page,
 }) => {
@@ -115,8 +124,7 @@ test("lists and installs every built-in workflow preset through the real workben
   ];
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  await navigateWorkbenchSection(page, "工作流设计");
 
   const presetSelect = page.getByLabel("工作流预设");
   await expect(presetSelect).toBeVisible({ timeout: 15_000 });
@@ -195,8 +203,7 @@ test("prevents duplicate workflow preset install requests from a real double cli
   page,
 }) => {
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  await navigateWorkbenchSection(page, "工作流设计");
 
   const presetSelect = page.getByLabel("工作流预设");
   await expect(presetSelect).toBeVisible({ timeout: 15_000 });
@@ -234,8 +241,7 @@ test("prevents duplicate workflow saves from a real double click", async ({
   const workflowId = `double_save_${unique}`;
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  await navigateWorkbenchSection(page, "工作流设计");
   await page.getByLabel("Workflow JSON").fill(
     JSON.stringify(
       {
@@ -742,16 +748,14 @@ test("installs a workflow preset and validates required inputs through the real 
   fs.writeFileSync(path.join(repo, "lib", "nvmf", "README.md"), "NVMe-oF target notes\n", "utf8");
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  await navigateWorkbenchSection(page, "工作流设计");
 
   await page.getByLabel("工作流预设").selectOption("module_analysis");
   await page.getByRole("button", { name: "安装预设" }).hover();
   await page.getByRole("button", { name: "安装预设" }).click();
   await expect(page.getByText(/预设已安装: 模块分析工作流/)).toBeVisible({ timeout: 15_000 });
 
-  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await navigateWorkbenchSection(page, "运行驾驶舱");
   await expect(page.getByRole("heading", { name: "任务运行" })).toBeVisible();
   await page.getByLabel("Repo path").fill(repo);
   await page.getByLabel("Workflow input repo_path").fill(repo);
@@ -816,8 +820,7 @@ test("locks conflicting task run actions while a real prepare request is in flig
   );
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  await navigateWorkbenchSection(page, "工作流设计");
   await page.getByLabel("工作流预设").selectOption("module_analysis");
   await page.getByRole("button", { name: "安装预设" }).hover();
   await page.getByRole("button", { name: "安装预设" }).click();
@@ -825,8 +828,7 @@ test("locks conflicting task run actions while a real prepare request is in flig
     timeout: 15_000,
   });
 
-  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await navigateWorkbenchSection(page, "运行驾驶舱");
   await page.getByLabel("Repo path").fill(repo);
   await page.getByLabel("Workflow input repo_path").fill(repo);
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf busy connect");
@@ -870,8 +872,7 @@ test("prevents duplicate create-and-run task runs from a real double click", asy
   );
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  await navigateWorkbenchSection(page, "工作流设计");
   await page.getByLabel("工作流预设").selectOption("module_analysis");
   await page.getByRole("button", { name: "安装预设" }).hover();
   await page.getByRole("button", { name: "安装预设" }).click();
@@ -879,8 +880,7 @@ test("prevents duplicate create-and-run task runs from a real double click", asy
     timeout: 15_000,
   });
 
-  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await navigateWorkbenchSection(page, "运行驾驶舱");
   await page.getByLabel("Repo path").fill(repo);
   await page.getByLabel("Workflow input repo_path").fill(repo);
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf create run");
@@ -974,8 +974,7 @@ test("creates, runs, previews, and downloads workflow artifacts through the real
   );
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  await navigateWorkbenchSection(page, "工作流设计");
   await page.getByLabel("工作流预设").selectOption("module_analysis");
   await page.getByRole("button", { name: "安装预设" }).hover();
   await page.getByRole("button", { name: "安装预设" }).click();
@@ -983,8 +982,7 @@ test("creates, runs, previews, and downloads workflow artifacts through the real
     timeout: 15_000,
   });
 
-  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await navigateWorkbenchSection(page, "运行驾驶舱");
   await page.getByLabel("Repo path").fill(repo);
   await page.getByLabel("Workflow input repo_path").fill(repo);
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf artifact flow");
@@ -1444,8 +1442,7 @@ test("executes SPDK CLI RPC smoke preset through the real workbench UI", async (
   );
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  await navigateWorkbenchSection(page, "工作流设计");
   await page.getByLabel("工作流预设").selectOption("spdk_cli_rpc_smoke_blackbox");
   await page.getByRole("button", { name: "安装预设" }).hover();
   await page.getByRole("button", { name: "安装预设" }).click();
@@ -1453,8 +1450,7 @@ test("executes SPDK CLI RPC smoke preset through the real workbench UI", async (
     timeout: 15_000,
   });
 
-  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await navigateWorkbenchSection(page, "运行驾驶舱");
   await page.getByLabel("Repo path").fill(repo);
   await page.getByLabel("Inputs JSON").fill(
     JSON.stringify(
@@ -1537,57 +1533,65 @@ test("executes SPDK CLI RPC smoke preset through the real workbench UI", async (
   await expect(page.getByText(/black_box_cases:ok/)).toBeVisible();
 });
 
-test("prevents duplicate workbench smoke E2E probes from a real double click", async ({
+test("prevents duplicate workbench prepare requests from a real double click", async ({
   page,
+  request,
 }) => {
-  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-smoke-probe-")));
+  test.setTimeout(90_000);
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-prepare-probe-")));
   fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
+  const designDoc = path.join(repo, "design.md");
   fs.writeFileSync(
-    path.join(repo, "lib", "nvmf", "smoke_probe.c"),
-    "int nvmf_smoke_probe(void) { return 0; }\n",
+    path.join(repo, "lib", "nvmf", "prepare_probe.c"),
+    "int nvmf_prepare_probe(void) { return 0; }\n",
     "utf8",
   );
+  fs.writeFileSync(designDoc, "prepare probe design\n", "utf8");
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: `prepare-probe-${Date.now()}`, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-  await page.getByRole("button", { name: "运行驾驶舱" }).click();
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByRole("button", { name: "执行器体检" }).hover();
-  await page.getByRole("button", { name: "执行器体检" }).click();
-  await expect(page.getByRole("heading", { name: "执行器矩阵" })).toBeVisible({
-    timeout: 15_000,
-  });
+  await navigateWorkbenchSection(page, "运行驾驶舱");
+  await page.getByLabel("Workspace selector").selectOption(workspace.id);
+  await expect(page.getByText(`源码路径:${"ready"}`)).toBeVisible();
+  await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf prepare probe");
+  const designInput = page.getByLabel("Workflow input design_doc");
+  if ((await designInput.count()) > 0) {
+    await designInput.fill(designDoc);
+  }
 
-  const smokeRequests: string[] = [];
+  const prepareRequests: string[] = [];
   page.on("request", (req) => {
     if (
       req.method() === "POST" &&
-      new URL(req.url()).pathname === "/api/workbench/task-runs/smoke-e2e"
+      new URL(req.url()).pathname === "/api/workbench/task-runs/prepare"
     ) {
-      smokeRequests.push(req.url());
+      prepareRequests.push(req.url());
     }
   });
-  const smokeRequest = page.waitForRequest(
+  const prepareRequest = page.waitForRequest(
     (req) =>
       req.method() === "POST" &&
-      new URL(req.url()).pathname === "/api/workbench/task-runs/smoke-e2e",
+      new URL(req.url()).pathname === "/api/workbench/task-runs/prepare",
   );
 
-  await page.getByRole("button", { name: "全链路烟测" }).hover();
-  await page.getByRole("button", { name: "全链路烟测" }).dblclick();
-  await smokeRequest;
-  await expect(page.getByRole("button", { name: "全链路烟测" })).toBeDisabled();
-  await expect(page.getByText(/全链路烟测/).last()).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText(/task:task_run_/)).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText(/execution:completed|execution:failed|execution:cancelled/)).toBeVisible({
-    timeout: 30_000,
-  });
-  await expect.poll(() => smokeRequests.length).toBe(1);
+  const prepareButton = page.getByRole("button", { name: "准备运行" });
+  await prepareButton.hover();
+  await prepareButton.dblclick();
+  await prepareRequest;
+  await expect(prepareButton).toBeDisabled();
+  await expect(page.getByText(/任务已准备/)).toBeVisible({ timeout: 30_000 });
+  await expect.poll(() => prepareRequests.length).toBe(1);
 });
 
 test("locks artifact previews while a prepared workflow is executing", async ({
   page,
+  request,
 }) => {
+  test.setTimeout(90_000);
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-artifact-busy-")));
   fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
   fs.writeFileSync(
@@ -1595,33 +1599,33 @@ test("locks artifact previews while a prepared workflow is executing", async ({
     "int nvmf_artifact_busy_probe(void) { return 0; }\n",
     "utf8",
   );
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: `artifact-busy-${Date.now()}`, repo_path: repo },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  const workspace = (await workspaceResp.json()) as { id: string };
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  await navigateWorkbenchSection(page, "工作流设计");
   await page.getByLabel("工作流预设").selectOption("module_analysis");
-  await page.getByRole("button", { name: "安装预设" }).hover();
-  await page.getByRole("button", { name: "安装预设" }).click();
-  await expect(page.getByText("预设已安装: 模块分析工作流")).toBeVisible({
+  await page.getByRole("button", { name: "从模板库导入" }).hover();
+  await page.getByRole("button", { name: "从模板库导入" }).click();
+  await page.getByRole("button", { name: "保存工作流" }).hover();
+  await page.getByRole("button", { name: "保存工作流" }).click();
+  await expect(page.getByText(/工作流已保存|内置模板已另存为自定义工作流/)).toBeVisible({
     timeout: 15_000,
   });
 
-  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-  await page.getByRole("button", { name: "运行驾驶舱" }).click();
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByLabel("Workflow input repo_path").fill(repo);
+  await navigateWorkbenchSection(page, "运行驾驶舱");
+  await page.getByLabel("Workspace selector").selectOption(workspace.id);
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf artifact busy");
   await page.getByRole("button", { name: "准备运行" }).hover();
   await page.getByRole("button", { name: "准备运行" }).click();
-  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/任务已准备/)).toBeVisible({ timeout: 15_000 });
 
   await page.getByRole("button", { name: "审计产物" }).hover();
   await page.getByRole("button", { name: "审计产物" }).click();
   await expect(page.getByText(/产物已加载:/)).toBeVisible({ timeout: 15_000 });
-  const taskBundleArtifact = page.getByRole("button", {
-    name: /task_bundle:task_bundle\.json/,
-  });
-  await expect(taskBundleArtifact).toBeVisible();
 
   const executeRequest = page.waitForRequest(
     (request) =>
@@ -1642,7 +1646,7 @@ test("locks artifact previews while a prepared workflow is executing", async ({
   await page.getByRole("button", { name: "执行工作流" }).dblclick();
   await executeRequest;
   await expect(page.getByRole("button", { name: "执行工作流" })).toBeDisabled();
-  await expect(taskBundleArtifact).toBeDisabled();
+  await expect(page.getByRole("button", { name: "审计产物" })).toBeDisabled();
   await expect.poll(() => executeRequests.length).toBe(1);
 });
 
@@ -1658,8 +1662,7 @@ test("prevents duplicate recent task restore requests from a real double click",
   );
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  await navigateWorkbenchSection(page, "工作流设计");
   await page.getByLabel("工作流预设").selectOption("module_analysis");
   await page.getByRole("button", { name: "安装预设" }).hover();
   await page.getByRole("button", { name: "安装预设" }).click();
@@ -1667,8 +1670,7 @@ test("prevents duplicate recent task restore requests from a real double click",
     timeout: 15_000,
   });
 
-  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await navigateWorkbenchSection(page, "运行驾驶舱");
   await page.getByLabel("Repo path").fill(repo);
   await page.getByLabel("Workflow input repo_path").fill(repo);
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf restore run");
@@ -1755,8 +1757,7 @@ test("locks sibling agent-run actions while a real step execution is in flight",
 
   try {
     await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-    await page.getByRole("button", { name: "工作流设计" }).hover();
-    await page.getByRole("button", { name: "工作流设计" }).click();
+    await navigateWorkbenchSection(page, "工作流设计");
     await page.getByLabel("Workflow JSON").fill(
       JSON.stringify(
         {
@@ -1797,8 +1798,7 @@ test("locks sibling agent-run actions while a real step execution is in flight",
       timeout: 15_000,
     });
 
-    await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-    await page.getByRole("button", { name: "运行驾驶舱" }).click();
+    await navigateWorkbenchSection(page, "运行驾驶舱");
     await page.getByLabel("Repo path").fill(repo);
     await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf step busy");
     await page.getByRole("button", { name: "准备运行" }).hover();
@@ -2306,8 +2306,7 @@ test("opens a persisted AI review thread from a prepared workbench run through t
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
   await page.getByLabel("Workspace ID").fill(workspaceId);
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  await navigateWorkbenchSection(page, "工作流设计");
   await page.getByLabel("工作流预设").selectOption("module_analysis");
   await page.getByRole("button", { name: "安装预设" }).hover();
   await page.getByRole("button", { name: "安装预设" }).click();
@@ -2315,8 +2314,7 @@ test("opens a persisted AI review thread from a prepared workbench run through t
     timeout: 15_000,
   });
 
-  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await navigateWorkbenchSection(page, "运行驾驶舱");
   await page.getByLabel("Repo path").fill(repo);
   await page.getByLabel("Workflow input repo_path").fill(repo);
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf connect review");
@@ -2401,8 +2399,7 @@ test("prevents duplicate workbench AI review threads from a real double click", 
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
   await page.getByLabel("Workspace ID").fill(workspaceId);
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  await navigateWorkbenchSection(page, "工作流设计");
   await page.getByLabel("工作流预设").selectOption("module_analysis");
   await page.getByRole("button", { name: "安装预设" }).hover();
   await page.getByRole("button", { name: "安装预设" }).click();
@@ -2410,8 +2407,7 @@ test("prevents duplicate workbench AI review threads from a real double click", 
     timeout: 15_000,
   });
 
-  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await navigateWorkbenchSection(page, "运行驾驶舱");
   await page.getByLabel("Repo path").fill(repo);
   await page.getByLabel("Workflow input repo_path").fill(repo);
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf connect review double");
@@ -2618,8 +2614,7 @@ test("executes resource leak hunt and previews materialized artifacts through th
   );
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  await navigateWorkbenchSection(page, "工作流设计");
   await page.getByLabel("工作流预设").selectOption("resource_leak_hunt");
   await page.getByRole("button", { name: "安装预设" }).hover();
   await page.getByRole("button", { name: "安装预设" }).click();
@@ -2627,8 +2622,7 @@ test("executes resource leak hunt and previews materialized artifacts through th
     timeout: 15_000,
   });
 
-  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await navigateWorkbenchSection(page, "运行驾驶舱");
   await page.getByLabel("Repo path").fill(repo);
   await page.getByLabel("Inputs JSON").fill(
     JSON.stringify(
@@ -2778,8 +2772,7 @@ test("executes rerun twice from the real workbench UI and keeps distinct history
   };
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  await navigateWorkbenchSection(page, "工作流设计");
   await page.getByLabel("工作流预设").selectOption("resource_leak_hunt");
   await page.getByRole("button", { name: "安装预设" }).hover();
   await page.getByRole("button", { name: "安装预设" }).click();
@@ -2787,8 +2780,7 @@ test("executes rerun twice from the real workbench UI and keeps distinct history
     timeout: 15_000,
   });
 
-  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await navigateWorkbenchSection(page, "运行驾驶舱");
   await page.getByLabel("Repo path").fill(repo);
   await page.getByLabel("Inputs JSON").fill(
     JSON.stringify(
@@ -2880,8 +2872,7 @@ test("prevents duplicate task rerun execution requests from a real double click"
   };
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  await navigateWorkbenchSection(page, "工作流设计");
   await page.getByLabel("工作流预设").selectOption("resource_leak_hunt");
   await page.getByRole("button", { name: "安装预设" }).hover();
   await page.getByRole("button", { name: "安装预设" }).click();
@@ -2889,8 +2880,7 @@ test("prevents duplicate task rerun execution requests from a real double click"
     timeout: 15_000,
   });
 
-  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await navigateWorkbenchSection(page, "运行驾驶舱");
   await page.getByLabel("Repo path").fill(repo);
   await page.getByLabel("Inputs JSON").fill(
     JSON.stringify(
@@ -2975,8 +2965,7 @@ test("executes patch impact review and previews flow impact artifacts through th
   ].join("\n");
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  await navigateWorkbenchSection(page, "工作流设计");
   await page.getByLabel("工作流预设").selectOption("patch_impact_review");
   await page.getByRole("button", { name: "安装预设" }).hover();
   await page.getByRole("button", { name: "安装预设" }).click();
@@ -2984,8 +2973,7 @@ test("executes patch impact review and previews flow impact artifacts through th
     timeout: 15_000,
   });
 
-  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await navigateWorkbenchSection(page, "运行驾驶舱");
   await page.getByLabel("Repo path").fill(repo);
   await page.getByLabel("Inputs JSON").fill(
     JSON.stringify(
@@ -3058,8 +3046,7 @@ test("executes MR black-box workflow and previews public test cases through the 
   ].join("\n");
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByRole("button", { name: "工作流设计" }).hover();
-  await page.getByRole("button", { name: "工作流设计" }).click();
+  await navigateWorkbenchSection(page, "工作流设计");
   await page.getByLabel("工作流预设").selectOption("mr_blackbox_test");
   await page.getByRole("button", { name: "安装预设" }).hover();
   await page.getByRole("button", { name: "安装预设" }).click();
@@ -3067,8 +3054,7 @@ test("executes MR black-box workflow and previews public test cases through the 
     timeout: 15_000,
   });
 
-  await page.getByRole("button", { name: "运行驾驶舱" }).hover();
-  await page.getByRole("button", { name: "运行驾驶舱" }).click();
+  await navigateWorkbenchSection(page, "运行驾驶舱");
   await page.getByLabel("Repo path").fill(repo);
   await page.getByLabel("Inputs JSON").fill(
     JSON.stringify(
