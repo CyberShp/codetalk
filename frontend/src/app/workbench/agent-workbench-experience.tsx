@@ -1453,7 +1453,7 @@ function workflowLayoutFromPayload(payload: unknown): WorkflowCanvasLayout | nul
   const rawHiddenEdges = (layout as { hidden_edge_ids?: unknown }).hidden_edge_ids;
   const nodes = Array.isArray(rawNodes)
     ? rawNodes
-        .map((item) => {
+        .map<WorkflowCanvasLayout["nodes"][number] | null>((item) => {
           if (!item || typeof item !== "object") return null;
           const record = item as Record<string, unknown>;
           const id = String(record.id ?? "").trim();
@@ -1475,8 +1475,8 @@ function workflowLayoutFromPayload(payload: unknown): WorkflowCanvasLayout | nul
                 : undefined,
           };
         })
-        .filter((item): item is WorkflowCanvasLayout["nodes"][number] =>
-          Boolean(item),
+        .filter(
+          (item): item is WorkflowCanvasLayout["nodes"][number] => item !== null,
         )
     : [];
   const hidden_node_ids = Array.isArray(rawHidden)
