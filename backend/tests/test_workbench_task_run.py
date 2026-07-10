@@ -1,5 +1,6 @@
 import json
 import hashlib
+import sys
 from pathlib import Path
 
 
@@ -294,6 +295,148 @@ def test_prepare_workbench_task_run_builds_executor_handoff_contract(tmp_path):
         "sfmea.json",
         "black_box_cases.md",
     ]
+
+
+def test_agent_runtime_timeout_limits_are_frozen_into_task_run(tmp_path, monkeypatch):
+    import app.services.workbench_task_run as task_run_module
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    monkeypatch.setattr(
+        task_run_module,
+        "get_agent_runtime_sync",
+        lambda runtime_id: {
+            "id": runtime_id,
+            "command": sys.executable,
+            "args": [],
+            "timeout_seconds": 900,
+            "idle_complete_seconds": 5,
+            "enabled": True,
+        } if runtime_id == "default-codex" else None,
+    )
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "codex_runtime_limits",
+        "name": "Codex runtime limits",
+        "version": 1,
+        "steps": [
+            {
+                "id": "agent_collect",
+                "type": "agent_task",
+                "provider": "agent-runtime:default-codex",
+                "required_artifacts": ["report.md"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "report",
+                "type": "markdown",
+                "from": "agent_collect",
+                "artifact": "report.md",
+            }
+        ],
+    })
+
+    result = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="codex_runtime_limits",
+        workspace_id="ws-spdk",
+        repo_path=str(tmp_path),
+        inputs={},
+    )
+
+    assert result.agent_runs[0]["timeout_seconds"] == 900
+    assert result.agent_runs[0]["idle_timeout_seconds"] == 120
+    agent_run = json.loads(
+        Path(
+            result.artifact_dir,
+            "agent_runs",
+            "agent_collect",
+            "agent_run.json",
+        ).read_text(encoding="utf-8")
+    )
+    assert agent_run["timeout_seconds"] == 900
+    assert agent_run["idle_timeout_seconds"] == 120
+
+
+def test_workbench_runner_auto_timeout_uses_agent_runtime_limit(tmp_path, monkeypatch):
+    import app.services.workbench_task_run as task_run_module
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    script_path = tmp_path / "runtime_agent.py"
+    script_path.write_text(
+        "import os, pathlib, sys, time\n"
+        "sys.stdin.read()\n"
+        "print('runtime-agent-started', flush=True)\n"
+        "time.sleep(1.2)\n"
+        "artifact_dir=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "artifact_dir.joinpath('report.md').write_text('# ok\\n', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        task_run_module,
+        "get_agent_runtime_sync",
+        lambda runtime_id: {
+            "id": runtime_id,
+            "command": sys.executable,
+            "args": [str(script_path)],
+            "timeout_seconds": 3,
+            "idle_complete_seconds": 5,
+            "enabled": True,
+        } if runtime_id == "default-codex" else None,
+    )
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "runtime_auto_timeout",
+        "name": "Runtime auto timeout",
+        "version": 1,
+        "steps": [
+            {
+                "id": "agent_collect",
+                "type": "agent_task",
+                "provider": "agent-runtime:default-codex",
+                "required_artifacts": ["report.md"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "report",
+                "type": "markdown",
+                "from": "agent_collect",
+                "artifact": "report.md",
+            }
+        ],
+    })
+    prepared = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="runtime_auto_timeout",
+        workspace_id="ws-spdk",
+        repo_path=str(tmp_path),
+        inputs={},
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        prepared.task_run_id,
+        timeout_sec=0,
+    )
+
+    assert result.status == "completed"
+    execution_input = json.loads(
+        Path(
+            prepared.artifact_dir,
+            "agent_runs",
+            "agent_collect",
+            "execution_input.json",
+        ).read_text(encoding="utf-8")
+    )
+    assert execution_input["timeout_sec"] == 3
+    assert execution_input["idle_timeout_sec"] == 120
 
 
 def test_workbench_runner_builtin_llm_uses_handoff_contract_and_writes_outputs(
@@ -1552,6 +1695,83 @@ def test_agent_execution_input_artifact_redacts_stdin_without_changing_process_i
     execution_input = json.loads(execution_input_text)
     assert execution_input["stdin_redacted"] is True
     assert execution_input["stdin_json_sha256"]
+
+
+def test_agent_run_harness_keeps_active_process_alive_past_idle_window(tmp_path):
+    from app.services.agent_run_harness import AgentRunHarness
+
+    artifact_dir = tmp_path / "agent"
+    marker = artifact_dir / "done.txt"
+    script_path = tmp_path / "active_agent.py"
+    script_path.write_text(
+        "import pathlib, sys, time\n"
+        f"marker=pathlib.Path({str(marker)!r})\n"
+        "sys.stdin.read()\n"
+        "for index in range(5):\n"
+        "    print(f'heartbeat {index}', flush=True)\n"
+        "    time.sleep(0.25)\n"
+        "marker.parent.mkdir(parents=True, exist_ok=True)\n"
+        "marker.write_text('done', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    harness = AgentRunHarness(artifact_dir)
+    run = harness.create_run(
+        provider="local-python",
+        command=[sys.executable, str(script_path)],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf"},
+        task_bundle={"task_id": "active-agent"},
+        run_id="run_active_agent",
+    )
+
+    events = []
+    result = harness.execute_run(
+        run.run_id,
+        timeout_sec=5,
+        idle_timeout_sec=0.5,
+        event_sink=lambda event_type, payload: events.append((event_type, payload)),
+    )
+
+    assert result.status == "completed"
+    assert result.timed_out is False
+    assert marker.read_text(encoding="utf-8") == "done"
+    raw_output = (artifact_dir / "raw_output.txt").read_text(encoding="utf-8")
+    assert "heartbeat 4" in raw_output
+    output_events = [payload for event_type, payload in events if event_type == "agent_output"]
+    assert any("heartbeat 4" in payload["content"] for payload in output_events)
+
+
+def test_agent_run_harness_times_out_when_process_goes_idle(tmp_path):
+    from app.services.agent_run_harness import AgentRunHarness
+
+    artifact_dir = tmp_path / "agent"
+    script_path = tmp_path / "idle_agent.py"
+    script_path.write_text(
+        "import sys, time\n"
+        "sys.stdin.read()\n"
+        "print('started', flush=True)\n"
+        "time.sleep(2)\n"
+        "print('too late', flush=True)\n",
+        encoding="utf-8",
+    )
+    harness = AgentRunHarness(artifact_dir)
+    run = harness.create_run(
+        provider="local-python",
+        command=[sys.executable, str(script_path)],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf"},
+        task_bundle={"task_id": "idle-agent"},
+        run_id="run_idle_agent",
+    )
+
+    result = harness.execute_run(run.run_id, timeout_sec=5, idle_timeout_sec=0.4)
+
+    assert result.status == "timeout"
+    assert result.timed_out is True
+    assert "idle" in result.error
+    raw_output = (artifact_dir / "raw_output.txt").read_text(encoding="utf-8")
+    assert "started" in raw_output
+    assert "too late" not in raw_output
 
 
 def test_workbench_task_run_store_loads_and_lists_prepared_runs(tmp_path):

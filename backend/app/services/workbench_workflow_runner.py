@@ -61,7 +61,7 @@ class WorkbenchWorkflowRunner:
         self,
         task_run_id: str,
         *,
-        timeout_sec: int = 90,
+        timeout_sec: int = 0,
         stop_on_error: bool = True,
     ) -> WorkbenchWorkflowExecutionResult:
         task_run = self.store.load(task_run_id)
@@ -272,7 +272,15 @@ class WorkbenchWorkflowRunner:
         )
         execution = AgentRunHarness(artifact_dir).execute_run(
             run_id,
-            timeout_sec=timeout_sec,
+            timeout_sec=_effective_agent_timeout_sec(
+                requested_timeout_sec=timeout_sec,
+                agent_run=agent_run,
+                run_payload=run_payload if isinstance(run_payload, dict) else {},
+            ),
+            idle_timeout_sec=_effective_agent_idle_timeout_sec(
+                agent_run=agent_run,
+                run_payload=run_payload if isinstance(run_payload, dict) else {},
+            ),
             is_cancelled=self._is_cancelled,
             event_sink=emit_agent_event,
         )
@@ -295,7 +303,15 @@ class WorkbenchWorkflowRunner:
             _set_agent_turn_id(artifact_dir=artifact_dir, turn_id="turn_2")
             execution = AgentRunHarness(artifact_dir).execute_run(
                 run_id,
-                timeout_sec=timeout_sec,
+                timeout_sec=_effective_agent_timeout_sec(
+                    requested_timeout_sec=timeout_sec,
+                    agent_run=agent_run,
+                    run_payload=run_payload if isinstance(run_payload, dict) else {},
+                ),
+                idle_timeout_sec=_effective_agent_idle_timeout_sec(
+                    agent_run=agent_run,
+                    run_payload=run_payload if isinstance(run_payload, dict) else {},
+                ),
                 is_cancelled=self._is_cancelled,
                 event_sink=emit_agent_event,
             )
@@ -3438,10 +3454,10 @@ def _cancelled_step_result(step: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _step_executor_label(step: dict[str, Any]) -> str:
+def _step_executor_label(step: dict[str, Any], *, provider: str = "") -> str:
     step_type = str(step.get("type") or "")
     if step_type == "agent_task":
-        provider = str(step.get("provider") or "")
+        provider = provider or str(step.get("provider") or "")
         if provider == BUILTIN_LLM_PROVIDER_ID:
             return "builtin_llm"
         return f"agent_cli:{provider}" if provider else "agent_cli"
@@ -3477,7 +3493,10 @@ def _step_started_event_payload(
     payload = {
         "step_id": step_id,
         "step_type": step_type,
-        "executor": _step_executor_label(step),
+        "executor": _step_executor_label(
+            step,
+            provider=str(runtime.get("provider") or (agent_run or {}).get("provider") or ""),
+        ),
         "provider": runtime.get("provider") or str(step.get("provider") or ""),
         "runtime": runtime,
         "mcp_profile": runtime.get("mcp_profile") or str(step.get("mcp_profile") or ""),
@@ -4455,6 +4474,50 @@ def _public_repo_label(repo_path: Any) -> str:
         return Path(text).expanduser().name or "local-repo"
     except (OSError, RuntimeError):
         return "local-repo"
+
+
+def _effective_agent_timeout_sec(
+    *,
+    requested_timeout_sec: int | float | None,
+    agent_run: dict[str, Any],
+    run_payload: dict[str, Any],
+) -> int:
+    requested = _positive_number(requested_timeout_sec)
+    if requested is not None:
+        return max(1, int(requested))
+    configured = (
+        _positive_number(agent_run.get("timeout_seconds"))
+        or _positive_number(run_payload.get("timeout_seconds"))
+    )
+    if configured is not None:
+        return max(1, int(configured))
+    return 900
+
+
+def _effective_agent_idle_timeout_sec(
+    *,
+    agent_run: dict[str, Any],
+    run_payload: dict[str, Any],
+) -> float | None:
+    configured = (
+        _positive_number(agent_run.get("idle_timeout_seconds"))
+        or _positive_number(run_payload.get("idle_timeout_seconds"))
+    )
+    if configured is None:
+        return 120.0
+    return float(configured)
+
+
+def _positive_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return number
 
 
 def _redact_workbench_public_text(text: str, *, task_run: Any) -> str:

@@ -125,11 +125,11 @@ class RawOutputCreate(BaseModel):
 
 
 class AgentRunExecuteRequest(BaseModel):
-    timeout_sec: int = Field(default=90, ge=1, le=3600)
+    timeout_sec: int = Field(default=0, ge=0, le=3600)
 
 
 class TaskRunExecuteRequest(BaseModel):
-    timeout_sec: int = Field(default=90, ge=1, le=3600)
+    timeout_sec: int = Field(default=0, ge=0, le=3600)
     stop_on_error: bool = True
 
 
@@ -156,7 +156,7 @@ class PrepareTaskRunRequest(BaseModel):
 
 
 class RunTaskRunRequest(PrepareTaskRunRequest):
-    timeout_sec: int = Field(default=90, ge=1, le=3600)
+    timeout_sec: int = Field(default=0, ge=0, le=3600)
     stop_on_error: bool = True
 
 
@@ -612,7 +612,7 @@ def _task_run_ui_step_execution_metadata(
     step_result: dict[str, Any],
 ) -> dict[str, str]:
     step_type = str(step.get("type") or "")
-    provider = str(step.get("provider") or "")
+    provider = str(step_result.get("provider") or step.get("provider") or "")
     method = ""
     executor = ""
     executor_label = ""
@@ -997,6 +997,11 @@ def _task_run_ui_reason_label(reason: str) -> str:
         return "找不到执行器命令。请在设置中检查 Agent 命令、PATH 或填写完整可执行文件路径。"
     if "timed out" in lower or "timeout" in lower or "超时" in lower:
         seconds = re.search(r"after\s+(\d+)s", normalized, flags=re.I)
+        if "idle" in lower:
+            return (
+                f"Agent 长时间没有新的输出{f'（{seconds.group(1)} 秒）' if seconds else ''}，"
+                "系统判断可能卡住并停止了运行。请查看内部诊断、缩小分析范围，或从失败节点重试。"
+            )
         return (
             f"Agent 运行超时{f'（{seconds.group(1)} 秒）' if seconds else ''}。"
             "请缩小分析范围、延长运行超时，或从失败节点重试。"

@@ -1061,7 +1061,7 @@ export const api = {
           },
         ),
 
-      execute: (runId: string, timeoutSec = 90) =>
+      execute: (runId: string, timeoutSec = 0) =>
         request<AgentRunExecutionResult>(
           `/api/workbench/agent-runs/${encodeURIComponent(runId)}/execute`,
           {
@@ -1112,7 +1112,7 @@ export const api = {
           `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/rerun-plan/history`,
         ),
 
-      executeRerunPlan: (taskRunId: string, timeoutSec = 90, stopOnError = true) =>
+      executeRerunPlan: (taskRunId: string, timeoutSec = 0, stopOnError = true) =>
         request<TaskRerunExecutionResult>(
           `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/rerun-plan/execute`,
           {
@@ -1167,7 +1167,7 @@ export const api = {
           inputs?: Record<string, unknown>;
           provider_override?: string | null;
         },
-        timeoutSec = 90,
+        timeoutSec = 0,
         stopOnError = true,
       ) =>
         request<WorkbenchTaskRunRunResult>("/api/workbench/task-runs/run", {
@@ -1179,7 +1179,7 @@ export const api = {
           }),
         }),
 
-      execute: (taskRunId: string, timeoutSec = 90, stopOnError = true) =>
+      execute: (taskRunId: string, timeoutSec = 0, stopOnError = true) =>
         request<WorkbenchTaskRunRunResult>(
           `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/execute`,
           {
@@ -1232,7 +1232,7 @@ export const api = {
           },
         ),
 
-      executeAgentRun: (taskRunId: string, stepId: string, timeoutSec = 90) =>
+      executeAgentRun: (taskRunId: string, stepId: string, timeoutSec = 0) =>
         request<AgentRunExecutionResult>(
           `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/agent-runs/${encodeURIComponent(stepId)}/execute`,
           {

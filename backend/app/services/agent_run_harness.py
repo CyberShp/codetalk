@@ -41,6 +41,8 @@ def _json_sha256(payload: Any) -> str:
 
 
 _MAX_ARG_PROMPT_BYTES = 24000
+_DEFAULT_AGENT_TOTAL_TIMEOUT_SEC = 900
+_DEFAULT_AGENT_IDLE_TIMEOUT_SEC = 120.0
 
 
 def _default_agent_session_policy() -> dict[str, Any]:
@@ -262,6 +264,8 @@ class AgentRunRecord:
     cwd: str
     artifact_dir: str
     mcp_profile: str = ""
+    timeout_seconds: int | None = None
+    idle_timeout_seconds: float | None = None
     session_policy: dict[str, Any] = field(default_factory=_default_agent_session_policy)
     status: str = "created"
     created_at: str = field(default_factory=_now)
@@ -297,6 +301,7 @@ class _SubprocessExecutionResult:
     stdout: str
     stderr: str
     timed_out: bool = False
+    timeout_kind: str = ""
     cancelled: bool = False
     error: str = ""
 
@@ -317,6 +322,8 @@ class AgentRunHarness:
         workflow_snapshot: dict[str, Any],
         task_bundle: dict[str, Any],
         mcp_profile: str = "",
+        timeout_seconds: int | None = None,
+        idle_timeout_seconds: float | None = None,
         run_id: str | None = None,
         turn_id: str = "turn_1",
     ) -> AgentRunRecord:
@@ -328,6 +335,8 @@ class AgentRunHarness:
             cwd=cwd,
             artifact_dir=str(self.artifact_dir),
             mcp_profile=mcp_profile,
+            timeout_seconds=timeout_seconds,
+            idle_timeout_seconds=idle_timeout_seconds,
         )
         self._write_json("agent_run.json", asdict(run))
         self._write_json("task_bundle.json", task_bundle)
@@ -378,7 +387,8 @@ class AgentRunHarness:
         self,
         run_id: str,
         *,
-        timeout_sec: int = 90,
+        timeout_sec: int = 0,
+        idle_timeout_sec: float | None = None,
         is_cancelled: Callable[[], bool] | None = None,
         event_sink: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> AgentRunExecutionResult:
@@ -392,6 +402,11 @@ class AgentRunHarness:
         cwd = str(run_payload.get("cwd") or "")
         if not cwd:
             raise ValueError("agent run cwd is empty")
+        effective_timeout_sec = _effective_agent_timeout_sec(timeout_sec, run_payload)
+        effective_idle_timeout_sec = _effective_agent_idle_timeout_sec(
+            idle_timeout_sec,
+            run_payload,
+        )
 
         task_bundle = self._read_json_file("task_bundle.json")
         workflow_snapshot = self._read_json_file("workflow_snapshot.json")
@@ -573,7 +588,8 @@ class AgentRunHarness:
                 "prompt_transport_reason": prompt_transport_reason,
                 "transport_attempts": [],
                 "cwd": cwd,
-                "timeout_sec": max(1, int(timeout_sec)),
+                "timeout_sec": effective_timeout_sec,
+                "idle_timeout_sec": effective_idle_timeout_sec,
                 "mcp_profile": run_payload.get("mcp_profile") or "",
                 "session_policy": session_policy,
                 "env_hints": _redact_replay_payload(env_hints),
@@ -667,6 +683,23 @@ class AgentRunHarness:
         )
         env.update(env_hints)
 
+        def emit_process_output(stream: str, chunk: str) -> None:
+            text = _redact(chunk)
+            if not text.strip():
+                return
+            _emit_agent_run_event(
+                event_sink,
+                "agent_output",
+                {
+                    "tool": "agent_cli",
+                    "run_id": run_id,
+                    "turn_id": turn_id,
+                    "provider": str(run_payload.get("provider") or ""),
+                    "stream": stream,
+                    "content": text[-2000:],
+                },
+            )
+
         exit_code: int | None = None
         stdout = ""
         stderr = ""
@@ -701,9 +734,11 @@ class AgentRunHarness:
                     process_command,
                     cwd=cwd,
                     input_bytes=candidate_stdin,
-                    timeout=max(1, int(timeout_sec)),
+                    timeout=effective_timeout_sec,
+                    idle_timeout=effective_idle_timeout_sec,
                     env=env,
                     is_cancelled=is_cancelled,
+                    output_sink=emit_process_output,
                 )
                 exit_code = completed.exit_code
                 stdout = completed.stdout
@@ -722,6 +757,8 @@ class AgentRunHarness:
                 )
                 if completed.error:
                     attempt["error"] = _redact(completed.error)
+                if completed.timeout_kind:
+                    attempt["timeout_kind"] = completed.timeout_kind
                 attempt["stderr_excerpt"] = _redact(stderr[:4000])
                 attempt["stdout_excerpt"] = _redact(stdout[:4000])
                 if completed.cancelled:
@@ -763,6 +800,14 @@ class AgentRunHarness:
                 "status": status,
                 "exit_code": exit_code,
                 "timed_out": timed_out,
+                "timeout_kind": next(
+                    (
+                        str(item.get("timeout_kind") or "")
+                        for item in transport_attempts
+                        if item.get("timeout_kind")
+                    ),
+                    "",
+                ),
                 "stdout_tail": _redact(stdout[-4000:]),
                 "stderr_tail": _redact(stderr[-4000:]),
                 "error": _redact(error),
@@ -816,7 +861,8 @@ class AgentRunHarness:
                 turn_id=turn_id,
                 status=status,
                 cwd=cwd,
-                timeout_sec=max(1, int(timeout_sec)),
+                timeout_sec=effective_timeout_sec,
+                idle_timeout_sec=effective_idle_timeout_sec,
                 command=configured_command,
                 launch_command=launch_command,
                 command_resolution=command_resolution,
@@ -1086,6 +1132,41 @@ def _safe_required_artifact(artifact: Any) -> str:
     return posix.as_posix()
 
 
+def _effective_agent_timeout_sec(timeout_sec: int | float | None, run_payload: dict[str, Any]) -> int:
+    requested = _coerce_positive_number(timeout_sec)
+    if requested is not None:
+        return max(1, int(requested))
+    configured = _coerce_positive_number(run_payload.get("timeout_seconds"))
+    if configured is not None:
+        return max(1, int(configured))
+    return _DEFAULT_AGENT_TOTAL_TIMEOUT_SEC
+
+
+def _effective_agent_idle_timeout_sec(
+    idle_timeout_sec: int | float | None,
+    run_payload: dict[str, Any],
+) -> float | None:
+    requested = _coerce_positive_number(idle_timeout_sec)
+    if requested is not None:
+        return float(requested)
+    configured = _coerce_positive_number(run_payload.get("idle_timeout_seconds"))
+    if configured is not None:
+        return float(configured)
+    return _DEFAULT_AGENT_IDLE_TIMEOUT_SEC
+
+
+def _coerce_positive_number(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number <= 0:
+        return None
+    return number
+
+
 def _agent_replay_plan_payload(
     *,
     run_payload: dict[str, Any],
@@ -1094,6 +1175,7 @@ def _agent_replay_plan_payload(
     status: str,
     cwd: str,
     timeout_sec: int,
+    idle_timeout_sec: float | None,
     command: list[str],
     launch_command: list[str],
     command_resolution: dict[str, Any],
@@ -1138,6 +1220,7 @@ def _agent_replay_plan_payload(
         "artifact_dir": str(artifact_dir),
         "cwd": cwd,
         "timeout_sec": timeout_sec,
+        "idle_timeout_sec": idle_timeout_sec,
         "command": _redact_command_list(command),
         "launch_command": _redact_command_list(launch_command),
         "process_command": _redact_command_list(process_command),
@@ -1564,8 +1647,10 @@ def _run_cancellable_subprocess(
     cwd: str,
     input_bytes: bytes | None,
     timeout: int,
+    idle_timeout: float | None,
     env: dict[str, str],
     is_cancelled: Callable[[], bool] | None = None,
+    output_sink: Callable[[str, str], None] | None = None,
 ) -> _SubprocessExecutionResult:
     popen_kwargs: dict[str, Any] = {}
     if os.name == "nt":
@@ -1582,46 +1667,115 @@ def _run_cancellable_subprocess(
         **popen_kwargs,
     )
     captured: dict[str, Any] = {}
-
-    def _communicate() -> None:
-        try:
-            stdout, stderr = process.communicate(input=input_bytes)
-            captured["stdout"] = stdout
-            captured["stderr"] = stderr
-        except BaseException as exc:  # pragma: no cover - defensive bridge for OS process edge cases.
-            captured["error"] = exc
-
-    thread = threading.Thread(target=_communicate, daemon=True)
-    thread.start()
+    stdout_chunks: list[bytes] = []
+    stderr_chunks: list[bytes] = []
+    lock = threading.Lock()
     started = time.monotonic()
+    last_activity = {"at": started}
+
+    def _mark_activity() -> None:
+        with lock:
+            last_activity["at"] = time.monotonic()
+
+    def _read_stream(pipe: Any, chunks: list[bytes], name: str) -> None:
+        try:
+            while True:
+                chunk = pipe.readline()
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                _mark_activity()
+                if output_sink is not None:
+                    output_sink(name, _decode_subprocess_text(chunk))
+        except BaseException as exc:  # pragma: no cover - defensive bridge for OS process edge cases.
+            captured[f"{name}_error"] = exc
+
+    def _write_stdin() -> None:
+        try:
+            if process.stdin is None:
+                return
+            if input_bytes:
+                process.stdin.write(input_bytes)
+                process.stdin.flush()
+        except BrokenPipeError:
+            return
+        except BaseException as exc:  # pragma: no cover - defensive bridge for OS process edge cases.
+            captured["stdin_error"] = exc
+        finally:
+            try:
+                if process.stdin is not None:
+                    process.stdin.close()
+            except OSError:
+                pass
+
+    stdout_thread = threading.Thread(
+        target=_read_stream,
+        args=(process.stdout, stdout_chunks, "stdout"),
+        daemon=True,
+    )
+    stderr_thread = threading.Thread(
+        target=_read_stream,
+        args=(process.stderr, stderr_chunks, "stderr"),
+        daemon=True,
+    )
+    stdin_thread = threading.Thread(target=_write_stdin, daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+    stdin_thread.start()
     timed_out = False
+    timeout_kind = ""
     cancelled = False
-    while thread.is_alive():
+    while process.poll() is None:
         if is_cancelled is not None and _safe_is_cancelled(is_cancelled):
             cancelled = True
             _terminate_process_group(process)
             break
         if time.monotonic() - started > max(1, int(timeout)):
             timed_out = True
+            timeout_kind = "total"
             _terminate_process_group(process)
             break
-        thread.join(0.1)
-    thread.join(3)
-    if thread.is_alive():
+        if idle_timeout is not None and idle_timeout > 0:
+            with lock:
+                inactive_for = time.monotonic() - last_activity["at"]
+            if inactive_for > float(idle_timeout):
+                timed_out = True
+                timeout_kind = "idle"
+                _terminate_process_group(process)
+                break
+        time.sleep(0.1)
+    try:
+        process.wait(timeout=3)
+    except subprocess.TimeoutExpired:
         _kill_process_group(process)
-        thread.join(3)
-    error_obj = captured.get("error")
+    stdin_thread.join(1)
+    stdout_thread.join(3)
+    stderr_thread.join(3)
+    if stdout_thread.is_alive() or stderr_thread.is_alive():
+        _kill_process_group(process)
+        stdout_thread.join(1)
+        stderr_thread.join(1)
+    error_obj = (
+        captured.get("stdout_error")
+        or captured.get("stderr_error")
+        or captured.get("stdin_error")
+    )
     if error_obj is not None:
         raise OSError(str(error_obj))
+    stdout = b"".join(stdout_chunks)
+    stderr = b"".join(stderr_chunks)
     return _SubprocessExecutionResult(
         exit_code=process.returncode,
-        stdout=_decode_subprocess_text(captured.get("stdout")),
-        stderr=_decode_subprocess_text(captured.get("stderr")),
+        stdout=_decode_subprocess_text(stdout),
+        stderr=_decode_subprocess_text(stderr),
         timed_out=timed_out,
+        timeout_kind=timeout_kind,
         cancelled=cancelled,
         error=(
             "agent run cancelled by user"
             if cancelled
+            else f"agent run idle timed out after {idle_timeout}s without output"
+            if timed_out and timeout_kind == "idle"
             else f"agent run timed out after {timeout}s"
             if timed_out
             else ""

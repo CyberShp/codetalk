@@ -216,6 +216,7 @@ class WorkbenchTaskRunPreparer:
             step_id = str(step.get("id") or f"step_{len(agent_runs) + 1}")
             provider = str(provider_override or step.get("provider") or "claude-code")
             command = _agent_task_provider_command(provider)
+            runtime_limits = _agent_task_runtime_limits(provider)
             execution_contract = build_executor_handoff_contract(
                 workflow_snapshot=workflow_snapshot,
                 workflow_contract=workflow_contract,
@@ -253,6 +254,8 @@ class WorkbenchTaskRunPreparer:
                 workflow_snapshot=workflow_snapshot,
                 task_bundle=step_bundle,
                 mcp_profile=str(step.get("mcp_profile") or ""),
+                timeout_seconds=runtime_limits.get("timeout_seconds"),
+                idle_timeout_seconds=runtime_limits.get("idle_timeout_seconds"),
                 run_id=f"{task_run_id}_{step_id}",
             )
             agent_runs.append({
@@ -262,6 +265,7 @@ class WorkbenchTaskRunPreparer:
                 "artifact_dir": agent_run.artifact_dir,
                 "mcp_profile": agent_run.mcp_profile,
                 "required_artifacts": required_artifacts_by_step.get(step_id, []),
+                **runtime_limits,
             })
 
         result = PreparedWorkbenchTaskRun(
@@ -1576,6 +1580,32 @@ def _agent_task_provider_command(provider: str) -> list[str]:
         return [*command, *[str(item) for item in runtime.get("args") or []]] or [provider]
     spec = external_agent_provider_spec(provider)
     return split_agent_command(spec.command) if spec and spec.command else [provider]
+
+
+def _agent_task_runtime_limits(provider: str) -> dict[str, Any]:
+    runtime = _agent_runtime_for_provider(provider)
+    if runtime is None:
+        return {}
+    timeout_seconds = _positive_int(runtime.get("timeout_seconds"), default=900)
+    idle_timeout_seconds = max(
+        120,
+        _positive_int(runtime.get("workflow_idle_timeout_seconds"), default=0)
+        or _positive_int(runtime.get("idle_timeout_seconds"), default=0)
+        or _positive_int(runtime.get("idle_complete_seconds"), default=0)
+        or 120,
+    )
+    return {
+        "timeout_seconds": timeout_seconds,
+        "idle_timeout_seconds": idle_timeout_seconds,
+    }
+
+
+def _positive_int(value: Any, *, default: int = 0) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return default
+    return number if number > 0 else default
 
 
 def _agent_runtime_provider_capabilities(runtime: dict[str, Any]) -> dict[str, Any]:

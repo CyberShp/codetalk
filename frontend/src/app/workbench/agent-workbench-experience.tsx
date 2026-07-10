@@ -6913,7 +6913,7 @@ export function AgentWorkbenchExperience({
           inputs,
           provider_override: providerOverride.trim() || null,
         },
-        90,
+        undefined,
         true,
       );
       setPreparedRun(result.task_run);
@@ -7300,7 +7300,7 @@ export function AgentWorkbenchExperience({
       if (!preparedRun || !taskRerunPlanValidation?.can_rerun) return;
       const result = await api.workbench.taskRuns.executeRerunPlan(
         preparedRun.task_run_id,
-        90,
+        undefined,
         true,
       );
       setTaskRerunExecution(result);
@@ -7363,7 +7363,7 @@ export function AgentWorkbenchExperience({
       markTaskRunSubmitted(taskRun);
       const result = await api.workbench.taskRuns.execute(
         taskRun.task_run_id,
-        90,
+        undefined,
         true,
       );
       setWorkflowExecution(result.execution ?? null);
