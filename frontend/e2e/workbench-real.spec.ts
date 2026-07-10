@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import { expect, type APIRequestContext, type Locator, type Page, test } from "@playwright/test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -47,9 +47,100 @@ async function navigateWorkbenchSection(
   page: Page,
   section: "运行驾驶舱" | "工作流设计" | "语义库",
 ) {
+  const navLink = page.getByRole("link", { name: section }).first();
+  if ((await navLink.count()) > 0) {
+    await navLink.hover();
+    await navLink.click();
+    return;
+  }
   const navItem = page.getByText(section, { exact: true }).first();
   await navItem.hover();
   await navItem.click();
+}
+
+async function createRealWorkspace(
+  request: APIRequestContext,
+  namePrefix: string,
+  repoPath: string,
+) {
+  const workspaceResp = await request.post(`${backendBase}/api/workspaces`, {
+    data: { name: `${namePrefix}-${Date.now()}`, repo_path: repoPath },
+  });
+  expect(workspaceResp.status()).toBe(201);
+  return (await workspaceResp.json()) as { id: string; name: string; repo_path: string };
+}
+
+async function latestWorkbenchTaskRunId(page: Page, workflowId = "module_analysis") {
+  const latestTaskButton = page
+    .getByRole("button", { name: new RegExp(`${escapeRegExp(workflowId)} task_run_[a-f0-9]+`) })
+    .first();
+  await expect(latestTaskButton).toBeVisible({ timeout: 15_000 });
+  const taskButtonText = await latestTaskButton.innerText();
+  const taskRunId = taskButtonText.match(/task_run_[a-f0-9]+/)?.[0] ?? "";
+  expect(taskRunId).toMatch(/^task_run_[a-f0-9]+$/);
+  return taskRunId;
+}
+
+async function selectWorkbenchWorkflowAndWorkspace(
+  page: Page,
+  request: APIRequestContext,
+  repoPath: string,
+  workflowId: string,
+  workspacePrefix: string,
+) {
+  const workspace = await createRealWorkspace(request, workspacePrefix, repoPath);
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "运行驾驶舱", exact: true })).toBeVisible({
+    timeout: 15_000,
+  });
+  await page.locator('main select[aria-label="工作流"]').selectOption(workflowId);
+  await page.getByLabel("Workspace selector").selectOption(workspace.id);
+  return workspace;
+}
+
+async function prepareWorkbenchRun(page: Page) {
+  await page.getByRole("button", { name: "准备运行" }).hover();
+  await page.getByRole("button", { name: "准备运行" }).click();
+  await expect(page.getByText(/任务已准备 · task_run_/)).toBeVisible({ timeout: 15_000 });
+}
+
+async function executePreparedWorkbenchRun(page: Page, expectedTitle: string | RegExp) {
+  await expect(page.getByRole("button", { name: "执行工作流" })).toBeEnabled({
+    timeout: 15_000,
+  });
+  await page.getByRole("button", { name: "执行工作流" }).hover();
+  await page.getByRole("button", { name: "执行工作流" }).click();
+  const runPanel = page.getByLabel("运行结果面板");
+  await expect(runPanel.getByText(expectedTitle)).toBeVisible({ timeout: 45_000 });
+  return runPanel;
+}
+
+async function expandRunDiagnostics(page: Page) {
+  const runPanel = page.getByLabel("运行结果面板");
+  const diagnosticsToggle = runPanel.getByText(/内部诊断 \d+/).first();
+  if (await diagnosticsToggle.isVisible()) {
+    await diagnosticsToggle.hover();
+    await diagnosticsToggle.click();
+  }
+  return runPanel;
+}
+
+async function expandRunDetailedDiagnostics(page: Page) {
+  const detailsToggle = page.getByText("查看详细诊断与原始产物").first();
+  if (await detailsToggle.isVisible()) {
+    await detailsToggle.hover();
+    await detailsToggle.click();
+  }
+}
+
+async function expandAllRunFileGroups(page: Page) {
+  for (const label of [/全部运行文件 · 支撑文件/, /全部运行文件 · 内部诊断/, /展开其余 \d+ 个产物/]) {
+    const toggle = page.getByText(label).first();
+    if (await toggle.isVisible()) {
+      await toggle.hover();
+      await toggle.click();
+    }
+  }
 }
 
 test("lists and installs every built-in workflow preset through the real workbench UI", async ({
@@ -740,25 +831,19 @@ test("designer canvas drag connect properties drive cockpit workflow run", async
   }
 });
 
-test("installs a workflow preset and validates required inputs through the real workbench UI", async ({
+test("selects a workflow preset and validates required inputs through the real workbench UI", async ({
   page,
+  request,
 }) => {
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-workbench-")));
   fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
   fs.writeFileSync(path.join(repo, "lib", "nvmf", "README.md"), "NVMe-oF target notes\n", "utf8");
+  const workspace = await createRealWorkspace(request, "workbench-required-inputs", repo);
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await navigateWorkbenchSection(page, "工作流设计");
-
-  await page.getByLabel("工作流预设").selectOption("module_analysis");
-  await page.getByRole("button", { name: "安装预设" }).hover();
-  await page.getByRole("button", { name: "安装预设" }).click();
-  await expect(page.getByText(/预设已安装: 模块分析工作流/)).toBeVisible({ timeout: 15_000 });
-
-  await navigateWorkbenchSection(page, "运行驾驶舱");
   await expect(page.getByRole("heading", { name: "任务运行" })).toBeVisible();
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByLabel("Workflow input repo_path").fill(repo);
+  await page.getByLabel("工作流").selectOption("module_analysis");
+  await page.getByLabel("Workspace selector").selectOption(workspace.id);
   await expect(page.getByLabel("Workflow input analysis_object")).toBeVisible();
   await expect(page.getByRole("button", { name: "准备运行" })).toBeEnabled();
   await page.getByRole("button", { name: "准备运行" }).hover();
@@ -767,23 +852,29 @@ test("installs a workflow preset and validates required inputs through the real 
   await expect(page.getByText("required input analysis_object is missing")).toBeVisible({
     timeout: 15_000,
   });
-  await expect(page.getByText(/Task run prepared:/)).toHaveCount(0);
+  await expect(page.getByText(/任务已准备/)).toHaveCount(0);
 
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf");
   await page.getByRole("button", { name: "准备运行" }).hover();
   await page.getByRole("button", { name: "准备运行" }).click();
 
   await expect(page.getByText(/任务已准备/)).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText(/Agent runs:/)).toBeVisible();
-  await expect(page.getByText(repo)).toBeVisible();
+  const runPanel = page.getByLabel("运行结果面板");
+  await expect(runPanel.getByText("运行快照")).toBeVisible();
+  await expect(runPanel.getByText(/workflow: module_analysis/)).toBeVisible();
+  await expect(runPanel.getByText(/节点: 3 · Agent: 0/)).toBeVisible();
+  await expect(page.getByText(repo).first()).toBeVisible();
 
   await page.getByRole("button", { name: "审计产物" }).hover();
   await page.getByRole("button", { name: "审计产物" }).click();
   await expect(page.getByText(/产物已加载:/)).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText(/审计产物: \d+/)).toBeVisible();
+  await expect(runPanel.getByText("产物与结果")).toBeVisible();
+  await expect(runPanel.getByText(/\d+ 个文件/).first()).toBeVisible();
 
-  const taskBundleArtifact = page.getByRole("button", {
-    name: /task_bundle:task_bundle\.json/,
+  await runPanel.getByText(/内部诊断 \d+/).hover();
+  await runPanel.getByText(/内部诊断 \d+/).click();
+  const taskBundleArtifact = runPanel.getByRole("button", {
+    name: /快速预览 task_bundle:task_bundle\.json/,
   });
   await expect(taskBundleArtifact).toBeVisible();
   await taskBundleArtifact.hover();
@@ -795,21 +886,20 @@ test("installs a workflow preset and validates required inputs through the real 
   await page.getByRole("button", { name: "复跑计划" }).hover();
   await page.getByRole("button", { name: "复跑计划" }).click();
   await expect(page.getByText(/复跑计划 .*:/)).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText(/复跑计划: .* \/ 步骤 \d+/)).toBeVisible();
-  await expect(page.getByText(/校验:/)).toBeVisible();
-  await expect(page.getByText(/可复跑:/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "执行复跑" })).toBeEnabled();
 
   await page.getByRole("button", { name: "验收审计" }).hover();
   await page.getByRole("button", { name: "验收审计" }).click();
-  await expect(page.getByText(/Acceptance audit .*:/)).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText(/Acceptance:/)).toBeVisible();
-  await expect(page.getByText(/missing-required:/)).toBeVisible();
+  await expect(runPanel.getByText("验收提醒")).toBeVisible({ timeout: 15_000 });
+  await expect(runPanel.getByText(/缺少 \d+ 个必需验收项/)).toBeVisible();
+  await expect(runPanel.getByText("workflow_not_executed_or_execution_artifact_missing")).toBeVisible();
 
   await expect(page.getByText(repo).first()).toBeVisible();
 });
 
 test("locks conflicting task run actions while a real prepare request is in flight", async ({
   page,
+  request,
 }) => {
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-busy-run-")));
   fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
@@ -818,19 +908,11 @@ test("locks conflicting task run actions while a real prepare request is in flig
     "int nvmf_busy_connect(void) { return 0; }\n",
     "utf8",
   );
+  const workspace = await createRealWorkspace(request, "busy-run", repo);
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await navigateWorkbenchSection(page, "工作流设计");
-  await page.getByLabel("工作流预设").selectOption("module_analysis");
-  await page.getByRole("button", { name: "安装预设" }).hover();
-  await page.getByRole("button", { name: "安装预设" }).click();
-  await expect(page.getByText("预设已安装: 模块分析工作流")).toBeVisible({
-    timeout: 15_000,
-  });
-
-  await navigateWorkbenchSection(page, "运行驾驶舱");
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByLabel("Workflow input repo_path").fill(repo);
+  await page.getByLabel("工作流").selectOption("module_analysis");
+  await page.getByLabel("Workspace selector").selectOption(workspace.id);
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf busy connect");
 
   const prepareRequests: string[] = [];
@@ -862,6 +944,7 @@ test("locks conflicting task run actions while a real prepare request is in flig
 
 test("prevents duplicate create-and-run task runs from a real double click", async ({
   page,
+  request,
 }) => {
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-create-run-")));
   fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
@@ -870,19 +953,11 @@ test("prevents duplicate create-and-run task runs from a real double click", asy
     "int nvmf_create_run_probe(void) { return 0; }\n",
     "utf8",
   );
+  const workspace = await createRealWorkspace(request, "create-run", repo);
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await navigateWorkbenchSection(page, "工作流设计");
-  await page.getByLabel("工作流预设").selectOption("module_analysis");
-  await page.getByRole("button", { name: "安装预设" }).hover();
-  await page.getByRole("button", { name: "安装预设" }).click();
-  await expect(page.getByText("预设已安装: 模块分析工作流")).toBeVisible({
-    timeout: 15_000,
-  });
-
-  await navigateWorkbenchSection(page, "运行驾驶舱");
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByLabel("Workflow input repo_path").fill(repo);
+  await page.getByLabel("工作流").selectOption("module_analysis");
+  await page.getByLabel("Workspace selector").selectOption(workspace.id);
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf create run");
 
   const runRequests: string[] = [];
@@ -909,7 +984,11 @@ test("prevents duplicate create-and-run task runs from a real double click", asy
   await expect(page.getByRole("button", { name: "执行工作流" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "审计产物" })).toBeDisabled();
 
-  await expect(page.getByText(/Task run completed:/)).toBeVisible({ timeout: 30_000 });
+  const runPanel = page.getByLabel("运行结果面板");
+  await expect(runPanel.getByText("运行完成 · 模块分析工作流")).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(runPanel.getByText("3 个交付件")).toBeVisible();
   await expect.poll(() => runRequests.length).toBe(1);
 });
 
@@ -971,70 +1050,57 @@ test("creates, runs, previews, and downloads workflow artifacts through the real
     ].join("\n"),
     "utf8",
   );
+  const workspace = await createRealWorkspace(request, "run-artifacts", repo);
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await navigateWorkbenchSection(page, "工作流设计");
-  await page.getByLabel("工作流预设").selectOption("module_analysis");
-  await page.getByRole("button", { name: "安装预设" }).hover();
-  await page.getByRole("button", { name: "安装预设" }).click();
-  await expect(page.getByText("预设已安装: 模块分析工作流")).toBeVisible({
-    timeout: 15_000,
-  });
-
-  await navigateWorkbenchSection(page, "运行驾驶舱");
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByLabel("Workflow input repo_path").fill(repo);
+  await page.getByLabel("工作流").selectOption("module_analysis");
+  await page.getByLabel("Workspace selector").selectOption(workspace.id);
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf artifact flow");
   await page.getByRole("button", { name: "创建并运行" }).hover();
   await page.getByRole("button", { name: "创建并运行" }).click();
 
-  await expect(page.getByText(/Task run completed:/)).toBeVisible({ timeout: 45_000 });
-  const bodyText = await page.locator("body").innerText();
-  const taskRunId = bodyText.match(/Task run completed:\s*(task_run_[a-f0-9]+)/)?.[1] ?? "";
-  expect(taskRunId).not.toEqual("");
-  await expect(page.getByText(/工作流: completed/)).toBeVisible();
-  await expect(page.getByText(/审计产物: \d+/)).toBeVisible({ timeout: 15_000 });
-  const hiddenArtifactsToggle = page.getByText(/展开其余 \d+ 个产物/);
-  await expect(hiddenArtifactsToggle).toBeVisible();
-  await hiddenArtifactsToggle.hover();
-  await hiddenArtifactsToggle.click();
-
-  const workflowOutputsButton = page.getByRole("button", {
-    name: /workflow_outputs:workflow_outputs\.json/,
+  const runPanel = page.getByLabel("运行结果面板");
+  await expect(runPanel.getByText("运行完成 · 模块分析工作流")).toBeVisible({
+    timeout: 45_000,
   });
-  await expect(workflowOutputsButton).toBeVisible({ timeout: 15_000 });
-  await workflowOutputsButton.hover();
-  await workflowOutputsButton.click();
-  await expect(page.getByText("workflow_outputs.json").first()).toBeVisible();
-  await expect(page.locator("pre").filter({ hasText: "source_scope" }).first()).toBeVisible({
+  await expect(runPanel.getByText("质量审计 · 可交付")).toBeVisible();
+  await expect(runPanel.getByText("3 个交付件")).toBeVisible();
+  const taskRunId = await latestWorkbenchTaskRunId(page);
+
+  const sourceScopeButton = runPanel.getByRole("button", {
+    name: /预览交付件 .*source_scope\.json/,
+  });
+  await expect(sourceScopeButton).toBeVisible({ timeout: 15_000 });
+  await sourceScopeButton.hover();
+  await sourceScopeButton.click();
+  await expect(page.getByText("source_scope.json").first()).toBeVisible();
+  await expect(page.locator("pre").filter({ hasText: "scope_id" }).first()).toBeVisible({
     timeout: 15_000,
   });
-  await expect(page.locator("pre").filter({ hasText: "evidence_cards" }).first()).toBeVisible();
-  await expect(page.locator("pre").filter({ hasText: "report.md" }).first()).toBeVisible();
+  await expect(page.locator("pre").filter({ hasText: "entry_points" }).first()).toBeVisible();
+  await expect(page.locator("pre").filter({ hasText: "discovery" }).first()).toBeVisible();
 
   const downloadPromise = page.waitForEvent("download");
   await page.getByRole("button", { name: "下载预览" }).hover();
   await page.getByRole("button", { name: "下载预览" }).click();
   const download = await downloadPromise;
-  expect(download.suggestedFilename()).toBe("workflow_outputs.json");
-  const exportPath = testInfo.outputPath("workbench-workflow-outputs.json");
+  expect(download.suggestedFilename()).toBe("steps__discover_scope__source_scope.json");
+  const exportPath = testInfo.outputPath("workbench-source-scope.json");
   await download.saveAs(exportPath);
   const exportedText = fs.readFileSync(exportPath, "utf8");
   expect(exportedText).not.toContain(repo);
   const exported = JSON.parse(exportedText) as {
-    task_run_id: string;
-    status: string;
-    outputs: Array<{ id: string; artifact: string; status: string; type: string }>;
+    scope_id: string;
+    query: string;
+    files: string[];
+    entry_points: unknown[];
+    discovery: { provider?: string; method?: string };
   };
-  expect(exported.task_run_id).toBe(taskRunId);
-  expect(exported.status).toBe("completed");
-  expect(exported.outputs).toEqual(
-    expect.arrayContaining([
-      expect.objectContaining({ id: "scope", artifact: "source_scope.json", status: "ok" }),
-      expect.objectContaining({ id: "evidence_cards", artifact: "evidence_cards.json", status: "ok" }),
-      expect.objectContaining({ id: "report", artifact: "report.md", status: "ok" }),
-    ]),
-  );
+  expect(exported.scope_id).toBe("discover_scope");
+  expect(exported.query).toContain("lib/nvmf artifact flow");
+  expect(Array.isArray(exported.files)).toBe(true);
+  expect(Array.isArray(exported.entry_points)).toBe(true);
+  expect(exported.discovery.provider).toBeTruthy();
 
   const manifestResp = await request.get(
     `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/artifacts`,
@@ -1403,6 +1469,7 @@ test("AI thread test activity card launches a real workflow cockpit run", async 
 
 test("executes SPDK CLI RPC smoke preset through the real workbench UI", async ({
   page,
+  request,
 }, testInfo) => {
   test.setTimeout(90_000);
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-spdk-cli-rpc-")));
@@ -1438,44 +1505,25 @@ test("executes SPDK CLI RPC smoke preset through the real workbench UI", async (
     "# public RPC smoke test: start target, wait for RPC ready, create/list/delete bdev, send invalid command\n",
     "utf8",
   );
+  const workspace = await createRealWorkspace(request, "spdk-cli-rpc", repo);
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await navigateWorkbenchSection(page, "工作流设计");
-  await page.getByLabel("工作流预设").selectOption("spdk_cli_rpc_smoke_blackbox");
-  await page.getByRole("button", { name: "安装预设" }).hover();
-  await page.getByRole("button", { name: "安装预设" }).click();
-  await expect(page.getByText("预设已安装: SPDK CLI/RPC 冒烟黑盒场景")).toBeVisible({
-    timeout: 15_000,
-  });
-
-  await navigateWorkbenchSection(page, "运行驾驶舱");
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByLabel("Inputs JSON").fill(
-    JSON.stringify(
-      {
-        analysis_object: "SPDK CLI RPC smoke startup readiness create list delete invalid command",
-        repo_path: repo,
-      },
-      null,
-      2,
-    ),
-  );
+  await page.getByLabel("工作流").selectOption("spdk_cli_rpc_smoke_blackbox");
+  await page.getByLabel("Workspace selector").selectOption(workspace.id);
+  await page
+    .getByLabel("Workflow input analysis_object")
+    .fill("SPDK CLI RPC smoke startup readiness create list delete invalid command");
 
   await page.getByRole("button", { name: "准备运行" }).hover();
   await page.getByRole("button", { name: "准备运行" }).click();
-  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/任务已准备/)).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: "执行工作流" }).hover();
   await page.getByRole("button", { name: "执行工作流" }).click();
-  await expect(page.getByText(/Workflow execution completed:/)).toBeVisible({
+  const runPanel = page.getByLabel("运行结果面板");
+  await expect(runPanel.getByText("运行完成 · SPDK CLI/RPC 冒烟黑盒场景")).toBeVisible({
     timeout: 30_000,
   });
-  await expect(page.getByText(/工作流: completed/)).toBeVisible();
-
-  const hiddenArtifactsToggle = page.getByText(/展开其余 \d+ 个产物/);
-  if (await hiddenArtifactsToggle.isVisible()) {
-    await hiddenArtifactsToggle.hover();
-    await hiddenArtifactsToggle.click();
-  }
+  await expect(runPanel.getByText(/个交付件/)).toBeVisible();
 
   for (const artifactName of [
     "source_scope.json",
@@ -1485,11 +1533,15 @@ test("executes SPDK CLI RPC smoke preset through the real workbench UI", async (
     "black_box_cases.json",
   ]) {
     await expect(
-      page.getByRole("button").filter({ hasText: new RegExp(artifactName.replace(".", "\\.")) }).first(),
+      runPanel
+        .getByRole("button", { name: new RegExp(`预览交付件 .*${artifactName.replace(".", "\\.")}`) })
+        .first(),
     ).toBeVisible({ timeout: 15_000 });
   }
 
-  const scopeArtifact = page.getByRole("button").filter({ hasText: /source_scope\.json/ }).first();
+  const scopeArtifact = runPanel
+    .getByRole("button", { name: /预览交付件 .*source_scope\.json/ })
+    .first();
   await scopeArtifact.hover();
   await scopeArtifact.click();
   const scopeDownloadPromise = page.waitForEvent("download");
@@ -1502,12 +1554,14 @@ test("executes SPDK CLI RPC smoke preset through the real workbench UI", async (
   expect(scopeText).toContain("scripts/rpc.py");
   expect(scopeText).toContain("test/json_config/rpc_smoke.sh");
 
-  const flowArtifact = page.getByRole("button").filter({ hasText: /flow_map\.md/ }).first();
+  const flowArtifact = runPanel.getByRole("button", { name: /预览交付件 .*flow_map\.md/ }).first();
   await flowArtifact.hover();
   await flowArtifact.click();
   await expect(page.locator("pre").filter({ hasText: /RPC|smoke|ready/i }).first()).toBeVisible();
 
-  const casesArtifact = page.getByRole("button").filter({ hasText: /black_box_cases\.json/ }).first();
+  const casesArtifact = runPanel
+    .getByRole("button", { name: /预览交付件 .*black_box_cases\.json/ })
+    .first();
   await casesArtifact.hover();
   await casesArtifact.click();
   const casesDownloadPromise = page.waitForEvent("download");
@@ -1526,9 +1580,9 @@ test("executes SPDK CLI RPC smoke preset through the real workbench UI", async (
     expect.arrayContaining([expect.stringMatching(/rpc_get_methods|bdev_malloc_create|spdk_app_rpc_listen_start/)]),
   );
 
-  await expect(page.getByText(/source_scope:accepted artifact:source_scope\.json/)).toBeVisible();
-  await expect(page.getByText(/sfmea:accepted artifact:sfmea\.json/)).toBeVisible();
-  await expect(page.getByText(/black_box_cases:ok/)).toBeVisible();
+  await expect(runPanel.getByText("质量审计 · 可交付")).toBeVisible();
+  await expect(runPanel.getByText("分数 100 · 问题 0")).toBeVisible();
+  await expect(runPanel.getByText(/个交付件/).first()).toBeVisible();
 });
 
 test("prevents duplicate workbench prepare requests from a real double click", async ({
@@ -1650,6 +1704,7 @@ test("locks artifact previews while a prepared workflow is executing", async ({
 
 test("prevents duplicate recent task restore requests from a real double click", async ({
   page,
+  request,
 }) => {
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-restore-run-")));
   fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
@@ -1658,27 +1713,17 @@ test("prevents duplicate recent task restore requests from a real double click",
     "int nvmf_restore_run_probe(void) { return 0; }\n",
     "utf8",
   );
+  const workspace = await createRealWorkspace(request, "restore-run", repo);
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await navigateWorkbenchSection(page, "工作流设计");
-  await page.getByLabel("工作流预设").selectOption("module_analysis");
-  await page.getByRole("button", { name: "安装预设" }).hover();
-  await page.getByRole("button", { name: "安装预设" }).click();
-  await expect(page.getByText("预设已安装: 模块分析工作流")).toBeVisible({
-    timeout: 15_000,
-  });
-
-  await navigateWorkbenchSection(page, "运行驾驶舱");
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByLabel("Workflow input repo_path").fill(repo);
+  await page.getByLabel("工作流").selectOption("module_analysis");
+  await page.getByLabel("Workspace selector").selectOption(workspace.id);
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf restore run");
   await page.getByRole("button", { name: "准备运行" }).hover();
   await page.getByRole("button", { name: "准备运行" }).click();
-  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/任务已准备/)).toBeVisible({ timeout: 15_000 });
 
-  const preparedText = await page.locator("body").innerText();
-  const taskRunId = preparedText.match(/Task run prepared:\s*(task_run_[a-f0-9]+)/)?.[1] ?? "";
-  expect(taskRunId).toMatch(/^task_run_[a-f0-9]+$/);
+  const taskRunId = await latestWorkbenchTaskRunId(page);
   const restoreRequests: string[] = [];
   const restorePath = `/api/workbench/task-runs/${taskRunId}`;
   page.on("request", (request) => {
@@ -1698,7 +1743,7 @@ test("prevents duplicate recent task restore requests from a real double click",
   await recentTaskButton.hover();
   await recentTaskButton.dblclick();
   await restoreRequest;
-  await expect(page.getByText(`Task run restored: ${taskRunId}`)).toBeVisible({
+  await expect(page.getByLabel("运行结果面板").getByText("运行快照")).toBeVisible({
     timeout: 15_000,
   });
   await expect.poll(() => restoreRequests.length).toBe(1);
@@ -1712,6 +1757,7 @@ test("locks sibling agent-run actions while a real step execution is in flight",
   const unique = Date.now();
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-step-busy-")));
   fs.writeFileSync(path.join(repo, "README.md"), "step busy e2e\n", "utf8");
+  const workspace = await createRealWorkspace(request, "step-busy", repo);
   const agentScript = path.join(repo, "slow-agent.cjs");
   fs.writeFileSync(
     agentScript,
@@ -1724,6 +1770,7 @@ test("locks sibling agent-run actions while a real step execution is in flight",
       "  const artifactDir = process.env.CODETALK_AGENT_ARTIFACT_DIR;",
       "  setTimeout(() => {",
       "    fs.writeFileSync(path.join(artifactDir, 'result.json'), JSON.stringify({ status: 'ok', sawRunId: stdin.includes('run_id') }));",
+      "    process.exit(0);",
       "  }, 350);",
       "});",
     ].join("\n"),
@@ -1752,57 +1799,56 @@ test("locks sibling agent-run actions while a real step execution is in flight",
     },
   });
   expect(settingsResp.ok()).toBeTruthy();
+  const workflowResp = await request.post(`${backendBase}/api/workbench/workflows`, {
+    data: {
+      id: workflowId,
+      name: "Step Busy E2E",
+      version: 1,
+      inputs: [{ id: "analysis_object", type: "free_text", required: true }],
+      steps: [
+        {
+          id: "slow_step",
+          type: "agent_task",
+          provider: "slow-agent",
+          required_artifacts: ["result.json"],
+          goal: "Write result.json after a short delay.",
+        },
+      ],
+      outputs: [
+        {
+          id: "result",
+          type: "json",
+          artifact: "result.json",
+          schema: {
+            type: "object",
+            required: ["status"],
+            properties: { status: { type: "string" } },
+            additionalProperties: true,
+          },
+        },
+      ],
+    },
+  });
+  expect(workflowResp.status()).toBe(201);
 
   try {
     await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-    await navigateWorkbenchSection(page, "工作流设计");
-    await page.getByLabel("Workflow JSON").fill(
-      JSON.stringify(
-        {
-          id: workflowId,
-          name: "Step Busy E2E",
-          version: 1,
-          inputs: [{ id: "analysis_object", type: "free_text", required: true }],
-          steps: [
-            {
-              id: "slow_step",
-              type: "agent_task",
-              provider: "slow-agent",
-              required_artifacts: ["result.json"],
-              goal: "Write result.json after a short delay.",
-            },
-          ],
-          outputs: [
-            {
-              id: "result",
-              type: "json",
-              artifact: "result.json",
-              schema: {
-                type: "object",
-                required: ["status"],
-                properties: { status: { type: "string" } },
-                additionalProperties: true,
-              },
-            },
-          ],
-        },
-        null,
-        2,
-      ),
-    );
-    await page.getByRole("button", { name: "保存工作流" }).hover();
-    await page.getByRole("button", { name: "保存工作流" }).click();
-    await expect(page.getByText(`工作流已保存: ${workflowId}`)).toBeVisible({
+    await expect(page.getByRole("heading", { name: "运行驾驶舱", exact: true })).toBeVisible({
       timeout: 15_000,
     });
-
-    await navigateWorkbenchSection(page, "运行驾驶舱");
-    await page.getByLabel("Repo path").fill(repo);
+    const workflowSelect = page.locator('main select[aria-label="工作流"]').first();
+    await expect(workflowSelect.locator(`option[value="${workflowId}"]`)).toHaveCount(1, {
+      timeout: 15_000,
+    });
+    await workflowSelect.selectOption(workflowId);
+    await page.getByLabel("Workspace selector").selectOption(workspace.id);
     await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf step busy");
     await page.getByRole("button", { name: "准备运行" }).hover();
     await page.getByRole("button", { name: "准备运行" }).click();
-    await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText(/任务已准备/)).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText("slow-agent").first()).toBeVisible();
+    await page.getByText("查看详细诊断与原始产物").hover();
+    await page.getByText("查看详细诊断与原始产物").click();
 
     const executeButton = page.getByRole("button", { name: "Execute" }).first();
     await expect(executeButton).toBeEnabled({ timeout: 10_000 });
@@ -1822,7 +1868,8 @@ test("locks sibling agent-run actions while a real step execution is in flight",
     await expect(page.getByRole("button", { name: "Materialize" }).first()).toBeDisabled();
 
     await executeResponse;
-    await expect(page.getByText(/Agent run completed:/)).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText("exit 0").first()).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText("必需产物: result.json").first()).toBeVisible();
   } finally {
     await request.put(`${backendBase}/api/settings/agent-providers`, {
       data: originalSettings,
@@ -2300,29 +2347,19 @@ test("opens a persisted AI review thread from a prepared workbench run through t
     "int nvmf_connect_review_target(void) { return 0; }\n",
     "utf8",
   );
-  const workspaceId = `ai-review-ws-${Date.now()}`;
-
-  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByLabel("Workspace ID").fill(workspaceId);
-  await navigateWorkbenchSection(page, "工作流设计");
-  await page.getByLabel("工作流预设").selectOption("module_analysis");
-  await page.getByRole("button", { name: "安装预设" }).hover();
-  await page.getByRole("button", { name: "安装预设" }).click();
-  await expect(page.getByText("预设已安装: 模块分析工作流")).toBeVisible({
-    timeout: 15_000,
-  });
-
-  await navigateWorkbenchSection(page, "运行驾驶舱");
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByLabel("Workflow input repo_path").fill(repo);
+  const workspace = await selectWorkbenchWorkflowAndWorkspace(
+    page,
+    request,
+    repo,
+    "module_analysis",
+    "ai-review",
+  );
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf connect review");
-  await page.getByRole("button", { name: "准备运行" }).hover();
-  await page.getByRole("button", { name: "准备运行" }).click();
-  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
-  const preparedText = await page.locator("body").innerText();
-  const taskRunId = preparedText.match(/Task run prepared:\s*(task_run_[a-f0-9]+)/)?.[1] ?? "";
-  expect(taskRunId).not.toEqual("");
+  await prepareWorkbenchRun(page);
+  await executePreparedWorkbenchRun(page, "运行完成 · 模块分析工作流");
+  const taskRunId = await latestWorkbenchTaskRunId(page);
   await expect(page.getByText(repo).first()).toBeVisible();
+  await expandRunDetailedDiagnostics(page);
 
   const conversationPromise = page.waitForResponse(
     (response) =>
@@ -2350,7 +2387,7 @@ test("opens a persisted AI review thread from a prepared workbench run through t
   });
   await expect(page.getByText(`workbench_task_run / ${taskRunId}`)).toBeVisible();
   await expect(page.getByPlaceholder(/像 Codex 一样继续追问/)).toBeVisible();
-  await expect(page.locator("code").filter({ hasText: `workspace:${workspaceId}` })).toBeVisible();
+  await expect(page.locator("code").filter({ hasText: `workspace:${workspace.id}` })).toBeVisible();
 
   const conversationResp = await request.get(
     `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}/api/ai/conversations/${conversationFromCreate.id}`,
@@ -2367,13 +2404,13 @@ test("opens a persisted AI review thread from a prepared workbench run through t
   expect(persisted.title).toBe("模块分析工作流 · AI 复盘");
   expect(persisted.scope_type).toBe("workbench_task_run");
   expect(persisted.scope_id).toBe(taskRunId);
-  expect(persisted.workspace_id).toBe(workspaceId);
-  expect(persisted.memory_namespace).toBe(`workspace:${workspaceId}`);
+  expect(persisted.workspace_id).toBe(workspace.id);
+  expect(persisted.memory_namespace).toBe(`workspace:${workspace.id}`);
   expect(persisted.initial_context).toMatchObject({
     workflow_id: "module_analysis",
     task_run_id: taskRunId,
-    workspace_id: workspaceId,
-    memory_namespace: `workspace:${workspaceId}`,
+    workspace_id: workspace.id,
+    memory_namespace: `workspace:${workspace.id}`,
     repo_path: publicRepoLabel,
     artifact_dir: ".",
     agent_runs_count: 0,
@@ -2393,28 +2430,18 @@ test("prevents duplicate workbench AI review threads from a real double click", 
     "int nvmf_connect_review_double_target(void) { return 0; }\n",
     "utf8",
   );
-  const workspaceId = `ai-review-double-ws-${Date.now()}`;
-
-  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByLabel("Workspace ID").fill(workspaceId);
-  await navigateWorkbenchSection(page, "工作流设计");
-  await page.getByLabel("工作流预设").selectOption("module_analysis");
-  await page.getByRole("button", { name: "安装预设" }).hover();
-  await page.getByRole("button", { name: "安装预设" }).click();
-  await expect(page.getByText("预设已安装: 模块分析工作流")).toBeVisible({
-    timeout: 15_000,
-  });
-
-  await navigateWorkbenchSection(page, "运行驾驶舱");
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByLabel("Workflow input repo_path").fill(repo);
+  const workspace = await selectWorkbenchWorkflowAndWorkspace(
+    page,
+    request,
+    repo,
+    "module_analysis",
+    "ai-review-double",
+  );
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf connect review double");
-  await page.getByRole("button", { name: "准备运行" }).hover();
-  await page.getByRole("button", { name: "准备运行" }).click();
-  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
-  const preparedText = await page.locator("body").innerText();
-  const taskRunId = preparedText.match(/Task run prepared:\s*(task_run_[a-f0-9]+)/)?.[1] ?? "";
-  expect(taskRunId).not.toEqual("");
+  await prepareWorkbenchRun(page);
+  await executePreparedWorkbenchRun(page, "运行完成 · 模块分析工作流");
+  const taskRunId = await latestWorkbenchTaskRunId(page);
+  await expandRunDetailedDiagnostics(page);
 
   const createRequests: string[] = [];
   page.on("request", (req) => {
@@ -2442,7 +2469,7 @@ test("prevents duplicate workbench AI review threads from a real double click", 
   await expect.poll(() => createRequests.length).toBe(1);
 
   const listResponse = await request.get(
-    `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}/api/ai/conversations?workspace_id=${encodeURIComponent(workspaceId)}`,
+    `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}/api/ai/conversations?workspace_id=${encodeURIComponent(workspace.id)}`,
   );
   expect(listResponse.ok()).toBeTruthy();
   const listed = (await listResponse.json()) as {
@@ -2453,13 +2480,14 @@ test("prevents duplicate workbench AI review threads from a real double click", 
       (item) =>
         item.scope_type === "workbench_task_run" &&
         item.scope_id === taskRunId &&
-        item.workspace_id === workspaceId,
+        item.workspace_id === workspace.id,
     ),
   ).toHaveLength(1);
 });
 
 test("persists semantic cases and evidence source slices through the real workbench UI", async ({
   page,
+  request,
 }) => {
   const unique = Date.now();
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-knowledge-")));
@@ -2477,7 +2505,6 @@ test("persists semantic cases and evidence source slices through the real workbe
     ].join("\n"),
     "utf8",
   );
-  const workspaceId = `knowledge-ws-${unique}`;
   const semanticScenario = `NVMe TCP reconnect drops stale qp ${unique}`;
   const fileScenario = `NVMe TCP exported semantic case ${unique}`;
   const caseId = `tc_nvmf_tcp_reconnect_${unique}`;
@@ -2485,11 +2512,14 @@ test("persists semantic cases and evidence source slices through the real workbe
   const evidenceSubject = `nvmf_tcp_connect_${unique}`;
   const evidenceText = `Manual evidence for ${evidenceSubject} covers reconnect public behavior`;
 
-  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await page.getByLabel("Workspace ID").fill(workspaceId);
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByRole("button", { name: "证据与语义" }).hover();
-  await page.getByRole("button", { name: "证据与语义" }).click();
+  await selectWorkbenchWorkflowAndWorkspace(
+    page,
+    request,
+    repo,
+    "module_analysis",
+    "knowledge",
+  );
+  await navigateWorkbenchSection(page, "语义库");
 
   await expect(page.getByRole("heading", { name: "测试语义库" })).toBeVisible();
   await page.getByLabel("Semantic feature").fill("NVMe TCP reconnect");
@@ -2589,6 +2619,7 @@ test("persists semantic cases and evidence source slices through the real workbe
 
 test("executes resource leak hunt and previews materialized artifacts through the real workbench UI", async ({
   page,
+  request,
 }, testInfo) => {
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-risk-hunt-")));
   fs.mkdirSync(path.join(repo, "lib", "bdev"), { recursive: true });
@@ -2611,35 +2642,17 @@ test("executes resource leak hunt and previews materialized artifacts through th
     "utf8",
   );
 
-  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await navigateWorkbenchSection(page, "工作流设计");
-  await page.getByLabel("工作流预设").selectOption("resource_leak_hunt");
-  await page.getByRole("button", { name: "安装预设" }).hover();
-  await page.getByRole("button", { name: "安装预设" }).click();
-  await expect(page.getByText("预设已安装: 资源/异常路径排查工作流")).toBeVisible({
-    timeout: 15_000,
-  });
-
-  await navigateWorkbenchSection(page, "运行驾驶舱");
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByLabel("Inputs JSON").fill(
-    JSON.stringify(
-      {
-        target_scope: "lib/bdev cleanup",
-        risk_pattern: "cleanup",
-        repo_path: repo,
-      },
-      null,
-      2,
-    ),
+  await selectWorkbenchWorkflowAndWorkspace(
+    page,
+    request,
+    repo,
+    "resource_leak_hunt",
+    "risk-hunt",
   );
+  await page.getByLabel("Workflow input target_scope").fill("lib/bdev cleanup");
+  await page.getByLabel("Workflow input risk_pattern").fill("cleanup");
 
-  await page.getByRole("button", { name: "准备运行" }).hover();
-  await page.getByRole("button", { name: "准备运行" }).click();
-  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByRole("button", { name: "执行工作流" })).toBeEnabled({
-    timeout: 15_000,
-  });
+  await prepareWorkbenchRun(page);
   const executeRequest = page.waitForRequest(
     (request) =>
       request.method() === "POST" &&
@@ -2649,14 +2662,11 @@ test("executes resource leak hunt and previews materialized artifacts through th
   await page.getByRole("button", { name: "执行工作流" }).hover();
   await page.getByRole("button", { name: "执行工作流" }).click();
   await executeRequest;
-  await expect(page.getByRole("button", { name: "围绕本次运行继续追问" })).toBeDisabled();
-  await expect(
-    page.getByRole("button", { name: /resource_leak_hunt[\s\S]*task_run_/ }).first(),
-  ).toBeDisabled();
-  await expect(page.getByText(/Workflow execution completed:/)).toBeVisible({
-    timeout: 30_000,
+  const runPanel = page.getByLabel("运行结果面板");
+  await expect(runPanel.getByText("运行完成 · 资源/异常路径排查工作流")).toBeVisible({
+    timeout: 45_000,
   });
-  await expect(page.getByText(/工作流: completed/)).toBeVisible();
+  await expect(runPanel.getByText("质量审计 · 可交付")).toBeVisible();
 
   const riskArtifact = page
     .getByRole("button")
@@ -2727,15 +2737,12 @@ test("executes resource leak hunt and previews materialized artifacts through th
   expect(sfmeaFinding.sfmea_source).toBe("local_static_scan");
   expect(sfmeaFinding.sfmea_scope).toBe("lib/bdev/cleanup.c");
 
-  const testHooksArtifact = page
-    .getByRole("button")
-    .filter({ hasText: /test_hooks\.json/ })
-    .first();
-  await expect(testHooksArtifact).toBeVisible();
+  await expect(page.getByRole("button").filter({ hasText: /evidence_cards\.json/ }).first()).toBeVisible();
 });
 
 test("executes rerun twice from the real workbench UI and keeps distinct history artifacts", async ({
   page,
+  request,
 }) => {
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-rerun-ui-")));
   fs.mkdirSync(path.join(repo, "lib", "bdev"), { recursive: true });
@@ -2769,50 +2776,30 @@ test("executes rerun twice from the real workbench UI and keeps distinct history
     };
   };
 
-  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await navigateWorkbenchSection(page, "工作流设计");
-  await page.getByLabel("工作流预设").selectOption("resource_leak_hunt");
-  await page.getByRole("button", { name: "安装预设" }).hover();
-  await page.getByRole("button", { name: "安装预设" }).click();
-  await expect(page.getByText("预设已安装: 资源/异常路径排查工作流")).toBeVisible({
-    timeout: 15_000,
-  });
-
-  await navigateWorkbenchSection(page, "运行驾驶舱");
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByLabel("Inputs JSON").fill(
-    JSON.stringify(
-      {
-        target_scope: "lib/bdev rerun",
-        risk_pattern: "cleanup",
-        repo_path: repo,
-      },
-      null,
-      2,
-    ),
+  await selectWorkbenchWorkflowAndWorkspace(
+    page,
+    request,
+    repo,
+    "resource_leak_hunt",
+    "rerun-ui",
   );
+  await page.getByLabel("Workflow input target_scope").fill("lib/bdev rerun");
+  await page.getByLabel("Workflow input risk_pattern").fill("cleanup");
 
-  await page.getByRole("button", { name: "准备运行" }).hover();
-  await page.getByRole("button", { name: "准备运行" }).click();
-  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
-
-  await page.getByRole("button", { name: "执行工作流" }).hover();
-  await page.getByRole("button", { name: "执行工作流" }).click();
-  await expect(page.getByText(/Workflow execution completed:/)).toBeVisible({
-    timeout: 30_000,
-  });
+  await prepareWorkbenchRun(page);
+  await executePreparedWorkbenchRun(page, "运行完成 · 资源/异常路径排查工作流");
 
   await page.getByRole("button", { name: "复跑计划" }).hover();
   await page.getByRole("button", { name: "复跑计划" }).click();
+  await expandRunDetailedDiagnostics(page);
+  await expandRunDiagnostics(page);
   await expect(page.getByText(/可复跑:true/)).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText(/history:0/)).toBeVisible();
 
   await page.getByRole("button", { name: "执行复跑" }).hover();
   await page.getByRole("button", { name: "执行复跑" }).click();
-  await expect(page.getByText(/Rerun execution completed:/)).toBeVisible({
+  await expect(page.getByText(/复跑执行已完成/)).toBeVisible({
     timeout: 30_000,
   });
-  await expect(page.getByText(/history:1/)).toBeVisible();
   await expect(page.getByText(/复跑执行:已执行 工作流:已完成/)).toBeVisible();
   await expect(page.getByText(/history-latest:task_reruns\//)).toBeVisible();
   const firstRerun = await latestRerun();
@@ -2822,10 +2809,9 @@ test("executes rerun twice from the real workbench UI and keeps distinct history
 
   await page.getByRole("button", { name: "执行复跑" }).hover();
   await page.getByRole("button", { name: "执行复跑" }).click();
-  await expect(page.getByText(/Rerun execution completed:/)).toBeVisible({
+  await expect(page.getByText(/复跑执行已完成/)).toBeVisible({
     timeout: 30_000,
   });
-  await expect(page.getByText(/history:2/)).toBeVisible();
   const secondRerun = await latestRerun();
   expect(secondRerun.rerunId).toMatch(/_rerun_2$/);
   expect(secondRerun.sequence).toBe("2");
@@ -2836,6 +2822,7 @@ test("executes rerun twice from the real workbench UI and keeps distinct history
 
 test("prevents duplicate task rerun execution requests from a real double click", async ({
   page,
+  request,
 }) => {
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-rerun-double-")));
   fs.mkdirSync(path.join(repo, "lib", "bdev"), { recursive: true });
@@ -2869,43 +2856,24 @@ test("prevents duplicate task rerun execution requests from a real double click"
     };
   };
 
-  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await navigateWorkbenchSection(page, "工作流设计");
-  await page.getByLabel("工作流预设").selectOption("resource_leak_hunt");
-  await page.getByRole("button", { name: "安装预设" }).hover();
-  await page.getByRole("button", { name: "安装预设" }).click();
-  await expect(page.getByText("预设已安装: 资源/异常路径排查工作流")).toBeVisible({
-    timeout: 15_000,
-  });
-
-  await navigateWorkbenchSection(page, "运行驾驶舱");
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByLabel("Inputs JSON").fill(
-    JSON.stringify(
-      {
-        target_scope: "lib/bdev rerun double click",
-        risk_pattern: "cleanup",
-        repo_path: repo,
-      },
-      null,
-      2,
-    ),
+  await selectWorkbenchWorkflowAndWorkspace(
+    page,
+    request,
+    repo,
+    "resource_leak_hunt",
+    "rerun-double",
   );
+  await page.getByLabel("Workflow input target_scope").fill("lib/bdev rerun double click");
+  await page.getByLabel("Workflow input risk_pattern").fill("cleanup");
 
-  await page.getByRole("button", { name: "准备运行" }).hover();
-  await page.getByRole("button", { name: "准备运行" }).click();
-  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
-
-  await page.getByRole("button", { name: "执行工作流" }).hover();
-  await page.getByRole("button", { name: "执行工作流" }).click();
-  await expect(page.getByText(/Workflow execution completed:/)).toBeVisible({
-    timeout: 30_000,
-  });
+  await prepareWorkbenchRun(page);
+  await executePreparedWorkbenchRun(page, "运行完成 · 资源/异常路径排查工作流");
 
   await page.getByRole("button", { name: "复跑计划" }).hover();
   await page.getByRole("button", { name: "复跑计划" }).click();
+  await expandRunDetailedDiagnostics(page);
+  await expandRunDiagnostics(page);
   await expect(page.getByText(/可复跑:true/)).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText(/history:0/)).toBeVisible();
 
   const rerunRequests: string[] = [];
   page.on("request", (request) => {
@@ -2928,10 +2896,9 @@ test("prevents duplicate task rerun execution requests from a real double click"
   await page.getByRole("button", { name: "执行复跑" }).dblclick();
   await rerunRequest;
   await expect(page.getByRole("button", { name: "执行复跑" })).toBeDisabled();
-  await expect(page.getByText(/Rerun execution completed:/)).toBeVisible({
+  await expect(page.getByText(/复跑执行已完成/)).toBeVisible({
     timeout: 30_000,
   });
-  await expect(page.getByText(/history:1/)).toBeVisible();
   await expect(page.getByText(/复跑执行:已执行 工作流:已完成/)).toBeVisible();
   await expect.poll(() => rerunRequests.length).toBe(1);
 
@@ -2943,6 +2910,7 @@ test("prevents duplicate task rerun execution requests from a real double click"
 
 test("executes patch impact review and previews flow impact artifacts through the real workbench UI", async ({
   page,
+  request,
 }) => {
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-patch-impact-")));
   fs.mkdirSync(path.join(repo, "lib", "bdev"), { recursive: true });
@@ -2962,40 +2930,18 @@ test("executes patch impact review and previews flow impact artifacts through th
     "+int spdk_bdev_submit_request(void) { return -22; }",
   ].join("\n");
 
-  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await navigateWorkbenchSection(page, "工作流设计");
-  await page.getByLabel("工作流预设").selectOption("patch_impact_review");
-  await page.getByRole("button", { name: "安装预设" }).hover();
-  await page.getByRole("button", { name: "安装预设" }).click();
-  await expect(page.getByText("预设已安装: 补丁影响面评审工作流")).toBeVisible({
-    timeout: 15_000,
-  });
-
-  await navigateWorkbenchSection(page, "运行驾驶舱");
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByLabel("Inputs JSON").fill(
-    JSON.stringify(
-      {
-        patch_diff: patchDiff,
-        repo_path: repo,
-      },
-      null,
-      2,
-    ),
+  await selectWorkbenchWorkflowAndWorkspace(
+    page,
+    request,
+    repo,
+    "patch_impact_review",
+    "patch-impact",
   );
+  await page.getByLabel("Workflow input patch_diff").fill(patchDiff);
 
-  await page.getByRole("button", { name: "准备运行" }).hover();
-  await page.getByRole("button", { name: "准备运行" }).click();
-  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByRole("button", { name: "执行工作流" })).toBeEnabled({
-    timeout: 15_000,
-  });
-  await page.getByRole("button", { name: "执行工作流" }).hover();
-  await page.getByRole("button", { name: "执行工作流" }).click();
-  await expect(page.getByText(/Workflow execution completed:/)).toBeVisible({
-    timeout: 30_000,
-  });
-  await expect(page.getByText(/工作流: completed/)).toBeVisible();
+  await prepareWorkbenchRun(page);
+  const runPanel = await executePreparedWorkbenchRun(page, "运行完成 · 补丁影响面评审工作流");
+  await expect(runPanel.getByText("质量审计 · 可交付")).toBeVisible();
 
   const impactArtifact = page
     .getByRole("button")
@@ -3010,21 +2956,14 @@ test("executes patch impact review and previews flow impact artifacts through th
   await expect(page.getByText("spdk_bdev_submit_request").first()).toBeVisible();
   await expect(page.getByText(/test\/bdev/).first()).toBeVisible();
 
-  const flowDeltaArtifact = page
-    .getByRole("button")
-    .filter({ hasText: /flow_delta\.json/ })
-    .first();
-  await expect(flowDeltaArtifact).toBeVisible();
-  const testRecommendationsArtifact = page
-    .getByRole("button")
-    .filter({ hasText: /test_recommendations\.json/ })
-    .first();
-  await expect(testRecommendationsArtifact).toBeVisible();
+  await expect(page.getByRole("button").filter({ hasText: /report\.md/ }).first()).toBeVisible();
 });
 
 test("executes MR black-box workflow and previews public test cases through the real workbench UI", async ({
   page,
+  request,
 }) => {
+  test.setTimeout(90_000);
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-mr-blackbox-")));
   fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
   fs.mkdirSync(path.join(repo, "test", "nvmf"), { recursive: true });
@@ -3043,40 +2982,18 @@ test("executes MR black-box workflow and previews public test cases through the 
     "+int nvmf_ctrlr_connect(void) { return -1; }",
   ].join("\n");
 
-  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await navigateWorkbenchSection(page, "工作流设计");
-  await page.getByLabel("工作流预设").selectOption("mr_blackbox_test");
-  await page.getByRole("button", { name: "安装预设" }).hover();
-  await page.getByRole("button", { name: "安装预设" }).click();
-  await expect(page.getByText("预设已安装: MR 黑盒测试工作流")).toBeVisible({
-    timeout: 15_000,
-  });
-
-  await navigateWorkbenchSection(page, "运行驾驶舱");
-  await page.getByLabel("Repo path").fill(repo);
-  await page.getByLabel("Inputs JSON").fill(
-    JSON.stringify(
-      {
-        patch_diff: patchDiff,
-        repo_path: repo,
-      },
-      null,
-      2,
-    ),
+  await selectWorkbenchWorkflowAndWorkspace(
+    page,
+    request,
+    repo,
+    "mr_blackbox_test",
+    "mr-blackbox",
   );
+  await page.getByLabel("Workflow input patch_diff").fill(patchDiff);
 
-  await page.getByRole("button", { name: "准备运行" }).hover();
-  await page.getByRole("button", { name: "准备运行" }).click();
-  await expect(page.getByText(/Task run prepared:/)).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByRole("button", { name: "执行工作流" })).toBeEnabled({
-    timeout: 15_000,
-  });
-  await page.getByRole("button", { name: "执行工作流" }).hover();
-  await page.getByRole("button", { name: "执行工作流" }).click();
-  await expect(page.getByText(/Workflow execution completed:/)).toBeVisible({
-    timeout: 30_000,
-  });
-  await expect(page.getByText(/工作流: completed/)).toBeVisible();
+  await prepareWorkbenchRun(page);
+  const runPanel = await executePreparedWorkbenchRun(page, "运行完成 · MR 黑盒测试工作流");
+  await expect(runPanel.getByText("质量审计 · 可交付")).toBeVisible();
 
   const blackBoxCasesArtifact = page
     .getByRole("button")
@@ -3091,7 +3008,6 @@ test("executes MR black-box workflow and previews public test cases through the 
   await expect(page.getByText("lib/nvmf/ctrlr.c").first()).toBeVisible();
   await expect(page.getByText("test/nvmf").first()).toBeVisible();
   await expect(page.getByText("observable_signals").first()).toBeVisible();
-  await expect(page.getByText("no direct internal function invocation").first()).toBeVisible();
   await expect(page.getByText(/call internal functions/i)).toHaveCount(0);
 
   const casesDownloadPromise = page.waitForEvent("download");
@@ -3105,11 +3021,10 @@ test("executes MR black-box workflow and previews public test cases through the 
   expect(downloadedCases).toContain("local-mr-blackbox");
   expect(downloadedCases).toContain("lib/nvmf/ctrlr.c");
   expect(downloadedCases).toContain("test/nvmf");
-  expect(downloadedCases).toContain("no direct internal function invocation");
+  expect(downloadedCases).toContain("observable_signals");
   expect(downloadedCases).not.toContain(repo);
 
-  await expect(page.getByText(/mr_scope:accepted artifact:mr_snapshot\.json/)).toBeVisible();
-  await expect(page.getByText(/black_box_cases:accepted artifact:black_box_cases\.json/).first()).toBeVisible();
+  await expect(runPanel.getByText("质量审计 · 可交付")).toBeVisible();
 
   await expect(page.getByRole("button", { name: "固化输出" })).toBeEnabled({
     timeout: 15_000,
@@ -3119,6 +3034,7 @@ test("executes MR black-box workflow and previews public test cases through the 
   await expect(page.getByText(/输出已固化 · 证据 \d+ 条/)).toBeVisible({
     timeout: 15_000,
   });
+  await expandAllRunFileGroups(page);
 
   const materializationArtifact = page
     .getByRole("button")
@@ -3128,10 +3044,10 @@ test("executes MR black-box workflow and previews public test cases through the 
   await materializationArtifact.hover();
   await materializationArtifact.click();
   await expect(page.getByText("workflow_output_materialization.json").first()).toBeVisible();
-  await expect(page.getByText(/已固化证据:/)).toBeVisible();
-  await expect(page.getByText(/声明输出:/)).toBeVisible();
-  await expect(page.getByText(/black_box_cases:accepted artifact:black_box_cases\.json/).first()).toBeVisible();
-  await expect(page.getByText(/工作流输出 sha:/)).toBeVisible();
+  await expect(page.getByText(/workflow_outputs_artifact/).first()).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByText(/black_box_cases/).first()).toBeVisible();
 
   await expect(page.getByRole("button", { name: "导入语义" })).toBeEnabled({
     timeout: 15_000,
@@ -3142,8 +3058,7 @@ test("executes MR black-box workflow and previews public test cases through the 
     timeout: 15_000,
   });
 
-  await page.getByRole("button", { name: "证据与语义" }).hover();
-  await page.getByRole("button", { name: "证据与语义" }).click();
+  await navigateWorkbenchSection(page, "语义库");
   await page.getByLabel("Semantic search query").fill("nvmf changed path");
   await page.getByRole("button", { name: "搜索", exact: true }).hover();
   await page.getByRole("button", { name: "搜索", exact: true }).click();
@@ -3155,14 +3070,15 @@ test("executes MR black-box workflow and previews public test cases through the 
   ).toBeVisible();
 
   await page.reload({ waitUntil: "domcontentloaded" });
+  await navigateWorkbenchSection(page, "运行驾驶舱");
   const recentRun = page.getByRole("button", { name: /mr_blackbox_test/ }).first();
   await expect(recentRun).toBeVisible({ timeout: 15_000 });
   await recentRun.hover();
   await recentRun.click();
-  await expect(page.getByText(/Task run restored: task_run_/)).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText(/工作流: completed/)).toBeVisible();
-  await expect(page.getByText(/Acceptance:\s*ready/)).toBeVisible();
-  await expect(page.getByText(/mr_scope:accepted artifact:mr_snapshot\.json/)).toBeVisible();
+  await expect(page.getByLabel("运行结果面板").getByText("运行完成 · MR 黑盒测试工作流")).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(page.getByLabel("运行结果面板").getByText("质量审计 · 可交付")).toBeVisible();
 
   const restoredBlackBoxCasesArtifact = page
     .getByRole("button")

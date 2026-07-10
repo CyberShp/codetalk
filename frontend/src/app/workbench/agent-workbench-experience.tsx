@@ -1964,6 +1964,8 @@ function updateInputsJsonValue(
         path,
       }),
     );
+  } else if (isPatchLikeWorkflowInput(inputType)) {
+    payload[inputId] = rawValue;
   } else if (isFileLikeWorkflowInput(inputType)) {
     payload[inputId] = rawValue.trim() ? { path: rawValue.trim() } : "";
   } else if (inputType === "boolean") {
@@ -1977,7 +1979,11 @@ function updateInputsJsonValue(
 }
 
 function isFileLikeWorkflowInput(inputType: string): boolean {
-  return ["file", "patch", "diff", "coverage_report"].includes(inputType);
+  return ["file", "coverage_report"].includes(inputType);
+}
+
+function isPatchLikeWorkflowInput(inputType: string): boolean {
+  return ["patch", "diff"].includes(inputType);
 }
 
 function semanticCasesFromLines({
@@ -10031,7 +10037,8 @@ export function AgentWorkbenchExperience({
                       const multiline =
                         inputType === "file_set" ||
                         inputType === "long_text" ||
-                        inputType === "free_text";
+                        inputType === "free_text" ||
+                        isPatchLikeWorkflowInput(inputType);
                       return (
                         <label key={inputId} className="block">
                           <span className="mb-1 block text-xs text-on-surface-variant">
@@ -10049,6 +10056,8 @@ export function AgentWorkbenchExperience({
                                 placeholder={
                                   inputType === "file_set"
                                     ? "每行一个本地文件路径"
+                                    : isPatchLikeWorkflowInput(inputType)
+                                      ? "粘贴 unified diff，或上传 .patch/.diff 文件"
                                     : role || "输入文本"
                                 }
                                 className="h-24 w-full resize-y rounded-lg border border-outline-variant/30 bg-surface-container p-3 font-data text-xs text-on-surface outline-none focus:border-primary"
@@ -10059,6 +10068,19 @@ export function AgentWorkbenchExperience({
                                   aria-label={`Upload file for ${inputId}`}
                                   type="file"
                                   multiple
+                                  onChange={(event) =>
+                                    uploadPrepareInputFile(
+                                      input,
+                                      event.currentTarget.files,
+                                    )
+                                  }
+                                  className="mt-1 block w-full text-xs text-on-surface-variant file:mr-2 file:rounded file:border-0 file:bg-surface-container-high file:px-2 file:py-1 file:text-xs file:text-on-surface"
+                                />
+                              )}
+                              {isPatchLikeWorkflowInput(inputType) && (
+                                <input
+                                  aria-label={`Upload file for ${inputId}`}
+                                  type="file"
                                   onChange={(event) =>
                                     uploadPrepareInputFile(
                                       input,
