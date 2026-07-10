@@ -1124,7 +1124,6 @@ test("executes source-flow SFMEA black-box workflow through the real workbench U
   await page.getByLabel("工作流").selectOption("source_flow_sfmea_blackbox_custom");
   await page.getByLabel("Workspace selector").selectOption({ label: `${workspaceName} · ${repo}` });
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf connect to IO submit flow");
-  await page.getByLabel("Workflow input repo_path").selectOption(repo);
   const coverageInput = page.getByLabel("Workflow input coverage_report");
   if ((await coverageInput.count()) > 0) {
     await coverageInput.fill(coveragePath);
