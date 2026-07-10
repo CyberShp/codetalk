@@ -42,7 +42,7 @@ def _json_sha256(payload: Any) -> str:
 
 _MAX_ARG_PROMPT_BYTES = 24000
 _DEFAULT_AGENT_TOTAL_TIMEOUT_SEC = 900
-_DEFAULT_AGENT_IDLE_TIMEOUT_SEC = 120.0
+_DEFAULT_AGENT_IDLE_TIMEOUT_SEC = 300.0
 
 
 def _default_agent_session_policy() -> dict[str, Any]:

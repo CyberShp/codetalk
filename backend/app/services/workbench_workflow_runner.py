@@ -4504,7 +4504,7 @@ def _effective_agent_idle_timeout_sec(
         or _positive_number(run_payload.get("idle_timeout_seconds"))
     )
     if configured is None:
-        return 120.0
+        return 300.0
     return float(configured)
 
 

@@ -1591,11 +1591,11 @@ def _agent_task_runtime_limits(provider: str) -> dict[str, Any]:
         return {}
     timeout_seconds = _positive_int(runtime.get("timeout_seconds"), default=900)
     idle_timeout_seconds = max(
-        120,
+        300,
         _positive_int(runtime.get("workflow_idle_timeout_seconds"), default=0)
         or _positive_int(runtime.get("idle_timeout_seconds"), default=0)
         or _positive_int(runtime.get("idle_complete_seconds"), default=0)
-        or 120,
+        or 300,
     )
     return {
         "timeout_seconds": timeout_seconds,
