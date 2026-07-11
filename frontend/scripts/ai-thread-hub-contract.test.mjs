@@ -39,6 +39,11 @@ test("AI thread translates persisted internal parser errors before display and e
     /cleaned\.startsWith\("模型输出达到长度上限"\)/,
     "AI thread should show the actionable truncation reason",
   );
+  assert.match(
+    threadSource,
+    /cleaned\.startsWith\("绑定工作流交付件未通过验收"\)/,
+    "AI thread should show the exact missing workflow artifact and repair action",
+  );
   assert.match(threadSource, /separator is not found/i);
   assert.match(threadSource, /publicAgentErrorText\(latestRun\.error\)/);
   assert.match(threadSource, /publicAgentErrorText\(conversation\.latest_run\.error\)/);

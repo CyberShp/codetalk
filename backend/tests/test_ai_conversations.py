@@ -5307,3 +5307,228 @@ async def test_bound_workflow_contract_reaches_builtin_and_agent_prompts_without
         "storage-test-design",
     ]
     assert merged_runtime["env"]["CODETALK_BOUND_WORKFLOW_ID"] == "thread_bound_flow"
+
+
+async def test_bound_workflow_missing_builtin_artifact_fails_closed(
+    sqlite_db,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services.ai_conversations import AIConversationStore, run_generation
+    from app.services.workflow_dsl import WorkflowStore
+
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path / "data"))
+    WorkflowStore(settings.data_path / "workbench" / "workflows.db").save_workflow({
+        "id": "builtin_required_artifact",
+        "name": "内置模型必交付件",
+        "version": 1,
+        "inputs": [],
+        "steps": [{
+            "id": "analysis",
+            "type": "agent_task",
+            "required_artifacts": ["test_design.md"],
+        }],
+        "outputs": [{
+            "id": "test_design",
+            "type": "markdown",
+            "from": "analysis",
+            "artifact": "test_design.md",
+        }],
+    })
+    await _seed_workspace(sqlite_db, "ws-bound-builtin-missing")
+    store = AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="workspace",
+        scope_id="ws-bound-builtin-missing",
+        workspace_id="ws-bound-builtin-missing",
+        title="内置模型缺失交付件",
+        initial_context={"selected_workflow_id": "builtin_required_artifact"},
+    )
+    created = await store.create_user_message_and_run(
+        conversation_id=conversation["id"],
+        content="总结模块入口",
+        references=[],
+    )
+
+    await run_generation(
+        store=store,
+        run_id=created["run"]["id"],
+        llm=ShallowCompletedTestActivityLLM(),
+    )
+
+    run = await store.get_run(created["run"]["id"])
+    assert run["status"] == "failed"
+    assert "绑定工作流交付件" in run["error"]
+    assert "test_design.md" in run["error"]
+
+
+async def test_bound_workflow_missing_agent_artifact_fails_closed(
+    sqlite_db,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services import ai_conversations
+    from app.services.workflow_dsl import WorkflowStore
+
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path / "data"))
+    WorkflowStore(settings.data_path / "workbench" / "workflows.db").save_workflow({
+        "id": "agent_required_artifact",
+        "name": "Agent 必交付件",
+        "version": 1,
+        "inputs": [],
+        "steps": [{
+            "id": "analysis",
+            "type": "agent_task",
+            "required_artifacts": ["test_design.md"],
+        }],
+        "outputs": [{
+            "id": "test_design",
+            "type": "markdown",
+            "from": "analysis",
+            "artifact": "test_design.md",
+        }],
+    })
+    await _seed_workspace(sqlite_db, "ws-bound-agent-missing")
+
+    async def fake_stream_agent_runtime(**_kwargs):
+        yield "模块分析完成：入口和异常返回已经识别。"
+
+    monkeypatch.setattr(ai_conversations, "stream_agent_runtime", fake_stream_agent_runtime)
+    monkeypatch.setattr(ai_conversations, "_agent_answer_requires_repair", lambda *_args, **_kwargs: False)
+    store = ai_conversations.AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="workspace",
+        scope_id="ws-bound-agent-missing",
+        workspace_id="ws-bound-agent-missing",
+        title="Agent 缺失交付件",
+        runtime_type="agent_runtime",
+        agent_runtime_id="fake-agent",
+        initial_context={"selected_workflow_id": "agent_required_artifact"},
+    )
+    created = await store.create_user_message_and_run(
+        conversation_id=conversation["id"],
+        content="总结模块入口",
+        references=[],
+    )
+
+    await ai_conversations.run_agent_generation(
+        store=store,
+        run_id=created["run"]["id"],
+        runtime={
+            "id": "fake-agent",
+            "name": "Fake Agent",
+            "command": "/bin/echo",
+            "args": [],
+            "prompt_transport": "stdin",
+            "output_mode": "plain",
+            "completion_mode": "process_exit",
+        },
+    )
+
+    run = await store.get_run(created["run"]["id"])
+    assert run["status"] == "failed"
+    assert "绑定工作流交付件" in run["error"]
+    assert "test_design.md" in run["error"]
+
+
+async def test_test_activity_explanations_do_not_trigger_full_artifact_gate():
+    from app.services.ai_conversations import (
+        _agent_task_requests_downloadable_artifact,
+        _requires_strict_test_activity_quality_gate,
+    )
+
+    discussion_requests = (
+        "解释这个测试设计背后的风险判断",
+        "这个测试用例为什么不合理？",
+        "补充黑盒边界条件和异常路径",
+    )
+    for request in discussion_requests:
+        assert _agent_task_requests_downloadable_artifact(request, request) is False
+        assert _requires_strict_test_activity_quality_gate(request) is False
+
+    assert _agent_task_requests_downloadable_artifact("请做 iSCSI SFMEA", "请做 iSCSI SFMEA") is True
+    assert _requires_strict_test_activity_quality_gate("请做 iSCSI SFMEA") is True
+
+
+async def test_bound_workflow_artifact_validation_checks_json_schema(
+    sqlite_db,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services.ai_conversations import (
+        AIConversationStore,
+        _enforce_bound_workflow_artifacts,
+        ai_thread_agent_artifact_dir,
+    )
+    from app.services.workflow_dsl import WorkflowStore
+
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path / "data"))
+    WorkflowStore(settings.data_path / "workbench" / "workflows.db").save_workflow({
+        "id": "schema_required_artifact",
+        "name": "Schema 必交付件",
+        "version": 1,
+        "inputs": [],
+        "steps": [{
+            "id": "analysis",
+            "type": "agent_task",
+            "required_artifacts": ["result.json"],
+        }],
+        "outputs": [{
+            "id": "result",
+            "type": "json",
+            "from": "analysis",
+            "artifact": "result.json",
+            "schema": {
+                "type": "object",
+                "required": ["cases"],
+                "properties": {"cases": {"type": "array"}},
+            },
+        }],
+    })
+    await _seed_workspace(sqlite_db, "ws-bound-schema")
+    store = AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="workspace",
+        scope_id="ws-bound-schema",
+        workspace_id="ws-bound-schema",
+        title="Schema 验收",
+        initial_context={"selected_workflow_id": "schema_required_artifact"},
+    )
+    first = await store.create_user_message_and_run(
+        conversation_id=conversation["id"],
+        content="第一次执行",
+        references=[],
+    )
+    first_dir = ai_thread_agent_artifact_dir(conversation["id"], first["run"]["id"])
+    first_dir.mkdir(parents=True, exist_ok=True)
+    (first_dir / "result.json").write_text('{"wrong": []}', encoding="utf-8")
+
+    assert await _enforce_bound_workflow_artifacts(
+        store=store,
+        run_id=first["run"]["id"],
+        conversation=conversation,
+    ) is False
+    first_run = await store.get_run(first["run"]["id"])
+    assert "缺少必填字段 cases" in first_run["error"]
+
+    second = await store.create_user_message_and_run(
+        conversation_id=conversation["id"],
+        content="第二次执行",
+        references=[],
+    )
+    second_dir = ai_thread_agent_artifact_dir(conversation["id"], second["run"]["id"])
+    second_dir.mkdir(parents=True, exist_ok=True)
+    (second_dir / "result.json").write_text('{"cases": []}', encoding="utf-8")
+    assert await _enforce_bound_workflow_artifacts(
+        store=store,
+        run_id=second["run"]["id"],
+        conversation=conversation,
+    ) is True
+    validation = json.loads(
+        (second_dir / "bound_workflow_artifact_validation.json").read_text(encoding="utf-8")
+    )
+    assert validation["status"] == "ok"
+    assert validation["accepted"] == [{"artifact": "result.json", "size": 13}]

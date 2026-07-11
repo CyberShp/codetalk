@@ -9776,7 +9776,7 @@ export function AgentWorkbenchExperience({
                   }
                   className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary"
                 >
-                  {[selectedWorkflowId, ...workflowOptions]
+                  {[...workflowOptions, selectedWorkflowId]
                     .map((item) =>
                       typeof item === "string"
                         ? { id: item, label: workflowDisplayName(item) }

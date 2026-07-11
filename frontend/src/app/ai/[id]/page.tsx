@@ -881,7 +881,8 @@ function publicAgentErrorText(value: string): string {
   }
   if (
     cleaned.startsWith("测试活动产物未通过质量门禁") ||
-    cleaned.startsWith("模型输出达到长度上限")
+    cleaned.startsWith("模型输出达到长度上限") ||
+    cleaned.startsWith("绑定工作流交付件未通过验收")
   ) {
     return cleaned;
   }

@@ -1835,6 +1835,12 @@ async def run_generation(
                 "请点击重试，或使用“代码分析 → 流程梳理 → SFMEA → 黑盒用例”工作流分步生成。",
             )
             return
+        if not await _enforce_bound_workflow_artifacts(
+            store=store,
+            run_id=run_id,
+            conversation=conversation,
+        ):
+            return
         if wants_downloadable_artifact and requires_strict_quality_gate:
             repo_path = (
                 await _conversation_repo_path(conversation, db_path=store.db_path)
@@ -2251,6 +2257,12 @@ async def run_agent_generation(
         if agent_artifact_content:
             content = agent_artifact_content
             adopted_agent_artifact = True
+        if not await _enforce_bound_workflow_artifacts(
+            store=store,
+            run_id=run_id,
+            conversation=conversation,
+        ):
+            return
         if (
             _agent_task_requests_downloadable_artifact(test_activity_context, content)
             and _requires_strict_test_activity_quality_gate(test_activity_context)
@@ -3315,6 +3327,134 @@ def _bound_workflow_action(conversation: dict[str, Any]) -> dict[str, Any] | Non
         "label": "查看绑定工作流",
         "href": f"/workbench?{urlencode({'workflow': workflow_id, 'workspace_id': workspace_id})}",
     }
+
+
+def _bound_workflow_required_artifacts(conversation: dict[str, Any]) -> list[dict[str, Any]]:
+    workflow = _selected_workflow_snapshot(conversation)
+    if not workflow:
+        return []
+    contracts: dict[str, dict[str, Any]] = {}
+    for step in workflow.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        for value in step.get("required_artifacts") or []:
+            artifact = str(value or "").strip()
+            if artifact:
+                contracts.setdefault(artifact, {"artifact": artifact})
+    for output in workflow.get("outputs") or []:
+        if not isinstance(output, dict):
+            continue
+        artifact = str(output.get("artifact") or output.get("path") or "").strip()
+        if not artifact:
+            continue
+        contract = contracts.setdefault(artifact, {"artifact": artifact})
+        contract.update({
+            "output_id": str(output.get("id") or ""),
+            "type": str(output.get("type") or ""),
+        })
+        schema = output.get("schema") or output.get("json_schema")
+        if isinstance(schema, dict):
+            contract["schema"] = schema
+    return list(contracts.values())
+
+
+def _bound_workflow_schema_errors(value: Any, schema: dict[str, Any], *, path: str = "$") -> list[str]:
+    errors: list[str] = []
+    expected = str(schema.get("type") or "").strip()
+    validators = {
+        "object": lambda item: isinstance(item, dict),
+        "array": lambda item: isinstance(item, list),
+        "string": lambda item: isinstance(item, str),
+        "number": lambda item: isinstance(item, (int, float)) and not isinstance(item, bool),
+        "integer": lambda item: isinstance(item, int) and not isinstance(item, bool),
+        "boolean": lambda item: isinstance(item, bool),
+        "null": lambda item: item is None,
+    }
+    validator = validators.get(expected)
+    if validator is not None and not validator(value):
+        return [f"{path} 类型应为 {expected}"]
+    if "enum" in schema and value not in (schema.get("enum") or []):
+        errors.append(f"{path} 不在允许值范围内")
+    if isinstance(value, dict):
+        for field in schema.get("required") or []:
+            if str(field) not in value:
+                errors.append(f"{path} 缺少必填字段 {field}")
+        properties = schema.get("properties") or {}
+        if isinstance(properties, dict):
+            for field, child_schema in properties.items():
+                if field in value and isinstance(child_schema, dict):
+                    errors.extend(
+                        _bound_workflow_schema_errors(value[field], child_schema, path=f"{path}.{field}")
+                    )
+    if isinstance(value, list) and isinstance(schema.get("items"), dict):
+        for index, item in enumerate(value):
+            errors.extend(
+                _bound_workflow_schema_errors(item, schema["items"], path=f"{path}[{index}]")
+            )
+    return errors
+
+
+async def _enforce_bound_workflow_artifacts(
+    *,
+    store: AIConversationStore,
+    run_id: str,
+    conversation: dict[str, Any],
+) -> bool:
+    contracts = _bound_workflow_required_artifacts(conversation)
+    if not contracts:
+        return True
+    artifact_root = ai_thread_agent_artifact_dir(str(conversation["id"]), run_id)
+    accepted: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+    for contract in contracts:
+        artifact = str(contract["artifact"])
+        relative = Path(artifact)
+        if relative.is_absolute() or ".." in relative.parts:
+            rejected.append({"artifact": artifact, "reason": "交付件路径不安全"})
+            continue
+        path = artifact_root / relative
+        if not path.is_file():
+            rejected.append({"artifact": artifact, "reason": "缺少必交付文件"})
+            continue
+        data = await _to_thread(path.read_bytes)
+        if not data:
+            rejected.append({"artifact": artifact, "reason": "交付文件为空"})
+            continue
+        artifact_type = str(contract.get("type") or "").lower()
+        schema = contract.get("schema")
+        parsed: Any = None
+        if path.suffix.lower() == ".json" or artifact_type == "json" or isinstance(schema, dict):
+            try:
+                parsed = json.loads(data.decode("utf-8"))
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                rejected.append({"artifact": artifact, "reason": f"JSON 格式无效: {exc}"})
+                continue
+        if isinstance(schema, dict):
+            schema_errors = _bound_workflow_schema_errors(parsed, schema)
+            if schema_errors:
+                rejected.append({"artifact": artifact, "reason": "；".join(schema_errors[:4])})
+                continue
+        accepted.append({"artifact": artifact, "size": len(data)})
+    validation = {
+        "workflow_id": str((_selected_workflow_snapshot(conversation) or {}).get("id") or ""),
+        "status": "invalid" if rejected else "ok",
+        "required_artifacts": [item["artifact"] for item in contracts],
+        "accepted": accepted,
+        "rejected": rejected,
+    }
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    await _write_json_file(artifact_root / "bound_workflow_artifact_validation.json", validation)
+    if not rejected:
+        return True
+    details = "；".join(
+        f"{item['artifact']}（{item['reason']}）" for item in rejected[:4]
+    )
+    await store.fail_run(
+        run_id,
+        f"绑定工作流交付件未通过验收：{details}。"
+        "请让执行器把声明文件写入产物目录，或在工作流设计中修正输出文件名和 schema 后重试。",
+    )
+    return False
 
 
 def _runtime_with_bound_workflow(
@@ -5226,6 +5366,7 @@ _AI_THREAD_AGENT_ARTIFACT_SUFFIX_PRIORITY = {
 _AI_THREAD_AGENT_AUDIT_ARTIFACT_NAMES = {
     "agent_invocation",
     "agent_replay_plan",
+    "bound_workflow_artifact_validation",
     "capability_manifest",
     "diagnostic",
     "diagnostics",
@@ -5485,8 +5626,10 @@ def _agent_task_requests_downloadable_artifact(user_message: str, content: str) 
     has_complete_intent = any(marker in requested for marker in complete_markers)
     has_artifact_intent = any(marker in requested for marker in artifact_markers)
     has_structured_output = sum(1 for marker in artifact_markers if marker in output) >= 2
-    if _agent_task_requires_structured_delivery(requested):
+    if _requests_full_test_activity_delivery(requested):
         return True
+    if _looks_like_test_activity_request(requested):
+        return False
     if has_complete_intent and (has_artifact_intent or has_structured_output):
         return True
     requested_groups = _agent_structured_deliverable_groups(requested)
@@ -5498,23 +5641,47 @@ def _agent_task_requests_downloadable_artifact(user_message: str, content: str) 
     return {"sfmea", "blackbox"}.issubset(requested_groups) and len(output_groups) >= 2
 
 
-def _requires_strict_test_activity_quality_gate(user_message: str) -> bool:
-    text = str(user_message or "").lower()
-    if not _looks_like_test_activity_request(text):
+def _requests_full_test_activity_delivery(text: str) -> bool:
+    requested = str(text or "").lower().strip()
+    if not _looks_like_test_activity_request(requested):
         return False
-    return _agent_task_requires_structured_delivery(text) or any(
-        marker in text
+    generation_markers = (
+        "生成", "输出", "产出", "创建", "制定", "编写", "写一份", "设计一套",
+        "给出", "列出", "请做", "做一次", "重做", "重新生成", "补齐", "完善",
+        "generate", "produce", "create", "write", "design", "regenerate",
+    )
+    discussion_markers = (
+        "解释", "为什么", "为何", "是否合理", "不合理", "评审", "审查", "点评",
+        "风险判断", "背后的", "这个", "这份", "这条", "补充", "再补", "几个",
+        "explain", "why", "review", "comment on", "discuss",
+    )
+    completeness_markers = (
+        "完整", "全部", "全量", "详细", "详尽", "可下载", "下载", "文件", "交付件",
+        "complete", "comprehensive", "detailed", "download", "artifact", "file",
+    )
+    has_generation = any(marker in requested for marker in generation_markers)
+    has_discussion = any(marker in requested for marker in discussion_markers)
+    has_completeness = any(marker in requested for marker in completeness_markers)
+    groups = _agent_structured_deliverable_groups(requested)
+    broader_deliverable = any(
+        marker in requested
         for marker in (
-            "测试策略",
-            "测试计划",
-            "覆盖率",
-            "风险报告",
-            "test strategy",
-            "test plan",
-            "coverage report",
-            "risk report",
+            "测试策略", "测试计划", "覆盖率报告", "风险报告",
+            "test strategy", "test plan", "coverage report", "risk report",
         )
     )
+    if has_discussion and not (has_generation or has_completeness):
+        return False
+    if has_completeness and (groups or broader_deliverable):
+        return True
+    if has_generation and (groups or broader_deliverable):
+        return True
+    return len(groups) >= 2 and not has_discussion
+
+
+def _requires_strict_test_activity_quality_gate(user_message: str) -> bool:
+    text = str(user_message or "").lower()
+    return _requests_full_test_activity_delivery(text)
 
 
 def _agent_structured_deliverable_groups(text: str) -> set[str]:

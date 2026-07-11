@@ -474,3 +474,12 @@ test("designer selector can reload saved custom workflows instead of listing pre
   assert.match(designerSource, /applyWorkflowLayout\(selectedDefinition\)/);
   assert.match(designerSource, /defaultWorkflowCanvasEdgeIds/);
 });
+
+test("cockpit workflow selector prefers saved labels over internal id fallback", () => {
+  assert.match(
+    designerSource,
+    /\{\[\.\.\.workflowOptions, selectedWorkflowId\]/,
+    "saved workflow options must be deduplicated before the id-only fallback",
+  );
+  assert.doesNotMatch(designerSource, /\{\[selectedWorkflowId, \.\.\.workflowOptions\]/);
+});
