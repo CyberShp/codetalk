@@ -31,6 +31,7 @@ import { api, currentApiBase } from "@/lib/api";
 import {
   buildWorkflowFromDesigner,
   mergeDesignerWorkflowWithDraft,
+  mergeDesignerWorkflowWithSpecializedDraft,
 } from "@/lib/workflow-builder.mjs";
 import { deriveRunPanelStatus } from "@/lib/run-panel-status.mjs";
 import type {
@@ -4169,6 +4170,12 @@ export function AgentWorkbenchExperience({
         .filter((group) => group.items.length > 0),
     [workflowPresets],
   );
+  const savedCustomWorkflows = useMemo(() => {
+    const presetIds = new Set(
+      workflowPresets.flatMap((preset) => [preset.id, preset.definition.id]),
+    );
+    return workflows.filter((workflow) => !presetIds.has(workflow.id));
+  }, [workflowPresets, workflows]);
 
   useEffect(() => {
     const query = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -5187,7 +5194,14 @@ export function AgentWorkbenchExperience({
     setWorkflowNodePositions(positions);
     setWorkflowNodeTitles(titles);
     setWorkflowNodeConfigs(configs);
-    setWorkflowCanvasEdges(layout.edges ?? []);
+    const defaultWorkflowCanvasEdgeIds = new Set(
+      defaultWorkflowCanvasEdges.map((edge) => edge.id),
+    );
+    setWorkflowCanvasEdges(
+      (layout.edges ?? []).filter(
+        (edge) => !defaultWorkflowCanvasEdgeIds.has(edge.id),
+      ),
+    );
     setWorkflowHiddenEdgeIds(layout.hidden_edge_ids ?? []);
     setWorkflowExtraNodes(extras);
     setWorkflowHiddenNodeIds(layout.hidden_node_ids);
@@ -5616,7 +5630,7 @@ export function AgentWorkbenchExperience({
         paletteModule.id === "agent" ||
         paletteModule.id === "output"
           ? ["画布新增节点", "已同步草稿契约"]
-          : ["画布新增节点", "仅影响画布布局"],
+          : ["画布新增节点", "连接 Agent 后进入执行契约"],
       x: position.x,
       y: position.y,
       source: "canvas",
@@ -5638,7 +5652,7 @@ export function AgentWorkbenchExperience({
         paletteModule.id === "agent" ||
         paletteModule.id === "output"
         ? `画布节点已添加: ${paletteModule.label}；已同步草稿契约。`
-        : `画布节点已添加: ${paletteModule.label}；当前只影响画布布局。`,
+        : `画布节点已添加: ${paletteModule.label}；连接到 Agent 并保存后会进入执行契约。`,
     );
     window.setTimeout(
       () => mergeWorkflowLayoutIntoJson(workflowLayoutSnapshot([...workflowCanvasNodes, node])),
@@ -6536,7 +6550,7 @@ export function AgentWorkbenchExperience({
               node.kind === "agent" ||
               node.kind === "output"
                 ? ["画布恢复节点", "已同步草稿契约"]
-                : ["画布恢复节点", "仅影响画布布局"],
+                : ["画布恢复节点", "连接 Agent 后进入执行契约"],
             x: positions[node.id].x,
             y: positions[node.id].y,
             source: "canvas",
@@ -6682,17 +6696,10 @@ export function AgentWorkbenchExperience({
     runAction("save-workflow", async () => {
       const currentDraft = parseJsonObject(workflowJson || "{}");
       const payload = workflowHasSpecializedStep(currentDraft)
-        ? {
-            ...currentDraft,
-            ui: {
-              ...((currentDraft.ui &&
-              typeof currentDraft.ui === "object" &&
-              !Array.isArray(currentDraft.ui)
-                ? currentDraft.ui
-                : {}) as Record<string, unknown>),
-              layout: workflowLayoutSnapshot(),
-            },
-          }
+        ? mergeDesignerWorkflowWithSpecializedDraft(
+            generateWorkflowFromBuilder(),
+            currentDraft,
+          )
         : mergeDesignerWorkflowWithDraft(
             generateWorkflowFromBuilder(),
             currentDraft,
@@ -6721,6 +6728,7 @@ export function AgentWorkbenchExperience({
       }
       selectedWorkflowIdRef.current = saved.id;
       setSelectedWorkflowId(saved.id);
+      setSelectedPresetId(`saved:${saved.id}`);
       hydrateBuilderFromWorkflow(saved as unknown as Record<string, unknown>);
       const warningCount = saved.audit?.warnings?.length ?? 0;
       localWorkflowDraftIdRef.current = "";
@@ -6835,14 +6843,25 @@ export function AgentWorkbenchExperience({
   };
 
   const applyPreset = () => {
+    const savedWorkflowId = selectedPresetId.startsWith("saved:")
+      ? selectedPresetId.slice("saved:".length)
+      : "";
     const preset = workflowPresets.find((item) => item.id === selectedPresetId);
-    if (!preset) return;
+    const selectedDefinition = savedWorkflowId
+      ? workflows.find((item) => item.id === savedWorkflowId) ?? null
+      : preset?.definition ?? null;
+    if (!selectedDefinition) return;
     localWorkflowDraftIdRef.current = "";
-    setWorkflowJson(pretty(preset.definition));
-    selectedWorkflowIdRef.current = preset.definition.id;
-    setSelectedWorkflowId(preset.definition.id);
-    applyWorkflowLayout(preset.definition);
-    setMessage(`已从模板库导入到当前草稿: ${workflowDisplayName(preset.definition)}`);
+    setWorkflowJson(pretty(selectedDefinition));
+    selectedWorkflowIdRef.current = selectedDefinition.id;
+    setSelectedWorkflowId(selectedDefinition.id);
+    hydrateBuilderFromWorkflow(selectedDefinition as unknown as Record<string, unknown>);
+    applyWorkflowLayout(selectedDefinition);
+    setMessage(
+      savedWorkflowId
+        ? `已载入自定义工作流: ${workflowDisplayName(selectedDefinition)}`
+        : `已从模板库导入到当前草稿: ${workflowDisplayName(selectedDefinition)}`,
+    );
   };
 
   const restoreBuiltinPresets = () =>
@@ -8315,6 +8334,15 @@ export function AgentWorkbenchExperience({
                         ))}
                       </optgroup>
                     ))}
+                    {savedCustomWorkflows.length > 0 && (
+                      <optgroup label="已保存自定义工作流">
+                        {savedCustomWorkflows.map((workflow) => (
+                          <option key={workflow.id} value={`saved:${workflow.id}`}>
+                            {workflowDisplayName(workflow)}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
                   </select>
                 ) : (
                   <span className="rounded-lg border border-amber-500/25 bg-amber-500/10 px-3 py-2 text-sm text-amber-700">
@@ -8326,7 +8354,7 @@ export function AgentWorkbenchExperience({
                   disabled={!selectedPresetId}
                   className="inline-flex items-center gap-2 rounded-lg bg-surface px-3 py-2 text-sm font-medium text-on-surface transition-colors hover:bg-surface-container-high disabled:opacity-50"
                 >
-                  从模板库导入
+                  载入所选
                 </button>
                 <button
                   onClick={restoreBuiltinPresets}

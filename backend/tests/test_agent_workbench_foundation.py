@@ -161,6 +161,73 @@ def test_workflow_dsl_rejects_duplicate_ids_and_missing_output_step():
     assert templated_source.outputs[0].source == "{{steps.discover.output}}"
 
 
+def test_workflow_validation_rejects_canvas_contract_that_is_not_executable():
+    from app.services.workflow_dsl import WorkflowValidationError, validate_workflow_definition
+
+    with pytest.raises(
+        WorkflowValidationError,
+        match="canvas input node requirements_doc is missing from workflow inputs",
+    ):
+        validate_workflow_definition({
+            "id": "fake_canvas",
+            "name": "Fake Canvas",
+            "version": 1,
+            "inputs": [],
+            "steps": [{"id": "agent_collect", "type": "agent_task"}],
+            "outputs": [],
+            "ui": {
+                "layout": {
+                    "nodes": [
+                        {
+                            "id": "input-node",
+                            "kind": "input",
+                            "source": "canvas",
+                            "config": {"id": "requirements_doc", "type": "file"},
+                        },
+                        {
+                            "id": "agent-node",
+                            "kind": "agent",
+                            "source": "canvas",
+                            "config": {"id": "agent_collect"},
+                        },
+                    ],
+                    "edges": [
+                        {"id": "edge-1", "source": "input-node", "target": "agent-node"}
+                    ],
+                }
+            },
+        })
+
+
+def test_workflow_validation_rejects_canvas_agent_edge_missing_dsl_dependency():
+    from app.services.workflow_dsl import WorkflowValidationError, validate_workflow_definition
+
+    with pytest.raises(
+        WorkflowValidationError,
+        match="canvas edge agent_a -> agent_b is missing from step dependencies",
+    ):
+        validate_workflow_definition({
+            "id": "fake_dependency",
+            "name": "Fake Dependency",
+            "version": 1,
+            "inputs": [],
+            "steps": [
+                {"id": "agent_a", "type": "agent_task"},
+                {"id": "agent_b", "type": "agent_task"},
+            ],
+            "outputs": [],
+            "ui": {
+                "layout": {
+                    "nodes": [
+                        {"id": "node-a", "kind": "agent", "source": "canvas", "config": {"id": "agent_a"}},
+                        {"id": "node-b", "kind": "agent", "source": "canvas", "config": {"id": "agent_b"}},
+                    ],
+                    "edges": [{"id": "edge-agent", "source": "node-a", "target": "node-b"}],
+                }
+            },
+        })
+
+
 def test_workflow_dsl_validates_user_defined_output_schema():
     from app.services.workflow_dsl import WorkflowValidationError, validate_workflow_definition
 
@@ -754,7 +821,7 @@ def test_agent_run_harness_uses_provider_prompt_transport_for_argv_last(
     assert execution_input["prompt_transport"] == "argv"
 
 
-def test_agent_run_harness_forces_stdin_for_large_prompt_payload(
+def test_agent_run_harness_uses_prompt_file_for_large_argv_payload(
     tmp_path, monkeypatch
 ):
     from app.config import settings
@@ -770,12 +837,13 @@ def test_agent_run_harness_forces_stdin_for_large_prompt_payload(
     artifact_dir = tmp_path / "agent-run-large-argv"
     output_file = artifact_dir / "agent_seen.json"
     script = (
-        "import json, pathlib, sys; "
-        "payload=json.load(sys.stdin); "
+        "import json, os, pathlib, sys; "
+        "payload=json.loads(pathlib.Path(os.environ['CODETALK_AGENT_PROMPT_FILE']).read_text()); "
         "pathlib.Path(sys.argv[1]).write_text(json.dumps({"
         "'bundle_id': payload['task_bundle']['task_id'], "
         "'argv_count': len(sys.argv), "
-        "'blob_len': len(payload['task_bundle']['large_context'])"
+        "'blob_len': len(payload['task_bundle']['large_context']), "
+        "'bootstrap': sys.argv[-1]"
         "}), encoding='utf-8')"
     )
     harness = AgentRunHarness(artifact_dir)
@@ -794,14 +862,77 @@ def test_agent_run_harness_forces_stdin_for_large_prompt_payload(
     seen = json.loads(output_file.read_text(encoding="utf-8"))
     assert seen == {
         "bundle_id": "task-large-argv",
-        "argv_count": 2,
+        "argv_count": 3,
         "blob_len": 70000,
+        "bootstrap": (
+            "CodeTalk 的完整用户任务过长，已写入环境变量 CODETALK_AGENT_PROMPT_FILE 指向的 UTF-8 文件。"
+            "必须先完整读取该文件，并把文件全部内容作为本轮唯一用户任务执行；不要只回复这条引导。"
+        ),
     }
     execution_input = json.loads((artifact_dir / "execution_input.json").read_text(encoding="utf-8"))
-    assert execution_input["prompt_transport"] == "stdin"
-    assert execution_input["prompt_transport_reason"] == "large_payload_forced_stdin"
+    assert execution_input["prompt_transport"] == "argv"
+    assert execution_input["prompt_transport_reason"] == "large_payload_prompt_file"
     assert execution_input["command"] == ["python", "-c", script, str(output_file)]
-    assert execution_input["process_command"][1:] == execution_input["command"][1:]
+    assert execution_input["process_command"][1:-1] == execution_input["command"][1:]
+
+
+@pytest.mark.parametrize(
+    ("provider", "prompt_transport", "expected_tokens"),
+    [
+        ("claude-code", "claude_print_arg", {"-p", "--output-format", "stream-json"}),
+        ("opencode", "opencode_run_arg", {"run", "--format", "json"}),
+    ],
+)
+def test_agent_run_harness_large_managed_prompt_keeps_cli_mode_and_uses_prompt_file(
+    tmp_path,
+    monkeypatch,
+    provider,
+    prompt_transport,
+    expected_tokens,
+):
+    from app.config import settings
+    from app.services.agent_run_harness import AgentRunHarness
+
+    capture = tmp_path / f"{provider}-capture.json"
+    shim = tmp_path / f"{provider}-shim.py"
+    shim.write_text(
+        "import json, os, pathlib, sys\n"
+        "prompt_file = pathlib.Path(os.environ['CODETALK_AGENT_PROMPT_FILE'])\n"
+        "pathlib.Path(sys.argv[1]).write_text(json.dumps({\n"
+        "  'argv': sys.argv[2:],\n"
+        "  'prompt': prompt_file.read_text(encoding='utf-8'),\n"
+        "}, ensure_ascii=False), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        settings,
+        "external_agent_custom_providers",
+        [{"id": provider, "command": sys.executable, "prompt_transport": prompt_transport}],
+    )
+    large_context = "完整用户输入" * 12000
+    harness = AgentRunHarness(tmp_path / f"run-{provider}")
+    run = harness.create_run(
+        run_id=f"large-{provider}",
+        provider=provider,
+        command=[sys.executable, str(shim), str(capture)],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf"},
+        task_bundle={"task_id": "task-large-managed", "large_context": large_context},
+        prompt_transport=prompt_transport,
+    )
+
+    executed = harness.execute_run(run.run_id, timeout_sec=10)
+
+    assert executed.status == "completed"
+    seen = json.loads(capture.read_text(encoding="utf-8"))
+    assert expected_tokens.issubset(set(seen["argv"]))
+    assert "CODETALK_AGENT_PROMPT_FILE" in " ".join(seen["argv"])
+    assert large_context in seen["prompt"]
+    assert large_context not in " ".join(seen["argv"])
+    execution_input = json.loads(
+        (harness.artifact_dir / "execution_input.json").read_text(encoding="utf-8")
+    )
+    assert execution_input["prompt_transport_reason"] == "large_payload_prompt_file"
 
 
 def test_agent_run_harness_executes_provider_health_fallback_command(

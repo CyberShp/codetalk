@@ -97,6 +97,15 @@ async def test_app_js_served(client):
     assert "[object Object]" not in resp.text
 
 
+async def test_deploy_log_announces_deployment_before_long_install_steps(client):
+    resp = await client.get("/app.js")
+    assert resp.status_code == 200
+    start_index = resp.text.index("async function startDeploy()")
+    fetch_index = resp.text.index("fetch('/api/deploy'", start_index)
+    announce_index = resp.text.index("开始部署 CodeTalk", start_index)
+    assert announce_index < fetch_index
+
+
 async def test_deploy_static_uses_cgc_not_legacy_codecompass(client):
     deploy_resp = await client.get("/deploy.html")
     app_resp = await client.get("/app.js")

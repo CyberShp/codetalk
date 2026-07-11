@@ -412,6 +412,7 @@ function resetDeployUI() {
 
 async function startDeploy() {
   resetDeployUI();
+  appendLog('info', '开始部署 CodeTalk，正在准备运行环境...');
   state.deployDone = false;
   state.hasDeployError = false;
 

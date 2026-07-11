@@ -175,6 +175,69 @@ function visibleLayout(layout) {
   return { nodes, edges };
 }
 
+function validateExecutableCanvas(nodes, edges) {
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  const customNodes = nodes.filter((node) => node.source === "canvas");
+  if (!customNodes.length) return;
+
+  const allowedTargets = {
+    input: new Set(["context", "agent"]),
+    context: new Set(["context", "agent"]),
+    agent: new Set(["agent", "output", "verify"]),
+    output: new Set(["verify"]),
+    verify: new Set(),
+  };
+  for (const edge of edges) {
+    const source = nodesById.get(edge.source);
+    const target = nodesById.get(edge.target);
+    if (!source || !target) {
+      throw new Error(`连线“${edge.id}”引用了不存在的节点，请删除后重新连接。`);
+    }
+    const targets = allowedTargets[source.kind];
+    if (!targets || !targets.has(target.kind)) {
+      throw new Error(`不支持从“${source.title}”连接到“${target.title}”，请按输入/能力 -> Agent -> 输出 -> 校验的顺序连接。`);
+    }
+  }
+
+  const outgoing = new Map(nodes.map((node) => [node.id, []]));
+  const incoming = new Map(nodes.map((node) => [node.id, []]));
+  for (const edge of edges) {
+    outgoing.get(edge.source)?.push(edge.target);
+    incoming.get(edge.target)?.push(edge.source);
+  }
+  function reachesAgent(nodeId, seen = new Set()) {
+    if (seen.has(nodeId)) return false;
+    seen.add(nodeId);
+    return (outgoing.get(nodeId) || []).some((targetId) => {
+      const target = nodesById.get(targetId);
+      return target?.kind === "agent" || (target?.kind === "context" && reachesAgent(targetId, seen));
+    });
+  }
+  for (const node of customNodes) {
+    if ((node.kind === "input" || node.kind === "context") && !reachesAgent(node.id)) {
+      throw new Error(`${node.kind === "input" ? "输入" : "能力"}节点“${node.title}”必须连接到上下文或 Agent 节点。`);
+    }
+    if (node.kind === "output" && !incoming.get(node.id)?.some((id) => nodesById.get(id)?.kind === "agent")) {
+      throw new Error(`输出节点“${node.title}”必须连接到 Agent 节点。`);
+    }
+    if (node.kind === "agent" && !(incoming.get(node.id)?.length || outgoing.get(node.id)?.length)) {
+      throw new Error(`Agent 节点“${node.title}”尚未接入执行链。`);
+    }
+  }
+
+  const visiting = new Set();
+  const visited = new Set();
+  function visit(nodeId) {
+    if (visiting.has(nodeId)) throw new Error("工作流画布存在环路，请删除造成循环的连线。");
+    if (visited.has(nodeId)) return;
+    visiting.add(nodeId);
+    for (const targetId of outgoing.get(nodeId) || []) visit(targetId);
+    visiting.delete(nodeId);
+    visited.add(nodeId);
+  }
+  for (const node of nodes) visit(node.id);
+}
+
 function incomingSources(edges, targetId) {
   return edges.filter((edge) => edge.target === targetId).map((edge) => edge.source);
 }
@@ -226,6 +289,92 @@ export function mergeDesignerWorkflowWithDraft(generatedWorkflow, draftWorkflow)
   };
 }
 
+function mergeSpecializedItems(
+  generatedItems,
+  draftItems,
+  { preserveDependencies = false, includeGeneratedItem = () => true } = {},
+) {
+  const generatedById = new Map(
+    asArray(generatedItems)
+      .filter((item) => item && typeof item === "object" && !Array.isArray(item) && item.id)
+      .map((item) => [String(item.id), item]),
+  );
+  const merged = asArray(draftItems).map((draftItem) => {
+    if (!draftItem || typeof draftItem !== "object" || Array.isArray(draftItem)) return draftItem;
+    const generatedItem = generatedById.get(String(draftItem.id || ""));
+    if (!generatedItem) return draftItem;
+    generatedById.delete(String(draftItem.id || ""));
+    const item = { ...draftItem, ...generatedItem };
+    if (preserveDependencies) {
+      const dependencies = uniqueStrings([
+        ...asArray(draftItem.depends_on),
+        ...asArray(generatedItem.depends_on),
+      ]);
+      if (dependencies.length) item.depends_on = dependencies;
+    }
+    return item;
+  });
+  return [
+    ...merged,
+    ...[...generatedById.values()].filter((item) => includeGeneratedItem(item)),
+  ];
+}
+
+export function mergeDesignerWorkflowWithSpecializedDraft(generatedWorkflow, draftWorkflow) {
+  const generated = asRecord(generatedWorkflow);
+  const draft = asRecord(draftWorkflow);
+  const generatedUi = asRecord(generated.ui);
+  const draftUi = asRecord(draft.ui);
+  const layoutNodes = asArray(asRecord(generatedUi.layout).nodes);
+  const canvasAgentIds = new Set(
+    layoutNodes
+      .filter((node) => node && node.kind === "agent" && node.source === "canvas")
+      .map((node) => nodeContractId(node, String(node.id || "agent"))),
+  );
+  const contractAgentIds = new Set(
+    layoutNodes
+      .filter((node) => node && node.kind === "agent" && node.source === "contract")
+      .map((node) => nodeContractId(node, String(node.id || "agent"))),
+  );
+  const rawDraftSteps = asArray(draft.steps);
+  const draftAgentCount = rawDraftSteps.filter((step) => step?.type === "agent_task").length;
+  const referencedDraftStepIds = new Set([
+    ...asArray(draft.outputs).map((output) => String(output?.from || output?.source || "")),
+    ...rawDraftSteps.flatMap((step) => asArray(step?.depends_on).map(String)),
+  ]);
+  const cleanedDraftSteps = rawDraftSteps.filter((step) => {
+    if (!step || step.type !== "agent_task" || draftAgentCount < 2) return true;
+    const stepId = String(step.id || "");
+    return !contractAgentIds.has(stepId) || referencedDraftStepIds.has(stepId);
+  });
+  const draftStepTypes = new Set(cleanedDraftSteps.map((step) => String(step?.type || "")));
+  const hasDraftAgent = draftStepTypes.has("agent_task");
+  const generatedSupportTypes = new Set(["evidence_validate", "report_render", "artifact_export"]);
+  return {
+    ...draft,
+    ...generated,
+    inputs: mergeSpecializedItems(generated.inputs, draft.inputs),
+    steps: mergeSpecializedItems(generated.steps, cleanedDraftSteps, {
+      preserveDependencies: true,
+      includeGeneratedItem: (item) => {
+        if (item?.type === "agent_task") {
+          return !hasDraftAgent || canvasAgentIds.has(String(item.id || ""));
+        }
+        if (generatedSupportTypes.has(String(item?.type || ""))) {
+          return !draftStepTypes.has(String(item.type));
+        }
+        return true;
+      },
+    }),
+    outputs: mergeSpecializedItems(generated.outputs, draft.outputs),
+    ui: {
+      ...draftUi,
+      ...generatedUi,
+      layout: generatedUi.layout ?? draftUi.layout,
+    },
+  };
+}
+
 export function buildWorkflowFromDesigner(options) {
   const workflowId = String(options.workflowId || "").trim();
   const workflowName = String(options.workflowName || "").trim();
@@ -242,6 +391,7 @@ export function buildWorkflowFromDesigner(options) {
   const outputLabels = asRecord(options.outputLabels);
   const layout = asRecord(options.layout);
   const { nodes, edges } = visibleLayout(layout);
+  validateExecutableCanvas(nodes, edges);
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
   const inputNodes = nodes.filter((node) => node.kind === "input");
   const canvasInputNodes = inputNodes.filter((node) => node.source === "canvas");

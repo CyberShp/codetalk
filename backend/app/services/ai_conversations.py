@@ -41,6 +41,8 @@ from app.services.test_activity_contract import (
     audit_test_activity_response,
     build_test_activity_contract,
 )
+from app.services.workflow_dsl import WorkflowStore
+from app.services.workflow_presets import get_workflow_preset
 
 logger = logging.getLogger(__name__)
 
@@ -1875,6 +1877,9 @@ async def run_generation(
             user_message=user_message["content"],
             force_artifact=_agent_task_requests_downloadable_artifact(user_message["content"], content),
         )
+        workflow_action = _bound_workflow_action(conversation)
+        if workflow_action:
+            actions = [*actions, workflow_action]
         await store.complete_run(
             run_id=run_id,
             content=final_content,
@@ -2005,7 +2010,8 @@ async def run_agent_generation(
             ),
         },
     )
-    cwd = resolve_agent_cwd(runtime, repo_path=repo_path)
+    workflow_runtime = _runtime_with_bound_workflow(runtime, conversation)
+    cwd = resolve_agent_cwd(workflow_runtime, repo_path=repo_path)
     runtime_id = str(runtime.get("id") or conversation.get("agent_runtime_id") or "").strip()
     resume_session_id = ""
     if runtime_id and str(runtime.get("session_persistence") or "none") == "resume_args":
@@ -2015,7 +2021,7 @@ async def run_agent_generation(
         )
         if session:
             resume_session_id = str(session.get("resume_session_id") or session.get("cli_session_id") or "")
-    prompt_runtime = dict(runtime)
+    prompt_runtime = dict(workflow_runtime)
     if str(runtime.get("session_persistence") or "none") == "resume_args" and not resume_session_id:
         prompt_runtime["force_prompt_history"] = True
     quality_retry_feedback = await _quality_retry_feedback_for_run(
@@ -2042,7 +2048,7 @@ async def run_agent_generation(
     invocation_manifest = _agent_thread_invocation_manifest(
         conversation=conversation,
         run_id=run_id,
-        runtime=runtime,
+        runtime=workflow_runtime,
         prompt=prompt,
         cwd=cwd,
         repo_path=repo_path,
@@ -2076,12 +2082,12 @@ async def run_agent_generation(
             artifact="agent-artifacts/capability_manifest.json",
         ),
     )
-    runtime_for_turn = dict(runtime)
+    runtime_for_turn = dict(workflow_runtime)
     runtime_env = dict(runtime_for_turn.get("env") or {})
     runtime_env["CODETALK_AGENT_ARTIFACT_DIR"] = str(agent_artifact_dir)
     runtime_for_turn["env"] = runtime_env
     for milestone in _agent_run_start_milestones(
-        runtime=runtime,
+        runtime=workflow_runtime,
         cwd=cwd,
         references=references,
         resume_session_id=resume_session_id,
@@ -2217,7 +2223,7 @@ async def run_agent_generation(
                 references=references,
                 user_message=user_message["content"],
                 previous_answer=content,
-                runtime=runtime,
+                runtime=workflow_runtime,
             )
             chunks = await consume_agent_turn(repair_prompt, latest_session_id)
             if await run_cancelled():
@@ -2296,6 +2302,9 @@ async def run_agent_generation(
             or _agent_task_requests_downloadable_artifact(user_message["content"], content),
             artifact_only=adopted_agent_artifact,
         )
+        workflow_action = _bound_workflow_action(conversation)
+        if workflow_action:
+            actions = [*actions, workflow_action]
         artifact_action = next(
             (
                 action
@@ -3230,6 +3239,123 @@ def _codex_style_answer_instruction() -> str:
     )
 
 
+def _selected_workflow_snapshot(conversation: dict[str, Any]) -> dict[str, Any] | None:
+    context = conversation.get("initial_context")
+    if not isinstance(context, dict):
+        return None
+    workflow_id = str(context.get("selected_workflow_id") or "").strip()
+    if not workflow_id:
+        return None
+    try:
+        preset = get_workflow_preset(workflow_id)
+        definition = preset.get("definition")
+        if isinstance(definition, dict):
+            return dict(definition)
+    except KeyError:
+        pass
+    try:
+        return dict(
+            WorkflowStore(settings.data_path / "workbench" / "workflows.db")
+            .get_workflow(workflow_id)
+            .raw
+        )
+    except KeyError:
+        return None
+
+
+def _bound_workflow_execution_prompt(conversation: dict[str, Any]) -> str:
+    workflow = _selected_workflow_snapshot(conversation)
+    if not workflow:
+        return ""
+    allowed_input_keys = {"id", "label", "type", "required", "resolver", "role", "schema", "json_schema"}
+    allowed_step_keys = {
+        "id", "type", "goal", "provider", "mcp_profile", "skills",
+        "skill_instructions", "required_artifacts", "depends_on",
+    }
+    allowed_output_keys = {
+        "id", "label", "type", "from", "source", "artifact", "path",
+        "schema", "json_schema", "evidence_memory", "semantic_import",
+    }
+
+    def project(items: Any, allowed: set[str]) -> list[dict[str, Any]]:
+        return [
+            {key: item[key] for key in allowed if key in item}
+            for item in items or []
+            if isinstance(item, dict)
+        ]
+
+    contract = {
+        "id": str(workflow.get("id") or ""),
+        "name": str(workflow.get("name") or ""),
+        "version": workflow.get("version", 1),
+        "inputs": project(workflow.get("inputs"), allowed_input_keys),
+        "steps": project(workflow.get("steps"), allowed_step_keys),
+        "outputs": project(workflow.get("outputs"), allowed_output_keys),
+    }
+    return "\n".join([
+        "BOUND_WORKFLOW_EXECUTION_CONTRACT:",
+        "  rule: 本线程已绑定工作流；本轮不是自由问答。必须按依赖顺序执行所有节点，并遵守每个节点声明的 MCP、skills、目标和输出契约。",
+        "  input_mapping: 将本轮用户原文完整映射到适用的文本输入；MR 链接、文件路径和输出要求不得遗漏。缺少必填文件时明确指出，禁止假装已读取。",
+        "  delivery: 所有 required_artifacts 和 outputs 都是本轮交付要求；无法生成时必须说明失败节点和可行动原因。",
+        "  workflow_json: |",
+        *[f"    {line}" for line in json.dumps(contract, ensure_ascii=False, indent=2).splitlines()],
+    ])
+
+
+def _bound_workflow_action(conversation: dict[str, Any]) -> dict[str, Any] | None:
+    context = conversation.get("initial_context")
+    if not isinstance(context, dict):
+        return None
+    workflow_id = str(context.get("selected_workflow_id") or "").strip()
+    if not workflow_id:
+        return None
+    workspace_id = _conversation_workspace_id(conversation)
+    return {
+        "id": "open_bound_workflow",
+        "label": "查看绑定工作流",
+        "href": f"/workbench?{urlencode({'workflow': workflow_id, 'workspace_id': workspace_id})}",
+    }
+
+
+def _runtime_with_bound_workflow(
+    runtime: dict[str, Any],
+    conversation: dict[str, Any],
+) -> dict[str, Any]:
+    workflow = _selected_workflow_snapshot(conversation)
+    if not workflow:
+        return dict(runtime)
+    agent_steps = [
+        step for step in workflow.get("steps") or []
+        if isinstance(step, dict) and step.get("type") == "agent_task"
+    ]
+    mcp_profiles: list[str] = []
+    skills: list[str] = []
+    for value in [runtime.get("mcp_profile"), *[step.get("mcp_profile") for step in agent_steps]]:
+        for item in str(value or "").split("+"):
+            item = item.strip()
+            if item and item not in mcp_profiles:
+                mcp_profiles.append(item)
+    skill_values = [
+        *(runtime.get("skills") or []),
+        *[skill for step in agent_steps for skill in step.get("skills") or []],
+    ]
+    for value in skill_values:
+        item = str(value or "").strip()
+        if item and item not in skills:
+            skills.append(item)
+    merged = dict(runtime)
+    merged["mcp_profile"] = "+".join(mcp_profiles)
+    merged["skills"] = skills
+    env = dict(merged.get("env") or {})
+    env.update({
+        "CODETALK_BOUND_WORKFLOW_ID": str(workflow.get("id") or ""),
+        "CODETALK_MCP_PROFILE": merged["mcp_profile"],
+        "CODETALK_SKILLS": json.dumps(skills, ensure_ascii=False),
+    })
+    merged["env"] = env
+    return merged
+
+
 def _build_prompt(
     conversation: dict[str, Any],
     messages: list[dict[str, Any]],
@@ -3280,6 +3406,7 @@ def _build_prompt(
         f"{_codex_style_answer_instruction()}\n\n"
         f"{_source_first_contract(references, user_message)}\n\n"
         f"{_test_activity_contract_prompt(user_message=test_activity_context, repo_path=_conversation_initial_repo_path(conversation))}\n\n"
+        f"{_bound_workflow_execution_prompt(conversation)}\n\n"
         f"{original_task_context}\n\n"
         f"线程范围: {conversation['scope_type']} / {conversation['scope_id']}\n"
         f"上下文引用:\n{chr(10).join(context_lines) if context_lines else '（暂无可用引用）'}"
@@ -3320,6 +3447,7 @@ def _build_agent_prompt(
         _agent_artifact_delivery_contract(user_message),
         _source_first_contract(references, user_message),
         _test_activity_contract_prompt(user_message=test_activity_context, repo_path=repo_path or _conversation_initial_repo_path(conversation)),
+        _bound_workflow_execution_prompt(conversation),
         _original_test_activity_context_prompt(
             test_activity_context,
             current_user_message=user_message,
@@ -3688,6 +3816,7 @@ def _agent_thread_invocation_manifest(
             },
         ),
         "test_activity_contract": test_activity_contract,
+        "bound_workflow": _selected_workflow_snapshot(conversation) or {},
         "artifact_contract": test_activity_contract.get("artifact_contract", {}),
         "references": {
             "count": len(references),
@@ -5192,6 +5321,7 @@ async def _prepare_assistant_delivery(
     actions: list[dict[str, Any]] = [*test_activity_actions, *_default_actions()]
     if not force_artifact and not _should_materialize_thread_artifact(content):
         return content, actions
+    safe_content = redact_agent_diagnostic_text(content)
     artifact_path = ai_thread_artifact_path(str(conversation["id"]), run_id)
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     title = str(conversation.get("title") or "AI 调查线程")
@@ -5203,7 +5333,7 @@ async def _prepare_assistant_delivery(
             f"- run_id: {run_id}",
             f"- exported_at: {_now()}",
             "",
-            content.rstrip(),
+            safe_content.rstrip(),
             "",
         ]
     )
@@ -5218,7 +5348,10 @@ async def _prepare_assistant_delivery(
         },
         *actions,
     ]
-    visible = _compact_thread_artifact_preview(content, include_body_snippets=not artifact_only)
+    visible = _compact_thread_artifact_preview(
+        safe_content,
+        include_body_snippets=not artifact_only,
+    )
     suffix = (
         "完整内容已保存为下载产物。请使用“下载完整产物”获取完整文件。"
         if artifact_only
@@ -5352,6 +5485,8 @@ def _agent_task_requests_downloadable_artifact(user_message: str, content: str) 
     has_complete_intent = any(marker in requested for marker in complete_markers)
     has_artifact_intent = any(marker in requested for marker in artifact_markers)
     has_structured_output = sum(1 for marker in artifact_markers if marker in output) >= 2
+    if _agent_task_requires_structured_delivery(requested):
+        return True
     if has_complete_intent and (has_artifact_intent or has_structured_output):
         return True
     requested_groups = _agent_structured_deliverable_groups(requested)
@@ -5367,24 +5502,19 @@ def _requires_strict_test_activity_quality_gate(user_message: str) -> bool:
     text = str(user_message or "").lower()
     if not _looks_like_test_activity_request(text):
         return False
-    strict_markers = (
-        "完整",
-        "全部",
-        "全量",
-        "详细",
-        "详尽",
-        "交付件",
-        "交付文件",
-        "输出文件",
-        "可下载",
-        "full",
-        "complete",
-        "comprehensive",
-        "detailed",
-        "deliverable",
-        "downloadable",
+    return _agent_task_requires_structured_delivery(text) or any(
+        marker in text
+        for marker in (
+            "测试策略",
+            "测试计划",
+            "覆盖率",
+            "风险报告",
+            "test strategy",
+            "test plan",
+            "coverage report",
+            "risk report",
+        )
     )
-    return any(marker in text for marker in strict_markers)
 
 
 def _agent_structured_deliverable_groups(text: str) -> set[str]:

@@ -822,7 +822,9 @@ class TestAgentRuntimes:
             "print('## 结论\\n已基于源码分析 iSCSI login。\\n\\n## 代码证据\\n- `lib/iscsi/iscsi.c`: `iscsi_login_invocation_probe`。\\n\\n## 流程梳理\\n1. initiator 发起 login。\\n2. target 校验参数。\\n3. 返回明确 login 状态。\\n\\n## SFMEA\\n| failure mode | cause | effect | detection | severity | occurrence | detection score | RPN | mitigation |\\n| login 参数拒绝不清晰 | 参数协商边界缺失 | initiator 误判重试 | 检查 Login Response 与日志 | 7 | 3 | 4 | 84 | 增加非法参数黑盒用例 |\\n\\n## 黑盒测试用例\\n1. 前置条件：target 已启动；步骤：合法 initiator login；预期结果：进入 full feature；观测点：Login Response 与 session 状态；失败诊断线索：检查 target 配置。\\n2. 前置条件：target 已启动；步骤：提交非法 CHAP 参数；预期结果：login 失败且日志可诊断；观测点：错误码、日志和连接状态；失败诊断线索：检查认证配置。')\n"
         )
 
-        from app.services.ai_conversations import ai_thread_agent_artifact_dir
+        from app.services.ai_conversations import AIConversationStore, ai_thread_agent_artifact_dir
+
+        store = AIConversationStore(sqlite_db)
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             runtime = await client.post(
@@ -866,15 +868,17 @@ class TestAgentRuntimes:
 
             for _ in range(60):
                 messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
-                items = messages.json()["items"]
-                if len(items) == 2:
+                latest = await store.latest_run(conversation["id"])
+                if latest and latest["status"] in {"completed", "failed"}:
                     break
                 await asyncio.sleep(0.1)
 
             messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
             body = messages.json()
-            assert [item["role"] for item in body["items"]] == ["user", "assistant"]
-            assert "下载完整产物" in body["items"][1]["content"]
+            assert [item["role"] for item in body["items"]] == ["user"]
+            latest = await store.latest_run(conversation["id"])
+            assert latest and latest["status"] == "failed"
+            assert "质量门禁" in latest["error"]
 
         run_id = body["items"][0]["run_id"]
         manifest_path = ai_thread_agent_artifact_dir(conversation["id"], run_id) / "agent_invocation.json"
@@ -1043,7 +1047,7 @@ class TestAgentRuntimes:
 
             posted = await client.post(
                 f"/api/ai/conversations/{conversation['id']}/messages",
-                json={"content": "分析 connect 黑盒测试"},
+                json={"content": "分析 connect 的源码行为与可观测结果"},
             )
             assert posted.status_code == 202
 
@@ -1394,7 +1398,7 @@ class TestAgentRuntimes:
         )
         created = await store.create_user_message_and_run(
             conversation_id=conversation["id"],
-            content="继续基于当前源码分析 iSCSI 登录黑盒测试",
+            content="继续基于当前源码分析 iSCSI 登录行为",
             references=[],
         )
         run_id = created["run"]["id"]
@@ -1500,7 +1504,7 @@ class TestAgentRuntimes:
         )
         created = await store.create_user_message_and_run(
             conversation_id=conversation["id"],
-            content="继续基于当前源码分析 iSCSI 登录黑盒测试，输出代码证据、流程梳理和黑盒测试用例。",
+            content="继续基于当前源码分析 iSCSI 登录行为，说明关键文件、调用顺序和异常恢复依据。",
             references=[],
         )
         run_id = created["run"]["id"]
@@ -1594,10 +1598,7 @@ class TestAgentRuntimes:
         )
         created = await store.create_user_message_and_run(
             conversation_id=conversation["id"],
-            content=(
-                "基于当前源码分析 NVMe-oF connect，输出代码证据、流程梳理、SFMEA，"
-                "并至少给出两个黑盒测试用例。"
-            ),
+            content="基于当前源码分析 NVMe-oF connect，说明关键文件、调用顺序和异常恢复依据。",
             references=[],
         )
         run_id = created["run"]["id"]
@@ -2116,7 +2117,7 @@ class TestAgentRuntimes:
 
             posted = await client.post(
                 f"/api/ai/conversations/{conversation['id']}/messages",
-                json={"content": "基于 nvmf auth 源码总结黑盒边界，不要输出源码全文"},
+                json={"content": "基于 nvmf auth 源码总结外部行为边界，不要输出源码全文"},
             )
             assert posted.status_code == 202
 
@@ -2339,7 +2340,7 @@ class TestAgentRuntimes:
             encoding="utf-8",
         )
 
-        from app.services.ai_conversations import AIConversationStore, ai_thread_artifact_path, run_agent_generation
+        from app.services.ai_conversations import AIConversationStore, run_agent_generation
 
         store = AIConversationStore(sqlite_db)
         conversation = await store.create_conversation(
@@ -2353,8 +2354,8 @@ class TestAgentRuntimes:
         created = await store.create_user_message_and_run(
             conversation_id=conversation["id"],
             content=(
-                "基于当前 SPDK 源码，分析 iSCSI login 流程，"
-                "输出代码证据、流程梳理、SFMEA 和黑盒测试用例。"
+                "基于当前 SPDK 源码分析 iSCSI login 行为，"
+                "说明关键文件、调用顺序和异常恢复依据。"
             ),
             references=[],
         )
@@ -2385,12 +2386,6 @@ class TestAgentRuntimes:
         assert "你好，有什么需要帮助" not in assistant["content"]
         assert "## 结论" in assistant["content"]
         assert "lib/iscsi/iscsi.c" in assistant["content"]
-        assert "已生成结构化产物" in assistant["content"]
-        assert "下载完整产物" in assistant["content"]
-        assert any(action["id"] == "download_run_artifact" for action in assistant["actions"])
-        artifact_text = ai_thread_artifact_path(conversation["id"], run_id).read_text(encoding="utf-8")
-        assert "黑盒测试用例" in artifact_text
-        assert "用例：非法参数 login 失败" in artifact_text
 
         events = await store.list_events_after(conversation["id"])
         diagnostics = "\n".join(
@@ -3080,7 +3075,7 @@ class TestAgentRuntimes:
         )
         created = await store.create_user_message_and_run(
             conversation_id=conversation["id"],
-            content="针对 iscsi 登录写几个黑盒用例",
+            content="说明 iSCSI 登录的外部可观测行为",
             references=[],
         )
         run_id = created["run"]["id"]
@@ -3178,7 +3173,7 @@ class TestAgentRuntimes:
         )
         created = await store.create_user_message_and_run(
             conversation_id=conversation["id"],
-            content="针对 iscsi 登录写几个黑盒用例",
+            content="说明 iSCSI 登录的外部可观测行为",
             references=[],
         )
         run_id = created["run"]["id"]
@@ -3275,7 +3270,7 @@ class TestAgentRuntimes:
         )
         created = await store.create_user_message_and_run(
             conversation_id=conversation["id"],
-            content="针对 iscsi 登录写几个黑盒用例",
+            content="说明 iSCSI 登录的外部可观测行为",
             references=[],
         )
         run_id = created["run"]["id"]
@@ -3362,7 +3357,7 @@ class TestAgentRuntimes:
         )
         created = await store.create_user_message_and_run(
             conversation_id=conversation["id"],
-            content="针对 iscsi 登录写几个黑盒用例",
+            content="说明 iSCSI 登录的外部可观测行为",
             references=[],
         )
         run_id = created["run"]["id"]
@@ -3626,7 +3621,7 @@ class TestAgentRuntimes:
         assert "## 黑盒测试用例" in artifact_text
         assert "用例：连接超时" in artifact_text
 
-    async def test_ai_thread_agent_runtime_downloads_four_piece_test_design_without_complete_word(
+    async def test_ai_thread_agent_runtime_rejects_shallow_four_piece_test_design_without_complete_word(
         self,
         sqlite_db,
         tmp_path,
@@ -3681,19 +3676,11 @@ class TestAgentRuntimes:
         )
 
         messages = await store.list_messages(conversation["id"])
-        assistant = [item for item in messages if item["role"] == "assistant"][-1]
-        assert "已生成结构化产物" in assistant["content"]
-        assert "下载完整产物" in assistant["content"]
-        assert "connect timeout" not in assistant["content"]
-        assert any(action["id"] == "download_run_artifact" for action in assistant["actions"])
-
-        artifact_text = ai_thread_artifact_path(conversation["id"], run_id).read_text(encoding="utf-8")
-        assert "## 代码证据" in artifact_text
-        assert "## 流程梳理" in artifact_text
-        assert "## SFMEA" in artifact_text
-        assert "connect timeout" in artifact_text
-        assert "## 黑盒测试用例" in artifact_text
-        assert "用例：连接超时" in artifact_text
+        run = await store.get_run(run_id)
+        assert [item["role"] for item in messages] == ["user"]
+        assert run["status"] == "failed"
+        assert "质量门禁" in run["error"]
+        assert not ai_thread_artifact_path(conversation["id"], run_id).exists()
 
     async def test_ai_thread_agent_runtime_always_downloads_adopted_short_artifact(
         self,
@@ -3805,7 +3792,7 @@ class TestAgentRuntimes:
         )
         created = await store.create_user_message_and_run(
             conversation_id=conversation["id"],
-            content="保存流程梳理和 SFMEA 两个文件",
+            content="保存两个 Markdown 分析文件并合并为下载结果",
             references=[],
         )
         run_id = created["run"]["id"]
@@ -3958,7 +3945,7 @@ class TestAgentRuntimes:
         )
         created = await store.create_user_message_and_run(
             conversation_id=conversation["id"],
-            content="保存 SFMEA 和黑盒测试用例 JSON 文件",
+            content="保存 JSON 分析结果文件并在下载前脱敏",
             references=[],
         )
         run_id = created["run"]["id"]
@@ -4648,7 +4635,7 @@ class TestAgentRuntimes:
         )
         created = await store.create_user_message_and_run(
             conversation_id=conversation["id"],
-            content="分析 SPDK connect 黑盒测试",
+            content="分析 SPDK connect 的源码行为与可观测结果",
             references=[],
         )
         run_id = created["run"]["id"]
@@ -4737,7 +4724,7 @@ class TestAgentRuntimes:
         )
         created = await store.create_user_message_and_run(
             conversation_id=conversation["id"],
-            content="针对 iSCSI 登录写几个黑盒用例",
+            content="说明 iSCSI 登录的外部可观测行为",
             references=[],
         )
         run_id = created["run"]["id"]

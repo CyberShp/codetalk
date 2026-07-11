@@ -1792,11 +1792,11 @@ export default function AIThreadPage() {
                 {selectedWorkflowHref ? (
                   <>
                     <p>
-                      已绑定工作流“{selectedWorkflowName}”。先在驾驶舱填写命名输入并运行，完成后可回到 AI 线程继续复盘。
+                      已绑定工作流“{selectedWorkflowName}”。直接下达任务时，完整输入会连同节点顺序、MCP、skills 和输出契约交给当前执行器；需要上传命名文件时可打开驾驶舱。
                     </p>
                     <Link className="ct-codex-ai__workflow-launch" href={selectedWorkflowHref}>
                       <PlayCircle size={15} />
-                      配置并运行工作流
+                      配置命名输入并运行
                     </Link>
                   </>
                 ) : (

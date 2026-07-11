@@ -54,3 +54,13 @@ export interface BuildWorkflowFromDesignerOptions {
 export function buildWorkflowFromDesigner(
   options: BuildWorkflowFromDesignerOptions,
 ): Record<string, unknown>;
+
+export function mergeDesignerWorkflowWithDraft(
+  generatedWorkflow: Record<string, unknown>,
+  draftWorkflow: Record<string, unknown>,
+): Record<string, unknown>;
+
+export function mergeDesignerWorkflowWithSpecializedDraft(
+  generatedWorkflow: Record<string, unknown>,
+  draftWorkflow: Record<string, unknown>,
+): Record<string, unknown>;

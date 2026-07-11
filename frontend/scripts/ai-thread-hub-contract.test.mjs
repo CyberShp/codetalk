@@ -17,7 +17,8 @@ test("AI thread creation can bind a workflow and the empty thread opens the real
   assert.match(source, /aria-label="线程工作流模板"/);
   assert.match(source, /selected_workflow_id/);
   assert.match(source, /selected_workflow_name/);
-  assert.match(threadSource, /配置并运行工作流/);
+  assert.match(threadSource, /完整输入会连同节点顺序、MCP、skills 和输出契约交给当前执行器/);
+  assert.match(threadSource, /配置命名输入并运行/);
   assert.match(threadSource, /\/workbench\?workflow=/);
 });
 

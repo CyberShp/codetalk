@@ -10,6 +10,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -18,7 +19,10 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
-from app.services.agent_cli_bridge import _decode as _decode_agent_cli_output
+from app.services.agent_cli_bridge import (
+    _decode as _decode_agent_cli_output,
+    _prompt_argument_or_file_bootstrap,
+)
 from app.services.agent_invocation_contract import (
     agent_invocation_artifact_event_payload,
     agent_invocation_capability_event_payload,
@@ -569,17 +573,39 @@ class AgentRunHarness:
             artifact_dir=str(self.artifact_dir),
         )
         process_command, stdin_payload_bytes, prompt_transport, prompt_transport_reason = invocation_candidates[0]
+        prompt_file_path: str | None = None
         if (
             prompt_transport not in {"stdin", "codex_exec_json"}
             and len(stdin_payload.encode("utf-8")) > _MAX_ARG_PROMPT_BYTES
         ):
-            process_command = list(launch_command)
-            stdin_payload_bytes = stdin_payload.encode("utf-8")
-            prompt_transport = "stdin"
-            prompt_transport_reason = "large_payload_forced_stdin"
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                prefix="codetalk-workflow-prompt-",
+                suffix=".json",
+                delete=False,
+            ) as prompt_file:
+                prompt_file.write(stdin_payload)
+                prompt_file_path = prompt_file.name
+            env_hints["CODETALK_AGENT_PROMPT_FILE"] = prompt_file_path
+            prompt_bootstrap = _prompt_argument_or_file_bootstrap(
+                stdin_payload,
+                prompt_file_path=prompt_file_path,
+            )
+            invocation_candidates = _agent_process_invocation_candidates_for_harness(
+                provider=str(run_payload.get("provider") or ""),
+                command=launch_command,
+                prompt=prompt_bootstrap,
+                prompt_transport=str(run_payload.get("prompt_transport") or ""),
+                artifact_dir=str(self.artifact_dir),
+            )
             invocation_candidates = [
-                (process_command, stdin_payload_bytes, prompt_transport, prompt_transport_reason)
+                (command_value, input_bytes, transport, "large_payload_prompt_file")
+                for command_value, input_bytes, transport, _reason in invocation_candidates[:1]
             ]
+            process_command, stdin_payload_bytes, prompt_transport, prompt_transport_reason = (
+                invocation_candidates[0]
+            )
         self._write_json(
             "execution_input.json",
             {
@@ -721,7 +747,7 @@ class AgentRunHarness:
             process_command = _resolve_local_process_command(candidate_command)
             stdin_payload_bytes = candidate_stdin
             prompt_transport = candidate_transport
-            if candidate_reason == "large_payload_forced_stdin":
+            if candidate_reason in {"large_payload_forced_stdin", "large_payload_prompt_file"}:
                 prompt_transport_reason = candidate_reason
             else:
                 prompt_transport_reason = (
@@ -783,6 +809,12 @@ class AgentRunHarness:
                 break
             if candidate_index >= len(invocation_candidates) - 1:
                 break
+
+        if prompt_file_path:
+            try:
+                Path(prompt_file_path).unlink(missing_ok=True)
+            except OSError:
+                pass
 
         completed_at = _now()
         duration_ms = int((datetime.now(timezone.utc) - started).total_seconds() * 1000)

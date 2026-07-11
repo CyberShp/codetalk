@@ -22,6 +22,7 @@ AGENT_FINAL_ANSWER_PREFIX = "__CODETALK_AGENT_FINAL_ANSWER__:"
 AGENT_ANSWER_DELTA_PREFIX = "__CODETALK_AGENT_ANSWER_DELTA__:"
 CHAT_TOOL_CALL_STATE_KEY = "__codetalk_chat_tool_calls__"
 AGENT_STREAM_RECORD_LIMIT = 16 * 1024 * 1024
+MAX_AGENT_ARG_PROMPT_BYTES = 24_000
 
 
 class AgentRuntimeError(RuntimeError):
@@ -82,27 +83,6 @@ async def stream_agent_runtime(
     command = _resolve_agent_command(command)
     args = _runtime_args(runtime, resume_session_id=resume_session_id)
     prompt_transport = str(runtime.get("prompt_transport") or "stdin")
-    write_prompt_to_stdin = False
-    if prompt_transport == "argv_last":
-        args = [*args, prompt]
-        stdin = asyncio.subprocess.DEVNULL
-    elif prompt_transport == "stdin":
-        stdin = asyncio.subprocess.PIPE
-        write_prompt_to_stdin = True
-    elif prompt_transport == "claude_print_arg":
-        args = _claude_print_args(args, prompt, resume_session_id=resume_session_id)
-        stdin = asyncio.subprocess.DEVNULL
-    elif prompt_transport == "codex_exec_json":
-        args = _codex_add_writable_artifact_dir(args, runtime, command=command)
-        args = _codex_exec_json_args(args, prompt, resume_session_id=resume_session_id)
-        stdin = asyncio.subprocess.PIPE
-        write_prompt_to_stdin = True
-    elif prompt_transport == "opencode_run_arg":
-        args = _opencode_run_args(args, prompt, resume_session_id=resume_session_id)
-        stdin = asyncio.subprocess.DEVNULL
-    else:
-        raise AgentRuntimeError(f"不支持的 prompt_transport: {prompt_transport}")
-
     env = _build_env(runtime)
     prompt_file_path: str | None = None
     try:
@@ -118,6 +98,30 @@ async def stream_agent_runtime(
         env["CODETALK_AGENT_PROMPT_FILE"] = prompt_file_path
     except Exception:
         prompt_file_path = None
+    prompt_argument = _prompt_argument_or_file_bootstrap(
+        prompt,
+        prompt_file_path=prompt_file_path,
+    )
+    write_prompt_to_stdin = False
+    if prompt_transport == "argv_last":
+        args = [*args, prompt_argument]
+        stdin = asyncio.subprocess.DEVNULL
+    elif prompt_transport == "stdin":
+        stdin = asyncio.subprocess.PIPE
+        write_prompt_to_stdin = True
+    elif prompt_transport == "claude_print_arg":
+        args = _claude_print_args(args, prompt_argument, resume_session_id=resume_session_id)
+        stdin = asyncio.subprocess.DEVNULL
+    elif prompt_transport == "codex_exec_json":
+        args = _codex_add_writable_artifact_dir(args, runtime, command=command)
+        args = _codex_exec_json_args(args, prompt, resume_session_id=resume_session_id)
+        stdin = asyncio.subprocess.PIPE
+        write_prompt_to_stdin = True
+    elif prompt_transport == "opencode_run_arg":
+        args = _opencode_run_args(args, prompt_argument, resume_session_id=resume_session_id)
+        stdin = asyncio.subprocess.DEVNULL
+    else:
+        raise AgentRuntimeError(f"不支持的 prompt_transport: {prompt_transport}")
     timeout = int(runtime.get("timeout_seconds") or 120)
     hard_timeout = max(3600, timeout * 4)
     isolate_process_group = os.name != "nt"
@@ -372,6 +376,19 @@ def _runtime_args(runtime: dict[str, Any], *, resume_session_id: str | None = No
         item.replace("{session_id}", session_id).replace("{resume_session_id}", session_id)
         for item in resume_args
     ]
+
+
+def _prompt_argument_or_file_bootstrap(prompt: str, *, prompt_file_path: str | None) -> str:
+    if len(str(prompt or "").encode("utf-8")) <= MAX_AGENT_ARG_PROMPT_BYTES:
+        return prompt
+    if not prompt_file_path:
+        raise AgentRuntimeError(
+            "Agent 输入超过命令行安全上限，但临时任务文件创建失败。请检查临时目录权限后重试。"
+        )
+    return (
+        "CodeTalk 的完整用户任务过长，已写入环境变量 CODETALK_AGENT_PROMPT_FILE 指向的 UTF-8 文件。"
+        "必须先完整读取该文件，并把文件全部内容作为本轮唯一用户任务执行；不要只回复这条引导。"
+    )
 
 
 def _claude_print_args(

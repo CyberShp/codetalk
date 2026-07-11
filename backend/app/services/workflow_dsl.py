@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -212,6 +213,13 @@ def validate_workflow_definition(payload: dict[str, Any]) -> WorkflowDefinition:
         if output.source and _is_plain_step_reference(output.source) and output.source not in seen_steps:
             raise WorkflowValidationError(f"unknown workflow output source step: {output.source}")
 
+    _validate_canvas_execution_contract(
+        payload,
+        input_ids=seen_inputs,
+        step_ids=seen_steps,
+        output_ids=seen_outputs,
+    )
+
     return WorkflowDefinition(
         id=workflow_id,
         name=name,
@@ -221,6 +229,120 @@ def validate_workflow_definition(payload: dict[str, Any]) -> WorkflowDefinition:
         outputs=outputs,
         raw=dict(payload),
     )
+
+
+def _validate_canvas_execution_contract(
+    payload: dict[str, Any],
+    *,
+    input_ids: set[str],
+    step_ids: set[str],
+    output_ids: set[str],
+) -> None:
+    ui = payload.get("ui")
+    if not isinstance(ui, dict):
+        return
+    layout = ui.get("layout")
+    if not isinstance(layout, dict):
+        return
+    raw_nodes = layout.get("nodes") or []
+    raw_edges = layout.get("edges") or []
+    if not isinstance(raw_nodes, list) or not isinstance(raw_edges, list):
+        raise WorkflowValidationError("workflow canvas nodes and edges must be lists")
+    hidden_nodes = {str(value) for value in layout.get("hidden_node_ids") or []}
+    hidden_edges = {str(value) for value in layout.get("hidden_edge_ids") or []}
+    step_by_id = {
+        str(item.get("id") or ""): item
+        for item in payload.get("steps") or []
+        if isinstance(item, dict) and str(item.get("id") or "")
+    }
+    output_by_id = {
+        str(item.get("id") or ""): item
+        for item in payload.get("outputs") or []
+        if isinstance(item, dict) and str(item.get("id") or "")
+    }
+    nodes: dict[str, dict[str, Any]] = {}
+    for item in raw_nodes:
+        if not isinstance(item, dict):
+            raise WorkflowValidationError("workflow canvas node must be an object")
+        node_id = str(item.get("id") or "").strip()
+        if not node_id or node_id in hidden_nodes:
+            continue
+        if node_id in nodes:
+            raise WorkflowValidationError(f"duplicate workflow canvas node id: {node_id}")
+        nodes[node_id] = item
+
+    for node_id, node in nodes.items():
+        if str(node.get("source") or "") != "canvas":
+            continue
+        config = node.get("config") if isinstance(node.get("config"), dict) else {}
+        contract_id = _safe_canvas_contract_id(config.get("id") or node_id)
+        kind = str(node.get("kind") or "context")
+        expected = input_ids if kind == "input" else step_ids if kind == "agent" else output_ids if kind == "output" else None
+        if expected is not None and contract_id not in expected:
+            raise WorkflowValidationError(
+                f"canvas {kind} node {contract_id} is missing from workflow "
+                f"{'inputs' if kind == 'input' else 'steps' if kind == 'agent' else 'outputs'}"
+            )
+
+    adjacency: dict[str, list[str]] = {node_id: [] for node_id in nodes}
+    for item in raw_edges:
+        if not isinstance(item, dict):
+            raise WorkflowValidationError("workflow canvas edge must be an object")
+        edge_id = str(item.get("id") or "")
+        if edge_id in hidden_edges:
+            continue
+        source = str(item.get("source") or "").strip()
+        target = str(item.get("target") or "").strip()
+        if source not in nodes or target not in nodes:
+            raise WorkflowValidationError(f"workflow canvas edge {edge_id or '<unnamed>'} references an unknown node")
+        adjacency[source].append(target)
+        source_node = nodes[source]
+        target_node = nodes[target]
+        if str(source_node.get("source") or "") != "canvas" or str(target_node.get("source") or "") != "canvas":
+            continue
+        source_config = source_node.get("config") if isinstance(source_node.get("config"), dict) else {}
+        target_config = target_node.get("config") if isinstance(target_node.get("config"), dict) else {}
+        source_contract_id = _safe_canvas_contract_id(source_config.get("id") or source)
+        target_contract_id = _safe_canvas_contract_id(target_config.get("id") or target)
+        source_kind = str(source_node.get("kind") or "context")
+        target_kind = str(target_node.get("kind") or "context")
+        if source_kind == "agent" and target_kind == "agent":
+            dependencies = {
+                str(value) for value in step_by_id.get(target_contract_id, {}).get("depends_on") or []
+            }
+            if source_contract_id not in dependencies:
+                raise WorkflowValidationError(
+                    f"canvas edge {source_contract_id} -> {target_contract_id} is missing from step dependencies"
+                )
+        if source_kind == "agent" and target_kind == "output":
+            output = output_by_id.get(target_contract_id, {})
+            output_source = str(output.get("from") or output.get("source") or "")
+            if output_source != source_contract_id:
+                raise WorkflowValidationError(
+                    f"canvas edge {source_contract_id} -> {target_contract_id} is missing from output source"
+                )
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(node_id: str) -> None:
+        if node_id in visiting:
+            raise WorkflowValidationError("workflow canvas contains a cycle")
+        if node_id in visited:
+            return
+        visiting.add(node_id)
+        for target in adjacency.get(node_id, []):
+            visit(target)
+        visiting.remove(node_id)
+        visited.add(node_id)
+
+    for node_id in nodes:
+        visit(node_id)
+
+
+def _safe_canvas_contract_id(value: Any) -> str:
+    text = re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "").strip()).strip("_")
+    return text or "node"
 
 
 def audit_workflow_definition(payload: dict[str, Any]) -> dict[str, Any]:

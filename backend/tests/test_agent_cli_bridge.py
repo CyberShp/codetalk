@@ -1,6 +1,7 @@
 from app.services.agent_cli_bridge import (
     _codex_add_writable_artifact_dir,
     _looks_like_unattended_permission_request,
+    _prompt_argument_or_file_bootstrap,
     _resolve_agent_command,
     clean_agent_output_text,
 )
@@ -39,6 +40,29 @@ def test_codex_transport_shim_does_not_receive_codex_only_add_dir_flag():
     )
 
     assert "--add-dir" not in args
+
+
+def test_large_cli_prompt_uses_prompt_file_bootstrap_without_copying_payload():
+    prompt = "完整用户任务\n" + ("证据与约束" * 5000)
+
+    transported = _prompt_argument_or_file_bootstrap(
+        prompt,
+        prompt_file_path="/tmp/codetalk-agent-prompt.md",
+    )
+
+    assert "CODETALK_AGENT_PROMPT_FILE" in transported
+    assert "/tmp/codetalk-agent-prompt.md" not in transported
+    assert prompt not in transported
+    assert len(transported.encode("utf-8")) < 1000
+
+
+def test_small_cli_prompt_remains_the_direct_argument():
+    prompt = "读取工作区并回答"
+
+    assert _prompt_argument_or_file_bootstrap(
+        prompt,
+        prompt_file_path="/tmp/codetalk-agent-prompt.md",
+    ) == prompt
 
 
 def test_agent_output_cleaning_repairs_local_cjk_mojibake_without_touching_normal_text():

@@ -1,10 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 import {
   buildWorkflowFromDesigner,
   mergeDesignerWorkflowWithDraft,
+  mergeDesignerWorkflowWithSpecializedDraft,
 } from "../src/lib/workflow-builder.mjs";
+
+const designerSource = readFileSync(
+  new URL("../src/app/workbench/agent-workbench-experience.tsx", import.meta.url),
+  "utf8",
+);
 
 test("workflow designer canvas nodes and edges materialize into executable DSL", () => {
   const workflow = buildWorkflowFromDesigner({
@@ -71,6 +78,32 @@ test("workflow designer canvas nodes and edges materialize into executable DSL",
   assert.equal(workflow.outputs.find((output) => output.id === "cases").from, "agent_review");
   assert.ok(workflow.steps.some((step) => step.type === "evidence_validate"));
   assert.equal(workflow.ui.layout.nodes.length, 6);
+});
+
+test("workflow designer accepts input through source context before the agent", () => {
+  const workflow = buildWorkflowFromDesigner({
+    workflowId: "context_chain",
+    workflowName: "Context Chain",
+    provider: "claude-code",
+    goal: "先构建上下文再分析",
+    inputSpec: "analysis_target:free_text",
+    outputSpec: "report:markdown=report.md",
+    artifacts: "report.md",
+    layout: {
+      nodes: [
+        { id: "input", kind: "input", title: "输入", source: "canvas", config: { id: "analysis_target" } },
+        { id: "context", kind: "context", title: "源码上下文", source: "canvas" },
+        { id: "agent", kind: "agent", title: "Agent", source: "canvas" },
+        { id: "report", kind: "output", title: "报告", source: "canvas" },
+      ],
+      edges: [
+        { id: "e1", source: "input", target: "context" },
+        { id: "e2", source: "context", target: "agent" },
+        { id: "e3", source: "agent", target: "report" },
+      ],
+    },
+  });
+  assert.equal(workflow.steps.filter((step) => step.type === "agent_task").length, 1);
 });
 
 test("workflow designer uses per-node config for inputs agents mcp skills and outputs", () => {
@@ -334,4 +367,110 @@ test("workflow designer save preserves advanced JSON DSL extensions while applyi
   assert.equal(merged.outputs[0].x_download_group, "交付件");
   assert.deepEqual(merged.ui.collapsed_panels, ["advanced-json"]);
   assert.equal(merged.ui.layout.nodes[0].id, "agent-task");
+});
+
+test("workflow designer rejects cycles instead of saving a non-executable canvas", () => {
+  assert.throws(
+    () => buildWorkflowFromDesigner({
+      workflowId: "cycle_flow",
+      workflowName: "Cycle Flow",
+      provider: "claude-code",
+      goal: "不应保存环路",
+      inputSpec: "requirements:file",
+      outputSpec: "report:markdown=report.md",
+      artifacts: "report.md",
+      layout: {
+        nodes: [
+          { id: "requirements", kind: "input", title: "需求", source: "canvas" },
+          { id: "agent_a", kind: "agent", title: "Agent A", source: "canvas" },
+          { id: "agent_b", kind: "agent", title: "Agent B", source: "canvas" },
+          { id: "report", kind: "output", title: "报告", source: "canvas" },
+        ],
+        edges: [
+          { id: "e1", source: "requirements", target: "agent_a" },
+          { id: "e2", source: "agent_a", target: "agent_b" },
+          { id: "e3", source: "agent_b", target: "agent_a" },
+          { id: "e4", source: "agent_b", target: "report" },
+        ],
+      },
+    }),
+    /工作流画布存在环路/,
+  );
+});
+
+test("workflow designer rejects disconnected custom outputs with an actionable message", () => {
+  assert.throws(
+    () => buildWorkflowFromDesigner({
+      workflowId: "disconnected_output",
+      workflowName: "Disconnected Output",
+      provider: "claude-code",
+      goal: "输出必须接到 Agent",
+      inputSpec: "requirements:file",
+      outputSpec: "report:markdown=report.md",
+      artifacts: "report.md",
+      layout: {
+        nodes: [
+          { id: "requirements", kind: "input", title: "需求", source: "canvas" },
+          { id: "agent", kind: "agent", title: "Agent", source: "canvas" },
+          { id: "report", kind: "output", title: "报告", source: "canvas" },
+        ],
+        edges: [{ id: "e1", source: "requirements", target: "agent" }],
+      },
+    }),
+    /输出节点“报告”必须连接到 Agent 节点/,
+  );
+});
+
+test("specialized workflows keep local steps while canvas contracts become executable", () => {
+  const generated = buildWorkflowFromDesigner({
+    workflowId: "specialized_canvas",
+    workflowName: "Specialized Canvas",
+    provider: "claude-code",
+    goal: "保留本地步骤并执行新增输入",
+    inputSpec: "analysis_target:free_text",
+    outputSpec: "report:markdown=report.md",
+    artifacts: "report.md",
+    layout: {
+      nodes: [
+        { id: "inputs", kind: "input", title: "输入", source: "contract" },
+        { id: "agent-task", kind: "agent", title: "Agent", source: "contract", config: { id: "agent_collect" } },
+        {
+          id: "mr-node",
+          kind: "input",
+          title: "MR 链接",
+          source: "canvas",
+          config: { id: "mr_link_rc", type: "mr_link", resolver: "agent_mcp", label: "MR 链接" },
+        },
+      ],
+      edges: [{ id: "e-mr", source: "mr-node", target: "agent-task" }],
+    },
+  });
+  const draft = {
+    id: "specialized_canvas",
+    name: "Specialized Canvas",
+    version: 3,
+    inputs: [{ id: "analysis_target", type: "free_text", required: true }],
+    steps: [
+      { id: "discover", type: "local_scope_discover" },
+      { id: "agent_collect", type: "agent_task", depends_on: ["discover"] },
+    ],
+    outputs: [{ id: "report", type: "markdown", from: "agent_collect", artifact: "report.md" }],
+    ui: { layout: { nodes: [], edges: [] } },
+  };
+
+  const merged = mergeDesignerWorkflowWithSpecializedDraft(generated, draft);
+
+  assert.deepEqual(merged.inputs.map((item) => item.id), ["analysis_target", "mr_link_rc"]);
+  assert.ok(merged.steps.some((step) => step.id === "discover" && step.type === "local_scope_discover"));
+  assert.deepEqual(merged.steps.find((step) => step.id === "agent_collect").depends_on, ["discover"]);
+  assert.equal(merged.steps.some((step) => step.id === "agent_task"), false);
+  assert.ok(merged.ui.layout.nodes.some((node) => node.id === "mr-node"));
+});
+
+test("designer selector can reload saved custom workflows instead of listing presets only", () => {
+  assert.match(designerSource, /已保存自定义工作流/);
+  assert.match(designerSource, /saved:\$\{workflow\.id\}/);
+  assert.match(designerSource, /载入所选/);
+  assert.match(designerSource, /applyWorkflowLayout\(selectedDefinition\)/);
+  assert.match(designerSource, /defaultWorkflowCanvasEdgeIds/);
 });

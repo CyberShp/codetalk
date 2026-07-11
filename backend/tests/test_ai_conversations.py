@@ -2925,7 +2925,7 @@ class TestAIConversationsAPI:
 
             posted = await client.post(
                 f"/api/ai/conversations/{conversation['id']}/messages",
-                json={"content": "这个报告里的测试设计还缺什么？"},
+                json={"content": "这个报告里的项目背景还缺什么？"},
             )
             assert posted.status_code == 202
             payload = posted.json()
@@ -3816,7 +3816,7 @@ class TestAIConversationsAPI:
             assert "SFMEA 风险 3" in artifact_text
             assert "TC-09" in artifact_text
 
-    async def test_source_evidence_blackbox_request_materializes_downloadable_artifact(
+    async def test_shallow_source_evidence_blackbox_request_is_rejected_by_quality_gate(
         self,
         sqlite_db,
         monkeypatch,
@@ -3849,27 +3849,17 @@ class TestAIConversationsAPI:
             )
             assert posted.status_code == 202
             for _ in range(60):
-                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
-                body = messages.json()
-                if len(body["items"]) == 2:
+                current = await client.get(f"/api/ai/conversations/{conversation['id']}")
+                current_body = current.json()
+                if current_body.get("latest_run", {}).get("status") == "failed":
                     break
                 await asyncio.sleep(0.05)
             else:
-                pytest.fail("assistant message was not generated")
+                pytest.fail("shallow black-box artifact was not rejected")
 
-            assistant = body["items"][1]
-            assert "已保存为下载产物" in assistant["content"]
-            assert "Login Response 拒绝" not in assistant["content"]
-            download_action = next(
-                action for action in assistant["actions"] if action["id"] == "download_run_artifact"
-            )
-            artifact = await client.get(download_action["href"])
-            assert artifact.status_code == 200
-            artifact_text = artifact.text
-            assert "# 短黑盒产物线程" in artifact_text
-            assert "## 代码证据" in artifact_text
-            assert "## 黑盒测试用例" in artifact_text
-            assert "TC-02 CHAP 失败" in artifact_text
+            assert "质量门禁" in current_body["latest_run"]["error"]
+            messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+            assert [item["role"] for item in messages.json()["items"]] == ["user"]
 
     async def test_legacy_source_blackbox_message_backfills_downloadable_artifact_on_read(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
@@ -5159,3 +5149,161 @@ async def test_builtin_test_activity_rejects_shallow_completed_output(
     assert rejected_path.exists()
     assert "已完成 iSCSI login 测试设计" in rejected_path.read_text(encoding="utf-8")
     assert not (tmp_path / conversation["id"] / f"{created['run']['id']}.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_downloadable_assistant_artifact_redacts_secrets_before_write(
+    tmp_path,
+    monkeypatch,
+):
+    from app.services import ai_conversations
+
+    artifact_path = tmp_path / "assistant-output.md"
+    monkeypatch.setattr(
+        ai_conversations,
+        "ai_thread_artifact_path",
+        lambda _conversation_id, _run_id: artifact_path,
+    )
+    secret = "sk-review-secret-1234567890"
+
+    visible, actions = await ai_conversations._prepare_assistant_delivery(
+        run_id="run-secret-download",
+        conversation={"id": "conv-secret-download", "title": "安全导出"},
+        content=f"# 报告\n\nAuthorization: Bearer bearer-review-secret\napi_key={secret}",
+        user_message="请输出可下载测试设计",
+        force_artifact=True,
+    )
+
+    downloaded = artifact_path.read_text(encoding="utf-8")
+    assert secret not in downloaded
+    assert "bearer-review-secret" not in downloaded
+    assert "<redacted>" in downloaded
+    assert secret not in visible
+    assert any(action["id"] == "download_run_artifact" for action in actions)
+
+
+@pytest.mark.asyncio
+async def test_structured_test_activity_without_completeness_adjective_still_runs_quality_gate(
+    sqlite_db,
+    tmp_path,
+    monkeypatch,
+):
+    from app.services import ai_conversations
+    from app.services.ai_conversations import AIConversationStore
+
+    monkeypatch.setattr(
+        ai_conversations,
+        "ai_thread_artifact_path",
+        lambda conversation_id, run_id: tmp_path / conversation_id / f"{run_id}.md",
+    )
+    store = AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="freeform",
+        scope_id="global",
+        workspace_id="global",
+        title="普通措辞也必须验收",
+        initial_context={"repo_path": str(tmp_path / "spdk")},
+    )
+    created = await store.create_user_message_and_run(
+        conversation_id=conversation["id"],
+        content="请为 iSCSI Login 生成 SFMEA 和黑盒测试用例",
+        references=[],
+    )
+
+    await ai_conversations.run_generation(
+        store=store,
+        run_id=created["run"]["id"],
+        llm=ShallowCompletedTestActivityLLM(),
+    )
+
+    run = await store.get_run(created["run"]["id"])
+    assert run["status"] == "failed"
+    assert "质量门禁" in run["error"]
+    assert not (tmp_path / conversation["id"] / f"{created['run']['id']}.md").exists()
+
+
+async def test_bound_workflow_contract_reaches_builtin_and_agent_prompts_without_losing_user_text(
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services.ai_conversations import (
+        _build_agent_prompt,
+        _build_prompt,
+        _runtime_with_bound_workflow,
+    )
+    from app.services.workflow_dsl import WorkflowStore
+
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path / "data"))
+    WorkflowStore(settings.data_path / "workbench" / "workflows.db").save_workflow({
+        "id": "thread_bound_flow",
+        "name": "线程绑定测试活动",
+        "version": 1,
+        "inputs": [
+            {"id": "analysis_target", "type": "long_text", "required": True},
+            {"id": "mr_link", "type": "mr_link", "required": False, "resolver": "agent_mcp"},
+        ],
+        "steps": [
+            {
+                "id": "source_analysis",
+                "type": "agent_task",
+                "provider": "agent-runtime:codex",
+                "mcp_profile": "gitnexus+cgc",
+                "skills": ["source-evidence-first", "storage-test-design"],
+                "goal": "先读源码，再完成测试设计",
+                "required_artifacts": ["test_design.md"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "test_design",
+                "type": "markdown",
+                "from": "source_analysis",
+                "artifact": "test_design.md",
+            }
+        ],
+    })
+    conversation = {
+        "id": "conv-bound-flow",
+        "title": "绑定工作流线程",
+        "scope_type": "workspace",
+        "scope_id": "ws-spdk",
+        "workspace_id": "ws-spdk",
+        "initial_context": {
+            "selected_workflow_id": "thread_bound_flow",
+            "selected_workflow_name": "线程绑定测试活动",
+        },
+    }
+    user_text = "第一行：分析 iSCSI login\n第二行：MR https://example.test/mr/42\n第三行：输出必须含错误恢复。"
+
+    builtin_prompt = "\n".join(
+        item["content"]
+        for item in _build_prompt(conversation, [], [], user_text)
+    )
+    agent_prompt = _build_agent_prompt(
+        conversation,
+        [],
+        [],
+        user_text,
+        {"id": "codex", "name": "Codex", "completion_mode": "process_exit"},
+    )
+    merged_runtime = _runtime_with_bound_workflow(
+        {"id": "codex", "mcp_profile": "existing", "skills": ["base-skill"]},
+        conversation,
+    )
+
+    for prompt in (builtin_prompt, agent_prompt):
+        assert user_text in prompt
+        assert "BOUND_WORKFLOW_EXECUTION_CONTRACT" in prompt
+        assert "source_analysis" in prompt
+        assert "gitnexus+cgc" in prompt
+        assert "source-evidence-first" in prompt
+        assert "test_design.md" in prompt
+        assert "按依赖顺序执行所有节点" in prompt
+    assert merged_runtime["mcp_profile"] == "existing+gitnexus+cgc"
+    assert merged_runtime["skills"] == [
+        "base-skill",
+        "source-evidence-first",
+        "storage-test-design",
+    ]
+    assert merged_runtime["env"]["CODETALK_BOUND_WORKFLOW_ID"] == "thread_bound_flow"
