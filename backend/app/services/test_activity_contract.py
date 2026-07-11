@@ -193,6 +193,40 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"(?:status[- ]?detail\s*[:=]?\s*)?`?0x02`?.{0,80}(?:表示|是|means).{0,40}(?:authorization failure|授权失败).{0,100}(?:不是|并非|不能|不应|not).{0,50}(?:参数(?:解析|协商)?失败|parameter)",
                 ],
             },
+            {
+                "id": "iscsi_param_bounds_checked",
+                "assertion": (
+                    "iscsi_parse_param 使用有界 strnlen、memchr 以及 key/value 长度上限；"
+                    "不能把“缺少边界检查/必然越界”写成已确认缺陷。未经验证只能标成假设。"
+                ),
+                "evidence": ["lib/iscsi/param.c::iscsi_parse_param"],
+                "conflict_patterns": [
+                    r"iscsi_parse_param(?:s)?.{0,180}(?:未(?:做|进行|对).{0,40}(?:边界|长度)检查|写入越界|缓冲区溢出)",
+                    r"(?:缓冲区溢出|写入越界).{0,180}iscsi_parse_param(?:s)?",
+                ],
+                "correction_patterns": [
+                    r"(?:假设|若|如果|可能|潜在|待验证|需核验|尚未确认|hypothes).{0,180}(?:边界|越界|溢出)",
+                ],
+            },
+            {
+                "id": "iscsi_unverified_cleanup_or_lock_defect",
+                "assertion": (
+                    "SFMEA 可以分析清理或并发失效假设，但在没有具体错误路径证据时，"
+                    "不能断言析构未调用或共享配置未加锁；必须明确标注为待验证假设。"
+                ),
+                "evidence": [
+                    "lib/iscsi/conn.c::_iscsi_conn_destruct",
+                    "lib/iscsi/iscsi.c::iscsi_op_login_session_discovery_chap",
+                ],
+                "conflict_patterns": [
+                    r"_iscsi_conn_destruct.{0,160}未.{0,40}(?:调用|执行)",
+                    r"(?:未.{0,40}(?:调用|执行)).{0,160}_iscsi_conn_destruct",
+                    r"(?:g_iscsi|共享数据).{0,160}(?:未加锁|没有锁|无锁保护)",
+                ],
+                "correction_patterns": [
+                    r"(?:假设|若|如果|可能|潜在|待验证|需核验|尚未确认|hypothes).{0,200}(?:未.{0,40}(?:调用|执行)|未加锁|没有锁|无锁保护)",
+                ],
+            },
         ],
     ),
     "nvmeof_transport": _profile(

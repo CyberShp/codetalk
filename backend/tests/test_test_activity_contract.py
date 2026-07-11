@@ -768,6 +768,41 @@ def test_iscsi_professional_constraints_accept_explicit_fact_corrections(tmp_pat
     assert conflicts == []
 
 
+def test_iscsi_professional_constraints_reject_unverified_defect_assertions(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login SFMEA",
+        repo_path=str(repo),
+        user_requirements="输出完整测试设计",
+    )
+
+    audit = audit_test_activity_response(
+        content=(
+            "## SFMEA\n\n"
+            "`iscsi_parse_params` 未对超长 key 或 value 进行边界检查，导致缓冲区溢出。\n"
+            "登录失败路径中 `_iscsi_conn_destruct` 未被调用，造成连接泄漏。\n"
+            "多个 Initiator 访问共享数据 `g_iscsi` 未加锁，必然产生资源竞争。"
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    conflicts = [
+        issue for issue in audit["issues"]
+        if issue["code"] == "professional_fact_conflict"
+    ]
+    assert {issue["constraint_id"] for issue in conflicts} == {
+        "iscsi_param_bounds_checked",
+        "iscsi_unverified_cleanup_or_lock_defect",
+    }
+
+
 def test_combined_response_ignores_glob_when_concrete_evidence_exists(tmp_path):
     from app.services.test_activity_contract import (
         audit_test_activity_response,
