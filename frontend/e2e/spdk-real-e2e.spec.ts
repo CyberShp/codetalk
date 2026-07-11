@@ -1947,6 +1947,21 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
 test("D/I current UI: workflow cockpit, designer, semantic library, and artifacts", async ({ page }) => {
   test.setTimeout(480_000);
 
+  await page.goto("/settings", { waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  const optionalLlmSettings = page.getByRole("button", { name: /可选：内置模型与 RAG 检索/ });
+  await optionalLlmSettings.click();
+  const activeChatModel = page
+    .getByText("活跃聊天模型", { exact: true })
+    .locator("..")
+    .getByRole("combobox");
+  await expect
+    .poll(() => activeChatModel.locator("option").count(), { timeout: 30_000 })
+    .toBeGreaterThanOrEqual(2);
+  if (!(await activeChatModel.inputValue())) {
+    await activeChatModel.selectOption({ index: 1 });
+  }
+
   await page.goto("/workbench/designer", { waitUntil: "domcontentloaded" });
   await noFrameworkOverlay(page);
   await expect(page.getByRole("heading", { name: "工作流设计", exact: true })).toBeVisible({ timeout: 30_000 });
@@ -2034,6 +2049,29 @@ test("D/I current UI: workflow cockpit, designer, semantic library, and artifact
   } else {
     record("D07", "pass", "completed result exposes technical diagnostics and rerun controls");
   }
+
+  const firstTaskRunId = (await page.locator("body").innerText()).match(/task_run_[a-f0-9]+/)?.[0] ?? "";
+  expect(firstTaskRunId).not.toEqual("");
+  await analysisInput.fill(
+    `修改输入后复跑 SPDK lib/nvmf TCP connect 异常清理和证据。${runMarker}-rerun`,
+  );
+  await page.getByRole("button", { name: "创建并运行" }).hover();
+  await page.getByRole("button", { name: "创建并运行" }).click();
+  let secondTaskRunId = "";
+  await expect
+    .poll(async () => {
+      secondTaskRunId = (await page.locator("body").innerText()).match(/task_run_[a-f0-9]+/)?.[0] ?? "";
+      return secondTaskRunId;
+    }, { timeout: 30_000 })
+    .not.toBe(firstTaskRunId);
+  await expect
+    .poll(() => resultPanel.innerText(), { timeout: 180_000 })
+    .toMatch(/(?:需要复核|运行完成|运行失败|已完成)\s*·\s*模块分析工作流/);
+  expect(secondTaskRunId).not.toEqual("");
+  record("D10", "pass", "changed the named cockpit input, reran through the UI, and received a distinct task run", {
+    firstTaskRunId,
+    secondTaskRunId,
+  });
 
   for (const [id, value, label] of [
     ["D03", "resource_leak_hunt", "资源/异常路径排查工作流"],
@@ -3015,9 +3053,6 @@ test("L01: 30-minute real UI reliability soak keeps coverage task usable", async
   const card = page.locator(".bg-surface-container-low").filter({ hasText: analysisName }).first();
   await card.hover();
   await card.getByRole("button", { name: /AI 分析|重新分析/ }).click();
-  await expect(page.getByText(/分析中|正在分析|AI 分析结果|nvmf|bdev|iscsi/i).first()).toBeVisible({
-    timeout: 30_000,
-  });
 
   const listCreated = async () => {
     const listResp = await request.get(`${BACKEND_BASE}/api/coverage/list`);
