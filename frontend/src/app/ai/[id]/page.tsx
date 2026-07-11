@@ -1665,7 +1665,8 @@ export default function AIThreadPage() {
       </aside>
 
       <main className="ct-codex-ai__main">
-        <header className="ct-codex-ai__topbar">
+        <div className="ct-codex-ai__chrome">
+          <header className="ct-codex-ai__topbar">
           <div>
             <span>{conversation?.scope_type} / {conversation?.scope_id}</span>
             <h1>{conversation?.title ?? "AI 调查线程"}</h1>
@@ -1691,30 +1692,31 @@ export default function AIThreadPage() {
             <Download size={17} />
             导出
           </button>
-        </header>
+          </header>
 
-        {visibleError && (
-          <div className="ct-codex-ai__error" role="alert">
-            <AlertCircle size={16} />
-            <span>{visibleError}</span>
-            {canRetryLatestFailure && (
-              <button type="button" onClick={() => void retryLatestFailure()}>
-                <RotateCcw size={14} />
-                重试上一条
-              </button>
-            )}
-            {visibleError.includes("未配置活跃的聊天模型") && (
-              <Link href="/settings">去设置执行器</Link>
-            )}
-          </div>
-        )}
+          {visibleError && (
+            <div className="ct-codex-ai__error" role="alert">
+              <AlertCircle size={16} />
+              <span>{visibleError}</span>
+              {canRetryLatestFailure && (
+                <button type="button" onClick={() => void retryLatestFailure()}>
+                  <RotateCcw size={14} />
+                  重试上一条
+                </button>
+              )}
+              {visibleError.includes("未配置活跃的聊天模型") && (
+                <Link href="/settings">去设置执行器</Link>
+              )}
+            </div>
+          )}
 
-        {runtimeNotice && (
-          <div className="ct-codex-ai__notice" role="status">
-            <AlertCircle size={16} />
-            <span>{runtimeNotice}</span>
-          </div>
-        )}
+          {runtimeNotice && (
+            <div className="ct-codex-ai__notice" role="status">
+              <AlertCircle size={16} />
+              <span>{runtimeNotice}</span>
+            </div>
+          )}
+        </div>
 
         <div className="ct-codex-ai__reader-shell">
           <section

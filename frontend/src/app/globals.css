@@ -2292,6 +2292,13 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   overflow: hidden;
 }
 
+.ct-codex-ai__chrome {
+  position: relative;
+  z-index: 2;
+  min-width: 0;
+  background: rgba(255, 255, 255, 0.96);
+}
+
 .ct-codex-ai__topbar {
   display: flex;
   align-items: flex-start;

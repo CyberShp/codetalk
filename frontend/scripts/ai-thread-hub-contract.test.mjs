@@ -60,6 +60,16 @@ test("AI thread keeps line-numbered source output out of the latest process summ
 
 test("AI thread layout keeps mobile reading usable and wraps long evidence text", () => {
   assert.match(
+    threadSource,
+    /<div className="ct-codex-ai__chrome">\s*<header className="ct-codex-ai__topbar">/,
+    "top bar and actionable errors must share one auto-sized grid row above the scroll reader",
+  );
+  assert.match(
+    globalCss,
+    /\.ct-codex-ai__chrome\s*\{[\s\S]*?position:\s*relative;[\s\S]*?z-index:\s*2;/,
+    "actionable errors must remain above long message content and accept pointer events",
+  );
+  assert.match(
     globalCss,
     /\.ct-page-shell:has\(\.ct-codex-ai\)\s*\{[\s\S]*?height:\s*calc\(100dvh - var\(--ct-mobile-nav-height\)\);[\s\S]*?overflow:\s*hidden;/,
   );
