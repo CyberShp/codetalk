@@ -673,8 +673,10 @@ function agentLifecycleLabel({
     .find((event) => processEventKind(event));
   const latestKind = latestTypedEvent ? processEventKind(latestTypedEvent) : "";
   const latestStatus = eventTextValue(latestTypedEvent?.payload.status);
-  if (runStatus === "failed" || latestKind === "error") return "失败";
+  if (runStatus === "failed") return "失败";
   if (runStatus === "cancelled") return "已取消";
+  if (runStatus === "completed") return "已完成";
+  if (latestKind === "error") return "失败";
   if (latestKind === "artifact") return "产物就绪";
   if (latestKind === "artifact_progress") return "生成产物中";
   if (["tool_use", "tool_result"].includes(latestKind)) return "调用工具";
@@ -685,7 +687,6 @@ function agentLifecycleLabel({
   }
   const text = diagnostics.toLowerCase();
   if (diagnostics.includes("下载产物已准备")) return "产物就绪";
-  if (runStatus === "completed") return "已完成";
   if (text.includes("gitnexus") || text.includes("cgc") || diagnostics.includes("源码")) return "读取证据";
   if (diagnostics.includes("已启动")) return "Agent 已启动";
   if (streaming || runStatus === "running" || runStatus === "queued") return "生成中";

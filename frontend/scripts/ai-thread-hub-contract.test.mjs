@@ -64,6 +64,23 @@ test("AI thread keeps line-numbered source output out of the latest process summ
   assert.equal(looksLikeReadableNumericProgress("7 item_count = 3;"), false);
 });
 
+test("AI thread lifecycle gives the final run state authority over stale process events", () => {
+  const start = threadSource.indexOf("function agentLifecycleLabel");
+  const end = threadSource.indexOf("function agentRunElapsedLabel", start);
+  const lifecycleSource = threadSource.slice(start, end);
+  assert.ok(start >= 0 && end > start);
+  assert.ok(
+    lifecycleSource.indexOf('runStatus === "completed"') <
+      lifecycleSource.indexOf('latestKind === "artifact"'),
+    "completed must win over a stale running/artifact process event",
+  );
+  assert.ok(
+    lifecycleSource.indexOf('runStatus === "completed"') <
+      lifecycleSource.indexOf('latestKind === "error"'),
+    "completed must win over a stale error process event after recovery",
+  );
+});
+
 test("AI thread layout keeps mobile reading usable and wraps long evidence text", () => {
   assert.match(
     threadSource,
