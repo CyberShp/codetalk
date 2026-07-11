@@ -28,6 +28,16 @@ test("AI thread composer preserves multiline prompts until explicit send", () =>
 
 test("AI thread translates persisted internal parser errors before display and export", () => {
   assert.match(threadSource, /function publicAgentErrorText/);
+  assert.match(
+    threadSource,
+    /cleaned\.startsWith\("测试活动产物未通过质量门禁"\)/,
+    "AI thread should show CodeTalk quality-gate failures instead of replacing them with a generic executor error",
+  );
+  assert.match(
+    threadSource,
+    /cleaned\.startsWith\("模型输出达到长度上限"\)/,
+    "AI thread should show the actionable truncation reason",
+  );
   assert.match(threadSource, /separator is not found/i);
   assert.match(threadSource, /publicAgentErrorText\(latestRun\.error\)/);
   assert.match(threadSource, /publicAgentErrorText\(conversation\.latest_run\.error\)/);

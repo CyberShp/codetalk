@@ -1686,6 +1686,7 @@ async def run_generation(
                 run_id=run_id,
                 conversation=conversation,
                 audit=audit,
+                rejected_content=content,
             )
             await store.fail_run(
                 run_id,
@@ -1712,6 +1713,7 @@ async def run_generation(
                 run_id=run_id,
                 conversation=conversation,
                 audit=audit,
+                rejected_content=content,
             )
             if not audit.get("deliverable"):
                 issue_messages = [
@@ -1753,10 +1755,27 @@ async def _record_ai_thread_quality_audit(
     run_id: str,
     conversation: dict[str, Any],
     audit: dict[str, Any],
+    rejected_content: str = "",
 ) -> None:
-    audit_path = ai_thread_artifact_path(str(conversation["id"]), run_id).parent / "test_activity_quality_audit.json"
+    artifact_root = ai_thread_artifact_path(str(conversation["id"]), run_id).parent
+    audit_path = artifact_root / "test_activity_quality_audit.json"
     audit_path.parent.mkdir(parents=True, exist_ok=True)
     await _write_json_file(audit_path, audit)
+    if not audit.get("deliverable") and str(rejected_content or "").strip():
+        rejected_path = artifact_root / "rejected-assistant-output.md"
+        rejected_body = "\n".join(
+            [
+                "# 未通过质量门禁的模型输出",
+                "",
+                f"- run_id: {run_id}",
+                f"- rejected_at: {_now()}",
+                "- purpose: 仅用于诊断和修复，不是可交付产物",
+                "",
+                redact_agent_diagnostic_text(str(rejected_content)).strip(),
+                "",
+            ]
+        )
+        await _to_thread(rejected_path.write_text, rejected_body, "utf-8")
     await store.append_event(
         run_id=run_id,
         conversation_id=str(conversation["id"]),

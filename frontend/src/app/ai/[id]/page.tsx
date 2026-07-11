@@ -844,6 +844,12 @@ function publicAgentErrorText(value: string): string {
   ) {
     return cleaned;
   }
+  if (
+    cleaned.startsWith("测试活动产物未通过质量门禁") ||
+    cleaned.startsWith("模型输出达到长度上限")
+  ) {
+    return cleaned;
+  }
   return "执行器运行失败。请展开 Agent 过程查看内部诊断，然后重试或切换执行器。";
 }
 

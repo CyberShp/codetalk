@@ -4645,3 +4645,11 @@ async def test_builtin_test_activity_rejects_shallow_completed_output(
     assert "质量门禁" in run["error"]
     assert "缺少" in run["error"] or "不完整" in run["error"]
     assert [message["role"] for message in messages] == ["user"]
+    rejected_path = (
+        tmp_path
+        / conversation["id"]
+        / "rejected-assistant-output.md"
+    )
+    assert rejected_path.exists()
+    assert "已完成 iSCSI login 测试设计" in rejected_path.read_text(encoding="utf-8")
+    assert not (tmp_path / conversation["id"] / f"{created['run']['id']}.md").exists()
