@@ -334,6 +334,193 @@ def audit_test_activity_artifacts(
     }
 
 
+def audit_test_activity_response(
+    *,
+    content: str,
+    contract: dict[str, Any],
+    repo_path: str = "",
+) -> dict[str, Any]:
+    """Audit a combined Markdown deliverable produced in an AI thread.
+
+    Workbench executions write one file per declared artifact and use
+    ``audit_test_activity_artifacts``. Built-in chat models cannot write those
+    files directly, so their downloadable Markdown must satisfy the same
+    contract before CodeTalk labels it complete.
+    """
+
+    text = str(content or "").strip()
+    lower = text.lower()
+    required_outputs = {
+        str(item).strip()
+        for item in contract.get("required_outputs") or []
+        if str(item).strip()
+    }
+    issues: list[dict[str, Any]] = []
+    min_chars = 1200 if len(required_outputs) >= 3 else 700
+    if len(text) < min_chars:
+        issues.append(
+            _issue(
+                "response_too_short",
+                "assistant-output.md",
+                f"组合交付件仅 {len(text)} 字符，无法覆盖声明的测试活动输出",
+            )
+        )
+
+    if "business_flow.md" in required_outputs:
+        flow_steps = re.findall(r"(?m)^\s*(?:\d+[.)]|步骤\s*\d+)\s*", text)
+        if not any(marker in lower for marker in ("流程", "flow", "状态迁移")) or len(flow_steps) < 3:
+            issues.append(
+                _issue(
+                    "missing_combined_business_flow",
+                    "business_flow.md",
+                    "组合交付件缺少至少 3 步的代码流程与异常/恢复说明",
+                )
+            )
+
+    if "sfmea.json" in required_outputs:
+        sfmea_fields = {
+            "failure_mode": ("failure_mode", "failure mode", "失效模式"),
+            "cause": ("cause", "原因"),
+            "effect": ("effect", "影响", "后果"),
+            "detection": ("detection", "探测", "检测"),
+            "severity": ("severity", "严重度"),
+            "occurrence": ("occurrence", "发生度"),
+            "detection_score": ("detection_score", "探测度", "检测评分"),
+            "rpn": ("rpn",),
+            "mitigation": ("mitigation", "缓解", "改进措施"),
+            "evidence": ("source_evidence", "源码证据", "证据"),
+            "test_mapping": ("test_mapping", "测试映射", "测试目录"),
+        }
+        missing = [
+            field
+            for field, aliases in sfmea_fields.items()
+            if not any(alias in lower for alias in aliases)
+        ]
+        has_sfmea_rows = text.count("\n|") >= 3 or len(re.findall(r"(?mi)^\s*[-*]\s+.*rpn", text)) >= 2
+        if "sfmea" not in lower or missing or not has_sfmea_rows:
+            issues.append(
+                _issue(
+                    "missing_combined_sfmea",
+                    "sfmea.json",
+                    "组合交付件的 SFMEA 字段或风险条目不完整",
+                    fields=missing,
+                )
+            )
+
+    if "black_box_cases.json" in required_outputs:
+        field_aliases = (
+            ("前置条件", "precondition"),
+            ("步骤", "steps"),
+            ("预期结果", "expected_result", "expected result"),
+            ("观测点", "observability"),
+            ("失败诊断", "failure_diagnostics", "diagnostic"),
+        )
+        missing_fields = [
+            aliases[0]
+            for aliases in field_aliases
+            if not any(alias in lower for alias in aliases)
+        ]
+        dimension_aliases = {
+            "normal_path": ("normal_path", "正常路径", "正常场景"),
+            "invalid_input": ("invalid_input", "非法输入", "无效输入"),
+            "resource_pressure": ("resource_pressure", "资源不足", "资源压力"),
+            "timeout": ("timeout", "超时"),
+            "reconnect": ("reconnect", "重连"),
+            "concurrency": ("concurrency", "并发"),
+            "recovery": ("recovery", "恢复"),
+            "performance": ("performance", "性能"),
+        }
+        missing_dimensions = [
+            dimension
+            for dimension, aliases in dimension_aliases.items()
+            if not any(alias in lower for alias in aliases)
+        ]
+        if missing_fields:
+            issues.append(
+                _issue(
+                    "missing_combined_black_box_fields",
+                    "black_box_cases.json",
+                    "组合交付件的黑盒用例字段不完整",
+                    fields=missing_fields,
+                )
+            )
+        if missing_dimensions:
+            issues.append(
+                _issue(
+                    "missing_combined_black_box_dimensions",
+                    "black_box_cases.json",
+                    "组合交付件缺少黑盒测试维度: " + ", ".join(missing_dimensions),
+                    dimensions=missing_dimensions,
+                )
+            )
+
+    if "test_design.md" in required_outputs:
+        required_markers = {
+            "target": ("目标", "target"),
+            "input": ("输入", "input"),
+            "cases": ("用例", "case"),
+            "coverage": ("覆盖", "coverage"),
+            "remaining_risk": ("剩余风险", "residual risk"),
+        }
+        missing = [
+            field
+            for field, aliases in required_markers.items()
+            if not any(alias in lower for alias in aliases)
+        ]
+        if missing:
+            issues.append(
+                _issue(
+                    "missing_combined_test_design",
+                    "test_design.md",
+                    "组合交付件的测试设计章节不完整",
+                    fields=missing,
+                )
+            )
+
+    repo = Path(str(repo_path or "")).expanduser()
+    evidence_paths = _combined_response_evidence_paths(text)
+    if not evidence_paths:
+        issues.append(
+            _issue(
+                "missing_combined_source_evidence",
+                "assistant-output.md",
+                "组合交付件没有引用工作区源码或测试目录证据",
+            )
+        )
+    elif repo.is_dir():
+        missing_paths = [path for path in evidence_paths if not (repo / path).exists()]
+        for path in missing_paths:
+            issues.append(
+                _issue(
+                    "evidence_path_not_found",
+                    "assistant-output.md",
+                    f"证据路径不存在: {path}",
+                )
+            )
+
+    score = max(0, 100 - len(issues) * 15)
+    status = "deliverable" if not issues and score >= int((contract.get("quality_gates") or {}).get("min_score") or 80) else "needs_rework"
+    return {
+        "kind": "test_activity_quality_audit",
+        "source": "ai_thread_combined_markdown",
+        "status": status,
+        "deliverable": status == "deliverable",
+        "score": score,
+        "issue_count": len(issues),
+        "issues": issues,
+        "recommendations": _recommendations_for_issues(issues),
+    }
+
+
+def _combined_response_evidence_paths(content: str) -> list[str]:
+    candidates = re.findall(
+        r"`((?:app|lib|module|src|test|tests)/[^`\s:]+)(?::\d+(?:-\d+)?)?`",
+        str(content or ""),
+        flags=re.IGNORECASE,
+    )
+    return _unique_strings(path.rstrip(".,;，。；") for path in candidates)
+
+
 def _matched_profiles(text: str) -> list[str]:
     matched: list[str] = []
     for profile_id, profile in PROFILE_REGISTRY.items():

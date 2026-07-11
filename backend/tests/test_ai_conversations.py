@@ -65,6 +65,26 @@ class FakeLLM:
         yield "建议补充异常路径和边界值。"
 
 
+class TruncatedTestActivityLLM:
+    def __init__(self) -> None:
+        self.max_tokens = 0
+
+    async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
+        from app.llm.base import current_finish_reason
+
+        self.max_tokens = max_tokens
+        yield "## 代码证据\n\n- `lib/iscsi/iscsi.c`: login 入口。\n\n## 流程步骤\n\n1. 建立连接"
+        current_finish_reason.set("length")
+
+
+class ShallowCompletedTestActivityLLM:
+    async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
+        from app.llm.base import current_finish_reason
+
+        yield "## 结论\n\n已完成 iSCSI login 测试设计。"
+        current_finish_reason.set("stop")
+
+
 class SourceMaterialAssertingLLM:
     def __init__(self) -> None:
         self.joined = ""
@@ -146,16 +166,28 @@ class MultiConversationBlockingLLM:
 class LongArtifactLLM:
     async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
         rows = [
-            "| failure mode | cause | effect | detection | RPN |",
-            "| --- | --- | --- | --- | --- |",
+            "| failure_mode | cause | effect | detection | severity | occurrence | detection_score | RPN | score_explanation | mitigation | source_evidence | test_mapping |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
         rows.extend(
-            f"| SFMEA 风险 {index} | 资源不足 | IO 失败 | 日志和指标 | {200 + index} |"
+            f"| SFMEA 风险 {index} | 资源不足 | IO 失败 | 日志和指标 | 8 | 3 | 4 | 96 | 严重度高且可探测 | 增加恢复验证 | `lib/iscsi/iscsi.c` | `test/iscsi_tgt` |"
             for index in range(120)
+        )
+        dimensions = (
+            "normal_path",
+            "invalid_input",
+            "resource_pressure",
+            "timeout",
+            "reconnect",
+            "concurrency",
+            "recovery",
+            "performance",
         )
         yield "## SFMEA\n\n" + "\n".join(rows) + "\n\n## 黑盒测试用例\n\n"
         yield "\n".join(
-            f"{index}. 前置条件：target 已启动。步骤：执行异常输入。预期结果：返回明确错误并记录日志。"
+            f"{index}. TC-{index:03d} {dimensions[index % len(dimensions)]}。前置条件：target 已启动。"
+            "步骤：initiator 执行登录。预期结果：返回明确状态。观测点：登录响应和 SPDK 日志。"
+            "失败诊断线索：关联 session 日志。证据：`test/iscsi_tgt`。"
             for index in range(120)
         )
 
@@ -163,15 +195,27 @@ class LongArtifactLLM:
 class MediumArtifactLLM:
     async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
         rows = [
-            "| failure mode | cause | effect | detection | RPN |",
-            "| --- | --- | --- | --- | --- |",
-            "| SFMEA 风险 1 | reconnect timeout | I/O 暂停 | 日志和指标 | 180 |",
-            "| SFMEA 风险 2 | reset race | session stale | RPC 状态 | 160 |",
-            "| SFMEA 风险 3 | queue drain | request lost | poller latency | 144 |",
+            "| failure_mode | cause | effect | detection | severity | occurrence | detection_score | RPN | score_explanation | mitigation | source_evidence | test_mapping |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+            "| SFMEA 风险 1：reconnect timeout | 网络中断 | I/O 暂停 | 日志和指标 | 8 | 3 | 4 | 96 | 恢复受阻 | 限制重试 | `lib/iscsi/iscsi.c` | `test/iscsi_tgt` |",
+            "| SFMEA 风险 2：reset race | 并发关闭 | session stale | RPC 状态 | 7 | 3 | 4 | 84 | 状态残留 | 增加并发回归 | `lib/iscsi/iscsi.c` | `test/iscsi_tgt` |",
+            "| SFMEA 风险 3：queue drain | 资源压力 | request lost | poller latency | 9 | 2 | 4 | 72 | 数据面影响 | 增加资源监控 | `lib/iscsi/iscsi.c` | `test/iscsi_tgt` |",
         ]
+        dimensions = (
+            "normal_path",
+            "invalid_input",
+            "resource_pressure",
+            "timeout",
+            "reconnect",
+            "concurrency",
+            "recovery",
+            "performance",
+        )
         cases = "\n".join(
-            f"{index}. TC-{index:02d} 前置条件：target 已启动。步骤：执行异常输入 {index}。预期结果：返回明确错误并记录日志。"
-            for index in range(1, 10)
+            f"{index}. TC-{index:02d} {dimension}。前置条件：target 已启动。步骤：initiator 执行登录。"
+            "预期结果：返回明确状态。观测点：登录响应和 SPDK 日志。失败诊断线索：关联 session 日志。"
+            "证据：`test/iscsi_tgt`。"
+            for index, dimension in enumerate((*dimensions, "normal_path"), start=1)
         )
         yield "## SFMEA\n\n" + "\n".join(rows) + "\n\n## 黑盒测试用例\n\n" + cases
 
@@ -4510,3 +4554,94 @@ class TestAIConversationsAPI:
         assert "grep -n login" not in prompt
         assert "iscsi_conn_login_pdu_success_complete" not in prompt
         assert "AuthMethod" not in prompt
+
+
+@pytest.mark.asyncio
+async def test_builtin_test_activity_rejects_truncated_provider_output(
+    sqlite_db,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services import ai_conversations
+    from app.services.ai_conversations import AIConversationStore
+
+    monkeypatch.setattr(
+        ai_conversations,
+        "ai_thread_artifact_path",
+        lambda conversation_id, run_id: tmp_path / conversation_id / f"{run_id}.md",
+    )
+    monkeypatch.setattr(settings, "ai_conversation_max_output_tokens", 1024)
+    monkeypatch.setattr(settings, "llm_max_output_tokens", 8192)
+    llm = TruncatedTestActivityLLM()
+    store = AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="freeform",
+        scope_id="global",
+        workspace_id="global",
+        title="iSCSI Login 发布门禁",
+        initial_context={"repo_path": str(tmp_path / "spdk")},
+    )
+    created = await store.create_user_message_and_run(
+        conversation_id=conversation["id"],
+        content=(
+            "详细分析 iSCSI login 流程并输出完整 SFMEA、黑盒测试用例和可下载测试设计文件"
+        ),
+        references=[],
+    )
+
+    await ai_conversations.run_generation(
+        store=store,
+        run_id=created["run"]["id"],
+        llm=llm,
+    )
+
+    run = await store.get_run(created["run"]["id"])
+    messages = await store.list_messages(conversation["id"])
+    assert llm.max_tokens == 8192
+    assert run["status"] == "failed"
+    assert "输出达到长度上限" in run["error"]
+    assert [message["role"] for message in messages] == ["user"]
+    assert not (tmp_path / conversation["id"] / f"{created['run']['id']}.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_builtin_test_activity_rejects_shallow_completed_output(
+    sqlite_db,
+    tmp_path,
+    monkeypatch,
+):
+    from app.services import ai_conversations
+    from app.services.ai_conversations import AIConversationStore
+
+    monkeypatch.setattr(
+        ai_conversations,
+        "ai_thread_artifact_path",
+        lambda conversation_id, run_id: tmp_path / conversation_id / f"{run_id}.md",
+    )
+    store = AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="freeform",
+        scope_id="global",
+        workspace_id="global",
+        title="iSCSI Login 质量门禁",
+        initial_context={"repo_path": str(tmp_path / "spdk")},
+    )
+    created = await store.create_user_message_and_run(
+        conversation_id=conversation["id"],
+        content="详细输出 iSCSI login 完整流程、SFMEA、黑盒测试用例和测试设计文件",
+        references=[],
+    )
+
+    await ai_conversations.run_generation(
+        store=store,
+        run_id=created["run"]["id"],
+        llm=ShallowCompletedTestActivityLLM(),
+    )
+
+    run = await store.get_run(created["run"]["id"])
+    messages = await store.list_messages(conversation["id"])
+    assert run["status"] == "failed"
+    assert "质量门禁" in run["error"]
+    assert "缺少" in run["error"] or "不完整" in run["error"]
+    assert [message["role"] for message in messages] == ["user"]

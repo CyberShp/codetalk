@@ -21,6 +21,7 @@ from urllib.parse import urlencode
 import aiosqlite
 
 from app.config import settings
+from app.llm.base import current_finish_reason
 from app.services.agent_cli_bridge import (
     AGENT_ANSWER_DELTA_PREFIX,
     AGENT_FINAL_ANSWER_PREFIX,
@@ -36,7 +37,10 @@ from app.services.agent_invocation_contract import (
     build_agent_invocation_execution_contract,
 )
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
-from app.services.test_activity_contract import build_test_activity_contract
+from app.services.test_activity_contract import (
+    audit_test_activity_response,
+    build_test_activity_contract,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +71,7 @@ _THREAD_ARTIFACT_KEYWORDS = (
     "rpn",
 )
 _THREAD_ARTIFACT_STREAM_NOTICE = "正在生成结构化产物，完成后会提供下载文件。"
+_TEST_ACTIVITY_OUTPUT_TOKEN_BUDGET = 8192
 _STALE_INTERNAL_RECORD_SQL = (
     "COALESCE(julianday(updated_at), julianday(created_at), 0) "
     "< julianday('now') - (1.0 / 1440.0)"
@@ -1579,7 +1584,19 @@ async def run_generation(
     prompt = _build_prompt(conversation, messages, references, user_message["content"])
     chunks: list[str] = []
     artifact_stream_notice_sent = False
-    max_tokens = min(settings.ai_conversation_max_output_tokens, settings.llm_max_output_tokens)
+    wants_downloadable_artifact = _agent_task_requests_downloadable_artifact(
+        user_message["content"],
+        user_message["content"],
+    )
+    requires_strict_quality_gate = _requires_strict_test_activity_quality_gate(
+        user_message["content"]
+    )
+    requested_token_budget = (
+        max(settings.ai_conversation_max_output_tokens, _TEST_ACTIVITY_OUTPUT_TOKEN_BUDGET)
+        if requires_strict_quality_gate
+        else settings.ai_conversation_max_output_tokens
+    )
+    max_tokens = min(requested_token_budget, settings.llm_max_output_tokens)
     temperature = 0.5
 
     async def append_delta(content: str) -> None:
@@ -1608,6 +1625,7 @@ async def run_generation(
         current = await store.get_run(run_id)
         if current["status"] == "cancelled":
             return
+        current_finish_reason.set(None)
         if not settings.ai_conversation_streaming_enabled:
             response = await llm.complete(prompt, max_tokens=max_tokens, temperature=temperature)
             current = await store.get_run(run_id)
@@ -1643,6 +1661,71 @@ async def run_generation(
             "".join(chunks).strip() or "本轮没有生成有效内容，请换一种问法重试。",
             references,
         )
+        finish_reason = str(current_finish_reason.get() or "").strip().lower()
+        if finish_reason == "length":
+            audit = {
+                "kind": "test_activity_quality_audit",
+                "source": "ai_thread_combined_markdown",
+                "status": "needs_rework",
+                "deliverable": False,
+                "score": 0,
+                "issue_count": 1,
+                "issues": [
+                    {
+                        "code": "provider_output_truncated",
+                        "artifact": "assistant-output.md",
+                        "message": "模型输出达到长度上限，交付件被截断",
+                    }
+                ],
+                "recommendations": [
+                    "缩小单轮范围，或改用结构化工作流分步生成并校验交付件。"
+                ],
+            }
+            await _record_ai_thread_quality_audit(
+                store=store,
+                run_id=run_id,
+                conversation=conversation,
+                audit=audit,
+            )
+            await store.fail_run(
+                run_id,
+                "模型输出达到长度上限，交付件不完整，系统未将其标记为完成。"
+                "请点击重试，或使用“代码分析 → 流程梳理 → SFMEA → 黑盒用例”工作流分步生成。",
+            )
+            return
+        if wants_downloadable_artifact and requires_strict_quality_gate:
+            repo_path = (
+                await _conversation_repo_path(conversation, db_path=store.db_path)
+                or _conversation_initial_repo_path(conversation)
+            )
+            contract = _test_activity_contract_payload(
+                user_message=user_message["content"],
+                repo_path=repo_path,
+            )
+            audit = audit_test_activity_response(
+                content=content,
+                contract=contract,
+                repo_path=repo_path or "",
+            )
+            await _record_ai_thread_quality_audit(
+                store=store,
+                run_id=run_id,
+                conversation=conversation,
+                audit=audit,
+            )
+            if not audit.get("deliverable"):
+                issue_messages = [
+                    str(item.get("message") or "").strip()
+                    for item in audit.get("issues") or []
+                    if isinstance(item, dict) and str(item.get("message") or "").strip()
+                ]
+                summary = "；".join(issue_messages[:3]) or "测试活动交付件不完整"
+                await store.fail_run(
+                    run_id,
+                    f"测试活动产物未通过质量门禁（{audit.get('score', 0)} 分）：{summary}。"
+                    "系统未生成下载交付件；请重试或改用结构化工作流补齐缺失内容。",
+                )
+                return
         model = str(getattr(llm, "_model", "") or "")
         final_content, actions = await _prepare_assistant_delivery(
             run_id=run_id,
@@ -1662,6 +1745,33 @@ async def run_generation(
     except Exception as exc:
         logger.exception("AI conversation run failed: %s", exc)
         await store.fail_run(run_id, str(exc))
+
+
+async def _record_ai_thread_quality_audit(
+    *,
+    store: AIConversationStore,
+    run_id: str,
+    conversation: dict[str, Any],
+    audit: dict[str, Any],
+) -> None:
+    audit_path = ai_thread_artifact_path(str(conversation["id"]), run_id).parent / "test_activity_quality_audit.json"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    await _write_json_file(audit_path, audit)
+    await store.append_event(
+        run_id=run_id,
+        conversation_id=str(conversation["id"]),
+        event_type="quality_audit",
+        payload={
+            "status": str(audit.get("status") or "needs_rework"),
+            "score": int(audit.get("score") or 0),
+            "issue_count": int(audit.get("issue_count") or 0),
+            "message": (
+                "测试活动质量门禁已通过"
+                if audit.get("deliverable")
+                else "测试活动质量门禁未通过，系统不会把不完整结果标记为完成"
+            ),
+        },
+    )
 
 
 async def run_agent_generation(
@@ -4653,6 +4763,30 @@ def _agent_task_requests_downloadable_artifact(user_message: str, content: str) 
     if len(requested_groups) >= 3 and len(output_groups) >= 2:
         return True
     return {"sfmea", "blackbox"}.issubset(requested_groups) and len(output_groups) >= 2
+
+
+def _requires_strict_test_activity_quality_gate(user_message: str) -> bool:
+    text = str(user_message or "").lower()
+    if not _looks_like_test_activity_request(text):
+        return False
+    strict_markers = (
+        "完整",
+        "全部",
+        "全量",
+        "详细",
+        "详尽",
+        "交付件",
+        "交付文件",
+        "输出文件",
+        "可下载",
+        "full",
+        "complete",
+        "comprehensive",
+        "detailed",
+        "deliverable",
+        "downloadable",
+    )
+    return any(marker in text for marker in strict_markers)
 
 
 def _agent_structured_deliverable_groups(text: str) -> set[str]:

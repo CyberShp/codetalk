@@ -600,6 +600,95 @@ def test_workbench_runner_marks_low_quality_test_activity_outputs_needs_rework(t
     assert any(issue["code"] == "black_box_boundary_violation" for issue in audit["issues"])
 
 
+def test_combined_test_activity_response_requires_complete_sections_and_evidence(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login_probe;\n", encoding="utf-8")
+    contract = build_test_activity_contract(
+        target="iSCSI login 完整流程、SFMEA、黑盒测试用例和测试设计",
+        repo_path=str(repo),
+        user_requirements="输出完整可下载测试设计文件",
+    )
+
+    audit = audit_test_activity_response(
+        content="## 结论\n\n已完成。",
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert audit["status"] == "needs_rework"
+    assert audit["deliverable"] is False
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert "response_too_short" in codes
+    assert "missing_combined_sfmea" in codes
+    assert "missing_combined_black_box_dimensions" in codes
+    assert "missing_combined_source_evidence" in codes
+
+
+def test_combined_test_activity_response_accepts_complete_contract_shape(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login_probe;\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt" / "login.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    contract = build_test_activity_contract(
+        target="iSCSI login 完整流程、SFMEA、黑盒测试用例和测试设计",
+        repo_path=str(repo),
+        user_requirements="输出完整可下载测试设计文件",
+    )
+    dimensions = [
+        "normal_path",
+        "invalid_input",
+        "resource_pressure",
+        "timeout",
+        "reconnect",
+        "concurrency",
+        "recovery",
+        "performance",
+    ]
+    cases = "\n\n".join(
+        f"### TC-{index:02d} {dimension}\n前置条件：target 已启动。\n步骤：从 initiator 发起登录。\n"
+        "预期结果：返回明确状态。\n观测点：initiator 结果和 SPDK 日志。\n"
+        "失败诊断线索：关联 session 日志。\n证据：`test/iscsi_tgt/login.sh`。"
+        for index, dimension in enumerate(dimensions, start=1)
+    )
+    content = (
+        "## 测试设计目标\n\n验证 iSCSI login 协商、认证、异常和恢复。\n\n"
+        "## 输入与范围\n\n输入为 initiator 参数、CHAP 凭据与网络故障。\n\n"
+        "## 代码证据\n\n- `lib/iscsi/iscsi.c`: 登录状态处理。\n"
+        "- `test/iscsi_tgt/login.sh`: 现有登录测试入口。\n\n"
+        "## 流程步骤\n\n1. 建立 TCP 连接。\n2. 协商登录参数与 CHAP。\n3. 进入会话或返回失败并清理。\n\n"
+        "## SFMEA\n\n| failure_mode | cause | effect | detection | severity | occurrence | "
+        "detection_score | RPN | score_explanation | mitigation | source_evidence | test_mapping |\n"
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |\n"
+        "| CHAP 绕过 | 认证分支错误 | 未授权访问 | 登录响应和日志 | 10 | 2 | 3 | 60 | "
+        "安全影响高 | 增加拒绝用例 | `lib/iscsi/iscsi.c` | `test/iscsi_tgt/login.sh` |\n\n"
+        "## 黑盒测试用例\n\n"
+        f"{cases}\n\n"
+        "## 覆盖矩阵\n\n覆盖正常、非法输入、资源、超时、重连、并发、恢复和性能。\n\n"
+        "## 剩余风险\n\n跨平台 initiator 差异标记为待验证。"
+    )
+
+    audit = audit_test_activity_response(
+        content=content,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert audit["status"] == "deliverable", audit
+    assert audit["score"] == 100
+
+
 def test_workbench_runner_classifies_unhelpful_agent_greeting(tmp_path, monkeypatch):
     from app.config import settings
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer
