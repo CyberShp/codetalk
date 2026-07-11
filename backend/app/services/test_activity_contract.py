@@ -81,6 +81,53 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"(?:status[- ]?class\s*[:=]?\s*)?0x03.{0,80}(?:authorization failure|授权失败)",
                 ],
             },
+            {
+                "id": "iscsi_login_request_entry",
+                "assertion": (
+                    "Login Request 的头部与负载入口分别是 iscsi_pdu_hdr_op_login 和 "
+                    "iscsi_pdu_payload_op_login；iscsi_op_login_rsp_handle_csg_bit 只处理响应阶段与认证状态。"
+                ),
+                "evidence": [
+                    "lib/iscsi/iscsi.c::iscsi_pdu_hdr_op_login",
+                    "lib/iscsi/iscsi.c::iscsi_pdu_payload_op_login",
+                    "lib/iscsi/iscsi.c::iscsi_op_login_rsp_handle_csg_bit",
+                ],
+                "conflict_patterns": [
+                    r"(?:接收|入口|处理).{0,60}login request.{0,100}iscsi_op_login_rsp_handle_csg_bit",
+                    r"iscsi_op_login_rsp_handle_csg_bit.{0,100}(?:接收|入口|处理).{0,60}login request",
+                ],
+            },
+            {
+                "id": "iscsi_login_negotiation_transport",
+                "assertion": (
+                    "登录认证与参数协商使用 Login Request/Response 的数据段；不要把 Text Request "
+                    "写成进入 Full Feature Phase 前的必需登录步骤。"
+                ),
+                "evidence": [
+                    "lib/iscsi/iscsi.c::iscsi_pdu_payload_op_login",
+                    "lib/iscsi/iscsi.c::iscsi_op_login_rsp_handle",
+                ],
+                "conflict_patterns": [
+                    r"initiator.{0,50}(?:发送|send).{0,40}text request.{0,100}(?:登录|login|参数协商|negot)",
+                    r"text request.{0,100}(?:登录参数协商|login negotiation|进入 full feature)",
+                ],
+            },
+            {
+                "id": "iscsi_connection_cleanup_role",
+                "assertion": (
+                    "连接生命周期清理由 lib/iscsi/conn.c 的连接析构路径负责；iscsi_param_free "
+                    "只释放参数链表，app/iscsi_tgt 的 spdk_startup 只是应用启动入口。"
+                ),
+                "evidence": [
+                    "lib/iscsi/conn.c::_iscsi_conn_destruct",
+                    "lib/iscsi/param.c::iscsi_param_free",
+                    "app/iscsi_tgt/iscsi_tgt.c::spdk_startup",
+                ],
+                "conflict_patterns": [
+                    r"(?:连接清理|connection cleanup).{0,100}(?:iscsi_param_free|spdk_startup)",
+                    r"(?:iscsi_param_free|spdk_startup).{0,100}(?:负责|完成|实现).{0,40}(?:连接清理|connection cleanup)",
+                ],
+            },
         ],
     ),
     "nvmeof_transport": _profile(
@@ -500,7 +547,13 @@ def audit_test_activity_response(
             "input": ("输入", "input"),
             "cases": ("用例", "case"),
             "coverage": ("覆盖", "coverage"),
-            "remaining_risk": ("剩余风险", "residual risk", "待验证", "已知限制"),
+            "remaining_risk": (
+                "剩余风险",
+                "residual risk",
+                "待验证",
+                "已知限制",
+                "ai_suggested_unverified",
+            ),
         }
         missing = [
             field

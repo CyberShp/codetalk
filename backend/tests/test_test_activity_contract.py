@@ -676,7 +676,7 @@ def test_combined_test_activity_response_accepts_complete_contract_shape(tmp_pat
         "安全影响高 | 增加拒绝用例 | `lib/iscsi/iscsi.c` | `test/iscsi_tgt/login.sh` |\n\n"
         "## 黑盒测试用例\n\n"
         f"{cases}\n\n"
-        "## 待验证内容\n\n跨平台 initiator 差异标记为待验证。"
+        "## 未确认项\n\n跨平台 initiator 差异为 ai_suggested_unverified。"
     )
 
     audit = audit_test_activity_response(
@@ -707,7 +707,10 @@ def test_iscsi_professional_constraints_reject_known_protocol_contradictions(tmp
         content=(
             "## 结论\n\n"
             "`iscsi_op_login_response` 是认证和参数协商的核心函数。\n"
-            "Authorization Failure 使用 Status-Class: 0x03。"
+            "Authorization Failure 使用 Status-Class: 0x03。\n"
+            "接收 Login Request 的入口是 `iscsi_op_login_rsp_handle_csg_bit`。\n"
+            "Initiator 发送 Text Request 进行登录参数协商。\n"
+            "连接清理由 `iscsi_param_free` 和 `spdk_startup` 完成。"
         ),
         contract=contract,
         repo_path=str(repo),
@@ -718,7 +721,7 @@ def test_iscsi_professional_constraints_reject_known_protocol_contradictions(tmp
         issue for issue in audit["issues"]
         if issue["code"] == "professional_fact_conflict"
     ]
-    assert len(conflicts) == 2
+    assert len(conflicts) == 5
     assert all(issue["evidence"] for issue in conflicts)
 
 
