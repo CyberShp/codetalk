@@ -499,6 +499,15 @@ async def test_public_agent_run_error_only_allows_exact_controlled_timeout_text(
     assert "/Users/alice" not in spoofed
 
 
+async def test_public_agent_run_error_explains_activity_timeout():
+    from app.services.ai_conversations import _public_agent_run_error
+
+    assert _public_agent_run_error("执行器连续 90s 没有输出或进度") == (
+        "执行器已连续 90 秒没有输出或进度。请检查 Agent 过程；"
+        "若执行器仍在工作，请确认它会持续输出状态事件，否则从本轮重试。"
+    )
+
+
 async def test_agent_run_failure_reaches_failed_state_when_diagnostic_event_write_fails():
     from app.services.ai_conversations import _record_agent_run_failure
 
@@ -626,6 +635,33 @@ async def test_context_status_message_names_graph_artifacts_when_available():
 
 
 class TestAIConversationsAPI:
+    async def test_agent_thread_invocation_manifest_derives_provider_from_runtime_id(self, tmp_path):
+        from app.services.ai_conversations import _agent_thread_invocation_manifest
+
+        manifest = _agent_thread_invocation_manifest(
+            conversation={
+                "id": "conv-provider",
+                "workspace_id": "ws-provider",
+                "agent_runtime_id": "default-codex",
+            },
+            run_id="run-provider",
+            runtime={
+                "id": "default-codex",
+                "name": "Codex",
+                "command": "codex",
+                "prompt_transport": "codex_exec_json",
+            },
+            prompt="完整用户输入",
+            cwd=str(tmp_path),
+            repo_path=str(tmp_path),
+            user_message="完整用户输入",
+            references=[],
+            artifact_dir=tmp_path / "artifacts",
+            resume_session_id="",
+        )
+
+        assert manifest["runtime"]["provider"] == "agent-runtime:default-codex"
+
     async def test_create_and_list_project_scoped_conversations(self, sqlite_db):
         ws_a = await _seed_workspace(sqlite_db, "ws-a")
         ws_b = await _seed_workspace(sqlite_db, "ws-b")

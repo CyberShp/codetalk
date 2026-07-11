@@ -2136,6 +2136,12 @@ def _public_agent_run_error(error: Exception | str) -> str:
         return "执行器鉴权失败（HTTP 403）。请在设置中检查账号、API Key 或代理权限后重试。"
     if re.fullmatch(r"执行器超时（\d+s）", message):
         return message
+    activity_timeout = re.fullmatch(r"执行器连续 (\d+)s 没有输出或进度", message)
+    if activity_timeout:
+        return (
+            f"执行器已连续 {activity_timeout.group(1)} 秒没有输出或进度。请检查 Agent 过程；"
+            "若执行器仍在工作，请确认它会持续输出状态事件，否则从本轮重试。"
+        )
     if message == "执行器单条过程事件超过安全上限，请减少单次工具输出后重试。":
         return message
     if message == (
@@ -3086,7 +3092,7 @@ def _agent_thread_invocation_manifest(
         "runtime": {
             "id": str(runtime.get("id") or conversation.get("agent_runtime_id") or ""),
             "name": str(runtime.get("name") or ""),
-            "provider": str(runtime.get("provider") or ""),
+            "provider": _agent_thread_runtime_provider(runtime, conversation),
             "command": redact_agent_diagnostic_text(str(runtime.get("command") or "")),
             "args": [redact_agent_diagnostic_text(str(item)) for item in runtime.get("args") or []],
             "prompt_transport": str(runtime.get("prompt_transport") or "stdin"),
@@ -3125,6 +3131,17 @@ def _agent_thread_invocation_manifest(
         },
         "artifact_dir": str(artifact_dir),
     }
+
+
+def _agent_thread_runtime_provider(
+    runtime: dict[str, Any],
+    conversation: dict[str, Any],
+) -> str:
+    explicit = str(runtime.get("provider") or "").strip()
+    if explicit:
+        return explicit
+    runtime_id = str(runtime.get("id") or conversation.get("agent_runtime_id") or "").strip()
+    return f"agent-runtime:{runtime_id}" if runtime_id else ""
 
 
 def _agent_invocation_artifact_event_payload(manifest: dict[str, Any]) -> dict[str, Any]:

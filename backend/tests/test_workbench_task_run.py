@@ -495,6 +495,10 @@ def test_workbench_runner_builtin_llm_uses_handoff_contract_and_writes_outputs(
         "iSCSI login shall reject invalid CHAP credentials and expose a clear error.",
         encoding="utf-8",
     )
+    analysis_target = (
+        "iSCSI login CHAP failure\n"
+        "保留第二行中的 timeout=37s、符号 #A/B 与全部标点。"
+    )
     source_file = tmp_path / "lib" / "iscsi" / "login.c"
     source_file.parent.mkdir(parents=True)
     source_file.write_text(
@@ -615,7 +619,7 @@ def test_workbench_runner_builtin_llm_uses_handoff_contract_and_writes_outputs(
         workspace_id="ws-spdk",
         repo_path=str(tmp_path),
         inputs={
-            "analysis_target": "iSCSI login CHAP failure",
+            "analysis_target": analysis_target,
             "requirements": {"path": str(requirements)},
             "mr_link": "https://codehub.local/storage/spdk/-/merge_requests/8",
         },
@@ -636,6 +640,10 @@ def test_workbench_runner_builtin_llm_uses_handoff_contract_and_writes_outputs(
     )
     messages = captured["messages"]
     assert isinstance(messages, list)
+    llm_request = json.loads(messages[1]["content"])
+    assert llm_request["execution_contract"]["analysis_targets"][0]["value"] == (
+        analysis_target
+    )
     prompt = json.dumps(messages, ensure_ascii=False)
     assert "iSCSI login CHAP failure" in prompt
     assert "execution_contract.source_context.files" in prompt
@@ -654,6 +662,9 @@ def test_workbench_runner_builtin_llm_uses_handoff_contract_and_writes_outputs(
     assert "unrelated_bootstrap" not in source_context["files"][0]["excerpt"]
     assert source_context["files"][0]["start_line"] > 1
     assert llm_execution_input["execution_contract"]["mcp"]["profile"] == "gitnexus+cgc"
+    assert llm_execution_input["execution_contract"]["mcp"]["availability"]["status"] == (
+        "codetalk_prefetch"
+    )
     assert llm_execution_input["execution_contract"]["skills"]["ids"] == [
         "sfmea",
         "black-box-test-design",
@@ -1807,7 +1818,7 @@ def test_agent_run_harness_keeps_active_process_alive_past_idle_window(tmp_path)
     events = []
     result = harness.execute_run(
         run.run_id,
-        timeout_sec=5,
+        timeout_sec=1,
         idle_timeout_sec=0.5,
         event_sink=lambda event_type, payload: events.append((event_type, payload)),
     )

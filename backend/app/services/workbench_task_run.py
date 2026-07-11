@@ -1256,7 +1256,15 @@ def _mcp_execution_availability(
             "action": "建议在设置页运行执行器探测，或在失败后切换到已声明该 MCP 的执行器。",
             "supported_profiles": supported_profiles,
         }
-    if profile in {"gitnexus", "cgc", "codehub-mcp"}:
+    prefetch_profiles = [
+        item
+        for item in re.split(r"[+,;\s]+", profile.lower())
+        if item
+    ]
+    if prefetch_profiles and all(
+        item in {"gitnexus", "cgc", "codehub-mcp"}
+        for item in prefetch_profiles
+    ):
         return {
             "status": "codetalk_prefetch",
             "user_message": f"{provider} 未声明 {profile}；CodeTalk 会优先查工作区/GitNexus/CGC 产物，把可验证证据注入任务包。",

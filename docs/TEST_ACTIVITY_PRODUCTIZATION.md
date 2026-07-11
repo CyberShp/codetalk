@@ -123,6 +123,8 @@ SFMEA 必须包含 failure mode、cause、effect、detection、severity、occurr
 
 Claude、OpenCode、Codex、NGA、内置模型和自定义 Agent 都应接收同一份 `execution_contract`。
 
+执行器总时限采用活动感知策略：stdout、stderr 或结构化事件持续更新时续期；连续无输出才判超时，并保留一小时硬安全上限。内置模型无法直接持有 Agent MCP 凭证时，`gitnexus+cgc` 这类复合 profile 由 CodeTalk 预取可验证上下文，并在能力清单里标记 `codetalk_prefetch`。
+
 失败时 CodeTalk 会把内部异常转换成中文行动建议：
 
 - 执行器不可用：检查命令、PATH 或完整可执行文件路径。

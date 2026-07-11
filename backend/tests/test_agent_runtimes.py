@@ -4848,6 +4848,7 @@ class TestAgentRuntimes:
             "print(json.dumps({'argv': sys.argv[1:], 'prompt_file': prompt_file, 'stdin': stdin}, ensure_ascii=False), flush=True)"
         )
         cases = [
+            ("stdin", lambda argv, captured: captured["stdin"]),
             ("claude_print_arg", lambda argv, captured: argv[argv.index("-p") + 1]),
             ("codex_exec_json", lambda argv, captured: captured["stdin"]),
             ("opencode_run_arg", lambda argv, captured: argv[-1]),
@@ -4872,7 +4873,9 @@ class TestAgentRuntimes:
             argv = captured["argv"]
             assert captured["prompt_file"] == prompt
             assert prompt_arg(argv, captured) == prompt
-            if transport == "claude_print_arg":
+            if transport == "stdin":
+                assert argv == []
+            elif transport == "claude_print_arg":
                 assert "--output-format" in argv
                 assert "stream-json" in argv
                 assert "--include-partial-messages" in argv
@@ -4936,6 +4939,32 @@ class TestAgentRuntimes:
         output = "".join(chunks)
         assert "首段源码分析" in output
         assert "最终答案：stderr 活动期间不应被 idle 提前截断。" in output
+
+    async def test_agent_runtime_activity_extends_configured_timeout(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import time; "
+            "\nfor i in range(6):\n"
+            "    print(f'STATUS: still working {i}', flush=True); time.sleep(0.25)\n"
+            "print('最终答案：持续活动的任务不应被绝对计时误杀。', flush=True)"
+        )
+        chunks: list[str] = []
+        async for chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "args": ["-c", agent_code],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "timeout_seconds": 1,
+                "completion_mode": "process_exit",
+            },
+            prompt="读取源码",
+            cwd=None,
+        ):
+            chunks.append(chunk)
+
+        assert "最终答案：持续活动的任务不应被绝对计时误杀。" in "".join(chunks)
 
     async def test_agent_runtime_reports_stderr_progress_without_polluting_answer(self):
         from app.services.agent_cli_bridge import stream_agent_runtime

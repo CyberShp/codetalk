@@ -18,6 +18,8 @@ Make CodeTalk AI threads behave like Clowder AI in agent lifecycle management, e
 - [x] Process visibility: keep thinking/CLI/process details visible as collapsed diagnostics with live progress, timing, cancellation, and failure cues.
 - [x] Artifact-first long outputs: route SFMEA, test design, black-box cases, and other long structured results to downloadable artifacts instead of dumping them into the terminal/chat body.
 - [x] Source-first execution: when a workspace is selected, prefer GitNexus/CGC/source evidence unless the user explicitly opts out.
+- [x] Activity-aware timeout: stdout/stderr/event activity renews the timeout window; silent execution is stopped with an actionable message and a one-hour hard safety cap.
+- [x] Cross-executor invocation identity: capability manifests retain `agent-runtime:<runtime_id>` for persisted Agent runtimes.
 - [x] Real comparison baseline: compare the deployed Clowder AI and CodeTalk surfaces for lifecycle/process/artifact behavior; live same-task Clowder execution requires an available Clowder member.
 
 ## Acceptance Criteria
@@ -27,6 +29,7 @@ Make CodeTalk AI threads behave like Clowder AI in agent lifecycle management, e
 - Resume-capable runtimes use session continuity by default without requiring users to configure end markers.
 - Long structured outputs are exposed as files/artifacts with download controls, while chat shows a compact summary and links.
 - Workspace-scoped prompts include source-evidence instructions by default and preserve multiline user prompts.
+- NGA/raw stdin, Claude, Codex, OpenCode and builtin LLM transports preserve the complete multiline task; compound `gitnexus+cgc` profiles use CodeTalk prefetch when the executor cannot call MCP directly.
 - E2E coverage protects Clowder-like lifecycle display, process collapse, artifact-first output, and source-first prompting.
 
 ## Validation

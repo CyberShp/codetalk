@@ -118,6 +118,7 @@ async def stream_agent_runtime(
     except Exception:
         prompt_file_path = None
     timeout = int(runtime.get("timeout_seconds") or 120)
+    hard_timeout = max(3600, timeout * 4)
     isolate_process_group = os.name != "nt"
     process_kwargs: dict[str, Any] = {}
     if isolate_process_group:
@@ -206,7 +207,7 @@ async def stream_agent_runtime(
             await proc.stdin.drain()
             proc.stdin.close()
 
-        async with asyncio.timeout(timeout):
+        async with asyncio.timeout(hard_timeout):
             async for chunk in _read_stdout(
                 proc,
                 str(runtime.get("output_mode") or "plain"),
@@ -235,7 +236,7 @@ async def stream_agent_runtime(
     except TimeoutError as exc:
         await _terminate_process(proc, process_group=isolate_process_group)
         stderr_task.cancel()
-        raise AgentRuntimeError(f"执行器超时（{timeout}s）") from exc
+        raise AgentRuntimeError(f"执行器超过安全运行上限（{hard_timeout}s）") from exc
     finally:
         if proc.returncode is None:
             await _terminate_process(proc, process_group=isolate_process_group)
@@ -488,35 +489,38 @@ async def _read_stdout(
     runtime = runtime or {}
     completion_mode = _completion_mode(runtime)
     idle_seconds = max(1, int(runtime.get("idle_complete_seconds") or 5))
+    activity_timeout_seconds = max(1, int(runtime.get("timeout_seconds") or 120))
     sentinel = str(runtime.get("sentinel_text") or "").strip()
     saw_output = False
 
     async def read_with_idle(read_coro_factory):
         nonlocal saw_output
-        if completion_mode == "idle_after_output" and saw_output:
-            read_task = asyncio.create_task(read_coro_factory())
-            while True:
-                wait_tasks: set[asyncio.Task[Any]] = {read_task}
-                timeout_task = asyncio.create_task(asyncio.sleep(idle_seconds))
-                wait_tasks.add(timeout_task)
-                activity_task: asyncio.Task[Any] | None = None
-                if activity_queue is not None:
-                    activity_task = asyncio.create_task(activity_queue.get())
-                    wait_tasks.add(activity_task)
-                done, pending = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
-                if read_task in done:
-                    for task in pending:
-                        task.cancel()
-                    return read_task.result()
-                if timeout_task in done:
-                    read_task.cancel()
-                    if activity_task is not None:
-                        activity_task.cancel()
+        complete_on_idle = completion_mode == "idle_after_output" and saw_output
+        wait_seconds = idle_seconds if complete_on_idle else activity_timeout_seconds
+        read_task = asyncio.create_task(read_coro_factory())
+        while True:
+            wait_tasks: set[asyncio.Task[Any]] = {read_task}
+            timeout_task = asyncio.create_task(asyncio.sleep(wait_seconds))
+            wait_tasks.add(timeout_task)
+            activity_task: asyncio.Task[Any] | None = None
+            if activity_queue is not None:
+                activity_task = asyncio.create_task(activity_queue.get())
+                wait_tasks.add(activity_task)
+            done, pending = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+            if read_task in done:
+                for task in pending:
+                    task.cancel()
+                return read_task.result()
+            if timeout_task in done:
+                read_task.cancel()
+                if activity_task is not None:
+                    activity_task.cancel()
+                if complete_on_idle:
                     return None
-                timeout_task.cancel()
-                if activity_task is not None and activity_task in done:
-                    continue
-        return await read_coro_factory()
+                raise AgentRuntimeError(f"执行器连续 {activity_timeout_seconds}s 没有输出或进度")
+            timeout_task.cancel()
+            if activity_task is not None and activity_task in done:
+                continue
 
     def apply_completion_policy(parsed: str) -> tuple[str, bool]:
         if completion_mode != "sentinel" or not sentinel:

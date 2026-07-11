@@ -1806,14 +1806,21 @@ def _run_cancellable_subprocess(
             cancelled = True
             _terminate_process_group(process)
             break
-        if time.monotonic() - started > max(1, int(timeout)):
+        elapsed = time.monotonic() - started
+        with lock:
+            inactive_for = time.monotonic() - last_activity["at"]
+        hard_timeout = max(3600.0, float(timeout) * 4)
+        if elapsed > hard_timeout:
+            timed_out = True
+            timeout_kind = "hard"
+            _terminate_process_group(process)
+            break
+        if inactive_for > max(1, int(timeout)):
             timed_out = True
             timeout_kind = "total"
             _terminate_process_group(process)
             break
         if idle_timeout is not None and idle_timeout > 0:
-            with lock:
-                inactive_for = time.monotonic() - last_activity["at"]
             if inactive_for > float(idle_timeout):
                 timed_out = True
                 timeout_kind = "idle"
