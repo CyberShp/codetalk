@@ -797,6 +797,66 @@ def test_combined_response_ignores_glob_when_concrete_evidence_exists(tmp_path):
     )
 
 
+def test_professional_constraint_does_not_join_separate_bullets(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login 测试设计",
+        repo_path=str(repo),
+    )
+
+    audit = audit_test_activity_response(
+        content=(
+            "- 授权失败：`0x02/0x02` authorization failure。\n"
+            "- 无资源：`0x03/0x02` target error/no resources。"
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert not any(
+        issue["code"] == "professional_fact_conflict"
+        for issue in audit["issues"]
+    )
+
+
+def test_runtime_generated_observation_path_is_not_repository_evidence(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    (repo / "test" / "iscsi_tgt" / "perf").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt" / "perf" / "iscsi_initiator.sh").write_text(
+        "iscsi_fio_results=perf_output/iscsi_fio.json\n",
+        encoding="utf-8",
+    )
+    contract = build_test_activity_contract(
+        target="iSCSI Login 性能测试设计",
+        repo_path=str(repo),
+    )
+
+    audit = audit_test_activity_response(
+        content=(
+            "具体测试映射：`test/iscsi_tgt/perf/iscsi_initiator.sh`。\n"
+            "运行后观测产物：`test/iscsi_tgt/perf/perf_output/iscsi_fio.json`。"
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert not any(
+        issue["code"] == "evidence_path_not_found"
+        for issue in audit["issues"]
+    )
+
+
 def test_workbench_runner_classifies_unhelpful_agent_greeting(tmp_path, monkeypatch):
     from app.config import settings
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer

@@ -627,7 +627,11 @@ def audit_test_activity_response(
             )
         )
     elif repo.is_dir():
-        missing_paths = [path for path in evidence_paths if not (repo / path).exists()]
+        missing_paths = [
+            path
+            for path in evidence_paths
+            if not (repo / path).exists() and not _looks_like_runtime_generated_path(path)
+        ]
         for path in missing_paths:
             issues.append(
                 _issue(
@@ -678,7 +682,7 @@ def _audit_professional_constraints(
         conflict_found = False
         for pattern in constraint.get("conflict_patterns") or []:
             try:
-                conflicts = list(re.finditer(str(pattern), content, flags=re.IGNORECASE | re.DOTALL))
+                conflicts = list(re.finditer(str(pattern), content, flags=re.IGNORECASE))
             except re.error:
                 continue
             if not conflicts:
@@ -736,6 +740,16 @@ def _combined_response_evidence_paths(content: str) -> list[str]:
         path.rstrip(".,;，。；")
         for path in candidates
         if not any(marker in path for marker in "*?[]")
+    )
+
+
+def _looks_like_runtime_generated_path(path: str) -> bool:
+    candidate = Path(str(path or ""))
+    generated_suffixes = {".csv", ".html", ".json", ".log", ".xml", ".xlsx"}
+    generated_markers = {"artifact", "artifacts", "output", "outputs", "report", "reports", "result", "results"}
+    return candidate.suffix.lower() in generated_suffixes and any(
+        any(marker in part.lower() for marker in generated_markers)
+        for part in candidate.parts[:-1]
     )
 
 
