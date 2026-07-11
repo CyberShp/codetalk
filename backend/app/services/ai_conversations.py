@@ -1835,6 +1835,17 @@ async def run_generation(
                 "请点击重试，或使用“代码分析 → 流程梳理 → SFMEA → 黑盒用例”工作流分步生成。",
             )
             return
+        content, bound_artifacts_materialized = await _materialize_bound_workflow_builtin_artifacts(
+            conversation=conversation,
+            run_id=run_id,
+            content=content,
+        )
+        if bound_artifacts_materialized:
+            bundled_content = await _agent_thread_artifact_content(
+                ai_thread_agent_artifact_dir(str(conversation["id"]), run_id)
+            )
+            if bundled_content:
+                content = bundled_content
         if not await _enforce_bound_workflow_artifacts(
             store=store,
             run_id=run_id,
@@ -1881,7 +1892,9 @@ async def run_generation(
             conversation=conversation,
             content=content,
             user_message=user_message["content"],
-            force_artifact=_agent_task_requests_downloadable_artifact(user_message["content"], content),
+            force_artifact=bound_artifacts_materialized
+            or _agent_task_requests_downloadable_artifact(user_message["content"], content),
+            artifact_only=bound_artifacts_materialized,
         )
         workflow_action = _bound_workflow_action(conversation)
         if workflow_action:
@@ -3358,6 +3371,100 @@ def _bound_workflow_required_artifacts(conversation: dict[str, Any]) -> list[dic
     return list(contracts.values())
 
 
+def _bound_workflow_builtin_artifact_prompt(conversation: dict[str, Any]) -> str:
+    contracts = _bound_workflow_required_artifacts(conversation)
+    if not contracts:
+        return ""
+    projected = [
+        {
+            key: contract[key]
+            for key in ("artifact", "type", "schema")
+            if key in contract
+        }
+        for contract in contracts
+    ]
+    return "\n".join([
+        "BUILTIN_WORKFLOW_ARTIFACT_PROTOCOL:",
+        "  rule: 当前内置模型必须把工作流文件交付给 CodeTalk 物化，不能只在正文声称已生成。",
+        "  response: 只返回一个 JSON 对象，格式为 {\"answer\":\"给用户的简短结论\",\"artifacts\":{\"文件名\":\"Markdown 文本或 JSON 值\"}}。",
+        "  constraints: artifacts 只能包含下列声明文件；JSON 文件必须直接提供对象/数组值并满足 schema。",
+        "  required: |",
+        *[f"    {line}" for line in json.dumps(projected, ensure_ascii=False, indent=2).splitlines()],
+    ])
+
+
+def _bound_workflow_json_payload(content: str) -> Any:
+    text = str(content or "").strip()
+    candidates = [text]
+    fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", text, re.IGNORECASE)
+    if fenced:
+        candidates.insert(0, fenced.group(1).strip())
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        candidates.append(text[start : end + 1])
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except (TypeError, json.JSONDecodeError):
+            continue
+    return None
+
+
+async def _materialize_bound_workflow_builtin_artifacts(
+    *,
+    conversation: dict[str, Any],
+    run_id: str,
+    content: str,
+) -> tuple[str, bool]:
+    contracts = _bound_workflow_required_artifacts(conversation)
+    if not contracts:
+        return content, False
+    payload = _bound_workflow_json_payload(content)
+    answer = content
+    values: dict[str, Any] = {}
+    if isinstance(payload, dict) and isinstance(payload.get("artifacts"), dict):
+        values = dict(payload["artifacts"])
+        if str(payload.get("answer") or "").strip():
+            answer = str(payload["answer"]).strip()
+    elif len(contracts) == 1:
+        contract = contracts[0]
+        artifact = str(contract["artifact"])
+        if Path(artifact).suffix.lower() == ".json" or str(contract.get("type") or "").lower() == "json":
+            if payload is not None:
+                values[artifact] = payload
+        else:
+            values[artifact] = content
+    if not values:
+        return answer, False
+    artifact_root = ai_thread_agent_artifact_dir(str(conversation["id"]), run_id)
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    materialized = False
+    for contract in contracts:
+        artifact = str(contract["artifact"])
+        if artifact not in values:
+            continue
+        relative = Path(artifact)
+        if relative.is_absolute() or ".." in relative.parts:
+            continue
+        path = artifact_root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        value = values[artifact]
+        is_json = path.suffix.lower() == ".json" or str(contract.get("type") or "").lower() == "json"
+        if is_json:
+            if isinstance(value, str):
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    pass
+            await _write_json_file(path, value)
+        else:
+            rendered = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, indent=2)
+            await _to_thread(path.write_text, rendered, "utf-8")
+        materialized = True
+    return answer, materialized
+
+
 def _bound_workflow_schema_errors(value: Any, schema: dict[str, Any], *, path: str = "$") -> list[str]:
     errors: list[str] = []
     expected = str(schema.get("type") or "").strip()
@@ -3375,6 +3482,9 @@ def _bound_workflow_schema_errors(value: Any, schema: dict[str, Any], *, path: s
         return [f"{path} 类型应为 {expected}"]
     if "enum" in schema and value not in (schema.get("enum") or []):
         errors.append(f"{path} 不在允许值范围内")
+    min_length = schema.get("minLength")
+    if isinstance(value, str) and isinstance(min_length, int) and len(value) < min_length:
+        errors.append(f"{path} 长度不能小于 {min_length}")
     if isinstance(value, dict):
         for field in schema.get("required") or []:
             if str(field) not in value:
@@ -3547,6 +3657,7 @@ def _build_prompt(
         f"{_source_first_contract(references, user_message)}\n\n"
         f"{_test_activity_contract_prompt(user_message=test_activity_context, repo_path=_conversation_initial_repo_path(conversation))}\n\n"
         f"{_bound_workflow_execution_prompt(conversation)}\n\n"
+        f"{_bound_workflow_builtin_artifact_prompt(conversation)}\n\n"
         f"{original_task_context}\n\n"
         f"线程范围: {conversation['scope_type']} / {conversation['scope_id']}\n"
         f"上下文引用:\n{chr(10).join(context_lines) if context_lines else '（暂无可用引用）'}"

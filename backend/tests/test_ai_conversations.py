@@ -5327,14 +5327,22 @@ async def test_bound_workflow_missing_builtin_artifact_fails_closed(
         "steps": [{
             "id": "analysis",
             "type": "agent_task",
-            "required_artifacts": ["test_design.md"],
+            "required_artifacts": ["test_design.md", "evidence.md"],
         }],
-        "outputs": [{
-            "id": "test_design",
-            "type": "markdown",
-            "from": "analysis",
-            "artifact": "test_design.md",
-        }],
+        "outputs": [
+            {
+                "id": "test_design",
+                "type": "markdown",
+                "from": "analysis",
+                "artifact": "test_design.md",
+            },
+            {
+                "id": "evidence",
+                "type": "markdown",
+                "from": "analysis",
+                "artifact": "evidence.md",
+            },
+        ],
     })
     await _seed_workspace(sqlite_db, "ws-bound-builtin-missing")
     store = AIConversationStore(sqlite_db)
@@ -5532,3 +5540,172 @@ async def test_bound_workflow_artifact_validation_checks_json_schema(
     )
     assert validation["status"] == "ok"
     assert validation["accepted"] == [{"artifact": "result.json", "size": 13}]
+
+
+async def test_bound_workflow_builtin_materializes_markdown_and_json_envelope(
+    sqlite_db,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services.ai_conversations import (
+        AIConversationStore,
+        ai_thread_agent_artifact_dir,
+        run_generation,
+    )
+    from app.services.workflow_dsl import WorkflowStore
+
+    class BuiltinArtifactEnvelopeLLM:
+        async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
+            joined = "\n".join(str(item.get("content") or "") for item in messages)
+            assert "BUILTIN_WORKFLOW_ARTIFACT_PROTOCOL" in joined
+            yield json.dumps({
+                "answer": "已生成模块分析交付件。",
+                "artifacts": {
+                    "analysis.md": "# 模块分析\n\n入口与错误恢复路径已确认。\n",
+                    "result.json": {"summary": "入口已确认", "cases": []},
+                },
+            }, ensure_ascii=False)
+
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path / "data"))
+    WorkflowStore(settings.data_path / "workbench" / "workflows.db").save_workflow({
+        "id": "builtin_artifact_success",
+        "name": "内置模型文件成功路径",
+        "version": 1,
+        "inputs": [],
+        "steps": [{
+            "id": "analysis",
+            "type": "agent_task",
+            "required_artifacts": ["analysis.md", "result.json"],
+        }],
+        "outputs": [
+            {"id": "analysis", "type": "markdown", "from": "analysis", "artifact": "analysis.md"},
+            {
+                "id": "result",
+                "type": "json",
+                "from": "analysis",
+                "artifact": "result.json",
+                "schema": {
+                    "type": "object",
+                    "required": ["summary", "cases"],
+                    "properties": {
+                        "summary": {"type": "string", "minLength": 3},
+                        "cases": {"type": "array"},
+                    },
+                },
+            },
+        ],
+    })
+    await _seed_workspace(sqlite_db, "ws-bound-builtin-success")
+    store = AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="workspace",
+        scope_id="ws-bound-builtin-success",
+        workspace_id="ws-bound-builtin-success",
+        title="内置模型文件成功路径",
+        initial_context={"selected_workflow_id": "builtin_artifact_success"},
+    )
+    created = await store.create_user_message_and_run(
+        conversation_id=conversation["id"],
+        content="总结模块入口",
+        references=[],
+    )
+
+    await run_generation(
+        store=store,
+        run_id=created["run"]["id"],
+        llm=BuiltinArtifactEnvelopeLLM(),
+    )
+
+    run = await store.get_run(created["run"]["id"])
+    assert run["status"] == "completed"
+    artifact_dir = ai_thread_agent_artifact_dir(conversation["id"], created["run"]["id"])
+    assert "入口与错误恢复路径已确认" in (artifact_dir / "analysis.md").read_text(encoding="utf-8")
+    assert json.loads((artifact_dir / "result.json").read_text(encoding="utf-8")) == {
+        "summary": "入口已确认",
+        "cases": [],
+    }
+    validation = json.loads(
+        (artifact_dir / "bound_workflow_artifact_validation.json").read_text(encoding="utf-8")
+    )
+    assert validation["status"] == "ok"
+    messages = await store.list_messages(conversation["id"])
+    assistant = [item for item in messages if item["role"] == "assistant"][-1]
+    assert any(action["id"] == "download_run_artifact" for action in assistant["actions"])
+
+
+async def test_bound_workflow_agent_rejects_min_length_schema_violation(
+    sqlite_db,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services import ai_conversations
+    from app.services.workflow_dsl import WorkflowStore
+
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path / "data"))
+    WorkflowStore(settings.data_path / "workbench" / "workflows.db").save_workflow({
+        "id": "agent_min_length_violation",
+        "name": "Agent minLength 反例",
+        "version": 1,
+        "inputs": [],
+        "steps": [{
+            "id": "analysis",
+            "type": "agent_task",
+            "required_artifacts": ["result.json"],
+        }],
+        "outputs": [{
+            "id": "result",
+            "type": "json",
+            "from": "analysis",
+            "artifact": "result.json",
+            "schema": {
+                "type": "object",
+                "required": ["summary"],
+                "properties": {"summary": {"type": "string", "minLength": 3}},
+            },
+        }],
+    })
+    await _seed_workspace(sqlite_db, "ws-bound-agent-min-length")
+
+    async def fake_stream_agent_runtime(**kwargs):
+        artifact_dir = Path(kwargs["runtime"]["env"]["CODETALK_AGENT_ARTIFACT_DIR"])
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        (artifact_dir / "result.json").write_text('{"summary": ""}', encoding="utf-8")
+        yield "模块分析已完成。"
+
+    monkeypatch.setattr(ai_conversations, "stream_agent_runtime", fake_stream_agent_runtime)
+    monkeypatch.setattr(ai_conversations, "_agent_answer_requires_repair", lambda *_args, **_kwargs: False)
+    store = ai_conversations.AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="workspace",
+        scope_id="ws-bound-agent-min-length",
+        workspace_id="ws-bound-agent-min-length",
+        title="Agent minLength 反例",
+        runtime_type="agent_runtime",
+        agent_runtime_id="fake-agent",
+        initial_context={"selected_workflow_id": "agent_min_length_violation"},
+    )
+    created = await store.create_user_message_and_run(
+        conversation_id=conversation["id"],
+        content="总结模块入口",
+        references=[],
+    )
+
+    await ai_conversations.run_agent_generation(
+        store=store,
+        run_id=created["run"]["id"],
+        runtime={
+            "id": "fake-agent",
+            "name": "Fake Agent",
+            "command": "/bin/echo",
+            "args": [],
+            "prompt_transport": "stdin",
+            "output_mode": "plain",
+            "completion_mode": "process_exit",
+        },
+    )
+
+    run = await store.get_run(created["run"]["id"])
+    assert run["status"] == "failed"
+    assert "长度不能小于 3" in run["error"]
