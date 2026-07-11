@@ -3579,6 +3579,7 @@ class TestAIConversationsAPI:
             runtime={
                 "id": "fake-agent",
                 "name": "Fake Agent",
+                "provider": "fake",
                 "command": "/bin/echo",
                 "args": [],
                 "prompt_transport": "stdin",
@@ -3673,6 +3674,7 @@ class TestAIConversationsAPI:
             runtime={
                 "id": "fake-agent",
                 "name": "Fake Agent",
+                "provider": "fake",
                 "command": "/bin/echo",
                 "args": [],
                 "prompt_transport": "stdin",

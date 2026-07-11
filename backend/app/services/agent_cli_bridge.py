@@ -1397,6 +1397,14 @@ def _decode(value: bytes) -> str:
 
 
 def _decode_strict_if_complete(value: bytes) -> str | None:
+    # A partial UTF-8 code point can also be valid GB18030. Do not fall back to
+    # a legacy encoding until the UTF-8 sequence is complete, otherwise stream
+    # chunk boundaries turn valid Chinese output into mojibake.
+    try:
+        value.decode("utf-8", "strict")
+    except UnicodeDecodeError as exc:
+        if exc.reason == "unexpected end of data" and exc.end == len(value):
+            return None
     best_text: str | None = None
     for encoding in _candidate_decodings():
         try:

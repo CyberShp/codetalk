@@ -3006,7 +3006,11 @@ def _test_activity_contract_prompt(*, user_message: str, repo_path: str | None =
         workflow_outputs=requested_outputs,
         user_requirements=user_message,
     )
-    payload = json.dumps(contract, ensure_ascii=False, sort_keys=True)
+    payload = json.dumps(
+        _test_activity_prompt_contract(contract),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
     return "\n".join([
         "TEST_ACTIVITY_CONTRACT:",
         "  active: true",
@@ -3014,6 +3018,21 @@ def _test_activity_contract_prompt(*, user_message: str, repo_path: str | None =
         "  payload_json: |",
         *[f"    {line}" for line in payload.splitlines()],
     ])
+
+
+def _test_activity_prompt_contract(contract: dict[str, Any]) -> dict[str, Any]:
+    """Reference the final user block instead of duplicating its text in the prompt."""
+
+    payload = json.loads(json.dumps(contract, ensure_ascii=False))
+    marker = "<CURRENT_USER_MESSAGE>"
+    payload["target"] = marker
+    payload["user_requirements"] = marker
+    rationale = payload.get("focus_rationale")
+    if isinstance(rationale, list):
+        for item in rationale:
+            if isinstance(item, dict) and item.get("source") == "user_explicit_requirement":
+                item["summary"] = marker
+    return payload
 
 
 def _test_activity_contract_payload(*, user_message: str, repo_path: str | None = None) -> dict[str, Any]:
@@ -3067,6 +3086,7 @@ def _agent_thread_invocation_manifest(
         "runtime": {
             "id": str(runtime.get("id") or conversation.get("agent_runtime_id") or ""),
             "name": str(runtime.get("name") or ""),
+            "provider": str(runtime.get("provider") or ""),
             "command": redact_agent_diagnostic_text(str(runtime.get("command") or "")),
             "args": [redact_agent_diagnostic_text(str(item)) for item in runtime.get("args") or []],
             "prompt_transport": str(runtime.get("prompt_transport") or "stdin"),

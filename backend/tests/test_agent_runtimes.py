@@ -973,7 +973,14 @@ class TestAgentRuntimes:
             assert latest["status"] == "failed"
             serialized_run = json.dumps(latest, ensure_ascii=False)
             assert secret not in serialized_run
-            assert "<redacted>" in serialized_run
+            assert "执行器运行失败" in serialized_run
+            events = await client.get(
+                f"/api/ai/conversations/{conversation['id']}/events",
+                params={"run_id": latest["id"], "limit": 200},
+            )
+            serialized_events = json.dumps(events.json(), ensure_ascii=False)
+            assert secret not in serialized_events
+            assert "<redacted>" in serialized_events
 
             stream = await client.get(f"/api/ai/conversations/{conversation['id']}/stream")
             serialized_events = stream.text
@@ -988,7 +995,7 @@ class TestAgentRuntimes:
         app = _test_app(sqlite_db)
         agent_code = (
             "print('STATUS: 正在读取工作区源码 lib/nvmf/connect.c'); "
-            "print('最终答案：## 结论\\n已经基于源码生成黑盒测试建议。\\n\\n"
+            "print('最终答案：STATUS_OUTPUT_FILTER_OK\\nstatus_output_separated=true\\n\\n## 结论\\n已经基于源码生成黑盒测试建议。\\n\\n"
             "## 代码证据\\n- lib/nvmf/connect.c: connect 状态检查。\\n"
             "- test/nvmf: 可承载连接失败路径。\\n\\n"
             "## 黑盒测试用例\\n"
@@ -1041,6 +1048,7 @@ class TestAgentRuntimes:
             messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
             body = messages.json()
             assert [item["role"] for item in body["items"]] == ["user", "assistant"]
+            assert "STATUS_OUTPUT_FILTER_OK" in body["items"][1]["content"]
             assert "已经基于源码生成黑盒测试建议" in body["items"][1]["content"]
             assert "## 代码证据" in body["items"][1]["content"]
             assert "## 黑盒测试用例" in body["items"][1]["content"]
@@ -1124,7 +1132,7 @@ class TestAgentRuntimes:
 
             messages = await client.get(f"/api/ai/conversations/{conversation.json()['id']}/messages")
             assistant = [item for item in messages.json()["items"] if item["role"] == "assistant"][-1]
-            assert "最终答案：NGA 已输出完整内容。" in assistant["content"]
+            assert "NGA 已输出完整内容。" in assistant["content"]
             final_conversation = await client.get(f"/api/ai/conversations/{conversation.json()['id']}")
             assert final_conversation.json()["status"] == "idle"
 
@@ -1825,7 +1833,7 @@ class TestAgentRuntimes:
         agent_code = (
             "import json; "
             "print(json.dumps({'type':'status','message':'正在调用外部 agent 读取源码'}, ensure_ascii=False)); "
-            "print(json.dumps({'content':'最终答案：外部 agent 已完成源码证据分析。'}, ensure_ascii=False))"
+            "print(json.dumps({'content':'最终答案：STATUS_EVENT_FILTER_OK\\nstatus_event_separated=true'}, ensure_ascii=False))"
         )
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -1873,7 +1881,7 @@ class TestAgentRuntimes:
             messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
             body = messages.json()
             assert [item["role"] for item in body["items"]] == ["user", "assistant"]
-            assert "最终答案：外部 agent 已完成源码证据分析。" in body["items"][1]["content"]
+            assert "STATUS_EVENT_FILTER_OK" in body["items"][1]["content"]
             assert "正在调用外部 agent" not in body["items"][1]["content"]
 
             stream = await client.get(f"/api/ai/conversations/{conversation['id']}/stream")
@@ -1943,7 +1951,7 @@ class TestAgentRuntimes:
             messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
             body = messages.json()
             assert [item["role"] for item in body["items"]] == ["user", "assistant"]
-            assert "最终答案：外部 agent 已恢复并完成源码证据分析。" in body["items"][1]["content"]
+            assert "外部 agent 已恢复并完成源码证据分析。" in body["items"][1]["content"]
             assert "临时工具错误" not in body["items"][1]["content"]
 
             stream = await client.get(f"/api/ai/conversations/{conversation['id']}/stream")
@@ -2065,7 +2073,7 @@ class TestAgentRuntimes:
             "from pathlib import Path\n"
             "text = Path('lib/nvmf/auth.c').read_text(encoding='utf-8')\n"
             "print(text)\n"
-            "print('## 结论\\n源码全文已读取，但最终只保留边界摘要。\\n\\n## 代码证据\\n- lib/nvmf/auth.c: auth probe。\\n- test/nvmf: auth 黑盒测试入口。\\n\\n## 黑盒测试用例\\n1. 用例：认证成功；前置条件：凭据有效；步骤：发起连接；预期结果：认证通过。\\n2. 用例：认证失败；前置条件：凭据无效；步骤：发起连接；预期结果：认证拒绝。')\n"
+            "print('## 结论\\nSOURCE_DUMP_FILTER_OK\\nsource_dump_hidden=true\\n源码全文已读取，证据文件为 lib/nvmf/auth.c。')\n"
         )
 
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -2114,6 +2122,7 @@ class TestAgentRuntimes:
             body = messages.json()
             assert [item["role"] for item in body["items"]] == ["user", "assistant"]
             assistant = body["items"][1]["content"]
+            assert "SOURCE_DUMP_FILTER_OK" in assistant
             assert "源码全文" in assistant
             assert "已折叠" in assistant
             assert "lib/nvmf/auth.c" in assistant
@@ -2132,7 +2141,8 @@ class TestAgentRuntimes:
                 if event["event_type"] == "delta" and event["payload"].get("kind") != "diagnostic"
             ]
             visible_stream = "".join(answer_chunks)
-            assert "## 黑盒测试用例" in visible_stream
+            assert "SOURCE_DUMP_FILTER_OK" in visible_stream
+            assert "源码全文已读取" in visible_stream
             assert "lib/nvmf/auth.c" in visible_stream
             assert '#include "spdk/stdinc.h"' not in visible_stream
             assert "spdk_nvmf_auth_probe_69" not in visible_stream
@@ -2191,7 +2201,7 @@ class TestAgentRuntimes:
             messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
             body = messages.json()
             assert [item["role"] for item in body["items"]] == ["user", "assistant"]
-            assert "最终答案：已根据源码证据完成分析。" in body["items"][1]["content"]
+            assert "已根据源码证据完成分析。" in body["items"][1]["content"]
             assert "正在调用 rg 搜索源码" not in body["items"][1]["content"]
 
             stream = await client.get(f"/api/ai/conversations/{conversation['id']}/stream")
@@ -5483,7 +5493,7 @@ class TestAgentRuntimes:
         answer = "".join(content for kind, content in segments if kind == "answer")
         diagnostics = "\n".join(content for kind, content in segments if kind == "diagnostic")
 
-        assert answer == "最终答案：只展示源码分析结论。"
+        assert answer == "只展示源码分析结论。"
         assert "内部推理" not in answer
         assert "tool_result" not in answer
         assert "secret/path" not in answer
@@ -5506,7 +5516,7 @@ class TestAgentRuntimes:
         answer = "".join(content for kind, content in segments if kind == "answer")
         diagnostics = "\n".join(content for kind, content in segments if kind == "diagnostic")
 
-        assert "最终答案：只展示源码分析结论。" in answer
+        assert "只展示源码分析结论。" in answer
         assert "Read(file_path" not in answer
         assert "Bash(command" not in answer
         assert "nvmf_ctrlr_connect(void" not in answer
@@ -5584,7 +5594,7 @@ class TestAgentRuntimes:
         segments = [segment for chunk in chunks for segment in _agent_output_segments(chunk)]
         answer = "".join(content for kind, content in segments if kind == "answer")
         diagnostics = [content for kind, content in segments if kind == "diagnostic"]
-        assert answer.strip() == "最终答案：只展示可交付正文。"
+        assert answer.strip() == "只展示可交付正文。"
         assert "内部推理" not in answer
         assert "拒绝诊断" not in answer
         assert any("内部推理：先搜索源码。" in item for item in diagnostics)
@@ -5623,7 +5633,7 @@ class TestAgentRuntimes:
         segments = [segment for chunk in chunks for segment in _agent_output_segments(chunk)]
         answer = "".join(content for kind, content in segments if kind == "answer")
         diagnostics = "\n".join(content for kind, content in segments if kind == "diagnostic")
-        assert answer == "最终答案：已基于源码完成分析。"
+        assert answer == "已基于源码完成分析。"
         assert "command: rg nvmf_connect lib/nvmf" in diagnostics
         assert "thread.started" not in answer + diagnostics
 
