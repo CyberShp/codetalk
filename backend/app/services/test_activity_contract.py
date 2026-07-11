@@ -157,7 +157,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"(?:chap\s*)?(?:认证|authentication).{0,100}(?:由|通过).{0,30}iscsi_negotiate_chap_param.{0,40}(?:执行|处理|完成)",
                 ],
                 "correction_patterns": [
-                    r"iscsi_negotiate_chap_param.{0,60}(?:不执行|不负责|并非|does not).{0,50}(?:chap\s*)?(?:认证|authentication)",
+                    r"iscsi_negotiate_chap_param.{0,160}(?:不执行|不负责|并非|does not).{0,50}(?:chap\s*)?(?:认证|authentication)",
                 ],
             },
             {

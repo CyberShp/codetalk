@@ -645,7 +645,8 @@ function agentLifecycleLabel({
   const latestStatus = eventTextValue(latestTypedEvent?.payload.status);
   if (runStatus === "failed" || latestKind === "error") return "失败";
   if (runStatus === "cancelled") return "已取消";
-  if (["artifact", "artifact_progress"].includes(latestKind)) return "产物就绪";
+  if (latestKind === "artifact") return "产物就绪";
+  if (latestKind === "artifact_progress") return "生成产物中";
   if (["tool_use", "tool_result"].includes(latestKind)) return "调用工具";
   if (["thinking", "reasoning"].includes(latestKind)) return "思考中";
   if (latestKind === "status") {

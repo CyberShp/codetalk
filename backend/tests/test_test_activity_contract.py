@@ -751,6 +751,7 @@ def test_iscsi_professional_constraints_accept_explicit_fact_corrections(tmp_pat
             "连接清理由 `lib/iscsi/conn.c` 析构路径负责，`iscsi_param_free` 只释放参数链。\n"
             "`spdk_startup` 不负责 Login、认证或连接清理。\n"
             "`iscsi_negotiate_chap_param` 不执行 CHAP 认证，实际校验由 `iscsi_auth_params` 完成。\n"
+            "| CHAP 策略设置 | `iscsi_negotiate_chap_param` | 1532-1543 | 根据 `disable_chap`/`require_chap` 设置 `AuthMethod`。不执行实际认证。 |\n"
             "Status-Detail 0x05 是 Unsupported Version，不是参数错误。\n"
             "Unsupported Version 的 status_detail = `0x05`，不能泛化为参数错误。"
         ),
