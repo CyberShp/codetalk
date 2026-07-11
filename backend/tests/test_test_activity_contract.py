@@ -1160,6 +1160,9 @@ def test_ai_thread_prompts_include_test_activity_contract_for_testing_work():
         assert "不能自由决定交付件骨架" in prompt
         assert "test_mapping 必须指向具体存在的测试文件" in prompt
         assert "不能只写测试目录" in prompt
+        assert "FINAL_FACT_CHECK" in prompt
+        assert "iscsi_negotiate_params 使用 alloc_len" in prompt
+    assert agent_prompt.rfind("FINAL_FACT_CHECK") < agent_prompt.rfind("用户问题：")
 
 
 def test_builtin_prompt_rehydrates_artifact_and_deduplicates_current_request(tmp_path, monkeypatch):

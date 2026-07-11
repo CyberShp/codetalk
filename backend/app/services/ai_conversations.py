@@ -3331,6 +3331,18 @@ def _test_activity_contract_prompt(*, user_message: str, repo_path: str | None =
         ensure_ascii=False,
         sort_keys=True,
     )
+    fact_check_lines = [
+        "FINAL_FACT_CHECK:",
+        "  rule: 输出最终答案前逐条复核下列已验证事实；删除任何冲突结论。已有源码防线阻止的结果不得写成已确认缺陷，除非明确标注为待验证假设。",
+    ]
+    for constraint in contract.get("professional_constraints") or []:
+        if not isinstance(constraint, dict):
+            continue
+        assertion = str(constraint.get("assertion") or "").strip()
+        if assertion:
+            fact_check_lines.append(
+                f"  - [{constraint.get('id') or 'verified_fact'}] {assertion}"
+            )
     return "\n".join([
         "TEST_ACTIVITY_CONTRACT:",
         "  active: true",
@@ -3338,6 +3350,7 @@ def _test_activity_contract_prompt(*, user_message: str, repo_path: str | None =
         "  evidence_rule: source_evidence 必须引用具体源码文件、符号或行号；test_mapping 必须指向具体存在的测试文件，不能只写测试目录。",
         "  payload_json: |",
         *[f"    {line}" for line in payload.splitlines()],
+        *fact_check_lines,
     ])
 
 
