@@ -2340,6 +2340,22 @@ test("shows Chinese failure reason and recovery actions for a real failed agent 
     await expect(page.getByText(/执行器异常退出，退出码 2。请查看内部诊断确认失败节点/)).toBeVisible();
     await expect(page.getByRole("button", { name: "从失败节点重试" })).toBeVisible();
     await expect(page.getByRole("button", { name: "编辑工作流" })).toBeVisible();
+    const diagnosticDownload = page.getByRole("link", { name: "下载诊断包" });
+    await expect(diagnosticDownload).toBeVisible();
+    await expect(diagnosticDownload).toHaveAttribute(
+      "href",
+      new RegExp(`/api/workbench/task-runs/[^/]+/diagnostic-package$`),
+    );
+    const [diagnosticPackage] = await Promise.all([
+      page.waitForEvent("download"),
+      diagnosticDownload.click(),
+    ]);
+    expect(diagnosticPackage.suggestedFilename()).toMatch(/^task_run_.+-diagnostic\.zip$/);
+    const diagnosticPath = await diagnosticPackage.path();
+    expect(diagnosticPath).toBeTruthy();
+    const diagnosticBytes = fs.readFileSync(diagnosticPath!);
+    expect(diagnosticBytes.byteLength).toBeGreaterThan(100);
+    expect(diagnosticBytes.subarray(0, 2).toString("ascii")).toBe("PK");
 
     const diagnostics = page.getByRole("group", { name: "运行详细诊断" });
     await expect(diagnostics).toBeVisible();

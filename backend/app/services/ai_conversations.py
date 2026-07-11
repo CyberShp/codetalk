@@ -938,7 +938,11 @@ class AIConversationStore:
             run_id=run_id,
             conversation_id=conversation_id,
             event_type="status",
-            payload={"status": "queued", "message": "已复用原始输入进入重试队列，正在准备上下文。"},
+            payload={
+                "status": "queued",
+                "message": "已复用原始输入进入重试队列，正在准备上下文。",
+                "source_run_id": source_run_id,
+            },
         )
         message = await self.get_message(message_id)
         return {
@@ -1687,6 +1691,10 @@ async def run_generation(
     if not user_message:
         await store.fail_run(run_id, "未找到本轮用户消息")
         return
+    test_activity_context = _test_activity_request_context(
+        messages,
+        user_message["content"],
+    )
     references = user_message.get("references") or []
     await store.mark_run_running(run_id)
     await store.append_event(
@@ -1701,15 +1709,26 @@ async def run_generation(
             ),
         },
     )
-    prompt = _build_prompt(conversation, messages, references, user_message["content"])
+    quality_retry_feedback = await _quality_retry_feedback_for_run(
+        store=store,
+        run=run,
+        conversation=conversation,
+    )
+    prompt = _build_prompt(
+        conversation,
+        messages,
+        references,
+        user_message["content"],
+        quality_retry_feedback=quality_retry_feedback,
+    )
     chunks: list[str] = []
     artifact_stream_notice_sent = False
     wants_downloadable_artifact = _agent_task_requests_downloadable_artifact(
-        user_message["content"],
-        user_message["content"],
+        test_activity_context,
+        test_activity_context,
     )
     requires_strict_quality_gate = _requires_strict_test_activity_quality_gate(
-        user_message["content"]
+        test_activity_context
     )
     requested_token_budget = (
         max(settings.ai_conversation_max_output_tokens, _TEST_ACTIVITY_OUTPUT_TOKEN_BUDGET)
@@ -1820,7 +1839,7 @@ async def run_generation(
                 or _conversation_initial_repo_path(conversation)
             )
             contract = _test_activity_contract_payload(
-                user_message=user_message["content"],
+                user_message=test_activity_context,
                 repo_path=repo_path,
             )
             audit = audit_test_activity_response(
@@ -1967,6 +1986,10 @@ async def run_agent_generation(
     if not user_message:
         await store.fail_run(run_id, "未找到本轮用户消息")
         return
+    test_activity_context = _test_activity_request_context(
+        messages,
+        user_message["content"],
+    )
     references = user_message.get("references") or []
     await store.mark_run_running(run_id)
     repo_path = await _conversation_repo_path(conversation)
@@ -1995,6 +2018,11 @@ async def run_agent_generation(
     prompt_runtime = dict(runtime)
     if str(runtime.get("session_persistence") or "none") == "resume_args" and not resume_session_id:
         prompt_runtime["force_prompt_history"] = True
+    quality_retry_feedback = await _quality_retry_feedback_for_run(
+        store=store,
+        run=run,
+        conversation=conversation,
+    )
     prompt = _build_agent_prompt(
         conversation,
         messages,
@@ -2002,6 +2030,7 @@ async def run_agent_generation(
         user_message["content"],
         prompt_runtime,
         repo_path=repo_path,
+        quality_retry_feedback=quality_retry_feedback,
     )
     chunks: list[str] = []
     live_chunks: list[str] = []
@@ -2018,6 +2047,7 @@ async def run_agent_generation(
         cwd=cwd,
         repo_path=repo_path,
         user_message=user_message["content"],
+        test_activity_context=test_activity_context,
         references=references,
         artifact_dir=agent_artifact_dir,
         resume_session_id=resume_session_id,
@@ -2216,13 +2246,13 @@ async def run_agent_generation(
             content = agent_artifact_content
             adopted_agent_artifact = True
         if (
-            _agent_task_requests_downloadable_artifact(user_message["content"], content)
-            and _requires_strict_test_activity_quality_gate(user_message["content"])
+            _agent_task_requests_downloadable_artifact(test_activity_context, content)
+            and _requires_strict_test_activity_quality_gate(test_activity_context)
             and not await _enforce_ai_thread_test_activity_quality(
                 store=store,
                 run_id=run_id,
                 conversation=conversation,
-                user_message=user_message["content"],
+                user_message=test_activity_context,
                 content=content,
                 repo_path=repo_path,
             )
@@ -3205,7 +3235,14 @@ def _build_prompt(
     messages: list[dict[str, Any]],
     references: list[dict[str, Any]],
     user_message: str,
+    *,
+    quality_retry_feedback: str = "",
 ) -> list[dict[str, str]]:
+    test_activity_context = _test_activity_request_context(messages, user_message)
+    original_task_context = _original_test_activity_context_prompt(
+        test_activity_context,
+        current_user_message=user_message,
+    )
     context_lines = []
     for index, ref in enumerate(references, start=1):
         context_lines.append(
@@ -3223,6 +3260,8 @@ def _build_prompt(
         for msg in messages[-_MAX_HISTORY_MESSAGES:]
         if msg["role"] in {"user", "assistant"}
     ]
+    if quality_retry_feedback:
+        history = []
     current = str(user_message or "").strip()
     for index in range(len(history) - 1, -1, -1):
         if history[index]["role"] == "user" and history[index]["content"].strip() == current:
@@ -3240,11 +3279,22 @@ def _build_prompt(
         "历史下载产物只用于延续上下文，不得只回复历史摘要或声称产物已经存在。\n\n"
         f"{_codex_style_answer_instruction()}\n\n"
         f"{_source_first_contract(references, user_message)}\n\n"
-        f"{_test_activity_contract_prompt(user_message=user_message, repo_path=_conversation_initial_repo_path(conversation))}\n\n"
+        f"{_test_activity_contract_prompt(user_message=test_activity_context, repo_path=_conversation_initial_repo_path(conversation))}\n\n"
+        f"{original_task_context}\n\n"
         f"线程范围: {conversation['scope_type']} / {conversation['scope_id']}\n"
         f"上下文引用:\n{chr(10).join(context_lines) if context_lines else '（暂无可用引用）'}"
     )
-    return [{"role": "system", "content": system}, *history, {"role": "user", "content": user_message}]
+    retry_messages = (
+        [{"role": "system", "content": quality_retry_feedback}]
+        if quality_retry_feedback
+        else []
+    )
+    return [
+        {"role": "system", "content": system},
+        *history,
+        *retry_messages,
+        {"role": "user", "content": user_message},
+    ]
 
 
 def _build_agent_prompt(
@@ -3255,7 +3305,9 @@ def _build_agent_prompt(
     runtime: dict[str, Any],
     *,
     repo_path: str | None = None,
+    quality_retry_feedback: str = "",
 ) -> str:
+    test_activity_context = _test_activity_request_context(messages, user_message, runtime)
     lines = [
         "你正在通过 CodeTalks AI 线程作为本机 Agent 执行任务。",
         f"执行器：{runtime.get('name') or runtime.get('id')}",
@@ -3267,7 +3319,11 @@ def _build_agent_prompt(
         _codex_style_answer_instruction(),
         _agent_artifact_delivery_contract(user_message),
         _source_first_contract(references, user_message),
-        _test_activity_contract_prompt(user_message=user_message, repo_path=repo_path or _conversation_initial_repo_path(conversation)),
+        _test_activity_contract_prompt(user_message=test_activity_context, repo_path=repo_path or _conversation_initial_repo_path(conversation)),
+        _original_test_activity_context_prompt(
+            test_activity_context,
+            current_user_message=user_message,
+        ),
         "",
     ]
     sentinel = str(runtime.get("sentinel_text") or "").strip()
@@ -3277,7 +3333,11 @@ def _build_agent_prompt(
             "不要在正文中解释这个结束标记。",
             "",
         ])
-    history = _agent_prompt_history(messages, user_message, runtime)
+    history = (
+        []
+        if quality_retry_feedback
+        else _agent_prompt_history(messages, user_message, runtime)
+    )
     for message in history:
         role = message.get("role", "user")
         content = str(message.get("content") or "")
@@ -3287,6 +3347,8 @@ def _build_agent_prompt(
             lines.append("历史用户消息：")
         lines.append(content)
         lines.append("")
+    if quality_retry_feedback:
+        lines.extend([quality_retry_feedback, ""])
     if history:
         lines.append("本轮用户问题：")
     else:
@@ -3295,17 +3357,177 @@ def _build_agent_prompt(
     return "\n".join(lines).strip()
 
 
+def _test_activity_request_context(
+    messages: list[dict[str, Any]],
+    current_user_message: str,
+    runtime: dict[str, Any] | None = None,
+) -> str:
+    """Keep the original test task attached to follow-up and quality-retry turns."""
+
+    user_messages = [
+        str(message.get("content") or "").strip()
+        for message in messages
+        if message.get("role") == "user" and str(message.get("content") or "").strip()
+    ]
+    current = str(current_user_message or "").strip()
+    if current and current not in user_messages:
+        user_messages.append(current)
+    continues_test_task = bool(
+        _looks_like_test_activity_request(current)
+        or _requires_strict_test_activity_quality_gate(current)
+        or re.search(r"(?:修订|重做|重新输出|重新生成|重试|上一轮|前一轮)", current, flags=re.IGNORECASE)
+    )
+    if not continues_test_task:
+        return current
+    first_task_index = next(
+        (
+            index
+            for index, content in enumerate(user_messages)
+            if _looks_like_test_activity_request(content)
+            or _requires_strict_test_activity_quality_gate(content)
+        ),
+        None,
+    )
+    if first_task_index is None:
+        return current
+    relevant = user_messages[first_task_index:]
+    runtime = runtime if isinstance(runtime, dict) else {}
+    if (
+        str(runtime.get("session_persistence") or "none") == "resume_args"
+        and not runtime.get("force_prompt_history")
+        and len(relevant) > 1
+    ):
+        relevant = [relevant[0], relevant[-1]]
+    if len(relevant) == 1:
+        return relevant[0]
+    return "\n\n".join(
+        f"[测试活动用户消息 {index}]\n{content}"
+        for index, content in enumerate(relevant, start=1)
+    )
+
+
+def _original_test_activity_context_prompt(
+    context: str,
+    *,
+    current_user_message: str,
+) -> str:
+    current = str(current_user_message or "").strip()
+    if not context or context == current:
+        return ""
+    return "\n".join(
+        [
+            "ORIGINAL_TEST_ACTIVITY_REQUEST_CONTEXT:",
+            "  rule: 这是本线程从原始任务到当前修订要求的完整用户输入。不得遗漏或改写；当前消息仍是本轮直接指令。",
+            "  content: |",
+            *[f"    {line}" for line in context.splitlines()],
+        ]
+    )
+
+
+def _quality_retry_feedback_text(audit: dict[str, Any]) -> str:
+    issues = [item for item in audit.get("issues") or [] if isinstance(item, dict)]
+    recommendations = [
+        str(item).strip()
+        for item in audit.get("recommendations") or []
+        if str(item).strip()
+    ]
+    if not issues and not recommendations:
+        return ""
+    lines = [
+        "QUALITY_RETRY_FEEDBACK:",
+        f"  previous_score: {int(audit.get('score') or 0)}",
+        "  rule: 这是上一轮质量门禁的真实反馈。本轮必须逐项修正并重新输出完整交付件；不要只解释错误，也不要删减用户原始要求。",
+        "  issues:",
+    ]
+    for issue in issues[:12]:
+        issue_id = str(issue.get("constraint_id") or issue.get("code") or "quality_issue").strip()
+        message = redact_agent_diagnostic_text(str(issue.get("message") or "").strip())
+        lines.append(f"    - [{issue_id}] {message[:1200]}")
+    if recommendations:
+        lines.append("  recommendations:")
+        for recommendation in recommendations[:8]:
+            lines.append(
+                f"    - {redact_agent_diagnostic_text(recommendation)[:1200]}"
+            )
+    return "\n".join(lines)
+
+
+def _quality_retry_draft_text(content: str, *, limit: int = 40_000) -> str:
+    draft = redact_agent_diagnostic_text(str(content or "").strip())
+    if not draft:
+        return ""
+    if len(draft) > limit:
+        draft = draft[:limit] + "\n\n[草稿已按长度上限截断]"
+    return "\n".join(
+        [
+            "REJECTED_DRAFT_TO_REPAIR:",
+            "  rule: 这是紧邻上一轮、未通过门禁的草稿，只能修订，不能原样复用。保留已正确且有证据的章节；逐项修正 QUALITY_RETRY_FEEDBACK，并重新输出完整交付件。",
+            "  draft: |",
+            *[f"    {line}" for line in draft.splitlines()],
+        ]
+    )
+
+
+async def _quality_retry_feedback_for_run(
+    *,
+    store: AIConversationStore,
+    run: dict[str, Any],
+    conversation: dict[str, Any],
+) -> str:
+    events = await store.list_events_for_run(
+        str(conversation.get("id") or ""),
+        str(run.get("id") or ""),
+    )
+    source_run_id = ""
+    for event in events:
+        payload = event.get("payload")
+        if isinstance(payload, dict) and str(payload.get("source_run_id") or "").strip():
+            source_run_id = str(payload["source_run_id"]).strip()
+            break
+    if not source_run_id:
+        return ""
+    audit_path = (
+        ai_thread_artifact_path(str(conversation.get("id") or ""), source_run_id).parent
+        / "test_activity_quality_audit.json"
+    )
+    if not audit_path.is_file():
+        return ""
+    try:
+        audit = json.loads(await _read_text(audit_path))
+    except (OSError, json.JSONDecodeError):
+        return ""
+    feedback = _quality_retry_feedback_text(audit if isinstance(audit, dict) else {})
+    rejected_path = audit_path.parent / "rejected-assistant-output.md"
+    if not rejected_path.is_file():
+        return feedback
+    try:
+        rejected_content = await _read_text(rejected_path)
+    except OSError:
+        return feedback
+    repair_draft = _quality_retry_draft_text(rejected_content)
+    return "\n\n".join(item for item in (feedback, repair_draft) if item)
+
+
 def _agent_artifact_delivery_contract(user_message: str) -> str:
     wants_downloadable_artifact = _agent_task_requests_downloadable_artifact(user_message, user_message)
     lines = [
         "ARTIFACT_DELIVERY_CONTRACT:",
         "  rule: CodeTalk 负责把最终 Markdown 物化为“下载完整产物”；Agent 不要为了满足用户的下载/保存诉求去写源码仓库文件。",
         "  do_not: 不要调用 Write/Edit 或 shell 重定向在源码工作区创建报告、SFMEA、测试用例文件。",
-        "  final_answer: 如果用户要求完整报告、SFMEA、黑盒测试用例或可下载文件，请直接输出完整 Markdown 正文；CodeTalk 会自动压缩对话区并生成下载链接。",
-        "  auxiliary_files: 只有确有机器可读辅助文件时，才可写入环境变量 CODETALK_AGENT_ARTIFACT_DIR 指向的目录；绝不要写入源码目录。",
+        "  artifact_dir: 环境变量 CODETALK_AGENT_ARTIFACT_DIR 是本轮唯一允许写入的隔离交付目录；绝不要写入源码目录。",
+        "  auxiliary_files: 机器可读辅助文件也必须写入 CODETALK_AGENT_ARTIFACT_DIR。",
     ]
     if wants_downloadable_artifact:
-        lines.append("  current_task: 用户正在请求结构化/可下载产物；本轮必须遵守 final_answer 规则，不要发起交互式文件写入权限请求。")
+        lines.extend(
+            [
+                "  current_task: 用户正在请求结构化/可下载产物；完整交付正文必须写入 $CODETALK_AGENT_ARTIFACT_DIR/deliverable.md。",
+                "  file_rule: deliverable.md 必须包含全部章节、代码、表格和 JSON，不得只写摘要、diff 或文件路径。",
+                "  final_answer: 文件写完并自检后，聊天最终回答只给简短摘要和验证结果；CodeTalk 会读取 deliverable.md、执行质量门禁并生成下载链接。",
+                "  no_permission_prompt: CODETALK_AGENT_ARTIFACT_DIR 已授权写入，不要发起交互式文件写入权限请求。",
+            ]
+        )
+    else:
+        lines.append("  final_answer: 普通问答直接输出 Markdown 正文。")
     return "\n".join(lines)
 
 
@@ -3403,11 +3625,25 @@ def _agent_thread_invocation_manifest(
     references: list[dict[str, Any]],
     artifact_dir: Path,
     resume_session_id: str,
+    test_activity_context: str = "",
 ) -> dict[str, Any]:
+    activity_input = str(test_activity_context or user_message)
     test_activity_contract = _test_activity_contract_payload(
-        user_message=user_message,
+        user_message=activity_input,
         repo_path=repo_path or _conversation_initial_repo_path(conversation),
     )
+    requested_outputs = _user_requested_outputs_from_message(activity_input)
+    if test_activity_contract.get("active") and test_activity_contract.get("required_outputs"):
+        requested_outputs.append(
+            {
+                "source": "test_activity_contract",
+                "items": [
+                    str(item)
+                    for item in test_activity_contract.get("required_outputs") or []
+                    if str(item).strip()
+                ],
+            }
+        )
     mcp_profile = str(runtime.get("mcp_profile") or "").strip()
     skills = [str(item) for item in runtime.get("skills") or [] if str(item).strip()]
     prompt_text = redact_agent_diagnostic_text(prompt)
@@ -3444,11 +3680,11 @@ def _agent_thread_invocation_manifest(
             "mode": "resume" if resume_session_id else "fresh",
         },
         "execution_contract": build_agent_invocation_execution_contract(
-            source_first=not _source_analysis_declined(user_message),
+            source_first=not _source_analysis_declined(activity_input),
             cwd=cwd,
             repo_path=str(repo_path or ""),
             outputs={
-                "user_requested_outputs": _user_requested_outputs_from_message(user_message),
+                "user_requested_outputs": requested_outputs,
             },
         ),
         "test_activity_contract": test_activity_contract,
@@ -4149,6 +4385,10 @@ def _test_activity_source_anchor_specs(repo_root: Path, query: str) -> list[tupl
                 "iscsi_op_login_rsp_handle",
                 "iscsi_op_login_rsp_handle_csg_bit",
                 "iscsi_op_login_response",
+                "iscsi_op_login_set_target_info",
+                "iscsi_negotiate_params",
+                "iscsi_get_active_conns",
+                "ISCSI_SECURITY_NEGOTIATION_PHASE",
                 "_iscsi_conn_destruct",
                 "iscsi_parse_param",
                 "ISCSI_CLASS_INITIATOR_ERROR",
@@ -4156,7 +4396,7 @@ def _test_activity_source_anchor_specs(repo_root: Path, query: str) -> list[tupl
         )
     }
     source_specs.sort(key=lambda spec: (symbol_priority.get(spec[1], len(symbol_priority)), spec[0], spec[1]))
-    specs = source_specs[:10]
+    specs = source_specs[:14]
     project_profile = contract.get("project_profile") or {}
     for rel_path in project_profile.get("validated_test_mappings") or []:
         spec = (str(rel_path).strip(), "")

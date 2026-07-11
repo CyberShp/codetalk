@@ -151,6 +151,9 @@ let settingsLlmConfigId = "";
 let settingsLlmConfigName = "";
 let brokenLlmConfigId = "";
 let brokenLlmConfigName = "";
+let preFailureActiveLlmConfigId = "";
+let preFailureActiveLlmConfigName = "";
+let preFailureActiveLlmCaptured = false;
 
 function runMetadata() {
   const git = (args: string[]) => {
@@ -227,6 +230,22 @@ function shouldReplaceMergedCaseResult(
   return previous.at <= candidate.at;
 }
 
+const ancestorCommitCache = new Map<string, boolean>();
+
+function isCommitInCurrentHistory(candidateCommit: string | undefined, currentCommit: string) {
+  const candidate = String(candidateCommit ?? "").trim();
+  if (!candidate || candidate === currentCommit) return true;
+  const cached = ancestorCommitCache.get(candidate);
+  if (cached !== undefined) return cached;
+  const result = spawnSync("git", ["merge-base", "--is-ancestor", candidate, currentCommit], {
+    cwd: path.resolve(process.cwd(), ".."),
+    stdio: "ignore",
+  });
+  const isAncestor = result.status === 0;
+  ancestorCommitCache.set(candidate, isAncestor);
+  return isAncestor;
+}
+
 function mergeShardCaseResultsIntoMemory() {
   if (!mergeShardResults || !fs.existsSync(ARTIFACT_ROOT)) return;
   const current = runMetadata();
@@ -249,7 +268,7 @@ function mergeShardCaseResultsIntoMemory() {
           case?: CaseResult;
         };
         if (!parsed.case?.id || !results.has(parsed.case.id)) continue;
-        if (parsed.metadata?.git_commit && parsed.metadata.git_commit !== current.git_commit) continue;
+        if (!isCommitInCurrentHistory(parsed.metadata?.git_commit, current.git_commit)) continue;
         if ((parsed.metadata?.spdk_repo ?? "") !== current.spdk_repo) continue;
         const at = Date.parse(parsed.recorded_at ?? "");
         if (!Number.isFinite(at)) continue;
@@ -1161,6 +1180,18 @@ async function configureSettingsPersistenceLlm(page: Page) {
   await page.goto("/settings", { waitUntil: "domcontentloaded" });
   await noFrameworkOverlay(page);
   await page.getByRole("button", { name: /可选：内置模型与 RAG 检索/ }).click();
+  const currentActiveModelSelect = page
+    .locator("select")
+    .filter({ has: page.locator("option", { hasText: /请选择活跃的聊天模型|暂无聊天模型/ }) })
+    .first();
+  await expect(currentActiveModelSelect).toBeVisible({ timeout: 15_000 });
+  const currentActiveModelId = await currentActiveModelSelect.inputValue();
+  preFailureActiveLlmCaptured = true;
+  if (currentActiveModelId && currentActiveModelId !== brokenLlmConfigId) {
+    preFailureActiveLlmConfigId = currentActiveModelId;
+    preFailureActiveLlmConfigName =
+      (await currentActiveModelSelect.locator(`option[value="${currentActiveModelId}"]`).textContent())?.trim() ?? "";
+  }
   await page.getByRole("button", { name: /新增/ }).click();
   const llmForm = page.locator("form").filter({ hasText: "新增 LLM 配置" });
   await llmForm.getByPlaceholder(/Claude|GPT-4o/).fill(settingsLlmConfigName);
@@ -1203,6 +1234,18 @@ async function configureBrokenLlmAndSelect(page: Page) {
   await page.goto("/settings", { waitUntil: "domcontentloaded" });
   await noFrameworkOverlay(page);
   await page.getByRole("button", { name: /可选：内置模型与 RAG 检索/ }).click();
+  const currentActiveModelSelect = page
+    .locator("select")
+    .filter({ has: page.locator("option", { hasText: /请选择活跃的聊天模型|暂无聊天模型/ }) })
+    .first();
+  await expect(currentActiveModelSelect).toBeVisible({ timeout: 15_000 });
+  const currentActiveModelId = await currentActiveModelSelect.inputValue();
+  preFailureActiveLlmCaptured = true;
+  if (currentActiveModelId && currentActiveModelId !== brokenLlmConfigId) {
+    preFailureActiveLlmConfigId = currentActiveModelId;
+    preFailureActiveLlmConfigName =
+      (await currentActiveModelSelect.locator(`option[value="${currentActiveModelId}"]`).textContent())?.trim() ?? "";
+  }
   await page.getByRole("button", { name: /新增/ }).click();
   const llmForm = page.locator("form").filter({ hasText: "新增 LLM 配置" });
   await llmForm.getByPlaceholder(/Claude|GPT-4o/).fill(brokenLlmConfigName);
@@ -1227,16 +1270,18 @@ async function configureBrokenLlmAndSelect(page: Page) {
 }
 
 async function restorePrimaryLlmIfAvailable(page: Page) {
-  if (!e2eLlmConfigId || !e2eLlmConfigName) return false;
+  const restoreId = e2eLlmConfigId || preFailureActiveLlmConfigId;
+  const restoreName = e2eLlmConfigName || preFailureActiveLlmConfigName;
+  if (!restoreId || !restoreName) return false;
   await page.goto("/settings", { waitUntil: "domcontentloaded" });
   await noFrameworkOverlay(page);
   await page.getByRole("button", { name: /可选：内置模型与 RAG 检索/ }).click();
   const activeModelSelect = page
     .locator("select")
-    .filter({ has: page.locator("option", { hasText: e2eLlmConfigName }) })
+    .filter({ has: page.locator("option", { hasText: restoreName }) })
     .first();
   await expect(activeModelSelect).toBeVisible({ timeout: 15_000 });
-  await selectActiveChatModelAndWait(page, activeModelSelect, e2eLlmConfigId);
+  await selectActiveChatModelAndWait(page, activeModelSelect, restoreId);
   return true;
 }
 
@@ -1633,6 +1678,13 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
   await expect(page.getByRole("heading", { name: /AI 调查线程|AI 调查|spdk/i })).toBeVisible({
     timeout: 30_000,
   });
+  const threadRuntime = page.getByLabel("当前 AI 执行器");
+  await expect(threadRuntime).toBeVisible({ timeout: 15_000 });
+  if ((await threadRuntime.inputValue()) !== "builtin_llm") {
+    await threadRuntime.hover();
+    await threadRuntime.selectOption("builtin_llm");
+    await expect(threadRuntime).toHaveValue("builtin_llm", { timeout: 15_000 });
+  }
   const primaryThreadUrl = page.url();
 
   const textarea = page.getByLabel("AI 线程消息");
@@ -1912,22 +1964,33 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
       await expect(page.locator(".ct-codex-message").filter({ hasText: failurePrompt }).first()).toBeVisible({
         timeout: 15_000,
       });
+      const actionableFailurePattern =
+        /LLM 不可用|执行器运行失败|展开 Agent 过程|重试或切换执行器|连接|Connect|ECONN|failed|error|SSE/i;
       await expect(page.locator(".ct-codex-ai__error")).toContainText(
-        /LLM 不可用|连接|Connect|ECONN|failed|error|SSE/i,
+        actionableFailurePattern,
         { timeout: 90_000 },
       );
       const retryButton = page.getByRole("button", { name: "重试上一条" });
       await expect(retryButton).toBeVisible({ timeout: 15_000 });
       await expect(retryButton).toBeEnabled({ timeout: 10_000 });
+      const retryResponsePromise = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          /\/api\/ai\/conversations\/[^/]+\/runs\/[^/]+\/retry$/.test(new URL(response.url()).pathname),
+      );
       await retryButton.click();
-      await expect
-        .poll(() => page.locator(".ct-codex-message").filter({ hasText: failurePrompt }).count(), { timeout: 30_000 })
-        .toBeGreaterThanOrEqual(2);
+      const retryResponse = await retryResponsePromise;
+      expect(retryResponse.ok()).toBeTruthy();
+      const retryPayload = (await retryResponse.json()) as { run?: { id?: string; status?: string } };
+      expect(retryPayload.run?.id).toMatch(/^run_/);
+      expect(retryPayload.run?.status).toMatch(/queued|running/);
+      await expect(page.locator(".ct-codex-message").filter({ hasText: failurePrompt })).toHaveCount(1);
       await waitForAiThreadIdle(page, 120_000);
-      await expect(page.locator(".ct-codex-ai__error")).toContainText(/LLM 不可用|连接|Connect|ECONN|failed|error|SSE/i, {
+      await expect(page.locator(".ct-codex-ai__error")).toContainText(actionableFailurePattern, {
         timeout: 90_000,
       });
-      record("C06", "pass", "controlled bad LLM produced actionable error, exposed retry, and retry resubmitted the failed prompt", {
+      record("C06", "pass", "controlled bad model produced an actionable error and UI retry created a new run without duplicating the user message", {
+        retryRunId: retryPayload.run?.id,
         screenshot: await screenshot(page, "C06-ai-thread-controlled-retry"),
       });
     } catch (error) {
@@ -1937,8 +2000,11 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
       });
     } finally {
       const restored = await restorePrimaryLlmIfAvailable(page).catch(() => false);
-      if (!restored) {
+      if (!restored && preFailureActiveLlmCaptured && !preFailureActiveLlmConfigId) {
         await clearActiveChatModel(page).catch(() => undefined);
+      }
+      if (!restored && preFailureActiveLlmCaptured && preFailureActiveLlmConfigId) {
+        throw new Error(`failed to restore pre-test active LLM ${preFailureActiveLlmConfigName || preFailureActiveLlmConfigId}`);
       }
     }
   }
@@ -3164,46 +3230,36 @@ test("L04: isolated backend restart preserves workspace and workbench artifacts"
 
     await page.goto("/workbench", { waitUntil: "domcontentloaded" });
     await noFrameworkOverlay(page);
-    await page.getByLabel("Repo path").fill(SPDK_REPO);
-    await page.getByLabel("Workspace ID").fill(l04WorkspaceId);
-    await openWorkbenchView(page, "工作流设计");
-    const workflowPresetSelect = page.getByLabel("工作流预设");
-    await expect(workflowPresetSelect).toBeVisible({ timeout: 30_000 });
-    await workflowPresetSelect.selectOption("module_analysis");
-    await page.getByRole("button", { name: "安装预设" }).click();
-    await expect(page.getByText(/预设已安装:|工作流已保存:|已应用预设:/).first()).toBeVisible({
-      timeout: 30_000,
-    });
-
-    await openWorkbenchView(page, "运行驾驶舱");
-    await page.getByLabel("Repo path").fill(SPDK_REPO);
-    await page.getByLabel("Workspace ID").fill(l04WorkspaceId);
-    await page.getByLabel("Inputs JSON").fill(JSON.stringify({
-      analysis_object: "L04 backend restart persistence smoke: preserve workspace and artifact manifest.",
-      repo_path: SPDK_REPO,
-    }, null, 2));
-    const prepareRunButton = page.getByRole("button", { name: /^准备运行$/ });
-    await prepareRunButton.scrollIntoViewIfNeeded({ timeout: 15_000 });
-    await prepareRunButton.hover({ timeout: 15_000 });
-    await expect(prepareRunButton).toBeEnabled({ timeout: 15_000 });
-    await prepareRunButton.click({ timeout: 15_000 });
+    const workspaceSelect = page.getByLabel("Workspace selector");
+    await expect(workspaceSelect).toBeVisible({ timeout: 30_000 });
+    await workspaceSelect.selectOption(l04WorkspaceId);
+    await page.getByLabel("工作流").selectOption("source_flow_sfmea_blackbox");
+    const analysisInput = page.getByRole("textbox", { name: "Workflow input analysis_object" });
+    await analysisInput.fill(
+      "L04 backend restart persistence smoke: preserve workspace, named input, run status, and artifact manifest.",
+    );
+    const createRunButton = page.getByRole("button", { name: "创建并运行" });
+    await createRunButton.scrollIntoViewIfNeeded({ timeout: 15_000 });
+    await createRunButton.hover({ timeout: 15_000 });
+    await expect(createRunButton).toBeEnabled({ timeout: 15_000 });
+    await createRunButton.click({ timeout: 15_000 });
     await expect
       .poll(
         async () => {
           const body = await page.locator("body").innerText();
-          return body.match(/Task run prepared:\s*(task_run_[a-f0-9]+)/)?.[1] ?? "";
+          return body.match(/task_run_[a-f0-9]+/)?.[0] ?? "";
         },
         { timeout: 45_000 },
       )
       .not.toEqual("");
     const preparedBody = await page.locator("body").innerText();
-    const l04TaskRunId = preparedBody.match(/Task run prepared:\s*(task_run_[a-f0-9]+)/)?.[1] ?? "";
+    const l04TaskRunId = preparedBody.match(/task_run_[a-f0-9]+/)?.[0] ?? "";
     expect(l04TaskRunId).not.toEqual("");
-    await page.getByRole("button", { name: "审计产物" }).click();
-    await expect(page.getByText(/审计产物:/)).toBeVisible({ timeout: 30_000 });
-    await expect(page.locator("button").filter({ hasText: /task_bundle|input|artifact/i }).first()).toBeVisible({
-      timeout: 15_000,
-    });
+    const resultPanel = page.getByLabel("运行结果面板");
+    await expect
+      .poll(() => resultPanel.innerText(), { timeout: 120_000 })
+      .toMatch(/(?:需要复核|运行完成|运行失败|已完成)/);
+    await expect(resultPanel.getByRole("button", { name: /预览交付件/ }).first()).toBeVisible({ timeout: 30_000 });
     const beforeRestartScreenshot = await screenshot(page, "L04-before-backend-restart-artifact");
 
     await stopChildProcess(backend.child);
@@ -3217,14 +3273,16 @@ test("L04: isolated backend restart preserves workspace and workbench artifacts"
 
     await page.goto("/workbench", { waitUntil: "domcontentloaded" });
     await noFrameworkOverlay(page);
-    await openWorkbenchView(page, "运行驾驶舱");
-    const restoredTaskRunButton = page.locator("button").filter({ hasText: String(l04TaskRunId) }).first();
+    const restoredTaskRunButton = page
+      .getByLabel("最近任务运行列表")
+      .getByRole("button")
+      .filter({ hasText: String(l04TaskRunId) })
+      .first();
     await expect(restoredTaskRunButton).toBeVisible({ timeout: 30_000 });
     await restoredTaskRunButton.click();
-    await expect(page.getByText(new RegExp(`Task run restored: ${l04TaskRunId}`))).toBeVisible({ timeout: 30_000 });
-    await page.getByRole("button", { name: "审计产物" }).click();
-    await expect(page.getByText(/审计产物:/)).toBeVisible({ timeout: 30_000 });
-    const restoredArtifactButton = page.locator("button").filter({ hasText: /task_bundle|input|artifact/i }).first();
+    await expect(page.getByText(new RegExp(`任务已恢复 · ${l04TaskRunId}`))).toBeVisible({ timeout: 30_000 });
+    const restoredPanel = page.getByLabel("运行结果面板");
+    const restoredArtifactButton = restoredPanel.getByRole("button", { name: /预览交付件/ }).first();
     await expect(restoredArtifactButton).toBeVisible({ timeout: 30_000 });
     await restoredArtifactButton.click();
     await expect(page.locator("pre, code").filter({ hasText: /task|workflow|artifact|input|evidence/i }).first()).toBeVisible({

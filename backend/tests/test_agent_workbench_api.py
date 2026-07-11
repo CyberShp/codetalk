@@ -1,9 +1,11 @@
 from contextlib import asynccontextmanager
 import asyncio
 import hashlib
+import io
 import json
 import sys
 import time
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -5775,6 +5777,33 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     rerun_plan = rerun_plan_response.json()
     assert rerun_plan["task_run_id"] == task_run_id
     assert rerun_plan["status"] == "needs_rerun"
+
+    secret_value = "sk-diagnostic-secret-1234567890"
+    (_task_run_dir(task_run_id) / "operator-debug.log").write_text(
+        f"Authorization: Bearer {secret_value}\nagent failed\n",
+        encoding="utf-8",
+    )
+    diagnostic_bundle = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/diagnostic-package"
+    )
+    assert diagnostic_bundle.status_code == 200
+    assert diagnostic_bundle.headers["content-type"].startswith("application/zip")
+    assert f"{task_run_id}-diagnostic.zip" in diagnostic_bundle.headers["content-disposition"]
+    with zipfile.ZipFile(io.BytesIO(diagnostic_bundle.content)) as archive:
+        names = set(archive.namelist())
+        assert {
+            "diagnostic_summary.json",
+            "task_run.json",
+            "events.json",
+            "artifact_manifest.json",
+        }.issubset(names)
+        summary = json.loads(archive.read("diagnostic_summary.json"))
+        assert summary["task_run_id"] == task_run_id
+        assert summary["status"] in {"failed", "needs_rework"}
+        assert summary["failure_reasons"]
+        combined = b"\n".join(archive.read(name) for name in names).decode("utf-8", errors="replace")
+        assert secret_value not in combined
+        assert "<redacted>" in combined
     assert rerun_plan["steps"][0]["recommended_action"] == "rerun_agent_step"
     assert rerun_plan["steps"][0]["missing_artifacts"] == ["source_scope.json"]
     validation_response = await workbench_client.get(

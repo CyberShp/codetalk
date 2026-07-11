@@ -678,13 +678,37 @@ def _strip_terminal_noise(value: str) -> str:
 
 def _redact_agent_diagnostic_text(value: str) -> str:
     text = _strip_terminal_noise(value)
-    text = _SECRET_ASSIGNMENT_RE.sub(r"\1\2<redacted>\4", text)
-    text = _SECRET_KV_RE.sub(r"\1\2<redacted>\4", text)
+    text = _SECRET_ASSIGNMENT_RE.sub(_redact_secret_assignment_match, text)
+    text = _SECRET_KV_RE.sub(_redact_secret_kv_match, text)
     text = _SECRET_STRUCTURED_KV_RE.sub(r"\1\2<redacted>\4", text)
     text = _SECRET_BARE_VALUE_RE.sub(r"\1\2<redacted>\4", text)
     text = _BEARER_RE.sub(r"\1<redacted>", text)
     text = _OPENAI_STYLE_KEY_RE.sub("<redacted>", text)
     return _redact_secret_csv_columns(text)
+
+
+def _redact_secret_assignment_match(match: re.Match[str]) -> str:
+    value = match.group(3)
+    if not match.group(2) and value.lower() in {"none", "null", "nil", "true", "false"}:
+        return match.group(0)
+    return f"{match.group(1)}{match.group(2)}<redacted>{match.group(4)}"
+
+
+def _redact_secret_kv_match(match: re.Match[str]) -> str:
+    value = match.group(3)
+    trailing = ""
+    while value and value[-1] in ",;)]}":
+        trailing = value[-1] + trailing
+        value = value[:-1]
+    opening_quote = match.group(2)
+    closing_quote = match.group(4)
+    if value == "<redacted>":
+        return match.group(0)
+    if not opening_quote and value.lower() in {"none", "null", "nil", "true", "false"}:
+        return match.group(0)
+    if opening_quote:
+        return f"{match.group(1)}{opening_quote}<redacted>{closing_quote}{trailing}"
+    return f"{match.group(1)}<redacted>{closing_quote}{trailing}"
 
 
 def _redact_secret_csv_columns(value: str) -> str:

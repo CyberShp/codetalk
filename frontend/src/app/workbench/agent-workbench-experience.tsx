@@ -10787,6 +10787,16 @@ export function AgentWorkbenchExperience({
                               >
                                 编辑工作流
                               </button>
+                              {preparedRun && (
+                                <a
+                                  href={`${currentApiBase()}/api/workbench/task-runs/${encodeURIComponent(preparedRun.task_run_id)}/diagnostic-package`}
+                                  download={`${preparedRun.task_run_id}-diagnostic.zip`}
+                                  className="inline-flex items-center gap-1 rounded-md bg-white px-2 py-1 text-[11px] font-medium text-red-700"
+                                >
+                                  <Download size={12} />
+                                  下载诊断包
+                                </a>
+                              )}
                             </div>
                           ) : (
                             <button

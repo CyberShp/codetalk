@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import io
 import json
 import re
 import sys
 import uuid
+import zipfile
 from copy import deepcopy
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -2671,6 +2673,68 @@ async def list_task_run_artifacts(task_run_id: str) -> dict[str, Any]:
         "artifact_dir": ".",
         "artifacts": _public_artifact_manifest(task_dir),
     }
+
+
+@router.get("/task-runs/{task_run_id}/diagnostic-package")
+async def download_task_run_diagnostic_package(task_run_id: str) -> StreamingResponse:
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+
+    task_dir = Path(task_run.artifact_dir)
+    summary = _build_task_run_ui_summary(task_run, task_dir)
+    events = WorkbenchTaskRunEventStore(_task_runs_dir()).list_after(
+        task_run_id,
+        after_id=0,
+        limit=1000,
+    )
+    artifact_manifest = _public_artifact_manifest(task_dir)
+    diagnostic_summary = {
+        "task_run_id": task_run.task_run_id,
+        "workflow_id": task_run.workflow_id,
+        "workspace_id": task_run.workspace_id,
+        "status": summary.get("status") or task_run.status,
+        "failure_reasons": (summary.get("failure") or {}).get("reasons") or [],
+        "recommended_actions": (summary.get("failure") or {}).get("recommended_actions") or [],
+        "event_count": len(events),
+        "artifact_count": len(artifact_manifest),
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    def redacted_json(payload: Any) -> bytes:
+        serialized = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True, default=str)
+        return redact_agent_diagnostic_text(serialized).encode("utf-8")
+
+    archive_buffer = io.BytesIO()
+    with zipfile.ZipFile(archive_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("diagnostic_summary.json", redacted_json(diagnostic_summary))
+        archive.writestr("task_run.json", redacted_json(_public_task_run_payload(task_run)))
+        archive.writestr("events.json", redacted_json(events))
+        archive.writestr("artifact_manifest.json", redacted_json(artifact_manifest))
+
+        total_text_bytes = 0
+        for path in sorted(task_dir.rglob("*"), key=lambda item: item.as_posix()):
+            if not path.is_file() or path.suffix.lower() not in TEXT_ARTIFACT_SUFFIXES:
+                continue
+            try:
+                relative_path = path.resolve().relative_to(task_dir.resolve()).as_posix()
+                raw_text = path.read_text(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                continue
+            redacted = redact_agent_diagnostic_text(raw_text)[:200_000]
+            encoded = redacted.encode("utf-8")
+            if total_text_bytes + len(encoded) > 5_000_000:
+                break
+            total_text_bytes += len(encoded)
+            archive.writestr(f"artifacts/{relative_path}", encoded)
+
+    archive_buffer.seek(0)
+    headers = {
+        "Content-Disposition": f'attachment; filename="{task_run_id}-diagnostic.zip"',
+        "Cache-Control": "no-store",
+    }
+    return StreamingResponse(archive_buffer, media_type="application/zip", headers=headers)
 
 
 @router.get("/task-runs/{task_run_id}/artifacts/content/{artifact_path:path}")

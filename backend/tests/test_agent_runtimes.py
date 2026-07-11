@@ -894,7 +894,16 @@ class TestAgentRuntimes:
                 "source": "user_message",
                 "value": "项目结构、源码定向阅读、测试视角代码理解",
                 "items": ["项目结构", "源码定向阅读", "测试视角代码理解"],
-            }
+            },
+            {
+                "source": "test_activity_contract",
+                "items": [
+                    "sfmea.json",
+                    "black_box_cases.json",
+                    "business_flow.md",
+                    "project_structure.md",
+                ],
+            },
         ]
         assert manifest["execution_contract"]["typed_events"] == [
             "answer",
@@ -3774,7 +3783,7 @@ class TestAgentRuntimes:
                     "sys.stdin.read()",
                     "artifact_dir = pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])",
                     "artifact_dir.mkdir(parents=True, exist_ok=True)",
-                    "(artifact_dir / 'flow.md').write_text('# 流程梳理\\n\\nFLOW_ARTIFACT_ONLY\\n', encoding='utf-8')",
+                    "(artifact_dir / 'flow.md').write_text('# 流程梳理\\n\\n| Profile | Score |\\n|---|---:|\\n| P1 | 100 |\\n\\nFLOW_ARTIFACT_ONLY\\n', encoding='utf-8')",
                     "(artifact_dir / 'sfmea.md').write_text('# SFMEA\\n\\nSFMEA_ARTIFACT_ONLY\\n', encoding='utf-8')",
                     "print('已生成文件：flow.md sfmea.md', flush=True)",
                     "",
@@ -3826,6 +3835,7 @@ class TestAgentRuntimes:
         artifact_text = ai_thread_artifact_path(conversation["id"], run_id).read_text(encoding="utf-8")
         assert "FLOW_ARTIFACT_ONLY" in artifact_text
         assert "SFMEA_ARTIFACT_ONLY" in artifact_text
+        assert "|---|---:|" in artifact_text
         assert "flow.md" in artifact_text
         assert "sfmea.md" in artifact_text
         assert "已生成文件：flow.md sfmea.md" not in artifact_text

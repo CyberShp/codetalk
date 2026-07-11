@@ -22,8 +22,6 @@ function workspaceCreateErrorMessage(error: unknown): string {
 
 export default function NewWorkspacePage() {
   const router = useRouter();
-  const [name, setName] = useState("");
-  const [repoPath, setRepoPath] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [existingWorkspace, setExistingWorkspace] = useState<{
@@ -38,8 +36,8 @@ export default function NewWorkspacePage() {
       if (submittingRef.current) return;
       const form = e.currentTarget as HTMLFormElement;
       const formData = new FormData(form);
-      const submittedName = String(formData.get("name") ?? name).trim();
-      const submittedRepoPath = String(formData.get("repoPath") ?? repoPath).trim();
+      const submittedName = String(formData.get("name") ?? "").trim();
+      const submittedRepoPath = String(formData.get("repoPath") ?? "").trim();
       if (!submittedName) { setError("请输入工作空间名称"); return; }
       if (!submittedRepoPath) { setError("请输入代码仓库路径"); return; }
 
@@ -66,7 +64,7 @@ export default function NewWorkspacePage() {
         setSubmitting(false);
       }
     },
-    [name, repoPath, router],
+    [router],
   );
 
   return (
@@ -113,8 +111,6 @@ export default function NewWorkspacePage() {
           <input
             name="name"
             type="text"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
             placeholder="例如：项目 A 分析工作台"
             className="w-full px-4 py-2.5 bg-surface-container border border-outline-variant/30 rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 transition-colors"
           />
@@ -132,8 +128,6 @@ export default function NewWorkspacePage() {
             <input
               name="repoPath"
               type="text"
-              value={repoPath}
-              onChange={(e) => setRepoPath(e.target.value)}
               placeholder="本地文件夹路径，如 /home/user/project"
               className="w-full pl-10 pr-4 py-2.5 bg-surface-container border border-outline-variant/30 rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 transition-colors font-data"
             />

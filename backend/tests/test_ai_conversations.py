@@ -1563,7 +1563,7 @@ class TestAIConversationsAPI:
         assert "SOURCE_FIRST_CONTRACT:" in prompt
         assert "未找到直接源码或输入材料时，必须说明未验证" in prompt
 
-    async def test_agent_prompt_tells_runtime_not_to_write_download_artifacts_into_source_repo(self):
+    async def test_agent_prompt_routes_download_artifacts_to_isolated_artifact_dir(self):
         from app.services.ai_conversations import _build_agent_prompt
 
         prompt = _build_agent_prompt(
@@ -1586,7 +1586,9 @@ class TestAIConversationsAPI:
         assert "不要调用 Write/Edit" in prompt
         assert "绝不要写入源码目录" in prompt
         assert "CODETALK_AGENT_ARTIFACT_DIR" in prompt
-        assert "本轮必须遵守 final_answer 规则" in prompt
+        assert "deliverable.md" in prompt
+        assert "完整交付正文必须写入" in prompt
+        assert "聊天最终回答只给简短摘要" in prompt
 
     async def test_agent_prompt_honors_explicit_no_source_analysis_request(self):
         from app.services.ai_conversations import _build_agent_prompt
@@ -1720,6 +1722,35 @@ class TestAIConversationsAPI:
         )
         assert "历史助手完整下载产物" in fresh_fallback_prompt
         assert "FULL_ARTIFACT_CONTEXT_MARKER" in fresh_fallback_prompt
+
+    async def test_resume_test_activity_context_keeps_original_and_current_only(self):
+        from app.services.ai_conversations import _test_activity_request_context
+
+        messages = [
+            {"role": "user", "content": "请对 iSCSI Login 输出完整 SFMEA 和黑盒测试设计"},
+            {"role": "user", "content": "中间修订：补充 CHAP 负向矩阵"},
+            {"role": "user", "content": "中间修订：修复 CID oracle"},
+            {"role": "user", "content": "当前修订：只修复 profile 执行闭环"},
+        ]
+
+        context = _test_activity_request_context(
+            messages,
+            "当前修订：只修复 profile 执行闭环",
+            {"session_persistence": "resume_args"},
+        )
+
+        assert "完整 SFMEA 和黑盒测试设计" in context
+        assert "当前修订：只修复 profile 执行闭环" in context
+        assert "补充 CHAP 负向矩阵" not in context
+        assert "修复 CID oracle" not in context
+
+        fallback_context = _test_activity_request_context(
+            messages,
+            "当前修订：只修复 profile 执行闭环",
+            {"session_persistence": "resume_args", "force_prompt_history": True},
+        )
+        assert "补充 CHAP 负向矩阵" in fallback_context
+        assert "修复 CID oracle" in fallback_context
 
     async def test_context_references_skip_source_and_graph_artifacts_when_source_declined(
         self,
@@ -3314,10 +3345,140 @@ class TestAIConversationsAPI:
         assert retried["run"]["status"] == "queued"
         assert retried["run"]["input_message_id"] == created["message"]["id"]
         assert retried["message"]["id"] == created["message"]["id"]
+        retry_events = await store.list_events_for_run(
+            conversation["id"], retried["run"]["id"]
+        )
+        assert retry_events[0]["payload"]["source_run_id"] == created["run"]["id"]
         messages = await store.list_messages(conversation["id"])
         assert [(message["role"], message["content"]) for message in messages] == [
             ("user", "分析 iSCSI Login 并输出测试设计"),
         ]
+
+    async def test_quality_retry_feedback_is_injected_without_changing_user_input(self):
+        from app.services.ai_conversations import (
+            _build_agent_prompt,
+            _build_prompt,
+            _quality_retry_draft_text,
+            _quality_retry_feedback_text,
+        )
+
+        feedback = _quality_retry_feedback_text(
+            {
+                "score": 70,
+                "issues": [
+                    {
+                        "constraint_id": "iscsi_unknown_key_not_understood",
+                        "message": "未知合法 key 必须返回 NotUnderstood，不能写成解析失败。",
+                    }
+                ],
+                "recommendations": ["分开描述合法未知 key 与超长非法 key。"],
+            }
+        )
+        repair_draft = _quality_retry_draft_text(
+            "# 未通过质量门禁的模型输出\n\n旧草稿中 Protocol Error=0x05。"
+        )
+        assert repair_draft.startswith("REJECTED_DRAFT_TO_REPAIR")
+        assert "只能修订" in repair_draft
+        assert "Protocol Error=0x05" in repair_draft
+        original = "分析 iSCSI Login 并输出完整测试设计"
+        stale_answer = "STALE_REJECTED_ANSWER: Protocol Error=0x05"
+        prompt_history = [
+            {"role": "user", "content": "上一轮完整任务"},
+            {"role": "assistant", "content": stale_answer},
+            {"role": "user", "content": original},
+        ]
+        prompt = _build_agent_prompt(
+            {"title": "质量重试", "id": "conv-retry", "workspace_id": "ws-retry"},
+            prompt_history,
+            [],
+            original,
+            {"id": "opencode", "name": "OpenCode"},
+            repo_path="/repo/spdk",
+            quality_retry_feedback=feedback,
+        )
+
+        assert "QUALITY_RETRY_FEEDBACK" in prompt
+        assert "iscsi_unknown_key_not_understood" in prompt
+        assert prompt.rfind("QUALITY_RETRY_FEEDBACK") > prompt.rfind("FINAL_FACT_CHECK")
+        assert prompt.rfind("QUALITY_RETRY_FEEDBACK") < prompt.rfind("用户问题：")
+        assert stale_answer not in prompt
+        assert prompt.endswith(original)
+
+        llm_messages = _build_prompt(
+            {"scope_type": "workspace", "scope_id": "ws-retry", "initial_context": {}},
+            prompt_history,
+            [],
+            original,
+            quality_retry_feedback=feedback,
+        )
+        assert len(llm_messages) == 3
+        assert llm_messages[-2]["role"] == "system"
+        assert llm_messages[-2]["content"].startswith("QUALITY_RETRY_FEEDBACK")
+        assert "iscsi_unknown_key_not_understood" in llm_messages[-2]["content"]
+        assert stale_answer not in json.dumps(llm_messages, ensure_ascii=False)
+        assert llm_messages[-1] == {"role": "user", "content": original}
+
+    async def test_quality_retry_keeps_original_test_activity_scope_for_prompt_and_gate(self):
+        from app.services.ai_conversations import (
+            _build_agent_prompt,
+            _build_prompt,
+            _test_activity_request_context,
+        )
+        from app.services.test_activity_contract import build_test_activity_contract
+
+        original = (
+            "基于 SPDK iSCSI Login 输出完整代码流程、SFMEA 和八维黑盒测试用例，"
+            "每条映射到具体测试脚本。"
+        )
+        repair = (
+            "请修订上一轮并重新输出完整可下载交付件，修正协议字段和测试映射；"
+            "危险脚本仅允许使用 Null/Malloc bdev。"
+        )
+        messages = [
+            {"role": "user", "content": original},
+            {"role": "assistant", "content": "旧草稿"},
+            {"role": "user", "content": repair},
+        ]
+        context = _test_activity_request_context(messages, repair)
+        contract = build_test_activity_contract(
+            target=context,
+            repo_path="/repo/spdk",
+        )
+
+        assert original in context
+        assert repair in context
+        assert contract["domain_profiles"] == ["iscsi_login"]
+        assert {
+            "business_flow.md",
+            "sfmea.json",
+            "black_box_cases.json",
+        }.issubset(set(contract["required_outputs"]))
+
+        prompt = _build_agent_prompt(
+            {"title": "质量重试", "id": "conv-retry", "workspace_id": "ws-retry"},
+            messages,
+            [],
+            repair,
+            {"id": "codex", "name": "Codex"},
+            repo_path="/repo/spdk",
+            quality_retry_feedback="QUALITY_RETRY_FEEDBACK:\n  previous_score: 66",
+        )
+        assert "ORIGINAL_TEST_ACTIVITY_REQUEST_CONTEXT" in prompt
+        assert original in prompt
+        assert '"iscsi_login"' in prompt
+        assert prompt.endswith(repair)
+
+        llm_messages = _build_prompt(
+            {"scope_type": "workspace", "scope_id": "ws-retry", "initial_context": {}},
+            messages,
+            [],
+            repair,
+            quality_retry_feedback="QUALITY_RETRY_FEEDBACK:\n  previous_score: 66",
+        )
+        system_prompt = llm_messages[0]["content"]
+        assert "ORIGINAL_TEST_ACTIVITY_REQUEST_CONTEXT" in system_prompt
+        assert original in system_prompt
+        assert '"iscsi_login"' in system_prompt
 
     async def test_retry_failed_run_api_schedules_without_duplicate_message(
         self,
@@ -3473,7 +3634,12 @@ class TestAIConversationsAPI:
                 json={"content": "触发流式超时"},
             )
             assert posted.status_code == 202
-            await asyncio.sleep(0.1)
+
+            for _ in range(40):
+                messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
+                if len(messages.json()["items"]) == 2:
+                    break
+                await asyncio.sleep(0.05)
 
             messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
             assert messages.status_code == 200
@@ -4054,6 +4220,12 @@ class TestAIConversationsAPI:
 
         assert invocation_payload["execution_contract"]["typed_events"] == agent_invocation_typed_events()
         assert invocation_payload["execution_contract"]["source_first"] is True
+        assert invocation_payload["execution_contract"]["outputs"]["user_requested_outputs"] == [
+            {
+                "source": "test_activity_contract",
+                "items": ["sfmea.json", "black_box_cases.json"],
+            }
+        ]
         assert invocation_payload["artifact_contract"]["required_outputs"] == [
             "sfmea.json",
             "black_box_cases.json",

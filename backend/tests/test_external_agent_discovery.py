@@ -3244,6 +3244,56 @@ def test_agent_diagnostic_redaction_handles_quoted_and_bearer_values():
     assert redacted.count("<redacted>") >= 6
 
 
+def test_agent_diagnostic_redaction_preserves_python_parameter_syntax():
+    import ast
+
+    from app.services.external_agent_discovery import redact_agent_diagnostic_text
+
+    source = (
+        'def complete_chap(user=None, secret=None, token="actual-secret-123"):\n'
+        "    return user, secret, token\n"
+    )
+
+    redacted = redact_agent_diagnostic_text(source)
+
+    ast.parse(redacted)
+    assert "secret=None," in redacted
+    assert "actual-secret-123" not in redacted
+
+
+def test_agent_diagnostic_redaction_preserves_json_string_delimiter_after_inline_secret():
+    import json
+
+    from app.services.external_agent_discovery import redact_agent_diagnostic_text
+
+    source = (
+        '{"preconditions":["P3_NORMAL_CHAP；initiator 配置 '
+        'user=chapo secret=123456789123"],"steps":["login"]}'
+    )
+
+    redacted = redact_agent_diagnostic_text(source)
+
+    assert json.loads(redacted)["steps"] == ["login"]
+    assert "123456789123" not in redacted
+    assert "secret=<redacted>\"" in redacted
+
+
+def test_agent_diagnostic_redaction_does_not_cross_markdown_table_lines():
+    from app.services.external_agent_discovery import redact_agent_diagnostic_text
+
+    source = (
+        "The profile configures a secret.\n\n"
+        "| Profile | Discovery auth | Normal auth |\n"
+        "|---|---:|---:|\n"
+        "| `P0_NO_CHAP` | 否 | 否 |\n"
+    )
+
+    redacted = redact_agent_diagnostic_text(source)
+
+    assert "|---|---:|---:|" in redacted
+    assert "| `P0_NO_CHAP` | 否 | 否 |" in redacted
+
+
 def test_run_provider_nonzero_exit_prefers_structured_agent_error(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 

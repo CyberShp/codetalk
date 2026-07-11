@@ -93,6 +93,7 @@ async def stream_agent_runtime(
         args = _claude_print_args(args, prompt, resume_session_id=resume_session_id)
         stdin = asyncio.subprocess.DEVNULL
     elif prompt_transport == "codex_exec_json":
+        args = _codex_add_writable_artifact_dir(args, runtime, command=command)
         args = _codex_exec_json_args(args, prompt, resume_session_id=resume_session_id)
         stdin = asyncio.subprocess.PIPE
         write_prompt_to_stdin = True
@@ -405,6 +406,31 @@ def _codex_exec_json_args(
     if session_id and "resume" not in args[exec_index + 1 : exec_index + 3]:
         args[exec_index + 1 : exec_index + 1] = ["resume", session_id]
     args = _ensure_flag(args, "--json")
+    return args
+
+
+def _codex_add_writable_artifact_dir(
+    base_args: list[str],
+    runtime: dict[str, Any],
+    *,
+    command: str = "",
+) -> list[str]:
+    args = list(base_args)
+    command_name = Path(str(command or "")).stem.lower()
+    if command_name != "codex" and not runtime.get("supports_add_dir"):
+        return args
+    runtime_env = runtime.get("env") if isinstance(runtime.get("env"), dict) else {}
+    artifact_dir = str(runtime_env.get("CODETALK_AGENT_ARTIFACT_DIR") or "").strip()
+    if not artifact_dir:
+        return args
+    for index, item in enumerate(args[:-1]):
+        if item == "--add-dir" and args[index + 1] == artifact_dir:
+            return args
+    try:
+        exec_index = args.index("exec")
+    except ValueError:
+        exec_index = 0
+    args[exec_index:exec_index] = ["--add-dir", artifact_dir]
     return args
 
 
@@ -1786,9 +1812,20 @@ def _collapse_terminal_repaints(value: str) -> str:
     normalized = value.replace("\r\n", "\n")
     lines: list[str] = []
     cli_help_block = False
+    fenced_code = False
     for raw_line in normalized.split("\n"):
         line = raw_line.split("\r")[-1]
         original_stripped = line.strip()
+        if fenced_code:
+            lines.append(line)
+            if original_stripped.startswith("```"):
+                fenced_code = False
+            continue
+        if original_stripped.startswith("```"):
+            lines.append(line)
+            fenced_code = True
+            cli_help_block = False
+            continue
         if _looks_like_cli_help_start(original_stripped):
             cli_help_block = True
             continue
@@ -1814,7 +1851,13 @@ def _collapse_terminal_repaints(value: str) -> str:
 
 
 def _strip_progress_glyph_prefix(value: str) -> str:
-    return _PROGRESS_GLYPH_PREFIX_RE.sub("", value)
+    stripped = value.strip()
+    if stripped.startswith("|") and stripped.endswith("|"):
+        return value
+    match = _PROGRESS_GLYPH_PREFIX_RE.match(value)
+    if match is None or not match.group(0).strip():
+        return value
+    return value[match.end() :]
 
 
 def _looks_like_cli_ui_noise(value: str) -> bool:
