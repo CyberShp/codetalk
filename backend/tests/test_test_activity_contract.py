@@ -57,6 +57,11 @@ def test_test_activity_contract_covers_storage_testing_profiles_and_templates():
     assert contract["project_profile"]["project"] == "spdk"
     assert "lib/iscsi" in contract["project_profile"]["source_roots"]
     assert "test/iscsi_tgt" in contract["project_profile"]["test_roots"]
+    assert {
+        "test/iscsi_tgt/chap/chap_discovery.sh",
+        "test/iscsi_tgt/login_redirection/login_redirection.sh",
+        "test/unit/lib/iscsi/iscsi.c/iscsi_ut.c",
+    }.issubset(contract["project_profile"]["validated_test_mappings"])
     assert contract["evidence_policy"]["source_first"] is True
     assert contract["evidence_policy"]["prefer_artifacts"] == ["GitNexus", "CGC"]
     assert contract["black_box_boundary"]["forbidden_internal_steps"]

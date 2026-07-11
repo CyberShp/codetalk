@@ -4031,6 +4031,22 @@ def _collect_source_refs_sync(repo: Path, workspace_id: str, query: str) -> list
     repo_root = repo.resolve()
     refs: list[ContextReference] = []
     seen: set[str] = set()
+    test_activity = _looks_like_test_activity_request(query)
+    source_limit = 14 if test_activity else 8
+
+    if test_activity:
+        for rel_path, symbol in _test_activity_source_anchor_specs(repo_root, query):
+            source_path = (repo_root / rel_path).resolve()
+            if not _safe_source_file(repo_root, source_path):
+                continue
+            line = _best_source_line_for_query(source_path, symbol or query)
+            ref = _source_file_ref(repo_root, workspace_id, source_path, line=line)
+            if ref and ref.source_id not in seen:
+                refs.append(ref)
+                seen.add(ref.source_id)
+            if len(refs) >= source_limit:
+                return refs
+
     matched_path_hint = False
     hint_candidate_groups: list[list[Path]] = []
     for path_hint in _path_hints(query):
@@ -4059,7 +4075,7 @@ def _collect_source_refs_sync(repo: Path, workspace_id: str, query: str) -> list
                 refs.append(ref)
                 seen.add(ref.source_id)
                 matched_path_hint = True
-            if len(refs) >= 8:
+            if len(refs) >= source_limit:
                 return refs
     if matched_path_hint and refs:
         return refs
@@ -4089,6 +4105,55 @@ def _collect_source_refs_sync(repo: Path, workspace_id: str, query: str) -> list
         if len(refs) >= 2:
             break
     return refs
+
+
+def _test_activity_source_anchor_specs(repo_root: Path, query: str) -> list[tuple[str, str]]:
+    contract = build_test_activity_contract(
+        target=query,
+        repo_path=str(repo_root),
+        user_requirements=query,
+    )
+    source_specs: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for constraint in contract.get("professional_constraints") or []:
+        if not isinstance(constraint, dict):
+            continue
+        for evidence in constraint.get("evidence") or []:
+            rel_path, separator, symbol = str(evidence or "").partition("::")
+            spec = (rel_path.strip(), symbol.strip() if separator else "")
+            if not spec[0] or spec in seen:
+                continue
+            source_specs.append(spec)
+            seen.add(spec)
+    symbol_priority = {
+        symbol: index
+        for index, symbol in enumerate(
+            (
+                "iscsi_pdu_hdr_op_login",
+                "iscsi_pdu_payload_op_login",
+                "iscsi_auth_params",
+                "iscsi_negotiate_chap_param",
+                "iscsi_op_login_rsp_handle",
+                "iscsi_op_login_rsp_handle_csg_bit",
+                "iscsi_op_login_response",
+                "_iscsi_conn_destruct",
+                "iscsi_parse_param",
+                "ISCSI_CLASS_INITIATOR_ERROR",
+            )
+        )
+    }
+    source_specs.sort(key=lambda spec: (symbol_priority.get(spec[1], len(symbol_priority)), spec[0], spec[1]))
+    specs = source_specs[:10]
+    project_profile = contract.get("project_profile") or {}
+    for rel_path in project_profile.get("validated_test_mappings") or []:
+        spec = (str(rel_path).strip(), "")
+        if not spec[0] or spec in seen:
+            continue
+        specs.append(spec)
+        seen.add(spec)
+        if len(specs) >= 14:
+            break
+    return specs
 
 
 def _query_terms(text: str) -> list[str]:

@@ -18,6 +18,7 @@ def _profile(
     graybox_evidence: list[str],
     source_entries: list[str],
     test_dirs: list[str],
+    validated_test_mappings: list[str] | None = None,
     forbidden_internal_steps: list[str] | None = None,
     professional_constraints: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -30,6 +31,7 @@ def _profile(
         "graybox_evidence_points": graybox_evidence,
         "recommended_source_entries": source_entries,
         "recommended_test_dirs": test_dirs,
+        "validated_test_mappings": validated_test_mappings or [],
         "professional_constraints": professional_constraints or [],
         "log_metric_rpc_observability": observability,
         "forbidden_internal_steps": forbidden_internal_steps
@@ -51,6 +53,16 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
         graybox_evidence=["login state machine", "CHAP decision point", "session cleanup path"],
         source_entries=["lib/iscsi", "lib/iscsi/iscsi.c"],
         test_dirs=["test/iscsi_tgt"],
+        validated_test_mappings=[
+            "test/iscsi_tgt/chap/chap_discovery.sh",
+            "test/iscsi_tgt/chap/chap_mutual_not_set.sh",
+            "test/iscsi_tgt/digests/digests.sh",
+            "test/iscsi_tgt/login_redirection/login_redirection.sh",
+            "test/iscsi_tgt/multiconnection/multiconnection.sh",
+            "test/iscsi_tgt/rpc_config/rpc_config.py",
+            "test/iscsi_tgt/calsoft/calsoft.py",
+            "test/unit/lib/iscsi/iscsi.c/iscsi_ut.c",
+        ],
         professional_constraints=[
             {
                 "id": "iscsi_login_response_role",
@@ -835,6 +847,7 @@ def _term_matches(text: str, term: str) -> bool:
 def _spdk_project_profile(*, repo_path: str, target: str, domain_profiles: list[str]) -> dict[str, Any]:
     source_roots: list[str] = []
     test_roots: list[str] = []
+    validated_test_mappings: list[str] = []
     related_profiles: list[str] = []
     for root, payload in SPDK_PROJECT_PROFILE["modules"].items():
         profiles = [str(item) for item in payload.get("profiles") or []]
@@ -846,10 +859,12 @@ def _spdk_project_profile(*, repo_path: str, target: str, domain_profiles: list[
         profile = PROFILE_REGISTRY.get(profile_id, {})
         source_roots.extend(str(item) for item in profile.get("recommended_source_entries") or [])
         test_roots.extend(str(item) for item in profile.get("recommended_test_dirs") or [])
+        validated_test_mappings.extend(str(item) for item in profile.get("validated_test_mappings") or [])
     return {
         "project": "spdk" if "spdk" in str(repo_path).lower() or source_roots else "generic",
         "source_roots": _unique_strings(source_roots),
         "test_roots": _unique_strings(test_roots),
+        "validated_test_mappings": _unique_strings(validated_test_mappings),
         "related_profiles": _unique_strings(related_profiles),
     }
 
