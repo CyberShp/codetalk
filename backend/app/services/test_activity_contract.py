@@ -407,6 +407,7 @@ def audit_test_activity_response(
                 )
             )
 
+    black_box_dimensions_complete = False
     if "black_box_cases.json" in required_outputs:
         field_aliases = (
             ("前置条件", "precondition"),
@@ -421,9 +422,9 @@ def audit_test_activity_response(
             if not any(alias in lower for alias in aliases)
         ]
         dimension_aliases = {
-            "normal_path": ("normal_path", "正常路径", "正常场景"),
-            "invalid_input": ("invalid_input", "非法输入", "无效输入"),
-            "resource_pressure": ("resource_pressure", "资源不足", "资源压力"),
+            "normal_path": ("normal_path", "normal path", "正常路径", "正常场景"),
+            "invalid_input": ("invalid_input", "invalid input", "非法输入", "无效输入"),
+            "resource_pressure": ("resource_pressure", "resource pressure", "资源不足", "资源压力"),
             "timeout": ("timeout", "超时"),
             "reconnect": ("reconnect", "重连"),
             "concurrency": ("concurrency", "并发"),
@@ -435,6 +436,7 @@ def audit_test_activity_response(
             for dimension, aliases in dimension_aliases.items()
             if not any(alias in lower for alias in aliases)
         ]
+        black_box_dimensions_complete = not missing_dimensions
         if missing_fields:
             issues.append(
                 _issue(
@@ -460,12 +462,13 @@ def audit_test_activity_response(
             "input": ("输入", "input"),
             "cases": ("用例", "case"),
             "coverage": ("覆盖", "coverage"),
-            "remaining_risk": ("剩余风险", "residual risk"),
+            "remaining_risk": ("剩余风险", "residual risk", "待验证", "已知限制"),
         }
         missing = [
             field
             for field, aliases in required_markers.items()
-            if not any(alias in lower for alias in aliases)
+            if not (field == "coverage" and black_box_dimensions_complete)
+            and not any(alias in lower for alias in aliases)
         ]
         if missing:
             issues.append(

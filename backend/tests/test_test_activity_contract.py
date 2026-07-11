@@ -647,14 +647,14 @@ def test_combined_test_activity_response_accepts_complete_contract_shape(tmp_pat
         user_requirements="输出完整可下载测试设计文件",
     )
     dimensions = [
-        "normal_path",
-        "invalid_input",
-        "resource_pressure",
-        "timeout",
-        "reconnect",
-        "concurrency",
-        "recovery",
-        "performance",
+        "Normal Path",
+        "Invalid Input",
+        "Resource Pressure",
+        "Timeout",
+        "Reconnect",
+        "Concurrency",
+        "Recovery",
+        "Performance",
     ]
     cases = "\n\n".join(
         f"### TC-{index:02d} {dimension}\n前置条件：target 已启动。\n步骤：从 initiator 发起登录。\n"
@@ -675,8 +675,7 @@ def test_combined_test_activity_response_accepts_complete_contract_shape(tmp_pat
         "安全影响高 | 增加拒绝用例 | `lib/iscsi/iscsi.c` | `test/iscsi_tgt/login.sh` |\n\n"
         "## 黑盒测试用例\n\n"
         f"{cases}\n\n"
-        "## 覆盖矩阵\n\n覆盖正常、非法输入、资源、超时、重连、并发、恢复和性能。\n\n"
-        "## 剩余风险\n\n跨平台 initiator 差异标记为待验证。"
+        "## 待验证内容\n\n跨平台 initiator 差异标记为待验证。"
     )
 
     audit = audit_test_activity_response(
