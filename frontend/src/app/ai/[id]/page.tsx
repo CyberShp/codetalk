@@ -520,7 +520,11 @@ function AgentStatusPanel({
         ? "失败"
         : latestRun?.status === "completed"
           ? "已完成"
-          : latestRun?.status ?? "空闲";
+          : latestRun?.status === "cancelled"
+            ? "已取消"
+            : latestRun?.status === "queued"
+              ? "排队中"
+              : latestRun?.status ?? "空闲";
   const runtimeLabel = activeRuntime
     ? `${activeRuntime.name}${activeRuntime.enabled ? "" : "（已停用）"}`
     : runtimeType === "agent_runtime"
