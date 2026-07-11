@@ -3034,6 +3034,8 @@ test("AI conversation keeps long structured artifacts compact while streaming", 
 
     releaseDone();
     await expect(page.getByText("已生成完整结构化产物，可下载查看 SFMEA 和黑盒测试用例。")).toBeVisible();
+    await expect(statusPanel.getByText("最新过程：本轮已完成，产物可下载。")).toBeVisible();
+    await expect(page.getByTestId("agent-process-disclosure")).toContainText("最新：本轮已完成，产物可下载。");
     const artifactCard = page.locator(".ct-codex-message__actions").filter({ hasText: "下载完整产物" });
     await expect(artifactCard).toBeVisible();
     await expect(artifactCard).toContainText("附件与产物");

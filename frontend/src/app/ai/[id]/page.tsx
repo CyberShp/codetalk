@@ -454,11 +454,37 @@ function EvidenceReferenceCard({ refItem }: { refItem: AIContextReference }) {
   );
 }
 
-function AgentProcessDisclosure({ diagnostics }: { diagnostics: string[] }) {
+function agentProcessLatestSummary({
+  diagnostics,
+  processEvents,
+  runStatus,
+}: {
+  diagnostics: string[];
+  processEvents?: AIRunEvent[];
+  runStatus?: string;
+}): string {
+  if (runStatus === "completed") {
+    const producedArtifact = (processEvents ?? []).some((event) =>
+      ["artifact", "artifact_progress"].includes(processEventKind(event)),
+    );
+    return producedArtifact ? "本轮已完成，产物可下载。" : "本轮已完成，结果已整理。";
+  }
+  return diagnostics.length > 0 ? latestAgentProcessSummaryText(diagnostics) : "等待 Agent 事件";
+}
+
+function AgentProcessDisclosure({
+  diagnostics,
+  processEvents,
+  runStatus,
+}: {
+  diagnostics: string[];
+  processEvents: AIRunEvent[];
+  runStatus?: string;
+}) {
   const [open, setOpen] = useState(false);
   const visibleDiagnostics = capAgentProcessDiagnostics(diagnostics);
   if (visibleDiagnostics.length === 0) return null;
-  const latestSummary = latestAgentProcessSummaryText(visibleDiagnostics);
+  const latestSummary = agentProcessLatestSummary({ diagnostics: visibleDiagnostics, processEvents, runStatus });
   const toggleOpen = () => setOpen((current) => !current);
   return (
     <details
@@ -508,7 +534,11 @@ function AgentStatusPanel({
   runtimeType: string | undefined;
 }) {
   const visibleDiagnostics = capAgentProcessDiagnostics(diagnostics);
-  const latestSummary = visibleDiagnostics.length > 0 ? latestAgentProcessSummaryText(visibleDiagnostics) : "等待 Agent 事件";
+  const latestSummary = agentProcessLatestSummary({
+    diagnostics: visibleDiagnostics,
+    processEvents,
+    runStatus: latestRun?.status,
+  });
   const runtimeContractSummary =
     latestAgentRuntimeContractFromEvents(processEvents) ||
     latestAgentRuntimeContractText(visibleDiagnostics);
@@ -1896,7 +1926,11 @@ export default function AIThreadPage() {
             )}
             <div ref={bottomRef} />
           </section>
-          <AgentProcessDisclosure diagnostics={streamingDiagnostics} />
+          <AgentProcessDisclosure
+            diagnostics={streamingDiagnostics}
+            processEvents={streamingProcessEvents}
+            runStatus={latestRun?.status}
+          />
         </div>
         {showJumpToLatest && (
           <button type="button" className="ct-codex-ai__jump" onClick={() => jumpToLatest("auto", true)}>
