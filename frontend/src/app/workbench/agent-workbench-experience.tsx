@@ -6068,6 +6068,8 @@ export function AgentWorkbenchExperience({
     } finally {
       setLoading(false);
     }
+  // Hydration is a render-local helper; these scalar keys intentionally own reloads.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeWorkbenchView, repoPath, selectedPresetId, selectedWorkflowId]);
 
   useEffect(() => {

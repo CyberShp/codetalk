@@ -582,8 +582,21 @@ def audit_test_activity_response(
         )
 
     if "business_flow.md" in required_outputs:
-        flow_steps = re.findall(r"(?m)^\s*(?:\d+[.)]|步骤\s*\d+)\s*", text)
-        if not any(marker in lower for marker in ("流程", "flow", "状态迁移")) or len(flow_steps) < 3:
+        numbered_steps = re.findall(r"(?m)^\s*(?:\d+[.)]|步骤\s*\d+)\s*", text)
+        named_flows = re.findall(
+            r"(?mi)^\s*#{2,6}\s*(?:流程|flow)\s*(?:[a-z]|\d+|[一二三四五六七八九十]+)\s*[:：.)、-]",
+            text,
+        )
+        has_flow_marker = any(marker in lower for marker in ("流程", "flow", "状态迁移"))
+        has_failure_or_recovery = any(
+            marker in lower
+            for marker in ("异常", "失败", "恢复", "清理", "error", "failure", "recovery")
+        )
+        if (
+            not has_flow_marker
+            or max(len(numbered_steps), len(named_flows)) < 3
+            or not has_failure_or_recovery
+        ):
             issues.append(
                 _issue(
                     "missing_combined_business_flow",

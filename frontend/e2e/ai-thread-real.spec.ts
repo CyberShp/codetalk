@@ -2047,7 +2047,6 @@ test("does not pull the reader to the bottom while the user reviews earlier AI o
     await page.getByRole("button", { name: "新建线程" }).hover();
     await page.getByRole("button", { name: "新建线程" }).click();
     await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
-    const threadId = page.url().split("/").pop() ?? "";
     await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
 
     const composer = page.getByLabel("AI 线程消息");
@@ -2219,6 +2218,7 @@ test("uses a Claude assistant message as the final answer instead of keeping par
     await page.getByRole("button", { name: "新建线程" }).hover();
     await page.getByRole("button", { name: "新建线程" }).click();
     await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
     await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
 
     const composer = page.getByLabel("AI 线程消息");
@@ -2754,7 +2754,7 @@ test("renders long real AI thread histories without per-message entry animations
       const reader = document.querySelector(".ct-codex-ai__reader") as HTMLElement | null;
       const messages = Array.from(document.querySelectorAll(".ct-codex-message")) as HTMLElement[];
       const runningAnimations = document
-        .getAnimations({ subtree: true })
+        .getAnimations()
         .filter((animation) => {
           const target = animation.effect instanceof KeyframeEffect ? animation.effect.target : null;
           return target instanceof Element && target.closest(".ct-codex-ai");
@@ -3024,6 +3024,7 @@ test("Codex agent runtime keeps the final answer when the CLI exits 1 after outp
     await page.getByRole("button", { name: "新建线程" }).click();
 
     await page.waitForURL(/\/ai\/[^/]+$/, { timeout: 15_000 });
+    const threadId = page.url().split("/").pop() ?? "";
     await expect(page.getByRole("heading", { name: threadTitle })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByLabel("当前 AI 执行器")).toHaveValue(runtime.id);
 

@@ -694,6 +694,49 @@ def test_combined_test_activity_response_accepts_complete_contract_shape(tmp_pat
     assert audit["score"] == 100
 
 
+def test_combined_business_flow_accepts_named_end_to_end_flow_sections(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login_probe;\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt" / "login.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    contract = build_test_activity_contract(
+        target="iSCSI login 业务流程",
+        repo_path=str(repo),
+        workflow_outputs=[
+            {"id": "flow", "artifact": "business_flow.md", "type": "markdown"}
+        ],
+    )
+    content = (
+        "## 端到端流程\n\n"
+        "### 流程 A：无认证登录\n"
+        "Initiator 发送 Login Request，Target 协商参数并进入 Full Feature Phase。\n\n"
+        "### 流程 B：CHAP 登录\n"
+        "Target 返回 challenge，Initiator 响应后完成认证与状态迁移。\n\n"
+        "### 流程 C：授权失败与清理\n"
+        "Target 返回 Authorization Failure，连接进入失败清理路径。\n\n"
+        "## 异常与恢复\n\n断线后重连，核对 session 恢复和资源释放。\n\n"
+        "## 证据\n\n`lib/iscsi/iscsi.c` 与 `test/iscsi_tgt/login.sh`。\n"
+        + ("观测 Login 响应、连接状态、日志和会话恢复结果。" * 30)
+    )
+
+    audit = audit_test_activity_response(
+        content=content,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert not any(
+        issue["code"] == "missing_combined_business_flow"
+        for issue in audit["issues"]
+    ), audit
+
+
 def test_iscsi_professional_constraints_reject_known_protocol_contradictions(tmp_path):
     from app.services.test_activity_contract import (
         audit_test_activity_response,

@@ -2780,7 +2780,10 @@ test("agent workbench opens one AI review thread on double click", async ({ page
   await page.getByRole("button", { name: "围绕本次运行继续追问" }).dblclick();
 
   await expect.poll(() => createConversationCalls).toBe(1);
-  expect(createConversationBody?.initial_context).toMatchObject({
+  const capturedConversationBody = createConversationBody as unknown as {
+    initial_context?: Record<string, unknown>;
+  };
+  expect(capturedConversationBody.initial_context).toMatchObject({
     workflow_id: "mr-blackbox-workflow",
     task_run_id: "task_run_ai_review",
     workflow_execution_summary: {
