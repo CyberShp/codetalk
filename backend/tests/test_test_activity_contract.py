@@ -816,6 +816,34 @@ def test_iscsi_professional_constraints_accept_explicit_fact_corrections(tmp_pat
     assert conflicts == []
 
 
+def test_iscsi_status_class_constraint_does_not_confuse_status_detail_03(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login 授权失败测试设计",
+        repo_path=str(repo),
+    )
+
+    audit = audit_test_activity_response(
+        content=(
+            "Authorization Failure 使用 status_class=0x02, status_detail=0x02。\n"
+            "Target 不存在导致授权失败：status_class=0x02, status_detail=0x03。"
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_login_status_class"
+        for issue in audit["issues"]
+    ), audit
+
+
 def test_iscsi_professional_constraints_reject_unverified_defect_assertions(tmp_path):
     from app.services.test_activity_contract import (
         audit_test_activity_response,

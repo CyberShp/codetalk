@@ -95,8 +95,8 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 ),
                 "evidence": ["include/spdk/iscsi_spec.h::ISCSI_CLASS_INITIATOR_ERROR"],
                 "conflict_patterns": [
-                    r"(?:authorization failure|授权失败).{0,80}(?:status[- ]?class\s*[:=]?\s*)?0x03",
-                    r"(?:status[- ]?class\s*[:=]?\s*)?0x03.{0,80}(?:authorization failure|授权失败)",
+                    r"(?:authorization failure|授权失败).{0,80}status[- _]?class\s*[:=]?\s*0x03",
+                    r"status[- _]?class\s*[:=]?\s*0x03.{0,80}(?:authorization failure|授权失败)",
                 ],
                 "correction_patterns": [
                     r"(?:authorization failure|授权失败).{0,80}`?0x02`?.{0,50}(?:不是|而非|not)\s*(?:target error\s*)?`?0x03`?",
