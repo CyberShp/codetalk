@@ -41,6 +41,7 @@ async def test_services_stop_all_idempotent(client):
 async def test_service_restart_without_deployer_returns_400(client):
     resp = await client.post("/api/services/backend/restart")
     assert resp.status_code == 400
+    assert "尚未创建部署实例" in resp.json()["detail"]
 
 
 async def test_service_stop_without_deployer_returns_400(client):
@@ -91,6 +92,8 @@ async def test_removed_deepwiki_service_actions_are_rejected_before_deployer(cli
         assert resp.status_code == 404
         detail = resp.json()["detail"]
         assert detail["service"] == "deepwiki-api"
+        assert "未知服务" in detail["message"]
+        assert "可操作服务" in detail["hint"]
         assert "deepwiki-api" not in detail["available_services"]
         assert detail["available_services"] == ["backend", "frontend", "gitnexus", "cgc"]
 
@@ -119,3 +122,18 @@ async def test_services_status_filters_removed_deepwiki_stale_processes(client):
     assert list(processes) == ["backend"]
     assert "deepwiki-api" not in processes
     assert "deepwiki-ui" not in processes
+
+
+def test_deployer_diagnostics_redact_credentials():
+    import server
+
+    raw = (
+        "spawn failed --api-key sk-releaseCandidateSecret1234567890; "
+        "token=internal-token-value Authorization: Bearer bearer-value"
+    )
+    safe = server._safe_diagnostic(raw)
+
+    assert "sk-releaseCandidateSecret1234567890" not in safe
+    assert "internal-token-value" not in safe
+    assert "bearer-value" not in safe
+    assert safe.count("<redacted>") == 3

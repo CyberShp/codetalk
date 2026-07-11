@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -46,6 +47,20 @@ class DeploymentState:
 
 _state = DeploymentState()
 KNOWN_SERVICES = ("backend", "frontend", "gitnexus", "cgc")
+_SECRET_VALUE_RE = re.compile(
+    r"(?i)(api[-_]?key|token|access[-_]?token|secret|password)"
+    r"(\s*(?:=|:)\s*|\s+)([^\s,;]+)"
+)
+_BEARER_RE = re.compile(r"(?i)(authorization\s*:\s*bearer\s+)([^\s,;]+)")
+_SK_KEY_RE = re.compile(r"(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{12,}")
+
+
+def _safe_diagnostic(value: object) -> str:
+    """Keep useful deployment diagnostics without exposing credentials."""
+    text = str(value or "").strip()
+    text = _SECRET_VALUE_RE.sub(r"\1\2<redacted>", text)
+    text = _BEARER_RE.sub(r"\1<redacted>", text)
+    return _SK_KEY_RE.sub("<redacted>", text)
 
 
 def purge_removed_deepwiki_bytecode(root: Path = PROJECT_ROOT) -> list[Path]:
@@ -162,7 +177,7 @@ async def api_deploy(body: dict):
     """Start a deployment and return a job_id."""
     async with _state.lock:
         if _state.running:
-            raise HTTPException(status_code=409, detail="A deployment is already running")
+            raise HTTPException(status_code=409, detail="已有部署任务正在运行，请等待完成或先停止当前任务")
 
         cfg = config_store.load_config()
         cfg.update(config_store.normalize_to_snake(body))
@@ -188,15 +203,15 @@ async def api_deploy(body: dict):
                     raise HTTPException(
                         status_code=409,
                         detail={
-                            "message": "Port conflicts detected",
+                            "message": "检测到端口冲突，服务尚未启动",
                             "conflicts": conflicts,
-                            "hint": "retry with force_takeover=true or change the conflicting port in deployer settings",
+                            "hint": "请修改冲突端口，或确认占用进程可终止后启用“接管端口”重试",
                         },
                     )
         else:
             raise HTTPException(
                 status_code=400,
-                detail=f"Deployment mode '{mode}' is not supported. Use 'native'.",
+                detail=f"部署模式“{mode}”不受支持，请选择原生部署（native）",
             )
 
         _state.deployer = deployer
@@ -220,11 +235,15 @@ async def _run_deployment(deployer) -> None:
         q = _state.event_queue
         if q is not None:
             if cancelled:
-                await q.put({"step": "done", "status": "cancelled", "message": "Deployment cancelled"})
+                await q.put({"step": "done", "status": "cancelled", "message": "部署已取消"})
             elif error_occurred:
-                await q.put({"step": "done", "status": "error", "message": error_msg})
+                await q.put({
+                    "step": "done",
+                    "status": "error",
+                    "message": f"部署失败：{_safe_diagnostic(error_msg)}。请查看上方失败步骤，修正后重试",
+                })
             else:
-                await q.put({"step": "done", "status": "done", "message": "Deployment complete"})
+                await q.put({"step": "done", "status": "done", "message": "部署完成"})
             await q.put(None)  # sentinel -- signals SSE stream end
 
 
@@ -262,7 +281,7 @@ async def api_deploy_stop():
     """Cancel the currently running deployment."""
     deployer = _state.deployer
     if deployer is None or not _state.running:
-        return {"ok": True, "message": "No deployment running"}
+        return {"ok": True, "message": "当前没有正在运行的部署任务"}
     task = _state.task
     if task is not None and not task.done():
         task.cancel()
@@ -272,14 +291,14 @@ async def api_deploy_stop():
             pass
     await deployer.stop()
     _state.running = False
-    return {"ok": True, "message": "Deployment stopped"}
+    return {"ok": True, "message": "部署已停止"}
 
 
 @app.post("/api/deploy/supplement/gitnexus")
 async def api_supplement_gitnexus():
     """Install GitNexus as a supplementary service after native deployment."""
     if _state.running:
-        raise HTTPException(status_code=409, detail="A deployment is already running")
+        raise HTTPException(status_code=409, detail="已有部署任务正在运行，请等待完成或先停止当前任务")
 
     cfg = config_store.load_config()
     event_queue: asyncio.Queue = asyncio.Queue()
@@ -307,22 +326,22 @@ async def _run_supplement_gitnexus(deployer: NativeDeployer, cfg: dict) -> None:
         cancelled = True
         q = _state.event_queue
         if q is not None:
-            await q.put({"step": "install_gitnexus", "status": "cancelled", "message": "Cancelled"})
+            await q.put({"step": "install_gitnexus", "status": "cancelled", "message": "安装已取消"})
     except Exception as exc:
         error_msg = str(exc)
         q = _state.event_queue
         if q is not None:
-            await q.put({"step": "install_gitnexus", "status": "error", "message": error_msg})
+            await q.put({"step": "install_gitnexus", "status": "error", "message": _safe_diagnostic(error_msg)})
     finally:
         _state.running = False
         q = _state.event_queue
         if q is not None:
             if cancelled:
-                await q.put({"step": "done", "status": "cancelled", "message": "GitNexus install cancelled"})
+                await q.put({"step": "done", "status": "cancelled", "message": "GitNexus 安装已取消"})
             elif error_msg:
-                await q.put({"step": "done", "status": "error", "message": "GitNexus install failed"})
+                await q.put({"step": "done", "status": "error", "message": "GitNexus 安装失败，请查看失败步骤后重试"})
             else:
-                await q.put({"step": "done", "status": "done", "message": "GitNexus installed"})
+                await q.put({"step": "done", "status": "done", "message": "GitNexus 安装完成"})
             await q.put(None)
 
 
@@ -338,7 +357,7 @@ async def api_quickstart(request: Request):
 
     async with _state.lock:
         if _state.running:
-            raise HTTPException(status_code=409, detail="A deployment is already running")
+            raise HTTPException(status_code=409, detail="已有部署任务正在运行，请等待完成或先停止当前任务")
 
         force_takeover: bool = bool(body.get("force_takeover") or body.get("forceTakeover", False))
         dev_mode: bool = bool(body.get("dev_mode") or body.get("devMode", False))
@@ -362,9 +381,9 @@ async def api_quickstart(request: Request):
                 raise HTTPException(
                     status_code=409,
                     detail={
-                        "message": "Port conflicts detected",
+                        "message": "检测到端口冲突，服务尚未启动",
                         "conflicts": conflicts,
-                        "hint": "retry with force_takeover=true",
+                        "hint": "请修改冲突端口，或确认占用进程可终止后启用“接管端口”重试",
                     },
                 )
 
@@ -395,11 +414,15 @@ async def _run_quickstart(deployer: NativeDeployer) -> None:
         q = _state.event_queue
         if q is not None:
             if cancelled:
-                await q.put({"step": "done", "status": "cancelled", "message": "Quickstart cancelled"})
+                await q.put({"step": "done", "status": "cancelled", "message": "快速启动已取消"})
             elif error_msg:
-                await q.put({"step": "done", "status": "error", "message": f"Quickstart failed: {error_msg}"})
+                await q.put({
+                    "step": "done",
+                    "status": "error",
+                    "message": f"快速启动失败：{_safe_diagnostic(error_msg)}。请查看上方失败步骤，修正后重试",
+                })
             else:
-                await q.put({"step": "done", "status": "done", "message": "All services started"})
+                await q.put({"step": "done", "status": "done", "message": "全部服务已启动"})
             await q.put(None)
 
 
@@ -408,10 +431,11 @@ def _service_action_error(service: str, action: str, message: str, status_code: 
     return HTTPException(
         status_code=status_code,
         detail={
-            "message": message.strip("'\""),
+            "message": _safe_diagnostic(message).strip("'\""),
             "service": service,
             "action": action,
             "available_services": list(KNOWN_SERVICES),
+            "hint": "请从可操作服务列表中选择，或先完成一次部署再重试",
         },
     )
 
@@ -421,7 +445,7 @@ def _reject_unknown_service(service: str, action: str) -> None:
         raise _service_action_error(
             service,
             action,
-            f"Unknown service '{service}'. Available services: {', '.join(KNOWN_SERVICES)}",
+            f"未知服务“{service}”。可操作服务：{', '.join(KNOWN_SERVICES)}",
         )
 
 
@@ -431,15 +455,15 @@ async def api_service_restart(service: str):
     _reject_unknown_service(service, "restart")
     deployer = _state.deployer
     if deployer is None:
-        raise HTTPException(status_code=400, detail="No deployer instance — run a deployment first")
+        raise HTTPException(status_code=400, detail="尚未创建部署实例，请先完成一次部署或快速启动")
     if not hasattr(deployer, "restart_service"):
-        raise HTTPException(status_code=400, detail="Restart not supported in this deployment mode")
+        raise HTTPException(status_code=400, detail="当前部署模式不支持单独重启，请使用原生部署")
     try:
         return await deployer.restart_service(service)
     except KeyError as exc:
         raise _service_action_error(service, "restart", str(exc))
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=f"重启失败：{_safe_diagnostic(exc)}。请检查服务日志后重试")
 
 
 @app.post("/api/services/{service}/stop")
@@ -448,15 +472,15 @@ async def api_service_stop(service: str):
     _reject_unknown_service(service, "stop")
     deployer = _state.deployer
     if deployer is None:
-        raise HTTPException(status_code=400, detail="No deployer instance — run a deployment first")
+        raise HTTPException(status_code=400, detail="尚未创建部署实例，请先完成一次部署或快速启动")
     if not hasattr(deployer, "stop_service"):
-        raise HTTPException(status_code=400, detail="Individual stop not supported in this deployment mode")
+        raise HTTPException(status_code=400, detail="当前部署模式不支持单独停止，请使用原生部署")
     try:
         return await deployer.stop_service(service)
     except KeyError as exc:
         raise _service_action_error(service, "stop", str(exc))
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=f"停止失败：{_safe_diagnostic(exc)}。请检查服务日志后重试")
 
 
 @app.post("/api/services/{service}/start")
@@ -465,15 +489,15 @@ async def api_service_start(service: str):
     _reject_unknown_service(service, "start")
     deployer = _state.deployer
     if deployer is None:
-        raise HTTPException(status_code=400, detail="No deployer instance — run a deployment first")
+        raise HTTPException(status_code=400, detail="尚未创建部署实例，请先完成一次部署或快速启动")
     if not hasattr(deployer, "start_service"):
-        raise HTTPException(status_code=400, detail="Individual start not supported in this deployment mode")
+        raise HTTPException(status_code=400, detail="当前部署模式不支持单独启动，请使用原生部署")
     try:
         return await deployer.start_service(service)
     except KeyError as exc:
         raise _service_action_error(service, "start", str(exc))
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail=f"启动失败：{_safe_diagnostic(exc)}。请检查服务日志后重试")
 
 
 @app.post("/api/services/stop")
@@ -481,10 +505,10 @@ async def api_services_stop():
     """Stop all running service processes."""
     deployer = _state.deployer
     if deployer is None:
-        return {"ok": True, "message": "No services running"}
+        return {"ok": True, "message": "当前没有运行中的服务"}
     await deployer.stop()
     _state.running = False
-    return {"ok": True, "message": "All services stopped"}
+    return {"ok": True, "message": "全部服务已停止"}
 
 
 @app.get("/api/deploy/status")
@@ -521,7 +545,7 @@ async def api_services_health():
         if mode == "native":
             deployer = NativeDeployer(cfg, queue)
         else:
-            return {"services": {}, "error": f"Deployment mode '{mode}' is not supported"}
+            return {"services": {}, "error": f"部署模式“{mode}”不受支持，请切换到原生部署"}
     results = await deployer.check_health()
     return {"services": results}
 

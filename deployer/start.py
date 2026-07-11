@@ -1,5 +1,7 @@
 """CodeTalk Deployer launcher — sets up venv, installs deps, and starts the server."""
 
+from __future__ import annotations
+
 import subprocess
 import sys
 import threading

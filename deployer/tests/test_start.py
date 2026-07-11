@@ -11,6 +11,12 @@ import pytest
 import start
 
 
+def test_launcher_defers_annotations_before_python_version_guard():
+    """Python 3.9 must be able to import the launcher far enough to re-exec."""
+    source = (start.DEPLOYER_DIR / "start.py").read_text(encoding="utf-8")
+    assert "from __future__ import annotations" in source.splitlines()[:4]
+
+
 def test_venv_python_returns_windows_exe_on_win32():
     if sys.platform != "win32":
         pytest.skip("Windows-only path check")

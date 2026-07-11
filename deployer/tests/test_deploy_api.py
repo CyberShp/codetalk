@@ -4,7 +4,8 @@
 async def test_deploy_compose_mode_rejected(client):
     resp = await client.post("/api/deploy", json={"mode": "compose"})
     assert resp.status_code == 400
-    assert "not supported" in resp.json().get("detail", "").lower()
+    assert "不受支持" in resp.json().get("detail", "")
+    assert "原生部署" in resp.json().get("detail", "")
 
 
 async def test_deploy_k8s_mode_rejected(client):

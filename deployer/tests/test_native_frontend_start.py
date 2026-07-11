@@ -16,6 +16,21 @@ from deployers.native import NativeDeployer, _frontend_source_fingerprint  # noq
 
 
 class NativeFrontendStartTests(unittest.TestCase):
+    def test_intentional_stop_removes_process_from_active_status(self) -> None:
+        class ExitedProcess:
+            returncode = 0
+            _transport = None
+
+        async def run() -> NativeDeployer:
+            deployer = NativeDeployer({}, asyncio.Queue())
+            deployer._start_args["backend"] = {"cmd": [], "cwd": "."}
+            deployer._processes["backend"] = ExitedProcess()  # type: ignore[assignment]
+            await deployer.stop_service("backend")
+            return deployer
+
+        deployer = asyncio.run(run())
+        self.assertNotIn("backend", deployer._processes)
+
     def test_frontend_default_start_uses_next_start_script(self) -> None:
         deployer = NativeDeployer({"backend_port": 3504, "frontend_port": 3503}, asyncio.Queue())
 

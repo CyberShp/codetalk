@@ -17,7 +17,8 @@ async def test_deploy_409_when_already_running(client):
     resp = await client.post("/api/deploy", json={})
     assert resp.status_code == 409
     detail = resp.json().get("detail", "")
-    assert "already" in detail.lower() or "running" in detail.lower()
+    assert "部署任务正在运行" in detail
+    assert "停止当前任务" in detail
 
 
 async def test_supplement_gitnexus_409_when_running(client):

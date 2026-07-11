@@ -32,9 +32,9 @@ async def _run_cmd(*args: str) -> tuple[int, str, str]:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=15)
         return proc.returncode, stdout.decode().strip(), stderr.decode().strip()
     except asyncio.TimeoutError:
-        return 1, "", "Command timed out"
+        return 1, "", "命令执行超时"
     except FileNotFoundError:
-        return 1, "", f"Command not found: {args[0]}"
+        return 1, "", f"未找到命令：{args[0]}"
 
 
 def _check_port_free(port: int) -> bool:
@@ -70,13 +70,12 @@ def _probe_port_bind(port: int) -> dict:
 def _format_port_unavailable_message(port: int, probe: dict, pid_info: str = "") -> str:
     reason = probe.get("reason", "")
     if reason == "in_use":
-        return f"Port {port} is already in use{pid_info}"
+        return f"端口 {port} 已被占用{pid_info}"
     if reason == "access_denied":
         return (
-            f"Port {port} cannot be bound. On Windows this can happen when the "
-            "port is in an excluded/reserved range."
+            f"端口 {port} 无法绑定；在 Windows 上通常是端口位于系统排除或保留范围"
         )
-    return f"Port {port} cannot be bound"
+    return f"端口 {port} 无法绑定"
 
 
 async def _check_docker() -> dict:
@@ -228,16 +227,16 @@ def _check_ports(
     if own_ports is None:
         own_ports = set()
     hint = (
-        "Stop the process using the port or change the port in the deployer config"
+        "请停止占用端口的进程，或在部署配置中修改端口"
         if mode == "native"
-        else "Stop the process using the port or change the port mapping in docker-compose.yml"
+        else "请停止占用端口的进程，或修改 docker-compose.yml 的端口映射"
     )
     results = []
     for port in ports:
         probe = _probe_port_bind(port)
         if probe["available"]:
             results.append(
-                _make_result(f"Port {port}", "pass", f"Port {port} is available")
+                _make_result(f"Port {port}", "pass", f"端口 {port} 可用")
             )
         elif port in own_ports:
             results.append(
@@ -263,13 +262,13 @@ def _check_disk() -> dict:
         return _make_result(
             "Disk Space",
             "pass",
-            f"{free_gb:.1f} GB free (minimum 20 GB required)",
+            f"可用空间 {free_gb:.1f} GB（最低要求 20 GB）",
         )
     return _make_result(
         "Disk Space",
         "fail",
-        f"Only {free_gb:.1f} GB free — 20 GB required",
-        fix="Free up disk space before deploying",
+        f"可用空间仅 {free_gb:.1f} GB，部署至少需要 20 GB",
+        fix="请清理磁盘空间后重新检查",
     )
 
 
@@ -280,20 +279,20 @@ def _check_memory() -> dict:
         return _make_result(
             "Memory",
             "pass",
-            f"{total_gb:.1f} GB total RAM",
+            f"物理内存共 {total_gb:.1f} GB",
         )
     if total_gb >= 8:
         return _make_result(
             "Memory",
             "warn",
-            f"{total_gb:.1f} GB total RAM — 16 GB recommended for best performance",
-            fix="Consider upgrading to 16 GB RAM for a smooth experience",
+            f"物理内存共 {total_gb:.1f} GB，建议 16 GB 以获得更流畅的体验",
+            fix="可继续部署；运行大仓库分析前建议升级到 16 GB 内存",
         )
     return _make_result(
         "Memory",
         "fail",
-        f"Only {total_gb:.1f} GB total RAM — minimum 8 GB required",
-        fix="Upgrade to at least 8 GB RAM",
+        f"物理内存仅 {total_gb:.1f} GB，最低要求 8 GB",
+        fix="请将物理内存升级到至少 8 GB 后重新检查",
     )
 
 

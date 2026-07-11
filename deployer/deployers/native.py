@@ -897,6 +897,7 @@ class NativeDeployer:
             return
         if proc.returncode is not None:
             await _close_subprocess_transport(proc)
+            self._processes.pop(name, None)
             return
         if sys.platform == "win32":
             try:
@@ -913,6 +914,7 @@ class NativeDeployer:
                 await _close_subprocess_transport(kill_tree)
                 await asyncio.wait_for(proc.wait(), timeout=timeout)
                 await _close_subprocess_transport(proc)
+                self._processes.pop(name, None)
                 return
             except (ProcessLookupError, asyncio.TimeoutError, FileNotFoundError):
                 pass
@@ -932,6 +934,7 @@ class NativeDeployer:
                 pass
         finally:
             await _close_subprocess_transport(proc)
+            self._processes.pop(name, None)
 
     async def restart_service(self, name: str) -> dict:
         """Restart a named service using stored startup args."""

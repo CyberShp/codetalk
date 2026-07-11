@@ -118,10 +118,7 @@ class NativeDeployerTests(unittest.IsolatedAsyncioTestCase):
                     "process_name": "unavailable",
                     "is_own": False,
                     "reason": "access_denied",
-                    "message": (
-                        "Port 7100 cannot be bound. On Windows this can happen "
-                        "when the port is in an excluded/reserved range."
-                    ),
+                    "message": "端口 7100 无法绑定；在 Windows 上通常是端口位于系统排除或保留范围",
                 }
             ],
         )

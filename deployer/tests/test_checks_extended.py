@@ -7,6 +7,20 @@ of the functions not reached by the existing mode-based check tests.
 import socket
 
 import checks
+
+
+def test_native_port_conflict_is_chinese_and_actionable(monkeypatch):
+    monkeypatch.setattr(
+        checks,
+        "_probe_port_bind",
+        lambda port: {"available": False, "reason": "in_use", "error": "occupied"},
+    )
+
+    result = checks._check_ports([3133], mode="native")[0]
+
+    assert result["message"] == "端口 3133 已被占用"
+    assert "部署配置" in result["fix"]
+    assert "3133" in result["fix"]
 import config_store
 
 
@@ -197,5 +211,5 @@ def test_check_ports_reports_bind_denied_separately(monkeypatch):
     result = checks._check_ports(ports=[7100], mode="native", own_ports=set())[0]
 
     assert result["status"] == "fail"
-    assert "already in use" not in result["message"]
-    assert "cannot be bound" in result["message"]
+    assert "已被占用" not in result["message"]
+    assert "无法绑定" in result["message"]
