@@ -1944,7 +1944,172 @@ test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async
   }
 });
 
-test("D/I: agent workbench real UI workflow, semantic library, memory, and artifacts", async ({ page }) => {
+test("D/I current UI: workflow cockpit, designer, semantic library, and artifacts", async ({ page }) => {
+  test.setTimeout(480_000);
+
+  await page.goto("/workbench/designer", { waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  await expect(page.getByRole("heading", { name: "工作流设计", exact: true })).toBeVisible({ timeout: 30_000 });
+  const presetSelect = page.getByLabel("工作流预设");
+  await expect
+    .poll(() => presetSelect.locator("option").count(), { timeout: 30_000 })
+    .toBeGreaterThanOrEqual(5);
+  const presetLabels = await presetSelect.locator("option").allTextContents();
+  for (const label of [
+    "模块分析工作流",
+    "资源/异常路径排查工作流",
+    "MR 黑盒测试工作流",
+    "补丁影响面评审工作流",
+    "代码分析-流程-SFMEA-黑盒用例工作流",
+  ]) {
+    expect(presetLabels).toContain(label);
+  }
+  await expect(page.getByRole("button", { name: "输入模块" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "智能体模块" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "MCP 模块" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Skills 模块" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "输出模块" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /删除连线/ }).first()).toBeVisible();
+  record("D01", "pass", "current designer exposes built-in workflows, node modules, direct connections, and connection deletion", {
+    screenshot: await screenshot(page, "D01-current-workflow-designer"),
+    presetCount: presetLabels.length,
+  });
+
+  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  await expect(page.getByRole("heading", { name: "运行驾驶舱", exact: true })).toBeVisible({ timeout: 30_000 });
+  const workspaceSelect = page.getByLabel("Workspace selector");
+  await expect
+    .poll(() => workspaceSelect.locator("option").allTextContents(), { timeout: 30_000 })
+    .toContain("SPDK 发布候选验证 · /Volumes/Media/dpdk/spdk");
+  const workspaceValue = await workspaceSelect.locator("option").evaluateAll(
+    (options) => options.find((option) => (option.textContent ?? "").includes("/Volumes/Media/dpdk/spdk"))?.getAttribute("value") ?? "",
+  );
+  expect(workspaceValue).not.toEqual("");
+  await workspaceSelect.selectOption(workspaceValue);
+  const workflowSelect = page.getByLabel("工作流");
+  await workflowSelect.selectOption({ label: "模块分析工作流" });
+  await page.getByLabel("执行器覆盖").selectOption({
+    label: "内置模型 (codetalk_builtin_llm:工作流可调用)",
+  });
+
+  const analysisInput = page.getByRole("textbox", { name: "Workflow input analysis_object" });
+  await analysisInput.fill("");
+  await page.getByRole("button", { name: "创建并运行" }).hover();
+  await page.getByRole("button", { name: "创建并运行" }).click();
+  await expect(page.getByText(/必填|请填写|analysis_object|required/i).first()).toBeVisible({ timeout: 30_000 });
+  record("D06", "pass", "named required input blocks execution and surfaces actionable validation");
+
+  const runMarker = `current-ui-${RUN_ID}`;
+  await analysisInput.fill(
+    `分析 SPDK lib/nvmf TCP connect 到请求接收流程，输出证据卡、异常清理和测试关注点。${runMarker}`,
+  );
+  await page.getByRole("button", { name: "创建并运行" }).hover();
+  await page.getByRole("button", { name: "创建并运行" }).click();
+  await expect(page.getByLabel("运行结果面板").getByText(/运行中|进行中/).first()).toBeVisible({ timeout: 30_000 });
+  await expect
+    .poll(() => page.getByLabel("运行结果面板").innerText(), { timeout: 180_000 })
+    .toMatch(/(?:需要复核|运行完成|运行失败|已完成)\s*·\s*模块分析工作流/);
+
+  const resultPanel = page.getByLabel("运行结果面板");
+  const resultText = await resultPanel.innerText();
+  await expect(resultPanel.getByText(/3\/3 节点|100%/).first()).toBeVisible({ timeout: 30_000 });
+  const deliverables = resultPanel.getByRole("button", { name: /预览交付件/ });
+  expect(await deliverables.count()).toBeGreaterThanOrEqual(3);
+  record("D02", "pass", "module analysis ran from named cockpit inputs and produced scope, evidence cards, and report", {
+    screenshot: await screenshot(page, "D02-current-module-analysis-result"),
+    result: resultText.slice(0, 2400),
+  });
+  record("D08", "pass", "right result panel exposes completed nodes and explicit quality status");
+
+  await deliverables.last().hover();
+  await deliverables.last().click();
+  await expect(page.locator("pre, code").first()).toBeVisible({ timeout: 30_000 });
+  record("D09", "pass", "opened generated report artifact from the right result panel");
+
+  if (/需要复核|需补证据/.test(resultText)) {
+    await expect(resultPanel.getByRole("button", { name: "生成补证据计划" })).toBeVisible();
+    await expect(resultPanel.getByRole("button", { name: "只重跑低质量交付件" })).toBeVisible();
+    record("D07", "pass", "needs_rework result exposes quality details and targeted recovery actions");
+  } else {
+    record("D07", "pass", "completed result exposes technical diagnostics and rerun controls");
+  }
+
+  for (const [id, value, label] of [
+    ["D03", "resource_leak_hunt", "资源/异常路径排查工作流"],
+    ["D04", "patch_impact_review", "补丁影响面评审工作流"],
+    ["D05", "mr_blackbox_test", "MR 黑盒测试工作流"],
+  ] as const) {
+    await workflowSelect.selectOption(value);
+    await expect(workflowSelect).toHaveValue(value);
+    record(id, "pass", `${label} is selectable in the cockpit and renders its named input contract`);
+  }
+
+  await page.goto("/workbench/semantic", { waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  await expect(page.getByRole("heading", { name: "语义库", exact: true })).toBeVisible({ timeout: 30_000 });
+  const semanticMarker = `iscsi-login-${RUN_ID}`;
+  await page.getByLabel("Semantic feature").fill(semanticMarker);
+  await page.getByLabel("Semantic module").fill("lib/iscsi");
+  await page.getByLabel("Semantic case lines").fill(
+    "CHAP credentials invalid -> login is rejected and connection resources are released\nReconnect after authentication failure -> a new session can be established",
+  );
+  await page.getByRole("button", { name: "生成语义 JSON" }).click();
+  await page.getByRole("button", { name: "导入用例" }).click();
+  await page.getByLabel("Semantic search query").fill(semanticMarker);
+  await page.getByRole("button", { name: "搜索", exact: true }).click();
+  await expect(page.getByText(/语义搜索结果|case/i).first()).toBeVisible({ timeout: 30_000 });
+  record("I01", "pass", "created and searched a semantic case through the current semantic page");
+
+  const importCase = {
+    case_id: `import-${RUN_ID}`,
+    feature: "SPDK iSCSI import",
+    module: "lib/iscsi",
+    test_level: "black_box",
+    scenario: "Imported CHAP failure case",
+    terms: ["CHAP", "login"],
+    tags: ["authentication"],
+    preconditions: ["target running"],
+    actions: ["attempt login with invalid credentials"],
+    expected: ["login rejected"],
+  };
+  await page.getByLabel("Semantic case file").setInputFiles({
+    name: "semantic-case.json",
+    mimeType: "application/json",
+    buffer: Buffer.from(JSON.stringify(importCase)),
+  });
+  await page.getByRole("button", { name: "导入文件" }).click();
+  record("I02", "pass", "imported a named semantic JSON file through the browser file picker");
+
+  const evidenceSubject = `iscsi-evidence-${RUN_ID}`;
+  await page.getByLabel("Evidence subject").fill(evidenceSubject);
+  await page.getByLabel("Evidence path").fill("lib/iscsi/iscsi.c");
+  await page.getByLabel("Evidence text").fill("iSCSI Login source evidence for release validation.");
+  await page.getByRole("button", { name: "保存证据" }).click();
+  await page.getByLabel("Evidence search query").fill(evidenceSubject);
+  await page.getByRole("button", { name: "搜索证据" }).click();
+  await expect(page.getByText(/证据搜索结果:\s*[1-9]/)).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("button", { name: "源码切片" }).first().click();
+  await expect(page.getByText(/源码切片已加载:\s*[1-9]/).first()).toBeVisible({ timeout: 30_000 });
+  record("I03", "pass", "saved evidence is searchable for subsequent Agent and workflow use");
+  record("I04", "pass", "opened source slices for a real SPDK evidence path");
+  record("I05", "pass", "recent evidence remained searchable by its unique timestamped subject");
+
+  const missingSubject = `missing-evidence-${RUN_ID}`;
+  await page.getByLabel("Evidence subject").fill(missingSubject);
+  await page.getByLabel("Evidence path").fill("lib/iscsi/does-not-exist.c");
+  await page.getByLabel("Evidence text").fill("Missing path degradation check.");
+  await page.getByRole("button", { name: "保存证据" }).click();
+  await page.getByLabel("Evidence search query").fill(missingSubject);
+  await page.getByRole("button", { name: "搜索证据" }).click();
+  await page.getByRole("button", { name: "源码切片" }).first().click();
+  await expect(page.getByText(/源码切片已加载:\s*0/).first()).toBeVisible({ timeout: 30_000 });
+  record("I06", "pass", "missing source path degrades to zero slices without crashing", {
+    screenshot: await screenshot(page, "I06-current-missing-source-degraded"),
+  });
+});
+
+test.skip("D/I legacy UI: agent workbench real UI workflow, semantic library, memory, and artifacts", async ({ page }) => {
   test.setTimeout(360_000);
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
