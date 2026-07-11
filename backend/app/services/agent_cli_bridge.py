@@ -209,7 +209,7 @@ async def stream_agent_runtime(
             await proc.stdin.drain()
             proc.stdin.close()
 
-        stream_completion: dict[str, bool] = {"completed": False}
+        stream_completion: dict[str, Any] = {"completed": False, "error": ""}
         async with asyncio.timeout(hard_timeout):
             async for chunk in _read_stdout(
                 proc,
@@ -266,7 +266,10 @@ async def stream_agent_runtime(
 
     if return_code != 0 and not completed_by_policy and not cancelled_by_request:
         error = "".join(stderr_chunks).strip()
-        raise AgentRuntimeError(redact_agent_diagnostic_text(error or f"执行器退出码：{return_code}"))
+        structured_error = str(stream_completion.get("error") or "").strip()
+        raise AgentRuntimeError(
+            redact_agent_diagnostic_text(structured_error or error or f"执行器退出码：{return_code}")
+        )
 
 
 async def _emit_stderr_updates(text: str, callback: Callable[[str], Any] | None) -> None:
@@ -493,7 +496,7 @@ async def _read_stdout(
     runtime: dict[str, Any] | None = None,
     session_update: Callable[[dict[str, Any]], None] | None = None,
     activity_queue: asyncio.Queue[None] | None = None,
-    completion_state: dict[str, bool] | None = None,
+    completion_state: dict[str, Any] | None = None,
 ) -> AsyncIterator[str]:
     if proc.stdout is None:
         return
@@ -564,6 +567,9 @@ async def _read_stdout(
                             break
                 break
             text = _decode(raw)
+            structured_error = _structured_agent_error_text(text)
+            if structured_error and completion_state is not None:
+                completion_state["error"] = structured_error
             stream_completed = _managed_stream_completed(text, runtime)
             parsed = _parse_event_text(
                 text,
@@ -624,6 +630,32 @@ def _managed_stream_completed(text: str, runtime: dict[str, Any]) -> bool:
     except json.JSONDecodeError:
         return False
     return isinstance(event, dict) and str(event.get("type") or "").strip() == "turn.completed"
+
+
+def _structured_agent_error_text(text: str) -> str:
+    stripped = _sse_payload_text(_clean_agent_text(text).strip())
+    if not stripped:
+        return ""
+    try:
+        event = json.loads(stripped)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(event, dict):
+        return ""
+    message = event.get("message")
+    nested_error = str(message.get("error") or "") if isinstance(message, dict) else ""
+    is_error = bool(event.get("is_error")) or bool(nested_error)
+    status = str(event.get("api_error_status") or "").strip()
+    result = str(event.get("result") or "").strip()
+    combined = " ".join(part for part in (nested_error, status, result) if part).lower()
+    if not is_error:
+        return ""
+    if "authentication" in combined or "authenticate" in combined or status in {"401", "403"}:
+        status_label = f"（HTTP {status}）" if status else ""
+        return f"执行器认证失败{status_label}。请重新登录该执行器或在设置中配置有效凭据后重试。"
+    if status:
+        return f"执行器请求失败（HTTP {status}）。请检查执行器配置和服务权限后重试。"
+    return redact_agent_diagnostic_text(result or nested_error or "执行器返回结构化错误。")
 
 
 async def _read_agent_stream_record(

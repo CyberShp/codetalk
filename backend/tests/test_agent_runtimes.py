@@ -6226,6 +6226,35 @@ class TestAgentRuntimes:
         assert "47%" not in message
         assert "�" not in message
 
+    async def test_agent_runtime_failure_surfaces_structured_claude_auth_error(self):
+        from app.services.agent_cli_bridge import AgentRuntimeError, stream_agent_runtime
+
+        agent_code = (
+            "import json; "
+            "print(json.dumps({'type':'assistant','message':{'role':'assistant','content':[{'type':'text','text':'Failed to authenticate. API Error: 403 Request not allowed'}],'error':'authentication_failed'}}), flush=True); "
+            "print(json.dumps({'type':'result','subtype':'success','is_error':True,'api_error_status':403,'result':'Failed to authenticate. API Error: 403 Request not allowed'}), flush=True); "
+            "raise SystemExit(1)"
+        )
+
+        with pytest.raises(AgentRuntimeError) as excinfo:
+            async for _ in stream_agent_runtime(
+                runtime={
+                    "command": sys.executable,
+                    "args": ["-c", agent_code],
+                    "prompt_transport": "stdin",
+                    "output_mode": "stream_json",
+                    "timeout_seconds": 10,
+                },
+                prompt="读取源码",
+                cwd=None,
+            ):
+                pass
+
+        message = str(excinfo.value)
+        assert "认证失败" in message
+        assert "HTTP 403" in message
+        assert "重新登录" in message
+
     async def test_agent_runtime_failure_preserves_stderr_utf8_split_across_read_boundary(self):
         from app.services.agent_cli_bridge import AgentRuntimeError, stream_agent_runtime
 
