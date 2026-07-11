@@ -6869,10 +6869,10 @@ test("cancels a running agent-runtime AI thread through the real UI", async ({
     await expect(page.getByText("agent-runtime-first-delta")).toBeVisible({ timeout: 20_000 });
     const processDisclosure = page.getByTestId("agent-process-disclosure");
     await expect(processDisclosure.getByText("Agent 过程")).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByLabel("AI 线程消息")).toBeDisabled();
-    await expect(page.getByRole("button", { name: "解释这个测试设计背后的风险判断" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "补充黑盒边界条件和异常路径" })).toBeDisabled();
-    await expect(page.getByRole("button", { name: "新建线程" })).toBeDisabled();
+    await expect(page.getByLabel("AI 线程消息")).toBeEnabled();
+    await expect(page.getByRole("button", { name: "解释这个测试设计背后的风险判断" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "补充黑盒边界条件和异常路径" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "新建线程" })).toBeEnabled();
     await expect(page.getByRole("button", { name: "导出" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "沉淀到当前项目记忆" })).toBeDisabled();
     await expect(page.getByRole("button", { name: "加入测试设计" })).toBeDisabled();

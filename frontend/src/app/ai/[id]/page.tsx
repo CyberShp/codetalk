@@ -1071,7 +1071,7 @@ export default function AIThreadPage() {
     ? `/workbench?workflow=${encodeURIComponent(selectedWorkflowId)}&workspace_id=${encodeURIComponent(workspaceId)}`
     : "";
   const threadNavigationBusy =
-    savingRuntime || cancelling || creatingSiblingThread || Boolean(deletingThreadId) || isActuallyRunning;
+    savingRuntime || cancelling || creatingSiblingThread || Boolean(deletingThreadId);
   const lastUserMessage = useMemo(
     () => [...messages].reverse().find((message) => message.role === "user") ?? null,
     [messages],
