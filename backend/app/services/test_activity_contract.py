@@ -128,6 +128,32 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"(?:iscsi_param_free|spdk_startup).{0,100}(?:负责|完成|实现).{0,40}(?:连接清理|connection cleanup)",
                 ],
             },
+            {
+                "id": "iscsi_chap_execution_role",
+                "assertion": (
+                    "iscsi_negotiate_chap_param 只根据配置设置 AuthMethod 策略；实际 CHAP "
+                    "challenge/response 校验由 iscsi_auth_params 路径执行。"
+                ),
+                "evidence": [
+                    "lib/iscsi/iscsi.c::iscsi_negotiate_chap_param",
+                    "lib/iscsi/iscsi.c::iscsi_auth_params",
+                ],
+                "conflict_patterns": [
+                    r"iscsi_negotiate_chap_param.{0,100}(?:执行|处理|完成|负责).{0,40}(?:chap\s*)?(?:认证|authentication)",
+                    r"(?:chap\s*)?(?:认证|authentication).{0,100}(?:由|通过).{0,30}iscsi_negotiate_chap_param.{0,40}(?:执行|处理|完成)",
+                ],
+            },
+            {
+                "id": "iscsi_login_status_detail_05",
+                "assertion": (
+                    "Login Status-Detail 0x05 表示 Unsupported Version；参数协商失败不能泛化标成 Parameter Error 0x05。"
+                ),
+                "evidence": ["include/spdk/iscsi_spec.h::ISCSI_LOGIN_UNSUPPORTED_VERSION"],
+                "conflict_patterns": [
+                    r"(?:parameter error|参数(?:协商)?错误|参数错误).{0,80}(?:status[- ]?detail\s*[:=]?\s*)?0x05",
+                    r"(?:status[- ]?detail\s*[:=]?\s*)?0x05.{0,80}(?:parameter error|参数(?:协商)?错误|参数错误)",
+                ],
+            },
         ],
     ),
     "nvmeof_transport": _profile(

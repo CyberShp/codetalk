@@ -710,7 +710,9 @@ def test_iscsi_professional_constraints_reject_known_protocol_contradictions(tmp
             "Authorization Failure 使用 Status-Class: 0x03。\n"
             "接收 Login Request 的入口是 `iscsi_op_login_rsp_handle_csg_bit`。\n"
             "Initiator 发送 Text Request 进行登录参数协商。\n"
-            "连接清理由 `iscsi_param_free` 和 `spdk_startup` 完成。"
+            "连接清理由 `iscsi_param_free` 和 `spdk_startup` 完成。\n"
+            "`iscsi_negotiate_chap_param` 执行 CHAP 认证。\n"
+            "Parameter Error 使用 Status-Detail 0x05。"
         ),
         contract=contract,
         repo_path=str(repo),
@@ -721,7 +723,7 @@ def test_iscsi_professional_constraints_reject_known_protocol_contradictions(tmp
         issue for issue in audit["issues"]
         if issue["code"] == "professional_fact_conflict"
     ]
-    assert len(conflicts) == 5
+    assert len(conflicts) == 7
     assert all(issue["evidence"] for issue in conflicts)
 
 

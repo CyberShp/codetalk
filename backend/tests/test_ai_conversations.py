@@ -4670,7 +4670,7 @@ class TestAIConversationsAPI:
         assert "Bash {" not in prompt
         assert "grep -n login" not in prompt
         assert "iscsi_conn_login_pdu_success_complete" not in prompt
-        assert "AuthMethod" not in prompt
+        assert '1539:\t\trc = iscsi_op_login_update_param(conn, "AuthMethod"' not in prompt
 
 
 @pytest.mark.asyncio
