@@ -175,6 +175,24 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"unsupported version.{0,80}(?:status[- ]?detail\s*[:=]?\s*)?`?0x05`?.{0,80}(?:不能泛化|不应泛化|must not generalize).{0,30}(?:parameter error|参数(?:协商)?错误|参数错误)",
                 ],
             },
+            {
+                "id": "iscsi_login_status_detail_02",
+                "assertion": (
+                    "Initiator Error 的 Login Status-Detail 0x02 表示 Authorization Failure；"
+                    "通用参数解析或协商失败不能标成 0x02。"
+                ),
+                "evidence": [
+                    "include/spdk/iscsi_spec.h::ISCSI_LOGIN_AUTHORIZATION_FAIL",
+                    "lib/iscsi/iscsi.c::iscsi_op_login_store_incoming_params",
+                ],
+                "conflict_patterns": [
+                    r"(?:参数(?:解析|协商)?失败|parameter (?:parse|negotiation) (?:error|failure)).{0,100}(?:status[- ]?detail\s*[:=]?\s*)?`?0x02`?",
+                    r"(?:status[- ]?detail\s*[:=]?\s*)?`?0x02`?.{0,100}(?:参数(?:解析|协商)?失败|parameter (?:parse|negotiation) (?:error|failure))",
+                ],
+                "correction_patterns": [
+                    r"(?:status[- ]?detail\s*[:=]?\s*)?`?0x02`?.{0,80}(?:表示|是|means).{0,40}(?:authorization failure|授权失败).{0,100}(?:不是|并非|不能|不应|not).{0,50}(?:参数(?:解析|协商)?失败|parameter)",
+                ],
+            },
         ],
     ),
     "nvmeof_transport": _profile(

@@ -712,7 +712,8 @@ def test_iscsi_professional_constraints_reject_known_protocol_contradictions(tmp
             "Initiator 发送 Text Request 进行登录参数协商。\n"
             "连接清理由 `iscsi_param_free` 和 `spdk_startup` 完成。\n"
             "`iscsi_negotiate_chap_param` 执行 CHAP 认证。\n"
-            "Parameter Error 使用 Status-Detail 0x05。"
+            "Parameter Error 使用 Status-Detail 0x05。\n"
+            "参数协商失败使用 Status-Detail 0x02。"
         ),
         contract=contract,
         repo_path=str(repo),
@@ -723,7 +724,7 @@ def test_iscsi_professional_constraints_reject_known_protocol_contradictions(tmp
         issue for issue in audit["issues"]
         if issue["code"] == "professional_fact_conflict"
     ]
-    assert len(conflicts) == 7
+    assert len(conflicts) == 8
     assert all(issue["evidence"] for issue in conflicts)
 
 
@@ -753,7 +754,8 @@ def test_iscsi_professional_constraints_accept_explicit_fact_corrections(tmp_pat
             "`iscsi_negotiate_chap_param` 不执行 CHAP 认证，实际校验由 `iscsi_auth_params` 完成。\n"
             "| CHAP 策略设置 | `iscsi_negotiate_chap_param` | 1532-1543 | 根据 `disable_chap`/`require_chap` 设置 `AuthMethod`。不执行实际认证。 |\n"
             "Status-Detail 0x05 是 Unsupported Version，不是参数错误。\n"
-            "Unsupported Version 的 status_detail = `0x05`，不能泛化为参数错误。"
+            "Unsupported Version 的 status_detail = `0x05`，不能泛化为参数错误。\n"
+            "Status-Detail `0x02` 表示 Authorization Failure，不是参数协商失败。"
         ),
         contract=contract,
         repo_path=str(repo),
