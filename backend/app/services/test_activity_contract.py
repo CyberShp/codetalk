@@ -201,8 +201,8 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     "lib/iscsi/iscsi.c::iscsi_op_login_store_incoming_params",
                 ],
                 "conflict_patterns": [
-                    r"(?:参数(?:解析|协商)?失败|parameter (?:parse|negotiation) (?:error|failure)).{0,100}(?:status[- ]?detail\s*[:=]?\s*)?`?0x02`?",
-                    r"(?:status[- ]?detail\s*[:=]?\s*)?`?0x02`?.{0,100}(?:参数(?:解析|协商)?失败|parameter (?:parse|negotiation) (?:error|failure))",
+                    r"(?:参数(?:解析|协商)?失败|parameter (?:parse|negotiation) (?:error|failure)).{0,100}(?:status[- ]?detail|detail)\s*[:=]?\s*`?0x02`?",
+                    r"(?:status[- ]?detail|detail)\s*[:=]?\s*`?0x02`?.{0,100}(?:参数(?:解析|协商)?失败|parameter (?:parse|negotiation) (?:error|failure))",
                 ],
                 "correction_patterns": [
                     r"(?:status[- ]?detail\s*[:=]?\s*)?`?0x02`?.{0,80}(?:表示|是|means).{0,40}(?:authorization failure|授权失败).{0,100}(?:不是|并非|不能|不应|not).{0,50}(?:参数(?:解析|协商)?失败|parameter)",
@@ -221,6 +221,22 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 ],
                 "correction_patterns": [
                     r"(?:假设|若|如果|可能|潜在|待验证|需核验|尚未确认|hypothes).{0,180}(?:边界|越界|溢出)",
+                ],
+            },
+            {
+                "id": "iscsi_negotiate_params_bounds_checked",
+                "assertion": (
+                    "iscsi_negotiate_params 使用 alloc_len、剩余空间检查和有界 snprintf；"
+                    "不能把响应数据段写越界描述成已确认缺陷。未经验证只能标成假设。"
+                ),
+                "evidence": ["lib/iscsi/param.c::iscsi_negotiate_params"],
+                "conflict_patterns": [
+                    r"iscsi_negotiate_params.{0,220}(?:响应数据段溢出|写入越界|buffer overflow|缓冲区溢出)",
+                    r"(?:响应数据段溢出|写入越界|buffer overflow|缓冲区溢出).{0,220}iscsi_negotiate_params",
+                ],
+                "correction_patterns": [
+                    r"(?:假设|若|如果|可能|潜在|待验证|需核验|尚未确认|hypothes).{0,220}(?:越界|溢出|overflow)",
+                    r"iscsi_negotiate_params.{0,220}(?:alloc_len|剩余空间|snprintf).{0,160}(?:防止|避免|限制|有界|bounded)",
                 ],
             },
             {
