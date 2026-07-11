@@ -3261,6 +3261,75 @@ class TestAIConversationsAPI:
         messages = await store.list_messages(conversation["id"])
         assert [message["role"] for message in messages] == ["user"]
 
+    async def test_retry_failed_run_reuses_original_user_message(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.services.ai_conversations import AIConversationStore
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="重试不重复消息",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="分析 iSCSI Login 并输出测试设计",
+            references=[],
+        )
+        await store.fail_run(created["run"]["id"], "质量门禁未通过")
+
+        retried = await store.retry_failed_run(
+            conversation_id=conversation["id"],
+            source_run_id=created["run"]["id"],
+        )
+
+        assert retried["run"]["status"] == "queued"
+        assert retried["run"]["input_message_id"] == created["message"]["id"]
+        assert retried["message"]["id"] == created["message"]["id"]
+        messages = await store.list_messages(conversation["id"])
+        assert [(message["role"], message["content"]) for message in messages] == [
+            ("user", "分析 iSCSI Login 并输出测试设计"),
+        ]
+
+    async def test_retry_failed_run_api_schedules_without_duplicate_message(
+        self,
+        sqlite_db,
+        monkeypatch,
+    ):
+        ws_id = await _seed_workspace(sqlite_db)
+        from app.api import ai_conversations as ai_api
+        from app.services.ai_conversations import AIConversationStore
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="API 重试",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="分析 iSCSI Login",
+            references=[],
+        )
+        await store.fail_run(created["run"]["id"], "执行失败")
+        scheduled: list[str] = []
+        monkeypatch.setattr(ai_api, "schedule_conversation_run", scheduled.append)
+
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post(
+                f"/api/ai/conversations/{conversation['id']}/runs/{created['run']['id']}/retry"
+            )
+
+        assert response.status_code == 202
+        body = response.json()
+        assert body["message"]["id"] == created["message"]["id"]
+        assert scheduled == [body["run"]["id"]]
+        assert len(await store.list_messages(conversation["id"])) == 1
+
     async def test_cancel_while_followup_is_queued_stops_current_run_and_preserves_queue(
         self,
         sqlite_db,

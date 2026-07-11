@@ -85,6 +85,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 ],
                 "correction_patterns": [
                     r"(?:authorization failure|授权失败).{0,80}`?0x02`?.{0,50}(?:不是|而非|not)\s*(?:target error\s*)?`?0x03`?",
+                    r"(?:authorization failure|授权失败).{0,80}`?0x02`?.{0,50}target error.{0,20}`?0x03`?",
                 ],
             },
             {
@@ -171,6 +172,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 ],
                 "correction_patterns": [
                     r"(?:status[- ]?detail\s*[:=]?\s*)?0x05.{0,80}(?:不是|并非|not).{0,30}(?:parameter error|参数(?:协商)?错误|参数错误)",
+                    r"unsupported version.{0,80}(?:status[- ]?detail\s*[:=]?\s*)?`?0x05`?.{0,80}(?:不能泛化|不应泛化|must not generalize).{0,30}(?:parameter error|参数(?:协商)?错误|参数错误)",
                 ],
             },
         ],

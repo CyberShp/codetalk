@@ -1401,9 +1401,32 @@ export default function AIThreadPage() {
   };
 
   const retryLatestFailure = async () => {
-    const text = lastUserMessage?.content.trim();
-    if (!text || !canRetryLatestFailure) return;
-    await sendText(text);
+    if (!latestRun?.id || !lastUserMessage?.content.trim() || !canRetryLatestFailure) return;
+    setSending(true);
+    setError(null);
+    setStreamingContent("");
+    setStreamingDiagnostics([]);
+    setStreamingProcessEvents([]);
+    autoScrollRef.current = true;
+    setShowJumpToLatest(false);
+    try {
+      const result = await api.aiConversations.retry(conversationId, latestRun.id);
+      setConversation((prev) =>
+        prev
+          ? {
+              ...prev,
+              status: "running",
+              latest_run: result.run,
+            }
+          : prev,
+      );
+      setStreamingRunId(result.run.id);
+      setContextOpen(!window.matchMedia("(max-width: 760px)").matches);
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : "重试失败");
+    } finally {
+      setSending(false);
+    }
   };
 
   const exportThreadMarkdown = () => {

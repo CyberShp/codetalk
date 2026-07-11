@@ -203,6 +203,7 @@ CREATE TABLE IF NOT EXISTS ai_messages (
 CREATE TABLE IF NOT EXISTS ai_conversation_runs (
     id TEXT PRIMARY KEY,
     conversation_id TEXT NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+    input_message_id TEXT,
     status TEXT NOT NULL DEFAULT 'queued',
     sequence INTEGER DEFAULT 0,
     cursor INTEGER DEFAULT 0,
@@ -298,8 +299,11 @@ _MIGRATIONS = [
     "CREATE TABLE IF NOT EXISTS ai_agent_runtime_sessions (conversation_id TEXT NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE, agent_runtime_id TEXT NOT NULL REFERENCES agent_runtimes(id) ON DELETE CASCADE, cli_session_id TEXT NOT NULL, resume_session_id TEXT NOT NULL, metadata_json TEXT DEFAULT '{}', created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY (conversation_id, agent_runtime_id))",
     "CREATE INDEX IF NOT EXISTS idx_ai_agent_runtime_sessions_runtime ON ai_agent_runtime_sessions(agent_runtime_id, updated_at)",
     "ALTER TABLE ai_conversation_runs ADD COLUMN sequence INTEGER DEFAULT 0",
+    "ALTER TABLE ai_conversation_runs ADD COLUMN input_message_id TEXT",
+    "UPDATE ai_conversation_runs SET input_message_id = (SELECT id FROM ai_messages WHERE ai_messages.run_id = ai_conversation_runs.id AND ai_messages.role = 'user' ORDER BY ai_messages.created_at ASC LIMIT 1) WHERE input_message_id IS NULL",
     "ALTER TABLE ai_run_events ADD COLUMN seq INTEGER DEFAULT 0",
     "CREATE INDEX IF NOT EXISTS idx_ai_runs_conversation_sequence ON ai_conversation_runs(conversation_id, sequence)",
+    "CREATE INDEX IF NOT EXISTS idx_ai_runs_input_message ON ai_conversation_runs(input_message_id)",
     "CREATE INDEX IF NOT EXISTS idx_ai_run_events_run_seq ON ai_run_events(run_id, seq)",
 ]
 

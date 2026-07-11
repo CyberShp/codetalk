@@ -258,6 +258,31 @@ async def create_message(conversation_id: str, body: CreateMessageRequest) -> di
     return _redact_payload(result)
 
 
+@router.post(
+    "/{conversation_id}/runs/{source_run_id}/retry",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def retry_failed_run(conversation_id: str, source_run_id: str) -> dict[str, Any]:
+    store = _store()
+    try:
+        conversation = await store.get_conversation(conversation_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="AI conversation not found")
+    if conversation.get("runtime_type") == "agent_runtime":
+        await _require_enabled_agent_runtime(conversation.get("agent_runtime_id"))
+    try:
+        result = await store.retry_failed_run(
+            conversation_id=conversation_id,
+            source_run_id=source_run_id,
+        )
+    except KeyError:
+        raise HTTPException(status_code=404, detail="AI run not found")
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    schedule_conversation_run(result["run"]["id"])
+    return _redact_payload(result)
+
+
 @router.get("/{conversation_id}/stream")
 async def stream_events(
     conversation_id: str,

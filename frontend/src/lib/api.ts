@@ -813,6 +813,16 @@ export const api = {
         body: JSON.stringify({ content }),
       }),
 
+    retry: (id: string, runId: string) =>
+      request<{
+        message: AIMessage;
+        run: AIConversationRun;
+        references: AIContextReference[];
+      }>(
+        `/api/ai/conversations/${encodeURIComponent(id)}/runs/${encodeURIComponent(runId)}/retry`,
+        { method: "POST" },
+      ),
+
     stream: (id: string, cursor = 0, signal?: AbortSignal): Promise<Response> =>
       fetch(`${currentApiBase()}/api/ai/conversations/${encodeURIComponent(id)}/stream?cursor=${cursor}`, {
         credentials: "include",

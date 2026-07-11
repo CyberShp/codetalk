@@ -845,10 +845,10 @@ class AIConversationStore:
             await db.execute(
                 """
                 INSERT INTO ai_conversation_runs
-                    (id, conversation_id, status, sequence, cursor, created_at)
-                VALUES (?, ?, 'queued', ?, 0, ?)
+                    (id, conversation_id, input_message_id, status, sequence, cursor, created_at)
+                VALUES (?, ?, ?, 'queued', ?, 0, ?)
                 """,
-                (run_id, conversation_id, sequence, now),
+                (run_id, conversation_id, message_id, sequence, now),
             )
             await db.execute(
                 "UPDATE ai_conversations SET status = 'running', updated_at = ? WHERE id = ?",
@@ -865,6 +865,86 @@ class AIConversationStore:
             "message": await self.get_message(message_id),
             "run": await self.get_run(run_id),
             "references": refs,
+        }
+
+    async def retry_failed_run(
+        self,
+        *,
+        conversation_id: str,
+        source_run_id: str,
+    ) -> dict[str, Any]:
+        now = _now()
+        run_id = _new_id("run")
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT * FROM ai_conversation_runs WHERE id = ? AND conversation_id = ?",
+                (source_run_id, conversation_id),
+            ) as cur:
+                source_run = await cur.fetchone()
+            if source_run is None:
+                await db.rollback()
+                raise KeyError(source_run_id)
+            if str(source_run["status"] or "") not in {"failed", "cancelled"}:
+                await db.rollback()
+                raise ValueError("只有失败或已取消的运行可以重试")
+            async with db.execute(
+                """
+                SELECT id FROM ai_conversation_runs
+                WHERE conversation_id = ? AND status IN ('queued', 'running')
+                LIMIT 1
+                """,
+                (conversation_id,),
+            ) as cur:
+                active_run = await cur.fetchone()
+            if active_run is not None:
+                await db.rollback()
+                raise ValueError("当前已有运行中的任务")
+            message_id = str(source_run["input_message_id"] or "").strip()
+            if not message_id:
+                async with db.execute(
+                    """
+                    SELECT id FROM ai_messages
+                    WHERE conversation_id = ? AND run_id = ? AND role = 'user'
+                    ORDER BY created_at ASC LIMIT 1
+                    """,
+                    (conversation_id, source_run_id),
+                ) as cur:
+                    message_row = await cur.fetchone()
+                message_id = str(message_row["id"] or "").strip() if message_row else ""
+            if not message_id:
+                await db.rollback()
+                raise ValueError("未找到待重试的用户消息")
+            async with db.execute(
+                "SELECT COALESCE(MAX(sequence), 0) + 1 AS next_sequence FROM ai_conversation_runs WHERE conversation_id = ?",
+                (conversation_id,),
+            ) as cur:
+                sequence_row = await cur.fetchone()
+            sequence = int(sequence_row["next_sequence"] or 1) if sequence_row else 1
+            await db.execute(
+                """
+                INSERT INTO ai_conversation_runs
+                    (id, conversation_id, input_message_id, status, sequence, cursor, created_at)
+                VALUES (?, ?, ?, 'queued', ?, 0, ?)
+                """,
+                (run_id, conversation_id, message_id, sequence, now),
+            )
+            await db.execute(
+                "UPDATE ai_conversations SET status = 'running', updated_at = ? WHERE id = ?",
+                (now, conversation_id),
+            )
+            await db.commit()
+        await self.append_event(
+            run_id=run_id,
+            conversation_id=conversation_id,
+            event_type="status",
+            payload={"status": "queued", "message": "已复用原始输入进入重试队列，正在准备上下文。"},
+        )
+        message = await self.get_message(message_id)
+        return {
+            "message": message,
+            "run": await self.get_run(run_id),
+            "references": message.get("references") or [],
         }
 
     async def next_queued_run(self, conversation_id: str) -> dict[str, Any] | None:
@@ -1571,6 +1651,29 @@ def _source_query_for_conversation(conversation: dict[str, Any], user_message: s
     return user_message
 
 
+def _input_user_message_for_run(
+    messages: list[dict[str, Any]],
+    run: dict[str, Any],
+) -> dict[str, Any] | None:
+    message_id = str(run.get("input_message_id") or "").strip()
+    if message_id:
+        matched = next(
+            (message for message in messages if str(message.get("id") or "") == message_id),
+            None,
+        )
+        if matched is not None and matched.get("role") == "user":
+            return matched
+    run_id = str(run.get("id") or "")
+    return next(
+        (
+            message
+            for message in reversed(messages)
+            if message.get("role") == "user" and str(message.get("run_id") or "") == run_id
+        ),
+        None,
+    )
+
+
 async def run_generation(
     *,
     store: AIConversationStore,
@@ -1580,10 +1683,7 @@ async def run_generation(
     run = await store.get_run(run_id)
     conversation = await store.get_conversation(run["conversation_id"])
     messages = await store.list_messages(conversation["id"])
-    user_message = next(
-        (msg for msg in reversed(messages) if msg["role"] == "user" and msg.get("run_id") == run_id),
-        None,
-    )
+    user_message = _input_user_message_for_run(messages, run)
     if not user_message:
         await store.fail_run(run_id, "未找到本轮用户消息")
         return
@@ -1863,10 +1963,7 @@ async def run_agent_generation(
     run = await store.get_run(run_id)
     conversation = await store.get_conversation(run["conversation_id"])
     messages = await store.list_messages(conversation["id"])
-    user_message = next(
-        (msg for msg in reversed(messages) if msg["role"] == "user" and msg.get("run_id") == run_id),
-        None,
-    )
+    user_message = _input_user_message_for_run(messages, run)
     if not user_message:
         await store.fail_run(run_id, "未找到本轮用户消息")
         return

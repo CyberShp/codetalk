@@ -746,11 +746,13 @@ def test_iscsi_professional_constraints_accept_explicit_fact_corrections(tmp_pat
             "## 已核验事实\n\n"
             "`iscsi_op_login_response` 只发送响应，不是认证或参数协商核心。\n"
             "认证失败和授权失败都使用 Initiator Error class `0x02`，不是 Target Error `0x03`。\n"
+            "认证失败和授权失败均属 Initiator Error `0x02`；Target Error 是 `0x03`。\n"
             "Login PDU 数据段完成参数协商，不需要 Text Request。\n"
             "连接清理由 `lib/iscsi/conn.c` 析构路径负责，`iscsi_param_free` 只释放参数链。\n"
             "`spdk_startup` 不负责 Login、认证或连接清理。\n"
             "`iscsi_negotiate_chap_param` 不执行 CHAP 认证，实际校验由 `iscsi_auth_params` 完成。\n"
-            "Status-Detail 0x05 是 Unsupported Version，不是参数错误。"
+            "Status-Detail 0x05 是 Unsupported Version，不是参数错误。\n"
+            "Unsupported Version 的 status_detail = `0x05`，不能泛化为参数错误。"
         ),
         contract=contract,
         repo_path=str(repo),
