@@ -4418,6 +4418,11 @@ def _semantic_source_terms(text: str) -> list[str]:
 
 
 def _best_source_line_for_query(path: Path, query: str) -> int:
+    symbol = str(query or "").strip()
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", symbol):
+        definition_line = _source_symbol_definition_line(path, symbol)
+        if definition_line:
+            return definition_line
     terms = [*_symbol_query_terms(query), *_source_relevance_terms(query)]
     if not terms:
         return 1
@@ -4435,6 +4440,29 @@ def _best_source_line_for_query(path: Path, query: str) -> int:
             best_line = idx
             best_score = score
     return best_line if best_score > 0 else 1
+
+
+def _source_symbol_definition_line(path: Path, symbol: str) -> int:
+    try:
+        lines = path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except Exception:
+        return 0
+    macro_pattern = re.compile(rf"^\s*#\s*define\s+{re.escape(symbol)}(?:\s|\()")
+    same_line_definition = re.compile(
+        rf"^(?:[A-Za-z_][A-Za-z0-9_]*[\s*]+)+{re.escape(symbol)}\s*\("
+    )
+    split_definition = re.compile(rf"^{re.escape(symbol)}\s*\(")
+    for index, line in enumerate(lines, start=1):
+        if macro_pattern.search(line):
+            return index
+        stripped = line.strip()
+        if line == line.lstrip() and same_line_definition.search(stripped):
+            return index
+        if line == line.lstrip() and split_definition.search(stripped):
+            previous = lines[index - 2].strip() if index >= 2 else ""
+            if previous and not previous.endswith((";", "{", "}")):
+                return index
+    return 0
 
 
 def _source_line_match_score(

@@ -1896,6 +1896,30 @@ class TestAIConversationsAPI:
         assert "nvmf_dir_target" in source_refs[0].excerpt
         assert all(not ref.metadata["path"].startswith("lib/iscsi/") for ref in source_refs[:2])
 
+    async def test_source_symbol_anchor_prefers_definition_over_later_call(self, tmp_path: Path):
+        from app.services.ai_conversations import _best_source_line_for_query
+
+        source = tmp_path / "iscsi.c"
+        source.write_text(
+            "\n".join(
+                [
+                    "static int",
+                    "iscsi_auth_params(void *conn)",
+                    "{",
+                    "    return 0;",
+                    "}",
+                    "",
+                    "static void caller(void)",
+                    "{",
+                    "    iscsi_auth_params(0);",
+                    "}",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        assert _best_source_line_for_query(source, "iscsi_auth_params") == 2
+
     async def test_workspace_source_refs_balance_multiple_explicit_directories(
         self,
         sqlite_db,
