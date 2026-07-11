@@ -1459,48 +1459,41 @@ test("A04: health probes are triggerable from the UI", async ({ page }) => {
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
   await noFrameworkOverlay(page);
-  await expect(page.getByRole("heading", { name: "智能体编排台" })).toBeVisible({ timeout: 30_000 });
-  await expect(page.getByText("系统门禁")).toBeVisible({ timeout: 30_000 });
-  evidence.systemAuditScreenshot = await screenshot(page, "A04-workbench-system-audit");
-  await openWorkbenchView(page, "执行器体检");
-  await expect(page.getByRole("heading", { name: "执行器矩阵" })).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByRole("heading", { name: "运行驾驶舱" })).toBeVisible({ timeout: 30_000 });
+  const refreshButton = page.getByRole("button", { name: "刷新状态" });
+  await refreshButton.hover();
+  await refreshButton.click();
+  await expect(page.getByText("系统", { exact: true })).toBeVisible({ timeout: 30_000 });
+  evidence.systemAuditScreenshot = await screenshot(page, "A04-workbench-system-status");
 
-  const providerProbeAll = await firstVisibleEnabledButton(page, "探测全部 Agent");
-  const providerStartupProbe = providerProbeAll ?? (await firstVisibleEnabledButton(page, "启动探测"));
-  if (!providerStartupProbe) {
-    record("A04", "blocked", "workbench provider probe controls are unavailable or disabled", {
-      screenshot: await screenshot(page, "A04-provider-probe-unavailable"),
+  await page.goto("/settings", { waitUntil: "domcontentloaded" });
+  await noFrameworkOverlay(page);
+  await expect(page.getByRole("heading", { name: "设置", exact: true })).toBeVisible({ timeout: 30_000 });
+
+  const backendProbe = page.getByRole("button", { name: "检查后端连接" });
+  await backendProbe.hover();
+  await backendProbe.click();
+  await expect(page.getByText(/(?:可用|不可用)：/).first()).toBeVisible({ timeout: 30_000 });
+  evidence.backendProbeScreenshot = await screenshot(page, "A04-backend-connection-probe");
+
+  const runtimeProbe = await firstVisibleEnabledButton(page, "测试");
+  if (!runtimeProbe) {
+    record("A04", "blocked", "settings has no enabled Agent runtime to probe", {
+      screenshot: await screenshot(page, "A04-runtime-probe-unavailable"),
       excerpt: await pageExcerpt(page),
     });
     return;
   }
-
-  const providerUrlPart = providerProbeAll ? "/api/workbench/deployment-probe" : "/startup-probe";
-  evidence.providerProbe = await clickAndCaptureJsonResponse(page, providerUrlPart, providerStartupProbe);
-  await expect
-    .poll(() => page.locator("body").innerText(), { timeout: 120_000 })
-    .toMatch(/部署探测|探测结果:|启动探测\s+\w+:/i);
-  evidence.providerProbeScreenshot = await screenshot(page, "A04-provider-probe-result");
-
-  const workbenchToolProbe = await firstVisibleEnabledButton(page, "启动探测");
-  if (workbenchToolProbe) {
-    evidence.workbenchToolProbe = await clickAndCaptureJsonResponse(page, "/startup-probe", workbenchToolProbe);
-    await expect
-      .poll(() => page.locator("body").innerText(), { timeout: 120_000 })
-      .toMatch(/探测结果:|启动探测\s+\w+:/i);
-    evidence.workbenchToolProbeScreenshot = await screenshot(page, "A04-workbench-tool-probe-result");
-  }
-
-  if (!workbenchToolProbe) {
-    record("A04", "blocked", "no enabled tool startup probe control was available in workbench or tools UI", {
-      screenshot: await screenshot(page, "A04-tool-probe-unavailable"),
-      excerpt: await pageExcerpt(page),
-    });
-    return;
-  }
+  evidence.runtimeProbe = await clickAndCaptureJsonResponse(
+    page,
+    "/api/settings/agent-runtimes/",
+    runtimeProbe,
+  );
+  await expect(page.getByText(/(?:可用|不可用)：/).last()).toBeVisible({ timeout: 120_000 });
+  evidence.runtimeProbeScreenshot = await screenshot(page, "A04-agent-runtime-probe");
 
   writeJson("A04-health-probes-ui.json", evidence);
-  record("A04", "pass", "system audit, provider probe, and tool startup probe were triggered through UI controls", evidence);
+  record("A04", "pass", "workbench status, backend connection, and configured Agent runtime probes were triggered through current UI controls", evidence);
 });
 
 test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async ({ page, context }) => {
