@@ -628,6 +628,7 @@ def test_combined_test_activity_response_requires_complete_sections_and_evidence
     assert "missing_combined_sfmea" in codes
     assert "missing_combined_black_box_dimensions" in codes
     assert "missing_combined_source_evidence" in codes
+    assert "missing_specific_test_evidence" in codes
 
 
 def test_combined_test_activity_response_accepts_complete_contract_shape(tmp_path):
@@ -832,6 +833,8 @@ def test_ai_thread_prompts_include_test_activity_contract_for_testing_work():
         assert "black_box_cases" in prompt
         assert "ai_suggested_unverified" in prompt
         assert "不能自由决定交付件骨架" in prompt
+        assert "test_mapping 必须指向具体存在的测试文件" in prompt
+        assert "不能只写测试目录" in prompt
 
 
 @pytest.mark.asyncio

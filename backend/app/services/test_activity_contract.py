@@ -500,6 +500,20 @@ def audit_test_activity_response(
                     f"证据路径不存在: {path}",
                 )
             )
+    if required_outputs.intersection({"sfmea.json", "black_box_cases.json"}):
+        specific_test_paths = [
+            path
+            for path in evidence_paths
+            if path.lower().startswith(("test/", "tests/")) and Path(path).suffix
+        ]
+        if not specific_test_paths:
+            issues.append(
+                _issue(
+                    "missing_specific_test_evidence",
+                    "assistant-output.md",
+                    "组合交付件只引用了测试目录，没有映射到具体测试脚本或用例文件",
+                )
+            )
 
     score = max(0, 100 - len(issues) * 15)
     status = "deliverable" if not issues and score >= int((contract.get("quality_gates") or {}).get("min_score") or 80) else "needs_rework"

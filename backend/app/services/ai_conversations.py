@@ -3150,6 +3150,7 @@ def _test_activity_contract_prompt(*, user_message: str, repo_path: str | None =
         "TEST_ACTIVITY_CONTRACT:",
         "  active: true",
         "  rule: AI/Agent 只能在契约范围内填充内容，不能自由决定交付件骨架；未验证关注点必须标为 ai_suggested_unverified。",
+        "  evidence_rule: source_evidence 必须引用具体源码文件、符号或行号；test_mapping 必须指向具体存在的测试文件，不能只写测试目录。",
         "  payload_json: |",
         *[f"    {line}" for line in payload.splitlines()],
     ])
@@ -3846,36 +3847,35 @@ def _collect_source_refs_sync(repo: Path, workspace_id: str, query: str) -> list
     refs: list[ContextReference] = []
     seen: set[str] = set()
     matched_path_hint = False
+    hint_candidate_groups: list[list[Path]] = []
     for path_hint in _path_hints(query):
         candidate = (repo_root / path_hint).resolve()
         if _safe_source_dir(repo_root, candidate):
-            for source_path in _directory_source_candidates(repo_root, candidate, query=query):
-                ref = _source_file_ref(
-                    repo_root,
-                    workspace_id,
-                    source_path,
-                    line=_best_source_line_for_query(source_path, query),
-                )
-                if ref and ref.source_id not in seen:
-                    refs.append(ref)
-                    seen.add(ref.source_id)
-                    matched_path_hint = True
-                if len(refs) >= 4:
-                    return refs
+            hint_candidate_groups.append(
+                _directory_source_candidates(repo_root, candidate, query=query)
+            )
             continue
         if _safe_source_file(repo_root, candidate):
+            hint_candidate_groups.append([candidate])
+
+    per_hint_limit = 4 if len(hint_candidate_groups) <= 1 else 2
+    for candidate_index in range(per_hint_limit):
+        for candidates in hint_candidate_groups:
+            if candidate_index >= len(candidates):
+                continue
+            source_path = candidates[candidate_index]
             ref = _source_file_ref(
                 repo_root,
                 workspace_id,
-                candidate,
-                line=_best_source_line_for_query(candidate, query),
+                source_path,
+                line=_best_source_line_for_query(source_path, query),
             )
             if ref and ref.source_id not in seen:
                 refs.append(ref)
                 seen.add(ref.source_id)
                 matched_path_hint = True
-        if len(refs) >= 4:
-            return refs
+            if len(refs) >= 8:
+                return refs
     if matched_path_hint and refs:
         return refs
 

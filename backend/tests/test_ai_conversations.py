@@ -170,7 +170,7 @@ class LongArtifactLLM:
             "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
         ]
         rows.extend(
-            f"| SFMEA 风险 {index} | 资源不足 | IO 失败 | 日志和指标 | 8 | 3 | 4 | 96 | 严重度高且可探测 | 增加恢复验证 | `lib/iscsi/iscsi.c` | `test/iscsi_tgt` |"
+            f"| SFMEA 风险 {index} | 资源不足 | IO 失败 | 日志和指标 | 8 | 3 | 4 | 96 | 严重度高且可探测 | 增加恢复验证 | `lib/iscsi/iscsi.c` | `test/iscsi_tgt/chap/chap.sh` |"
             for index in range(120)
         )
         dimensions = (
@@ -187,7 +187,7 @@ class LongArtifactLLM:
         yield "\n".join(
             f"{index}. TC-{index:03d} {dimensions[index % len(dimensions)]}。前置条件：target 已启动。"
             "步骤：initiator 执行登录。预期结果：返回明确状态。观测点：登录响应和 SPDK 日志。"
-            "失败诊断线索：关联 session 日志。证据：`test/iscsi_tgt`。"
+            "失败诊断线索：关联 session 日志。证据：`test/iscsi_tgt/chap/chap.sh`。"
             for index in range(120)
         )
 
@@ -197,9 +197,9 @@ class MediumArtifactLLM:
         rows = [
             "| failure_mode | cause | effect | detection | severity | occurrence | detection_score | RPN | score_explanation | mitigation | source_evidence | test_mapping |",
             "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
-            "| SFMEA 风险 1：reconnect timeout | 网络中断 | I/O 暂停 | 日志和指标 | 8 | 3 | 4 | 96 | 恢复受阻 | 限制重试 | `lib/iscsi/iscsi.c` | `test/iscsi_tgt` |",
-            "| SFMEA 风险 2：reset race | 并发关闭 | session stale | RPC 状态 | 7 | 3 | 4 | 84 | 状态残留 | 增加并发回归 | `lib/iscsi/iscsi.c` | `test/iscsi_tgt` |",
-            "| SFMEA 风险 3：queue drain | 资源压力 | request lost | poller latency | 9 | 2 | 4 | 72 | 数据面影响 | 增加资源监控 | `lib/iscsi/iscsi.c` | `test/iscsi_tgt` |",
+            "| SFMEA 风险 1：reconnect timeout | 网络中断 | I/O 暂停 | 日志和指标 | 8 | 3 | 4 | 96 | 恢复受阻 | 限制重试 | `lib/iscsi/iscsi.c` | `test/iscsi_tgt/chap/chap.sh` |",
+            "| SFMEA 风险 2：reset race | 并发关闭 | session stale | RPC 状态 | 7 | 3 | 4 | 84 | 状态残留 | 增加并发回归 | `lib/iscsi/iscsi.c` | `test/iscsi_tgt/chap/chap.sh` |",
+            "| SFMEA 风险 3：queue drain | 资源压力 | request lost | poller latency | 9 | 2 | 4 | 72 | 数据面影响 | 增加资源监控 | `lib/iscsi/iscsi.c` | `test/iscsi_tgt/chap/chap.sh` |",
         ]
         dimensions = (
             "normal_path",
@@ -214,7 +214,7 @@ class MediumArtifactLLM:
         cases = "\n".join(
             f"{index}. TC-{index:02d} {dimension}。前置条件：target 已启动。步骤：initiator 执行登录。"
             "预期结果：返回明确状态。观测点：登录响应和 SPDK 日志。失败诊断线索：关联 session 日志。"
-            "证据：`test/iscsi_tgt`。"
+            "证据：`test/iscsi_tgt/chap/chap.sh`。"
             for index, dimension in enumerate((*dimensions, "normal_path"), start=1)
         )
         yield "## SFMEA\n\n" + "\n".join(rows) + "\n\n## 黑盒测试用例\n\n" + cases
@@ -1893,6 +1893,62 @@ class TestAIConversationsAPI:
         assert "repo_path" not in source_refs[0].metadata
         assert "nvmf_dir_target" in source_refs[0].excerpt
         assert all(not ref.metadata["path"].startswith("lib/iscsi/") for ref in source_refs[:2])
+
+    async def test_workspace_source_refs_balance_multiple_explicit_directories(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+    ):
+        repo = tmp_path / "repo"
+        for relative, content in {
+            "lib/iscsi/conn.c": "int iscsi_login_entry(void) { return 1; }\n",
+            "lib/iscsi/iscsi.c": "int iscsi_login_auth(void) { return 2; }\n",
+            "lib/iscsi/param.c": "int iscsi_login_params(void) { return 3; }\n",
+            "lib/iscsi/tgt_node.c": "int iscsi_login_target(void) { return 4; }\n",
+            "app/iscsi_tgt/iscsi_tgt.c": "int iscsi_tgt_main(void) { return 5; }\n",
+            "test/iscsi_tgt/chap/chap.sh": "iscsi_login_chap_test\n",
+            "test/iscsi_tgt/login_redirection/login_redirection.sh": "iscsi_login_redirect_test\n",
+        }.items():
+            path = repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        ws_id = "ws-balanced-hints"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'Balanced Hints WS', ?, 1, ?, ?)",
+                (ws_id, str(repo), now, now),
+            )
+            await db.commit()
+
+        from app.services.ai_conversations import build_context_references
+
+        refs = await build_context_references(
+            conversation={
+                "id": "conv-balanced-hints",
+                "scope_type": "workspace",
+                "scope_id": ws_id,
+                "workspace_id": ws_id,
+                "memory_namespace": f"workspace:{ws_id}",
+                "initial_context": {},
+            },
+            user_message=(
+                "完整分析 iSCSI login；定向阅读 lib/iscsi、app/iscsi_tgt、test/iscsi_tgt，"
+                "输出源码证据和现有测试映射"
+            ),
+            db_path=sqlite_db,
+        )
+        paths = [
+            str(ref.metadata.get("path") or "")
+            for ref in refs
+            if ref.source_type == "workspace_source"
+        ]
+
+        assert any(path.startswith("lib/iscsi/") for path in paths)
+        assert any(path.startswith("app/iscsi_tgt/") for path in paths)
+        assert any(path.startswith("test/iscsi_tgt/") for path in paths)
+        assert any(Path(path).suffix in {".sh", ".py"} for path in paths if path.startswith("test/"))
 
     async def test_workspace_source_refs_for_directory_hint_start_near_matching_flow_line(
         self,
