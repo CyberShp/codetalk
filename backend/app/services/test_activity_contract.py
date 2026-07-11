@@ -178,6 +178,18 @@ SPDK_PROJECT_PROFILE: dict[str, Any] = {
 }
 
 
+BLACK_BOX_REQUIRED_DIMENSIONS = [
+    "normal_path",
+    "invalid_input",
+    "resource_pressure",
+    "timeout",
+    "reconnect",
+    "concurrency",
+    "recovery",
+    "performance",
+]
+
+
 ARTIFACT_TEMPLATES: dict[str, dict[str, Any]] = {
     "module_analysis.md": {
         "preview": "markdown",
@@ -205,7 +217,8 @@ ARTIFACT_TEMPLATES: dict[str, dict[str, Any]] = {
     },
     "black_box_cases.json": {
         "preview": "table",
-        "required_fields": ["case_id", "scenario_name", "preconditions", "steps", "expected_result", "observability", "failure_diagnostics", "mapped_test_dir", "source_or_test_evidence"],
+        "required_fields": ["case_id", "test_dimension", "scenario_name", "preconditions", "steps", "expected_result", "observability", "failure_diagnostics", "mapped_test_dir", "source_or_test_evidence"],
+        "required_dimensions": BLACK_BOX_REQUIRED_DIMENSIONS,
         "schema": {"type": "array"},
     },
     "black_box_cases.md": {"preview": "markdown", "sections": ["用例列表", "观测点", "诊断线索"], "required_fields": ["case_id", "steps", "expected_result"]},
@@ -266,6 +279,7 @@ def build_test_activity_contract(
             "high_risk_requires_source_or_test_evidence": True,
             "black_box_cases_must_not_call_internal_functions": True,
             "missing_required_artifacts_block_delivery": True,
+            "required_black_box_dimensions": list(BLACK_BOX_REQUIRED_DIMENSIONS),
         },
         "executor_requirements": {
             "must_receive_full_user_input": True,
@@ -410,6 +424,10 @@ def _artifact_contract_payload(artifact: str, template: dict[str, Any]) -> dict[
     }
     if isinstance(template.get("schema"), dict):
         payload["schema"] = dict(template["schema"])
+    if isinstance(template.get("required_dimensions"), list):
+        payload["required_dimensions"] = [
+            str(item) for item in template["required_dimensions"] if str(item).strip()
+        ]
     return payload
 
 
@@ -450,8 +468,13 @@ def _audit_json_artifact(
     rows = payload if isinstance(payload, list) else payload.get("items") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         return [_issue("json_shape_invalid", artifact, f"{artifact} 必须是数组或包含 items 数组")]
+    if not rows:
+        return [_issue("empty_json_items", artifact, f"{artifact} 没有任何可交付条目")]
     issues: list[dict[str, Any]] = []
     required_fields = [str(item) for item in spec.get("required_fields") or []]
+    seen_case_ids: set[str] = set()
+    seen_case_signatures: set[str] = set()
+    observed_dimensions: set[str] = set()
     for index, row in enumerate(rows, start=1):
         if not isinstance(row, dict):
             issues.append(_issue("json_item_invalid", artifact, f"{artifact} 第 {index} 项不是对象"))
@@ -465,12 +488,48 @@ def _audit_json_artifact(
             issues.append(_issue(code, artifact, f"{artifact} 第 {index} 项缺少字段: {', '.join(missing)}", index=index, fields=missing))
         if artifact.startswith("black_box") and _black_box_boundary_violation(row):
             issues.append(_issue("black_box_boundary_violation", artifact, f"{artifact} 第 {index} 项混入内部函数调用或修改源码步骤", index=index))
+        if artifact == "sfmea.json":
+            issues.extend(_audit_sfmea_scores(row, artifact=artifact, index=index))
+        if artifact == "black_box_cases.json":
+            dimension = str(row.get("test_dimension") or "").strip().lower()
+            if dimension:
+                observed_dimensions.add(dimension)
+            duplicate_reason = _black_box_duplicate_reason(
+                row,
+                seen_case_ids=seen_case_ids,
+                seen_case_signatures=seen_case_signatures,
+            )
+            if duplicate_reason:
+                issues.append(
+                    _issue(
+                        "duplicate_black_box_case",
+                        artifact,
+                        f"{artifact} 第 {index} 项与已有用例重复: {duplicate_reason}",
+                        index=index,
+                    )
+                )
         evidence_values = _evidence_strings(row)
         if artifact in {"sfmea.json", "black_box_cases.json"} and not evidence_values:
             issues.append(_issue("missing_source_or_test_evidence", artifact, f"{artifact} 第 {index} 项缺少源码或测试证据", index=index))
         for evidence in _strict_evidence_path_strings(row):
             if _looks_like_repo_path(evidence) and not _repo_path_exists(repo, evidence):
                 issues.append(_issue("evidence_path_not_found", artifact, f"证据路径不存在: {evidence}", index=index))
+    if artifact == "black_box_cases.json":
+        required_dimensions = {
+            str(item).strip().lower()
+            for item in spec.get("required_dimensions") or []
+            if str(item).strip()
+        }
+        missing_dimensions = sorted(required_dimensions - observed_dimensions)
+        if missing_dimensions:
+            issues.append(
+                _issue(
+                    "missing_black_box_dimensions",
+                    artifact,
+                    "black_box_cases.json 缺少测试维度: " + ", ".join(missing_dimensions),
+                    dimensions=missing_dimensions,
+                )
+            )
     return issues
 
 
@@ -481,9 +540,6 @@ def _audit_markdown_artifact(
     spec: dict[str, Any],
     repo: Path,
 ) -> list[dict[str, Any]]:
-    if artifact != "module_analysis.md":
-        return []
-
     issues: list[dict[str, Any]] = []
     heading_matches = list(
         re.finditer(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", content, flags=re.MULTILINE)
@@ -563,6 +619,86 @@ def _audit_markdown_artifact(
                 )
             )
     return issues
+
+
+def _audit_sfmea_scores(
+    row: dict[str, Any],
+    *,
+    artifact: str,
+    index: int,
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    scores: dict[str, int] = {}
+    for field in ("severity", "occurrence", "detection_score"):
+        value = row.get(field)
+        if field == "severity" and _integer_score(value) is None:
+            value = row.get("severity_score")
+        if field == "occurrence" and _integer_score(value) is None:
+            value = row.get("occurrence_score")
+        score = _integer_score(value)
+        if score is not None:
+            scores[field] = score
+        if score is None or not 1 <= score <= 10:
+            issues.append(
+                _issue(
+                    "sfmea_score_out_of_range",
+                    artifact,
+                    f"{artifact} 第 {index} 项 {field} 必须是 1-10 的整数",
+                    index=index,
+                    field=field,
+                )
+            )
+    rpn = _integer_score(row.get("rpn"))
+    if len(scores) == 3 and rpn is not None:
+        expected = scores["severity"] * scores["occurrence"] * scores["detection_score"]
+        if rpn != expected:
+            issues.append(
+                _issue(
+                    "sfmea_rpn_mismatch",
+                    artifact,
+                    f"{artifact} 第 {index} 项 RPN 应为 {expected}，实际为 {rpn}",
+                    index=index,
+                    expected_rpn=expected,
+                    actual_rpn=rpn,
+                )
+            )
+    return issues
+
+
+def _integer_score(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    text = str(value or "").strip()
+    return int(text) if re.fullmatch(r"-?\d+", text) else None
+
+
+def _black_box_duplicate_reason(
+    row: dict[str, Any],
+    *,
+    seen_case_ids: set[str],
+    seen_case_signatures: set[str],
+) -> str:
+    case_id = re.sub(r"\s+", "", str(row.get("case_id") or "").lower())
+    signature = "|".join(
+        re.sub(r"\s+", "", text.lower())
+        for field in ("scenario_name", "preconditions", "steps", "expected_result")
+        for text in _flatten_text(row.get(field))
+        if text.strip()
+    )
+    duplicate = ""
+    if case_id and case_id in seen_case_ids:
+        duplicate = f"case_id={row.get('case_id')}"
+    elif signature and signature in seen_case_signatures:
+        duplicate = "场景、前置条件、步骤和预期结果相同"
+    if case_id:
+        seen_case_ids.add(case_id)
+    if signature:
+        seen_case_signatures.add(signature)
+    return duplicate
 
 
 def _normalized_markdown_heading(value: str) -> str:

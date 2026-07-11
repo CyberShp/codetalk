@@ -85,6 +85,19 @@ SFMEA 必须包含 failure mode、cause、effect、detection、severity、occurr
 
 黑盒用例必须包含 case id、场景名、前置条件、输入/操作、预期结果、观测点、失败诊断线索、映射测试目录、源码或测试证据。黑盒步骤不得要求调用内部函数或修改内部源码。
 
+每个结构化黑盒交付件还必须覆盖八个基础测试维度，并通过 `test_dimension` 明确标识：
+
+- `normal_path`
+- `invalid_input`
+- `resource_pressure`
+- `timeout`
+- `reconnect`
+- `concurrency`
+- `recovery`
+- `performance`
+
+领域画像在这八个基础维度上继续约束专业内容。例如 NVMe/TCP/TLS 会叠加握手、证书/PSK、降级、队列、断连和密钥轮换，iSCSI login 会叠加 CHAP、digest、session reset 和多连接；不能由模型随意省略。
+
 ## 质量审计
 
 运行完成后会生成 `test_activity_quality_audit.json`，并在驾驶舱右侧显示：
@@ -102,6 +115,9 @@ SFMEA 必须包含 failure mode、cause、effect、detection、severity、occurr
 - 缺少源码或测试目录证据。
 - 证据路径不存在。
 - 声称生成 JSON 但没有 schema 或结构不符。
+- JSON 数组为空、SFMEA 分值超出 1-10 或 RPN 计算不一致。
+- 黑盒用例 ID/场景重复，或缺少八个基础测试维度。
+- 任一 Markdown 交付件缺少声明章节、源码证据或测试目录映射。
 
 ## 执行器一致性
 

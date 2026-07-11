@@ -60,6 +60,16 @@ def test_test_activity_contract_covers_storage_testing_profiles_and_templates():
     assert contract["evidence_policy"]["source_first"] is True
     assert contract["evidence_policy"]["prefer_artifacts"] == ["GitNexus", "CGC"]
     assert contract["black_box_boundary"]["forbidden_internal_steps"]
+    assert contract["quality_gates"]["required_black_box_dimensions"] == [
+        "normal_path",
+        "invalid_input",
+        "resource_pressure",
+        "timeout",
+        "reconnect",
+        "concurrency",
+        "recovery",
+        "performance",
+    ]
     assert set(contract["artifact_contract"]["sfmea.json"]["required_fields"]) >= {
         "failure_mode",
         "cause",
@@ -293,6 +303,232 @@ def test_module_analysis_quality_audit_rejects_combined_heading_and_path_travers
     assert audit["status"] == "needs_rework"
     assert "missing_markdown_sections" in codes
     assert codes.count("evidence_path_not_found") == 2
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        "project_structure.md",
+        "source_reading_plan.md",
+        "module_map.md",
+        "business_flow.md",
+        "tester_code_understanding.md",
+        "black_box_cases.md",
+        "test_strategy.md",
+        "test_design.md",
+        "coverage_gap_report.md",
+        "risk_review.md",
+        "execution_checklist.md",
+    ],
+)
+def test_all_markdown_test_activity_outputs_reject_shallow_content(tmp_path, artifact):
+    from app.services.test_activity_contract import (
+        audit_test_activity_artifacts,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    artifact_dir = tmp_path / "run"
+    artifact_dir.mkdir()
+    (artifact_dir / artifact).write_text("done\n", encoding="utf-8")
+    contract = build_test_activity_contract(
+        target="iSCSI login test activity",
+        repo_path=str(repo),
+        workflow_outputs=[{"id": "report", "artifact": artifact, "type": "markdown"}],
+    )
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert audit["status"] == "needs_rework"
+    assert "missing_markdown_sections" in codes
+    assert "missing_source_evidence" in codes
+    assert "missing_test_evidence" in codes
+
+
+@pytest.mark.parametrize("artifact", ["sfmea.json", "black_box_cases.json"])
+def test_structured_test_activity_outputs_reject_empty_lists(tmp_path, artifact):
+    from app.services.test_activity_contract import (
+        audit_test_activity_artifacts,
+        build_test_activity_contract,
+    )
+
+    artifact_dir = tmp_path / "run"
+    artifact_dir.mkdir()
+    (artifact_dir / artifact).write_text("[]\n", encoding="utf-8")
+    contract = build_test_activity_contract(
+        target="iSCSI login",
+        repo_path=str(tmp_path),
+        workflow_outputs=[{"id": "result", "artifact": artifact, "type": "json"}],
+    )
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract=contract,
+        repo_path=str(tmp_path),
+    )
+
+    assert audit["status"] == "needs_rework"
+    assert any(issue["code"] == "empty_json_items" for issue in audit["issues"])
+
+
+def test_sfmea_audit_rejects_invalid_scores_and_rpn(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_artifacts,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login;\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    artifact_dir = tmp_path / "run"
+    artifact_dir.mkdir()
+    (artifact_dir / "sfmea.json").write_text(
+        json.dumps(
+            [
+                {
+                    "failure_mode": "login bypass",
+                    "cause": "bad auth state",
+                    "effect": "unauthorized session",
+                    "detection": "login response and target log",
+                    "severity": 11,
+                    "occurrence": 2,
+                    "detection_score": 3,
+                    "rpn": 12,
+                    "score_explanation": "security impact",
+                    "mitigation": "add negative CHAP test",
+                    "source_evidence": "lib/iscsi/iscsi.c",
+                    "test_mapping": "test/iscsi_tgt",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    contract = build_test_activity_contract(
+        target="iSCSI login SFMEA",
+        repo_path=str(repo),
+        workflow_outputs=[{"id": "sfmea", "artifact": "sfmea.json", "type": "json"}],
+    )
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert "sfmea_score_out_of_range" in codes
+    assert "sfmea_rpn_mismatch" in codes
+
+
+def test_black_box_audit_rejects_duplicate_cases(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_artifacts,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login;\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    row = {
+        "case_id": "TC-01",
+        "scenario_name": "invalid CHAP login",
+        "preconditions": "target requires CHAP",
+        "steps": ["connect with invalid credentials"],
+        "expected_result": "login is rejected",
+        "observability": "login response and target log",
+        "failure_diagnostics": "inspect target authentication configuration",
+        "mapped_test_dir": "test/iscsi_tgt",
+        "source_or_test_evidence": "lib/iscsi/iscsi.c",
+    }
+    artifact_dir = tmp_path / "run"
+    artifact_dir.mkdir()
+    (artifact_dir / "black_box_cases.json").write_text(
+        json.dumps([row, row]),
+        encoding="utf-8",
+    )
+    contract = build_test_activity_contract(
+        target="iSCSI login black box cases",
+        repo_path=str(repo),
+        workflow_outputs=[
+            {"id": "cases", "artifact": "black_box_cases.json", "type": "json"}
+        ],
+    )
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert any(issue["code"] == "duplicate_black_box_case" for issue in audit["issues"])
+
+
+def test_black_box_audit_rejects_missing_required_test_dimensions(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_artifacts,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login;\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    artifact_dir = tmp_path / "run"
+    artifact_dir.mkdir()
+    (artifact_dir / "black_box_cases.json").write_text(
+        json.dumps(
+            [
+                {
+                    "case_id": "TC-01",
+                    "test_dimension": "normal_path",
+                    "scenario_name": "valid CHAP login",
+                    "preconditions": "target requires CHAP",
+                    "steps": ["connect with valid credentials"],
+                    "expected_result": "login succeeds",
+                    "observability": "login response and target log",
+                    "failure_diagnostics": "inspect target authentication configuration",
+                    "mapped_test_dir": "test/iscsi_tgt",
+                    "source_or_test_evidence": "lib/iscsi/iscsi.c",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    contract = build_test_activity_contract(
+        target="iSCSI login black box cases",
+        repo_path=str(repo),
+        workflow_outputs=[
+            {"id": "cases", "artifact": "black_box_cases.json", "type": "json"}
+        ],
+    )
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    issue = next(
+        item for item in audit["issues"] if item["code"] == "missing_black_box_dimensions"
+    )
+    assert set(issue["dimensions"]) == {
+        "invalid_input",
+        "resource_pressure",
+        "timeout",
+        "reconnect",
+        "concurrency",
+        "recovery",
+        "performance",
+    }
 
 
 def test_workbench_runner_marks_low_quality_test_activity_outputs_needs_rework(tmp_path, monkeypatch):

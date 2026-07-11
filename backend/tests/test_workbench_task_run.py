@@ -517,6 +517,9 @@ def test_workbench_runner_builtin_llm_uses_handoff_contract_and_writes_outputs(
         ]),
         encoding="utf-8",
     )
+    test_dir = tmp_path / "test" / "iscsi_tgt"
+    test_dir.mkdir(parents=True)
+    (test_dir / "login.sh").write_text("# iSCSI login test\n", encoding="utf-8")
     workflow_store = WorkflowStore(tmp_path / "workflows.db")
     workflow_store.save_workflow({
         "id": "builtin_llm_test_design",
@@ -583,10 +586,16 @@ def test_workbench_runner_builtin_llm_uses_handoff_contract_and_writes_outputs(
                                 }
                             ],
                         },
-                        {
-                            "path": "black_box_cases.md",
-                            "content": "# 黑盒测试用例\n\n- 输入错误 CHAP 凭据，预期 login 失败并记录诊断。",
-                        },
+                            {
+                                "path": "black_box_cases.md",
+                                "content": (
+                                    "# 黑盒测试用例\n\n"
+                                    "## 用例列表\n输入错误 CHAP 凭据，预期 login 失败。"
+                                    "依据 `lib/iscsi/login.c`，映射 `test/iscsi_tgt/login.sh`。\n\n"
+                                    "## 观测点\n观察 login response、target 日志和 session 状态。\n\n"
+                                    "## 诊断线索\n失败时检查 CHAP 配置、响应状态和 target 认证日志。"
+                                ),
+                            },
                     ],
                 },
                 ensure_ascii=False,

@@ -1258,6 +1258,10 @@ def _local_source_flow_sfmea_blackbox_payloads(
     ]
     if not cases:
         cases = [_fallback_black_box_case(task_run=task_run)]
+    cases = _expand_black_box_dimension_cases(
+        _deduplicate_black_box_cases(cases, id_prefix="source_flow_black_box"),
+        id_prefix="source_flow_black_box",
+    )
     return {
         "source_scope.json": scope,
         "evidence_cards.json": evidence_cards,
@@ -1563,6 +1567,162 @@ def _source_flow_black_box_case(
     return case
 
 
+def _deduplicate_black_box_cases(
+    cases: list[dict[str, Any]],
+    *,
+    id_prefix: str,
+) -> list[dict[str, Any]]:
+    """Merge repeated scenarios while retaining every source/test evidence path."""
+
+    deduplicated: list[dict[str, Any]] = []
+    by_signature: dict[str, dict[str, Any]] = {}
+    for case in cases:
+        signature = json.dumps(
+            {
+                key: case.get(key)
+                for key in ("scenario_name", "preconditions", "steps", "expected_result")
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        existing = by_signature.get(signature)
+        if existing is None:
+            copied = dict(case)
+            copied["related_evidence"] = [
+                {
+                    "file_path": str((case.get("trace") or {}).get("file_path") or case.get("file_path") or ""),
+                    "evidence_id": str((case.get("trace") or {}).get("evidence_id") or ""),
+                    "symbols": list((case.get("trace") or {}).get("symbols") or []),
+                }
+            ]
+            by_signature[signature] = copied
+            deduplicated.append(copied)
+            continue
+        evidence = _dedupe_strings(
+            [
+                *[str(item) for item in existing.get("source_or_test_evidence") or []],
+                *[str(item) for item in case.get("source_or_test_evidence") or []],
+            ]
+        )
+        existing["source_or_test_evidence"] = evidence
+        existing["related_evidence"].append(
+            {
+                "file_path": str((case.get("trace") or {}).get("file_path") or case.get("file_path") or ""),
+                "evidence_id": str((case.get("trace") or {}).get("evidence_id") or ""),
+                "symbols": list((case.get("trace") or {}).get("symbols") or []),
+            }
+        )
+    for index, case in enumerate(deduplicated, start=1):
+        case["case_id"] = f"{id_prefix}_{index:03d}"
+    return deduplicated
+
+
+_BLACK_BOX_DIMENSION_SPECS: list[dict[str, Any]] = [
+    {
+        "id": "normal_path",
+        "label": "正常路径",
+        "input": "use valid configuration and supported public inputs",
+        "operation": "run the public success workflow once and repeat it to verify idempotent behavior",
+        "expected": "the operation succeeds, returns the documented public status, and leaves the target ready for subsequent operations",
+        "observe": "success status, negotiated/public state, completion latency, logs, and metrics",
+    },
+    {
+        "id": "invalid_input",
+        "label": "非法输入",
+        "input": "submit malformed, missing, unsupported, and boundary-value public inputs",
+        "operation": "invoke the same public workflow for each invalid input without changing source code",
+        "expected": "each request is rejected with a stable error and no partial session, device, queue, or configuration remains",
+        "observe": "client-visible error, RPC/tool exit status, target logs, and post-failure state",
+    },
+    {
+        "id": "resource_pressure",
+        "label": "资源压力",
+        "input": "use supported configuration or load controls to approach queue, memory, connection, or storage limits",
+        "operation": "increase public workload until the documented resource limit is reached, then submit one additional operation",
+        "expected": "resource exhaustion is surfaced cleanly, existing work remains consistent, and resources are reclaimed after load drops",
+        "observe": "public error, outstanding work, memory/queue counters, logs, and recovery after pressure is removed",
+    },
+    {
+        "id": "timeout",
+        "label": "超时",
+        "input": "delay or make the peer/service unreachable through the external test environment",
+        "operation": "start the public operation, wait beyond its configured timeout, and inspect final state",
+        "expected": "the operation terminates within the timeout budget with an actionable error and no indefinitely pending work",
+        "observe": "elapsed time, timeout status, pending operation count, logs, and cleanup state",
+    },
+    {
+        "id": "reconnect",
+        "label": "断连与重连",
+        "input": "interrupt the external connection during active public traffic",
+        "operation": "disconnect the peer, reconnect with valid settings, and repeat the original public operation",
+        "expected": "stale state is removed, reconnect succeeds according to policy, and subsequent operations complete exactly once",
+        "observe": "connection/session state, host-visible resources, completion results, retry count, and logs",
+    },
+    {
+        "id": "concurrency",
+        "label": "并发",
+        "input": "use multiple clients or workers to issue supported public operations concurrently",
+        "operation": "run parallel success and cancellation/disconnect operations while collecting ordered results",
+        "expected": "all operations reach a valid terminal state without deadlock, lost completion, cross-session leakage, or duplicate result",
+        "observe": "per-client result, completion count, latency distribution, state convergence, and logs",
+    },
+    {
+        "id": "recovery",
+        "label": "异常恢复",
+        "input": "interrupt the service or workflow after externally visible work has started",
+        "operation": "restart through the supported deployment path, inspect recovered public state, and rerun the operation",
+        "expected": "state is restored or rolled back according to contract, no stale ownership remains, and the workflow is usable again",
+        "observe": "restart result, recovered state, integrity/status checks, rerun result, and recovery logs",
+    },
+    {
+        "id": "performance",
+        "label": "性能退化",
+        "input": "run a fixed public workload first as baseline and then under representative sustained load",
+        "operation": "compare throughput, median/tail latency, CPU, and memory against the same baseline configuration",
+        "expected": "results stay within the agreed regression budget and resource use does not grow without bound",
+        "observe": "throughput, p50/p95/p99 latency, CPU, memory, error rate, and long-run trend",
+    },
+]
+
+
+def _expand_black_box_dimension_cases(
+    base_cases: list[dict[str, Any]],
+    *,
+    id_prefix: str,
+) -> list[dict[str, Any]]:
+    expanded: list[dict[str, Any]] = []
+    for base in base_cases:
+        module = str(base.get("module") or "repo")
+        for spec in _BLACK_BOX_DIMENSION_SPECS:
+            case = json.loads(json.dumps(base, ensure_ascii=False))
+            case["case_id"] = f"{id_prefix}_{len(expanded) + 1:03d}"
+            case["test_dimension"] = spec["id"]
+            case["title"] = f"{module} {spec['label']}黑盒测试"
+            case["scenario_name"] = case["title"]
+            case["scenario"] = f"Validate {module} externally observable behavior under {spec['id']}."
+            case["inputs"] = f"{base.get('inputs') or 'public workflow'}; {spec['input']}"
+            case["steps"] = [
+                "start the relevant SPDK target, tool, or RPC service through its supported public interface",
+                str(spec["operation"]),
+                "collect externally visible results, logs, metrics, timing, and state before cleanup",
+            ]
+            case["expected"] = [str(spec["expected"])]
+            case["expected_result"] = [str(spec["expected"])]
+            case["observable_signals"] = _dedupe_strings(
+                [*[str(item) for item in base.get("observable_signals") or []], str(spec["observe"])]
+            )
+            case["observability"] = list(case["observable_signals"])
+            case["diagnostics"] = _dedupe_strings(
+                [
+                    *[str(item) for item in base.get("diagnostics") or []],
+                    f"compare the {spec['id']} result with the normal-path baseline",
+                ]
+            )
+            case["failure_diagnostics"] = list(case["diagnostics"])
+            expanded.append(case)
+    return expanded
+
+
 def _local_scope_query(input_snapshot: dict[str, Any], *, default_query: str = "") -> str:
     explicit_scope_keys = (
         "analysis_object",
@@ -1802,6 +1962,10 @@ def _local_mr_blackbox_payloads(
     ]
     if not cases:
         cases = [_fallback_black_box_case(task_run=task_run)]
+    cases = _expand_black_box_dimension_cases(
+        _deduplicate_black_box_cases(cases, id_prefix="local_mr_black_box"),
+        id_prefix="local_mr_black_box",
+    )
     snapshot = {
         "kind": "mr_snapshot",
         "source": "local-mr-blackbox",

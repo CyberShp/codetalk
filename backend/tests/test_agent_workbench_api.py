@@ -3502,14 +3502,24 @@ async def test_builtin_mr_blackbox_run_produces_executable_black_box_case_contra
     assert body["outputs"][1]["id"] == "black_box_cases"
     assert body["outputs"][1]["status"] == "ok"
     assert body["semantic_output_import"]["status"] == "ok"
-    assert body["semantic_output_import"]["imported_count"] == 1
+    assert body["semantic_output_import"]["imported_count"] == 8
     assert body["acceptance_audit"]["status"] == "ready"
 
     task_dir = _task_run_dir(body["task_run"]["task_run_id"])
     cases_path = task_dir / "steps" / "collect_mr" / "black_box_cases.json"
     assert cases_path.exists()
     cases = json.loads(cases_path.read_text(encoding="utf-8"))
-    assert len(cases) == 1
+    assert len(cases) == 8
+    assert {item["test_dimension"] for item in cases} == {
+        "normal_path",
+        "invalid_input",
+        "resource_pressure",
+        "timeout",
+        "reconnect",
+        "concurrency",
+        "recovery",
+        "performance",
+    }
     case = cases[0]
     assert case["case_type"] == "black_box_ready"
     assert case["file_path"] == "lib/nvmf/tcp.c"
@@ -3668,6 +3678,16 @@ async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
     cases = json.loads((step_dir / "black_box_cases.json").read_text(encoding="utf-8"))
     assert sfmea
     assert cases
+    assert {item["test_dimension"] for item in cases} == {
+        "normal_path",
+        "invalid_input",
+        "resource_pressure",
+        "timeout",
+        "reconnect",
+        "concurrency",
+        "recovery",
+        "performance",
+    }
     assert {
         "failure_mode",
         "cause",
@@ -4020,10 +4040,8 @@ async def test_workbench_task_run_run_auto_imports_declared_semantic_outputs(
     script_path.write_text(
         "import json, pathlib, os\n"
         "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
-        "(root/'black_box_cases.json').write_text(json.dumps([\n"
-        "  {\n"
-        "    'case_id': 'bb-tls-expired-cert',\n"
-        "    'scenario_name': 'Expired certificate handshake rejection',\n"
+        "dimensions=['normal_path','invalid_input','resource_pressure','timeout','reconnect','concurrency','recovery','performance']\n"
+        "base={\n"
         "    'title': 'TLS handshake uses existing failure wording',\n"
         "    'entry_kind': 'rpc',\n"
         "    'inputs': 'connect with expired certificate',\n"
@@ -4035,8 +4053,9 @@ async def test_workbench_task_run_run_auto_imports_declared_semantic_outputs(
         "    'failure_diagnostics': ['compare certificate validity and target log timestamp'],\n"
         "    'mapped_test_dir': 'test/nvmf',\n"
         "    'source_or_test_evidence': 'test/nvmf'\n"
-        "  }\n"
-        "]), encoding='utf-8')\n",
+        "}\n"
+        "cases=[{**base,'case_id':f'bb-tls-expired-cert-{i:02d}','test_dimension':dimension,'scenario_name':f'Expired certificate handshake rejection {dimension}','steps':[*base['steps'],f'exercise {dimension} conditions'],'expected_result':f'{dimension}: '+base['expected_result']} for i,dimension in enumerate(dimensions,1)]\n"
+        "(root/'black_box_cases.json').write_text(json.dumps(cases), encoding='utf-8')\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(settings, "external_agent_custom_providers", [
@@ -4090,7 +4109,7 @@ async def test_workbench_task_run_run_auto_imports_declared_semantic_outputs(
     assert response.status_code == 200
     body = response.json()
     assert body["semantic_output_import"]["status"] == "ok"
-    assert body["semantic_output_import"]["imported_count"] == 1
+    assert body["semantic_output_import"]["imported_count"] == 8
     task_dir = _task_run_dir(body["task_run"]["task_run_id"])
     artifact = task_dir / "semantic_output_import.json"
     assert artifact.exists()
@@ -4224,10 +4243,8 @@ async def test_workbench_materialize_outputs_auto_imports_declared_semantic_outp
     script_path.write_text(
         "import json, pathlib, os\n"
         "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
-        "(root/'black_box_cases.json').write_text(json.dumps([\n"
-        "  {\n"
-        "    'case_id': 'bb-tls-alert-text',\n"
-        "    'scenario_name': 'Configured TLS alert is observable',\n"
+        "dimensions=['normal_path','invalid_input','resource_pressure','timeout','reconnect','concurrency','recovery','performance']\n"
+        "base={\n"
         "    'title': 'TLS listener reports configured alert text',\n"
         "    'entry_kind': 'cli',\n"
         "    'inputs': 'start listener with expired peer certificate',\n"
@@ -4239,8 +4256,9 @@ async def test_workbench_materialize_outputs_auto_imports_declared_semantic_outp
         "    'failure_diagnostics': ['compare peer certificate and alert log'],\n"
         "    'mapped_test_dir': 'test/nvmf',\n"
         "    'source_or_test_evidence': 'test/nvmf'\n"
-        "  }\n"
-        "]), encoding='utf-8')\n",
+        "}\n"
+        "cases=[{**base,'case_id':f'bb-tls-alert-text-{i:02d}','test_dimension':dimension,'scenario_name':f'Configured TLS alert is observable {dimension}','steps':[*base['steps'],f'exercise {dimension} conditions'],'expected_result':f'{dimension}: '+base['expected_result']} for i,dimension in enumerate(dimensions,1)]\n"
+        "(root/'black_box_cases.json').write_text(json.dumps(cases), encoding='utf-8')\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(settings, "external_agent_custom_providers", [
@@ -4302,7 +4320,7 @@ async def test_workbench_materialize_outputs_auto_imports_declared_semantic_outp
     assert materialized.status_code == 200
     body = materialized.json()
     assert body["semantic_output_import"]["status"] == "ok"
-    assert body["semantic_output_import"]["imported_count"] == 1
+    assert body["semantic_output_import"]["imported_count"] == 8
     artifact = _task_run_dir(prepared.json()["task_run_id"]) / "semantic_output_import.json"
     assert json.loads(artifact.read_text(encoding="utf-8"))["mode"] == "auto"
 
@@ -6082,9 +6100,8 @@ async def test_workbench_task_run_acceptance_audit_records_semantic_import_artif
         "import json, os, pathlib, sys\n"
         "json.load(sys.stdin)\n"
         "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
-        "(root/'black_box_cases.json').write_text(json.dumps([\n"
-        "  {'case_id':'bb-tls-audit','scenario_name':'TLS audit semantic case',"
-        "'title':'TLS audit semantic case','steps':['connect'],"
+        "dimensions=['normal_path','invalid_input','resource_pressure','timeout','reconnect','concurrency','recovery','performance']\n"
+        "base={'title':'TLS audit semantic case','steps':['connect'],"
         "'expected':['observable failure'],'expected_result':'observable failure',"
         "'preconditions':['NVMe-oF target is configured with TLS enabled'],"
         "'observability':['initiator exit code, target log, connection state metric'],"
@@ -6092,7 +6109,8 @@ async def test_workbench_task_run_acceptance_audit_records_semantic_import_artif
         "'failure_diagnostics':['compare target log timestamps with initiator timeout window'],"
         "'mapped_test_dir':'test/nvmf','source_or_test_evidence':'test/nvmf',"
         "'suggested_spdk_test_dir':'test/nvmf'}\n"
-        "]), encoding='utf-8')\n",
+        "cases=[{**base,'case_id':f'bb-tls-audit-{i:02d}','test_dimension':dimension,'scenario_name':f'TLS audit semantic case {dimension}','steps':[*base['steps'],f'exercise {dimension} conditions'],'expected_result':f'{dimension}: '+base['expected_result']} for i,dimension in enumerate(dimensions,1)]\n"
+        "(root/'black_box_cases.json').write_text(json.dumps(cases), encoding='utf-8')\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(settings, "external_agent_custom_providers", [
