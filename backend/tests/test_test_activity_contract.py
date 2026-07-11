@@ -689,6 +689,39 @@ def test_combined_test_activity_response_accepts_complete_contract_shape(tmp_pat
     assert audit["score"] == 100
 
 
+def test_iscsi_professional_constraints_reject_known_protocol_contradictions(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login 认证协商 SFMEA 和黑盒测试设计",
+        repo_path=str(repo),
+        user_requirements="输出完整可下载测试设计文件",
+    )
+
+    audit = audit_test_activity_response(
+        content=(
+            "## 结论\n\n"
+            "`iscsi_op_login_response` 是认证和参数协商的核心函数。\n"
+            "Authorization Failure 使用 Status-Class: 0x03。"
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert contract["professional_constraints"]
+    conflicts = [
+        issue for issue in audit["issues"]
+        if issue["code"] == "professional_fact_conflict"
+    ]
+    assert len(conflicts) == 2
+    assert all(issue["evidence"] for issue in conflicts)
+
+
 def test_workbench_runner_classifies_unhelpful_agent_greeting(tmp_path, monkeypatch):
     from app.config import settings
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer
@@ -835,6 +868,53 @@ def test_ai_thread_prompts_include_test_activity_contract_for_testing_work():
         assert "不能自由决定交付件骨架" in prompt
         assert "test_mapping 必须指向具体存在的测试文件" in prompt
         assert "不能只写测试目录" in prompt
+
+
+def test_builtin_prompt_rehydrates_artifact_and_deduplicates_current_request(tmp_path, monkeypatch):
+    from app.services import ai_conversations
+
+    artifact_path = tmp_path / "conv-1" / "run-old.md"
+    artifact_path.parent.mkdir(parents=True)
+    artifact_path.write_text(
+        "# 旧产物\n\n## 黑盒测试用例\nFULL_BUILTIN_ARTIFACT_MARKER\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        ai_conversations,
+        "ai_thread_artifact_path",
+        lambda conversation_id, run_id: artifact_path,
+    )
+    current_request = "重新生成完整可下载的 iSCSI Login 测试设计"
+    messages = [
+        {"role": "user", "content": "生成 iSCSI Login 测试设计"},
+        {
+            "role": "assistant",
+            "content": "已生成结构化产物，请下载完整产物。",
+            "conversation_id": "conv-1",
+            "run_id": "run-old",
+            "actions": [{"id": "download_run_artifact"}],
+        },
+        {"role": "user", "content": current_request},
+    ]
+
+    prompt = ai_conversations._build_prompt(
+        conversation={
+            "id": "conv-1",
+            "title": "SPDK",
+            "workspace_id": "ws-spdk",
+            "scope_type": "workspace",
+            "scope_id": "ws-spdk",
+            "initial_context": {"repo_path": "/Volumes/Media/dpdk/spdk"},
+        },
+        messages=messages,
+        references=[],
+        user_message=current_request,
+    )
+
+    assert sum(item["content"] == current_request for item in prompt) == 1
+    assert "历史助手完整下载产物" in prompt[2]["content"]
+    assert "FULL_BUILTIN_ARTIFACT_MARKER" in prompt[2]["content"]
+    assert "本轮必须重新输出完整正文" in prompt[0]["content"]
 
 
 @pytest.mark.asyncio

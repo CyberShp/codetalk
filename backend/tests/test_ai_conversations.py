@@ -1950,6 +1950,67 @@ class TestAIConversationsAPI:
         assert any(path.startswith("test/iscsi_tgt/") for path in paths)
         assert any(Path(path).suffix in {".sh", ".py"} for path in paths if path.startswith("test/"))
 
+    async def test_workspace_source_refs_rank_login_and_auth_files_above_generic_scripts(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+    ):
+        repo = tmp_path / "repo"
+        for relative, content in {
+            "lib/iscsi/conn.c": "int iscsi_tgt_generic(void) { return 1; }\n",
+            "lib/iscsi/iscsi.c": "int iscsi_login_request(void) { return 2; }\n",
+            "lib/iscsi/param.c": "int iscsi_auth_param_negotiate(void) { return 3; }\n",
+            "app/iscsi_tgt/iscsi_tgt.c": "int iscsi_tgt_main(void) { return 4; }\n",
+            "test/iscsi_tgt/bdev_io_wait/bdev_io_wait.sh": "iscsi_tgt generic login helper\n",
+            "test/iscsi_tgt/calsoft/calsoft.sh": "iscsi_tgt generic login helper\n",
+            "test/iscsi_tgt/chap/chap_discovery.sh": "iscsi CHAP authentication test\n",
+            "test/iscsi_tgt/login_redirection/login_redirection.sh": "iscsi login redirect test\n",
+        }.items():
+            path = repo / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+        ws_id = "ws-relevant-login-hints"
+        now = datetime.now(timezone.utc).isoformat()
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute(
+                "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+                "VALUES (?, 'Relevant Login Hints WS', ?, 1, ?, ?)",
+                (ws_id, str(repo), now, now),
+            )
+            await db.commit()
+
+        from app.services.ai_conversations import build_context_references
+
+        refs = await build_context_references(
+            conversation={
+                "id": "conv-relevant-login-hints",
+                "scope_type": "workspace",
+                "scope_id": ws_id,
+                "workspace_id": ws_id,
+                "memory_namespace": f"workspace:{ws_id}",
+                "initial_context": {},
+            },
+            user_message=(
+                "完整分析 iSCSI Login 的认证、CHAP、参数协商和状态转换；定向阅读 "
+                "lib/iscsi、app/iscsi_tgt、test/iscsi_tgt，输出 failure_mode、"
+                "detection_score、source_evidence 和具体 test_mapping"
+            ),
+            db_path=sqlite_db,
+        )
+        paths = [
+            str(ref.metadata.get("path") or "")
+            for ref in refs
+            if ref.source_type == "workspace_source"
+        ]
+
+        assert "lib/iscsi/iscsi.c" in paths
+        assert "lib/iscsi/param.c" in paths
+        assert "test/iscsi_tgt/login_redirection/login_redirection.sh" in paths
+        assert "test/iscsi_tgt/chap/chap_discovery.sh" in paths
+        assert paths.index("test/iscsi_tgt/login_redirection/login_redirection.sh") < paths.index(
+            "test/iscsi_tgt/bdev_io_wait/bdev_io_wait.sh"
+        )
+
     async def test_workspace_source_refs_for_directory_hint_start_near_matching_flow_line(
         self,
         sqlite_db,

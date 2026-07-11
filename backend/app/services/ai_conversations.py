@@ -117,6 +117,16 @@ _QUERY_STOPWORDS = {
     "read",
     "analyze",
 }
+_TEST_CONTRACT_QUERY_TERMS = {
+    "failure_mode",
+    "detection_score",
+    "score_explanation",
+    "source_evidence",
+    "test_mapping",
+    "normal_path",
+    "invalid_input",
+    "resource_pressure",
+}
 _STORAGE_DOMAIN_PATH_HINTS: tuple[tuple[tuple[str, ...], tuple[str, ...]], ...] = (
     (("nvme-of", "nvmeof", "nvmf", "nvmf target", "target connect"), ("lib/nvmf", "test/nvmf")),
     (("iscsi", "chap", "login digest"), ("lib/iscsi", "test/iscsi_tgt")),
@@ -3041,10 +3051,22 @@ def _build_prompt(
             f"[{index}] {ref.get('source_type')} · {ref.get('title')}\n{ref.get('excerpt')}"
         )
     history = [
-        {"role": msg["role"], "content": msg["content"]}
+        {
+            "role": msg["role"],
+            "content": (
+                _agent_prompt_history_content(msg)
+                if msg["role"] == "assistant"
+                else str(msg.get("content") or "")
+            ),
+        }
         for msg in messages[-_MAX_HISTORY_MESSAGES:]
         if msg["role"] in {"user", "assistant"}
     ]
+    current = str(user_message or "").strip()
+    for index in range(len(history) - 1, -1, -1):
+        if history[index]["role"] == "user" and history[index]["content"].strip() == current:
+            del history[index]
+            break
     system = (
         "你是 CodeTalks 的 AI 测试调查助手。你要帮助测试人员围绕需求、代码、报告、"
         "Workbench 任务和测试用例持续追问。\n"
@@ -3052,7 +3074,9 @@ def _build_prompt(
         "如果引用不足，请明确标记“待验证”。\n"
         "当线程绑定 workspace 时，workspace_source 和 workspace_material 是优先证据；"
         "必须先依据源码片段和输入材料回答，再用报告或记忆补充。"
-        "不要声称读过未出现在引用里的文件。\n\n"
+        "不要声称读过未出现在引用里的文件。\n"
+        "如果本轮要求完整、重新生成或可下载的交付件，本轮必须重新输出完整正文；"
+        "历史下载产物只用于延续上下文，不得只回复历史摘要或声称产物已经存在。\n\n"
         f"{_codex_style_answer_instruction()}\n\n"
         f"{_source_first_contract(references, user_message)}\n\n"
         f"{_test_activity_contract_prompt(user_message=user_message, repo_path=_conversation_initial_repo_path(conversation))}\n\n"
@@ -3858,7 +3882,7 @@ def _collect_source_refs_sync(repo: Path, workspace_id: str, query: str) -> list
         if _safe_source_file(repo_root, candidate):
             hint_candidate_groups.append([candidate])
 
-    per_hint_limit = 4 if len(hint_candidate_groups) <= 1 else 2
+    per_hint_limit = 4 if len(hint_candidate_groups) <= 1 else 3
     for candidate_index in range(per_hint_limit):
         for candidates in hint_candidate_groups:
             if candidate_index >= len(candidates):
@@ -4108,28 +4132,62 @@ def _source_candidate_rank_for_query(
     path: Path,
     query_terms: list[str],
     symbol_terms: list[str] | None = None,
-) -> tuple[int, int, int, str]:
+) -> tuple[int, int, int, int, int, str]:
     rel_text = path.as_posix().lower()
     name_text = path.stem.lower()
     symbol_terms = symbol_terms or []
-    symbol_matched = _source_file_contains_any(path, symbol_terms)
-    content_matched = _source_file_contains_any(path, query_terms)
-    matched = any(term in name_text or term in rel_text for term in query_terms)
+    symbol_matches = _source_file_match_count(path, symbol_terms)
+    content_matches = _source_file_match_count(path, query_terms)
+    filename_matches = sum(1 for term in query_terms if term in name_text)
+    path_matches = sum(1 for term in query_terms if term in rel_text)
     bucket, normalized = _source_candidate_rank(path)
-    return (0 if symbol_matched else 1, 0 if content_matched else 1, 0 if matched else 1, bucket, normalized)
+    return (
+        -symbol_matches,
+        -filename_matches,
+        -content_matches,
+        -path_matches,
+        bucket,
+        normalized,
+    )
 
 
 def _source_relevance_terms(text: str) -> list[str]:
     terms: list[str] = []
-    for term in [*_specific_flow_anchors(text), *_query_terms(text)]:
+    for term in [*_semantic_source_terms(text), *_specific_flow_anchors(text), *_query_terms(text)]:
         normalized = term.replace("-", "_").lower()
-        if normalized in {"spdk", "nvme", "nvmf", "target", "workspace", "source", "code"}:
+        if normalized in {
+            "spdk", "nvme", "nvmf", "target", "workspace", "source", "code",
+            *_TEST_CONTRACT_QUERY_TERMS,
+        }:
             continue
         if len(normalized) < 3 or normalized in terms:
             continue
         terms.append(normalized)
-        if len(terms) >= 6:
+        if len(terms) >= 10:
             break
+    return terms
+
+
+def _semantic_source_terms(text: str) -> list[str]:
+    normalized = str(text or "").lower().replace("-", "_")
+    groups = (
+        (("登录", "login"), ("login",)),
+        (("认证", "authentication", "auth"), ("auth", "chap")),
+        (("chap",), ("chap",)),
+        (("协商", "negotiate", "negotiation"), ("negotiate", "param")),
+        (("参数", "parameter"), ("param",)),
+        (("状态", "state"), ("state",)),
+        (("清理", "cleanup", "destruct", "destroy"), ("cleanup", "destruct")),
+        (("超时", "timeout"), ("timeout",)),
+        (("重连", "reconnect"), ("reconnect",)),
+    )
+    terms: list[str] = []
+    for markers, expansions in groups:
+        if not any(marker in normalized for marker in markers):
+            continue
+        for expansion in expansions:
+            if expansion not in terms:
+                terms.append(expansion)
     return terms
 
 
@@ -4222,12 +4280,22 @@ def _source_text_has_term(text: str, term: str) -> bool:
 
 def _symbol_query_terms(text: str) -> list[str]:
     terms: list[str] = []
+    path_tokens = {
+        part.lower()
+        for hint in _path_hints(text)
+        for part in hint.replace("-", "_").split("/")
+    }
     for item in re.findall(r"[A-Za-z_][A-Za-z0-9_]{4,}", text or ""):
         token = item.strip("_")
         if "_" not in token:
             continue
         lowered = token.lower()
-        if lowered in _QUERY_STOPWORDS or lowered in terms:
+        if (
+            lowered in _QUERY_STOPWORDS
+            or lowered in _TEST_CONTRACT_QUERY_TERMS
+            or lowered in path_tokens
+            or lowered in terms
+        ):
             continue
         terms.append(lowered)
         if len(terms) >= 4:
@@ -4236,14 +4304,18 @@ def _symbol_query_terms(text: str) -> list[str]:
 
 
 def _source_file_contains_any(path: Path, terms: list[str]) -> bool:
+    return _source_file_match_count(path, terms) > 0
+
+
+def _source_file_match_count(path: Path, terms: list[str]) -> int:
     if not terms or path.suffix.lower() not in _SOURCE_SUFFIXES:
-        return False
+        return 0
     try:
         text = path.read_text(encoding="utf-8", errors="ignore")[:262_144].lower()
     except Exception:
-        return False
+        return 0
     normalized = text.replace("-", "_")
-    return any(_source_text_has_term(normalized, term) for term in terms)
+    return sum(1 for term in terms if _source_text_has_term(normalized, term))
 
 
 def _source_candidate_rank(path: Path) -> tuple[int, str]:

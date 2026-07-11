@@ -19,6 +19,7 @@ def _profile(
     source_entries: list[str],
     test_dirs: list[str],
     forbidden_internal_steps: list[str] | None = None,
+    professional_constraints: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "name": name,
@@ -29,6 +30,7 @@ def _profile(
         "graybox_evidence_points": graybox_evidence,
         "recommended_source_entries": source_entries,
         "recommended_test_dirs": test_dirs,
+        "professional_constraints": professional_constraints or [],
         "log_metric_rpc_observability": observability,
         "forbidden_internal_steps": forbidden_internal_steps
         or [
@@ -49,6 +51,37 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
         graybox_evidence=["login state machine", "CHAP decision point", "session cleanup path"],
         source_entries=["lib/iscsi", "lib/iscsi/iscsi.c"],
         test_dirs=["test/iscsi_tgt"],
+        professional_constraints=[
+            {
+                "id": "iscsi_login_response_role",
+                "assertion": (
+                    "iscsi_op_login_response 负责整理并发送 Login Response；认证与阶段协商由 "
+                    "iscsi_op_login_rsp_handle_csg_bit、iscsi_auth_params 和 "
+                    "iscsi_op_login_rsp_handle 等路径完成。"
+                ),
+                "evidence": [
+                    "lib/iscsi/iscsi.c::iscsi_op_login_response",
+                    "lib/iscsi/iscsi.c::iscsi_op_login_rsp_handle_csg_bit",
+                    "lib/iscsi/iscsi.c::iscsi_op_login_rsp_handle",
+                ],
+                "conflict_patterns": [
+                    r"iscsi_op_login_response.{0,100}(?:认证|鉴权|auth|协商|negot).{0,40}(?:核心|处理|完成)",
+                    r"iscsi_op_login_response.{0,60}(?:是|为).{0,30}(?:认证|鉴权|auth|协商|negot)",
+                ],
+            },
+            {
+                "id": "iscsi_login_status_class",
+                "assertion": (
+                    "Authentication Failure 和 Authorization Failure 都属于 Initiator Error "
+                    "Status-Class 0x02；0x03 是 Target Error。"
+                ),
+                "evidence": ["include/spdk/iscsi_spec.h::ISCSI_CLASS_INITIATOR_ERROR"],
+                "conflict_patterns": [
+                    r"(?:authorization failure|授权失败).{0,80}(?:status[- ]?class\s*[:=]?\s*)?0x03",
+                    r"(?:status[- ]?class\s*[:=]?\s*)?0x03.{0,80}(?:authorization failure|授权失败)",
+                ],
+            },
+        ],
     ),
     "nvmeof_transport": _profile(
         name="NVMe-oF transport/connect/IO",
@@ -260,6 +293,11 @@ def build_test_activity_contract(
         "user_requirements": str(user_requirements or ""),
         "required_outputs": required_outputs,
         "focus_rationale": focus_rationale,
+        "professional_constraints": [
+            dict(constraint)
+            for profile_id in domain_profiles
+            for constraint in PROFILE_REGISTRY[profile_id].get("professional_constraints", [])
+        ],
         "evidence_policy": {
             "source_first": True,
             "prefer_artifacts": ["GitNexus", "CGC"],
@@ -515,6 +553,8 @@ def audit_test_activity_response(
                 )
             )
 
+    issues.extend(_audit_professional_constraints(text, contract))
+
     score = max(0, 100 - len(issues) * 15)
     status = "deliverable" if not issues and score >= int((contract.get("quality_gates") or {}).get("min_score") or 80) else "needs_rework"
     return {
@@ -527,6 +567,34 @@ def audit_test_activity_response(
         "issues": issues,
         "recommendations": _recommendations_for_issues(issues),
     }
+
+
+def _audit_professional_constraints(
+    content: str,
+    contract: dict[str, Any],
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    for constraint in contract.get("professional_constraints") or []:
+        if not isinstance(constraint, dict):
+            continue
+        for pattern in constraint.get("conflict_patterns") or []:
+            try:
+                conflict = re.search(str(pattern), content, flags=re.IGNORECASE | re.DOTALL)
+            except re.error:
+                continue
+            if not conflict:
+                continue
+            issues.append(
+                _issue(
+                    "professional_fact_conflict",
+                    "assistant-output.md",
+                    "交付件与已验证的领域事实冲突：" + str(constraint.get("assertion") or ""),
+                    constraint_id=str(constraint.get("id") or ""),
+                    evidence=[str(item) for item in constraint.get("evidence") or []],
+                )
+            )
+            break
+    return issues
 
 
 def _combined_response_evidence_paths(content: str) -> list[str]:
@@ -1039,6 +1107,8 @@ def _recommendations_for_issues(issues: list[dict[str, Any]]) -> list[str]:
         recommendations.append("将黑盒步骤改为外部输入、操作、期望输出和观测点，不要要求调用内部函数或修改源码。")
     if "evidence_path_not_found" in codes:
         recommendations.append("重新检索 GitNexus/CGC 和本地源码，修正不存在的证据引用。")
+    if "professional_fact_conflict" in codes:
+        recommendations.append("按领域事实锚点重新核对源码和协议常量，修正冲突结论后再交付。")
     return recommendations or ["从低质量交付件重跑，要求执行器严格遵守 TestActivityContract。"]
 
 
