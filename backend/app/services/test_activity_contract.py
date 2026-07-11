@@ -82,6 +82,9 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 ],
                 "correction_patterns": [
                     r"iscsi_op_login_response.{0,100}(?:不是|并非|不负责|does not).{0,60}(?:认证|鉴权|auth|协商|negot)",
+                    r"(?:此函数|该函数|this function).{0,30}(?:不是|并非|不负责|does not).{0,60}(?:认证|鉴权|auth|协商|negot)",
+                    r"iscsi_op_login_response.{0,180}(?:响应发送|send).{0,180}(?:认证|auth|协商|negot).{0,100}(?:负载|payload).{0,60}(?:处理|完成)",
+                    r"(?:响应发送|send).{0,60}iscsi_op_login_response.{0,180}(?:认证|auth|协商|negot).{0,100}(?:负载|payload).{0,60}(?:处理|完成)",
                 ],
             },
             {
@@ -592,7 +595,11 @@ def audit_test_activity_response(
             for field, aliases in sfmea_fields.items()
             if not any(alias in lower for alias in aliases)
         ]
-        has_sfmea_rows = text.count("\n|") >= 3 or len(re.findall(r"(?mi)^\s*[-*]\s+.*rpn", text)) >= 2
+        has_sfmea_rows = (
+            text.count("\n|") >= 3
+            or len(re.findall(r"(?mi)^\s*[-*]\s+.*rpn", text)) >= 2
+            or _combined_json_array_has_fields(text, {"failure_mode", "rpn", "source_evidence", "test_mapping"})
+        )
         if "sfmea" not in lower or missing or not has_sfmea_rows:
             issues.append(
                 _issue(
@@ -735,6 +742,20 @@ def audit_test_activity_response(
         "issues": issues,
         "recommendations": _recommendations_for_issues(issues),
     }
+
+
+def _combined_json_array_has_fields(content: str, required_fields: set[str]) -> bool:
+    for block in re.findall(r"```json\s*(\[.*?\])\s*```", content, flags=re.IGNORECASE | re.DOTALL):
+        try:
+            payload = json.loads(block)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, list) or len(payload) < 2:
+            continue
+        valid_items = [item for item in payload if isinstance(item, dict)]
+        if len(valid_items) >= 2 and all(required_fields.issubset(item) for item in valid_items):
+            return True
+    return False
 
 
 def _audit_professional_constraints(

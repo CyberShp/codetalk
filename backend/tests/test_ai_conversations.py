@@ -68,11 +68,13 @@ class FakeLLM:
 class TruncatedTestActivityLLM:
     def __init__(self) -> None:
         self.max_tokens = 0
+        self.temperature = 0.0
 
     async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
         from app.llm.base import current_finish_reason
 
         self.max_tokens = max_tokens
+        self.temperature = temperature
         yield "## 代码证据\n\n- `lib/iscsi/iscsi.c`: login 入口。\n\n## 流程步骤\n\n1. 建立连接"
         current_finish_reason.set("length")
 
@@ -4906,6 +4908,7 @@ async def test_builtin_test_activity_rejects_truncated_provider_output(
     run = await store.get_run(created["run"]["id"])
     messages = await store.list_messages(conversation["id"])
     assert llm.max_tokens == 8192
+    assert llm.temperature == 0.2
     assert run["status"] == "failed"
     assert "输出达到长度上限" in run["error"]
     assert [message["role"] for message in messages] == ["user"]

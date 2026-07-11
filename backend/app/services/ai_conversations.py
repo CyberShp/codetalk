@@ -1717,7 +1717,7 @@ async def run_generation(
         else settings.ai_conversation_max_output_tokens
     )
     max_tokens = min(requested_token_budget, settings.llm_max_output_tokens)
-    temperature = 0.5
+    temperature = 0.2 if requires_strict_quality_gate else 0.5
 
     async def append_delta(content: str) -> None:
         nonlocal artifact_stream_notice_sent

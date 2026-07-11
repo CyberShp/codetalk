@@ -808,6 +808,45 @@ def test_iscsi_professional_constraints_reject_unverified_defect_assertions(tmp_
     }
 
 
+def test_combined_response_accepts_complete_fenced_json_sfmea(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login;\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt" / "login.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    contract = build_test_activity_contract(
+        target="iSCSI Login SFMEA",
+        repo_path=str(repo),
+        workflow_outputs=[{"artifact": "sfmea.json"}],
+        user_requirements="输出 SFMEA",
+    )
+    rows = [
+        {
+            "failure_mode": f"failure-{index}", "cause": "cause", "effect": "effect",
+            "detection": "log", "severity": 7, "occurrence": 2, "detection_score": 3,
+            "rpn": 42, "score_explanation": "scored", "mitigation": "test",
+            "source_evidence": "lib/iscsi/iscsi.c", "test_mapping": "test/iscsi_tgt/login.sh",
+        }
+        for index in range(2)
+    ]
+
+    audit = audit_test_activity_response(
+        content=(
+            "## SFMEA\n\n```json\n" + json.dumps(rows, ensure_ascii=False) + "\n```\n\n"
+            "## 流程\n\n1. 输入。\n2. 执行。\n3. 观测。\n"
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert not any(issue["code"] == "missing_combined_sfmea" for issue in audit["issues"])
+
+
 def test_combined_response_ignores_glob_when_concrete_evidence_exists(tmp_path):
     from app.services.test_activity_contract import (
         audit_test_activity_response,
