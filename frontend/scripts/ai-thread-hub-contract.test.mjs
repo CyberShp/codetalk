@@ -12,6 +12,15 @@ test("AI thread hub exposes deletion through the real conversation API", () => {
   assert.match(source, /window\.confirm\(`删除线程/);
 });
 
+test("AI thread creation can bind a workflow and the empty thread opens the real cockpit", () => {
+  assert.match(source, /api\.workbench\.workflows\.list/);
+  assert.match(source, /aria-label="线程工作流模板"/);
+  assert.match(source, /selected_workflow_id/);
+  assert.match(source, /selected_workflow_name/);
+  assert.match(threadSource, /配置并运行工作流/);
+  assert.match(threadSource, /\/workbench\?workflow=/);
+});
+
 test("AI thread composer preserves multiline prompts until explicit send", () => {
   assert.match(threadSource, /event\.key === "Enter" && \(event\.metaKey \|\| event\.ctrlKey\)/);
   assert.doesNotMatch(threadSource, /event\.key === "Enter" && !event\.shiftKey/);

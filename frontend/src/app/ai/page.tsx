@@ -15,7 +15,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { AgentRuntime, AIConversation, Workspace } from "@/lib/types";
+import type { AgentRuntime, AIConversation, WorkflowDefinition, Workspace } from "@/lib/types";
 
 const PROJECT_LIST_RENDER_LIMIT = 80;
 
@@ -68,7 +68,9 @@ export default function AIHomePage() {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [threads, setThreads] = useState<AIConversation[]>([]);
   const [agentRuntimes, setAgentRuntimes] = useState<AgentRuntime[]>([]);
+  const [workflows, setWorkflows] = useState<WorkflowDefinition[]>([]);
   const [selectedRuntimeId, setSelectedRuntimeId] = useState("");
+  const [selectedWorkflowId, setSelectedWorkflowId] = useState("");
   const [selectedProjectId, setSelectedProjectId] = useState("");
   const [projectQuery, setProjectQuery] = useState("");
   const [title, setTitle] = useState("");
@@ -84,15 +86,17 @@ export default function AIHomePage() {
       setLoading(true);
       setError(null);
       try {
-        const [workspaceItems, threadResult, runtimeResult] = await Promise.all([
+        const [workspaceItems, threadResult, runtimeResult, workflowItems] = await Promise.all([
           api.workspaces.list(),
           api.aiConversations.list({ limit: 100 }),
           api.settings.listAgentRuntimes({ enabled: true }).catch(() => ({ items: [] as AgentRuntime[] })),
+          api.workbench.workflows.list().catch(() => [] as WorkflowDefinition[]),
         ]);
         if (cancelled) return;
         setWorkspaces(workspaceItems);
         setThreads(threadResult.items);
         setAgentRuntimes(runtimeResult.items);
+        setWorkflows(workflowItems);
         setSelectedRuntimeId((current) => current || runtimeResult.items[0]?.id || "builtin_llm");
         setSelectedProjectId((current) => current || workspaceItems[0]?.id || "global");
       } catch (exc) {
@@ -153,6 +157,7 @@ export default function AIHomePage() {
     setCreating(true);
     setError(null);
     try {
+      const selectedWorkflow = workflows.find((workflow) => workflow.id === selectedWorkflowId) ?? null;
       const conversation = await api.aiConversations.create({
         scope_type: "workspace",
         scope_id: selectedProject.workspace.id,
@@ -165,6 +170,8 @@ export default function AIHomePage() {
           workspace_id: selectedProject.workspace.id,
           project_name: selectedProject.workspace.name,
           memory_namespace: `workspace:${selectedProject.workspace.id}`,
+          selected_workflow_id: selectedWorkflow?.id ?? "",
+          selected_workflow_name: selectedWorkflow?.name ?? "",
         },
       });
       router.push(`/ai/${conversation.id}`);
@@ -272,6 +279,19 @@ export default function AIHomePage() {
                       </option>
                     ))}
                     <option value="builtin_llm">内置模型</option>
+                  </select>
+                  <select
+                    className="ct-thread-create__workflow"
+                    value={selectedWorkflowId}
+                    onChange={(event) => setSelectedWorkflowId(event.target.value)}
+                    aria-label="线程工作流模板"
+                  >
+                    <option value="">自由对话</option>
+                    {workflows.map((workflow) => (
+                      <option key={workflow.id} value={workflow.id}>
+                        {workflow.name || workflow.id}
+                      </option>
+                    ))}
                   </select>
                   <input
                     value={title}

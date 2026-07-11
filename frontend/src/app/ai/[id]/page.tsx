@@ -1018,6 +1018,17 @@ export default function AIThreadPage() {
     (!activeRuntime || !activeRuntime.enabled);
   const composerDisabled = sending || isActuallyRunning || activeAgentRuntimeUnavailable;
   const composerInputDisabled = sending || activeAgentRuntimeUnavailable;
+  const selectedWorkflowId =
+    typeof conversation?.initial_context?.selected_workflow_id === "string"
+      ? conversation.initial_context.selected_workflow_id.trim()
+      : "";
+  const selectedWorkflowName =
+    typeof conversation?.initial_context?.selected_workflow_name === "string"
+      ? conversation.initial_context.selected_workflow_name.trim()
+      : selectedWorkflowId;
+  const selectedWorkflowHref = selectedWorkflowId
+    ? `/workbench?workflow=${encodeURIComponent(selectedWorkflowId)}&workspace_id=${encodeURIComponent(workspaceId)}`
+    : "";
   const threadNavigationBusy =
     savingRuntime || cancelling || creatingSiblingThread || Boolean(deletingThreadId) || isActuallyRunning;
   const lastUserMessage = useMemo(
@@ -1712,7 +1723,19 @@ export default function AIThreadPage() {
             {messages.length === 0 && !streamingContent ? (
               <div className="ct-codex-ai__empty">
                 <Sparkles size={32} />
-                <p>直接提问。这个线程会持续保存，并只围绕当前项目命名空间召回记忆。</p>
+                {selectedWorkflowHref ? (
+                  <>
+                    <p>
+                      已绑定工作流“{selectedWorkflowName}”。先在驾驶舱填写命名输入并运行，完成后可回到 AI 线程继续复盘。
+                    </p>
+                    <Link className="ct-codex-ai__workflow-launch" href={selectedWorkflowHref}>
+                      <PlayCircle size={15} />
+                      配置并运行工作流
+                    </Link>
+                  </>
+                ) : (
+                  <p>直接提问。这个线程会持续保存，并只围绕当前项目命名空间召回记忆。</p>
+                )}
               </div>
             ) : (
               messages.map((message) => (

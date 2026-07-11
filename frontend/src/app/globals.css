@@ -1627,7 +1627,7 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
 .ct-thread-create {
   display: flex;
-  min-width: min(520px, 52%);
+  min-width: min(680px, 64%);
   gap: 9px;
 }
 
@@ -1650,6 +1650,10 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 
 .ct-thread-create select {
   flex: 0 0 150px;
+}
+
+.ct-thread-create select.ct-thread-create__workflow {
+  flex-basis: 190px;
 }
 
 .ct-thread-create input:focus,
@@ -2393,6 +2397,24 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
   gap: 12px;
   color: #475569;
   text-align: center;
+}
+
+.ct-codex-ai__workflow-launch {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  background: #ffffff;
+  padding: 8px 12px;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.ct-codex-ai__workflow-launch:hover {
+  border-color: #94a3b8;
+  background: #f8fafc;
 }
 
 .ct-codex-message {
