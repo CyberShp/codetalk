@@ -2710,6 +2710,7 @@ class TestAgentRuntimes:
         self,
         sqlite_db,
         tmp_path,
+        monkeypatch,
     ):
         repo = tmp_path / "spdk"
         (repo / "lib" / "nvmf").mkdir(parents=True)
@@ -2739,6 +2740,13 @@ class TestAgentRuntimes:
         )
 
         from app.services.ai_conversations import AIConversationStore, run_agent_generation
+        from app.services import ai_conversations as ai_service
+
+        monkeypatch.setattr(
+            ai_service,
+            "_requires_strict_test_activity_quality_gate",
+            lambda _message: False,
+        )
 
         store = AIConversationStore(sqlite_db)
         conversation = await store.create_conversation(
@@ -3405,6 +3413,13 @@ class TestAgentRuntimes:
         )
 
         from app.services.ai_conversations import AIConversationStore, ai_thread_artifact_path, run_agent_generation
+        from app.services import ai_conversations as ai_service
+
+        monkeypatch.setattr(
+            ai_service,
+            "_requires_strict_test_activity_quality_gate",
+            lambda _message: False,
+        )
 
         store = AIConversationStore(sqlite_db)
         conversation = await store.create_conversation(
@@ -3449,7 +3464,7 @@ class TestAgentRuntimes:
         assert "TC-08" in artifact_text
         assert "已生成文件：spdk-blackbox.md" not in artifact_text
 
-    async def test_ai_thread_agent_runtime_does_not_repair_after_artifact_file_adoption(
+    async def test_ai_thread_agent_runtime_rejects_shallow_adopted_artifact(
         self,
         sqlite_db,
         tmp_path,
@@ -3521,22 +3536,17 @@ class TestAgentRuntimes:
         assert len(prompts) == 1
 
         run = await store.get_run(run_id)
-        assert run["status"] == "completed"
+        assert run["status"] == "failed"
+        assert "质量门禁" in run["error"]
         messages = await store.list_messages(conversation["id"])
-        assistant = [item for item in messages if item["role"] == "assistant"][-1]
-        assert "已生成结构化产物" in assistant["content"]
-        assert "下载完整产物" in assistant["content"]
-        assert "TC-08" not in assistant["content"]
-        assert any(action["id"] == "download_run_artifact" for action in assistant["actions"])
-
-        artifact_text = ai_thread_artifact_path(conversation["id"], run_id).read_text(encoding="utf-8")
-        assert "TC-08" in artifact_text
-        assert "已生成文件：spdk-blackbox.md" not in artifact_text
+        assert [item["role"] for item in messages] == ["user"]
+        assert ai_thread_artifact_path(conversation["id"], run_id).exists() is False
 
     async def test_ai_thread_agent_runtime_downloads_complete_inline_test_design(
         self,
         sqlite_db,
         tmp_path,
+        monkeypatch,
     ):
         repo = tmp_path / "spdk"
         repo.mkdir()
@@ -3555,6 +3565,13 @@ class TestAgentRuntimes:
         )
 
         from app.services.ai_conversations import AIConversationStore, ai_thread_artifact_path, run_agent_generation
+        from app.services import ai_conversations as ai_service
+
+        monkeypatch.setattr(
+            ai_service,
+            "_requires_strict_test_activity_quality_gate",
+            lambda _message: False,
+        )
 
         store = AIConversationStore(sqlite_db)
         conversation = await store.create_conversation(
@@ -5665,6 +5682,65 @@ class TestAgentRuntimes:
         assert answer == "已基于源码完成分析。"
         assert "command: rg nvmf_connect lib/nvmf" in diagnostics
         assert "thread.started" not in answer + diagnostics
+
+    async def test_codex_turn_completed_finishes_even_when_cli_process_keeps_stdout_open(self):
+        from app.services.agent_cli_bridge import stream_agent_runtime
+
+        agent_code = (
+            "import json, sys, time; "
+            "sys.stdin.read(); "
+            "print(json.dumps({'type':'item.completed','item':{'type':'agent_message','text':'最终答案：已完成。'}}, ensure_ascii=False), flush=True); "
+            "print(json.dumps({'type':'turn.completed','usage':{}}, ensure_ascii=False), flush=True); "
+            "time.sleep(5)"
+        )
+        chunks: list[str] = []
+
+        async with asyncio.timeout(2):
+            async for chunk in stream_agent_runtime(
+                runtime={
+                    "command": sys.executable,
+                    "args": ["-c", agent_code],
+                    "prompt_transport": "codex_exec_json",
+                    "output_mode": "stream_json",
+                    "timeout_seconds": 10,
+                    "completion_mode": "process_exit",
+                },
+                prompt="读取源码后回答",
+                cwd=None,
+            ):
+                chunks.append(chunk)
+
+        assert "最终答案：已完成。" in "".join(chunks)
+
+    async def test_codex_reconnect_stderr_does_not_mask_productive_inactivity(self):
+        from app.services.agent_cli_bridge import AgentRuntimeError, stream_agent_runtime
+
+        agent_code = (
+            "import sys, time; "
+            "sys.stdin.read(); "
+            "\nfor i in range(20):\n"
+            "    sys.stderr.write(f'Reconnecting... {i % 5 + 1}/5\\n'); sys.stderr.flush(); time.sleep(0.2)\n"
+        )
+        progress: list[str] = []
+
+        with pytest.raises(AgentRuntimeError, match="连续 1s 没有输出或进度"):
+            async with asyncio.timeout(2.5):
+                async for _chunk in stream_agent_runtime(
+                    runtime={
+                        "command": sys.executable,
+                        "args": ["-c", agent_code],
+                        "prompt_transport": "codex_exec_json",
+                        "output_mode": "stream_json",
+                        "timeout_seconds": 1,
+                        "completion_mode": "process_exit",
+                    },
+                    prompt="读取源码后回答",
+                    cwd=None,
+                    stderr_update=progress.append,
+                ):
+                    pass
+
+        assert any("正在自动重试" in item for item in progress)
 
     async def test_agent_runtime_accepts_codex_ndjson_lines_larger_than_asyncio_default(self):
         from app.services.agent_cli_bridge import stream_agent_runtime

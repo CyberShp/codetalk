@@ -727,6 +727,76 @@ def test_iscsi_professional_constraints_reject_known_protocol_contradictions(tmp
     assert all(issue["evidence"] for issue in conflicts)
 
 
+def test_iscsi_professional_constraints_accept_explicit_fact_corrections(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login 认证协商 SFMEA 和黑盒测试设计",
+        repo_path=str(repo),
+        user_requirements="输出完整可下载测试设计文件",
+    )
+
+    audit = audit_test_activity_response(
+        content=(
+            "## 已核验事实\n\n"
+            "`iscsi_op_login_response` 只发送响应，不是认证或参数协商核心。\n"
+            "认证失败和授权失败都使用 Initiator Error class `0x02`，不是 Target Error `0x03`。\n"
+            "Login PDU 数据段完成参数协商，不需要 Text Request。\n"
+            "连接清理由 `lib/iscsi/conn.c` 析构路径负责，`iscsi_param_free` 只释放参数链。\n"
+            "`spdk_startup` 不负责 Login、认证或连接清理。\n"
+            "`iscsi_negotiate_chap_param` 不执行 CHAP 认证，实际校验由 `iscsi_auth_params` 完成。\n"
+            "Status-Detail 0x05 是 Unsupported Version，不是参数错误。"
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    conflicts = [
+        issue for issue in audit["issues"]
+        if issue["code"] == "professional_fact_conflict"
+    ]
+    assert conflicts == []
+
+
+def test_combined_response_ignores_glob_when_concrete_evidence_exists(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt" / "chap").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login_probe;\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt" / "chap" / "chap.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    contract = build_test_activity_contract(
+        target="iSCSI Login 测试设计",
+        repo_path=str(repo),
+        user_requirements="输出可下载测试设计文件",
+    )
+
+    audit = audit_test_activity_response(
+        content=(
+            "## 代码证据\n\n"
+            "实现见 `lib/iscsi/iscsi.c`，具体回归入口见 "
+            "`test/iscsi_tgt/chap/chap.sh`；同类脚本可概括为 "
+            "`test/iscsi_tgt/chap/*.sh`。"
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert not any(
+        issue["code"] == "evidence_path_not_found"
+        for issue in audit["issues"]
+    )
+
+
 def test_workbench_runner_classifies_unhelpful_agent_greeting(tmp_path, monkeypatch):
     from app.config import settings
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer

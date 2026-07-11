@@ -68,6 +68,9 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"iscsi_op_login_response.{0,100}(?:认证|鉴权|auth|协商|negot).{0,40}(?:核心|处理|完成)",
                     r"iscsi_op_login_response.{0,60}(?:是|为).{0,30}(?:认证|鉴权|auth|协商|negot)",
                 ],
+                "correction_patterns": [
+                    r"iscsi_op_login_response.{0,100}(?:不是|并非|不负责|does not).{0,60}(?:认证|鉴权|auth|协商|negot)",
+                ],
             },
             {
                 "id": "iscsi_login_status_class",
@@ -79,6 +82,9 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 "conflict_patterns": [
                     r"(?:authorization failure|授权失败).{0,80}(?:status[- ]?class\s*[:=]?\s*)?0x03",
                     r"(?:status[- ]?class\s*[:=]?\s*)?0x03.{0,80}(?:authorization failure|授权失败)",
+                ],
+                "correction_patterns": [
+                    r"(?:authorization failure|授权失败).{0,80}`?0x02`?.{0,50}(?:不是|而非|not)\s*(?:target error\s*)?`?0x03`?",
                 ],
             },
             {
@@ -111,6 +117,10 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"initiator.{0,50}(?:发送|send).{0,40}text request.{0,100}(?:登录|login|参数协商|negot)",
                     r"text request.{0,100}(?:登录参数协商|login negotiation|进入 full feature)",
                 ],
+                "correction_patterns": [
+                    r"(?:不需要|无需|not required).{0,50}text request",
+                    r"text request.{0,50}(?:不是|并非|不作为|is not).{0,80}(?:必需|required|登录|login)",
+                ],
             },
             {
                 "id": "iscsi_connection_cleanup_role",
@@ -124,8 +134,11 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     "app/iscsi_tgt/iscsi_tgt.c::spdk_startup",
                 ],
                 "conflict_patterns": [
-                    r"(?:连接清理|connection cleanup).{0,100}(?:iscsi_param_free|spdk_startup)",
+                    r"(?:连接清理|connection cleanup).{0,30}(?:由|通过|by)\s*`?(?:iscsi_param_free|spdk_startup)",
                     r"(?:iscsi_param_free|spdk_startup).{0,100}(?:负责|完成|实现).{0,40}(?:连接清理|connection cleanup)",
+                ],
+                "correction_patterns": [
+                    r"(?:iscsi_param_free|spdk_startup).{0,50}(?:不负责|并非|does not).{0,60}(?:连接清理|connection cleanup)",
                 ],
             },
             {
@@ -142,6 +155,9 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"iscsi_negotiate_chap_param.{0,100}(?:执行|处理|完成|负责).{0,40}(?:chap\s*)?(?:认证|authentication)",
                     r"(?:chap\s*)?(?:认证|authentication).{0,100}(?:由|通过).{0,30}iscsi_negotiate_chap_param.{0,40}(?:执行|处理|完成)",
                 ],
+                "correction_patterns": [
+                    r"iscsi_negotiate_chap_param.{0,60}(?:不执行|不负责|并非|does not).{0,50}(?:chap\s*)?(?:认证|authentication)",
+                ],
             },
             {
                 "id": "iscsi_login_status_detail_05",
@@ -152,6 +168,9 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 "conflict_patterns": [
                     r"(?:parameter error|参数(?:协商)?错误|参数错误).{0,80}(?:status[- ]?detail\s*[:=]?\s*)?0x05",
                     r"(?:status[- ]?detail\s*[:=]?\s*)?0x05.{0,80}(?:parameter error|参数(?:协商)?错误|参数错误)",
+                ],
+                "correction_patterns": [
+                    r"(?:status[- ]?detail\s*[:=]?\s*)?0x05.{0,80}(?:不是|并非|not).{0,30}(?:parameter error|参数(?:协商)?错误|参数错误)",
                 ],
             },
         ],
@@ -656,12 +675,21 @@ def _audit_professional_constraints(
     for constraint in contract.get("professional_constraints") or []:
         if not isinstance(constraint, dict):
             continue
+        conflict_found = False
         for pattern in constraint.get("conflict_patterns") or []:
             try:
-                conflict = re.search(str(pattern), content, flags=re.IGNORECASE | re.DOTALL)
+                conflicts = list(re.finditer(str(pattern), content, flags=re.IGNORECASE | re.DOTALL))
             except re.error:
                 continue
-            if not conflict:
+            if not conflicts:
+                continue
+            for conflict in conflicts:
+                statement = _professional_statement_window(content, conflict.start(), conflict.end())
+                if _matches_professional_correction(statement, constraint):
+                    continue
+                conflict_found = True
+                break
+            if not conflict_found:
                 continue
             issues.append(
                 _issue(
@@ -676,13 +704,39 @@ def _audit_professional_constraints(
     return issues
 
 
+def _professional_statement_window(content: str, start: int, end: int) -> str:
+    boundaries = "\n。！？"
+    left = max((content.rfind(marker, 0, start) for marker in boundaries), default=-1) + 1
+    right_candidates = [
+        position
+        for marker in boundaries
+        if (position := content.find(marker, end)) >= 0
+    ]
+    right = min(right_candidates) + 1 if right_candidates else len(content)
+    return content[left:right]
+
+
+def _matches_professional_correction(statement: str, constraint: dict[str, Any]) -> bool:
+    for pattern in constraint.get("correction_patterns") or []:
+        try:
+            if re.search(str(pattern), statement, flags=re.IGNORECASE | re.DOTALL):
+                return True
+        except re.error:
+            continue
+    return False
+
+
 def _combined_response_evidence_paths(content: str) -> list[str]:
     candidates = re.findall(
         r"`((?:app|lib|module|src|test|tests)/[^`\s:]+)(?::\d+(?:-\d+)?)?`",
         str(content or ""),
         flags=re.IGNORECASE,
     )
-    return _unique_strings(path.rstrip(".,;，。；") for path in candidates)
+    return _unique_strings(
+        path.rstrip(".,;，。；")
+        for path in candidates
+        if not any(marker in path for marker in "*?[]")
+    )
 
 
 def _matched_profiles(text: str) -> list[str]:

@@ -1126,6 +1126,8 @@ class AIConversationStore:
         actions: list[dict[str, Any]] | None = None,
     ) -> None:
         run = await self.get_run(run_id)
+        if str(run.get("status") or "") not in {"queued", "running"}:
+            return
         now = _now()
         conversation = await self.get_conversation(run["conversation_id"])
         enriched_references = await _enrich_references_with_answer_citations(
@@ -1139,7 +1141,15 @@ class AIConversationStore:
             enriched_references,
         )
         async with self._connect() as db:
-            await db.execute("BEGIN")
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT status FROM ai_conversation_runs WHERE id = ?",
+                (run_id,),
+            ) as cur:
+                current_row = await cur.fetchone()
+            if current_row is None or str(current_row["status"] or "") not in {"queued", "running"}:
+                await db.rollback()
+                return
             await db.execute(
                 """
                 INSERT INTO ai_messages
@@ -1803,6 +1813,47 @@ async def _record_ai_thread_quality_audit(
     )
 
 
+async def _enforce_ai_thread_test_activity_quality(
+    *,
+    store: AIConversationStore,
+    run_id: str,
+    conversation: dict[str, Any],
+    user_message: str,
+    content: str,
+    repo_path: str | None,
+) -> bool:
+    contract = _test_activity_contract_payload(
+        user_message=user_message,
+        repo_path=repo_path,
+    )
+    audit = audit_test_activity_response(
+        content=content,
+        contract=contract,
+        repo_path=repo_path or "",
+    )
+    await _record_ai_thread_quality_audit(
+        store=store,
+        run_id=run_id,
+        conversation=conversation,
+        audit=audit,
+        rejected_content=content,
+    )
+    if audit.get("deliverable"):
+        return True
+    issue_messages = [
+        str(item.get("message") or "").strip()
+        for item in audit.get("issues") or []
+        if isinstance(item, dict) and str(item.get("message") or "").strip()
+    ]
+    summary = "；".join(issue_messages[:3]) or "测试活动交付件不完整"
+    await store.fail_run(
+        run_id,
+        f"测试活动产物未通过质量门禁（{audit.get('score', 0)} 分）：{summary}。"
+        "系统未生成下载交付件；请重试或改用结构化工作流补齐缺失内容。",
+    )
+    return False
+
+
 async def run_agent_generation(
     *,
     store: AIConversationStore,
@@ -2067,6 +2118,19 @@ async def run_agent_generation(
         if agent_artifact_content:
             content = agent_artifact_content
             adopted_agent_artifact = True
+        if (
+            _agent_task_requests_downloadable_artifact(user_message["content"], content)
+            and _requires_strict_test_activity_quality_gate(user_message["content"])
+            and not await _enforce_ai_thread_test_activity_quality(
+                store=store,
+                run_id=run_id,
+                conversation=conversation,
+                user_message=user_message["content"],
+                content=content,
+                repo_path=repo_path,
+            )
+        ):
+            return
         live_content = "".join(live_chunks)
         if not live_content:
             await append_live_answer_delta(content)

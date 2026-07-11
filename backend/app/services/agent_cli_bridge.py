@@ -173,13 +173,15 @@ async def stream_agent_runtime(
             if text is not None:
                 stderr_chunks.append(text)
                 await _emit_stderr_updates(text, stderr_update)
-                mark_activity()
+                if _stderr_reports_productive_activity(text):
+                    mark_activity()
                 pending.clear()
         if pending:
             text = _decode(bytes(pending))
             stderr_chunks.append(text)
             await _emit_stderr_updates(text, stderr_update)
-            mark_activity()
+            if _stderr_reports_productive_activity(text):
+                mark_activity()
 
     stderr_task = asyncio.create_task(_drain_stderr())
     cancel_task: asyncio.Task[None] | None = None
@@ -207,6 +209,7 @@ async def stream_agent_runtime(
             await proc.stdin.drain()
             proc.stdin.close()
 
+        stream_completion: dict[str, bool] = {"completed": False}
         async with asyncio.timeout(hard_timeout):
             async for chunk in _read_stdout(
                 proc,
@@ -214,6 +217,7 @@ async def stream_agent_runtime(
                 runtime=runtime,
                 session_update=session_update,
                 activity_queue=activity_queue,
+                completion_state=stream_completion,
             ):
                 if chunk:
                     if _looks_like_unattended_permission_request(chunk):
@@ -226,7 +230,8 @@ async def stream_agent_runtime(
             if proc.returncode is None:
                 completion_mode = _completion_mode(runtime)
                 completed_by_policy = (
-                    completion_mode == "sentinel"
+                    stream_completion["completed"]
+                    or completion_mode == "sentinel"
                     or (completion_mode == "idle_after_output" and saw_stdout_output)
                 )
                 if completed_by_policy:
@@ -282,6 +287,11 @@ def _stderr_progress_lines(text: str) -> list[str]:
             continue
         lines.append(_public_agent_progress_line(line))
     return lines[-20:]
+
+
+def _stderr_reports_productive_activity(text: str) -> bool:
+    lines = _stderr_progress_lines(text)
+    return any("正在自动重试" not in line for line in lines)
 
 
 def _looks_like_agent_initialization_noise(value: str) -> bool:
@@ -483,6 +493,7 @@ async def _read_stdout(
     runtime: dict[str, Any] | None = None,
     session_update: Callable[[dict[str, Any]], None] | None = None,
     activity_queue: asyncio.Queue[None] | None = None,
+    completion_state: dict[str, bool] | None = None,
 ) -> AsyncIterator[str]:
     if proc.stdout is None:
         return
@@ -553,6 +564,7 @@ async def _read_stdout(
                             break
                 break
             text = _decode(raw)
+            stream_completed = _managed_stream_completed(text, runtime)
             parsed = _parse_event_text(
                 text,
                 output_mode,
@@ -573,6 +585,10 @@ async def _read_stdout(
                     yield parsed
                 if done:
                     break
+            if stream_completed:
+                if completion_state is not None:
+                    completion_state["completed"] = True
+                break
     else:
         pending = bytearray()
         while True:
@@ -595,6 +611,19 @@ async def _read_stdout(
             text, _done = apply_completion_policy(_decode(bytes(pending)))
             if text:
                 yield text
+
+
+def _managed_stream_completed(text: str, runtime: dict[str, Any]) -> bool:
+    if str(runtime.get("prompt_transport") or "").strip() != "codex_exec_json":
+        return False
+    stripped = _sse_payload_text(_clean_agent_text(text).strip())
+    if not stripped:
+        return False
+    try:
+        event = json.loads(stripped)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(event, dict) and str(event.get("type") or "").strip() == "turn.completed"
 
 
 async def _read_agent_stream_record(

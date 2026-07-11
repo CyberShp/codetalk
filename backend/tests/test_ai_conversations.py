@@ -3229,6 +3229,38 @@ class TestAIConversationsAPI:
             assert body["items"][1]["content"] == "取消后重新分析异常恢复路径"
             assert body["items"][2]["content"] == "第一段分析。最终结论。"
 
+    async def test_cancelled_run_cannot_be_completed_by_late_agent_flush(self, sqlite_db):
+        ws_id = await _seed_workspace(sqlite_db)
+
+        from app.services.ai_conversations import AIConversationStore
+
+        store = AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            title="取消竞态",
+        )
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content="执行一个长时间 Agent 分析",
+            references=[],
+        )
+        run_id = created["run"]["id"]
+        await store.mark_run_running(run_id)
+        await store.cancel_run(conversation["id"])
+
+        await store.complete_run(
+            run_id=run_id,
+            content="这是子进程在取消后才冲刷出的完整答案。",
+            references=[],
+            model="agent:codex",
+        )
+
+        assert (await store.get_run(run_id))["status"] == "cancelled"
+        messages = await store.list_messages(conversation["id"])
+        assert [message["role"] for message in messages] == ["user"]
+
     async def test_cancel_while_followup_is_queued_stops_current_run_and_preserves_queue(
         self,
         sqlite_db,
@@ -3753,6 +3785,11 @@ class TestAIConversationsAPI:
             )
 
         monkeypatch.setattr(ai_service, "stream_agent_runtime", fake_stream_agent_runtime)
+        monkeypatch.setattr(
+            ai_service,
+            "_requires_strict_test_activity_quality_gate",
+            lambda _message: False,
+        )
 
         store = ai_service.AIConversationStore(sqlite_db)
         conversation = await store.create_conversation(
@@ -3843,6 +3880,11 @@ class TestAIConversationsAPI:
             )
 
         monkeypatch.setattr(ai_service, "stream_agent_runtime", fake_stream_agent_runtime)
+        monkeypatch.setattr(
+            ai_service,
+            "_requires_strict_test_activity_quality_gate",
+            lambda _message: False,
+        )
 
         store = ai_service.AIConversationStore(sqlite_db)
         conversation = await store.create_conversation(
@@ -3940,6 +3982,85 @@ class TestAIConversationsAPI:
             "black_box_cases.json",
         ]
         assert capability_payload["skills"]["ids"] == []
+
+    async def test_agent_test_activity_uses_same_professional_quality_gate(
+        self,
+        sqlite_db,
+        tmp_path,
+        monkeypatch,
+    ):
+        ws_id = await _seed_workspace(sqlite_db)
+        repo = tmp_path / "spdk"
+        (repo / "lib" / "iscsi").mkdir(parents=True)
+        (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+        (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login_probe;\n", encoding="utf-8")
+        (repo / "test" / "iscsi_tgt" / "login.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        async with aiosqlite.connect(sqlite_db) as db:
+            await db.execute("UPDATE workspaces SET repo_path = ? WHERE id = ?", (str(repo), ws_id))
+            await db.commit()
+
+        from app.services import ai_conversations as ai_service
+
+        async def fake_stream_agent_runtime(**_kwargs):
+            yield (
+                "## 代码证据\n`lib/iscsi/iscsi.c` 和 `test/iscsi_tgt/login.sh`。\n"
+                "## 流程\n1. 接收请求。\n2. 认证。\n3. 返回响应并恢复。\n"
+                "## SFMEA\nfailure_mode cause effect detection severity occurrence detection_score RPN "
+                "score_explanation mitigation source_evidence test_mapping\n"
+                "| bad auth | bad key | reject | logs | 8 | 2 | 3 | 48 | score | retry | "
+                "`lib/iscsi/iscsi.c` | `test/iscsi_tgt/login.sh` |\n"
+                "## 黑盒测试用例\nnormal_path invalid_input resource_pressure timeout reconnect concurrency recovery performance\n"
+                "前置条件：target 启动。步骤：发起登录。预期结果：返回状态。观测点：日志。"
+                "失败诊断线索：检查响应。\n## 输入与覆盖\n覆盖八个维度。\n## 未确认项\n无。\n"
+                "`iscsi_op_login_response` 是认证和参数协商的核心函数。"
+            )
+
+        monkeypatch.setattr(ai_service, "stream_agent_runtime", fake_stream_agent_runtime)
+        monkeypatch.setattr(ai_service, "_agent_answer_requires_repair", lambda *_args, **_kwargs: False)
+
+        store = ai_service.AIConversationStore(sqlite_db)
+        conversation = await store.create_conversation(
+            scope_type="workspace",
+            scope_id=ws_id,
+            workspace_id=ws_id,
+            runtime_type="agent_runtime",
+            agent_runtime_id="fake-agent",
+            title="Agent 专业门禁",
+        )
+        request = "完整生成 iSCSI Login 流程、SFMEA、黑盒测试用例和可下载测试设计"
+        created = await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content=request,
+            references=[],
+        )
+        run_id = created["run"]["id"]
+
+        await ai_service.run_agent_generation(
+            store=store,
+            run_id=run_id,
+            runtime={
+                "id": "fake-agent",
+                "name": "Fake Agent",
+                "provider": "fake",
+                "command": "/bin/echo",
+                "args": [],
+                "prompt_transport": "stdin",
+                "output_mode": "plain",
+                "completion_mode": "process_exit",
+            },
+        )
+
+        run = await store.get_run(run_id)
+        assert run["status"] == "failed"
+        assert "质量门禁" in run["error"]
+        messages = await store.list_messages(conversation["id"])
+        assert [message["role"] for message in messages] == ["user"]
+        audit_path = (
+            ai_service.ai_thread_artifact_path(conversation["id"], run_id).parent
+            / "test_activity_quality_audit.json"
+        )
+        audit = json.loads(audit_path.read_text(encoding="utf-8"))
+        assert any(issue["code"] == "professional_fact_conflict" for issue in audit["issues"])
 
     async def test_list_run_events_returns_recent_redacted_agent_process(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
