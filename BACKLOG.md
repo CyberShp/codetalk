@@ -11,4 +11,4 @@ created: 2026-07-05
 
 | ID | Name | Status | Owner | Link |
 |----|------|--------|-------|------|
-| F002 | Clowder-style AI Agent Parity | review | codex | [Link](docs/features/F002-clowder-agent-parity.md) |
+当前没有处于 idea/spec/in-progress/review 的 Feature。F001 已归档，F002 已完成；历史结论见 `docs/archive/features/` 与 `docs/features/F002-clowder-agent-parity.md`。

@@ -1,3 +1,9 @@
+---
+topics: [deepwiki, archive, e2e]
+doc_kind: historical-handoff
+created: 2026-05-31
+---
+
 # Handoff: DeepWiki Open E2E Regression - 2026-05-31
 
 ## What
@@ -127,4 +133,3 @@ $env:PYTHONPATH='backend'; backend\.venv311\Scripts\python.exe -m pytest `
 - 失败复现：`17:43:22`，500 `OPENAI_API_KEY must be set`
 - 修复后成功：`17:45:51` 至 `17:47:13`，`completed / 100% / 10 pages`
 - 日志降噪后回归成功：`17:51:06` 至 `17:52:12`，`completed / 100% / 9 pages`
-

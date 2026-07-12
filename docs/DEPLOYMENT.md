@@ -61,7 +61,7 @@ start.bat
 ```bash
 git clone https://github.com/CyberShp/codetalk.git
 cd codetalk
-git checkout main
+git checkout feat
 ```
 
 ### 3.2 后端部署
@@ -161,7 +161,19 @@ GITNEXUS_BIN=/usr/local/bin/gitnexus
 
 GitNexus 由后端 ProcessManager 自动管理。当前产品已移除旧 Wiki 页面、路由和进程管理；不要再为新部署配置旧 Wiki 端口或路径。
 
-### 5.2 tiktoken 离线缓存
+连续索引由后端有界队列串行调度。遇到 GitNexus `429` 时会尊重 `Retry-After` 并进行有上限退避；工作空间页会显示排队、索引、重试倒计时和冷却状态。不要通过重复点击创建并行索引进程。
+
+### 5.2 外部 Agent 隔离
+
+macOS 默认尝试 `sandbox-exec`，Linux 默认尝试 bubblewrap。工作区为只读范围，只有当前 run 的 artifact 目录允许写入；传给子进程的环境变量经过白名单过滤，网络策略和实际降级原因写入审计文件。
+
+- `EXTERNAL_AGENT_SANDBOX_MODE=auto`：可用时隔离，不可用时显示中文降级提示。
+- `EXTERNAL_AGENT_SANDBOX_MODE=required`：无支持的隔离器时拒绝启动。
+- `EXTERNAL_AGENT_SANDBOX_MODE=off`：仅用于受控调试环境。
+
+Windows 本轮保留 `.cmd` 解析和 transport 自动化覆盖，但未声明完成 Windows 实机隔离验收。
+
+### 5.3 tiktoken 离线缓存
 
 内网环境无法下载 tiktoken 编码文件，需提前准备：
 
@@ -177,7 +189,7 @@ python -c "import tiktoken; tiktoken.encoding_for_model('gpt-4')"
 TIKTOKEN_CACHE_DIR=data/tiktoken_cache
 ```
 
-### 5.3 补充部署
+### 5.4 补充部署
 
 已完成初始部署后，可通过 deployer UI 单独安装 GitNexus，无需重新走全流程：
 

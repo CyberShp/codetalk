@@ -7,6 +7,7 @@ venv/
 
 # Node
 node_modules/
+.playwright-cli/
 .next/
 out/
 
@@ -44,7 +45,6 @@ CLAUDE.md
 GEMINI.md
 KIMI.md
 BACKLOG.md
-PLAN_V2.md
 frontend/AGENTS.md
 frontend/CLAUDE.md
 frontend/README.md

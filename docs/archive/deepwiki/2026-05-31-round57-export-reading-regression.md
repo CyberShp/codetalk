@@ -1,3 +1,9 @@
+---
+topics: [deepwiki, archive, export]
+doc_kind: historical-handoff
+created: 2026-05-31
+---
+
 # CodeTalk Handoff - Round57 Export + Reading Regression
 
 ## What

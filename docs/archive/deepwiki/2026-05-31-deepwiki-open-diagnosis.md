@@ -1,3 +1,9 @@
+---
+topics: [deepwiki, archive, diagnosis]
+doc_kind: historical-handoff
+created: 2026-05-31
+---
+
 # DeepWiki-Open Diagnosis Handoff
 
 Date: 2026-05-31

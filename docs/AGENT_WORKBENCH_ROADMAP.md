@@ -1,5 +1,15 @@
 # CodeTalk Agent Workbench Roadmap
 
+## 2026-07-12 Release Baseline
+
+- Workbench page implementation has been split into controller, shared UI, run cockpit, workflow designer, diagnostics and knowledge modules; route wrappers remain thin.
+- AI threads and Workbench share source-first task contracts, lifecycle language, collapsed process details and artifact-first presentation.
+- Comprehensive builtin-model requests automatically compile into dependent stages instead of one oversized call.
+- Run-scoped delivery supports multiple independent files, a fail-closed manifest, individual downloads and a ZIP bundle.
+- External Agent execution uses audited macOS `sandbox-exec` or Linux bubblewrap when available, with workspace read and artifact-directory write boundaries.
+- GitNexus indexing exposes bounded queue/running/retry/cooldown capacity instead of hiding repeated 429 responses.
+- F002 lifecycle parity is complete; current product truth is in this document, `docs/TEST_ACTIVITY_PRODUCTIZATION.md` and `PLAN_V2.md`.
+
 ## Goal
 
 CodeTalk should become the UI, configuration, workflow, memory, validation, and audit layer for analysis tasks. Agent CLIs such as `ccr code`, Claude Code, OpenCode, and internal Agent tools perform code exploration and reasoning, while CodeTalk keeps the task contract, evidence ledger, artifact validation, and user-facing traceability.

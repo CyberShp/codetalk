@@ -133,15 +133,11 @@ Claude、OpenCode、Codex、NGA、内置模型和自定义 Agent 都应接收同
 - 输出文件缺失：提示当前节点没有写入声明 artifact。
 - schema/质量审计失败：提示补字段、补证据或只重跑低质量交付件。
 
-## 内网验收清单
+## 发布验收结论
 
-建议明天内网至少执行：
+2026-07-12 已用真实浏览器完成 SPDK iSCSI Login 同题任务：内置 DeepSeek 自动执行源码分析、流程、SFMEA 和黑盒四阶段，保留完整多行输入并生成三个独立交付文件。浏览器实际下载了单文件和 ZIP；manifest 为每个文件记录 schema 状态、大小、sha256、producer 和验收状态。
 
-- DeepSeek 内置模型跑 iSCSI login 测试设计。
-- Claude Agent 跑同一任务，检查是否读源码、是否生成 artifact。
-- `代码分析 -> 流程 -> SFMEA -> 黑盒用例` 完整工作流。
-- 故意填坏路径、坏文件、不可用执行器，检查中文错误和下一步动作。
-- 连续跑 3 个任务，检查页面是否卡顿、任务列表是否固定高度、交付件是否清楚下载。
+Clowder AI 对照使用本地 OpenCode member。它在 45 秒内完成 16 次真实源码/符号操作，生命周期和折叠过程有效，但最终正文为空且没有 artifact-first 交付。CodeTalk 在 1 分 23 秒内完成四阶段并给出紧凑摘要、证据链和独立文件。GPT 复判 88/100。
 
 ## 本轮验证记录
 
@@ -165,20 +161,8 @@ Claude、OpenCode、Codex、NGA、内置模型和自定义 Agent 都应接收同
 
 ## 成熟度基线
 
-当前状态：可进入内网验收的 feat 版本，不是最终成熟稳定版。
+当前状态：发布候选基线。测试活动契约、领域画像、源码证据、阶段执行、多文件 manifest/ZIP、低质量 fail-closed、中文恢复建议和驾驶舱/AI 线程的折叠过程均已形成产品契约。
 
-已达到：
+Workbench 已拆为 controller、shared、run、workflow、diagnostics 和 knowledge 视图模块，单文件均低于 4,000 行；行为由 17 条 Playwright 用例保护。外部 Agent 运输继续保持统一输入、活动感知超时、session 和产物契约，macOS/Linux 还增加了可审计 OS 隔离。
 
-- 测试活动契约进入工作流和 AI 线程 prompt。
-- 基础领域画像、SPDK 项目画像、交付件模板和质量审计可用。
-- 驾驶舱显示中文失败原因、质量审计和可下载交付件。
-- source-flow 链路真实 E2E 跑通。
-
-仍需压测：
-
-- DeepSeek 官方 API 与至少一个外部 Agent 的同题对照。
-- NGA/Claude/OpenCode 在内网编码、session、MCP、超时下的稳定性。
-- AI 线程任务卡、工作流模板选择、工作流完成后一键继续追问。
-- 大 Markdown、长 SFMEA 表、100+ 黑盒用例的渲染性能。
-- 连续 3 个以上任务、长任务心跳、浏览器刷新和后端重启恢复。
-- 工作流设计器进一步拆组件，降低 500KB 单文件维护成本。
+Windows 实机回归是本次唯一明确排除项；Windows `.cmd`、编码和 transport 契约仍由自动化测试覆盖，不应把“未做 Windows 真机”解释为其他平台或产品功能未完成。

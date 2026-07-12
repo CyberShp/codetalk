@@ -3,6 +3,8 @@ feature_ids: [F002]
 topics: [ai-thread, agent-runtime, clowder-parity]
 doc_kind: feature
 created: 2026-07-05
+status: done
+completed: 2026-07-12
 ---
 
 # F002 Clowder-style AI Agent Parity
@@ -20,7 +22,10 @@ Make CodeTalk AI threads behave like Clowder AI in agent lifecycle management, e
 - [x] Source-first execution: when a workspace is selected, prefer GitNexus/CGC/source evidence unless the user explicitly opts out.
 - [x] Activity-aware timeout: stdout/stderr/event activity renews the timeout window; silent execution is stopped with an actionable message and a one-hour hard safety cap.
 - [x] Cross-executor invocation identity: capability manifests retain `agent-runtime:<runtime_id>` for persisted Agent runtimes.
-- [x] Real comparison baseline: compare the deployed Clowder AI and CodeTalk surfaces for lifecycle/process/artifact behavior; live same-task Clowder execution requires an available Clowder member.
+- [x] Real comparison baseline: provision a local OpenCode member and run the exact same SPDK iSCSI Login task through both products using real browser interaction.
+- [x] Multi-file delivery: expose accepted per-file artifacts, manifest metadata, individual downloads and ZIP download while chat remains compact.
+- [x] Long builtin task staging: automatically split comprehensive test work into source analysis, flow, SFMEA and black-box stages.
+- [x] Audited execution boundary: apply macOS sandbox-exec/Linux bubblewrap policies with explicit workspace read and artifact write scopes.
 
 ## Acceptance Criteria
 
@@ -34,6 +39,13 @@ Make CodeTalk AI threads behave like Clowder AI in agent lifecycle management, e
 
 ## Validation
 
-- Backend source/artifact semantics: `7 passed` for GitNexus/CGC priority, source-first prompt, artifact contract, history artifact continuity, Claude stream pollution isolation.
-- Frontend lifecycle/artifact E2E: `5 passed` for collapsed process diagnostics, Clowder-style lifecycle status, artifact-first delivery, friendly process summaries, and long process history retention.
-- Runtime comparison baseline: Clowder `3013` and API `3014` returned 200; CodeTalk worktree `3103/ai` returned 200. Clowder currently reports no available member, so live same-task SPDK execution is blocked until a member is created. The visible Clowder side panel keeps lifecycle/process/session controls separate; CodeTalk now exposes equivalent non-style states in `Agent 状态` and keeps final answers/artifacts separated from process output.
+- Same-task prompt: SPDK iSCSI Login PDU -> Full Feature Phase, CHAP failure recovery, source evidence, tester understanding, SFMEA and external-observation-only black-box cases.
+- Clowder AI: native production web on `3403`, API on `3404`, memory storage, OpenCode `opencode/big-pickle`. Real UI created the SPDK project thread and submitted the full prompt. It performed 16 source/tool operations and completed in 45 seconds. Lifecycle, stop, queued input and collapsed CLI details worked. Its final user-visible body was empty and it produced no independent deliverables; analysis remained in the private CLI bubble.
+- CodeTalk candidate: frontend `3503`, API `3504`, isolated copy of the configured database. Real UI selected the SPDK workspace and builtin model, submitted the same prompt, displayed four automatic stages and completed in 1 minute 23 seconds.
+- CodeTalk delivery: `sfmea.json` (15 rows), `black_box_cases.json` (10 cases, all eight required dimensions), `business_flow.md`, `artifact_manifest.json`, per-file downloads and ZIP. Every declared artifact was accepted and carried size and sha256 metadata.
+- GPT rubric: 88/100. Sampled source positions and seven mapped SPDK test paths exist; no P0/P1 hallucination or black-box boundary violation was found.
+- Regression: Workbench Playwright `17 passed`; focused backend AI suites `116 passed`; sandbox/runtime suites `151 passed`; external discovery `374 passed, 1 skipped`; GitNexus adapter/API `58 passed`; production frontend build and TypeScript passed before final full gates.
+
+## Closure
+
+F002 is complete. “Parity” means lifecycle semantics and user-facing separation of answer/process/artifacts, not reproducing Clowder defects or visual styling. The real comparison proves CodeTalk keeps the useful lifecycle behavior and provides stronger artifact-first delivery for this task.

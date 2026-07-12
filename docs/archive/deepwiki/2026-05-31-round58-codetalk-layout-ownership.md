@@ -1,3 +1,9 @@
+---
+topics: [deepwiki, archive, layout]
+doc_kind: historical-handoff
+created: 2026-05-31
+---
+
 # Round 58 Handoff: CodeTalk Owns Report Layout Artifacts
 
 ## What

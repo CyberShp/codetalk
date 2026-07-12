@@ -10,6 +10,8 @@ topics:
   - e2e
 doc_kind: implementation-plan
 created: 2026-07-11
+status: completed
+completed: 2026-07-12
 ---
 
 # CodeTalk 发布候选版产品化计划
@@ -43,26 +45,26 @@ created: 2026-07-11
 
 | 类别 | 范围 | 当前状态 | 最终证据 |
 | --- | --- | --- | --- |
-| A | 环境、设置、provider/tool probe、端口和 Redis | Pending | trace、截图、日志 |
-| B | SPDK workspace、索引、恢复和搜索 | Pending | trace、索引计时、截图 |
-| C | AI 线程、上下文、并发、恢复和导出 | Pending | trace、事件、产物 |
-| D | 智能体编排、preset、审计、artifact 和 rerun | Pending | trace、workflow snapshot |
-| E | 代码分析到流程、SFMEA、黑盒四件套 | Pending | 四件套 artifact |
-| F | SFMEA 字段、评分、证据、mitigation 和复判 | Pending | audit、GPT rubric |
-| G | 黑盒边界、场景覆盖、可执行性、映射和去重 | Pending | audit、GPT rubric |
-| H | coverage、entry、readiness、格式错误和一致性 | Pending | artifact、截图 |
-| I | semantic case、memory evidence 和 source slice | Pending | trace、截图 |
-| J | Markdown/JSON/表格/诊断包导出和脱敏 | Pending | 下载文件、scan |
-| K | desktop/mobile、hover、字体、状态和键盘 | Pending | 前后截图、trace |
-| L | 长任务、并发、恢复、大结果和性能门槛 | Pending | 性能记录、trace |
+| A | 环境、设置、provider/tool probe、端口和 Redis | Pass | native/isolated startup、probe tests、secret scan |
+| B | SPDK workspace、索引、恢复和搜索 | Pass | source slices、GitNexus capacity/backoff、browser evidence |
+| C | AI 线程、上下文、并发、恢复和导出 | Pass | same-task staged run、events、manifest/ZIP |
+| D | 智能体编排、preset、审计、artifact 和 rerun | Pass | 17 Playwright cases、workflow snapshots |
+| E | 代码分析到流程、SFMEA、黑盒四件套 | Pass | accepted independent artifacts |
+| F | SFMEA 字段、评分、证据、mitigation 和复判 | Pass | 15 rows、GPT rubric 88/100 |
+| G | 黑盒边界、场景覆盖、可执行性、映射和去重 | Pass | 10 cases、8 dimensions、real mappings |
+| H | coverage、entry、readiness、格式错误和一致性 | Pass | backend/frontend contract regression |
+| I | semantic case、memory evidence 和 source slice | Pass | Workbench/AI source evidence regression |
+| J | Markdown/JSON/表格/诊断包导出和脱敏 | Pass | browser individual/ZIP download、manifest、scan |
+| K | desktop/mobile、hover、字体、状态和键盘 | Pass | real browser interaction and UI suite |
+| L | 长任务、并发、恢复、大结果和性能门槛 | Pass | activity timeout、bounded lists/queue、full regression |
 
-`Pending` 仅用于开发过程；发布验收报告中必须全部替换为 Pass、Known Issue 或 Blocked。
+最终矩阵没有空项或 Pending。Windows 实机回归按本轮目标明确排除，不改变 A-L 分类结论；已有 Windows 契约测试仍是门禁的一部分。
 
 ## 缺陷闭环
 
 每个缺陷按“真实复现 -> 日志/trace/产物 -> 调用链 -> 红测试 -> 最小修复 -> 绿测试 -> 关联回归 -> 浏览器复验”执行。证据保存到 `/tmp/codetalk-release-validation/20260711-075736/`，最终汇总到 E2E 总报告和修复记录。
 
-## 当前基线
+## 历史起点
 
 - worktree：`/Volumes/Media/codetalk-release-candidate`
 - 分支：`codex/release-candidate-productization`
@@ -72,3 +74,6 @@ created: 2026-07-11
 - 后端核心组合初始：13 failed，355 passed。
 - 第一轮修复后：368 passed。
 
+## 完成状态
+
+最终实现和证据见 `PLAN_V2.md`、`docs/reports/2026-07-12-release-debt-zero.md` 与 `docs/features/F002-clowder-agent-parity.md`。本计划已完成，不再作为开放 backlog 使用。

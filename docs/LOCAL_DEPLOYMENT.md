@@ -8,6 +8,8 @@ current runtime.
 CodeTalk no longer deploys or manages the legacy Wiki component. Local folder analysis is handled
 by the CodeTalk backend, GitNexus, AI threads, and Workbench workflows.
 
+Historical DeepWiki notes live under `docs/archive/deepwiki/` and are not deployment instructions.
+
 Default local ports:
 
 | Service | Default |

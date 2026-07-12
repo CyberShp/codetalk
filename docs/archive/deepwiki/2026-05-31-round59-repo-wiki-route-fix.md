@@ -1,3 +1,9 @@
+---
+topics: [deepwiki, archive, routes]
+doc_kind: historical-handoff
+created: 2026-05-31
+---
+
 # Round 59 Handoff: Repo Wiki Routes and DeepWiki E2E Regression
 
 ## What
