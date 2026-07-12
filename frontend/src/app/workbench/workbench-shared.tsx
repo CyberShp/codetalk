@@ -1502,8 +1502,10 @@ export function downloadTextFile(filename: string, content: string, type: string
 
 export function ArtifactPreviewCard({
   artifactContent,
+  fullDownloadHref,
 }: {
   artifactContent: WorkbenchTaskArtifactContent;
+  fullDownloadHref?: string;
 }) {
   const safePreviewText = artifactContent.content_redacted
     ? "产物内容已脱敏，内联预览已隐藏。"
@@ -1537,7 +1539,23 @@ export function ArtifactPreviewCard({
             )}
           </div>
         </div>
-        {artifactContent.is_text && (
+        {artifactContent.is_text && fullDownloadHref ? (
+          <a
+            title={
+              artifactContent.content_redacted
+                ? "下载完整脱敏产物"
+                : "下载完整产物"
+            }
+            href={fullDownloadHref}
+            download={safeArtifactDownloadFilename(artifactContent.relative_path)}
+            className="inline-flex items-center gap-1 rounded-md bg-surface-container px-2 py-1 text-[11px] font-medium text-on-surface transition-colors hover:bg-surface-container-high"
+          >
+            <Download size={13} />
+            {artifactContent.content_redacted
+              ? "下载完整脱敏产物"
+              : "下载完整产物"}
+          </a>
+        ) : artifactContent.is_text ? (
           <button
             type="button"
             title={
@@ -1557,7 +1575,7 @@ export function ArtifactPreviewCard({
             <Download size={13} />
             {artifactContent.content_redacted ? "下载脱敏预览" : "下载预览"}
           </button>
-        )}
+        ) : null}
       </div>
       {artifactContent.content_redacted ? (
         <p className="mt-2 rounded-md bg-warning-container/60 px-2 py-2 text-[11px] text-on-warning-container">
@@ -3799,4 +3817,3 @@ export function ProviderFactRow({
 export function ProviderSectionTitle({ children }: { children: React.ReactNode }) {
   return <p className="ct-provider-section-title">{children}</p>;
 }
-

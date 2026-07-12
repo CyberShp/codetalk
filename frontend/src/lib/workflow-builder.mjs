@@ -348,25 +348,38 @@ export function mergeDesignerWorkflowWithSpecializedDraft(generatedWorkflow, dra
     return !contractAgentIds.has(stepId) || referencedDraftStepIds.has(stepId);
   });
   const draftStepTypes = new Set(cleanedDraftSteps.map((step) => String(step?.type || "")));
-  const hasDraftAgent = draftStepTypes.has("agent_task");
   const generatedSupportTypes = new Set(["evidence_validate", "report_render", "artifact_export"]);
+  const mergedSteps = mergeSpecializedItems(generated.steps, cleanedDraftSteps, {
+    preserveDependencies: true,
+    includeGeneratedItem: (item) => {
+      if (item?.type === "agent_task") {
+        return canvasAgentIds.has(String(item.id || ""));
+      }
+      if (generatedSupportTypes.has(String(item?.type || ""))) {
+        return !draftStepTypes.has(String(item.type));
+      }
+      return true;
+    },
+  });
+  const mergedStepIds = new Set(mergedSteps.map((step) => String(step?.id || "")));
+  const draftOutputsById = new Map(
+    asArray(draft.outputs).map((output) => [String(output?.id || ""), output]),
+  );
+  const mergedOutputs = mergeSpecializedItems(generated.outputs, draft.outputs).map((output) => {
+    const source = String(output?.from || output?.source || "");
+    if (!source || mergedStepIds.has(source)) return output;
+    const draftOutput = draftOutputsById.get(String(output?.id || ""));
+    const draftSource = String(draftOutput?.from || draftOutput?.source || "");
+    return draftSource && mergedStepIds.has(draftSource)
+      ? { ...output, from: draftSource }
+      : output;
+  });
   return {
     ...draft,
     ...generated,
     inputs: mergeSpecializedItems(generated.inputs, draft.inputs),
-    steps: mergeSpecializedItems(generated.steps, cleanedDraftSteps, {
-      preserveDependencies: true,
-      includeGeneratedItem: (item) => {
-        if (item?.type === "agent_task") {
-          return !hasDraftAgent || canvasAgentIds.has(String(item.id || ""));
-        }
-        if (generatedSupportTypes.has(String(item?.type || ""))) {
-          return !draftStepTypes.has(String(item.type));
-        }
-        return true;
-      },
-    }),
-    outputs: mergeSpecializedItems(generated.outputs, draft.outputs),
+    steps: mergedSteps,
+    outputs: mergedOutputs,
     ui: {
       ...draftUi,
       ...generatedUi,

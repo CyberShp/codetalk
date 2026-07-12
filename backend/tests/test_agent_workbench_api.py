@@ -5515,6 +5515,10 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
         ("x" * 1170) + f"\nAuthorization: Bearer {boundary_secret}\n",
         encoding="utf-8",
     )
+    large_payload = json.dumps(
+        [{"case_id": f"TC-{index:04d}", "steps": ["public operation"]} for index in range(2000)]
+    )
+    (task_dir / "large-cases.json").write_text(large_payload, encoding="utf-8")
 
     content = await workbench_client.get(
         f"/api/workbench/task-runs/{task_run_id}/artifacts/content/task_bundle.json"
@@ -5530,6 +5534,16 @@ async def test_workbench_task_run_artifact_content_api_is_safe(workbench_client,
     assert body["truncated"] is False
     assert body["content_redacted"] is False
     assert "artifact_content_workflow" in body["content"]
+
+    large_preview = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/artifacts/content/large-cases.json"
+    )
+    assert large_preview.json()["truncated"] is True
+    large_download = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/artifacts/download/large-cases.json"
+    )
+    assert large_download.status_code == 200
+    assert json.loads(large_download.text)[-1]["case_id"] == "TC-1999"
 
     escaped = await workbench_client.get(
         f"/api/workbench/task-runs/{task_run_id}/artifacts/content/%2E%2E/outside.txt"

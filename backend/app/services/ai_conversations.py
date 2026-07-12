@@ -1281,10 +1281,33 @@ class AIConversationStore:
             payload={"status": "completed"},
         )
 
-    async def fail_run(self, run_id: str, error: str) -> None:
+    async def fail_run(
+        self,
+        run_id: str,
+        error: str,
+        *,
+        assistant_content: str = "",
+        actions: list[dict[str, Any]] | None = None,
+    ) -> None:
         run = await self.get_run(run_id)
         now = _now()
         async with self._connect() as db:
+            if assistant_content.strip():
+                await db.execute(
+                    """
+                    INSERT INTO ai_messages
+                        (id, conversation_id, run_id, role, content, references_json, actions_json, created_at)
+                    VALUES (?, ?, ?, 'assistant', ?, '[]', ?, ?)
+                    """,
+                    (
+                        _new_id("msg"),
+                        run["conversation_id"],
+                        run_id,
+                        redact_agent_diagnostic_text(assistant_content.strip()),
+                        _json_dumps(actions or _default_actions()),
+                        now,
+                    ),
+                )
             await db.execute(
                 """
                 UPDATE ai_conversation_runs
@@ -1806,6 +1829,10 @@ async def run_generation(
                 str(conversation["id"]), run_id
             )
 
+            async def staged_run_cancelled() -> bool:
+                current_run = await store.get_run(run_id)
+                return current_run["status"] == "cancelled"
+
             async def append_stage_progress(payload: dict[str, Any]) -> None:
                 await store.append_event(
                     run_id=run_id,
@@ -1833,6 +1860,7 @@ async def run_generation(
                     if isinstance(item, dict)
                 ),
                 on_progress=append_stage_progress,
+                is_cancelled=staged_run_cancelled,
                 max_tokens=max_tokens,
             )
             content = await _staged_artifact_content(
@@ -1967,6 +1995,17 @@ async def run_generation(
                     run_id,
                     f"测试活动产物未通过质量门禁（{audit.get('score', 0)} 分）：{summary}。"
                     "系统未生成下载交付件；请重试或改用结构化工作流补齐缺失内容。",
+                    assistant_content=(
+                        "本轮结果未通过质量门禁，未作为交付件保存。"
+                        "请使用下方测试活动任务卡启动结构化工作流，补齐源码证据、流程、SFMEA 和黑盒用例。"
+                    ),
+                    actions=[
+                        *_test_activity_task_card_actions(
+                            conversation=conversation,
+                            user_message=user_message["content"],
+                        ),
+                        *_default_actions(),
+                    ],
                 )
                 return
         model = str(getattr(llm, "_model", "") or "")
@@ -2079,6 +2118,17 @@ async def _enforce_ai_thread_test_activity_quality(
         run_id,
         f"测试活动产物未通过质量门禁（{audit.get('score', 0)} 分）：{summary}。"
         "系统未生成下载交付件；请重试或改用结构化工作流补齐缺失内容。",
+        assistant_content=(
+            "本轮结果未通过质量门禁，未作为交付件保存。"
+            "请使用下方测试活动任务卡启动结构化工作流，补齐源码证据、流程、SFMEA 和黑盒用例。"
+        ),
+        actions=[
+            *_test_activity_task_card_actions(
+                conversation=conversation,
+                user_message=user_message,
+            ),
+            *_default_actions(),
+        ],
     )
     return False
 

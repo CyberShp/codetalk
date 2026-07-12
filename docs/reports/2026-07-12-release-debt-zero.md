@@ -43,13 +43,13 @@ GitNexus continuity was exercised through the browser by creating two detached S
 
 ## Regression Evidence
 
-- AI/source/artifact focused backend suite: 116 passed.
-- Sandbox/runtime suite: 151 passed.
-- External Agent discovery suite: 374 passed, 1 skipped.
-- GitNexus adapter/API suite: 58 passed.
-- Workbench real browser suite: 17 passed.
-- TypeScript, targeted ESLint and production Next build passed after Workbench decomposition.
-- Final full backend/frontend/deployer/scan/review results are recorded in the merge commit and CI output; no release may proceed with an open P0/P1/P2.
+- Full backend suite: 2,062 passed, 8 skipped.
+- Workbench real browser suite: 47 passed, using real hover, click, typing, drag/connect, execution and file downloads.
+- Frontend contract suite: 40 passed; ESLint, TypeScript and the production Next build passed without warnings or errors.
+- Deployer suite: 173 passed, 1 skipped.
+- Tracked-file secret scan outside test fixtures was clean; no generated test, Playwright, Next or Python cache artifact is tracked.
+- Node selection was repeated four times after the hydration gate fix; all four runs passed. The four failures found by the first full browser pass were rerun directly and then covered again by the green 47-test full pass.
+- Independent review findings and their closure are recorded in `docs/bug-report/release-debt-review-findings/bug-report.md`.
 
 ## Remaining Risk
 

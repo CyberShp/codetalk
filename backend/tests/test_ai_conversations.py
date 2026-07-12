@@ -3888,7 +3888,12 @@ class TestAIConversationsAPI:
 
             assert "质量门禁" in current_body["latest_run"]["error"]
             messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
-            assert [item["role"] for item in messages.json()["items"]] == ["user"]
+            message_items = messages.json()["items"]
+            assert [item["role"] for item in message_items] == ["user", "assistant"]
+            assert any(
+                action.get("id") == "test_activity_task_card"
+                for action in message_items[-1]["actions"]
+            )
 
     async def test_legacy_source_blackbox_message_backfills_downloadable_artifact_on_read(self, sqlite_db):
         ws_id = await _seed_workspace(sqlite_db)
@@ -4340,7 +4345,11 @@ class TestAIConversationsAPI:
         assert run["status"] == "failed"
         assert "质量门禁" in run["error"]
         messages = await store.list_messages(conversation["id"])
-        assert [message["role"] for message in messages] == ["user"]
+        assert [message["role"] for message in messages] == ["user", "assistant"]
+        assert any(
+            action.get("id") == "test_activity_task_card"
+            for action in messages[-1]["actions"]
+        )
         audit_path = (
             ai_service.ai_thread_artifact_path(conversation["id"], run_id).parent
             / "test_activity_quality_audit.json"
@@ -5169,7 +5178,8 @@ async def test_builtin_test_activity_rejects_shallow_completed_output(
     assert run["status"] == "failed"
     assert "质量门禁" in run["error"]
     assert "缺少" in run["error"] or "不完整" in run["error"]
-    assert [message["role"] for message in messages] == ["user"]
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[-1]["actions"][0]["id"] == "test_activity_task_card"
     rejected_path = (
         tmp_path
         / conversation["id"]
@@ -5375,6 +5385,13 @@ async def test_ai_thread_multi_file_manifest_content_and_zip_endpoints(
         escaped = await client.get(
             f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifacts/content/../secret.txt"
         )
+        (delivery_dir / "report.md").write_text("# replaced", encoding="utf-8")
+        tampered_content = await client.get(
+            f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifacts/content/report.md"
+        )
+        tampered_archive = await client.get(
+            f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifacts.zip"
+        )
 
     assert manifest.status_code == 200
     assert manifest.json()["status"] == "accepted"
@@ -5385,6 +5402,8 @@ async def test_ai_thread_multi_file_manifest_content_and_zip_endpoints(
     with zipfile.ZipFile(BytesIO(archive.content)) as zipped:
         assert sorted(zipped.namelist()) == ["artifact_manifest.json", "report.md"]
     assert escaped.status_code in {400, 404}
+    assert tampered_content.status_code == 409
+    assert tampered_archive.status_code == 409
 
 
 @pytest.mark.asyncio

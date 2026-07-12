@@ -861,6 +861,7 @@ def _sandbox_external_agent_argv(
             "sandbox_mode": settings.external_agent_sandbox_mode,
             "sandbox_allow_network": settings.external_agent_sandbox_allow_network,
             "sandbox_write_paths": settings.external_agent_sandbox_write_paths,
+            "sandbox_command": process_argv[0] if process_argv else "",
         },
         cwd=str(cwd),
         artifact_dir=artifact_dir,

@@ -69,6 +69,17 @@ async function navigateWorkbenchSection(
   await navItem.click();
 }
 
+async function openWorkflowAdvancedJson(page: Page) {
+  if ((await page.getByLabel("Workflow inspector").count()) === 0) {
+    await page.locator(".ct-workflow-node").first().click({ position: { x: 44, y: 18 } });
+    await expect(page.getByLabel("Workflow inspector")).toBeVisible();
+  }
+  if (!(await page.getByLabel("Workflow JSON").isVisible())) {
+    await page.getByText("高级 Workflow JSON").click();
+  }
+  await expect(page.getByLabel("Workflow JSON")).toBeVisible();
+}
+
 async function createRealWorkspace(
   request: APIRequestContext,
   namePrefix: string,
@@ -79,6 +90,86 @@ async function createRealWorkspace(
   });
   expect(workspaceResp.status()).toBe(201);
   return (await workspaceResp.json()) as { id: string; name: string; repo_path: string };
+}
+
+async function installModuleAnalysisRuntime(
+  request: APIRequestContext,
+  repoPath: string,
+) {
+  const unique = Date.now();
+  const runtimeScript = path.join(repoPath, `module-analysis-agent-${unique}.cjs`);
+  fs.writeFileSync(
+    runtimeScript,
+    [
+      "const fs = require('node:fs');",
+      "const path = require('node:path');",
+      "let stdin = '';",
+      "process.stdin.on('data', (chunk) => { stdin += chunk; });",
+      "process.stdin.on('end', () => {",
+      "  const root = process.cwd();",
+      "  const findSource = (dir) => {",
+      "    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {",
+      "      if (entry.name.startsWith('.')) continue;",
+      "      const full = path.join(dir, entry.name);",
+      "      if (entry.isDirectory()) { const nested = findSource(full); if (nested) return nested; }",
+      "      else if (/\\.(c|cc|cpp|h)$/.test(entry.name)) return full;",
+      "    }",
+      "    return '';",
+      "  };",
+      "  const source = findSource(root);",
+      "  const relative = source ? path.relative(root, source).split(path.sep).join('/') : '未找到匹配源码证据';",
+      "  const findTest = (dir) => {",
+      "    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {",
+      "      if (entry.name.startsWith('.')) continue;",
+      "      const full = path.join(dir, entry.name);",
+      "      if (entry.isDirectory()) { const nested = findTest(full); if (nested) return nested; }",
+      "      else if (/\\.(sh|py)$/.test(entry.name) && full.includes(`${path.sep}test${path.sep}`)) return full;",
+      "    }",
+      "    return '';",
+      "  };",
+      "  const testFile = findTest(root);",
+      "  const testRelative = testFile ? path.relative(root, testFile).split(path.sep).join('/') : '';",
+      "  const artifactDir = process.env.CODETALK_AGENT_ARTIFACT_DIR;",
+      "  fs.mkdirSync(artifactDir, { recursive: true });",
+      "  fs.writeFileSync(path.join(artifactDir, 'received_prompt.txt'), stdin);",
+      "  fs.writeFileSync(path.join(artifactDir, 'module_analysis.md'), [",
+      "    '# 分析范围', '模块源码分析', '', '## 模块边界', relative, '',",
+      "    '## 关键入口与调用链', source ? `${relative}:1 -> 模块入口` : '证据不足，不能确认入口', '',",
+      "    '## 主流程', '外部请求 -> 协议处理 -> 可观测结果', '',",
+      "    '## 异常与恢复路径', '超时、断连和重试均需通过外部状态与日志观测', '',",
+      "    '## 源码与测试证据', source ? `${relative}:1${testRelative ? `\\n${testRelative}:1` : ''}` : '未找到匹配源码证据', '',",
+      "    '## 测试关注点', '正常、异常、边界、恢复、并发、性能', '',",
+      "    '## 证据缺口', source ? '未发现额外缺口' : '工作区没有可验证源码证据', ''",
+      "  ].join('\\n'));",
+      "  console.log('module analysis complete');",
+      "});",
+    ].join("\n"),
+    "utf8",
+  );
+  const response = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: `Module analysis E2E ${unique}`,
+      command: process.execPath,
+      args: [runtimeScript],
+      prompt_transport: "stdin",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      fixed_working_dir: "",
+      env: {},
+      health_command: "",
+      timeout_seconds: 30,
+      completion_mode: "process_exit",
+      idle_complete_seconds: 1,
+      sentinel_text: "",
+      session_persistence: "none",
+      resume_args: [],
+      mcp_profile: "codehub-mcp",
+      enabled: true,
+    },
+  });
+  expect(response.status()).toBe(201);
+  const runtime = (await response.json()) as { id: string };
+  return `agent-runtime:${runtime.id}`;
 }
 
 async function latestWorkbenchTaskRunId(page: Page, workflowId = "module_analysis") {
@@ -154,7 +245,7 @@ async function expandAllRunFileGroups(page: Page) {
   }
 }
 
-test("lists and installs every built-in workflow preset through the real workbench UI", async ({
+test("lists and imports every built-in workflow preset through the real workbench UI", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -162,6 +253,7 @@ test("lists and installs every built-in workflow preset through the real workben
     { id: "module_analysis", label: "模块分析工作流" },
     { id: "resource_leak_hunt", label: "资源/异常路径排查工作流" },
     { id: "source_flow_sfmea_blackbox", label: "代码分析-流程-SFMEA-黑盒用例工作流" },
+    { id: "testing_activity_orchestration", label: "测试活动编排工作流" },
     { id: "nvmf_connect_io_blackbox", label: "NVMe-oF 连接/IO 黑盒场景" },
     { id: "iscsi_login_session_blackbox", label: "iSCSI 登录/会话黑盒场景" },
     { id: "bdev_io_reset_blackbox", label: "bdev IO/reset 黑盒场景" },
@@ -231,6 +323,7 @@ test("lists and installs every built-in workflow preset through the real workben
   const presetSelect = page.getByLabel("工作流预设");
   await expect(presetSelect).toBeVisible({ timeout: 15_000 });
   await expect(presetSelect.locator("option")).toHaveCount(presets.length);
+  await openWorkflowAdvancedJson(page);
   await expect(page.getByLabel("Workflow JSON")).not.toHaveValue(
     /"id": "mr-blackbox-workflow"/,
   );
@@ -290,9 +383,9 @@ test("lists and installs every built-in workflow preset through the real workben
       page.locator(`select[aria-label="工作流预设"] option[value="${preset.id}"]`),
     ).toHaveCount(1);
     await presetSelect.selectOption(preset.id);
-    await page.getByRole("button", { name: "安装预设" }).hover();
-    await page.getByRole("button", { name: "安装预设" }).click();
-    await expect(page.getByText(`预设已安装: ${preset.label}`)).toBeVisible({
+    await page.getByRole("button", { name: "从模板库导入" }).hover();
+    await page.getByRole("button", { name: "从模板库导入" }).click();
+    await expect(page.getByText(`已从模板库导入到当前草稿: ${preset.label}`)).toBeVisible({
       timeout: 15_000,
     });
     await expect(page.getByLabel("Workflow JSON")).toHaveValue(
@@ -301,7 +394,7 @@ test("lists and installs every built-in workflow preset through the real workben
   }
 });
 
-test("prevents duplicate workflow preset install requests from a real double click", async ({
+test("keeps a double-clicked preset import draft-only", async ({
   page,
 }) => {
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
@@ -311,29 +404,25 @@ test("prevents duplicate workflow preset install requests from a real double cli
   await expect(presetSelect).toBeVisible({ timeout: 15_000 });
   await presetSelect.selectOption("module_analysis");
 
-  const installRequests: string[] = [];
+  const persistenceRequests: string[] = [];
   page.on("request", (request) => {
     if (
       request.method() === "POST" &&
-      request.url().includes("/api/workbench/workflow-presets/module_analysis/install")
+      (request.url().includes("/api/workbench/workflow-presets/module_analysis/install") ||
+        new URL(request.url()).pathname === "/api/workbench/workflows")
     ) {
-      installRequests.push(request.url());
+      persistenceRequests.push(request.url());
     }
   });
-  const installRequest = page.waitForRequest(
-    (request) =>
-      request.method() === "POST" &&
-      request.url().includes("/api/workbench/workflow-presets/module_analysis/install"),
-  );
 
-  await page.getByRole("button", { name: "安装预设" }).hover();
-  await page.getByRole("button", { name: "安装预设" }).dblclick();
-  await installRequest;
-  await expect(page.getByRole("button", { name: "安装预设" })).toBeDisabled();
-  await expect(page.getByText("预设已安装: 模块分析工作流")).toBeVisible({
+  await page.getByRole("button", { name: "从模板库导入" }).hover();
+  await page.getByRole("button", { name: "从模板库导入" }).dblclick();
+  await expect(page.getByText("已从模板库导入到当前草稿: 模块分析工作流")).toBeVisible({
     timeout: 15_000,
   });
-  await expect.poll(() => installRequests.length).toBe(1);
+  await openWorkflowAdvancedJson(page);
+  await expect(page.getByLabel("Workflow JSON")).toHaveValue(/"id": "module_analysis"/);
+  await expect.poll(() => persistenceRequests.length).toBe(0);
 });
 
 test("prevents duplicate workflow saves from a real double click", async ({
@@ -344,6 +433,7 @@ test("prevents duplicate workflow saves from a real double click", async ({
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
   await navigateWorkbenchSection(page, "工作流设计");
+  await openWorkflowAdvancedJson(page);
   await page.getByLabel("Workflow JSON").fill(
     JSON.stringify(
       {
@@ -879,7 +969,7 @@ test("selects a workflow preset and validates required inputs through the real w
   const runPanel = page.getByLabel("运行结果面板");
   await expect(runPanel.getByText("运行快照")).toBeVisible();
   await expect(runPanel.getByText(/workflow: module_analysis/)).toBeVisible();
-  await expect(runPanel.getByText(/节点: 3 · Agent: 0/)).toBeVisible();
+  await expect(runPanel.getByText(/节点: 3 · Agent: 1/)).toBeVisible();
   await expect(page.getByText(repo).first()).toBeVisible();
 
   await page.getByRole("button", { name: "审计产物" }).hover();
@@ -963,6 +1053,7 @@ test("prevents duplicate create-and-run task runs from a real double click", asy
   page,
   request,
 }) => {
+  test.setTimeout(90_000);
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-create-run-")));
   fs.mkdirSync(path.join(repo, "lib", "nvmf"), { recursive: true });
   fs.writeFileSync(
@@ -970,11 +1061,15 @@ test("prevents duplicate create-and-run task runs from a real double click", asy
     "int nvmf_create_run_probe(void) { return 0; }\n",
     "utf8",
   );
+  fs.mkdirSync(path.join(repo, "test", "nvmf"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "test", "nvmf", "create_run.sh"), "# smoke\n", "utf8");
   const workspace = await createRealWorkspace(request, "create-run", repo);
+  const runtimeProvider = await installModuleAnalysisRuntime(request, repo);
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
   await page.getByLabel("工作流").selectOption("module_analysis");
   await page.getByLabel("Workspace selector").selectOption(workspace.id);
+  await page.getByLabel("执行器覆盖").selectOption(runtimeProvider);
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf create run");
 
   const runRequests: string[] = [];
@@ -1011,10 +1106,12 @@ test("prevents duplicate create-and-run task runs from a real double click", asy
 
 test("module analysis real run shows local static scan and review state for empty evidence", async ({
   page,
+  request,
 }) => {
   test.setTimeout(90_000);
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-empty-module-")));
   const workspaceName = `empty-module-${Date.now()}`;
+  const runtimeProvider = await installModuleAnalysisRuntime(request, repo);
 
   await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "创建工作空间" }).hover();
@@ -1027,6 +1124,7 @@ test("module analysis real run shows local static scan and review state for empt
   await expect(page.getByRole("heading", { name: "运行驾驶舱", exact: true })).toBeVisible();
   await page.getByLabel("工作流").selectOption("module_analysis");
   await page.getByLabel("Workspace selector").selectOption({ label: `${workspaceName} · ${repo}` });
+  await page.getByLabel("执行器覆盖").selectOption(runtimeProvider);
   await page
     .getByLabel("Workflow input analysis_object")
     .fill("definitely_missing_storage_module");
@@ -1067,11 +1165,15 @@ test("creates, runs, previews, and downloads workflow artifacts through the real
     ].join("\n"),
     "utf8",
   );
+  fs.mkdirSync(path.join(repo, "test", "nvmf"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "test", "nvmf", "artifact_flow.sh"), "# smoke\n", "utf8");
   const workspace = await createRealWorkspace(request, "run-artifacts", repo);
+  const runtimeProvider = await installModuleAnalysisRuntime(request, repo);
 
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
   await page.getByLabel("工作流").selectOption("module_analysis");
   await page.getByLabel("Workspace selector").selectOption(workspace.id);
+  await page.getByLabel("执行器覆盖").selectOption(runtimeProvider);
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf artifact flow");
   await page.getByRole("button", { name: "创建并运行" }).hover();
   await page.getByRole("button", { name: "创建并运行" }).click();
@@ -1098,10 +1200,10 @@ test("creates, runs, previews, and downloads workflow artifacts through the real
   await expect(page.locator("pre").filter({ hasText: "discovery" }).first()).toBeVisible();
 
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "下载预览" }).hover();
-  await page.getByRole("button", { name: "下载预览" }).click();
+  await page.getByRole("link", { name: "下载完整产物" }).hover();
+  await page.getByRole("link", { name: "下载完整产物" }).click();
   const download = await downloadPromise;
-  expect(download.suggestedFilename()).toBe("steps__discover_scope__source_scope.json");
+  expect(download.suggestedFilename()).toBe("source_scope.json");
   const exportPath = testInfo.outputPath("workbench-source-scope.json");
   await download.saveAs(exportPath);
   const exportedText = fs.readFileSync(exportPath, "utf8");
@@ -1265,8 +1367,8 @@ test("executes source-flow SFMEA black-box workflow through the real workbench U
   await sfmeaArtifact.click();
   await expect(page.getByText("sfmea.json").first()).toBeVisible();
   const sfmeaDownloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "下载预览" }).hover();
-  await page.getByRole("button", { name: "下载预览" }).click();
+  await page.getByRole("link", { name: "下载完整产物" }).hover();
+  await page.getByRole("link", { name: "下载完整产物" }).click();
   const sfmeaDownload = await sfmeaDownloadPromise;
   expect(sfmeaDownload.suggestedFilename()).toMatch(/sfmea\.json$/);
   const sfmeaPath = testInfo.outputPath("source_flow_sfmea.json");
@@ -1292,8 +1394,8 @@ test("executes source-flow SFMEA black-box workflow through the real workbench U
   await casesArtifact.click();
   await expect(page.getByText("black_box_cases.json").first()).toBeVisible();
   const casesDownloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "下载预览" }).hover();
-  await page.getByRole("button", { name: "下载预览" }).click();
+  await page.getByRole("link", { name: "下载完整产物" }).hover();
+  await page.getByRole("link", { name: "下载完整产物" }).click();
   const casesDownload = await casesDownloadPromise;
   expect(casesDownload.suggestedFilename()).toMatch(/black_box_cases\.json$/);
   const casesPath = testInfo.outputPath("source_flow_black_box_cases.json");
@@ -1562,8 +1664,8 @@ test("executes SPDK CLI RPC smoke preset through the real workbench UI", async (
   await scopeArtifact.hover();
   await scopeArtifact.click();
   const scopeDownloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "下载预览" }).hover();
-  await page.getByRole("button", { name: "下载预览" }).click();
+  await page.getByRole("link", { name: "下载完整产物" }).hover();
+  await page.getByRole("link", { name: "下载完整产物" }).click();
   const scopeDownload = await scopeDownloadPromise;
   const scopePath = testInfo.outputPath("spdk_cli_rpc_source_scope.json");
   await scopeDownload.saveAs(scopePath);
@@ -1582,8 +1684,8 @@ test("executes SPDK CLI RPC smoke preset through the real workbench UI", async (
   await casesArtifact.hover();
   await casesArtifact.click();
   const casesDownloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "下载预览" }).hover();
-  await page.getByRole("button", { name: "下载预览" }).click();
+  await page.getByRole("link", { name: "下载完整产物" }).hover();
+  await page.getByRole("link", { name: "下载完整产物" }).click();
   const casesDownload = await casesDownloadPromise;
   const casesPath = testInfo.outputPath("spdk_cli_rpc_black_box_cases.json");
   await casesDownload.saveAs(casesPath);
@@ -2386,6 +2488,9 @@ test("opens a persisted AI review thread from a prepared workbench run through t
     "int nvmf_connect_review_target(void) { return 0; }\n",
     "utf8",
   );
+  fs.mkdirSync(path.join(repo, "test", "nvmf"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "test", "nvmf", "review.sh"), "# smoke\n", "utf8");
+  const runtimeProvider = await installModuleAnalysisRuntime(request, repo);
   const workspace = await selectWorkbenchWorkflowAndWorkspace(
     page,
     request,
@@ -2393,11 +2498,12 @@ test("opens a persisted AI review thread from a prepared workbench run through t
     "module_analysis",
     "ai-review",
   );
+  await page.getByLabel("执行器覆盖").selectOption(runtimeProvider);
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf connect review");
   await prepareWorkbenchRun(page);
   await executePreparedWorkbenchRun(page, "运行完成 · 模块分析工作流");
   const taskRunId = await latestWorkbenchTaskRunId(page);
-  await expect(page.getByText(repo).first()).toBeVisible();
+  await expect(page.getByText(publicRepoLabel).first()).toBeVisible();
   await expandRunDetailedDiagnostics(page);
 
   const conversationPromise = page.waitForResponse(
@@ -2452,8 +2558,7 @@ test("opens a persisted AI review thread from a prepared workbench run through t
     memory_namespace: `workspace:${workspace.id}`,
     repo_path: publicRepoLabel,
     artifact_dir: ".",
-    agent_runs_count: 0,
-    agent_runs: [],
+    agent_runs_count: 1,
   });
 });
 
@@ -2469,6 +2574,9 @@ test("prevents duplicate workbench AI review threads from a real double click", 
     "int nvmf_connect_review_double_target(void) { return 0; }\n",
     "utf8",
   );
+  fs.mkdirSync(path.join(repo, "test", "nvmf"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "test", "nvmf", "review_double.sh"), "# smoke\n", "utf8");
+  const runtimeProvider = await installModuleAnalysisRuntime(request, repo);
   const workspace = await selectWorkbenchWorkflowAndWorkspace(
     page,
     request,
@@ -2476,6 +2584,7 @@ test("prevents duplicate workbench AI review threads from a real double click", 
     "module_analysis",
     "ai-review-double",
   );
+  await page.getByLabel("执行器覆盖").selectOption(runtimeProvider);
   await page.getByLabel("Workflow input analysis_object").fill("lib/nvmf connect review double");
   await prepareWorkbenchRun(page);
   await executePreparedWorkbenchRun(page, "运行完成 · 模块分析工作流");
@@ -2720,11 +2829,10 @@ test("executes resource leak hunt and previews materialized artifacts through th
   await expect(page.getByText(/failure_mode/).first()).toBeVisible();
   await expect(page.getByText(/test\/bdev/).first()).toBeVisible();
   const downloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "下载预览" }).hover();
-  await page.getByRole("button", { name: "下载预览" }).click();
+  await page.getByRole("link", { name: "下载完整产物" }).hover();
+  await page.getByRole("link", { name: "下载完整产物" }).click();
   const download = await downloadPromise;
   expect(download.suggestedFilename()).toMatch(/risk_findings\.json$/);
-  expect(download.suggestedFilename()).toContain("steps__hunt_risks__");
   const downloadPath = testInfo.outputPath("risk_findings_preview.json");
   await download.saveAs(downloadPath);
   const downloadedArtifact = fs.readFileSync(downloadPath, "utf8");
@@ -3050,8 +3158,8 @@ test("executes MR black-box workflow and previews public test cases through the 
   await expect(page.getByText(/call internal functions/i)).toHaveCount(0);
 
   const casesDownloadPromise = page.waitForEvent("download");
-  await page.getByRole("button", { name: "下载预览" }).hover();
-  await page.getByRole("button", { name: "下载预览" }).click();
+  await page.getByRole("link", { name: "下载完整产物" }).hover();
+  await page.getByRole("link", { name: "下载完整产物" }).click();
   const casesDownload = await casesDownloadPromise;
   expect(casesDownload.suggestedFilename()).toMatch(/black_box_cases\.json$/);
   const casesDownloadPath = test.info().outputPath("mr_black_box_cases_preview.json");
@@ -3098,14 +3206,14 @@ test("executes MR black-box workflow and previews public test cases through the 
   });
 
   await navigateWorkbenchSection(page, "语义库");
-  await page.getByLabel("Semantic search query").fill("nvmf changed path");
+  await page.getByLabel("Semantic search query").fill("local_mr_black_box_001");
   await page.getByRole("button", { name: "搜索", exact: true }).hover();
   await page.getByRole("button", { name: "搜索", exact: true }).click();
   await expect(page.getByText("local_mr_black_box_001").first()).toBeVisible({
     timeout: 15_000,
   });
   await expect(
-    page.getByText("nvmf changed path black-box regression").first(),
+    page.getByText("nvmf 正常路径黑盒测试").first(),
   ).toBeVisible();
 
   await page.reload({ waitUntil: "domcontentloaded" });

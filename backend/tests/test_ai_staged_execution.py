@@ -155,6 +155,67 @@ def test_plan_does_not_collapse_multiple_source_facing_deliverables():
     ]
 
 
+def test_plan_uses_canonical_dependency_order_for_unordered_user_outputs():
+    contract = _contract()
+    contract["required_outputs"] = [
+        "sfmea.json",
+        "black_box_cases.json",
+        "test_strategy.md",
+        "test_design.md",
+        "business_flow.md",
+    ]
+
+    plan = build_staged_execution_plan(
+        contract=contract,
+        original_user_request="先写 SFMEA，最后才提到流程，但执行仍须按依赖拓扑运行",
+    )
+
+    assert [stage["id"] for stage in plan["stages"]] == [
+        "source_analysis",
+        "business_flow",
+        "sfmea",
+        "black_box_cases",
+        "test_strategy",
+        "test_design",
+    ]
+    assert plan["stages"][2]["depends_on"] == ["source_analysis", "business_flow"]
+
+
+def test_plan_keeps_multiple_artifacts_owned_by_the_same_stage():
+    contract = _contract()
+    contract["required_outputs"] = ["business_flow.md", "black_box_cases.json", "black_box_cases.md"]
+    contract["artifact_contract"]["black_box_cases.md"] = {"artifact": "black_box_cases.md"}
+
+    plan = build_staged_execution_plan(
+        contract=contract,
+        original_user_request="同时交付 JSON 和 Markdown 黑盒用例",
+    )
+
+    black_box_stages = [stage for stage in plan["stages"] if stage["id"].startswith("black_box_cases")]
+    assert [stage["artifact"] for stage in black_box_stages] == [
+        "black_box_cases.json",
+        "black_box_cases.md",
+    ]
+
+
+def test_plan_expands_transitive_support_dependencies():
+    contract = _contract()
+    contract["required_outputs"] = ["risk_review.md"]
+    contract["artifact_contract"] = {"risk_review.md": {"artifact": "risk_review.md"}}
+
+    plan = build_staged_execution_plan(
+        contract=contract,
+        original_user_request="只点名风险复核也必须先完成流程和 SFMEA",
+    )
+
+    assert [stage["id"] for stage in plan["stages"]] == [
+        "source_analysis",
+        "business_flow",
+        "sfmea",
+        "risk_review",
+    ]
+
+
 @pytest.mark.asyncio
 async def test_executor_writes_each_stage_and_preserves_original_request(tmp_path):
     llm = _StageLLM()
@@ -186,3 +247,61 @@ async def test_executor_writes_each_stage_and_preserves_original_request(tmp_pat
     sfmea_prompt = next(prompt for prompt in llm.prompts if "STAGE_ID: sfmea" in prompt)
     assert "business_flow.md" in sfmea_prompt
     assert "lib/iscsi/iscsi.c:1262" in sfmea_prompt
+
+
+@pytest.mark.asyncio
+async def test_executor_retries_transient_provider_error_and_invalid_json(tmp_path):
+    class FlakyLLM(_StageLLM):
+        async def complete(self, messages, max_tokens=4096, temperature=0.2):
+            prompt = messages[-1]["content"]
+            stage = next(
+                line.split(":", 1)[1].strip()
+                for line in prompt.splitlines()
+                if line.startswith("STAGE_ID:")
+            )
+            attempts = self.calls_by_stage.get(stage, 0)
+            if stage == "source_analysis" and attempts == 0:
+                self.calls_by_stage[stage] = 1
+                raise RuntimeError("temporary provider unavailable")
+            if stage == "sfmea" and attempts == 0:
+                self.calls_by_stage[stage] = 1
+                return LLMResponse(content="not-json", model="stage-test", usage={}, truncated=False)
+            return await super().complete(messages, max_tokens=max_tokens, temperature=temperature)
+
+    llm = FlakyLLM()
+    plan = build_staged_execution_plan(contract=_contract(), original_user_request="retry")
+
+    result = await execute_staged_builtin_plan(
+        llm=llm,
+        plan=plan,
+        artifact_dir=tmp_path,
+        context_prompt="SOURCE_CONTEXT",
+    )
+
+    assert result["status"] == "completed"
+    assert llm.calls_by_stage["source_analysis"] == 2
+    assert llm.calls_by_stage["sfmea"] == 2
+    sfmea_result = json.loads(
+        (tmp_path / "stages" / "sfmea" / "stage_result.json").read_text(encoding="utf-8")
+    )
+    assert sfmea_result["attempts"] == 2
+
+
+@pytest.mark.asyncio
+async def test_executor_stops_between_stages_when_cancelled(tmp_path):
+    llm = _StageLLM()
+    plan = build_staged_execution_plan(contract=_contract(), original_user_request="cancel")
+
+    async def cancelled() -> bool:
+        return len(llm.prompts) >= 1
+
+    with pytest.raises(RuntimeError, match="任务已取消"):
+        await execute_staged_builtin_plan(
+            llm=llm,
+            plan=plan,
+            artifact_dir=tmp_path,
+            context_prompt="SOURCE_CONTEXT",
+            is_cancelled=cancelled,
+        )
+
+    assert len(llm.prompts) == 1

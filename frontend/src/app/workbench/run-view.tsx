@@ -4,7 +4,7 @@ import type { WorkbenchController } from "./workbench-controller";
 import type { WorkbenchTaskArtifact } from "@/lib/types";
 
 export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
-  const { AlertTriangle, ArtifactPreviewCard, ClipboardList, Database, Download, Library, Loader2, MessageSquareText, Panel, PlayCircle, RefreshCw, Search, X, acceptanceCodetalkProviderIssues, acceptanceInputRedactionIssues, acceptanceInstructionPolicyIssues, acceptanceIssueLabel, acceptanceProviderIssues, acceptanceWorkflowOutputIssues, agentMcpRequestSummary, agentRunActionBusy, applyWorkspaceSelection, artifactAudience, artifactAudienceGroups, artifactAudienceLabel, artifactContent, artifactManifest, artifactShortName, blackBoxGenerationPolicySummary, builderProviderOptions, busyAction, cancelPreparedTaskRun, compactReasonLabel, createAndRunTaskRun, currentApiBase, downloadTextFile, evidenceValidationSummary, executePreparedAgentRun, executePreparedWorkflow, executeTaskRerunPlan, executionInputSummary, executionResults, failureRetryContextSummary, fastContextDecisionSummary, filledInputCount, generateTaskAcceptanceAudit, importPreparedSemanticOutputs, inputContextSummary, inputMaterialsSummary, inputTextValue, inputsJson, isFileLikeWorkflowInput, isPatchLikeWorkflowInput, isTaskRunActiveStatus, loadPreparedArtifacts, loadTaskRerunPlan, materializationAuditOutputs, materializePreparedAgentRun, materializePreparedWorkflowOutputs, materializeResults, memoryArtifactSummary, openPreparedConversation, openingConversation, parsedPrepareInputs, prepareTaskRun, preparedProviderReadiness, preparedRun, preparedRunSnapshotSummary, previewArtifact, prioritizedAuditArtifacts, providerDisplayLabel, providerOverride, providerReadinessSummary, providerStatusDisplayLabel, rejectedOutputLabel, rejectedOutputReason, replayPlanSummary, repoPath, requiredInputCount, restoreExistingTaskRun, runPanelCapabilitySummary, runPanelDeliverables, runPanelExecutionNotice, runPanelFailureReasons, runPanelProgress, runPanelStatus, runPhaseCards, runStatusDisplayLabel, safeArtifactDownloadFilename, selectRunWorkflow, selectedAgentSkillIds, selectedAgentSkillInstructions, selectedAgentStep, selectedProviderCapability, selectedRunMcpProfile, selectedRunProvider, selectedWorkflowAudit, selectedWorkflowId, selectedWorkflowInputs, selectedWorkflowOutputs, semanticImportOutputIds, semanticOutputImport, setActiveWorkbenchView, setInputsJson, setProviderOverride, taskAcceptanceAudit, taskRerunExecution, taskRerunHistory, taskRerunPlan, taskRerunPlanValidation, taskRunActionBusy, taskRunEventDetail, taskRunEventTitle, taskRunEventTone, taskRunEvents, taskRunRuntimeStatus, taskRuns, testActivityQuality, updatePrepareInput, uploadPrepareInputFile, validatePreparedAgentRun, validationResults, visibleDeliveryArtifacts, visibleTaskRunEvents, visibleWorkflowInputs, workflowAuditWarningLabel, workflowDisplayName, workflowExecution, workflowInputDisplayName, workflowInputsUpdated, workflowOptions, workflowOutputDisplayName, workflowOutputMaterializationSummary, workflowOutputMaterialize, workspaceId, workspaces } = scope;
+  const { AlertTriangle, ArtifactPreviewCard, ClipboardList, Database, Download, Library, Loader2, MessageSquareText, Panel, PlayCircle, RefreshCw, Search, X, acceptanceCodetalkProviderIssues, acceptanceInputRedactionIssues, acceptanceInstructionPolicyIssues, acceptanceIssueLabel, acceptanceProviderIssues, acceptanceWorkflowOutputIssues, agentMcpRequestSummary, agentRunActionBusy, applyWorkspaceSelection, artifactAudience, artifactAudienceGroups, artifactAudienceLabel, artifactContent, artifactManifest, artifactShortName, blackBoxGenerationPolicySummary, busyAction, cancelPreparedTaskRun, compactReasonLabel, createAndRunTaskRun, currentApiBase, evidenceValidationSummary, executePreparedAgentRun, executePreparedWorkflow, executeTaskRerunPlan, executionInputSummary, executionResults, failureRetryContextSummary, fastContextDecisionSummary, filledInputCount, generateTaskAcceptanceAudit, importPreparedSemanticOutputs, inputContextSummary, inputMaterialsSummary, inputTextValue, inputsJson, isFileLikeWorkflowInput, isPatchLikeWorkflowInput, isTaskRunActiveStatus, loadPreparedArtifacts, loadTaskRerunPlan, materializationAuditOutputs, materializePreparedAgentRun, materializePreparedWorkflowOutputs, materializeResults, memoryArtifactSummary, openPreparedConversation, openingConversation, parsedPrepareInputs, prepareTaskRun, preparedProviderReadiness, preparedRun, preparedRunSnapshotSummary, previewArtifact, prioritizedAuditArtifacts, providerDisplayLabel, providerOverride, providerReadinessSummary, providerStatusDisplayLabel, rejectedOutputLabel, rejectedOutputReason, replayPlanSummary, repoPath, requiredInputCount, restoreExistingTaskRun, runExecutorProviderOptions, runPanelCapabilitySummary, runPanelDeliverables, runPanelExecutionNotice, runPanelFailureReasons, runPanelProgress, runPanelStatus, runPhaseCards, runStatusDisplayLabel, safeArtifactDownloadFilename, selectRunWorkflow, selectedAgentSkillIds, selectedAgentSkillInstructions, selectedAgentStep, selectedProviderCapability, selectedRunMcpProfile, selectedRunProvider, selectedWorkflowAudit, selectedWorkflowId, selectedWorkflowInputs, selectedWorkflowOutputs, semanticImportOutputIds, semanticOutputImport, setActiveWorkbenchView, setInputsJson, setProviderOverride, taskAcceptanceAudit, taskRerunExecution, taskRerunHistory, taskRerunPlan, taskRerunPlanValidation, taskRunActionBusy, taskRunEventDetail, taskRunEventTitle, taskRunEventTone, taskRunEvents, taskRunRuntimeStatus, taskRuns, testActivityQuality, updatePrepareInput, uploadPrepareInputFile, validatePreparedAgentRun, validationResults, visibleDeliveryArtifacts, visibleTaskRunEvents, visibleWorkflowInputs, workflowAuditWarningLabel, workflowDisplayName, workflowExecution, workflowInputDisplayName, workflowInputsUpdated, workflowOptions, workflowOutputDisplayName, workflowOutputMaterializationSummary, workflowOutputMaterialize, workspaceId, workspaces } = scope;
   return (<Panel title="任务运行" icon={<PlayCircle size={16} />}>
             <div className="grid gap-4 xl:grid-cols-[minmax(380px,0.95fr)_minmax(440px,1.05fr)] xl:items-start">
               <div className="min-w-0 space-y-3">
@@ -253,7 +253,7 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                   className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface outline-none focus:border-primary disabled:cursor-not-allowed disabled:opacity-55"
                 >
                   <option value="">使用工作流默认执行器</option>
-                  {builderProviderOptions.map((provider) => (
+                  {runExecutorProviderOptions.map((provider) => (
                     <option key={provider.id} value={provider.id}>
                       {provider.label} ({provider.owner}:
                       {providerStatusDisplayLabel(provider.status)})
@@ -1292,6 +1292,7 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                         {artifactContent && (
                           <ArtifactPreviewCard
                             artifactContent={artifactContent}
+                            fullDownloadHref={`${currentApiBase()}/api/workbench/task-runs/${encodeURIComponent(preparedRun.task_run_id)}/artifacts/download/${artifactContent.relative_path.split("/").map((part) => encodeURIComponent(part)).join("/")}`}
                           />
                         )}
                       </div>
@@ -2209,31 +2210,23 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                                 <span className="text-warning">已脱敏</span>
                               )}
                               {artifactContent.is_text && (
-                                <button
-                                  type="button"
+                                <a
                                   title={
                                     artifactContent.content_redacted
-                                      ? "下载当前脱敏后的预览内容"
-                                      : "下载当前预览内容"
+                                      ? "下载完整脱敏产物"
+                                      : "下载完整产物"
                                   }
-                                  onClick={() =>
-                                      downloadTextFile(
-                                        safeArtifactDownloadFilename(
-                                          artifactContent.relative_path,
-                                        ),
-                                        artifactContent.content_redacted
-                                          ? "产物内容已脱敏，内联预览已隐藏。"
-                                          : artifactContent.content,
-                                        "text/plain;charset=utf-8",
-                                      )
-                                  }
+                                  href={`${currentApiBase()}/api/workbench/task-runs/${encodeURIComponent(preparedRun?.task_run_id ?? "")}/artifacts/download/${artifactContent.relative_path.split("/").map((part) => encodeURIComponent(part)).join("/")}`}
+                                  download={safeArtifactDownloadFilename(
+                                    artifactContent.relative_path,
+                                  )}
                                   className="inline-flex items-center gap-1 rounded bg-surface-container px-1.5 py-0.5 font-medium text-on-surface transition-colors hover:bg-surface-container-high"
                                 >
                                   <Download size={12} />
                                   {artifactContent.content_redacted
-                                    ? "下载脱敏预览"
-                                    : "下载预览"}
-                                </button>
+                                    ? "下载完整脱敏产物"
+                                    : "下载完整产物"}
+                                </a>
                               )}
                             </div>
                             {(() => {

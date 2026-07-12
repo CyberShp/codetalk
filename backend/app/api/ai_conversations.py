@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse, Response, StreamingResponse
@@ -25,7 +26,7 @@ from app.services.ai_conversations import (
 from app.services.ai_thread_artifacts import (
     ArtifactContractError,
     build_ai_thread_delivery_zip,
-    resolve_ai_thread_artifact,
+    read_validated_ai_thread_artifact,
 )
 from app.services.agent_runtimes import AgentRuntimeStore
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
@@ -392,7 +393,7 @@ async def download_run_artifact_file(
     conversation_id: str,
     run_id: str,
     artifact_path: str,
-) -> FileResponse:
+) -> Response:
     await _require_conversation_run(conversation_id, run_id)
     manifest = _read_delivery_manifest(conversation_id, run_id)
     accepted = {
@@ -400,20 +401,20 @@ async def download_run_artifact_file(
         for item in manifest.get("artifacts") or []
         if isinstance(item, dict) and item.get("validation_status") == "accepted"
     }
-    if artifact_path not in accepted:
+    if manifest.get("status") != "accepted" or artifact_path not in accepted:
         raise HTTPException(status_code=404, detail="AI run artifact not found or not accepted")
     root = ai_thread_delivery_dir(conversation_id, run_id)
     try:
-        path = resolve_ai_thread_artifact(root, artifact_path)
+        path, data = read_validated_ai_thread_artifact(root, manifest, artifact_path)
     except ArtifactContractError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-    if not path.is_file():
-        raise HTTPException(status_code=404, detail="AI run artifact not found")
+        raise HTTPException(status_code=409, detail=str(exc))
     item = accepted[artifact_path]
-    return FileResponse(
-        path,
+    return Response(
+        content=data,
         media_type=str(item.get("media_type") or "application/octet-stream"),
-        filename=path.name,
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(path.name)}"
+        },
     )
 
 

@@ -875,7 +875,8 @@ class TestAgentRuntimes:
 
             messages = await client.get(f"/api/ai/conversations/{conversation['id']}/messages")
             body = messages.json()
-            assert [item["role"] for item in body["items"]] == ["user"]
+            assert [item["role"] for item in body["items"]] == ["user", "assistant"]
+            assert body["items"][-1]["actions"][0]["id"] == "test_activity_task_card"
             latest = await store.latest_run(conversation["id"])
             assert latest and latest["status"] == "failed"
             assert "质量门禁" in latest["error"]
@@ -3543,7 +3544,8 @@ class TestAgentRuntimes:
         assert run["status"] == "failed"
         assert "质量门禁" in run["error"]
         messages = await store.list_messages(conversation["id"])
-        assert [item["role"] for item in messages] == ["user"]
+        assert [item["role"] for item in messages] == ["user", "assistant"]
+        assert messages[-1]["actions"][0]["id"] == "test_activity_task_card"
         assert ai_thread_artifact_path(conversation["id"], run_id).exists() is False
 
     async def test_ai_thread_agent_runtime_downloads_complete_inline_test_design(
@@ -3677,7 +3679,8 @@ class TestAgentRuntimes:
 
         messages = await store.list_messages(conversation["id"])
         run = await store.get_run(run_id)
-        assert [item["role"] for item in messages] == ["user"]
+        assert [item["role"] for item in messages] == ["user", "assistant"]
+        assert messages[-1]["actions"][0]["id"] == "test_activity_task_card"
         assert run["status"] == "failed"
         assert "质量门禁" in run["error"]
         assert not ai_thread_artifact_path(conversation["id"], run_id).exists()

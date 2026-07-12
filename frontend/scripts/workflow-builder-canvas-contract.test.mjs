@@ -8,8 +8,16 @@ import {
   mergeDesignerWorkflowWithSpecializedDraft,
 } from "../src/lib/workflow-builder.mjs";
 
-const designerSource = readFileSync(
-  new URL("../src/app/workbench/agent-workbench-experience.tsx", import.meta.url),
+const workflowViewSource = readFileSync(
+  new URL("../src/app/workbench/workflow-view.tsx", import.meta.url),
+  "utf8",
+);
+const runViewSource = readFileSync(
+  new URL("../src/app/workbench/run-view.tsx", import.meta.url),
+  "utf8",
+);
+const controllerSource = readFileSync(
+  new URL("../src/app/workbench/workbench-controller.ts", import.meta.url),
   "utf8",
 );
 
@@ -467,19 +475,64 @@ test("specialized workflows keep local steps while canvas contracts become execu
   assert.ok(merged.ui.layout.nodes.some((node) => node.id === "mr-node"));
 });
 
+test("saving a local-only specialized workflow does not invent an agent step", () => {
+  const generated = {
+    id: "source_flow_sfmea_blackbox",
+    name: "Source flow",
+    version: 1,
+    inputs: [],
+    steps: [
+      { id: "agent_task", type: "agent_task", provider: "claude-code" },
+      { id: "validate_evidence", type: "evidence_validate" },
+    ],
+    outputs: [{ id: "sfmea", type: "json", from: "agent_task", artifact: "sfmea.json" }],
+    ui: {
+      layout: {
+        nodes: [
+          { id: "agent-task", kind: "agent", source: "contract", config: { id: "agent_task" } },
+        ],
+        edges: [],
+      },
+    },
+  };
+  const draft = {
+    id: "source_flow_sfmea_blackbox",
+    name: "Source flow",
+    version: 1,
+    inputs: [],
+    steps: [
+      { id: "analyze_source_flow", type: "local_source_flow_sfmea_blackbox" },
+      { id: "validate_evidence", type: "evidence_validate" },
+      { id: "render_report", type: "report_render" },
+    ],
+    outputs: [
+      { id: "sfmea", type: "json", from: "analyze_source_flow", artifact: "sfmea.json" },
+    ],
+    ui: { layout: { nodes: [], edges: [] } },
+  };
+
+  const merged = mergeDesignerWorkflowWithSpecializedDraft(generated, draft);
+
+  assert.deepEqual(
+    merged.steps.map((step) => step.id),
+    ["analyze_source_flow", "validate_evidence", "render_report"],
+  );
+  assert.equal(merged.outputs[0].from, "analyze_source_flow");
+});
+
 test("designer selector can reload saved custom workflows instead of listing presets only", () => {
-  assert.match(designerSource, /已保存自定义工作流/);
-  assert.match(designerSource, /saved:\$\{workflow\.id\}/);
-  assert.match(designerSource, /载入所选/);
-  assert.match(designerSource, /applyWorkflowLayout\(selectedDefinition\)/);
-  assert.match(designerSource, /defaultWorkflowCanvasEdgeIds/);
+  assert.match(workflowViewSource, /已保存自定义工作流/);
+  assert.match(workflowViewSource, /saved:\$\{workflow\.id\}/);
+  assert.match(workflowViewSource, /从模板库导入/);
+  assert.match(controllerSource, /applyWorkflowLayout\(selectedDefinition\)/);
+  assert.match(controllerSource, /defaultWorkflowCanvasEdgeIds/);
 });
 
 test("cockpit workflow selector prefers saved labels over internal id fallback", () => {
   assert.match(
-    designerSource,
+    runViewSource,
     /\{\[\.\.\.workflowOptions, selectedWorkflowId\]/,
     "saved workflow options must be deduplicated before the id-only fallback",
   );
-  assert.doesNotMatch(designerSource, /\{\[selectedWorkflowId, \.\.\.workflowOptions\]/);
+  assert.doesNotMatch(runViewSource, /\{\[selectedWorkflowId, \.\.\.workflowOptions\]/);
 });

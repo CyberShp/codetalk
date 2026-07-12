@@ -25,6 +25,7 @@ import {
   Search,
 } from "lucide-react";
 import { api, currentApiBase } from "@/lib/api";
+import { sameGitNexusRepoPath } from "@/lib/gitnexus-capacity.mjs";
 import type {
   Workspace,
   WorkspaceReportMeta,
@@ -567,9 +568,12 @@ export default function WorkspaceDetailPage() {
             api.tools.gitNexusCapacity().catch(() => null),
           ]);
           if (capacity) {
-            const leaf = workspace?.repo_path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? "";
-            const queued = capacity.queue.find((item) => item.repo_path.replace(/\\/g, "/").endsWith(`/${leaf}`));
-            const isRunning = Boolean(leaf && capacity.running_repo?.replace(/\\/g, "/").endsWith(`/${leaf}`));
+            const queued = capacity.queue.find(
+              (item) => sameGitNexusRepoPath(item.repo_path, workspace?.repo_path),
+            );
+            const isRunning = Boolean(
+              sameGitNexusRepoPath(capacity.running_repo, workspace?.repo_path),
+            );
             setIndexCapacityLabel(
               queued
                 ? `等待 GitNexus（队列第 ${queued.position} 位）`

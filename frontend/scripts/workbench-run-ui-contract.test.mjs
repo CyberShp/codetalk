@@ -5,10 +5,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url));
-const source = readFileSync(
-  join(root, "../src/app/workbench/agent-workbench-experience.tsx"),
-  "utf8",
-);
+const source = ["run-view.tsx", "workbench-controller.ts", "workbench-shared.tsx"]
+  .map((name) =>
+    readFileSync(join(root, "../src/app/workbench", name), "utf8"),
+  )
+  .join("\n");
 
 test("workbench cockpit treats weak-success states as review, not normal running", () => {
   assert.match(source, /completed_empty/);
@@ -23,4 +24,3 @@ test("workbench cockpit renders restart and review task-run events in Chinese", 
   assert.match(source, /needs_review:\s*["']需要复核["']/);
   assert.match(source, /completed_empty:\s*["']完成但信息不足["']/);
 });
-

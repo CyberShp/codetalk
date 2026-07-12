@@ -309,6 +309,14 @@ export function WorkflowDesignerView({ scope }: { scope: WorkbenchController }) 
                           onPointerUp={endWorkflowNodeDrag}
                           onPointerCancel={endWorkflowNodeDrag}
                           onClick={() => setActiveWorkflowNodeId(node.id)}
+                          tabIndex={0}
+                          aria-label={`编辑节点 ${node.title}`}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === " ") {
+                              event.preventDefault();
+                              setActiveWorkflowNodeId(node.id);
+                            }
+                          }}
                           className={[
                             "ct-workflow-node absolute h-24 cursor-move select-none rounded-md border bg-surface p-1.5 shadow-sm",
                             activeWorkflowNodeId === node.id

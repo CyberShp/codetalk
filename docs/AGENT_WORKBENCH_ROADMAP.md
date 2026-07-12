@@ -149,7 +149,7 @@ The harness launches configured Agent CLIs with a task bundle on stdin and captu
 - Agent steps can request source slices between turns through `source_slice_requests.json`; CodeTalk supplies only repo-local source files with sha256-backed excerpts before rerunning the Agent.
 - Multi-turn Agent steps keep per-turn artifact snapshots, so users can audit what each disposable Agent process saw and returned.
 
-The first implementation still relies on process timeout and prompt-level readonly rules rather than OS sandboxing. That residual risk must stay visible in docs and diagnostics.
+macOS and Linux Agent runs now apply an audited OS sandbox in addition to process timeout and prompt policy. The workspace is read-only; deliverables and provider-specific state directories are explicit write boundaries; parent environment variables are allowlisted; network access and the sandbox engine are recorded in `sandbox_policy.json`. When the configured engine is unavailable, `required` mode fails closed and `auto` mode emits a Chinese degraded-mode action message. Windows keeps contract coverage only in this release and still requires a later real-machine regression.
 
 ## Clowder-AI Reuse Policy
 

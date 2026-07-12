@@ -736,6 +736,9 @@ test("cockpit workflow switch rebuilds the visible input form", async ({
   await page.goto("/workbench", { waitUntil: "domcontentloaded" });
 
   await expect(page.getByRole("heading", { name: "运行驾驶舱" })).toBeVisible();
+  const executorOverride = page.getByLabel("执行器覆盖");
+  await expect(executorOverride.locator('option[value="local-search"]')).toHaveCount(0);
+  await expect(executorOverride.locator('option[value="claude-code"]')).toHaveCount(1);
   const inputRegion = page.getByLabel("Workflow run inputs");
   await expect(inputRegion.getByText("需求文档")).toBeVisible();
   await expect(inputRegion.getByText("设计文档")).toBeVisible();
@@ -1165,7 +1168,7 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByRole("heading", { name: "工作流编排" })).toBeVisible();
   await expect(page.getByLabel("Workflow module palette")).toBeVisible();
   await expect(page.getByLabel("Workflow canvas")).toBeVisible();
-  await page.locator(".ct-workflow-node").first().click();
+  await page.locator(".ct-workflow-node").first().click({ position: { x: 44, y: 18 } });
   await expect(page.getByLabel("Workflow inspector")).toBeVisible();
   for (const moduleName of ["输入模块", "智能体模块", "MCP 模块", "Skills 模块", "GitNexus 模块", "CGC 模块", "输出模块"]) {
     await expect(page.getByRole("button", { name: moduleName })).toBeVisible();
@@ -1277,7 +1280,7 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   ).toBeVisible();
   await page.getByRole("button", { name: "删除节点" }).click();
   await expect(page.locator(".ct-workflow-node")).toHaveCount(nodeCountBeforeCopy);
-  await page.locator(".ct-workflow-node").first().click();
+  await page.locator(".ct-workflow-node").first().click({ position: { x: 44, y: 18 } });
   await expect(page.getByLabel("Workflow inspector")).toBeVisible();
   await page.getByRole("button", { name: "重置位置" }).click();
   await expect(page.getByText(/节点位置已重置|节点布局已重置/)).toBeVisible();
@@ -1355,6 +1358,12 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await page.getByRole("button", { name: "保存工作流" }).click();
   await expect(page.getByText(/工作流已保存:/)).toBeVisible();
   await openWorkbenchView(page, "运行驾驶舱");
+  await expect(
+    page.getByLabel("执行器覆盖").locator('option[value="local-search"]'),
+  ).toHaveCount(0);
+  await expect(
+    page.getByLabel("执行器覆盖").locator('option[value="corp-agent"]'),
+  ).toHaveCount(1);
   await expect(page.getByLabel("Workspace selector")).toBeVisible();
   await expect(page.getByLabel("Repo path")).toHaveCount(0);
   await page.getByLabel("Workspace selector").selectOption("ws_spdk");
@@ -1363,7 +1372,7 @@ test("agent workbench renders workflow and task-run controls", async ({ page }) 
   await expect(page.getByLabel("Workflow input iscsi_login_script")).toBeVisible();
   await expect(page.getByLabel("Workflow input change_mr")).toBeVisible();
   await openWorkbenchView(page, "工作流设计");
-  await page.locator(".ct-workflow-node").first().click();
+  await page.locator(".ct-workflow-node").first().click({ position: { x: 44, y: 18 } });
   await expect(page.getByLabel("Workflow inspector")).toBeVisible();
   await page.getByText("输出契约", { exact: true }).scrollIntoViewIfNeeded();
   const newOutputName = page.getByLabel("New workflow output name");
@@ -2376,7 +2385,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
 
   await expect(page.getByText("sha:abc123abc123").first()).toBeVisible();
   await expect(page.getByText("\"provider\":\"claude-code\"", { exact: false }).first()).toBeVisible();
-  await expect(resultPanel.getByRole("button", { name: "下载预览" })).toBeVisible();
+  await expect(resultPanel.getByRole("link", { name: "下载完整产物" })).toBeVisible();
 
   await page
     .getByRole("button", {
@@ -2502,7 +2511,7 @@ test("agent workbench previews task run artifact content", async ({ page }) => {
     page.getByText("避免重复:do not treat raw stdout/stderr as accepted evidence"),
   ).toBeVisible();
   await expect(page.getByText("已脱敏", { exact: true }).first()).toBeVisible();
-  await expect(resultPanel.getByRole("button", { name: "下载脱敏预览" })).toBeVisible();
+  await expect(resultPanel.getByRole("link", { name: "下载完整脱敏产物" })).toBeVisible();
   await expect(page.locator("body")).not.toContainText(redactedArtifactSecret);
 
   await page.getByRole("button", { name: "验收审计" }).click();

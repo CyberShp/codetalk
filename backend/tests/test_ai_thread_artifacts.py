@@ -109,3 +109,20 @@ def test_delivery_zip_contains_only_accepted_deliverables_and_redacts_text(tmp_p
         assert "zip-secret-value" not in report
         assert "<redacted>" in report
 
+
+def test_delivery_zip_fails_closed_when_an_accepted_file_changes(tmp_path):
+    root = tmp_path / "delivery"
+    root.mkdir()
+    report = root / "report.md"
+    report.write_text("# accepted report\n", encoding="utf-8")
+    manifest = materialize_ai_thread_manifest(
+        root,
+        run_id="run-tampered",
+        declared_artifacts=[{"artifact": "report.md", "required": True}],
+        producer="agent:test",
+    )
+
+    report.write_text("# replaced after validation\n", encoding="utf-8")
+
+    with pytest.raises(ArtifactContractError, match="哈希|大小"):
+        build_ai_thread_delivery_zip(root, manifest)

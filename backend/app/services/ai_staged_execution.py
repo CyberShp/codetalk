@@ -7,10 +7,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
-from app.services.ai_thread_artifacts import materialize_ai_thread_manifest
+from app.services.ai_thread_artifacts import _validate_schema, materialize_ai_thread_manifest
 
 
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
+CancellationCallback = Callable[[], Awaitable[bool] | bool]
 
 
 _STAGE_BY_ARTIFACT = {
@@ -41,6 +42,30 @@ _STAGE_BY_ARTIFACT = {
     ),
 }
 
+_CANONICAL_STAGE_ORDER = (
+    "source_analysis",
+    "project_structure",
+    "source_reading_plan",
+    "module_map",
+    "tester_code_understanding",
+    "business_flow",
+    "sfmea",
+    "black_box_cases",
+    "test_strategy",
+    "test_design",
+    "coverage_gap",
+    "risk_review",
+    "execution_checklist",
+)
+_CANONICAL_STAGE_RANK = {
+    stage_id: index for index, stage_id in enumerate(_CANONICAL_STAGE_ORDER)
+}
+_SUPPORT_ARTIFACT = {
+    "business_flow": "business_flow.md",
+    "sfmea": "sfmea.json",
+    "black_box_cases": "black_box_cases.json",
+}
+
 
 def build_staged_execution_plan(
     *,
@@ -66,19 +91,63 @@ def build_staged_execution_plan(
             "support": True,
         }
     ]
-    included = {"source_analysis"}
-    for artifact in outputs:
+    requested: list[tuple[int, str, str, list[str]]] = []
+    for output_index, artifact in enumerate(outputs):
         stage_id, dependencies = _STAGE_BY_ARTIFACT.get(
             artifact,
-            (f"artifact_{len(stages)}", ["source_analysis"]),
+            (f"artifact_{output_index + 1}", ["source_analysis"]),
         )
-        if stage_id in included:
-            existing = next(item for item in stages if item["id"] == stage_id)
-            if existing.get("support"):
-                existing.update({"artifact": artifact, "support": False})
-            continue
-        included.add(stage_id)
-        projected_dependencies = [item for item in dependencies if item in included or item == "source_analysis"]
+        requested.append((output_index, artifact, stage_id, list(dependencies)))
+
+    requested_stage_ids = {item[2] for item in requested}
+    required_support_ids: set[str] = set()
+    for _, _, _, dependencies in requested:
+        required_support_ids.update(
+            dependency
+            for dependency in dependencies
+            if dependency != "source_analysis" and dependency not in requested_stage_ids
+        )
+    while True:
+        expanded = set(required_support_ids)
+        for support_id in required_support_ids:
+            support_artifact = _SUPPORT_ARTIFACT.get(support_id, f"{support_id}.md")
+            _, support_dependencies = _STAGE_BY_ARTIFACT.get(
+                support_artifact, (support_id, ["source_analysis"])
+            )
+            expanded.update(
+                dependency
+                for dependency in support_dependencies
+                if dependency != "source_analysis"
+                and dependency not in requested_stage_ids
+            )
+        if expanded == required_support_ids:
+            break
+        required_support_ids = expanded
+    for support_id in sorted(
+        required_support_ids,
+        key=lambda item: _CANONICAL_STAGE_RANK.get(item, 10_000),
+    ):
+        artifact = _SUPPORT_ARTIFACT.get(support_id, f"{support_id}.md")
+        _, dependencies = _STAGE_BY_ARTIFACT.get(
+            artifact, (support_id, ["source_analysis"])
+        )
+        requested.append((-1, artifact, support_id, list(dependencies)))
+
+    requested.sort(
+        key=lambda item: (
+            _CANONICAL_STAGE_RANK.get(item[2], 10_000),
+            item[0] if item[0] >= 0 else -1,
+        )
+    )
+    stage_counts: dict[str, int] = {}
+    available_stage_ids = {"source_analysis", *(item[2] for item in requested)}
+    for output_index, artifact, base_stage_id, dependencies in requested:
+        stage_counts[base_stage_id] = stage_counts.get(base_stage_id, 0) + 1
+        occurrence = stage_counts[base_stage_id]
+        stage_id = base_stage_id if occurrence == 1 else f"{base_stage_id}__{occurrence}"
+        projected_dependencies = [
+            item for item in dependencies if item in available_stage_ids
+        ]
         raw_contract = artifact_contract.get(artifact)
         output_contract = dict(raw_contract) if isinstance(raw_contract, dict) else {"artifact": artifact}
         output_contract["artifact"] = artifact
@@ -90,7 +159,7 @@ def build_staged_execution_plan(
                 "artifact": artifact,
                 "depends_on": projected_dependencies,
                 "purpose": _stage_purpose(stage_id),
-                "support": False,
+                "support": output_index < 0,
                 "output_contract": output_contract,
             }
         )
@@ -111,6 +180,7 @@ async def execute_staged_builtin_plan(
     artifact_dir: Path,
     context_prompt: str,
     on_progress: ProgressCallback | None = None,
+    is_cancelled: CancellationCallback | None = None,
     max_tokens: int = 4096,
 ) -> dict[str, Any]:
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -122,6 +192,12 @@ async def execute_staged_builtin_plan(
         artifact = str(stage.get("artifact") or f"{stage_id}.md")
         stage_dir = artifact_dir / "stages" / stage_id
         stage_dir.mkdir(parents=True, exist_ok=True)
+        if await _callback_true(is_cancelled):
+            _write_json(
+                stage_dir / "stage_result.json",
+                {"stage_id": stage_id, "status": "cancelled", "artifact": artifact},
+            )
+            raise RuntimeError("任务已取消，已停止后续阶段")
         await _emit_progress(
             on_progress,
             {
@@ -140,37 +216,65 @@ async def execute_staged_builtin_plan(
         )
         _write_text(stage_dir / "stage_prompt.txt", prompt)
         response = None
+        rendered: Any = None
+        last_error = ""
         attempts = 0
         while attempts < 2:
             attempts += 1
-            response = await llm.complete(
-                [{"role": "user", "content": prompt}],
-                max_tokens=max_tokens,
-                temperature=0.2,
-            )
-            if not bool(getattr(response, "truncated", False)):
+            try:
+                response = await llm.complete(
+                    [{"role": "user", "content": prompt}],
+                    max_tokens=max_tokens,
+                    temperature=0.2,
+                )
+                if await _callback_true(is_cancelled):
+                    raise RuntimeError("任务已取消，已停止后续阶段")
+                if bool(getattr(response, "truncated", False)):
+                    raise ValueError("provider_output_truncated")
+                raw_content = str(getattr(response, "content", "") or "").strip()
+                if not raw_content:
+                    raise ValueError("provider_output_empty")
+                rendered = _render_stage_artifact(raw_content, artifact)
+                schema = (
+                    stage.get("output_contract", {}).get("schema")
+                    if isinstance(stage.get("output_contract"), dict)
+                    else None
+                )
+                if isinstance(schema, dict):
+                    schema_errors = _validate_schema(rendered, schema)
+                    if schema_errors:
+                        raise ValueError("schema_invalid: " + "; ".join(schema_errors[:5]))
+                _write_text(stage_dir / f"raw_output_attempt_{attempts}.txt", raw_content)
                 break
+            except Exception as exc:
+                if "任务已取消" in str(exc):
+                    raise
+                last_error = str(exc) or exc.__class__.__name__
+                response = None
+                rendered = None
             prompt = "\n".join(
                 [
                     prompt,
                     "",
-                    "RETRY_AFTER_PROVIDER_TRUNCATION:",
-                    "  previous attempt was truncated; return only the declared artifact, complete and valid.",
+                    "RETRY_AFTER_STAGE_FAILURE:",
+                    f"  previous attempt failed validation or transport: {last_error}",
+                    "  return only the declared artifact, complete and valid.",
                 ]
             )
-        if response is None or bool(getattr(response, "truncated", False)):
+        if response is None or rendered is None:
             result = {
                 "stage_id": stage_id,
                 "status": "failed",
                 "artifact": artifact,
                 "attempts": attempts,
-                "reason": "provider_output_truncated",
+                "reason": last_error or "provider_output_invalid",
             }
             _write_json(stage_dir / "stage_result.json", result)
-            raise RuntimeError(f"阶段 {stage_id} 输出达到长度上限，已停止后续阶段")
+            raise RuntimeError(
+                f"阶段 {stage_id} 连续 {attempts} 次输出失败，已停止后续阶段：{result['reason']}"
+            )
         raw_content = str(getattr(response, "content", "") or "").strip()
         _write_text(stage_dir / "raw_output.txt", raw_content)
-        rendered = _render_stage_artifact(raw_content, artifact)
         output_path = artifact_dir / artifact
         output_path.parent.mkdir(parents=True, exist_ok=True)
         if isinstance(rendered, str):
@@ -222,6 +326,15 @@ async def execute_staged_builtin_plan(
     }
     _write_json(artifact_dir / "staged_execution_result.json", execution)
     return {**execution, "artifact_manifest": manifest}
+
+
+async def _callback_true(callback: CancellationCallback | None) -> bool:
+    if callback is None:
+        return False
+    result = callback()
+    if inspect.isawaitable(result):
+        result = await result
+    return bool(result)
 
 
 def _stage_prompt(

@@ -727,6 +727,7 @@ class AgentRunHarness:
                     "sandbox_mode": settings.external_agent_sandbox_mode,
                     "sandbox_allow_network": settings.external_agent_sandbox_allow_network,
                     "sandbox_write_paths": settings.external_agent_sandbox_write_paths,
+                    "sandbox_command": process_command[0] if process_command else "",
                 },
                 cwd=cwd,
                 artifact_dir=self.artifact_dir,
@@ -935,6 +936,7 @@ class AgentRunHarness:
                 agent_output_contract_sha256=agent_output_contract_sha256,
                 stdin_json_sha256=hashlib.sha256(stdin_payload.encode("utf-8")).hexdigest(),
                 agent_instruction_policy=agent_instruction_policy,
+                sandbox_audit=sandbox.audit,
             ),
         )
         self._write_json(
@@ -1248,6 +1250,7 @@ def _agent_replay_plan_payload(
     agent_output_contract_sha256: str,
     stdin_json_sha256: str,
     agent_instruction_policy: dict[str, Any],
+    sandbox_audit: dict[str, Any],
 ) -> dict[str, Any]:
     artifact_hashes = _replay_artifact_hashes(
         artifact_dir,
@@ -1305,7 +1308,9 @@ def _agent_replay_plan_payload(
             "codetalk_validates_outputs": True,
             "raw_output_is_diagnostic_only": True,
             "remote_mcp_credentials_owner": "agent_cli",
-            "os_sandbox": "not_enforced_by_codetalk_harness",
+            "os_sandbox": str(sandbox_audit.get("status") or "unknown"),
+            "os_sandbox_engine": str(sandbox_audit.get("engine") or ""),
+            "os_sandbox_policy_artifact": "sandbox_policy.json",
         },
     }
 

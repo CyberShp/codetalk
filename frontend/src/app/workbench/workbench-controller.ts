@@ -14,6 +14,8 @@ import type { EvidenceMemoryItem, EvidenceSourceSlice, ExternalAgentStartupProbe
 import * as WorkbenchShared from "./workbench-shared";
 import type { WorkbenchView, WorkflowCanvasNode, WorkflowCanvasEdge, WorkflowDraftEdge, WorkflowNodePosition, WorkflowCanvasLayout, WorkflowSkillOption } from "./workbench-shared";
 
+const WORKBENCH_WORKSPACE_STORAGE_KEY = "codetalk.workbench.workspace_id";
+
 const { MIN_VISIBLE_BUSY_ACTION_MS, WORKFLOW_CANVAS_WIDTH, WORKFLOW_CANVAS_HEIGHT, WORKFLOW_NODE_WIDTH, WORKFLOW_NODE_HEIGHT, DEFAULT_WORKFLOW, DEFAULT_INPUTS, workbenchInputsFromSearchParams, workbenchWorkspaceIdFromSearchParams, WorkbenchStageFrame, CORE_WORKFLOW_PRESET_IDS, workflowDisplayName, workflowPresetGroup, WORKFLOW_BUILDER_SCENARIOS, DEFAULT_BUILDER_OUTPUT_SCHEMAS, DEFAULT_BUILDER_EVIDENCE_MAPPINGS, DEFAULT_BUILDER_SEMANTIC_IMPORTS, DEFAULT_BUILDER_INPUT_SCHEMAS, DEFAULT_SEMANTIC_CASE, DEFAULT_SEMANTIC_LINES, pretty, parseJsonObject, workflowIdFromJson, parseJsonValue, parseCommaSeparated, uniqueWorkflowStrings, parseWorkflowSpecList, WORKFLOW_MODULE_PALETTE, WORKFLOW_NODE_TONE, WORKFLOW_NODE_ACCENT, FALLBACK_WORKFLOW_SKILLS, DEFAULT_BUILDER_SKILL_IDS, workflowPaletteKind, workflowPaletteSubtitle, clampWorkflowNodePosition, workflowLayoutFromPayload, safeWorkflowSpecList, workflowSpecToText, workflowItemLabel, workflowInputDisplayName, safeArtifactDownloadFilename, downloadTextFile, ArtifactPreviewCard, outputArtifactForSpec, outputSchemaForSpec, outputEvidenceMappingForSpec, outputSemanticImportForSpec, workflowInputsFromJson, workflowOutputsFromJson, workflowStepsFromJson, workflowOutputDisplayName, artifactShortName, workflowDraftAudit, inputTextValue, updateInputsJsonValue, isFileLikeWorkflowInput, isPatchLikeWorkflowInput, semanticCasesFromLines, isBulkSemanticImportPayload, fastContextDecisionSummary, inputContextSummary, agentMcpRequestSummary, providerReadinessSummary, commandResolutionLines, acceptanceProviderIssues, acceptanceCodetalkProviderIssues, acceptanceWorkflowOutputIssues, acceptanceInstructionPolicyIssues, acceptanceInputRedactionIssues, evidenceValidationSummary, workflowOutputMaterializationSummary, materializationAuditOutputs, replayPlanSummary, executionInputSummary, blackBoxGenerationPolicySummary, memoryArtifactSummary, inputMaterialsSummary, failureRetryContextSummary, rejectedOutputLabel, rejectedOutputReason, evidenceAuditRefs, prioritizedAuditArtifacts, artifactAudience, artifactAudienceLabel, runStatusDisplayLabel, providerStatusDisplayLabel, providerDisplayLabel, workflowRunSnapshotSummary, compactReasonLabel, taskRunEventTitle, taskRunEventDetail, taskRunEventTone, workflowAuditWarningLabel, acceptanceIssueLabel, workflowRunResultMessage, suggestedWorkflowIdFromError, workflowHasSpecializedStep, groupArtifactsByAudience, Panel, ProviderFactRow, ProviderSectionTitle } = WorkbenchShared;
 
 export function useWorkbenchController({
@@ -381,6 +383,15 @@ export function useWorkbenchController({
     }
     return providers;
   }, [providerMatrix]);
+  const runExecutorProviderOptions = useMemo(
+    () =>
+      builderProviderOptions.filter((provider) =>
+        ["agent_cli", "agent_runtime", "codetalk_builtin_llm"].includes(
+          provider.owner,
+        ),
+      ),
+    [builderProviderOptions],
+  );
   const workflowSkillOptions = useMemo<WorkflowSkillOption[]>(() => {
     const catalog = workflowCapabilities?.skill_catalog ?? [];
     const merged = [...catalog, ...FALLBACK_WORKFLOW_SKILLS];
@@ -1363,7 +1374,14 @@ export function useWorkbenchController({
         .filter((node) => !layout.hidden_node_ids.includes(node.id))
         .map((node) => node.id),
     );
-    if (activeWorkflowNodeId && !visibleNodeIds.has(activeWorkflowNodeId)) {
+    const activeNodeIsPersistedCanvasNode = workflowExtraNodes.some(
+      (node) => node.id === activeWorkflowNodeId,
+    );
+    if (
+      activeWorkflowNodeId &&
+      activeNodeIsPersistedCanvasNode &&
+      !visibleNodeIds.has(activeWorkflowNodeId)
+    ) {
       setActiveWorkflowNodeId("");
     }
   }
@@ -1414,6 +1432,7 @@ export function useWorkbenchController({
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
+    setActiveWorkflowNodeId(drag.id);
     if (!drag.moved) return;
     const node = workflowCanvasNodes.find((item) => item.id === drag.id);
     if (node) {
@@ -2006,6 +2025,11 @@ export function useWorkbenchController({
 
   function applyWorkspaceSelection(workspace: Workspace) {
     workspaceAutoSelectionDoneRef.current = true;
+    try {
+      window.localStorage.setItem(WORKBENCH_WORKSPACE_STORAGE_KEY, workspace.id);
+    } catch {
+      // Browser storage can be disabled; the active page still keeps its selection.
+    }
     setWorkspaceId(workspace.id);
     setRepoPath(workspace.repo_path);
     setInputsJson((current) =>
@@ -2201,11 +2225,24 @@ export function useWorkbenchController({
         const queryWorkspace = queryWorkspaceId
           ? visibleWorkspaces.find((workspace) => workspace.id === queryWorkspaceId)
           : null;
+        let persistedWorkspace: Workspace | null = null;
+        try {
+          const persistedWorkspaceId = window.localStorage.getItem(
+            WORKBENCH_WORKSPACE_STORAGE_KEY,
+          );
+          persistedWorkspace = persistedWorkspaceId
+            ? visibleWorkspaces.find(
+                (workspace) => workspace.id === persistedWorkspaceId,
+              ) ?? null
+            : null;
+        } catch {
+          persistedWorkspace = null;
+        }
         if (
-          queryWorkspace &&
+          (queryWorkspace || persistedWorkspace) &&
           !workspaceAutoSelectionDoneRef.current
         ) {
-          applyWorkspaceSelection(queryWorkspace);
+          applyWorkspaceSelection(queryWorkspace ?? persistedWorkspace!);
         }
         if (
           !workspaceAutoSelectionDoneRef.current &&
@@ -3778,7 +3815,7 @@ export function useWorkbenchController({
     motionPreferenceReady, moveWorkflowBoardPan, moveWorkflowNode, newWorkflowInputId, newWorkflowInputName, newWorkflowInputResolver, newWorkflowInputType, newWorkflowOutputArtifact,
     newWorkflowOutputId, newWorkflowOutputName, newWorkflowOutputType, openPreparedConversation, openingConversation, pageDescription, pageTitle, paletteDragModuleRef,
     parseCommaSeparated, parsedPrepareInputs, prefersReducedMotion, prepareTaskRun, preparedProviderReadiness, preparedRun, preparedRunSnapshotSummary, pretty,
-    previewArtifact, prioritizedAuditArtifacts, providerDisplayLabel, providerMatrix, providerOverride, providerProbeResults, providerReadinessSummary, providerStatusDisplayLabel,
+    previewArtifact, prioritizedAuditArtifacts, providerDisplayLabel, providerMatrix, providerOverride, providerProbeResults, providerReadinessSummary, providerStatusDisplayLabel, runExecutorProviderOptions,
     providerTaskProbeResults, rejectedOutputLabel, rejectedOutputReason, renameActiveWorkflowNode, replayPlanSummary, repoPath, requiredInputCount, resetActiveWorkflowNodePosition,
     restoreBuiltinPresets, restoreExistingTaskRun, runAllAgentProviderStartupProbes, runAllAgentProviderTaskProbes, runPanelCapabilitySummary, runPanelDeliverables, runPanelExecutionNotice, runPanelFailureReasons,
     runPanelProgress, runPanelStatus, runPhaseCards, runProviderStartupProbe, runProviderTaskProbe, runSmokeE2E, runStatusDisplayLabel, safeArtifactDownloadFilename,

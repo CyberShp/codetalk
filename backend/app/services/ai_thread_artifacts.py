@@ -169,6 +169,8 @@ def materialize_ai_thread_manifest(
             "schema_status": schema_status,
             "validation_status": validation_status,
         }
+        if schema is not None:
+            item["schema"] = schema
         if reason:
             item["reason"] = reason
             rejection_messages.append(f"{relative_path}: {reason}")
@@ -212,14 +214,58 @@ def build_ai_thread_delivery_zip(root: Path, manifest: dict[str, Any]) -> bytes:
             if not isinstance(item, dict) or item.get("validation_status") != "accepted":
                 continue
             relative_path = str(item.get("relative_path") or "")
-            path = resolve_ai_thread_artifact(root, relative_path)
-            data = path.read_bytes()
-            if path.suffix.lower() in _TEXT_SUFFIXES:
-                data = redact_agent_diagnostic_text(
-                    data.decode("utf-8", errors="replace")
-                ).encode("utf-8")
+            path, data = read_validated_ai_thread_artifact(
+                root, manifest, relative_path
+            )
             archive.writestr(relative_path, data)
     return buffer.getvalue()
+
+
+def read_validated_ai_thread_artifact(
+    root: Path,
+    manifest: dict[str, Any],
+    relative_path: str,
+) -> tuple[Path, bytes]:
+    if manifest.get("status") != "accepted":
+        raise ArtifactContractError("交付清单未通过验收，不能下载文件", manifest=manifest)
+    accepted = {
+        str(item.get("relative_path") or ""): item
+        for item in manifest.get("artifacts") or []
+        if isinstance(item, dict) and item.get("validation_status") == "accepted"
+    }
+    item = accepted.get(relative_path)
+    if item is None:
+        raise ArtifactContractError("交付文件不存在或未通过验收", manifest=manifest)
+    path = resolve_ai_thread_artifact(root, relative_path)
+    if not path.is_file():
+        raise ArtifactContractError("交付文件已不存在，请重新运行任务", manifest=manifest)
+    data = path.read_bytes()
+    expected_size = int(item.get("size_bytes") or 0)
+    if len(data) != expected_size:
+        raise ArtifactContractError(
+            f"交付文件大小在验收后发生变化：{relative_path}", manifest=manifest
+        )
+    expected_sha256 = str(item.get("sha256") or "")
+    actual_sha256 = hashlib.sha256(data).hexdigest()
+    if not expected_sha256 or actual_sha256 != expected_sha256:
+        raise ArtifactContractError(
+            f"交付文件哈希在验收后发生变化：{relative_path}", manifest=manifest
+        )
+    schema = item.get("schema") if isinstance(item.get("schema"), dict) else None
+    if schema is not None:
+        try:
+            payload = json.loads(data.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ArtifactContractError(
+                f"交付文件 JSON 在下载前校验失败：{relative_path}: {exc}", manifest=manifest
+            ) from exc
+        errors = _validate_schema(payload, schema)
+        if errors:
+            raise ArtifactContractError(
+                f"交付文件 schema 在下载前校验失败：{relative_path}: {'；'.join(errors[:5])}",
+                manifest=manifest,
+            )
+    return path, data
 
 
 def _rejected_entry(
@@ -293,4 +339,3 @@ def _validate_schema(value: Any, schema: dict[str, Any], *, path: str = "$") -> 
                 if key in value and isinstance(child_schema, dict):
                     errors.extend(_validate_schema(value[key], child_schema, path=f"{path}.{key}"))
     return errors
-

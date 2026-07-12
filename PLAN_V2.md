@@ -14,7 +14,7 @@ This file is the final release truth source for the 2026-07-12 debt-zero candida
 | A Environment/settings | Pass | Native frontend/API startup, isolated ports, persisted provider, probes, secret redaction and Redis 6399 exclusion. |
 | B Workspace/SPDK index | Pass | Existing SPDK workspace restored and source slices opened; GitNexus queue/backoff contract and UI capacity state covered. |
 | C AI threads | Pass | Real same-task builtin run preserved the full multiline request, four stages, evidence, compact answer and downloads. |
-| D Workbench workflow | Pass | Designer/cockpit route and interaction suite: 17 Playwright cases; preset, inspector, connection and artifact behavior retained after split. |
+| D Workbench workflow | Pass | Designer/cockpit route and interaction suite: 47 Playwright cases; preset, inspector, connection, cross-route workspace continuity and artifact behavior retained after split. |
 | E Analysis -> flow -> SFMEA -> black box | Pass | Same-task run generated three accepted independent deliverables plus manifest and ZIP. |
 | F SFMEA | Pass | 15 complete rows; sampled evidence real; GPT rubric 88/100. |
 | G Black-box cases | Pass | 10 cases, eight required dimensions, external operations/observations only, real SPDK test mappings. |
@@ -30,4 +30,4 @@ Windows real-machine spawn/sandbox validation is not a completion condition for 
 
 ## Final Gate
 
-The candidate may be merged to `feat` only after the full backend suite, frontend lint/TypeScript/build/E2E, deployer tests, secret scan, artifact hygiene and independent review all pass with no open P0/P1/P2.
+The local candidate gate passed with backend `2,062 passed, 8 skipped`, frontend browser E2E `47 passed`, frontend contracts `40 passed`, deployer `173 passed, 1 skipped`, clean ESLint/TypeScript/production build, clean tracked-file secret scan and clean artifact hygiene. Merge remains conditional only on the final independent rereview confirming no open P0/P1/P2.

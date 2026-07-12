@@ -146,6 +146,11 @@ async def stream_agent_runtime(
             "sandbox_write_paths",
             settings.external_agent_sandbox_write_paths,
         ),
+        "sandbox_command": command,
+        "sandbox_read_paths": [
+            *list(runtime.get("sandbox_read_paths") or []),
+            *([prompt_file_path] if prompt_file_path else []),
+        ],
     }
     try:
         sandbox = prepare_agent_sandbox(

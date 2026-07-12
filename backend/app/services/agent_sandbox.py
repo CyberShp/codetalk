@@ -86,7 +86,13 @@ def prepare_agent_sandbox(
     workspace = Path(cwd).resolve() if cwd else None
     allow_network = bool(runtime.get("sandbox_allow_network", True))
     extra_write_paths = _safe_extra_write_paths(runtime.get("sandbox_write_paths"))
-    write_paths = [artifact_dir, *extra_write_paths]
+    command = str(runtime.get("sandbox_command") or "").strip()
+    runtime_read_paths, runtime_state_paths = _runtime_paths(runtime, command)
+    write_paths = _unique_paths([artifact_dir, *runtime_state_paths, *extra_write_paths])
+    system_read_paths = _system_read_paths(platform, command)
+    read_paths = _unique_paths(
+        [*system_read_paths, *runtime_read_paths, *write_paths, *([workspace] if workspace else [])]
+    )
     base_audit = {
         "version": "agent-sandbox-policy-v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -94,7 +100,10 @@ def prepare_agent_sandbox(
         "platform": platform,
         "workspace": str(workspace or ""),
         "workspace_access": "read_only",
+        "read_boundary": "system_runtime_plus_declared_workspace_and_provider_state",
         "artifact_dir": str(artifact_dir),
+        "read_paths": [str(path) for path in read_paths],
+        "runtime_state_paths": [str(path) for path in runtime_state_paths],
         "write_paths": [str(path) for path in write_paths],
         "network": "outbound_allowed" if allow_network else "blocked",
         "subprocess": "allowed_and_inherited",
@@ -114,7 +123,7 @@ def prepare_agent_sandbox(
             profile_path = artifact_dir / "sandbox-profile.sb"
             profile_path.write_text(
                 _macos_profile(
-                    workspace=workspace,
+                    read_paths=read_paths,
                     write_paths=write_paths,
                     allow_network=allow_network,
                 ),
@@ -131,9 +140,14 @@ def prepare_agent_sandbox(
     if platform.startswith("linux"):
         bwrap = which("bwrap") or which("bubblewrap")
         if bwrap:
-            wrapper = [bwrap, "--die-with-parent", "--new-session", "--ro-bind", "/", "/"]
+            wrapper = [bwrap, "--die-with-parent", "--new-session", "--tmpfs", "/"]
+            for path in read_paths:
+                if path in write_paths:
+                    continue
+                wrapper.extend(["--ro-bind", str(path), str(path)])
             for path in write_paths:
                 wrapper.extend(["--bind", str(path), str(path)])
+            wrapper.extend(["--dev", "/dev", "--proc", "/proc"])
             if workspace:
                 wrapper.extend(["--chdir", str(workspace)])
             if not allow_network:
@@ -210,9 +224,81 @@ def _safe_extra_write_paths(value: Any) -> list[Path]:
     return paths
 
 
+def _safe_read_paths(value: Any) -> list[Path]:
+    items = value if isinstance(value, list) else []
+    paths: list[Path] = []
+    for item in items:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        path = Path(text).expanduser().resolve()
+        if path.exists() and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def _runtime_paths(runtime: dict[str, Any], command: str) -> tuple[list[Path], list[Path]]:
+    read_paths = _safe_read_paths(runtime.get("sandbox_read_paths"))
+    state_paths = _safe_extra_write_paths(runtime.get("sandbox_state_paths"))
+    command_name = Path(command).name.lower()
+    home = Path.home().resolve()
+
+    def add_read(path: Path) -> None:
+        path = path.expanduser().resolve()
+        if path.exists() and path not in read_paths:
+            read_paths.append(path)
+
+    def add_state(path: Path) -> None:
+        path = path.expanduser().resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        if path not in state_paths:
+            state_paths.append(path)
+
+    if "opencode" in command_name:
+        add_read(home / ".config" / "opencode")
+        add_read(home / ".opencode")
+        add_state(home / ".local" / "share" / "opencode")
+        add_state(home / ".local" / "state" / "opencode")
+        add_state(home / ".cache" / "opencode")
+    elif "codex" in command_name:
+        add_state(Path(os.environ.get("CODEX_HOME") or home / ".codex"))
+    elif "claude" in command_name or command_name in {"ccr", "ccr.cmd"}:
+        add_state(Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude"))
+        ccr_config = str(os.environ.get("CCR_CONFIG_PATH") or "").strip()
+        if ccr_config:
+            add_read(Path(ccr_config))
+    return read_paths, state_paths
+
+
+def _system_read_paths(platform: str, command: str) -> list[Path]:
+    candidates = (
+        ["/System", "/usr", "/bin", "/sbin", "/Library", "/opt", "/private/etc", "/private/var/db"]
+        if platform.startswith("darwin")
+        else ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc", "/opt"]
+    )
+    paths = [Path(value).resolve() for value in candidates if Path(value).exists()]
+    if command:
+        command_path = Path(command).expanduser()
+        if command_path.is_absolute() and command_path.exists():
+            command_root = command_path.resolve().parent
+            if command_root.name == "bin" and command_root.parent != Path("/"):
+                command_root = command_root.parent
+            paths.append(command_root)
+    return _unique_paths(paths)
+
+
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    result: list[Path] = []
+    for path in paths:
+        resolved = path.resolve()
+        if resolved not in result:
+            result.append(resolved)
+    return result
+
+
 def _macos_profile(
     *,
-    workspace: Path | None,
+    read_paths: list[Path],
     write_paths: list[Path],
     allow_network: bool,
 ) -> str:
@@ -220,7 +306,11 @@ def _macos_profile(
         "(version 1)",
         "(deny default)",
         "(allow process*)",
-        "(allow file-read*)",
+        '(allow file-read* (require-all (require-not (subpath "/Users")) '
+        '(require-not (subpath "/Volumes")) '
+        '(require-not (subpath "/private/var/folders")) '
+        '(require-not (subpath "/private/tmp"))))',
+        "(allow file-read-metadata)",
         "(allow sysctl-read)",
         "(allow mach-lookup)",
         "(allow signal (target same-sandbox))",
@@ -228,10 +318,22 @@ def _macos_profile(
     ]
     if allow_network:
         lines.append("(allow network-outbound)")
+    parent_literals: list[Path] = []
+    for path in read_paths:
+        if not str(path).startswith("/Users/"):
+            continue
+        parent = path.parent
+        while str(parent).startswith("/Users") and parent != Path("/"):
+            if parent not in parent_literals:
+                parent_literals.append(parent)
+            parent = parent.parent
+    for path in sorted(parent_literals, key=lambda item: len(item.parts)):
+        lines.append(f'(allow file-read* (literal "{_escape_profile_path(path)}"))')
+    for path in read_paths:
+        selector = "subpath" if path.is_dir() else "literal"
+        lines.append(f'(allow file-read* ({selector} "{_escape_profile_path(path)}"))')
     for path in write_paths:
         lines.append(f'(allow file-write* (subpath "{_escape_profile_path(path)}"))')
-    if workspace:
-        lines.append(f'; workspace read-only: "{_escape_profile_path(workspace)}"')
     return "\n".join(lines) + "\n"
 
 

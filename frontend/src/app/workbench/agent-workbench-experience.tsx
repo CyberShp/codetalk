@@ -12,7 +12,11 @@ export function AgentWorkbenchExperience({ initialView = "run" }: { initialView?
   const { Loader2, RefreshCw, WorkbenchStageFrame, activeWorkbenchView, error, loadWorkflows, loading, message, motionPreferenceReady, pageDescription, pageTitle, prefersReducedMotion, systemAudit, taskRuns, workbenchRootRef, workflowPresets, workflows, workspaces } = scope;
   return (<div
       ref={workbenchRootRef}
-      className="ct-workbench-shell w-full px-4 xl:px-6"
+      data-hydrated={motionPreferenceReady ? "true" : "false"}
+      aria-busy={!motionPreferenceReady}
+      className={`ct-workbench-shell w-full px-4 xl:px-6 ${
+        motionPreferenceReady ? "" : "pointer-events-none"
+      }`}
     >
       <div className="ct-workbench-hero ct-liquid-glass mb-3 overflow-hidden rounded-xl px-3 py-2.5">
         <div className="flex flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">

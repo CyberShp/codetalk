@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import io
 import json
+import mimetypes
 import re
 import sys
 import uuid
@@ -15,6 +16,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
@@ -2752,6 +2754,34 @@ async def get_task_run_artifact_content(
     if not path.exists() or not path.is_file():
         raise HTTPException(status_code=404, detail=f"Unknown artifact: {artifact_path}")
     return _artifact_content_payload(task_dir, path, max_chars=max_chars)
+
+
+@router.get("/task-runs/{task_run_id}/artifacts/download/{artifact_path:path}")
+async def download_task_run_artifact(
+    task_run_id: str,
+    artifact_path: str,
+) -> Response:
+    try:
+        task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    task_dir = Path(task_run.artifact_dir)
+    path = _resolve_task_artifact_path(task_dir, artifact_path)
+    if not path.exists() or not path.is_file():
+        raise HTTPException(status_code=404, detail=f"Unknown artifact: {artifact_path}")
+    data = path.read_bytes()
+    if path.suffix.lower() in TEXT_ARTIFACT_SUFFIXES:
+        data = redact_agent_diagnostic_text(
+            data.decode("utf-8", errors="replace")
+        ).encode("utf-8")
+    return Response(
+        content=data,
+        media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{quote(path.name)}",
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 @router.post("/task-runs/prepare", status_code=201)

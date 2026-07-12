@@ -42,11 +42,16 @@ async def test_stream_runtime_enforces_real_workspace_readonly_sandbox(tmp_path)
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / "source.txt").write_text("source", encoding="utf-8")
+    secret = tmp_path / "host-secret.txt"
+    secret.write_text("must-not-leak", encoding="utf-8")
     artifacts = tmp_path / "artifacts"
     script = (
         'cat >/dev/null; cat "$CODETALK_REPO_PATH/source.txt" > "$CODETALK_AGENT_ARTIFACT_DIR/result.md"; '
         'if echo forbidden > "$CODETALK_REPO_PATH/blocked.txt"; then echo WRITE_ESCAPED; '
-        'else echo SANDBOX_BLOCKED; fi'
+        'else echo SANDBOX_BLOCKED; fi; '
+        'if secret_value=$(cat "$CODETALK_HOST_SECRET"); '
+        'then printf "%s" "$secret_value" > "$CODETALK_AGENT_ARTIFACT_DIR/leak.txt"; '
+        'echo READ_ESCAPED; else echo SANDBOX_READ_BLOCKED; fi'
     )
     output = []
 
@@ -62,6 +67,7 @@ async def test_stream_runtime_enforces_real_workspace_readonly_sandbox(tmp_path)
             "env": {
                 "CODETALK_AGENT_ARTIFACT_DIR": str(artifacts),
                 "CODETALK_REPO_PATH": str(repo),
+                "CODETALK_HOST_SECRET": str(secret),
             },
         },
         prompt="read only task",
@@ -71,8 +77,11 @@ async def test_stream_runtime_enforces_real_workspace_readonly_sandbox(tmp_path)
 
     assert "SANDBOX_BLOCKED" in "".join(output)
     assert "WRITE_ESCAPED" not in "".join(output)
+    assert "SANDBOX_READ_BLOCKED" in "".join(output)
+    assert "READ_ESCAPED" not in "".join(output)
     assert (artifacts / "result.md").read_text(encoding="utf-8") == "source"
     assert not (repo / "blocked.txt").exists()
+    assert not (artifacts / "leak.txt").exists()
     policy = (artifacts / "sandbox_policy.json").read_text(encoding="utf-8")
     assert '"status": "active"' in policy
 
