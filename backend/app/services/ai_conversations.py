@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import aiosqlite
 
@@ -37,6 +37,7 @@ from app.services.agent_invocation_contract import (
     build_agent_invocation_execution_contract,
 )
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
+from app.services.ai_thread_artifacts import materialize_ai_thread_manifest
 from app.services.test_activity_contract import (
     audit_test_activity_response,
     build_test_activity_contract,
@@ -209,6 +210,10 @@ def ai_thread_artifact_path(conversation_id: str, run_id: str) -> Path:
 
 def ai_thread_agent_artifact_dir(conversation_id: str, run_id: str) -> Path:
     return ai_thread_artifact_path(conversation_id, run_id).parent / "agent-artifacts"
+
+
+def ai_thread_delivery_dir(conversation_id: str, run_id: str) -> Path:
+    return ai_thread_artifact_path(conversation_id, run_id).parent / "deliverables"
 
 
 async def _write_json_file(path: Path, payload: Any) -> None:
@@ -5590,6 +5595,38 @@ async def _prepare_assistant_delivery(
         ]
     )
     await _to_thread(artifact_path.write_text, artifact_body, "utf-8")
+    delivery_dir = ai_thread_delivery_dir(str(conversation["id"]), run_id)
+    delivery_dir.mkdir(parents=True, exist_ok=True)
+    declared_artifacts = _bound_workflow_required_artifacts(conversation) if artifact_only else []
+    if declared_artifacts:
+        source_root = ai_thread_agent_artifact_dir(str(conversation["id"]), run_id)
+        for contract in declared_artifacts:
+            relative = Path(str(contract.get("artifact") or ""))
+            if relative.is_absolute() or ".." in relative.parts:
+                continue
+            source = source_root / relative
+            if not source.is_file():
+                continue
+            destination = delivery_dir / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            await _to_thread(shutil.copyfile, source, destination)
+    else:
+        delivery_path = delivery_dir / "assistant-output.md"
+        await _to_thread(delivery_path.write_text, artifact_body, "utf-8")
+        declared_artifacts = [
+            {
+                "artifact": "assistant-output.md",
+                "type": "markdown",
+                "required": True,
+            }
+        ]
+    manifest = await _to_thread(
+        materialize_ai_thread_manifest,
+        delivery_dir,
+        run_id=run_id,
+        declared_artifacts=declared_artifacts,
+        producer=str(conversation.get("runtime_type") or "builtin_llm"),
+    )
     artifact_url = f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifact"
     actions = [
         {
@@ -5598,6 +5635,31 @@ async def _prepare_assistant_delivery(
             "href": artifact_url,
             "kind": "download",
         },
+        {
+            "id": "download_run_artifacts_zip",
+            "label": "下载全部交付件",
+            "href": f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifacts.zip",
+            "kind": "download",
+        },
+        {
+            "id": "download_run_artifact_manifest",
+            "label": "查看交付清单",
+            "href": f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifacts/manifest",
+            "kind": "download",
+        },
+        *[
+            {
+                "id": f"download_run_artifact_file_{index}",
+                "label": f"下载 {item.get('filename') or item.get('relative_path')}",
+                "href": (
+                    f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/"
+                    f"artifacts/content/{quote(str(item.get('relative_path') or ''), safe='/')}"
+                ),
+                "kind": "download",
+            }
+            for index, item in enumerate(manifest.get("artifacts") or [])
+            if isinstance(item, dict) and item.get("validation_status") == "accepted"
+        ],
         *actions,
     ]
     visible = _compact_thread_artifact_preview(
@@ -5609,8 +5671,13 @@ async def _prepare_assistant_delivery(
         if artifact_only
         else "完整测试设计/SFMEA/黑盒用例已保存为下载产物。请使用“下载完整产物”获取完整产物。"
     )
+    delivered_names = "、".join(
+        str(item.get("relative_path") or "")
+        for item in manifest.get("artifacts") or []
+        if isinstance(item, dict) and item.get("validation_status") == "accepted"
+    )
     return (
-        f"{visible}\n\n---\n{suffix}",
+        f"{visible}\n\n交付文件：{delivered_names}\n\n---\n{suffix}",
         actions,
     )
 

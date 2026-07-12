@@ -15,11 +15,17 @@ from app.services.ai_conversations import (
     AI_SCOPE_TYPES,
     AIConversationStore,
     ai_thread_artifact_path,
+    ai_thread_delivery_dir,
     build_context_references,
     maybe_await,
     run_agent_generation,
     run_generation,
     sanitize_ai_thread_artifact_file,
+)
+from app.services.ai_thread_artifacts import (
+    ArtifactContractError,
+    build_ai_thread_delivery_zip,
+    resolve_ai_thread_artifact,
 )
 from app.services.agent_runtimes import AgentRuntimeStore
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
@@ -344,6 +350,88 @@ async def download_run_artifact(conversation_id: str, run_id: str) -> FileRespon
         path,
         media_type="text/markdown; charset=utf-8",
         filename=f"{conversation_id}-{run_id}-assistant-output.md",
+    )
+
+
+async def _require_conversation_run(
+    conversation_id: str,
+    run_id: str,
+) -> dict[str, Any]:
+    store = _store()
+    try:
+        await store.get_conversation(conversation_id)
+        run = await store.get_run(run_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="AI conversation or run not found")
+    if run["conversation_id"] != conversation_id:
+        raise HTTPException(status_code=404, detail="AI conversation or run not found")
+    return run
+
+
+def _read_delivery_manifest(conversation_id: str, run_id: str) -> dict[str, Any]:
+    path = ai_thread_delivery_dir(conversation_id, run_id) / "artifact_manifest.json"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="AI run artifact manifest not found")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail=f"AI run artifact manifest is invalid: {exc}")
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=500, detail="AI run artifact manifest is invalid")
+    return payload
+
+
+@router.get("/{conversation_id}/runs/{run_id}/artifacts/manifest")
+async def get_run_artifact_manifest(conversation_id: str, run_id: str) -> dict[str, Any]:
+    await _require_conversation_run(conversation_id, run_id)
+    return _redact_payload(_read_delivery_manifest(conversation_id, run_id))
+
+
+@router.get("/{conversation_id}/runs/{run_id}/artifacts/content/{artifact_path:path}")
+async def download_run_artifact_file(
+    conversation_id: str,
+    run_id: str,
+    artifact_path: str,
+) -> FileResponse:
+    await _require_conversation_run(conversation_id, run_id)
+    manifest = _read_delivery_manifest(conversation_id, run_id)
+    accepted = {
+        str(item.get("relative_path") or ""): item
+        for item in manifest.get("artifacts") or []
+        if isinstance(item, dict) and item.get("validation_status") == "accepted"
+    }
+    if artifact_path not in accepted:
+        raise HTTPException(status_code=404, detail="AI run artifact not found or not accepted")
+    root = ai_thread_delivery_dir(conversation_id, run_id)
+    try:
+        path = resolve_ai_thread_artifact(root, artifact_path)
+    except ArtifactContractError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="AI run artifact not found")
+    item = accepted[artifact_path]
+    return FileResponse(
+        path,
+        media_type=str(item.get("media_type") or "application/octet-stream"),
+        filename=path.name,
+    )
+
+
+@router.get("/{conversation_id}/runs/{run_id}/artifacts.zip")
+async def download_run_artifacts_zip(conversation_id: str, run_id: str) -> Response:
+    await _require_conversation_run(conversation_id, run_id)
+    root = ai_thread_delivery_dir(conversation_id, run_id)
+    manifest = _read_delivery_manifest(conversation_id, run_id)
+    try:
+        payload = build_ai_thread_delivery_zip(root, manifest)
+    except ArtifactContractError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return Response(
+        content=payload,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{run_id}-deliverables.zip"'
+        },
     )
 
 

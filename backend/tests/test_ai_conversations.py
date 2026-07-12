@@ -1,7 +1,9 @@
 import asyncio
 import json
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from io import BytesIO
 from pathlib import Path
 
 import aiosqlite
@@ -5183,6 +5185,113 @@ async def test_downloadable_assistant_artifact_redacts_secrets_before_write(
 
 
 @pytest.mark.asyncio
+async def test_downloadable_assistant_delivery_writes_manifest_and_file_actions(
+    tmp_path,
+    monkeypatch,
+):
+    from app.services import ai_conversations
+
+    run_root = tmp_path / "conv-manifest" / "run-manifest"
+    monkeypatch.setattr(
+        ai_conversations,
+        "ai_thread_artifact_path",
+        lambda _conversation_id, _run_id: run_root / "assistant-output.md",
+    )
+    monkeypatch.setattr(
+        ai_conversations,
+        "ai_thread_delivery_dir",
+        lambda _conversation_id, _run_id: run_root / "deliverables",
+    )
+
+    visible, actions = await ai_conversations._prepare_assistant_delivery(
+        run_id="run-manifest",
+        conversation={"id": "conv-manifest", "title": "多文件交付"},
+        content="# 报告\n\n已完成分析。",
+        user_message="请生成可下载报告",
+        force_artifact=True,
+    )
+
+    manifest = json.loads(
+        (run_root / "deliverables" / "artifact_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["status"] == "accepted"
+    assert manifest["artifacts"][0]["relative_path"] == "assistant-output.md"
+    action_ids = {action["id"] for action in actions}
+    assert "download_run_artifacts_zip" in action_ids
+    assert "download_run_artifact_manifest" in action_ids
+    assert "交付文件" in visible
+
+
+@pytest.mark.asyncio
+async def test_ai_thread_multi_file_manifest_content_and_zip_endpoints(
+    sqlite_db,
+    tmp_path,
+    monkeypatch,
+):
+    from app.api import ai_conversations as api_module
+    from app.services.ai_conversations import AIConversationStore
+    from app.services.ai_thread_artifacts import materialize_ai_thread_manifest
+
+    store = AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="freeform",
+        scope_id="global",
+        workspace_id="global",
+        title="多文件接口",
+    )
+    created = await store.create_user_message_and_run(
+        conversation_id=conversation["id"],
+        content="生成报告",
+        references=[],
+    )
+    run_id = created["run"]["id"]
+    delivery_dir = tmp_path / conversation["id"] / run_id / "deliverables"
+    delivery_dir.mkdir(parents=True)
+    (delivery_dir / "report.md").write_text("# report", encoding="utf-8")
+    materialize_ai_thread_manifest(
+        delivery_dir,
+        run_id=run_id,
+        declared_artifacts=[
+            {"artifact": "report.md", "type": "markdown", "required": True},
+        ],
+        producer="builtin_llm",
+    )
+    monkeypatch.setattr(api_module, "_store", lambda: AIConversationStore(sqlite_db))
+    monkeypatch.setattr(
+        api_module,
+        "ai_thread_delivery_dir",
+        lambda _conversation_id, _run_id: delivery_dir,
+    )
+
+    async with AsyncClient(
+        transport=ASGITransport(app=_test_app(sqlite_db)),
+        base_url="http://test",
+    ) as client:
+        manifest = await client.get(
+            f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifacts/manifest"
+        )
+        content = await client.get(
+            f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifacts/content/report.md"
+        )
+        archive = await client.get(
+            f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifacts.zip"
+        )
+        escaped = await client.get(
+            f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifacts/content/../secret.txt"
+        )
+
+    assert manifest.status_code == 200
+    assert manifest.json()["status"] == "accepted"
+    assert content.status_code == 200
+    assert content.text == "# report"
+    assert archive.status_code == 200
+    assert archive.headers["content-type"].startswith("application/zip")
+    with zipfile.ZipFile(BytesIO(archive.content)) as zipped:
+        assert sorted(zipped.namelist()) == ["artifact_manifest.json", "report.md"]
+    assert escaped.status_code in {400, 404}
+
+
+@pytest.mark.asyncio
 async def test_structured_test_activity_without_completeness_adjective_still_runs_quality_gate(
     sqlite_db,
     tmp_path,
@@ -5540,6 +5649,92 @@ async def test_bound_workflow_artifact_validation_checks_json_schema(
     )
     assert validation["status"] == "ok"
     assert validation["accepted"] == [{"artifact": "result.json", "size": 13}]
+
+
+async def test_bound_workflow_delivery_manifest_keeps_each_output_as_a_real_file(
+    sqlite_db,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services import ai_conversations
+    from app.services.workflow_dsl import WorkflowStore
+
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path / "data"))
+    WorkflowStore(settings.data_path / "workbench" / "workflows.db").save_workflow({
+        "id": "multi_file_bound_delivery",
+        "name": "多文件交付",
+        "version": 1,
+        "inputs": [],
+        "steps": [{
+            "id": "analysis",
+            "type": "agent_task",
+            "required_artifacts": ["business_flow.md", "sfmea.json"],
+        }],
+        "outputs": [
+            {
+                "id": "flow",
+                "type": "markdown",
+                "from": "analysis",
+                "artifact": "business_flow.md",
+            },
+            {
+                "id": "sfmea",
+                "type": "json",
+                "from": "analysis",
+                "artifact": "sfmea.json",
+                "schema": {"type": "array", "minItems": 1},
+            },
+        ],
+    })
+    conversation = {
+        "id": "conv-multi-bound",
+        "title": "多文件绑定交付",
+        "runtime_type": "builtin_llm",
+        "initial_context": {"selected_workflow_id": "multi_file_bound_delivery"},
+    }
+    agent_dir = tmp_path / "agent-artifacts"
+    agent_dir.mkdir()
+    (agent_dir / "business_flow.md").write_text("# Flow", encoding="utf-8")
+    (agent_dir / "sfmea.json").write_text(
+        '[{"failure_mode":"timeout"}]', encoding="utf-8"
+    )
+    delivery_dir = tmp_path / "deliverables"
+    monkeypatch.setattr(
+        ai_conversations,
+        "ai_thread_agent_artifact_dir",
+        lambda _conversation_id, _run_id: agent_dir,
+    )
+    monkeypatch.setattr(
+        ai_conversations,
+        "ai_thread_delivery_dir",
+        lambda _conversation_id, _run_id: delivery_dir,
+    )
+    monkeypatch.setattr(
+        ai_conversations,
+        "ai_thread_artifact_path",
+        lambda _conversation_id, _run_id: tmp_path / "assistant-output.md",
+    )
+
+    visible, actions = await ai_conversations._prepare_assistant_delivery(
+        run_id="run-multi-bound",
+        conversation=conversation,
+        content="已按工作流生成两个交付件。",
+        user_message="执行绑定工作流",
+        force_artifact=True,
+        artifact_only=True,
+    )
+
+    manifest = json.loads((delivery_dir / "artifact_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["status"] == "accepted"
+    assert {item["relative_path"] for item in manifest["artifacts"]} == {
+        "business_flow.md",
+        "sfmea.json",
+    }
+    assert (delivery_dir / "business_flow.md").read_text(encoding="utf-8") == "# Flow"
+    assert "business_flow.md" in visible
+    assert "sfmea.json" in visible
+    assert any(action["id"] == "download_run_artifacts_zip" for action in actions)
 
 
 async def test_bound_workflow_builtin_materializes_markdown_and_json_envelope(
