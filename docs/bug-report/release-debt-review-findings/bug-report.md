@@ -62,3 +62,5 @@ created: 2026-07-12
 新增红绿测试覆盖符号链接首次验收与验收后替换、活跃 provider 取消、cancelled 终态保护、队列第 3 个请求拒绝、120 秒 `Retry-After`；相关回归 `424 passed`。
 
 追加修复后的最终门禁：后端 `2,070 passed, 8 skipped`；浏览器 E2E `47 passed`；前端契约 `40 passed`；部署器 `173 passed, 1 skipped`；lint、TypeScript 和生产构建通过。
+
+独立 reviewer 对提交 `89938780` 复核后明确放行：五项问题全部关闭，无未处理 P0/P1/P2；reviewer 定向复核 `43 passed`，`git diff --check` 通过。

@@ -30,4 +30,4 @@ Windows real-machine spawn/sandbox validation is not a completion condition for 
 
 ## Final Gate
 
-The local candidate gate passed with backend `2,070 passed, 8 skipped`, frontend browser E2E `47 passed`, frontend contracts `40 passed`, deployer `173 passed, 1 skipped`, clean ESLint/TypeScript/production build, clean tracked-file secret scan and clean artifact hygiene. Merge remains conditional only on the final independent rereview confirming no open P0/P1/P2.
+The candidate gate passed with backend `2,070 passed, 8 skipped`, frontend browser E2E `47 passed`, frontend contracts `40 passed`, deployer `173 passed, 1 skipped`, clean ESLint/TypeScript/production build, clean tracked-file secret scan and clean artifact hygiene. Independent rereview of `89938780` confirmed no open P0/P1/P2.

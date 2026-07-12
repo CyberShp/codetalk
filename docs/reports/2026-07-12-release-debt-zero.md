@@ -50,6 +50,7 @@ GitNexus continuity was exercised through the browser by creating two detached S
 - Tracked-file secret scan outside test fixtures was clean; no generated test, Playwright, Next or Python cache artifact is tracked.
 - Node selection was repeated four times after the hydration gate fix; all four runs passed. The four failures found by the first full browser pass were rerun directly and then covered again by the green 47-test full pass.
 - Independent review findings and their closure are recorded in `docs/bug-report/release-debt-review-findings/bug-report.md`.
+- Independent rereview explicitly approved `89938780` with no open P0/P1/P2.
 
 ## Remaining Risk
 
