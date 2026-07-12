@@ -13,6 +13,14 @@ from app.api import tasks
 from app.database import _MIGRATIONS, _SCHEMA, get_db
 
 
+@pytest.fixture(autouse=True)
+def _disable_external_agent_sandbox_for_legacy_test_doubles(monkeypatch):
+    """Keep generic fake agents unconstrained; sandbox tests opt in explicitly."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "external_agent_sandbox_mode", "off")
+
+
 @asynccontextmanager
 async def _test_lifespan(app: FastAPI):
     yield

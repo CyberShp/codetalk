@@ -17,6 +17,11 @@ def _set_existing_ccr_config(tmp_path, monkeypatch) -> Path:
     return config
 
 
+def _sandbox_unwrapped_argv(argv, executable: str) -> list[str]:
+    values = list(argv)
+    return values[values.index(executable):]
+
+
 def test_ccr_config_path_env_is_injected_into_ccr_code(monkeypatch, tmp_path):
     from app.services.external_agent_discovery import _normalize_ccr_code_print_argv
 
@@ -2640,6 +2645,18 @@ def test_agent_process_env_injects_configured_ccr_config_path(tmp_path, monkeypa
     assert env["CCR_CONFIG_PATH"] == str(config)
 
 
+def test_agent_process_env_filters_unrelated_parent_secret(tmp_path, monkeypatch):
+    from app.services.external_agent_discovery import _agent_process_env
+
+    monkeypatch.setenv("UNRELATED_DISCOVERY_SECRET", "must-not-leak")
+    monkeypatch.setenv("PATH", "/usr/bin")
+
+    env = _agent_process_env("opencode", tmp_path)
+
+    assert env["PATH"] == "/usr/bin"
+    assert "UNRELATED_DISCOVERY_SECRET" not in env
+
+
 def test_run_provider_cli_error_keeps_ccr_config_hint(tmp_path, monkeypatch):
     from app.services.external_agent_discovery import AgentDiscoveryRequest, run_external_agent_discovery
 
@@ -2936,7 +2953,11 @@ def test_run_provider_uses_fallback_after_default_ccr_run_invalid_output(tmp_pat
     assert any("primary command failed" in item for item in results[0].warnings)
     assert len(results[0].runtime_attempts) >= 2
     assert results[0].runtime_attempts[0]["status"] == "available"
-    assert results[0].runtime_attempts[0]["run_status"] in {"error", "invalid_output"}
+    assert results[0].runtime_attempts[0]["run_status"] in {
+        "configuration_error",
+        "error",
+        "invalid_output",
+    }
     assert results[0].runtime_attempts[-1]["run_status"] == "ok"
     assert runtime_attempts == results[0].runtime_attempts
 
@@ -3719,9 +3740,10 @@ def test_startup_probe_launches_agent_and_parses_json(tmp_path, monkeypatch):
     assert result["healthy"] is True
     assert result["status"] == "ok"
     assert result["message"] == "startup_probe_ok"
-    assert captured["argv"][0:2] == ("fake-agent", "-p")
-    assert "startup probe" in captured["argv"][2]
-    assert captured["argv"][3:] == ("--output-format", "json")
+    agent_argv = _sandbox_unwrapped_argv(captured["argv"], "fake-agent")
+    assert agent_argv[0:2] == ["fake-agent", "-p"]
+    assert "startup probe" in agent_argv[2]
+    assert agent_argv[3:] == ["--output-format", "json"]
     assert captured["cwd"] == str(tmp_path.resolve())
     assert captured["env"]["CODETALK_AGENT_READONLY"] == "1"
     assert captured["env"]["CODETALK_AGENT_ARTIFACT_DIR"]
@@ -3780,9 +3802,10 @@ def test_run_provider_claude_print_mode_passes_prompt_as_argument(tmp_path, monk
     ))
 
     assert results[0].status == "ok"
-    assert captured["argv"][0:2] == ("fake-agent", "-p")
-    assert "analysis_object_text" in captured["argv"][2]
-    assert captured["argv"][3:] == ("--output-format", "json")
+    agent_argv = _sandbox_unwrapped_argv(captured["argv"], "fake-agent")
+    assert agent_argv[0:2] == ["fake-agent", "-p"]
+    assert "analysis_object_text" in agent_argv[2]
+    assert agent_argv[3:] == ["--output-format", "json"]
     assert captured["stdin"] == ""
 
 
@@ -3837,7 +3860,7 @@ def test_run_provider_bare_ccr_code_uses_print_argument_transport(tmp_path, monk
     ))
 
     assert results[0].status == "ok"
-    argv = list(captured["argv"])
+    argv = _sandbox_unwrapped_argv(captured["argv"], "C:/tools/ccr.exe")
     assert argv[0:6] == ["C:/tools/ccr.exe", "code", "--config", str(config), "--", "-p"]
     assert "analysis_object_text" in argv[6]
     assert "--output-format" not in argv
@@ -3905,10 +3928,12 @@ def test_run_provider_retries_stdin_when_ccr_print_arg_is_rejected(tmp_path, mon
     assert results[0].status == "ok"
     assert results[0].raw_summary == "stdin_ok"
     assert len(captured) == 2
-    assert captured[0]["argv"][0:6] == ["C:/tools/ccr.exe", "code", "--config", str(config), "--", "-p"]
-    assert "analysis_object_text" in captured[0]["argv"][6]
+    first_argv = _sandbox_unwrapped_argv(captured[0]["argv"], "C:/tools/ccr.exe")
+    second_argv = _sandbox_unwrapped_argv(captured[1]["argv"], "C:/tools/ccr.exe")
+    assert first_argv[0:6] == ["C:/tools/ccr.exe", "code", "--config", str(config), "--", "-p"]
+    assert "analysis_object_text" in first_argv[6]
     assert captured[0]["stdin"] == ""
-    assert captured[1]["argv"] == ["C:/tools/ccr.exe", "code", "--config", str(config)]
+    assert second_argv == ["C:/tools/ccr.exe", "code", "--config", str(config)]
     assert "analysis_object_text" in captured[1]["stdin"]
     assert [item["prompt_transport"] for item in results[0].runtime_attempts] == ["argv", "stdin"]
     assert results[0].runtime_attempts[1]["transport_fallback_from"] == "argv"
@@ -3981,10 +4006,11 @@ def test_run_provider_replaces_configured_claude_print_placeholder(tmp_path, mon
     ))
 
     assert results[0].status == "ok"
-    assert captured["argv"][0:2] == ("fake-agent", "-p")
-    assert "analysis_object_text" in captured["argv"][2]
-    assert "configured placeholder" not in captured["argv"]
-    assert captured["argv"][3:] == ("--output-format", "json")
+    agent_argv = _sandbox_unwrapped_argv(captured["argv"], "fake-agent")
+    assert agent_argv[0:2] == ["fake-agent", "-p"]
+    assert "analysis_object_text" in agent_argv[2]
+    assert "configured placeholder" not in agent_argv
+    assert agent_argv[3:] == ["--output-format", "json"]
     assert captured["stdin"] == ""
 
 
@@ -4073,9 +4099,11 @@ def test_startup_probe_retries_stdin_when_ccr_print_arg_is_rejected(tmp_path, mo
     assert result["healthy"] is True
     assert result["status"] == "ok"
     assert len(captured) == 2
-    assert captured[0]["argv"][0:6] == ["C:/tools/ccr.exe", "code", "--config", str(config), "--", "-p"]
+    first_argv = _sandbox_unwrapped_argv(captured[0]["argv"], "C:/tools/ccr.exe")
+    second_argv = _sandbox_unwrapped_argv(captured[1]["argv"], "C:/tools/ccr.exe")
+    assert first_argv[0:6] == ["C:/tools/ccr.exe", "code", "--config", str(config), "--", "-p"]
     assert captured[0]["stdin"] == ""
-    assert captured[1]["argv"] == ["C:/tools/ccr.exe", "code", "--config", str(config)]
+    assert second_argv == ["C:/tools/ccr.exe", "code", "--config", str(config)]
     assert "startup probe" in captured[1]["stdin"]
     attempts = result["health"]["attempts"]
     assert [item["prompt_transport"] for item in attempts] == ["argv", "stdin"]

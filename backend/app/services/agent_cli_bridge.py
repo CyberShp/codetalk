@@ -15,6 +15,12 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any, Callable
 
+from app.config import settings
+from app.services.agent_sandbox import (
+    AgentSandboxError,
+    filtered_agent_environment,
+    prepare_agent_sandbox,
+)
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
 from app.services.agent_runtimes import MANAGED_PROVIDER_PROMPT_TRANSPORTS, validate_agent_command
 
@@ -128,6 +134,35 @@ async def stream_agent_runtime(
     process_kwargs: dict[str, Any] = {}
     if isolate_process_group:
         process_kwargs["start_new_session"] = True
+    artifact_dir = Path(env["CODETALK_AGENT_ARTIFACT_DIR"])
+    sandbox_runtime = {
+        **runtime,
+        "sandbox_mode": runtime.get("sandbox_mode") or settings.external_agent_sandbox_mode,
+        "sandbox_allow_network": runtime.get(
+            "sandbox_allow_network",
+            settings.external_agent_sandbox_allow_network,
+        ),
+        "sandbox_write_paths": runtime.get(
+            "sandbox_write_paths",
+            settings.external_agent_sandbox_write_paths,
+        ),
+    }
+    try:
+        sandbox = prepare_agent_sandbox(
+            runtime=sandbox_runtime,
+            cwd=cwd,
+            artifact_dir=artifact_dir,
+        )
+    except AgentSandboxError as exc:
+        if prompt_file_path:
+            Path(prompt_file_path).unlink(missing_ok=True)
+        raise AgentRuntimeError(str(exc)) from exc
+    if stderr_update is not None:
+        update_result = stderr_update(f"Agent 隔离：{sandbox.message}")
+        if asyncio.iscoroutine(update_result):
+            await update_result
+    if sandbox.wrapper:
+        command, args = sandbox.wrapper[0], [*sandbox.wrapper[1:], command, *args]
     try:
         proc = await asyncio.create_subprocess_exec(
             command,
@@ -1483,11 +1518,7 @@ def _probe_args(runtime: dict[str, Any], args: list[str]) -> list[str]:
 
 
 def _build_env(runtime: dict[str, Any]) -> dict[str, str]:
-    env = os.environ.copy()
-    for key, value in (runtime.get("env") or {}).items():
-        name = str(key).strip()
-        if name:
-            env[name] = str(value)
+    env = filtered_agent_environment(runtime.get("env") or {})
     if not env.get("CODETALK_AGENT_ARTIFACT_DIR"):
         env["CODETALK_AGENT_ARTIFACT_DIR"] = tempfile.mkdtemp(
             prefix="codetalk-agent-runtime-"

@@ -1,10 +1,80 @@
+import shutil
+import sys
+
+import pytest
+
 from app.services.agent_cli_bridge import (
     _codex_add_writable_artifact_dir,
     _looks_like_unattended_permission_request,
     _prompt_argument_or_file_bootstrap,
     _resolve_agent_command,
     clean_agent_output_text,
+    stream_agent_runtime,
 )
+
+
+def test_build_env_does_not_leak_unrelated_parent_secrets(monkeypatch, tmp_path):
+    from app.services.agent_cli_bridge import _build_env
+
+    monkeypatch.setenv("UNRELATED_PRIVATE_SECRET", "must-not-reach-agent")
+    monkeypatch.setenv("PATH", "/usr/bin")
+    env = _build_env({
+        "env": {
+            "CODETALK_AGENT_ARTIFACT_DIR": str(tmp_path),
+            "PROVIDER_API_KEY": "explicit-provider-secret",
+        }
+    })
+
+    assert env["PATH"] == "/usr/bin"
+    assert env["PROVIDER_API_KEY"] == "explicit-provider-secret"
+    assert "UNRELATED_PRIVATE_SECRET" not in env
+
+
+@pytest.mark.asyncio
+async def test_stream_runtime_enforces_real_workspace_readonly_sandbox(tmp_path):
+    if sys.platform == "darwin" and not shutil.which("sandbox-exec"):
+        pytest.skip("sandbox-exec unavailable")
+    if sys.platform.startswith("linux") and not (shutil.which("bwrap") or shutil.which("bubblewrap")):
+        pytest.skip("bubblewrap unavailable")
+    if not (sys.platform == "darwin" or sys.platform.startswith("linux")):
+        pytest.skip("macOS/Linux sandbox test")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "source.txt").write_text("source", encoding="utf-8")
+    artifacts = tmp_path / "artifacts"
+    script = (
+        'cat >/dev/null; cat "$CODETALK_REPO_PATH/source.txt" > "$CODETALK_AGENT_ARTIFACT_DIR/result.md"; '
+        'if echo forbidden > "$CODETALK_REPO_PATH/blocked.txt"; then echo WRITE_ESCAPED; '
+        'else echo SANDBOX_BLOCKED; fi'
+    )
+    output = []
+
+    async for chunk in stream_agent_runtime(
+        runtime={
+            "command": "/bin/sh",
+            "args": ["-c", script],
+            "prompt_transport": "stdin",
+            "output_mode": "plain",
+            "completion_mode": "process_exit",
+            "sandbox_mode": "required",
+            "sandbox_allow_network": False,
+            "env": {
+                "CODETALK_AGENT_ARTIFACT_DIR": str(artifacts),
+                "CODETALK_REPO_PATH": str(repo),
+            },
+        },
+        prompt="read only task",
+        cwd=str(repo),
+    ):
+        output.append(chunk)
+
+    assert "SANDBOX_BLOCKED" in "".join(output)
+    assert "WRITE_ESCAPED" not in "".join(output)
+    assert (artifacts / "result.md").read_text(encoding="utf-8") == "source"
+    assert not (repo / "blocked.txt").exists()
+    policy = (artifacts / "sandbox_policy.json").read_text(encoding="utf-8")
+    assert '"status": "active"' in policy
 
 
 def test_codex_artifact_dir_is_added_as_writable_before_exec():

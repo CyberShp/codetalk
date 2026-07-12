@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     external_agent_max_parallel: int = 2
     external_agent_max_output_chars: int = 120000
     external_agent_enforce_readonly_cli: bool = True
+    external_agent_sandbox_mode: str = "auto"  # auto | required | off
+    external_agent_sandbox_allow_network: bool = True
+    external_agent_sandbox_write_paths: list[str] = Field(default_factory=list)
     external_agent_windows_shell_fallback_enabled: bool = True
     external_agent_windows_shell_load_profile: bool = True
     external_agent_command_allowlist: list[str] = Field(default_factory=lambda: [

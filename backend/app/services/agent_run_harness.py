@@ -19,9 +19,15 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Callable
 
+from app.config import settings
 from app.services.agent_cli_bridge import (
     _decode as _decode_agent_cli_output,
     _prompt_argument_or_file_bootstrap,
+)
+from app.services.agent_sandbox import (
+    AgentSandboxError,
+    filtered_agent_environment,
+    prepare_agent_sandbox,
 )
 from app.services.agent_invocation_contract import (
     agent_invocation_artifact_event_payload,
@@ -714,6 +720,19 @@ class AgentRunHarness:
             repo_path=cwd,
         )
         env.update(env_hints)
+        env["CODETALK_AGENT_ARTIFACT_DIR"] = str(self.artifact_dir.resolve())
+        try:
+            sandbox = prepare_agent_sandbox(
+                runtime={
+                    "sandbox_mode": settings.external_agent_sandbox_mode,
+                    "sandbox_allow_network": settings.external_agent_sandbox_allow_network,
+                    "sandbox_write_paths": settings.external_agent_sandbox_write_paths,
+                },
+                cwd=cwd,
+                artifact_dir=self.artifact_dir,
+            )
+        except AgentSandboxError as exc:
+            raise RuntimeError(str(exc)) from exc
 
         def emit_process_output(stream: str, chunk: str) -> None:
             text = _redact(chunk)
@@ -760,10 +779,11 @@ class AgentRunHarness:
                 "process_command": _redact_command_list(process_command),
                 "prompt_transport": candidate_transport,
                 "prompt_transport_reason": prompt_transport_reason,
+                "sandbox": sandbox.audit,
             }
             try:
                 completed = _run_cancellable_subprocess(
-                    process_command,
+                    [*sandbox.wrapper, *process_command],
                     cwd=cwd,
                     input_bytes=candidate_stdin,
                     timeout=effective_timeout_sec,
@@ -1531,7 +1551,7 @@ def _agent_process_env_for_harness(*, provider: str, repo_path: str) -> dict[str
 
         return _agent_process_env(provider, repo_path)
     except Exception:
-        return os.environ.copy()
+        return filtered_agent_environment()
 
 
 def _launch_command_from_provider_health(

@@ -25,6 +25,11 @@ from urllib.parse import unquote, urlparse
 
 from app.config import settings
 from app.schemas.workspace_analysis import ScopeCandidate
+from app.services.agent_sandbox import (
+    AgentSandboxError,
+    filtered_agent_environment,
+    prepare_agent_sandbox,
+)
 
 AgentStatus = Literal[
     "ok",
@@ -826,14 +831,13 @@ def _unavailable_health_from_attempts(
 
 
 def _agent_process_env(provider: str, repo_path: str | Path) -> dict[str, str]:
-    env = os.environ.copy()
+    env = filtered_agent_environment(external_agent_provider_env_hints(provider))
     env["CODETALK_AGENT_READONLY"] = "1"
     env["CODETALK_REPO_PATH"] = str(Path(repo_path).resolve())
     if not env.get("CODETALK_AGENT_ARTIFACT_DIR"):
         env["CODETALK_AGENT_ARTIFACT_DIR"] = tempfile.mkdtemp(
             prefix="codetalk-agent-probe-"
         )
-    env.update(external_agent_provider_env_hints(provider))
     if provider == "claude-code":
         configured = str(getattr(settings, "claude_code_config_path", "") or "").strip()
         if configured:
@@ -843,6 +847,25 @@ def _agent_process_env(provider: str, repo_path: str | Path) -> dict[str, str]:
             if discovered:
                 env["CCR_CONFIG_PATH"] = discovered
     return env
+
+
+def _sandbox_external_agent_argv(
+    process_argv: list[str],
+    *,
+    env: dict[str, str],
+    cwd: str | Path,
+) -> tuple[list[str], dict[str, object]]:
+    artifact_dir = Path(env["CODETALK_AGENT_ARTIFACT_DIR"])
+    launch = prepare_agent_sandbox(
+        runtime={
+            "sandbox_mode": settings.external_agent_sandbox_mode,
+            "sandbox_allow_network": settings.external_agent_sandbox_allow_network,
+            "sandbox_write_paths": settings.external_agent_sandbox_write_paths,
+        },
+        cwd=str(cwd),
+        artifact_dir=artifact_dir,
+    )
+    return [*launch.wrapper, *process_argv], launch.audit
 
 
 def _resolve_provider_command_attempt(command: str, provider: str | None = None) -> dict:
@@ -2830,6 +2853,25 @@ async def probe_external_agent_startup(
             transport_attempt["prompt_transport"] = prompt_transport
             has_more_transport = transport_index < len(invocation_candidates) - 1
             try:
+                process_argv, sandbox_audit = _sandbox_external_agent_argv(
+                    process_argv,
+                    env=env,
+                    cwd=cwd,
+                )
+                transport_attempt["sandbox"] = sandbox_audit
+            except AgentSandboxError as exc:
+                message = str(exc)
+                transport_attempt["probe_status"] = "configuration_error"
+                transport_attempt["probe_message"] = message
+                last_failure = {
+                    "provider": provider,
+                    "healthy": False,
+                    "status": "configuration_error",
+                    "message": message,
+                    "health": health,
+                }
+                break
+            try:
                 proc = await asyncio.create_subprocess_exec(
                     *process_argv,
                     cwd=str(cwd),
@@ -3061,6 +3103,28 @@ async def _run_provider(
                 attempts.append(transport_attempt)
             transport_attempt["prompt_transport"] = prompt_transport
             has_more_transport = transport_index < len(invocation_candidates) - 1
+
+            try:
+                process_argv, sandbox_audit = _sandbox_external_agent_argv(
+                    process_argv,
+                    env=env,
+                    cwd=request.repo_path,
+                )
+                transport_attempt["sandbox"] = sandbox_audit
+            except AgentSandboxError as exc:
+                summary = str(exc)
+                transport_attempt["run_status"] = "configuration_error"
+                transport_attempt["run_message"] = summary[:4000]
+                prior_failures.append(summary)
+                last_result = AgentDiscoveryResult(
+                    provider=provider,
+                    status="configuration_error",
+                    raw_summary=summary,
+                    warnings=[summary],
+                )
+                last_raw = summary
+                should_try_next_command = True
+                break
 
             try:
                 proc = await asyncio.create_subprocess_exec(

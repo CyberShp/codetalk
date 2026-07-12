@@ -893,7 +893,8 @@ def test_agent_run_harness_large_managed_prompt_keeps_cli_mode_and_uses_prompt_f
     from app.config import settings
     from app.services.agent_run_harness import AgentRunHarness
 
-    capture = tmp_path / f"{provider}-capture.json"
+    run_dir = tmp_path / f"run-{provider}"
+    capture = run_dir / f"{provider}-capture.json"
     shim = tmp_path / f"{provider}-shim.py"
     shim.write_text(
         "import json, os, pathlib, sys\n"
@@ -910,7 +911,7 @@ def test_agent_run_harness_large_managed_prompt_keeps_cli_mode_and_uses_prompt_f
         [{"id": provider, "command": sys.executable, "prompt_transport": prompt_transport}],
     )
     large_context = "完整用户输入" * 12000
-    harness = AgentRunHarness(tmp_path / f"run-{provider}")
+    harness = AgentRunHarness(run_dir)
     run = harness.create_run(
         run_id=f"large-{provider}",
         provider=provider,

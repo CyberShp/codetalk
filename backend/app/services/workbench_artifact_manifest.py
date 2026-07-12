@@ -143,6 +143,7 @@ DIAGNOSTIC_ARTIFACT_KINDS = {
     "output_schemas",
     "provider_readiness",
     "provider_snapshot",
+    "sandbox_policy",
     "semantic_import_outputs",
     "source_read_chain",
     "task_acceptance_audit",
@@ -203,6 +204,8 @@ def workbench_artifact_kind(relative_path: str) -> str:
         return "provider_snapshot"
     if name == "provider_readiness.json":
         return "provider_readiness"
+    if name == "sandbox_policy.json":
+        return "sandbox_policy"
     if name == "input_snapshot.json":
         return "input_snapshot"
     if name == "input_context.json":
