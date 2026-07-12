@@ -89,6 +89,33 @@ class ShallowCompletedTestActivityLLM:
         current_finish_reason.set("stop")
 
 
+class StagedTestActivityLLM:
+    def __init__(self) -> None:
+        self.prompts: list[str] = []
+
+    async def complete(self, messages, max_tokens=4096, temperature=0.2):
+        from app.llm.base import LLMResponse
+
+        prompt = messages[-1]["content"]
+        self.prompts.append(prompt)
+        stage = next(
+            line.split(":", 1)[1].strip()
+            for line in prompt.splitlines()
+            if line.startswith("STAGE_ID:")
+        )
+        if stage == "source_analysis":
+            content = "# 代码证据\n\n- `lib/iscsi/iscsi.c:1262`\n"
+        elif stage == "business_flow":
+            content = "# Flow\n\n## 外部触发\nPDU\n## 流程步骤\nlogin\n## 异常分支\ntimeout\n## 观测点\nlog"
+        elif stage == "sfmea":
+            content = '[{"failure_mode":"timeout","cause":"peer silent"}]'
+        elif stage == "black_box_cases":
+            content = '[{"case_id":"TC-01","test_dimension":"normal_path"}]'
+        else:
+            content = "# Test design\n\n## 目标\nlogin\n## 输入\nPDU\n## 用例设计\nTC\n## 覆盖矩阵\nflow\n## 剩余风险\nlab"
+        return LLMResponse(content=content, model="staged-test", usage={}, truncated=False)
+
+
 class SourceMaterialAssertingLLM:
     def __init__(self) -> None:
         self.joined = ""
@@ -5151,6 +5178,75 @@ async def test_builtin_test_activity_rejects_shallow_completed_output(
     assert rejected_path.exists()
     assert "已完成 iSCSI login 测试设计" in rejected_path.read_text(encoding="utf-8")
     assert not (tmp_path / conversation["id"] / f"{created['run']['id']}.md").exists()
+
+
+@pytest.mark.asyncio
+async def test_builtin_comprehensive_test_activity_automatically_runs_stages(
+    sqlite_db,
+    tmp_path,
+    monkeypatch,
+):
+    from app.services import ai_conversations
+    from app.services.ai_conversations import AIConversationStore
+
+    run_root = tmp_path / "runs"
+    monkeypatch.setattr(
+        ai_conversations,
+        "ai_thread_artifact_path",
+        lambda conversation_id, run_id: run_root / conversation_id / run_id / "assistant-output.md",
+    )
+    monkeypatch.setattr(
+        ai_conversations,
+        "audit_test_activity_response",
+        lambda **_kwargs: {
+            "kind": "test_activity_quality_audit",
+            "status": "accepted",
+            "deliverable": True,
+            "score": 100,
+            "issues": [],
+        },
+    )
+    store = AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="freeform",
+        scope_id="global",
+        workspace_id="global",
+        title="自动分阶段",
+        initial_context={"repo_path": str(tmp_path / "spdk")},
+    )
+    original = "第一行：详细输出 iSCSI login 完整流程、SFMEA、黑盒测试用例和测试设计文件\n第二行：必须保留"
+    created = await store.create_user_message_and_run(
+        conversation_id=conversation["id"],
+        content=original,
+        references=[],
+    )
+    llm = StagedTestActivityLLM()
+
+    await ai_conversations.run_generation(
+        store=store,
+        run_id=created["run"]["id"],
+        llm=llm,
+    )
+
+    run_id = created["run"]["id"]
+    run = await store.get_run(run_id)
+    messages = await store.list_messages(conversation["id"])
+    agent_dir = ai_conversations.ai_thread_agent_artifact_dir(conversation["id"], run_id)
+    delivery_dir = ai_conversations.ai_thread_delivery_dir(conversation["id"], run_id)
+    assert run["status"] == "completed"
+    assert (agent_dir / "staged_execution_plan.json").exists()
+    assert len(llm.prompts) == 5
+    assert all(original in prompt for prompt in llm.prompts)
+    manifest = json.loads((delivery_dir / "artifact_manifest.json").read_text(encoding="utf-8"))
+    assert {item["relative_path"] for item in manifest["artifacts"]} == {
+        "business_flow.md",
+        "sfmea.json",
+        "black_box_cases.json",
+        "test_design.md",
+    }
+    assistant = messages[-1]
+    assert "business_flow.md" in assistant["content"]
+    assert any(action["id"] == "download_run_artifacts_zip" for action in assistant["actions"])
 
 
 @pytest.mark.asyncio

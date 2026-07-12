@@ -36,6 +36,10 @@ from app.services.agent_invocation_contract import (
     agent_invocation_capability_manifest,
     build_agent_invocation_execution_contract,
 )
+from app.services.ai_staged_execution import (
+    build_staged_execution_plan,
+    execute_staged_builtin_plan,
+)
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
 from app.services.ai_thread_artifacts import materialize_ai_thread_manifest
 from app.services.test_activity_contract import (
@@ -1744,6 +1748,29 @@ async def run_generation(
     )
     max_tokens = min(requested_token_budget, settings.llm_max_output_tokens)
     temperature = 0.2 if requires_strict_quality_gate else 0.5
+    staged_contract: dict[str, Any] | None = None
+    staged_plan: dict[str, Any] | None = None
+    if (
+        wants_downloadable_artifact
+        and requires_strict_quality_gate
+        and not _bound_workflow_required_artifacts(conversation)
+        and hasattr(llm, "complete")
+    ):
+        staged_repo_path = (
+            await _conversation_repo_path(conversation, db_path=store.db_path)
+            or _conversation_initial_repo_path(conversation)
+        )
+        candidate_contract = _test_activity_contract_payload(
+            user_message=test_activity_context,
+            repo_path=staged_repo_path,
+        )
+        if len(candidate_contract.get("required_outputs") or []) >= 3:
+            staged_contract = candidate_contract
+            staged_plan = build_staged_execution_plan(
+                contract=candidate_contract,
+                original_user_request=test_activity_context,
+            )
+            staged_plan["run_id"] = run_id
 
     async def append_delta(content: str) -> None:
         nonlocal artifact_stream_notice_sent
@@ -1772,7 +1799,58 @@ async def run_generation(
         if current["status"] == "cancelled":
             return
         current_finish_reason.set(None)
-        if not settings.ai_conversation_streaming_enabled:
+        staged_artifact_root: Path | None = None
+        staged_delivery_contracts: list[dict[str, Any]] | None = None
+        if staged_plan is not None:
+            staged_artifact_root = ai_thread_agent_artifact_dir(
+                str(conversation["id"]), run_id
+            )
+
+            async def append_stage_progress(payload: dict[str, Any]) -> None:
+                await store.append_event(
+                    run_id=run_id,
+                    conversation_id=conversation["id"],
+                    event_type="status",
+                    payload={
+                        "status": "running",
+                        "kind": "staged_execution",
+                        "stage_id": payload.get("stage_id"),
+                        "stage_status": payload.get("status"),
+                        "current": payload.get("current"),
+                        "total": payload.get("total"),
+                        "artifact": payload.get("artifact"),
+                        "message": _staged_execution_progress_message(payload),
+                    },
+                )
+
+            await execute_staged_builtin_plan(
+                llm=llm,
+                plan=staged_plan,
+                artifact_dir=staged_artifact_root,
+                context_prompt="\n".join(
+                    str(item.get("content") or "")
+                    for item in prompt
+                    if isinstance(item, dict)
+                ),
+                on_progress=append_stage_progress,
+                max_tokens=max_tokens,
+            )
+            content = await _staged_artifact_content(
+                staged_artifact_root,
+                staged_plan,
+            )
+            chunks.append(content)
+            await store.append_event(
+                run_id=run_id,
+                conversation_id=conversation["id"],
+                event_type="delta",
+                payload={
+                    "content": _THREAD_ARTIFACT_STREAM_NOTICE,
+                    "kind": "artifact_progress",
+                },
+            )
+            staged_delivery_contracts = _staged_delivery_contracts(staged_plan)
+        elif not settings.ai_conversation_streaming_enabled:
             response = await llm.complete(prompt, max_tokens=max_tokens, temperature=temperature)
             current = await store.get_run(run_id)
             if current["status"] == "cancelled":
@@ -1862,7 +1940,7 @@ async def run_generation(
                 await _conversation_repo_path(conversation, db_path=store.db_path)
                 or _conversation_initial_repo_path(conversation)
             )
-            contract = _test_activity_contract_payload(
+            contract = staged_contract or _test_activity_contract_payload(
                 user_message=test_activity_context,
                 repo_path=repo_path,
             )
@@ -1898,8 +1976,11 @@ async def run_generation(
             content=content,
             user_message=user_message["content"],
             force_artifact=bound_artifacts_materialized
+            or staged_artifact_root is not None
             or _agent_task_requests_downloadable_artifact(user_message["content"], content),
-            artifact_only=bound_artifacts_materialized,
+            artifact_only=bound_artifacts_materialized or staged_artifact_root is not None,
+            declared_artifacts=staged_delivery_contracts,
+            source_artifact_dir=staged_artifact_root,
         )
         workflow_action = _bound_workflow_action(conversation)
         if workflow_action:
@@ -5562,6 +5643,60 @@ async def _agent_thread_artifact_content(artifact_dir: Path) -> str:
     return "\n".join(sections).rstrip() + "\n"
 
 
+def _staged_delivery_contracts(plan: dict[str, Any]) -> list[dict[str, Any]]:
+    contracts: list[dict[str, Any]] = []
+    for stage in plan.get("stages") or []:
+        if not isinstance(stage, dict) or stage.get("support"):
+            continue
+        raw = stage.get("output_contract")
+        contract = dict(raw) if isinstance(raw, dict) else {}
+        contract["artifact"] = str(stage.get("artifact") or "")
+        contract["required"] = True
+        if contract["artifact"].endswith(".json"):
+            contract.setdefault("type", "json")
+        contracts.append(contract)
+    return contracts
+
+
+async def _staged_artifact_content(
+    artifact_dir: Path,
+    plan: dict[str, Any],
+) -> str:
+    sections = ["# 分阶段测试活动交付件", ""]
+    for contract in _staged_delivery_contracts(plan):
+        relative = Path(str(contract.get("artifact") or ""))
+        if relative.is_absolute() or ".." in relative.parts:
+            continue
+        path = artifact_dir / relative
+        if not path.is_file():
+            continue
+        text = await _read_text(path)
+        if path.suffix.lower() == ".json":
+            sections.extend(
+                [
+                    f"## {relative.as_posix()}",
+                    "",
+                    "```json",
+                    text.strip(),
+                    "```",
+                    "",
+                ]
+            )
+        else:
+            sections.extend([f"## {relative.as_posix()}", "", text.strip(), ""])
+    return "\n".join(sections).rstrip() + "\n"
+
+
+def _staged_execution_progress_message(payload: dict[str, Any]) -> str:
+    stage = str(payload.get("stage_id") or "当前阶段")
+    status = str(payload.get("status") or "running")
+    current = int(payload.get("current") or 0)
+    total = int(payload.get("total") or 0)
+    if status == "completed":
+        return f"阶段 {current}/{total} 已完成：{stage}"
+    return f"正在执行阶段 {current}/{total}：{stage}"
+
+
 async def _prepare_assistant_delivery(
     *,
     run_id: str,
@@ -5570,6 +5705,8 @@ async def _prepare_assistant_delivery(
     user_message: str = "",
     force_artifact: bool = False,
     artifact_only: bool = False,
+    declared_artifacts: list[dict[str, Any]] | None = None,
+    source_artifact_dir: Path | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:
     test_activity_actions = _test_activity_task_card_actions(
         conversation=conversation,
@@ -5597,10 +5734,14 @@ async def _prepare_assistant_delivery(
     await _to_thread(artifact_path.write_text, artifact_body, "utf-8")
     delivery_dir = ai_thread_delivery_dir(str(conversation["id"]), run_id)
     delivery_dir.mkdir(parents=True, exist_ok=True)
-    declared_artifacts = _bound_workflow_required_artifacts(conversation) if artifact_only else []
-    if declared_artifacts:
-        source_root = ai_thread_agent_artifact_dir(str(conversation["id"]), run_id)
-        for contract in declared_artifacts:
+    delivery_contracts = list(declared_artifacts or [])
+    if not delivery_contracts and artifact_only:
+        delivery_contracts = _bound_workflow_required_artifacts(conversation)
+    if delivery_contracts:
+        source_root = source_artifact_dir or ai_thread_agent_artifact_dir(
+            str(conversation["id"]), run_id
+        )
+        for contract in delivery_contracts:
             relative = Path(str(contract.get("artifact") or ""))
             if relative.is_absolute() or ".." in relative.parts:
                 continue
@@ -5613,7 +5754,7 @@ async def _prepare_assistant_delivery(
     else:
         delivery_path = delivery_dir / "assistant-output.md"
         await _to_thread(delivery_path.write_text, artifact_body, "utf-8")
-        declared_artifacts = [
+        delivery_contracts = [
             {
                 "artifact": "assistant-output.md",
                 "type": "markdown",
@@ -5624,7 +5765,7 @@ async def _prepare_assistant_delivery(
         materialize_ai_thread_manifest,
         delivery_dir,
         run_id=run_id,
-        declared_artifacts=declared_artifacts,
+        declared_artifacts=delivery_contracts,
         producer=str(conversation.get("runtime_type") or "builtin_llm"),
     )
     artifact_url = f"/api/ai/conversations/{conversation['id']}/runs/{run_id}/artifact"
@@ -6079,9 +6220,19 @@ def _legacy_artifact_preview_for_message(
         suffix = "完整内容已保存为下载产物。请使用“下载完整产物”获取完整文件。"
     else:
         suffix = "完整测试设计/SFMEA/黑盒用例已保存为下载产物。请使用“下载完整产物”获取完整产物。"
+    deliverable_names = [
+        str(action.get("label") or "").removeprefix("下载 ").strip()
+        for action in actions
+        if isinstance(action, dict)
+        and str(action.get("id") or "").startswith("download_run_artifact_file_")
+        and str(action.get("label") or "").strip()
+    ]
+    deliverable_line = (
+        f"\n\n交付文件：{'、'.join(deliverable_names)}" if deliverable_names else ""
+    )
     return (
         f"{_compact_thread_artifact_preview(preview_source, include_body_snippets=not artifact_only_preview)}"
-        f"\n\n---\n{suffix}"
+        f"{deliverable_line}\n\n---\n{suffix}"
     )
 
 
