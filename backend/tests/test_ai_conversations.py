@@ -5852,6 +5852,163 @@ async def test_bound_workflow_delivery_manifest_keeps_each_output_as_a_real_file
     assert any(action["id"] == "download_run_artifacts_zip" for action in actions)
 
 
+async def test_bound_workflow_rejects_symlink_artifact_and_never_copies_target(
+    sqlite_db,
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
+    from app.services import ai_conversations
+    from app.services.ai_thread_artifacts import ArtifactContractError
+    from app.services.workflow_dsl import WorkflowStore
+
+    monkeypatch.setattr(settings, "data_dir", str(tmp_path / "data"))
+    WorkflowStore(settings.data_path / "workbench" / "workflows.db").save_workflow({
+        "id": "symlink_artifact_rejection",
+        "name": "符号链接交付拒绝",
+        "version": 1,
+        "inputs": [],
+        "steps": [{
+            "id": "analysis",
+            "type": "agent_task",
+            "required_artifacts": ["report.md"],
+        }],
+        "outputs": [{
+            "id": "report",
+            "type": "markdown",
+            "from": "analysis",
+            "artifact": "report.md",
+        }],
+    })
+    await _seed_workspace(sqlite_db, "ws-bound-symlink")
+    store = ai_conversations.AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="workspace",
+        scope_id="ws-bound-symlink",
+        workspace_id="ws-bound-symlink",
+        title="符号链接交付拒绝",
+        initial_context={"selected_workflow_id": "symlink_artifact_rejection"},
+    )
+    created = await store.create_user_message_and_run(
+        conversation_id=conversation["id"],
+        content="生成报告",
+        references=[],
+    )
+    run_id = created["run"]["id"]
+    artifact_dir = ai_conversations.ai_thread_agent_artifact_dir(conversation["id"], run_id)
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    host_secret = tmp_path / "host-secret.txt"
+    host_secret.write_text("HOST_SECRET_MUST_NOT_LEAK", encoding="utf-8")
+    (artifact_dir / "report.md").symlink_to(host_secret)
+
+    assert await ai_conversations._enforce_bound_workflow_artifacts(
+        store=store,
+        run_id=run_id,
+        conversation=conversation,
+    ) is False
+    failed = await store.get_run(run_id)
+    assert "符号链接" in failed["error"]
+
+    delivery_dir = tmp_path / "delivery"
+    monkeypatch.setattr(
+        ai_conversations,
+        "ai_thread_delivery_dir",
+        lambda _conversation_id, _run_id: delivery_dir,
+    )
+    monkeypatch.setattr(
+        ai_conversations,
+        "ai_thread_artifact_path",
+        lambda _conversation_id, _run_id: tmp_path / "assistant-output.md",
+    )
+    with pytest.raises(ArtifactContractError, match="必需交付文件未生成"):
+        await ai_conversations._prepare_assistant_delivery(
+            run_id=run_id,
+            conversation=conversation,
+            content="已生成报告。",
+            user_message="生成报告",
+            force_artifact=True,
+            artifact_only=True,
+        )
+    assert not (delivery_dir / "report.md").exists()
+    assert "HOST_SECRET_MUST_NOT_LEAK" not in "".join(
+        path.read_text(encoding="utf-8", errors="ignore")
+        for path in delivery_dir.rglob("*")
+        if path.is_file()
+    )
+
+
+async def test_fail_run_does_not_overwrite_cancelled_terminal_state(sqlite_db):
+    from app.services.ai_conversations import AIConversationStore
+
+    store = AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="freeform",
+        scope_id="global",
+        workspace_id="global",
+        title="取消状态终态保护",
+    )
+    created = await store.create_user_message_and_run(
+        conversation_id=conversation["id"],
+        content="开始长任务",
+        references=[],
+    )
+    await store.mark_run_running(created["run"]["id"])
+    await store.cancel_run(conversation["id"])
+
+    await store.fail_run(created["run"]["id"], "late provider failure")
+
+    run = await store.get_run(created["run"]["id"])
+    assert run["status"] == "cancelled"
+    assert run["error"] in {None, ""}
+
+
+async def test_builtin_staged_cancel_interrupts_provider_and_preserves_run_state(
+    sqlite_db,
+):
+    from app.services.ai_conversations import AIConversationStore, run_generation
+
+    started = asyncio.Event()
+    provider_cancelled = asyncio.Event()
+
+    class BlockingStagedLLM:
+        async def complete(self, messages, max_tokens=4096, temperature=0.2):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                provider_cancelled.set()
+                raise
+
+    workspace_id = await _seed_workspace(sqlite_db, "ws-staged-cancel")
+    store = AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="workspace",
+        scope_id=workspace_id,
+        workspace_id=workspace_id,
+        title="分阶段取消",
+    )
+    created = await store.create_user_message_and_run(
+        conversation_id=conversation["id"],
+        content="请完整输出项目结构、业务流程、SFMEA、黑盒测试用例和测试设计文件",
+        references=[],
+    )
+    generation = asyncio.create_task(
+        run_generation(
+            store=store,
+            run_id=created["run"]["id"],
+            llm=BlockingStagedLLM(),
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+    await store.cancel_run(conversation["id"])
+
+    await asyncio.wait_for(generation, timeout=1)
+
+    run = await store.get_run(created["run"]["id"])
+    assert run["status"] == "cancelled"
+    assert provider_cancelled.is_set()
+
+
 async def test_bound_workflow_builtin_materializes_markdown_and_json_envelope(
     sqlite_db,
     tmp_path,

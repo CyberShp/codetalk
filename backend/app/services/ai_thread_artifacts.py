@@ -90,6 +90,18 @@ def materialize_ai_thread_manifest(
             )
             rejection_messages.append(f"{relative_path}: {exc}")
             continue
+        if _artifact_path_contains_symlink(root, relative_path):
+            artifacts.append(
+                _rejected_entry(
+                    relative_path,
+                    producer=producer,
+                    required=required,
+                    status="rejected",
+                    reason="交付文件不能是符号链接",
+                )
+            )
+            rejection_messages.append(f"{relative_path}: 交付文件不能是符号链接")
+            continue
         if not path.exists() or not path.is_file():
             status = "missing" if required else "optional_missing"
             artifacts.append(
@@ -237,6 +249,10 @@ def read_validated_ai_thread_artifact(
     if item is None:
         raise ArtifactContractError("交付文件不存在或未通过验收", manifest=manifest)
     path = resolve_ai_thread_artifact(root, relative_path)
+    if _artifact_path_contains_symlink(root, relative_path):
+        raise ArtifactContractError(
+            f"交付文件不能是符号链接：{relative_path}", manifest=manifest
+        )
     if not path.is_file():
         raise ArtifactContractError("交付文件已不存在，请重新运行任务", manifest=manifest)
     data = path.read_bytes()
@@ -266,6 +282,18 @@ def read_validated_ai_thread_artifact(
                 manifest=manifest,
             )
     return path, data
+
+
+def _artifact_path_contains_symlink(root: Path, relative_path: str) -> bool:
+    current = root
+    for part in Path(relative_path).parts:
+        current = current / part
+        try:
+            if current.is_symlink():
+                return True
+        except OSError:
+            return True
+    return False
 
 
 def _rejected_entry(

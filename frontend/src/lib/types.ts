@@ -190,6 +190,9 @@ export interface GitNexusCapacity {
   version: "gitnexus-capacity-v1";
   status: "idle" | "queued" | "running" | "retrying" | "cooldown";
   capacity: number;
+  queue_capacity: number;
+  queue_available: number;
+  queue_saturated: boolean;
   running_repo: string | null;
   queued: number;
   queue: Array<{ position: number; repo_path: string }>;

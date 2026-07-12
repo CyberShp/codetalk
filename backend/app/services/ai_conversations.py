@@ -7,8 +7,10 @@ import hashlib
 import inspect
 import json
 import logging
+import os
 import re
 import shutil
+import stat
 import subprocess
 import uuid
 from contextlib import asynccontextmanager
@@ -37,6 +39,7 @@ from app.services.agent_invocation_contract import (
     build_agent_invocation_execution_contract,
 )
 from app.services.ai_staged_execution import (
+    StagedExecutionCancelled,
     build_staged_execution_plan,
     execute_staged_builtin_plan,
 )
@@ -1292,6 +1295,17 @@ class AIConversationStore:
         run = await self.get_run(run_id)
         now = _now()
         async with self._connect() as db:
+            updated = await db.execute(
+                """
+                UPDATE ai_conversation_runs
+                SET status = 'failed', error = ?, completed_at = ?
+                WHERE id = ? AND status IN ('queued', 'running')
+                """,
+                (error, now, run_id),
+            )
+            if updated.rowcount == 0:
+                await db.rollback()
+                return
             if assistant_content.strip():
                 await db.execute(
                     """
@@ -1308,14 +1322,6 @@ class AIConversationStore:
                         now,
                     ),
                 )
-            await db.execute(
-                """
-                UPDATE ai_conversation_runs
-                SET status = 'failed', error = ?, completed_at = ?
-                WHERE id = ?
-                """,
-                (error, now, run_id),
-            )
             await db.execute(
                 "UPDATE ai_conversations SET status = 'error', updated_at = ? WHERE id = ?",
                 (now, run["conversation_id"]),
@@ -2032,6 +2038,9 @@ async def run_generation(
             model=model or None,
             actions=actions,
         )
+    except StagedExecutionCancelled:
+        logger.info("AI conversation staged run cancelled: %s", run_id)
+        return
     except Exception as exc:
         logger.exception("AI conversation run failed: %s", exc)
         await store.fail_run(run_id, str(exc))
@@ -3640,6 +3649,76 @@ def _bound_workflow_schema_errors(value: Any, schema: dict[str, Any], *, path: s
     return errors
 
 
+def _read_regular_artifact_bytes(
+    artifact_root: Path,
+    relative_path: Path,
+) -> tuple[bytes | None, str]:
+    """Read one artifact without following symlinks outside the run directory."""
+    if relative_path.is_absolute() or not relative_path.parts or ".." in relative_path.parts:
+        return None, "交付件路径不安全"
+    try:
+        root = artifact_root.resolve(strict=True)
+    except (FileNotFoundError, OSError):
+        return None, "缺少必交付文件"
+    if not root.is_dir():
+        return None, "交付件目录无效"
+
+    current = root
+    for part in relative_path.parts:
+        current = current / part
+        try:
+            if current.is_symlink():
+                return None, "交付文件不能是符号链接"
+        except OSError:
+            return None, "交付文件无法安全读取"
+
+    directory_fds: list[int] = []
+    file_fd: int | None = None
+    try:
+        supports_secure_open = (
+            os.open in os.supports_dir_fd
+            and hasattr(os, "O_NOFOLLOW")
+            and hasattr(os, "O_DIRECTORY")
+        )
+        if supports_secure_open:
+            parent_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+            directory_fds.append(parent_fd)
+            for part in relative_path.parts[:-1]:
+                parent_fd = os.open(
+                    part,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=parent_fd,
+                )
+                directory_fds.append(parent_fd)
+            file_fd = os.open(
+                relative_path.parts[-1],
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=parent_fd,
+            )
+        else:
+            candidate = root / relative_path
+            resolved = candidate.resolve(strict=True)
+            if resolved != root and root not in resolved.parents:
+                return None, "交付件路径越出运行目录"
+            file_fd = os.open(resolved, os.O_RDONLY)
+
+        opened = os.fstat(file_fd)
+        if not stat.S_ISREG(opened.st_mode):
+            return None, "交付件必须是普通文件"
+        with os.fdopen(file_fd, "rb", closefd=True) as artifact_file:
+            file_fd = None
+            return artifact_file.read(), ""
+    except FileNotFoundError:
+        return None, "缺少必交付文件"
+    except OSError:
+        return None, "交付文件无法安全读取或包含符号链接"
+    finally:
+        if file_fd is not None:
+            os.close(file_fd)
+        for directory_fd in reversed(directory_fds):
+            os.close(directory_fd)
+
+
 async def _enforce_bound_workflow_artifacts(
     *,
     store: AIConversationStore,
@@ -3658,18 +3737,23 @@ async def _enforce_bound_workflow_artifacts(
         if relative.is_absolute() or ".." in relative.parts:
             rejected.append({"artifact": artifact, "reason": "交付件路径不安全"})
             continue
-        path = artifact_root / relative
-        if not path.is_file():
-            rejected.append({"artifact": artifact, "reason": "缺少必交付文件"})
+        data, read_error = await _to_thread(
+            _read_regular_artifact_bytes,
+            artifact_root,
+            relative,
+        )
+        if data is None:
+            rejected.append(
+                {"artifact": artifact, "reason": read_error or "缺少必交付文件"}
+            )
             continue
-        data = await _to_thread(path.read_bytes)
         if not data:
             rejected.append({"artifact": artifact, "reason": "交付文件为空"})
             continue
         artifact_type = str(contract.get("type") or "").lower()
         schema = contract.get("schema")
         parsed: Any = None
-        if path.suffix.lower() == ".json" or artifact_type == "json" or isinstance(schema, dict):
+        if relative.suffix.lower() == ".json" or artifact_type == "json" or isinstance(schema, dict):
             try:
                 parsed = json.loads(data.decode("utf-8"))
             except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -5798,12 +5882,16 @@ async def _prepare_assistant_delivery(
             relative = Path(str(contract.get("artifact") or ""))
             if relative.is_absolute() or ".." in relative.parts:
                 continue
-            source = source_root / relative
-            if not source.is_file():
+            data, _read_error = await _to_thread(
+                _read_regular_artifact_bytes,
+                source_root,
+                relative,
+            )
+            if data is None:
                 continue
             destination = delivery_dir / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            await _to_thread(shutil.copyfile, source, destination)
+            await _to_thread(destination.write_bytes, data)
     else:
         delivery_path = delivery_dir / "assistant-output.md"
         await _to_thread(delivery_path.write_text, artifact_body, "utf-8")

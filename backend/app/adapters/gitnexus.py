@@ -35,6 +35,7 @@ _POLL_TIMEOUT = 1800  # max seconds to wait for analysis (30 min for large repos
 _ANALYZE_BUSY_RETRY_ATTEMPTS = 45
 _ANALYZE_BUSY_RETRY_INTERVAL = 1.0
 _ANALYZE_BUSY_RETRY_MAX_INTERVAL = 30.0
+_ANALYZE_RETRY_AFTER_MAX_INTERVAL = 3600.0
 _ANALYZE_START_COOLDOWN = 1.0
 
 
@@ -53,7 +54,10 @@ def _busy_retry_delay(response: httpx.Response, attempt: int) -> float:
             except (TypeError, ValueError, OverflowError):
                 retry_after = 0.0
     exponential = _ANALYZE_BUSY_RETRY_INTERVAL * (2 ** max(0, attempt))
-    return min(_ANALYZE_BUSY_RETRY_MAX_INTERVAL, max(retry_after, exponential))
+    client_backoff = min(_ANALYZE_BUSY_RETRY_MAX_INTERVAL, exponential)
+    if retry_after > 0:
+        return min(_ANALYZE_RETRY_AFTER_MAX_INTERVAL, retry_after)
+    return client_backoff
 
 
 # ---------------------------------------------------------------------------
@@ -334,6 +338,12 @@ class GitNexusAdapter(BaseToolAdapter):
             "version": "gitnexus-capacity-v1",
             "status": status,
             "capacity": 1,
+            "queue_capacity": settings.gitnexus_index_queue_max,
+            "queue_available": max(
+                0,
+                settings.gitnexus_index_queue_max - len(queue),
+            ),
+            "queue_saturated": len(queue) >= settings.gitnexus_index_queue_max,
             "running_repo": running_repo or None,
             "queued": len(queue),
             "queue": [
@@ -513,6 +523,15 @@ class GitNexusAdapter(BaseToolAdapter):
             }
             queue = self._analyze_queues.setdefault(capacity_key, [])
             queued_for_analyze = analyze_lock.locked()
+            if (
+                queued_for_analyze
+                and len(queue) >= settings.gitnexus_index_queue_max
+            ):
+                raise RuntimeError(
+                    "GitNexus 索引队列已满，当前最多等待 "
+                    f"{settings.gitnexus_index_queue_max} 个工作区；"
+                    "请等待已有索引完成后重试。"
+                )
             queue.append(queue_entry)
             if queued_for_analyze and on_progress:
                 await on_progress(0)

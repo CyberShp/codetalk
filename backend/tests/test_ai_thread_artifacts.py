@@ -78,6 +78,28 @@ def test_manifest_fails_closed_for_missing_required_or_invalid_json(tmp_path):
     assert (root / "artifact_manifest.json").exists()
 
 
+def test_manifest_rejects_symlink_artifact_without_reading_target(tmp_path):
+    root = tmp_path / "run"
+    root.mkdir()
+    secret = tmp_path / "host-secret.txt"
+    secret.write_text("HOST_SECRET_MUST_NOT_LEAK", encoding="utf-8")
+    (root / "report.md").symlink_to(secret)
+
+    with pytest.raises(ArtifactContractError, match="符号链接|越过") as exc_info:
+        materialize_ai_thread_manifest(
+            root,
+            run_id="run-symlink",
+            declared_artifacts=[{"artifact": "report.md", "required": True}],
+            producer="agent:test",
+        )
+
+    assert exc_info.value.manifest["artifacts"][0]["validation_status"] == "rejected"
+    assert "HOST_SECRET_MUST_NOT_LEAK" not in json.dumps(
+        exc_info.value.manifest,
+        ensure_ascii=False,
+    )
+
+
 @pytest.mark.parametrize("path", ["../secret.txt", "/tmp/secret.txt", "nested/../../secret.txt"])
 def test_resolve_artifact_rejects_path_escape(tmp_path, path):
     with pytest.raises(ArtifactContractError):
@@ -125,4 +147,24 @@ def test_delivery_zip_fails_closed_when_an_accepted_file_changes(tmp_path):
     report.write_text("# replaced after validation\n", encoding="utf-8")
 
     with pytest.raises(ArtifactContractError, match="哈希|大小"):
+        build_ai_thread_delivery_zip(root, manifest)
+
+
+def test_delivery_zip_rejects_symlink_replacement_before_read(tmp_path):
+    root = tmp_path / "delivery"
+    root.mkdir()
+    report = root / "report.md"
+    report.write_text("accepted report\n", encoding="utf-8")
+    manifest = materialize_ai_thread_manifest(
+        root,
+        run_id="run-symlink-replaced",
+        declared_artifacts=[{"artifact": "report.md", "required": True}],
+        producer="agent:test",
+    )
+    secret = tmp_path / "host-secret.txt"
+    secret.write_text("HOST_SECRET_MUST_NOT_LEAK", encoding="utf-8")
+    report.unlink()
+    report.symlink_to(secret)
+
+    with pytest.raises(ArtifactContractError, match="符号链接|越过"):
         build_ai_thread_delivery_zip(root, manifest)

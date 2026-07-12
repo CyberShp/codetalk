@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -303,5 +304,48 @@ async def test_executor_stops_between_stages_when_cancelled(tmp_path):
             context_prompt="SOURCE_CONTEXT",
             is_cancelled=cancelled,
         )
-
     assert len(llm.prompts) == 1
+
+
+@pytest.mark.asyncio
+async def test_executor_interrupts_active_provider_when_cancelled(tmp_path):
+    started = asyncio.Event()
+    provider_cancelled = asyncio.Event()
+    cancellation_requested = False
+
+    class BlockingLLM:
+        async def complete(self, messages, max_tokens=4096, temperature=0.2):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                provider_cancelled.set()
+                raise
+
+    async def cancelled() -> bool:
+        return cancellation_requested
+
+    plan = build_staged_execution_plan(
+        contract=_contract(),
+        original_user_request="cancel active provider",
+    )
+    task = asyncio.create_task(
+        execute_staged_builtin_plan(
+            llm=BlockingLLM(),
+            plan=plan,
+            artifact_dir=tmp_path,
+            context_prompt="SOURCE_CONTEXT",
+            is_cancelled=cancelled,
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+    cancellation_requested = True
+    done, _ = await asyncio.wait({task}, timeout=0.5)
+    completed_after_cancel = task in done
+    if not task.done():
+        task.cancel()
+    with pytest.raises((RuntimeError, asyncio.CancelledError)):
+        await task
+
+    assert completed_after_cancel is True
+    assert provider_cancelled.is_set()

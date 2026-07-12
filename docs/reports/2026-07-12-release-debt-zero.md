@@ -17,7 +17,7 @@ This release closes the accepted CodeTalk product and truth-source debts for mul
 - Individual file and ZIP downloads; long results render as a compact chat summary.
 - Automatic dependent stages for comprehensive builtin-model test activities, preserving the exact original user request and prior accepted artifacts.
 - Audited macOS/Linux Agent sandbox policy with explicit read/write/env/network boundaries and fail-closed required mode.
-- Bounded GitNexus FIFO capacity, `Retry-After` support, capped backoff and user-visible queue/retry state.
+- Bounded GitNexus FIFO capacity with configurable admission limit, explicit saturation errors, server-directed `Retry-After`, capped client backoff and user-visible queue/retry state.
 - Workbench split into controller/shared/run/workflow/diagnostics/knowledge modules, all below 4,000 lines.
 - F001 archived as superseded, F002 closed with live evidence, DeepWiki handoffs moved to a clearly marked historical archive.
 
@@ -43,7 +43,7 @@ GitNexus continuity was exercised through the browser by creating two detached S
 
 ## Regression Evidence
 
-- Full backend suite: 2,062 passed, 8 skipped.
+- Full backend suite: 2,070 passed, 8 skipped.
 - Workbench real browser suite: 47 passed, using real hover, click, typing, drag/connect, execution and file downloads.
 - Frontend contract suite: 40 passed; ESLint, TypeScript and the production Next build passed without warnings or errors.
 - Deployer suite: 173 passed, 1 skipped.

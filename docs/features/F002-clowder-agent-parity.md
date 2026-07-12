@@ -44,7 +44,7 @@ Make CodeTalk AI threads behave like Clowder AI in agent lifecycle management, e
 - CodeTalk candidate: frontend `3503`, API `3504`, isolated copy of the configured database. Real UI selected the SPDK workspace and builtin model, submitted the same prompt, displayed four automatic stages and completed in 1 minute 23 seconds.
 - CodeTalk delivery: `sfmea.json` (15 rows), `black_box_cases.json` (10 cases, all eight required dimensions), `business_flow.md`, `artifact_manifest.json`, per-file downloads and ZIP. Every declared artifact was accepted and carried size and sha256 metadata.
 - GPT rubric: 88/100. Sampled source positions and seven mapped SPDK test paths exist; no P0/P1 hallucination or black-box boundary violation was found.
-- Regression: backend `2,062 passed, 8 skipped`; Workbench Playwright `47 passed`; frontend contracts `40 passed`; deployer `173 passed, 1 skipped`; ESLint, TypeScript, production build, secret scan and artifact hygiene passed.
+- Regression: backend `2,070 passed, 8 skipped`; Workbench Playwright `47 passed`; frontend contracts `40 passed`; deployer `173 passed, 1 skipped`; ESLint, TypeScript, production build, secret scan and artifact hygiene passed.
 
 ## Closure
 

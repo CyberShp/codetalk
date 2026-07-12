@@ -235,6 +235,13 @@ class GitNexusAdapterPrepareTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(retry["capacity"]["retry_after_seconds"], 3)
         self.assertEqual(GitNexusAdapter.capacity_snapshot(adapter.base_url)["status"], "cooldown")
 
+    async def test_busy_retry_respects_long_retry_after_value(self) -> None:
+        response = _FakeResponse(429, {"error": "busy"}, {"Retry-After": "120"})
+
+        from app.adapters.gitnexus import _busy_retry_delay
+
+        self.assertEqual(_busy_retry_delay(response, 0), 120)
+
     async def test_concurrent_prepare_exposes_fifo_queue_position(self) -> None:
         first = GitNexusAdapter(base_url="http://gitnexus:7100")
         first._client = _ConcurrentAnalyzeClient("alpha")
@@ -254,8 +261,36 @@ class GitNexusAdapterPrepareTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(capacity["status"], "running")
             self.assertEqual(capacity["running_repo"], "/tmp/repos/alpha")
             self.assertEqual(capacity["queued"], 1)
+            self.assertEqual(capacity["queue_capacity"], settings.gitnexus_index_queue_max)
+            self.assertEqual(
+                capacity["queue_available"],
+                settings.gitnexus_index_queue_max - 1,
+            )
+            self.assertFalse(capacity["queue_saturated"])
             self.assertEqual(capacity["queue"][0]["position"], 1)
             self.assertEqual(capacity["queue"][0]["repo_path"], "/tmp/repos/beta")
+            await asyncio.gather(first_task, second_task)
+
+    async def test_prepare_rejects_when_bounded_queue_is_full(self) -> None:
+        first = GitNexusAdapter(base_url="http://gitnexus:7100")
+        first._client = _ConcurrentAnalyzeClient("alpha")
+        second = GitNexusAdapter(base_url="http://gitnexus:7100")
+        second._client = _ConcurrentAnalyzeClient("beta")
+        third = GitNexusAdapter(base_url="http://gitnexus:7100")
+        third._client = _ConcurrentAnalyzeClient("gamma")
+
+        with (
+            patch("app.adapters.gitnexus.to_tool_repo_path", side_effect=lambda repo_local_path, **_: repo_local_path),
+            patch("app.adapters.gitnexus._POLL_INTERVAL", 0.05),
+            patch("app.adapters.gitnexus._ANALYZE_START_COOLDOWN", 0),
+            patch.object(settings, "gitnexus_index_queue_max", 1),
+        ):
+            first_task = asyncio.create_task(first.prepare(AnalysisRequest(repo_local_path="/tmp/repos/alpha")))
+            await asyncio.sleep(0)
+            second_task = asyncio.create_task(second.prepare(AnalysisRequest(repo_local_path="/tmp/repos/beta")))
+            await asyncio.sleep(0.01)
+            with self.assertRaisesRegex(RuntimeError, "索引队列已满"):
+                await third.prepare(AnalysisRequest(repo_local_path="/tmp/repos/gamma"))
             await asyncio.gather(first_task, second_task)
 
     async def test_prepare_serializes_analyze_jobs_for_different_paths(self) -> None:

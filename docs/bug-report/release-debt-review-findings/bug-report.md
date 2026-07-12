@@ -51,4 +51,14 @@ created: 2026-07-12
 - `backend/tests/test_ai_thread_artifacts.py` 和 AI API 测试覆盖验收后替换返回 409。
 - `frontend/scripts/workflow-builder-canvas-contract.test.mjs` 覆盖纯本地 workflow 不注入 Agent。
 - Playwright 真实 hover、点击、输入、运行与下载覆盖驾驶舱最终行为；节点切页点击连续 4 次通过，完整 JSON 下载内容经本地文件读取复核。
-- 最终门禁：后端 `2,062 passed, 8 skipped`；浏览器 E2E `47 passed`；前端契约 `40 passed`；部署器 `173 passed, 1 skipped`；lint、TypeScript、生产构建、密钥扫描和工件卫生通过。
+- 首轮最终门禁：后端 `2,062 passed, 8 skipped`；浏览器 E2E `47 passed`；前端契约 `40 passed`；部署器 `173 passed, 1 skipped`；lint、TypeScript、生产构建、密钥扫描和工件卫生通过。
+
+## 最终复审追加闭环
+
+独立 reviewer 在提交 `1e4d20c0` 上继续发现 1 个 P0、2 个 P1、2 个 P2：Agent artifact 符号链接可诱导后端读取宿主文件；分阶段取消不打断活跃模型且会被晚到异常改写为失败；GitNexus 只有串行锁而没有队列准入上限；长 `Retry-After` 被客户端 30 秒退避上限截断；部署文档的分支与队列描述不一致。
+
+修复后，artifact 验收和复制只接受运行目录内、无符号链接的普通文件，并通过 `openat`/`O_NOFOLLOW` 逐级安全读取；manifest 与下载前复验也拒绝符号链接。分阶段模型调用改为可取消任务并轮询运行状态，`fail_run` 仅能从 queued/running 转为 failed。GitNexus 新增 `GITNEXUS_INDEX_QUEUE_MAX`（默认 8）、队列饱和状态和中文拒绝提示；客户端指数退避仍封顶 30 秒，但服务端 `Retry-After` 优先遵守并设置 1 小时安全上限。部署真相源统一为 `feat`。
+
+新增红绿测试覆盖符号链接首次验收与验收后替换、活跃 provider 取消、cancelled 终态保护、队列第 3 个请求拒绝、120 秒 `Retry-After`；相关回归 `424 passed`。
+
+追加修复后的最终门禁：后端 `2,070 passed, 8 skipped`；浏览器 E2E `47 passed`；前端契约 `40 passed`；部署器 `173 passed, 1 skipped`；lint、TypeScript 和生产构建通过。

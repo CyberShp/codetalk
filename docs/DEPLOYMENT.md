@@ -1,6 +1,6 @@
 # CodeTalk Lightweight — 部署文档
 
-> 版本: 2.1 | 分支: main | Sprint 4
+> 版本: 2.1 | 分支: feat | Sprint 4
 
 ## 1. 系统要求
 
@@ -131,6 +131,7 @@ GITNEXUS_BASE_URL=http://localhost:7100
 # 工具管理
 GITNEXUS_PORT=7100
 GITNEXUS_BIN=gitnexus            # GitNexus 二进制路径
+GITNEXUS_INDEX_QUEUE_MAX=8        # 最多等待的索引任务数（1-100）
 TOOL_HEALTH_INTERVAL=30          # 健康检查间隔(秒)
 
 # CORS（内网部署需添加客户端 IP）
@@ -161,7 +162,7 @@ GITNEXUS_BIN=/usr/local/bin/gitnexus
 
 GitNexus 由后端 ProcessManager 自动管理。当前产品已移除旧 Wiki 页面、路由和进程管理；不要再为新部署配置旧 Wiki 端口或路径。
 
-连续索引由后端有界队列串行调度。遇到 GitNexus `429` 时会尊重 `Retry-After` 并进行有上限退避；工作空间页会显示排队、索引、重试倒计时和冷却状态。不要通过重复点击创建并行索引进程。
+连续索引由后端有界队列串行调度，默认最多等待 8 个工作区；队列已满时新请求会被明确拒绝并提示稍后重试。遇到 GitNexus `429` 时，客户端指数退避上限为 30 秒，服务端 `Retry-After` 则会被优先遵守（安全上限 1 小时）；工作空间页会显示排队、索引、重试倒计时和冷却状态。不要通过重复点击创建并行索引进程。
 
 ### 5.2 外部 Agent 隔离
 

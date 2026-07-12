@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import re
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -12,6 +14,47 @@ from app.services.ai_thread_artifacts import _validate_schema, materialize_ai_th
 
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 CancellationCallback = Callable[[], Awaitable[bool] | bool]
+_CANCELLATION_POLL_INTERVAL = 0.1
+
+
+class StagedExecutionCancelled(RuntimeError):
+    """Raised after cancelling an in-flight staged provider request."""
+
+
+async def _complete_with_cancellation(
+    *,
+    llm: Any,
+    prompt: str,
+    max_tokens: int,
+    is_cancelled: CancellationCallback | None,
+) -> Any:
+    provider_task = asyncio.create_task(
+        llm.complete(
+            [{"role": "user", "content": prompt}],
+            max_tokens=max_tokens,
+            temperature=0.2,
+        )
+    )
+    if is_cancelled is None:
+        return await provider_task
+    try:
+        while True:
+            done, _ = await asyncio.wait(
+                {provider_task},
+                timeout=_CANCELLATION_POLL_INTERVAL,
+            )
+            if provider_task in done:
+                return provider_task.result()
+            if await _callback_true(is_cancelled):
+                provider_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await provider_task
+                raise StagedExecutionCancelled("任务已取消，已停止当前模型调用和后续阶段")
+    finally:
+        if not provider_task.done():
+            provider_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await provider_task
 
 
 _STAGE_BY_ARTIFACT = {
@@ -197,7 +240,7 @@ async def execute_staged_builtin_plan(
                 stage_dir / "stage_result.json",
                 {"stage_id": stage_id, "status": "cancelled", "artifact": artifact},
             )
-            raise RuntimeError("任务已取消，已停止后续阶段")
+            raise StagedExecutionCancelled("任务已取消，已停止后续阶段")
         await _emit_progress(
             on_progress,
             {
@@ -222,13 +265,14 @@ async def execute_staged_builtin_plan(
         while attempts < 2:
             attempts += 1
             try:
-                response = await llm.complete(
-                    [{"role": "user", "content": prompt}],
+                response = await _complete_with_cancellation(
+                    llm=llm,
+                    prompt=prompt,
                     max_tokens=max_tokens,
-                    temperature=0.2,
+                    is_cancelled=is_cancelled,
                 )
                 if await _callback_true(is_cancelled):
-                    raise RuntimeError("任务已取消，已停止后续阶段")
+                    raise StagedExecutionCancelled("任务已取消，已停止后续阶段")
                 if bool(getattr(response, "truncated", False)):
                     raise ValueError("provider_output_truncated")
                 raw_content = str(getattr(response, "content", "") or "").strip()
@@ -247,7 +291,7 @@ async def execute_staged_builtin_plan(
                 _write_text(stage_dir / f"raw_output_attempt_{attempts}.txt", raw_content)
                 break
             except Exception as exc:
-                if "任务已取消" in str(exc):
+                if isinstance(exc, StagedExecutionCancelled):
                     raise
                 last_error = str(exc) or exc.__class__.__name__
                 response = None
