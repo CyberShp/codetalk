@@ -1229,7 +1229,16 @@ def audit_test_activity_artifacts(
     root = Path(artifact_dir)
     repo = Path(str(repo_path or ""))
     issues: list[dict[str, Any]] = []
-    for artifact, spec in (contract.get("artifact_contract") or {}).items():
+    artifact_contract = contract.get("artifact_contract") or {}
+    if contract.get("audit_scope_required") and not artifact_contract:
+        issues.append(
+            _issue(
+                "empty_test_activity_audit_scope",
+                "workflow",
+                "工作流声明了测试活动交付件，但没有可审计的输出契约",
+            )
+        )
+    for artifact, spec in artifact_contract.items():
         path = _artifact_path(root, artifact)
         if not path.exists():
             issues.append(_issue("missing_required_artifact", artifact, f"缺少交付件 {artifact}"))
@@ -1251,7 +1260,16 @@ def audit_test_activity_artifacts(
                     )
                 )
     score = max(0, 100 - len(issues) * 15)
-    status = "deliverable" if score >= int((contract.get("quality_gates") or {}).get("min_score") or 80) and not issues else "needs_rework"
+    empty_scope = any(item.get("code") == "empty_test_activity_audit_scope" for item in issues)
+    if empty_scope:
+        score = 0
+    status = (
+        "invalid"
+        if empty_scope
+        else "deliverable"
+        if score >= int((contract.get("quality_gates") or {}).get("min_score") or 80) and not issues
+        else "needs_rework"
+    )
     return {
         "kind": "test_activity_quality_audit",
         "status": status,
@@ -2806,7 +2824,17 @@ def _audit_markdown_artifact(
         if section_heading is None:
             continue
         index, match = section_heading
-        end = heading_matches[index + 1].start() if index + 1 < len(heading_matches) else len(content)
+        current_level = len(match.group(0).lstrip()) - len(
+            match.group(0).lstrip().lstrip("#")
+        )
+        end = len(content)
+        for next_match in heading_matches[index + 1:]:
+            next_level = len(next_match.group(0).lstrip()) - len(
+                next_match.group(0).lstrip().lstrip("#")
+            )
+            if next_level <= current_level:
+                end = next_match.start()
+                break
         if not content[match.end():end].strip():
             empty_sections.append(section)
     if empty_sections:
@@ -3030,7 +3058,11 @@ def _strict_evidence_path_strings(row: dict[str, Any]) -> list[str]:
             values.extend(str(item) for item in value if str(item).strip())
         elif isinstance(value, dict):
             values.extend(str(item) for item in value.values() if str(item).strip())
-    return values
+    return _unique_strings(
+        path
+        for value in values
+        for path in _markdown_repo_paths(value)
+    )
 
 
 def _flatten_text(value: Any) -> list[str]:

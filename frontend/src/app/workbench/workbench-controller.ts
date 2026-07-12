@@ -2163,28 +2163,13 @@ export function useWorkbenchController({
       ]);
 
       const diagnosticErrors: string[] = [];
+      let recoverableRun: PreparedWorkbenchTaskRun | undefined;
       if (taskRunResult.status === "fulfilled") {
         const recentTaskRuns = taskRunResult.value.items;
         setTaskRuns(recentTaskRuns);
-        const recoverableRun = recentTaskRuns.find((run) =>
+        recoverableRun = recentTaskRuns.find((run) =>
           ["queued", "running"].includes(taskRunRuntimeStatus(run)),
         );
-        if (
-          activeWorkbenchView === "run" &&
-          recoverableRun &&
-          autoRestoredTaskRunRef.current !== recoverableRun.task_run_id
-        ) {
-          autoRestoredTaskRunRef.current = recoverableRun.task_run_id;
-          void (async () => {
-            try {
-              await restoreTaskRun(recoverableRun.task_run_id);
-              setMessage(`任务已恢复 · ${recoverableRun.task_run_id}`);
-              startTaskRunPollingRef.current(recoverableRun.task_run_id);
-            } catch (err: unknown) {
-              setError(err instanceof Error ? err.message : "恢复运行中任务失败");
-            }
-          })();
-        }
       } else {
         diagnosticErrors.push("最近任务");
       }
@@ -2256,6 +2241,32 @@ export function useWorkbenchController({
         }
       } else {
         diagnosticErrors.push("工作空间列表");
+      }
+
+      if (
+        activeWorkbenchView === "run" &&
+        recoverableRun &&
+        workspaceResult.status === "fulfilled" &&
+        autoRestoredTaskRunRef.current !== recoverableRun.task_run_id
+      ) {
+        const visibleWorkspaces = workspaceResult.value;
+        const recoverableWorkspace = visibleWorkspaces.find(
+          (workspace) => workspace.id === recoverableRun?.workspace_id,
+        );
+        if (!recoverableWorkspace) {
+          diagnosticErrors.push("运行中任务对应的工作空间已不存在，已停止自动恢复");
+        } else {
+          autoRestoredTaskRunRef.current = recoverableRun.task_run_id;
+          void (async () => {
+            try {
+              await restoreTaskRun(recoverableRun!.task_run_id, visibleWorkspaces);
+              setMessage(`任务已恢复 · ${recoverableRun!.task_run_id}`);
+              startTaskRunPollingRef.current(recoverableRun!.task_run_id);
+            } catch (err: unknown) {
+              setError(err instanceof Error ? err.message : "恢复运行中任务失败");
+            }
+          })();
+        }
       }
 
       if (coreErrors.length > 0) {
@@ -2530,7 +2541,10 @@ export function useWorkbenchController({
   }
   startTaskRunPollingRef.current = startTaskRunPolling;
 
-  async function restoreTaskRun(taskRunId: string) {
+  async function restoreTaskRun(
+    taskRunId: string,
+    availableWorkspaces: Workspace[] = workspaces,
+  ) {
     const [run, manifest, events] = await Promise.all([
       api.workbench.taskRuns.get(taskRunId),
       api.workbench.taskRuns.artifacts(taskRunId),
@@ -2539,8 +2553,17 @@ export function useWorkbenchController({
     selectedWorkflowIdRef.current = run.workflow_id;
     setSelectedWorkflowId(run.workflow_id);
     setWorkspaceId(run.workspace_id);
-    setRepoPath(run.repo_path);
-    setInputsJson(pretty(run.input_snapshot ?? {}));
+    const restoredWorkspace = availableWorkspaces.find(
+      (workspace) => workspace.id === run.workspace_id,
+    );
+    const restoredRepoPath = restoredWorkspace?.repo_path ?? "";
+    setRepoPath(restoredRepoPath);
+    setInputsJson(
+      pretty({
+        ...(run.input_snapshot ?? {}),
+        ...(restoredRepoPath ? { repo_path: restoredRepoPath } : {}),
+      }),
+    );
     setProviderOverride(run.agent_runs.find((item) => item.provider)?.provider ?? "");
     setPreparedRun(run);
     setArtifactManifest(manifest);

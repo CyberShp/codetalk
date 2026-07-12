@@ -231,6 +231,56 @@ def test_test_activity_quality_audit_flags_shallow_or_graybox_artifacts(tmp_path
     assert audit["recommendations"][0].startswith("补齐")
 
 
+def test_structured_evidence_paths_ignore_human_annotations():
+    from app.services.test_activity_contract import _strict_evidence_path_strings
+
+    paths = _strict_evidence_path_strings({
+        "source_or_test_evidence": [
+            "test/iscsi_tgt/chap/chap_discovery.sh (CHAP 发现登录)",
+            "lib/iscsi/iscsi.c::iscsi_auth_params",
+        ]
+    })
+
+    assert paths == [
+        "test/iscsi_tgt/chap/chap_discovery.sh",
+        "lib/iscsi/iscsi.c",
+    ]
+
+
+def test_markdown_sections_accept_content_organized_under_nested_headings(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    repo = tmp_path / "spdk"
+    source = repo / "lib" / "iscsi" / "iscsi.c"
+    test = repo / "test" / "iscsi_tgt" / "login.sh"
+    source.parent.mkdir(parents=True)
+    test.parent.mkdir(parents=True)
+    source.write_text("int login(void);\n", encoding="utf-8")
+    test.write_text("#!/bin/sh\n", encoding="utf-8")
+    content = """# Flow
+## 外部触发
+- TCP login request
+## 流程步骤
+### 1. 接收登录
+处理 `lib/iscsi/iscsi.c`。
+## 异常分支
+### A. 认证失败
+执行 `test/iscsi_tgt/login.sh`。
+## 观测点
+### 日志
+检查 Login Response。
+"""
+
+    issues = _audit_markdown_artifact(
+        artifact="flow_map.md",
+        content=content,
+        spec={"sections": ["外部触发", "流程步骤", "异常分支", "观测点"]},
+        repo=repo,
+    )
+
+    assert "empty_markdown_sections" not in {item["code"] for item in issues}
+
+
 def test_module_analysis_quality_audit_rejects_shallow_markdown(tmp_path):
     from app.services.test_activity_contract import (
         audit_test_activity_artifacts,

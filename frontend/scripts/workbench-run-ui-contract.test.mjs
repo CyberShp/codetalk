@@ -24,3 +24,16 @@ test("workbench cockpit renders restart and review task-run events in Chinese", 
   assert.match(source, /needs_review:\s*["']需要复核["']/);
   assert.match(source, /completed_empty:\s*["']完成但信息不足["']/);
 });
+
+test("restoring a public task run keeps the executable workspace path", () => {
+  assert.doesNotMatch(source, /setRepoPath\(run\.repo_path\)/);
+  assert.match(source, /availableWorkspaces\.find\([\s\S]*run\.workspace_id/);
+  assert.match(source, /restoredWorkspace[\s\S]*repo_path/);
+  assert.match(source, /restoreTaskRun\(recoverableRun!?\.task_run_id, visibleWorkspaces\)/);
+  assert.doesNotMatch(source, /setWorkspaces\(visibleWorkspaces\)[\s\S]{0,2500}restoreTaskRun\(recoverableRun\.task_run_id\)(?!,)/);
+});
+
+test("workbench renders the built-in workflow provider as a user-facing model label", () => {
+  assert.match(source, /["']builtin-llm["']:\s*["']内置模型["']/);
+  assert.match(source, /执行器:\s*\{providerDisplayLabel\(selectedRunProvider\)\}/);
+});

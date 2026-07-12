@@ -3,17 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+import ast
+import io
 import json
 import hashlib
 import re
 import shutil
 import threading
+import tokenize
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from app.llm.factory import create_llm_client_from_active
+from app.services.ai_staged_execution import (
+    build_staged_execution_plan,
+    execute_staged_builtin_plan,
+)
 from app.services.agent_run_harness import (
     AgentRunHarness,
     ArtifactValidationHarness,
@@ -216,9 +223,13 @@ class WorkbenchWorkflowRunner:
                 "recommendations": ["当前工作流未声明测试活动交付件，跳过测试活动质量门禁。"],
             }
         artifact_dir = Path(str(task_run.artifact_dir))
+        scoped_contract = _workflow_scoped_test_activity_contract(
+            contract=contract,
+            workflow_snapshot=task_run.workflow_snapshot,
+        )
         audit = audit_test_activity_artifacts(
             artifact_dir=artifact_dir,
-            contract=contract,
+            contract=scoped_contract,
             repo_path=str(task_run.repo_path or ""),
         )
         _write_json(artifact_dir / "test_activity_quality_audit.json", audit)
@@ -443,23 +454,88 @@ class WorkbenchWorkflowRunner:
         model = ""
         try:
             llm = _run_async_blocking(create_llm_client_from_active())
-            response = _run_async_blocking(
-                llm.complete(messages, max_tokens=12000, temperature=0.2)
-            )
-            raw_output = str(getattr(response, "content", "") or "")
-            model = str(getattr(response, "model", "") or "")
-            written_artifacts = _write_builtin_llm_artifacts(
-                artifact_dir=artifact_dir,
-                raw_output=raw_output,
-                required_artifacts=[
-                    str(item)
-                    for item in (
-                        step.get("required_artifacts")
-                        or agent_run.get("required_artifacts")
-                        or []
+            if str(step.get("execution_mode") or "") == "staged":
+                staged_context = _staged_builtin_context(
+                    execution_contract=execution_contract,
+                    task_bundle=task_bundle,
+                )
+                _write_json(
+                    artifact_dir / "staged_execution_context.json",
+                    staged_context,
+                )
+                staged_plan = _build_workbench_staged_plan(
+                    run_id=run_id,
+                    execution_contract=execution_contract,
+                    task_bundle=task_bundle,
+                    output_contract=output_contract,
+                    required_artifacts=[
+                        str(item)
+                        for item in (
+                            step.get("required_artifacts")
+                            or agent_run.get("required_artifacts")
+                            or []
+                        )
+                    ],
+                )
+
+                def emit_stage_progress(payload: dict[str, Any]) -> None:
+                    self._emit_event(
+                        "thinking",
+                        {
+                            "step_id": step_id,
+                            "provider": BUILTIN_LLM_PROVIDER_ID,
+                            "status": str(payload.get("status") or ""),
+                            "stage_id": str(payload.get("stage_id") or ""),
+                            "artifact": str(payload.get("artifact") or ""),
+                            "user_message": (
+                                f"内置模型阶段 {payload.get('current')}/{payload.get('total')}："
+                                f"{payload.get('stage_id')} · {payload.get('status')}"
+                            ),
+                        },
                     )
-                ],
-            )
+
+                staged_result = _run_async_blocking(
+                    execute_staged_builtin_plan(
+                        llm=llm,
+                        plan=staged_plan,
+                        artifact_dir=artifact_dir,
+                        context_prompt=json.dumps(
+                            staged_context,
+                            ensure_ascii=False,
+                            indent=2,
+                        ),
+                        on_progress=emit_stage_progress,
+                        is_cancelled=self._is_cancelled,
+                        max_tokens=6000,
+                    )
+                )
+                raw_output = json.dumps(staged_result, ensure_ascii=False, indent=2)
+                model = ", ".join(
+                    str(item) for item in staged_result.get("models") or [] if str(item)
+                ) or "staged-active-model"
+                written_artifacts = [
+                    artifact
+                    for artifact in staged_plan.get("required_outputs") or []
+                    if (artifact_dir / str(artifact)).is_file()
+                ]
+            else:
+                response = _run_async_blocking(
+                    llm.complete(messages, max_tokens=12000, temperature=0.2)
+                )
+                raw_output = str(getattr(response, "content", "") or "")
+                model = str(getattr(response, "model", "") or "")
+                written_artifacts = _write_builtin_llm_artifacts(
+                    artifact_dir=artifact_dir,
+                    raw_output=raw_output,
+                    required_artifacts=[
+                        str(item)
+                        for item in (
+                            step.get("required_artifacts")
+                            or agent_run.get("required_artifacts")
+                            or []
+                        )
+                    ],
+                )
         except Exception as exc:
             raw_output = ""
             written_artifacts = []
@@ -727,13 +803,17 @@ class WorkbenchWorkflowRunner:
             artifact_path = artifact_dir / f"{step_id}.json"
             _write_json(artifact_path, payload)
             _write_json(artifact_dir / "evidence_validation.json", payload)
-            return _builtin_step_result(
+            result = _builtin_step_result(
                 step_id,
                 step_type,
                 artifact_dir,
                 artifact_path,
                 payload.get("accepted_count", 0),
             )
+            if payload.get("status") == "invalid":
+                result["status"] = "invalid"
+                result["reason"] = "源码证据中的文件或符号未通过真实性校验"
+            return result
 
         if step_type == "report_render":
             written = _render_report_artifacts(
@@ -965,6 +1045,195 @@ class WorkbenchWorkflowRunner:
             encoding="utf-8",
         )
         write_task_artifact_manifest(task_dir, task_run_id=result.task_run_id)
+
+
+def _staged_builtin_context(
+    *,
+    execution_contract: dict[str, Any],
+    task_bundle: dict[str, Any],
+) -> dict[str, Any]:
+    """Preserve evidence and user input without the legacy one-shot output protocol."""
+    activity_contract = (
+        task_bundle.get("test_activity_contract")
+        if isinstance(task_bundle.get("test_activity_contract"), dict)
+        else {}
+    )
+    return {
+        "contract_version": execution_contract.get("contract_version"),
+        "repo_path": execution_contract.get("repo_path"),
+        "goal": execution_contract.get("goal"),
+        "analysis_targets": execution_contract.get("analysis_targets") or [],
+        "user_inputs": execution_contract.get("user_inputs") or {},
+        "input_materials": execution_contract.get("input_materials") or {},
+        "mcp": execution_contract.get("mcp") or {},
+        "skills": execution_contract.get("skills") or {},
+        "source_context": execution_contract.get("source_context") or {},
+        "test_activity_guidance": {
+            key: activity_contract.get(key)
+            for key in (
+                "domain_profiles",
+                "domain_requirements",
+                "evidence_policy",
+                "focus_rationale",
+                "professional_constraints",
+                "project_profile",
+                "quality_gates",
+                "black_box_boundary",
+            )
+            if activity_contract.get(key) not in (None, {}, [])
+        },
+        "prefetched_evidence": {
+            "context_discovery_decision": task_bundle.get("context_discovery_decision") or {},
+            "memory_retrieval": task_bundle.get("memory_retrieval") or {},
+            "degraded_retrieval": task_bundle.get("degraded_retrieval") or {},
+        },
+    }
+
+
+def _workflow_scoped_test_activity_contract(
+    *,
+    contract: dict[str, Any],
+    workflow_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Audit only test deliverables explicitly declared by this workflow."""
+    base_artifacts = (
+        contract.get("artifact_contract")
+        if isinstance(contract.get("artifact_contract"), dict)
+        else {}
+    )
+    allow_flow_map_alias = any(
+        isinstance(step, dict)
+        and str(step.get("execution_mode") or "") == "staged"
+        for step in workflow_snapshot.get("steps") or []
+    )
+    scoped_artifacts: dict[str, Any] = {}
+    for output in workflow_snapshot.get("outputs") or []:
+        if not isinstance(output, dict):
+            continue
+        artifact = str(output.get("artifact") or "").strip()
+        if not artifact:
+            continue
+        template_artifact = _test_activity_template_for_declaration(
+            output,
+            allow_flow_map_alias=allow_flow_map_alias,
+        )
+        if not template_artifact:
+            continue
+        spec = base_artifacts.get(template_artifact) or ARTIFACT_TEMPLATES.get(
+            template_artifact
+        )
+        if isinstance(spec, dict):
+            scoped_artifacts[artifact] = dict(spec)
+    for step in workflow_snapshot.get("steps") or []:
+        if not isinstance(step, dict):
+            continue
+        for declared in step.get("required_artifacts") or []:
+            artifact = str(declared or "").strip()
+            if not artifact or artifact in scoped_artifacts:
+                continue
+            template_artifact = _test_activity_template_for_declaration(
+                {"artifact": artifact},
+                allow_flow_map_alias=allow_flow_map_alias,
+            )
+            if not template_artifact:
+                continue
+            spec = base_artifacts.get(template_artifact) or ARTIFACT_TEMPLATES.get(
+                template_artifact
+            )
+            if isinstance(spec, dict):
+                scoped_artifacts[artifact] = dict(spec)
+    return {
+        **contract,
+        "artifact_contract": scoped_artifacts,
+        "required_outputs": list(scoped_artifacts),
+        "audit_scope_required": True,
+    }
+
+
+def _test_activity_template_for_declaration(
+    declaration: dict[str, Any],
+    *,
+    allow_flow_map_alias: bool = False,
+) -> str:
+    artifact = str(declaration.get("artifact") or declaration.get("path") or "").strip()
+    if artifact in ARTIFACT_TEMPLATES:
+        return artifact
+    if allow_flow_map_alias and artifact == "flow_map.md":
+        return "business_flow.md"
+    output_type = str(declaration.get("type") or "").strip().lower()
+    by_type = {
+        "business_flow": "business_flow.md",
+        "flow": "business_flow.md",
+        "sfmea": "sfmea.json",
+        "test_cases": "black_box_cases.json",
+        "black_box_cases": "black_box_cases.json",
+        "test_design": "test_design.md",
+        "test_strategy": "test_strategy.md",
+    }
+    if output_type in by_type:
+        return by_type[output_type]
+    semantic_name = " ".join(
+        str(declaration.get(key) or "").lower()
+        for key in ("id", "name", "label", "artifact", "path")
+    )
+    keyword_templates = (
+        (("sfmea", "fmea"), "sfmea.json"),
+        (("black_box", "black-box", "test_case", "用例"), "black_box_cases.json"),
+        (("business_flow", "业务流程", "流程梳理"), "business_flow.md"),
+        (("test_strategy", "测试策略"), "test_strategy.md"),
+        (("test_design", "测试设计"), "test_design.md"),
+    )
+    for keywords, template in keyword_templates:
+        if any(keyword in semantic_name for keyword in keywords):
+            return template
+    return ""
+
+
+def _build_workbench_staged_plan(
+    *,
+    run_id: str,
+    execution_contract: dict[str, Any],
+    task_bundle: dict[str, Any],
+    output_contract: dict[str, Any],
+    required_artifacts: list[str],
+) -> dict[str, Any]:
+    schemas = {
+        str(item.get("artifact") or ""): dict(item.get("schema") or {})
+        for item in output_contract.get("expected_output_schemas") or []
+        if isinstance(item, dict) and str(item.get("artifact") or "")
+    }
+    artifact_contract = {
+        artifact: {
+            "artifact": artifact,
+            **({"schema": schemas[artifact]} if schemas.get(artifact) else {}),
+        }
+        for artifact in required_artifacts
+    }
+    analysis_targets = [
+        str(item.get("value") or "").strip()
+        for item in execution_contract.get("analysis_targets") or []
+        if isinstance(item, dict) and str(item.get("value") or "").strip()
+    ]
+    original_request = "\n".join(analysis_targets).strip()
+    if not original_request:
+        original_request = str(
+            (task_bundle.get("context_bundle") or {}).get("query") or ""
+        ).strip()
+    test_activity_contract = (
+        execution_contract.get("test_activity_contract")
+        if isinstance(execution_contract.get("test_activity_contract"), dict)
+        else {}
+    )
+    plan = build_staged_execution_plan(
+        contract={
+            "target": str(test_activity_contract.get("target") or original_request),
+            "required_outputs": required_artifacts,
+            "artifact_contract": artifact_contract,
+        },
+        original_user_request=original_request,
+    )
+    plan["run_id"] = run_id
+    return plan
 
 
 def _builtin_llm_messages(
@@ -4397,6 +4666,21 @@ def _evidence_validation_payload(
             )
             if detail:
                 accepted_details.append(detail)
+                if artifact == "evidence_cards.json":
+                    rejected_details.extend(
+                        _evidence_card_validation_issues(
+                            artifact_path=Path(str(detail["path"])),
+                            repo_path=str(task_run.repo_path or ""),
+                            source_step_id=source_step_id,
+                            allow_synthetic_smoke=(
+                                str(getattr(task_run, "workflow_id", ""))
+                                == "codetalk_smoke_e2e"
+                                and str(getattr(task_run, "workspace_id", ""))
+                                == "codetalk-smoke"
+                                and source_step_id == "discover_scope"
+                            ),
+                        )
+                    )
         for item in rejected_artifacts:
             rejected_details.append({
                 **item,
@@ -4405,7 +4689,7 @@ def _evidence_validation_payload(
     context_bundle = task_run.task_bundle.get("context_bundle") or {}
     payload = {
         "step_id": step_id,
-        "status": "completed",
+        "status": "invalid" if rejected_details else "completed",
         "task_run_id": task_run.task_run_id,
         "workspace_id": task_run.workspace_id,
         "accepted_artifacts": accepted,
@@ -4414,11 +4698,313 @@ def _evidence_validation_payload(
         "rejected_artifact_details": rejected_details,
         "warnings": warnings,
         "accepted_count": len(accepted),
-        "rejected_count": len(rejected),
+        "rejected_count": len(rejected_details),
         "context_evidence_count": len(context_bundle.get("evidence") or []),
         "semantic_case_count": len(context_bundle.get("semantic_cases") or []),
     }
     return payload
+
+
+def _evidence_card_validation_issues(
+    *,
+    artifact_path: Path,
+    repo_path: str,
+    source_step_id: str,
+    allow_synthetic_smoke: bool = False,
+) -> list[dict[str, Any]]:
+    payload = _read_json(artifact_path)
+    if not isinstance(payload, list):
+        return [{
+            "artifact": artifact_path.name,
+            "source_step_id": source_step_id,
+            "code": "evidence_cards_invalid",
+            "reason": "evidence_cards.json 必须是 JSON 数组",
+        }]
+    try:
+        repo = Path(repo_path).resolve()
+    except OSError:
+        repo = Path(repo_path)
+    issues: list[dict[str, Any]] = []
+    for index, card in enumerate(payload, start=1):
+        if not isinstance(card, dict):
+            issues.append({
+                "artifact": artifact_path.name,
+                "source_step_id": source_step_id,
+                "code": "evidence_card_invalid",
+                "reason": f"第 {index} 张证据卡必须是 JSON 对象",
+                "index": index,
+            })
+            continue
+        if (
+            allow_synthetic_smoke
+            and
+            str(card.get("kind") or "") == "synthetic_smoke"
+            and str(card.get("source") or "") == "codetalk-smoke-agent"
+        ):
+            continue
+        file_path = str(card.get("file_path") or card.get("path") or "").strip()
+        if not file_path:
+            issues.append({
+                "artifact": artifact_path.name,
+                "source_step_id": source_step_id,
+                "code": "evidence_path_missing",
+                "reason": f"第 {index} 张证据卡缺少 file_path",
+                "index": index,
+            })
+            continue
+        candidate = _resolve_repo_source_path(repo, file_path)
+        if candidate is None:
+            issues.append({
+                "artifact": artifact_path.name,
+                "source_step_id": source_step_id,
+                "code": "evidence_path_not_found",
+                "reason": f"第 {index} 张证据卡的文件不存在或越界: {file_path}",
+                "index": index,
+                "file_path": file_path,
+            })
+            continue
+        try:
+            source_text = candidate.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            source_text = ""
+        symbols = card.get("symbols")
+        if not symbols and str(card.get("symbol") or "").strip():
+            symbols = [str(card.get("symbol") or "").strip()]
+        if not isinstance(symbols, list) or not any(str(item or "").strip() for item in symbols):
+            expected_sha256 = str(card.get("sha256") or "").strip().lower()
+            try:
+                actual_sha256 = hashlib.sha256(candidate.read_bytes()).hexdigest()
+            except OSError:
+                actual_sha256 = ""
+            expected_line_count = card.get("line_count")
+            line_count_matches = (
+                expected_line_count in (None, "")
+                or str(expected_line_count).isdigit()
+                and int(expected_line_count) == len(source_text.splitlines())
+            )
+            if expected_sha256 and expected_sha256 == actual_sha256 and line_count_matches:
+                continue
+            issues.append({
+                "artifact": artifact_path.name,
+                "source_step_id": source_step_id,
+                "code": "evidence_symbols_missing",
+                "reason": f"第 {index} 张证据卡至少需要一个源码符号",
+                "index": index,
+                "file_path": file_path,
+            })
+            continue
+        searchable_source = _source_code_without_comments_and_strings(
+            source_text,
+            suffix=candidate.suffix.lower(),
+        )
+        for symbol in symbols:
+            symbol_text = str(symbol or "").strip()
+            symbol_pattern = re.compile(
+                rf"(?<![A-Za-z0-9_]){re.escape(symbol_text)}(?![A-Za-z0-9_])"
+            )
+            if symbol_text and not symbol_pattern.search(searchable_source):
+                issues.append({
+                    "artifact": artifact_path.name,
+                    "source_step_id": source_step_id,
+                    "code": "evidence_symbol_not_in_file",
+                    "reason": (
+                        f"第 {index} 张证据卡的符号未出现在声明文件中: "
+                        f"{file_path}::{symbol_text}"
+                    ),
+                    "index": index,
+                    "file_path": file_path,
+                    "symbol": symbol_text,
+                })
+    return issues
+
+
+def _source_code_without_comments_and_strings(
+    source_text: str,
+    *,
+    suffix: str = "",
+) -> str:
+    if suffix == ".py":
+        try:
+            ast.parse(source_text)
+        except SyntaxError:
+            return ""
+        try:
+            tokens = []
+            for token in tokenize.generate_tokens(io.StringIO(source_text).readline):
+                if token.type in {tokenize.COMMENT, tokenize.STRING}:
+                    token = tokenize.TokenInfo(
+                        token.type,
+                        " ",
+                        token.start,
+                        token.end,
+                        token.line,
+                    )
+                tokens.append(token)
+            return tokenize.untokenize(tokens)
+        except (IndentationError, tokenize.TokenError):
+            return ""
+    if suffix in {".sh", ".bash", ".zsh", ".ksh"}:
+        return _shell_code_without_comments_and_strings(
+            _shell_without_heredoc_bodies(source_text)
+        )
+    cleaned = re.sub(
+        r"//[^\n]*|/\*.*?\*/|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'",
+        " ",
+        source_text,
+        flags=re.DOTALL,
+    )
+    return cleaned
+
+
+def _shell_code_without_comments_and_strings(source_text: str) -> str:
+    result = list(source_text)
+    quote = ""
+    escaped = False
+    index = 0
+    comment_boundaries = " \t\r\n;|&()<>"
+    while index < len(source_text):
+        char = source_text[index]
+        if escaped:
+            result[index] = " "
+            escaped = False
+            index += 1
+            continue
+        if char == "\\":
+            result[index] = " "
+            escaped = True
+            index += 1
+            continue
+        if quote:
+            result[index] = " "
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if source_text.startswith("<<<", index):
+            cursor = index + 3
+            while cursor < len(source_text) and source_text[cursor] in " \t":
+                cursor += 1
+            _, word_end, found_word = _shell_parse_word(source_text, cursor)
+            end = word_end if found_word else cursor
+            for blank_index in range(index, end):
+                if result[blank_index] not in {"\n", "\r"}:
+                    result[blank_index] = " "
+            index = end
+            continue
+        if char in {"'", '"'}:
+            result[index] = " "
+            quote = char
+            index += 1
+            continue
+        if char == "#" and (
+            index == 0 or source_text[index - 1] in comment_boundaries
+        ):
+            while index < len(source_text) and source_text[index] != "\n":
+                result[index] = " "
+                index += 1
+            continue
+        index += 1
+    return "".join(result)
+
+
+def _shell_without_heredoc_bodies(source_text: str) -> str:
+    lines = source_text.splitlines(keepends=True)
+    pending: list[tuple[str, bool]] = []
+    result: list[str] = []
+    for line in lines:
+        if pending:
+            delimiter, strip_tabs = pending[0]
+            candidate = line.rstrip("\r\n")
+            if strip_tabs:
+                candidate = candidate.lstrip("\t")
+            result.append("\n" if line.endswith(("\n", "\r")) else "")
+            if candidate == delimiter:
+                pending.pop(0)
+            continue
+        result.append(line)
+        pending.extend(_shell_heredoc_delimiters(line))
+    return "".join(result)
+
+
+def _shell_heredoc_delimiters(line: str) -> list[tuple[str, bool]]:
+    delimiters: list[tuple[str, bool]] = []
+    quote = ""
+    escaped = False
+    index = 0
+    comment_boundaries = " \t\r\n;|&()<>"
+    while index < len(line):
+        char = line[index]
+        if escaped:
+            escaped = False
+            index += 1
+            continue
+        if char == "\\":
+            escaped = True
+            index += 1
+            continue
+        if quote:
+            if char == quote:
+                quote = ""
+            index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            continue
+        if char == "#" and (index == 0 or line[index - 1] in comment_boundaries):
+            break
+        if not line.startswith("<<", index):
+            index += 1
+            continue
+        if line.startswith("<<<", index):
+            index += 3
+            continue
+        cursor = index + 2
+        strip_tabs = cursor < len(line) and line[cursor] == "-"
+        if strip_tabs:
+            cursor += 1
+        while cursor < len(line) and line[cursor] in " \t":
+            cursor += 1
+        delimiter, cursor, found_word = _shell_parse_word(line, cursor)
+        if not found_word:
+            break
+        if delimiter or found_word:
+            delimiters.append((delimiter, strip_tabs))
+        index = cursor
+    return delimiters
+
+
+def _shell_parse_word(source_text: str, start: int) -> tuple[str, int, bool]:
+    parts: list[str] = []
+    index = start
+    found = False
+    word_boundaries = " \t\r\n;|&()<>"
+    while index < len(source_text) and source_text[index] not in word_boundaries:
+        found = True
+        char = source_text[index]
+        if char == "\\":
+            if index + 1 < len(source_text):
+                parts.append(source_text[index + 1])
+                index += 2
+            else:
+                index += 1
+            continue
+        if char in {"'", '"'}:
+            quote = char
+            index += 1
+            while index < len(source_text) and source_text[index] != quote:
+                if quote == '"' and source_text[index] == "\\" and index + 1 < len(source_text):
+                    parts.append(source_text[index + 1])
+                    index += 2
+                else:
+                    parts.append(source_text[index])
+                    index += 1
+            if index < len(source_text) and source_text[index] == quote:
+                index += 1
+            continue
+        parts.append(char)
+        index += 1
+    return "".join(parts), index, found
 
 
 def _accepted_artifact_detail(
@@ -4705,45 +5291,32 @@ def _redact_workbench_public_text(text: str, *, task_run: Any) -> str:
     return redacted
 
 
-_TEST_ACTIVITY_AUDIT_ARTIFACTS = {
-    "module_analysis.md",
-    "sfmea.json",
-    "black_box_cases.json",
-    "black_box_cases.md",
-    "test_strategy.md",
-    "test_design.md",
-    "coverage_gap_report.md",
-    "risk_review.md",
-    "execution_checklist.md",
-}
-
-
 def _workflow_declares_test_activity_deliverables(workflow_snapshot: dict[str, Any]) -> bool:
     """Only apply strict test-activity gates to workflows that declare those files."""
 
-    declared: set[str] = set()
+    allow_flow_map_alias = any(
+        isinstance(step, dict)
+        and str(step.get("execution_mode") or "") == "staged"
+        for step in workflow_snapshot.get("steps") or []
+    )
     for output in workflow_snapshot.get("outputs") or []:
         if not isinstance(output, dict):
             continue
-        artifact = str(output.get("artifact") or output.get("path") or "").strip()
-        if artifact:
-            declared.add(artifact)
-        output_type = str(output.get("type") or "").strip()
-        if output_type in {"test_cases", "sfmea", "test_design", "test_strategy"}:
+        if _test_activity_template_for_declaration(
+            output,
+            allow_flow_map_alias=allow_flow_map_alias,
+        ):
             return True
     for step in workflow_snapshot.get("steps") or []:
         if not isinstance(step, dict):
             continue
-        declared.update(
-            str(item).strip()
-            for item in step.get("required_artifacts") or []
-            if str(item).strip()
-        )
-    return any(
-        artifact in _TEST_ACTIVITY_AUDIT_ARTIFACTS
-        and artifact in ARTIFACT_TEMPLATES
-        for artifact in declared
-    )
+        for item in step.get("required_artifacts") or []:
+            if _test_activity_template_for_declaration(
+                {"artifact": str(item or "").strip()},
+                allow_flow_map_alias=allow_flow_map_alias,
+            ):
+                return True
+    return False
 
 
 def _safe_segment(value: str) -> str:

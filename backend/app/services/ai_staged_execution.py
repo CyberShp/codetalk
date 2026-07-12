@@ -58,6 +58,9 @@ async def _complete_with_cancellation(
 
 
 _STAGE_BY_ARTIFACT = {
+    "source_scope.json": ("source_scope", ["source_analysis"]),
+    "evidence_cards.json": ("evidence_cards", ["source_analysis"]),
+    "flow_map.md": ("business_flow", ["source_analysis"]),
     "project_structure.md": ("project_structure", ["source_analysis"]),
     "source_reading_plan.md": ("source_reading_plan", ["source_analysis"]),
     "module_map.md": ("module_map", ["source_analysis"]),
@@ -87,6 +90,8 @@ _STAGE_BY_ARTIFACT = {
 
 _CANONICAL_STAGE_ORDER = (
     "source_analysis",
+    "source_scope",
+    "evidence_cards",
     "project_structure",
     "source_reading_plan",
     "module_map",
@@ -130,8 +135,13 @@ def build_staged_execution_plan(
             "id": "source_analysis",
             "artifact": "source_analysis.md",
             "depends_on": [],
-            "purpose": "读取源码、测试目录和输入材料，形成可验证证据锚点",
+            "purpose": "读取源码、测试目录和输入材料，形成紧凑、可验证的证据索引",
             "support": True,
+            "max_tokens": 3200,
+            "output_limits": {
+                "max_chinese_characters": 1800,
+                "max_evidence_anchors": 24,
+            },
         }
     ]
     requested: list[tuple[int, str, str, list[str]]] = []
@@ -204,6 +214,7 @@ def build_staged_execution_plan(
                 "purpose": _stage_purpose(stage_id),
                 "support": output_index < 0,
                 "output_contract": output_contract,
+                **_stage_execution_limits(base_stage_id),
             }
         )
     return {
@@ -229,6 +240,7 @@ async def execute_staged_builtin_plan(
     artifact_dir.mkdir(parents=True, exist_ok=True)
     _write_json(artifact_dir / "staged_execution_plan.json", plan)
     completed: dict[str, Path] = {}
+    models: set[str] = set()
     stages = [item for item in plan.get("stages") or [] if isinstance(item, dict)]
     for index, stage in enumerate(stages):
         stage_id = str(stage.get("id") or f"stage_{index + 1}")
@@ -262,20 +274,29 @@ async def execute_staged_builtin_plan(
         rendered: Any = None
         last_error = ""
         attempts = 0
+        stage_max_tokens = min(
+            max_tokens,
+            max(256, int(stage.get("max_tokens") or max_tokens)),
+        )
         while attempts < 2:
             attempts += 1
             try:
                 response = await _complete_with_cancellation(
                     llm=llm,
                     prompt=prompt,
-                    max_tokens=max_tokens,
+                    max_tokens=stage_max_tokens,
                     is_cancelled=is_cancelled,
                 )
                 if await _callback_true(is_cancelled):
                     raise StagedExecutionCancelled("任务已取消，已停止后续阶段")
+                raw_content = str(getattr(response, "content", "") or "").strip()
+                if raw_content:
+                    _write_text(
+                        stage_dir / f"raw_output_attempt_{attempts}.txt",
+                        raw_content,
+                    )
                 if bool(getattr(response, "truncated", False)):
                     raise ValueError("provider_output_truncated")
-                raw_content = str(getattr(response, "content", "") or "").strip()
                 if not raw_content:
                     raise ValueError("provider_output_empty")
                 rendered = _render_stage_artifact(raw_content, artifact)
@@ -288,7 +309,6 @@ async def execute_staged_builtin_plan(
                     schema_errors = _validate_schema(rendered, schema)
                     if schema_errors:
                         raise ValueError("schema_invalid: " + "; ".join(schema_errors[:5]))
-                _write_text(stage_dir / f"raw_output_attempt_{attempts}.txt", raw_content)
                 break
             except Exception as exc:
                 if isinstance(exc, StagedExecutionCancelled):
@@ -296,15 +316,32 @@ async def execute_staged_builtin_plan(
                 last_error = str(exc) or exc.__class__.__name__
                 response = None
                 rendered = None
-            prompt = "\n".join(
-                [
-                    prompt,
-                    "",
-                    "RETRY_AFTER_STAGE_FAILURE:",
-                    f"  previous attempt failed validation or transport: {last_error}",
-                    "  return only the declared artifact, complete and valid.",
-                ]
-            )
+            retry_rules = [
+                "RETRY_AFTER_STAGE_FAILURE:",
+                f"  previous attempt failed validation or transport: {last_error}",
+                "  return only the declared artifact, complete and valid.",
+            ]
+            if last_error == "provider_output_truncated":
+                retry_rules.extend(
+                    [
+                        "  上次输出因过长被截断；压缩到原输出的一半以内。",
+                        "  只保留最强源码证据、关键测试入口和未验证缺口，不写背景科普或重复叙述。",
+                    ]
+                )
+                output_limits = (
+                    stage.get("output_limits")
+                    if isinstance(stage.get("output_limits"), dict)
+                    else {}
+                )
+                if output_limits.get("max_items"):
+                    retry_rules.append(
+                        f"  本次最多返回 {min(8, int(output_limits['max_items']))} 项，必须闭合 JSON 后再结束。"
+                    )
+                if output_limits.get("max_field_characters"):
+                    retry_rules.append(
+                        f"  每个叙述字段最多 {int(output_limits['max_field_characters'])} 个字符，使用短句。"
+                    )
+            prompt = "\n".join([prompt, "", *retry_rules])
         if response is None or rendered is None:
             result = {
                 "stage_id": stage_id,
@@ -318,6 +355,9 @@ async def execute_staged_builtin_plan(
                 f"阶段 {stage_id} 连续 {attempts} 次输出失败，已停止后续阶段：{result['reason']}"
             )
         raw_content = str(getattr(response, "content", "") or "").strip()
+        response_model = str(getattr(response, "model", "") or "").strip()
+        if response_model:
+            models.add(response_model)
         _write_text(stage_dir / "raw_output.txt", raw_content)
         output_path = artifact_dir / artifact
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -332,6 +372,7 @@ async def execute_staged_builtin_plan(
             "artifact": artifact,
             "attempts": attempts,
             "size_bytes": output_path.stat().st_size,
+            "model": response_model,
         }
         _write_json(stage_dir / "stage_result.json", result)
         await _emit_progress(
@@ -367,6 +408,7 @@ async def execute_staged_builtin_plan(
         "completed_stages": len(stages),
         "total_stages": len(stages),
         "manifest": "artifact_manifest.json",
+        "models": sorted(models),
     }
     _write_json(artifact_dir / "staged_execution_result.json", execution)
     return {**execution, "artifact_manifest": manifest}
@@ -390,8 +432,14 @@ def _stage_prompt(
 ) -> str:
     artifact = str(stage.get("artifact") or "")
     previous_sections: list[str] = []
-    for stage_id in stage.get("depends_on") or []:
-        path = completed.get(str(stage_id))
+    dependencies = {
+        str(item).strip()
+        for item in stage.get("depends_on") or []
+        if str(item).strip()
+    }
+    for stage_id, path in completed.items():
+        if stage_id not in dependencies:
+            continue
         if not path or not path.is_file():
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -407,6 +455,33 @@ def _stage_prompt(
         if artifact.endswith(".json")
         else "Return the complete Markdown file body, without terminal chatter."
     )
+    output_limits = (
+        stage.get("output_limits")
+        if isinstance(stage.get("output_limits"), dict)
+        else {}
+    )
+    limit_rules: list[str] = []
+    if output_limits.get("max_chinese_characters"):
+        limit_rules.append(
+            f"- 正文最多 {int(output_limits['max_chinese_characters'])} 个中文字符；这是支持索引，不是最终报告。"
+        )
+    if output_limits.get("max_evidence_anchors"):
+        limit_rules.append(
+            f"- 最多 {int(output_limits['max_evidence_anchors'])} 个证据锚点，每个锚点只写文件、符号/行号、事实和关联测试。"
+        )
+    if output_limits.get("max_items"):
+        limit_rules.append(
+            f"- JSON 数组或条目列表最多 {int(output_limits['max_items'])} 项，优先保留高风险和高证据强度内容。"
+        )
+    if output_limits.get("max_field_characters"):
+        limit_rules.append(
+            f"- 每个叙述字段最多 {int(output_limits['max_field_characters'])} 个字符，数组步骤也使用短句。"
+        )
+    other_artifacts = [
+        str(item)
+        for item in plan.get("required_outputs") or []
+        if str(item) and str(item) != artifact
+    ]
     return "\n".join(
         [
             f"STAGE_ID: {stage.get('id')}",
@@ -421,11 +496,18 @@ def _stage_prompt(
             "OUTPUT_CONTRACT:",
             json.dumps(output_contract, ensure_ascii=False, indent=2),
             "",
+            "CURRENT_STAGE_ONLY:",
+            f"- 当前只生成 {artifact}。原始请求中的其他交付件由后续独立阶段处理。",
+            "- 不要在当前响应中生成其他阶段、artifact 容器、总报告或用户未要求的附加文件。",
+            f"- 本阶段禁止输出：{', '.join(other_artifacts) if other_artifacts else '(none)'}",
+            *_stage_format_rules(str(stage.get("id") or ""), artifact),
+            "",
             "RULES:",
             "- Read and preserve the complete original user request.",
             "- Use only source/test evidence supplied here or in accepted previous artifacts.",
             "- Mark unverified design proposals explicitly; do not claim execution.",
             f"- {output_rule}",
+            *limit_rules,
             "",
             "PRIOR_ACCEPTED_ARTIFACTS:",
             *(previous_sections or ["(none)"]),
@@ -482,3 +564,42 @@ def _stage_purpose(stage_id: str) -> str:
         "risk_review": "复核高风险、证据缺口和未验证建议",
         "execution_checklist": "形成环境、数据、步骤、观测和复跑检查清单",
     }.get(stage_id, "按声明契约生成独立交付文件")
+
+
+def _stage_execution_limits(stage_id: str) -> dict[str, Any]:
+    base_stage_id = stage_id.split("__", 1)[0]
+    limits = {
+        "source_scope": (2600, {"max_items": 24}),
+        "evidence_cards": (4000, {"max_items": 24}),
+        "business_flow": (4000, {"max_chinese_characters": 6000}),
+        "sfmea": (5500, {"max_items": 10, "max_field_characters": 180}),
+        "black_box_cases": (6000, {"max_items": 12, "max_field_characters": 180}),
+    }.get(base_stage_id)
+    if limits is None:
+        return {}
+    max_tokens, output_limits = limits
+    return {"max_tokens": max_tokens, "output_limits": output_limits}
+
+
+def _stage_format_rules(stage_id: str, artifact: str) -> list[str]:
+    base_stage_id = stage_id.split("__", 1)[0]
+    rules = {
+        "source_scope": "- 只写范围、真实文件和入口点；不要写流程、SFMEA 或测试用例。",
+        "evidence_cards": (
+            "- 每项只写可核验的文件、符号/行号、事实和证据来源；不要推演测试设计；"
+            "每个 symbol 必须逐字出现在对应 file_path，跨文件定义必须填写真正的定义文件。"
+        ),
+        "business_flow": (
+            "- 只写流程和证据引用，不要写 SFMEA 表或测试用例；"
+            "必须使用四个独立二级标题：## 外部触发、## 流程步骤、## 异常分支、## 观测点；"
+            "至少引用一个真实源码路径和一个真实测试路径。"
+        ),
+        "sfmea": "- 只返回 8-10 条最高风险 SFMEA JSON 数组；每条必须有评分依据、mitigation 和源码/测试映射。",
+        "black_box_cases": "- 只返回 8-12 条黑盒用例 JSON 数组；八个必需维度各至少一条，步骤只能使用外部操作和可观测结果。",
+    }
+    rule = rules.get(base_stage_id)
+    if rule:
+        return [rule]
+    if artifact.endswith(".json"):
+        return ["- 只返回当前 JSON 文件的顶层值，不要包裹 summary/artifacts/path/content。"]
+    return []

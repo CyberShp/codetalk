@@ -3383,6 +3383,7 @@ export function providerDisplayLabel(provider: string | undefined): string {
   const normalized = String(provider ?? "").trim().toLowerCase();
   const labels: Record<string, string> = {
     "local-search": "本地源码检索",
+    "builtin-llm": "内置模型",
     gitnexus: "GitNexus",
     cgc: "CGC",
     "claude-code": "Claude Code",

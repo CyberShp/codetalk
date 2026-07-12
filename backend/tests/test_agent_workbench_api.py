@@ -80,6 +80,90 @@ class _CompletedTaskRunResponse:
         return self._body
 
 
+class _SourceFlowStageLLM:
+    async def complete(self, messages, max_tokens=4096, temperature=0.2):
+        from app.llm.base import LLMResponse
+
+        prompt = messages[-1]["content"]
+        artifact = next(
+            line.split(":", 1)[1].strip()
+            for line in prompt.splitlines()
+            if line.startswith("OUTPUT_ARTIFACT:")
+        )
+        dimensions = [
+            "normal_path",
+            "invalid_input",
+            "resource_pressure",
+            "timeout",
+            "reconnect",
+            "concurrency",
+            "recovery",
+            "performance",
+        ]
+        payloads = {
+            "source_analysis.md": "# Source evidence\nlib/nvmf/ctrlr.c:1 spdk_nvmf_ctrlr_connect",
+            "source_scope.json": {
+                "scope_id": "nvmf",
+                "query": "connect to IO submit flow",
+                "repo": "spdk",
+                "discovery": {"provider": "builtin-llm", "method": "source_context", "file_count": 2},
+                "files": ["lib/nvmf/ctrlr.c", "test/nvmf/nvmf.sh"],
+                "entry_points": [],
+            },
+            "evidence_cards.json": [{
+                "evidence_id": "ev-1",
+                "kind": "source",
+                "file_path": "lib/nvmf/ctrlr.c",
+                "symbols": ["spdk_nvmf_ctrlr_connect"],
+                "reason": "connect entry",
+                "source": "local-source",
+            }],
+            "flow_map.md": (
+                "# Connect flow\n\n"
+                "## 外部触发\nInitiator sends a connect request to `lib/nvmf/ctrlr.c`.\n\n"
+                "## 流程步骤\n1. The public transport accepts the request.\n"
+                "2. The controller validates it.\n3. The response is returned.\n\n"
+                "## 异常分支\nInvalid requests return an observable error.\n\n"
+                "## 观测点\nUse the response, target log, and `test/nvmf/nvmf.sh`."
+            ),
+            "sfmea.json": [{
+                "failure_mode": "connect rejected",
+                "cause": "invalid request",
+                "effect": "controller unavailable",
+                "detection": "connect response",
+                "severity": 7,
+                "occurrence": 3,
+                "detection_score": 2,
+                "rpn": 42,
+                "score_explanation": "connection cannot progress",
+                "mitigation": "negative connect test",
+                "source_evidence": ["lib/nvmf/ctrlr.c:1"],
+                "test_mapping": "test/nvmf/nvmf.sh",
+            }],
+            "black_box_cases.json": [
+                {
+                    "case_id": f"TC-{index}",
+                    "case_type": "black_box_ready",
+                    "scenario_name": dimension,
+                    "test_dimension": dimension,
+                    "inputs": "public workflow",
+                    "preconditions": ["target running"],
+                    "steps": ["exercise the public connection interface"],
+                    "expected_result": "observable connection result",
+                    "observability": ["connection response"],
+                    "failure_diagnostics": ["target log"],
+                    "mapped_test_dir": "test/nvmf",
+                    "source_or_test_evidence": ["lib/nvmf/ctrlr.c:1"],
+                }
+                for index, dimension in enumerate(dimensions, 1)
+            ],
+        }
+        content = payloads[artifact]
+        if not isinstance(content, str):
+            content = json.dumps(content)
+        return LLMResponse(content=content, model="source-flow-stage-test", usage={})
+
+
 async def _execute_task_run_and_wait(
     client: AsyncClient,
     task_run_id: str,
@@ -1032,8 +1116,10 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
         "validate_evidence",
         "render_report",
     ]
+    assert by_id["source_flow_sfmea_blackbox"]["agent_step_count"] == 1
+    assert by_id["source_flow_sfmea_blackbox"]["execution_subject"] == "builtin_llm"
+    assert by_id["source_flow_sfmea_blackbox"]["execution_label"] == "内置模型分阶段分析"
     assert by_id["source_flow_sfmea_blackbox"]["builtin_steps"] == [
-        "analyze_source_flow",
         "validate_evidence",
         "render_report",
     ]
@@ -2671,6 +2757,8 @@ async def test_workbench_task_run_list_get_and_materialize_evidence_api(workbenc
     assert loaded.json()["workflow_id"] == "mr_test_design"
     assert loaded.json()["artifact_dir"] == "."
     assert loaded.json()["agent_runs"][0]["artifact_dir"] == f"agent_runs/{step_id}"
+    assert str(tmp_path) not in json.dumps(loaded.json())
+    assert loaded.json()["input_snapshot"].get("repo_path") in {None, "<repo>"}
 
     artifact_dir = _task_run_dir(task_run["task_run_id"]) / "agent_runs" / step_id
     task_bundle = json.loads((artifact_dir / "task_bundle.json").read_text("utf-8"))
@@ -3616,7 +3704,14 @@ async def test_patch_impact_uses_hunk_nearest_symbol_for_source_evidence(
 async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
     workbench_client,
     tmp_path,
+    monkeypatch,
 ):
+    import app.services.workbench_workflow_runner as runner_module
+
+    async def fake_factory():
+        return _SourceFlowStageLLM()
+
+    monkeypatch.setattr(runner_module, "create_llm_client_from_active", fake_factory)
     repo = tmp_path / "spdk-like"
     source_file = repo / "lib" / "nvmf" / "ctrlr.c"
     source_file.parent.mkdir(parents=True)
@@ -3672,7 +3767,7 @@ async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
     assert body["semantic_output_import"]["imported_count"] >= 1
 
     task_dir = _task_run_dir(body["task_run"]["task_run_id"])
-    step_dir = task_dir / "steps" / "analyze_source_flow"
+    step_dir = task_dir / "agent_runs" / "analyze_source_flow"
     assert (step_dir / "source_scope.json").exists()
     assert (step_dir / "evidence_cards.json").exists()
     assert (step_dir / "flow_map.md").exists()
@@ -5407,7 +5502,7 @@ async def test_workbench_prepare_task_run_api_ignores_empty_optional_file_inputs
     assert prepared.status_code == 201
     input_snapshot = prepared.json()["input_snapshot"]
     assert input_snapshot["analysis_object"] == "lib/nvmf"
-    assert input_snapshot["repo_path"] == str(tmp_path)
+    assert input_snapshot["repo_path"] == "<repo>"
     assert "design_doc" not in input_snapshot
     assert "coverage_report" not in input_snapshot
 

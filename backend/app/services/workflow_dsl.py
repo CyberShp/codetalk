@@ -465,8 +465,10 @@ def _parse_output(item: Any) -> WorkflowOutput:
     output_type = _required_str(item, "type")
     schema = item.get("schema") or item.get("json_schema")
     if schema is not None:
-        if output_type != "json":
-            raise WorkflowValidationError("workflow output schema requires json output type")
+        if output_type not in {"json", "test_cases"}:
+            raise WorkflowValidationError(
+                "workflow output schema requires json output type or test_cases output type"
+            )
         _validate_output_schema_definition(schema)
     artifact_path = str(item.get("artifact") or item.get("path") or "").strip()
     if artifact_path and not _is_safe_artifact_path(artifact_path):

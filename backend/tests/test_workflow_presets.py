@@ -99,6 +99,33 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         assert workflow.outputs
         assert audit_workflow_definition(preset["definition"])["warnings"] == []
 
+    source_flow_preset = next(
+        item for item in presets if item["id"] == "source_flow_sfmea_blackbox"
+    )
+    source_flow_step = source_flow_preset["definition"]["steps"][0]
+    assert source_flow_step["type"] == "agent_task"
+    assert source_flow_step["provider"] == "builtin-llm"
+    assert source_flow_step["execution_mode"] == "staged"
+    assert source_flow_step["mcp_profile"] == "codehub-mcp"
+    assert {
+        "source-evidence-first",
+        "storage-flow-analysis",
+        "sfmea",
+        "black-box-test-design",
+        "artifact-contract",
+    }.issubset(set(source_flow_step["skills"]))
+    source_flow_outputs = {
+        item["id"]: item for item in source_flow_preset["definition"]["outputs"]
+    }
+    assert source_flow_outputs["code_evidence"]["schema"]["minItems"] == 1
+    assert source_flow_outputs["sfmea"]["schema"]["minItems"] == 1
+    assert source_flow_outputs["black_box_cases"]["schema"]["minItems"] == 1
+    sfmea_required = source_flow_outputs["sfmea"]["schema"]["items"]["required"]
+    assert "source_evidence" in sfmea_required
+    assert "test_mapping" in sfmea_required
+    black_box_required = source_flow_outputs["black_box_cases"]["schema"]["items"]["required"]
+    assert "scenario_name" in black_box_required
+
     mr_preset = next(item for item in presets if item["id"] == "mr_blackbox_test")
     assert any(
         item["id"] == "mr_link" and item["type"] == "mr_link" and "resolver" not in item

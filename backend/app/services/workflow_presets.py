@@ -46,6 +46,7 @@ SOURCE_SCOPE_SCHEMA: dict[str, Any] = {
 
 EVIDENCE_CARDS_SCHEMA: dict[str, Any] = {
     "type": "array",
+    "minItems": 1,
     "items": {
         "type": "object",
         "required": ["evidence_id", "kind", "file_path", "symbols", "reason", "source"],
@@ -66,6 +67,7 @@ EVIDENCE_CARDS_SCHEMA: dict[str, Any] = {
 
 SFMEA_SCHEMA: dict[str, Any] = {
     "type": "array",
+    "minItems": 1,
     "items": {
         "type": "object",
         "required": [
@@ -78,6 +80,8 @@ SFMEA_SCHEMA: dict[str, Any] = {
             "detection_score",
             "rpn",
             "mitigation",
+            "source_evidence",
+            "test_mapping",
         ],
         "properties": {
             "sfmea_id": {"type": "string"},
@@ -93,7 +97,43 @@ SFMEA_SCHEMA: dict[str, Any] = {
             "rpn": {"type": "integer"},
             "score_explanation": {"type": "string"},
             "mitigation": {"type": "string"},
+            "source_evidence": {"type": "array", "items": {"type": "string"}},
+            "test_mapping": {"type": "string"},
             "evidence": {"type": "object"},
+        },
+        "additionalProperties": True,
+    },
+}
+
+
+BLACK_BOX_CASES_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "minItems": 1,
+    "items": {
+        "type": "object",
+        "required": [
+            "case_id",
+            "test_dimension",
+            "scenario_name",
+            "preconditions",
+            "steps",
+            "expected_result",
+            "observability",
+            "failure_diagnostics",
+            "mapped_test_dir",
+            "source_or_test_evidence",
+        ],
+        "properties": {
+            "case_id": {"type": "string"},
+            "test_dimension": {"type": "string"},
+            "scenario_name": {"type": "string"},
+            "preconditions": {"type": "array", "items": {"type": "string"}},
+            "steps": {"type": "array", "items": {"type": "string"}},
+            "expected_result": {"type": "string"},
+            "observability": {"type": "array", "items": {"type": "string"}},
+            "failure_diagnostics": {"type": "array", "items": {"type": "string"}},
+            "mapped_test_dir": {"type": "string"},
+            "source_or_test_evidence": {"type": "array", "items": {"type": "string"}},
         },
         "additionalProperties": True,
     },
@@ -641,6 +681,9 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 "id": "source_flow_sfmea_blackbox",
                 "name": "Code Analysis -> Flow -> SFMEA -> Black-box Cases",
                 "version": 1,
+                "execution_subject": "builtin_llm",
+                "execution_label": "内置模型分阶段分析",
+                "user_message": "内置模型将按源码证据、流程、SFMEA 和黑盒用例分阶段生成并校验交付件。",
                 "inputs": [
                     {"id": "analysis_object", "type": "free_text", "required": True, "role": "module, feature, or flow under test"},
                     {"id": "repo_path", "type": "directory", "required": True, "resolver": "local"},
@@ -652,7 +695,17 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 "steps": [
                     {
                         "id": "analyze_source_flow",
-                        "type": "local_source_flow_sfmea_blackbox",
+                        "type": "agent_task",
+                        "provider": "builtin-llm",
+                        "execution_mode": "staged",
+                        "mcp_profile": "codehub-mcp",
+                        "skills": [
+                            "source-evidence-first",
+                            "storage-flow-analysis",
+                            "sfmea",
+                            "black-box-test-design",
+                            "artifact-contract",
+                        ],
                         "goal": (
                             "First check GitNexus and CGC artifacts when available, then read local source "
                             "evidence to produce code evidence, externally observable flow steps, SFMEA, "
@@ -704,6 +757,7 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                                 "tags": ["source_flow_sfmea_blackbox"],
                             },
                         },
+                        "schema": BLACK_BOX_CASES_SCHEMA,
                     },
                     {"id": "report", "type": "markdown", "from": "render_report"},
                 ],

@@ -82,7 +82,7 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                     源码路径: {repoPath.trim() || "未填写"}
                   </span>
                   <span>
-                    执行器: {selectedRunProvider}
+                    执行器: {providerDisplayLabel(selectedRunProvider)}
                     {selectedProviderCapability
                       ? ` (${providerStatusDisplayLabel(selectedProviderCapability.status)})`
                       : ""}
@@ -130,7 +130,7 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                       MCP: {selectedRunMcpProfile || "未启用"}
                     </span>
                     <span className="rounded bg-surface-container px-1.5 py-0.5 font-data">
-                      Agent: {selectedRunProvider}
+                      Agent: {providerDisplayLabel(selectedRunProvider)}
                     </span>
                   </div>
                   <div className="mt-1.5 flex flex-wrap gap-1.5">
