@@ -3800,6 +3800,82 @@ async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
     assert "public workflow" in cases[0]["inputs"]
     assert all("spdk_nvmf_ctrlr_connect" not in step for step in cases[0]["steps"])
 
+    sfmea[0]["mitigation"] = "add a reconnect test and monitor logs"
+    (step_dir / "sfmea.json").write_text(json.dumps(sfmea), encoding="utf-8")
+    stale_quality = {
+        "kind": "test_activity_quality_audit",
+        "status": "deliverable",
+        "deliverable": True,
+        "score": 100,
+        "issue_count": 0,
+        "issues": [],
+    }
+    (task_dir / "test_activity_quality_audit.json").write_text(
+        json.dumps(stale_quality),
+        encoding="utf-8",
+    )
+    execution = json.loads((task_dir / "workflow_execution.json").read_text(encoding="utf-8"))
+    execution["test_activity_quality"] = stale_quality
+    (task_dir / "workflow_execution.json").write_text(
+        json.dumps(execution),
+        encoding="utf-8",
+    )
+
+    acceptance = await workbench_client.post(
+        f"/api/workbench/task-runs/{body['task_run']['task_run_id']}/acceptance-audit"
+    )
+
+    assert acceptance.status_code == 200
+    refreshed_quality = json.loads(
+        (task_dir / "test_activity_quality_audit.json").read_text(encoding="utf-8")
+    )
+    refreshed_execution = json.loads(
+        (task_dir / "workflow_execution.json").read_text(encoding="utf-8")
+    )
+    assert refreshed_quality["status"] == "needs_rework"
+    assert refreshed_quality["deliverable"] is False
+    assert refreshed_execution["test_activity_quality"] == refreshed_quality
+    assert refreshed_execution["status"] == "needs_rework"
+    refreshed_rerun_plan = json.loads(
+        (task_dir / "task_rerun_plan.json").read_text(encoding="utf-8")
+    )
+    assert refreshed_rerun_plan["status"] == "needs_rerun"
+    assert refreshed_execution["rerun_plan"] == refreshed_rerun_plan
+
+    sfmea[0]["mitigation"] = (
+        "harden reconnect state cleanup and verify recovery with reconnect tests and alert monitoring"
+    )
+    (step_dir / "sfmea.json").write_text(json.dumps(sfmea), encoding="utf-8")
+    recovered_acceptance = await workbench_client.post(
+        f"/api/workbench/task-runs/{body['task_run']['task_run_id']}/acceptance-audit"
+    )
+    recovered_execution = json.loads(
+        (task_dir / "workflow_execution.json").read_text(encoding="utf-8")
+    )
+    recovered_rerun_plan = json.loads(
+        (task_dir / "task_rerun_plan.json").read_text(encoding="utf-8")
+    )
+    assert recovered_acceptance.status_code == 200
+    assert recovered_execution["test_activity_quality"]["deliverable"] is True
+    assert recovered_execution["status"] == "completed"
+    assert recovered_rerun_plan["status"] == "clean"
+
+    (task_dir / "workflow_execution.json").write_text("{corrupt", encoding="utf-8")
+    degraded_acceptance = await workbench_client.post(
+        f"/api/workbench/task-runs/{body['task_run']['task_run_id']}/acceptance-audit"
+    )
+
+    assert degraded_acceptance.status_code == 200
+    assert degraded_acceptance.json()["status"] == "incomplete"
+    degraded_checks = {
+        item["id"]: item for item in degraded_acceptance.json()["checks"]
+    }
+    assert degraded_checks["workflow_execution"]["status"] == "invalid"
+    assert degraded_checks["workflow_execution"]["reason"] == "workflow_execution_invalid_json"
+    assert json.loads(
+        (task_dir / "test_activity_quality_audit.json").read_text(encoding="utf-8")
+    )["status"] == "deliverable"
+
 
 async def test_builtin_common_scenario_preset_uses_default_query_when_scope_is_empty(
     workbench_client,
@@ -8059,6 +8135,101 @@ async def test_workbench_task_run_acceptance_audit_flags_unavailable_agent_provi
     assert provider_check["deployment_evidence_conflict"] is True
     assert provider_check["deployment_task_probe_status"] == "ready"
     assert provider_check["deployment_probe_id"] == "acceptance-ready"
+
+
+async def test_workbench_task_run_acceptance_audit_rejects_active_execution(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    import asyncio
+
+    from app.config import settings
+
+    script_path = tmp_path / "slow_agent.py"
+    script_path.write_text(
+        "import json, os, pathlib, sys, time\n"
+        "json.load(sys.stdin)\n"
+        "time.sleep(1)\n"
+        "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
+        "(root/'result.json').write_text(json.dumps({'ok': True}), encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "slow-local-python", "command": f"python {script_path}"}
+    ])
+
+    workflow = {
+        "id": "acceptance_active_run_workflow",
+        "name": "Acceptance active run workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [{
+            "id": "collect",
+            "type": "agent_task",
+            "provider": "slow-local-python",
+            "required_artifacts": ["result.json"],
+        }],
+        "outputs": [{
+            "id": "result",
+            "type": "json",
+            "from": "collect",
+            "artifact": "result.json",
+            "schema": {"type": "object", "required": ["ok"]},
+        }],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": workflow["id"],
+            "workspace_id": "ws-acceptance-active",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    task_dir = _task_run_dir(task_run_id)
+    execute = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert execute.status_code == 202
+    await _wait_for_task_run_status(
+        workbench_client,
+        task_run_id,
+        terminal_statuses={"running"},
+    )
+    cancelled = await workbench_client.post(f"/api/workbench/task-runs/{task_run_id}/cancel")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+    overlapping_execute = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert overlapping_execute.status_code == 409
+    assert "退出" in overlapping_execute.json()["detail"]
+    overlapping_rerun = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/rerun-plan/execute",
+        json={"timeout_sec": 10},
+    )
+    assert overlapping_rerun.status_code == 409
+    assert "退出" in overlapping_rerun.json()["detail"]
+
+    response = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/acceptance-audit"
+    )
+
+    assert response.status_code == 409
+    assert "运行中" in response.json()["detail"]
+    assert not (task_dir / "task_acceptance_audit.json").exists()
+    assert not (task_dir / "test_activity_quality_audit.json").exists()
+
+    await asyncio.sleep(1.2)
+    after_exit = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/acceptance-audit"
+    )
+    assert after_exit.status_code == 200
 
 
 async def test_workbench_task_run_acceptance_audit_flags_invalid_workflow_output(

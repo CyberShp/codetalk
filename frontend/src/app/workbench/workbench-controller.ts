@@ -2591,17 +2591,23 @@ export function useWorkbenchController({
       manifest.artifacts.map((item) => item.relative_path),
     );
     if (artifactPaths.has("workflow_execution.json")) {
-      const content = await api.workbench.taskRuns.artifactContent(
-        taskRunId,
-        "workflow_execution.json",
-      );
-      const parsed = JSON.parse(
-        content.content || "{}",
-      ) as WorkflowExecutionResult;
-      setWorkflowExecution(parsed);
-      setTaskRerunPlan(
-        (parsed.rerun_plan as TaskRerunPlan | undefined) ?? null,
-      );
+      try {
+        const content = await api.workbench.taskRuns.artifactContent(
+          taskRunId,
+          "workflow_execution.json",
+        );
+        const parsed = JSON.parse(
+          content.content || "{}",
+        ) as WorkflowExecutionResult;
+        setWorkflowExecution(parsed);
+        setTaskRerunPlan(
+          (parsed.rerun_plan as TaskRerunPlan | undefined) ?? null,
+        );
+      } catch {
+        // Keep restoring the acceptance audit and other valid artifacts.
+        setWorkflowExecution(null);
+        setTaskRerunPlan(null);
+      }
     }
     if (artifactPaths.has("workflow_output_materialization.json")) {
       const content = await api.workbench.taskRuns.artifactContent(
@@ -3520,7 +3526,7 @@ export function useWorkbenchController({
         preparedRun.task_run_id,
       );
       setTaskAcceptanceAudit(result);
-      await refreshArtifactManifest(preparedRun.task_run_id);
+      await restoreTaskRun(preparedRun.task_run_id);
       setMessage(
         `验收审计${runStatusDisplayLabel(result.status)} · 缺少 ${result.summary.missing_required} 个必需项`,
       );

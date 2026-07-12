@@ -37,3 +37,17 @@ test("workbench renders the built-in workflow provider as a user-facing model la
   assert.match(source, /["']builtin-llm["']:\s*["']内置模型["']/);
   assert.match(source, /执行器:\s*\{providerDisplayLabel\(selectedRunProvider\)\}/);
 });
+
+test("acceptance audit refreshes the task quality panel from persisted execution", () => {
+  assert.match(
+    source,
+    /generateTaskAcceptanceAudit[\s\S]{0,1200}acceptanceAudit\([\s\S]{0,1200}restoreTaskRun\(/,
+  );
+});
+
+test("corrupt workflow execution does not block restoring the acceptance audit", () => {
+  assert.match(
+    source,
+    /workflow_execution\.json[\s\S]{0,900}try\s*\{[\s\S]{0,900}JSON\.parse[\s\S]{0,900}catch[\s\S]{0,2200}task_acceptance_audit\.json/,
+  );
+});

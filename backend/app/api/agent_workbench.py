@@ -88,6 +88,7 @@ _TASK_RUN_TERMINAL_STATUSES = {
     "canceled",
     "interrupted",
 }
+_ACTIVE_TASK_RUN_IDS: set[str] = set()
 
 
 class AnalysisRunCreate(BaseModel):
@@ -1925,6 +1926,11 @@ async def execute_task_run_workflow(
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
     event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
+    if task_run_id in _ACTIVE_TASK_RUN_IDS:
+        raise HTTPException(
+            status_code=409,
+            detail="上一次任务仍在退出中，请稍候再重新运行。",
+        )
     current_status = event_store.current_status(task_run_id)
     if current_status in {"queued", "running"}:
         response.status_code = 202
@@ -1954,6 +1960,7 @@ async def _execute_task_run_background(
     payload: TaskRunExecuteRequest,
 ) -> None:
     event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
+    _ACTIVE_TASK_RUN_IDS.add(task_run_id)
     try:
         if event_store.current_status(task_run_id) == "cancelled":
             event_store.append(
@@ -2007,6 +2014,8 @@ async def _execute_task_run_background(
             )
         except KeyError:
             return
+    finally:
+        _ACTIVE_TASK_RUN_IDS.discard(task_run_id)
 
 
 @router.post("/task-runs/{task_run_id}/cancel")
@@ -2575,7 +2584,51 @@ async def create_task_run_acceptance_audit(task_run_id: str) -> dict[str, Any]:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    runtime_status = WorkbenchTaskRunEventStore(_task_runs_dir()).current_status(task_run_id)
+    if runtime_status in {"queued", "running"} or task_run_id in _ACTIVE_TASK_RUN_IDS:
+        raise HTTPException(
+            status_code=409,
+            detail="任务正在运行中，请等待执行完成后再进行验收审计。",
+        )
     task_dir = Path(task_run.artifact_dir)
+    quality = WorkbenchWorkflowRunner(_task_runs_dir()).audit_test_activity_quality(
+        task_run=task_run,
+    )
+    execution_path = task_dir / "workflow_execution.json"
+    execution = _read_json(execution_path)
+    if quality and isinstance(execution, dict):
+        execution["test_activity_quality"] = quality
+        quality_base_status = str(execution.get("quality_audit_base_status") or "")
+        if (
+            quality.get("deliverable") is False
+            and str(execution.get("status") or "") in {"completed", "completed_empty"}
+        ):
+            execution["quality_audit_base_status"] = str(execution.get("status") or "completed")
+            execution["status"] = "needs_rework"
+        elif (
+            quality.get("deliverable") is True
+            and str(execution.get("status") or "") == "needs_rework"
+            and quality_base_status in {"completed", "completed_empty"}
+        ):
+            execution["status"] = quality_base_status
+            execution.pop("quality_audit_base_status", None)
+        rerun_plan = build_workflow_rerun_plan(
+            task_run=task_run,
+            status=str(execution.get("status") or runtime_status or "prepared"),
+            step_results=[
+                dict(item)
+                for item in execution.get("step_results") or []
+                if isinstance(item, dict)
+            ],
+            outputs=[
+                dict(item)
+                for item in execution.get("outputs") or []
+                if isinstance(item, dict)
+            ],
+        )
+        execution["rerun_plan"] = rerun_plan
+        _write_json(task_dir / "task_rerun_plan.json", rerun_plan)
+        _write_json(execution_path, execution)
     payload = _build_task_acceptance_audit(task_run)
     _write_json(task_dir / "task_acceptance_audit.json", payload)
     write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
@@ -2622,6 +2675,12 @@ async def execute_task_run_rerun_plan(
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    runtime_status = WorkbenchTaskRunEventStore(_task_runs_dir()).current_status(task_run_id)
+    if task_run_id in _ACTIVE_TASK_RUN_IDS or runtime_status in {"queued", "running"}:
+        raise HTTPException(
+            status_code=409,
+            detail="上一次任务仍在退出中，请稍候再重新运行。",
+        )
     plan = _ensure_task_rerun_plan(task_run)
     validation_before = _validate_task_rerun_plan(task_run=task_run, plan=plan)
     if not validation_before.get("can_rerun"):
@@ -2632,14 +2691,18 @@ async def execute_task_run_rerun_plan(
                 "validation": validation_before,
             },
         )
+    _ACTIVE_TASK_RUN_IDS.add(task_run_id)
     try:
-        execution = WorkbenchWorkflowRunner(_task_runs_dir()).execute_task_run(
+        execution = await asyncio.to_thread(
+            WorkbenchWorkflowRunner(_task_runs_dir()).execute_task_run,
             task_run_id,
             timeout_sec=payload.timeout_sec,
             stop_on_error=payload.stop_on_error,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        _ACTIVE_TASK_RUN_IDS.discard(task_run_id)
     refreshed_task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     evidence_materialization = _materialize_task_run_outputs_if_available(
         task_run=refreshed_task_run,
@@ -5860,14 +5923,20 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
 
     execution_payload = _read_json(task_dir / "workflow_execution.json")
     workflow_execution_exists = "workflow_execution.json" in artifacts
-    checks.append(_acceptance_file_check(
+    workflow_execution_check = _acceptance_file_check(
         check_id="workflow_execution",
         relative_path="workflow_execution.json",
         artifacts=artifacts,
         description="workflow execution result and audit summary",
         severity="required",
         missing_reason="workflow_not_executed_or_execution_artifact_missing",
-    ))
+    )
+    if workflow_execution_exists and not isinstance(execution_payload, dict):
+        workflow_execution_check.update({
+            "status": "invalid",
+            "reason": "workflow_execution_invalid_json",
+        })
+    checks.append(workflow_execution_check)
     if "workflow_outputs.json" in artifacts:
         checks.append(_acceptance_file_check(
             check_id="workflow_outputs",
@@ -7257,10 +7326,15 @@ def _write_task_rerun_execution_artifacts(
 
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def _read_json(path: Path) -> Any:

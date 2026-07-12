@@ -11,6 +11,7 @@ import re
 import shutil
 import threading
 import tokenize
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -150,7 +151,7 @@ class WorkbenchWorkflowRunner:
         for output in outputs:
             if isinstance(output, dict) and output.get("status") in {"ok", "completed", "ready", "success"}:
                 self._emit_event("artifact_created", dict(output))
-        test_activity_quality = self._audit_test_activity_quality(task_run=task_run)
+        test_activity_quality = self.audit_test_activity_quality(task_run=task_run)
         if (
             status in {"completed", "completed_empty"}
             and test_activity_quality.get("status") in {"needs_rework", "invalid"}
@@ -204,7 +205,7 @@ class WorkbenchWorkflowRunner:
         except Exception:
             return False
 
-    def _audit_test_activity_quality(self, *, task_run: Any) -> dict[str, Any]:
+    def audit_test_activity_quality(self, *, task_run: Any) -> dict[str, Any]:
         contract = (
             task_run.task_bundle.get("test_activity_contract")
             if isinstance(task_run.task_bundle.get("test_activity_contract"), dict)
@@ -1023,26 +1024,21 @@ class WorkbenchWorkflowRunner:
         task_dir = self.artifact_root / _safe_segment(task_run_id)
         task_dir.mkdir(parents=True, exist_ok=True)
         payload = asdict(result)
-        (task_dir / "workflow_execution.json").write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
+        _write_json(
+            task_dir / "workflow_execution.json",
+            payload,
         )
-        (task_dir / "workflow_outputs.json").write_text(
-            json.dumps(
-                {
-                    "task_run_id": result.task_run_id,
-                    "status": result.status,
-                    "outputs": result.outputs,
-                },
-                ensure_ascii=False,
-                indent=2,
-                sort_keys=True,
-            ),
-            encoding="utf-8",
+        _write_json(
+            task_dir / "workflow_outputs.json",
+            {
+                "task_run_id": result.task_run_id,
+                "status": result.status,
+                "outputs": result.outputs,
+            },
         )
-        (task_dir / "task_rerun_plan.json").write_text(
-            json.dumps(result.rerun_plan, ensure_ascii=False, indent=2, sort_keys=True),
-            encoding="utf-8",
+        _write_json(
+            task_dir / "task_rerun_plan.json",
+            result.rerun_plan,
         )
         write_task_artifact_manifest(task_dir, task_run_id=result.task_run_id)
 
@@ -5329,7 +5325,13 @@ def _safe_segment(value: str) -> str:
 
 
 def _write_json(path: Path, payload: Any) -> None:
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
-    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
