@@ -43,10 +43,12 @@ function IndexBadge({
   indexed,
   lastIndexError,
   indexProgress = 0,
+  capacityLabel = "",
 }: {
   indexed: number;
   lastIndexError?: string | null;
   indexProgress?: number;
+  capacityLabel?: string;
 }) {
   if (indexed === 1) {
     return (
@@ -71,7 +73,7 @@ function IndexBadge({
     <div className="flex items-center gap-2">
       <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded-full bg-amber-400/10 text-amber-400">
         <Loader2 size={12} className="animate-spin" />
-        索引中{indexProgress > 0 ? ` ${indexProgress}%` : ""}
+        {capacityLabel || `索引中${indexProgress > 0 ? ` ${indexProgress}%` : ""}`}
       </span>
       {indexProgress > 0 && (
         <div className="w-24 h-1.5 bg-amber-400/20 rounded-full overflow-hidden">
@@ -496,6 +498,7 @@ export default function WorkspaceDetailPage() {
   const [analyzeProgress, setAnalyzeProgress] = useState(0);
   const [analyzeStatus, setAnalyzeStatus] = useState<string | null>(null);
   const [indexProgress, setIndexProgress] = useState(0);
+  const [indexCapacityLabel, setIndexCapacityLabel] = useState("");
   const [reindexing, setReindexing] = useState(false);
   const [materialUploading, setMaterialUploading] = useState(false);
   const [deletingMaterialIds, setDeletingMaterialIds] = useState<string[]>([]);
@@ -559,11 +562,29 @@ export default function WorkspaceDetailPage() {
 
       pollIndexRef.current = setInterval(async () => {
         try {
-          const s = await api.workspaces.indexStatus(wsId);
+          const [s, capacity] = await Promise.all([
+            api.workspaces.indexStatus(wsId),
+            api.tools.gitNexusCapacity().catch(() => null),
+          ]);
+          if (capacity) {
+            const leaf = workspace?.repo_path.replace(/\\/g, "/").split("/").filter(Boolean).pop() ?? "";
+            const queued = capacity.queue.find((item) => item.repo_path.replace(/\\/g, "/").endsWith(`/${leaf}`));
+            const isRunning = Boolean(leaf && capacity.running_repo?.replace(/\\/g, "/").endsWith(`/${leaf}`));
+            setIndexCapacityLabel(
+              queued
+                ? `等待 GitNexus（队列第 ${queued.position} 位）`
+                : isRunning && capacity.status === "retrying"
+                  ? `GitNexus 忙，${capacity.retry_after_seconds ?? 1} 秒后重试`
+                  : isRunning
+                    ? `GitNexus 正在索引${s.index_progress > 0 ? ` ${s.index_progress}%` : ""}`
+                    : "",
+            );
+          }
           if (s.indexed !== 0) {
             clearInterval(pollIndexRef.current!);
             pollIndexRef.current = null;
             setIndexProgress(0);
+            setIndexCapacityLabel("");
             await loadWorkspace();
           } else {
             setIndexProgress(s.index_progress ?? 0);
@@ -576,7 +597,7 @@ export default function WorkspaceDetailPage() {
         }
       }, 3000);
     },
-    [wsId, loadWorkspace],
+    [wsId, loadWorkspace, workspace?.repo_path],
   );
 
   const loadVersions = useCallback(async () => {
@@ -907,7 +928,7 @@ export default function WorkspaceDetailPage() {
             <h1 className="text-2xl font-bold text-on-surface">{workspace.name}</h1>
             <p className="text-sm text-on-surface-variant mt-0.5">{workspace.repo_path}</p>
             <div className="flex items-center gap-2 mt-2 flex-wrap">
-              <IndexBadge indexed={workspace.indexed} lastIndexError={workspace.last_index_error} indexProgress={indexProgress} />
+              <IndexBadge indexed={workspace.indexed} lastIndexError={workspace.last_index_error} indexProgress={indexProgress} capacityLabel={indexCapacityLabel} />
               <AnalyzeBadge status={analyzeStatus} progress={analyzeProgress} />
             </div>
           </div>

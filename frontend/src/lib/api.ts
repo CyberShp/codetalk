@@ -11,6 +11,7 @@ import type {
   AgentRuntimeCreate,
   AgentProviderSettings,
   ToolInfo,
+  GitNexusCapacity,
   PromptTemplate,
   PromptTemplateCreate,
   PromptTemplateUpdate,
@@ -444,6 +445,9 @@ export const api = {
   // ── 工具进程 API（Workbench 探测使用） ──
   tools: {
     status: () => request<ToolInfo[]>("/api/tools/procs"),
+
+    gitNexusCapacity: () =>
+      request<GitNexusCapacity>("/api/tools/gitnexus/capacity"),
 
     start: (name: string) =>
       request<{ success: boolean; message: string }>(

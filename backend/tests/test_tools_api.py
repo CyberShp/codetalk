@@ -55,6 +55,29 @@ async def tools_client(tmp_path, monkeypatch):
 
 
 class TestGetPmFromAppState:
+    async def test_gitnexus_capacity_exposes_queue_state(self, tools_client, monkeypatch):
+        client, _mock_pm = tools_client
+        monkeypatch.setattr(
+            tools.GitNexusAdapter,
+            "capacity_snapshot",
+            classmethod(lambda cls, base_url: {
+                "version": "gitnexus-capacity-v1",
+                "status": "queued",
+                "capacity": 1,
+                "running_repo": "/repos/alpha",
+                "queued": 1,
+                "queue": [{"position": 1, "repo_path": "/repos/beta"}],
+                "retry_after_seconds": None,
+                "retry_attempt": None,
+                "cooldown_seconds": 0,
+            }),
+        )
+
+        response = await client.get("/api/tools/gitnexus/capacity")
+
+        assert response.status_code == 200
+        assert response.json()["queue"][0]["position"] == 1
+
     async def test_pm_returned_from_app_state(self, tools_client):
         """Line 19: when app.state.process_manager is set, _get_pm returns it
         without falling through to ProcessManager.get_instance()."""

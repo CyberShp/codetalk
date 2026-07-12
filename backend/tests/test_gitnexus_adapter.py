@@ -8,10 +8,11 @@ from app.config import settings
 
 
 class _FakeResponse:
-    def __init__(self, status_code: int, payload: dict):
+    def __init__(self, status_code: int, payload: dict, headers: dict | None = None):
         self.status_code = status_code
         self._payload = payload
         self.content = b"{}" if payload else b""
+        self.headers = headers or {}
 
     @property
     def is_error(self) -> bool:
@@ -87,6 +88,9 @@ class GitNexusAdapterPrepareTests(unittest.IsolatedAsyncioTestCase):
         GitNexusAdapter._prepare_locks.clear()
         GitNexusAdapter._analyze_locks.clear()
         GitNexusAdapter._next_analyze_start_at.clear()
+        GitNexusAdapter._analyze_queues.clear()
+        GitNexusAdapter._analyze_running.clear()
+        GitNexusAdapter._analyze_retrying.clear()
         _ConcurrentAnalyzeClient.active_jobs = 0
         _ConcurrentAnalyzeClient.max_active_jobs = 0
         _ConcurrentAnalyzeClient.post_order = []
@@ -96,6 +100,9 @@ class GitNexusAdapterPrepareTests(unittest.IsolatedAsyncioTestCase):
         GitNexusAdapter._prepare_locks.clear()
         GitNexusAdapter._analyze_locks.clear()
         GitNexusAdapter._next_analyze_start_at.clear()
+        GitNexusAdapter._analyze_queues.clear()
+        GitNexusAdapter._analyze_running.clear()
+        GitNexusAdapter._analyze_retrying.clear()
 
     async def test_prepare_reuses_indexed_repo_across_fresh_instances(self) -> None:
         request = AnalysisRequest(repo_local_path="/tmp/repos/open-iscsi")
@@ -196,6 +203,60 @@ class GitNexusAdapterPrepareTests(unittest.IsolatedAsyncioTestCase):
             ("/api/repos", None, 10),
         ])
         self.assertEqual(adapter.current_repo_name, "spdk")
+
+    async def test_busy_retry_honors_retry_after_and_exposes_retry_capacity(self) -> None:
+        request = AnalysisRequest(repo_local_path="/tmp/repos/spdk")
+        adapter = GitNexusAdapter(base_url="http://gitnexus:7100")
+        adapter._client = _FakeAsyncClient(
+            get_responses=[
+                _FakeResponse(200, {"repos": []}),
+                _FakeResponse(200, {"repos": []}),
+                _FakeResponse(200, {"status": "complete", "repoName": "spdk"}),
+            ],
+            post_responses=[
+                _FakeResponse(429, {"error": "busy"}, {"Retry-After": "3"}),
+                _FakeResponse(200, {"jobId": "job-retry-after"}),
+            ],
+        )
+        observed: list[dict] = []
+
+        async def capture_sleep(delay: float) -> None:
+            observed.append({"delay": delay, "capacity": GitNexusAdapter.capacity_snapshot(adapter.base_url)})
+
+        with (
+            patch("app.adapters.gitnexus.to_tool_repo_path", side_effect=lambda repo_local_path, **_: repo_local_path),
+            patch("app.adapters.gitnexus._POLL_INTERVAL", 0),
+            patch("app.adapters.gitnexus.asyncio.sleep", side_effect=capture_sleep),
+        ):
+            await adapter.prepare(request)
+
+        retry = next(item for item in observed if item["delay"] == 3)
+        self.assertEqual(retry["capacity"]["status"], "retrying")
+        self.assertEqual(retry["capacity"]["retry_after_seconds"], 3)
+        self.assertEqual(GitNexusAdapter.capacity_snapshot(adapter.base_url)["status"], "cooldown")
+
+    async def test_concurrent_prepare_exposes_fifo_queue_position(self) -> None:
+        first = GitNexusAdapter(base_url="http://gitnexus:7100")
+        first._client = _ConcurrentAnalyzeClient("alpha")
+        second = GitNexusAdapter(base_url="http://gitnexus:7100")
+        second._client = _ConcurrentAnalyzeClient("beta")
+
+        with (
+            patch("app.adapters.gitnexus.to_tool_repo_path", side_effect=lambda repo_local_path, **_: repo_local_path),
+            patch("app.adapters.gitnexus._POLL_INTERVAL", 0.05),
+            patch("app.adapters.gitnexus._ANALYZE_START_COOLDOWN", 0),
+        ):
+            first_task = asyncio.create_task(first.prepare(AnalysisRequest(repo_local_path="/tmp/repos/alpha")))
+            await asyncio.sleep(0)
+            second_task = asyncio.create_task(second.prepare(AnalysisRequest(repo_local_path="/tmp/repos/beta")))
+            await asyncio.sleep(0.01)
+            capacity = GitNexusAdapter.capacity_snapshot(first.base_url)
+            self.assertEqual(capacity["status"], "running")
+            self.assertEqual(capacity["running_repo"], "/tmp/repos/alpha")
+            self.assertEqual(capacity["queued"], 1)
+            self.assertEqual(capacity["queue"][0]["position"], 1)
+            self.assertEqual(capacity["queue"][0]["repo_path"], "/tmp/repos/beta")
+            await asyncio.gather(first_task, second_task)
 
     async def test_prepare_serializes_analyze_jobs_for_different_paths(self) -> None:
         first = GitNexusAdapter(base_url="http://gitnexus:7100")

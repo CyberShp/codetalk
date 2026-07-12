@@ -11,7 +11,9 @@ import logging
 import time
 from collections import Counter
 from collections.abc import AsyncIterator, Awaitable, Callable
+from email.utils import parsedate_to_datetime
 from pathlib import Path
+from datetime import datetime, timezone
 
 import httpx
 
@@ -32,7 +34,26 @@ _POLL_INTERVAL = 2  # seconds between job status polls
 _POLL_TIMEOUT = 1800  # max seconds to wait for analysis (30 min for large repos)
 _ANALYZE_BUSY_RETRY_ATTEMPTS = 45
 _ANALYZE_BUSY_RETRY_INTERVAL = 1.0
+_ANALYZE_BUSY_RETRY_MAX_INTERVAL = 30.0
 _ANALYZE_START_COOLDOWN = 1.0
+
+
+def _busy_retry_delay(response: httpx.Response, attempt: int) -> float:
+    raw = str(response.headers.get("Retry-After") or "").strip()
+    retry_after = 0.0
+    if raw:
+        try:
+            retry_after = max(0.0, float(raw))
+        except ValueError:
+            try:
+                target = parsedate_to_datetime(raw)
+                if target.tzinfo is None:
+                    target = target.replace(tzinfo=timezone.utc)
+                retry_after = max(0.0, (target - datetime.now(timezone.utc)).total_seconds())
+            except (TypeError, ValueError, OverflowError):
+                retry_after = 0.0
+    exponential = _ANALYZE_BUSY_RETRY_INTERVAL * (2 ** max(0, attempt))
+    return min(_ANALYZE_BUSY_RETRY_MAX_INTERVAL, max(retry_after, exponential))
 
 
 # ---------------------------------------------------------------------------
@@ -253,6 +274,9 @@ class GitNexusAdapter(BaseToolAdapter):
     _prepare_locks: dict[tuple[str, str, int], asyncio.Lock] = {}
     _analyze_locks: dict[tuple[str, int], asyncio.Lock] = {}
     _next_analyze_start_at: dict[tuple[str, int], float] = {}
+    _analyze_queues: dict[tuple[str, int], list[dict[str, str]]] = {}
+    _analyze_running: dict[tuple[str, int], str] = {}
+    _analyze_retrying: dict[tuple[str, int], dict[str, object]] = {}
 
     def __init__(self, base_url: str | None = None):
         self.base_url = base_url or settings.gitnexus_base_url
@@ -281,6 +305,47 @@ class GitNexusAdapter(BaseToolAdapter):
             lock = asyncio.Lock()
             cls._analyze_locks[key] = lock
         return lock
+
+    @classmethod
+    def _capacity_key(cls, base_url: str) -> tuple[str, int]:
+        return base_url, id(asyncio.get_running_loop())
+
+    @classmethod
+    def capacity_snapshot(cls, base_url: str) -> dict[str, object]:
+        key = cls._capacity_key(base_url)
+        queue = cls._analyze_queues.get(key, [])
+        retrying = cls._analyze_retrying.get(key)
+        running_repo = cls._analyze_running.get(key, "")
+        cooldown = max(
+            0.0,
+            cls._next_analyze_start_at.get(key, 0.0) - time.monotonic(),
+        )
+        if retrying:
+            status = "retrying"
+        elif running_repo:
+            status = "running"
+        elif queue:
+            status = "queued"
+        elif cooldown > 0:
+            status = "cooldown"
+        else:
+            status = "idle"
+        return {
+            "version": "gitnexus-capacity-v1",
+            "status": status,
+            "capacity": 1,
+            "running_repo": running_repo or None,
+            "queued": len(queue),
+            "queue": [
+                {"position": index, "repo_path": item["repo_path"]}
+                for index, item in enumerate(queue, start=1)
+            ],
+            "retry_after_seconds": (
+                retrying.get("retry_after_seconds") if retrying else None
+            ),
+            "retry_attempt": retrying.get("attempt") if retrying else None,
+            "cooldown_seconds": round(cooldown, 3),
+        }
 
     @classmethod
     async def _wait_for_analyze_cooldown(cls, base_url: str) -> None:
@@ -441,29 +506,51 @@ class GitNexusAdapter(BaseToolAdapter):
                 return
 
             analyze_lock = self._analyze_lock_for(self.base_url)
+            capacity_key = self._capacity_key(self.base_url)
+            queue_entry = {
+                "token": f"{id(asyncio.current_task())}:{time.monotonic_ns()}",
+                "repo_path": tool_repo_path,
+            }
+            queue = self._analyze_queues.setdefault(capacity_key, [])
             queued_for_analyze = analyze_lock.locked()
-            async with analyze_lock:
-                if queued_for_analyze:
-                    # Another path may have completed while this prepare waited
-                    # for GitNexus's single analyze worker. Re-check before POSTing.
-                    resolved = await self._resolve_repo_for_path(tool_repo_path)
-                    if resolved:
-                        self._adopt_resolved_repo(cache_key, resolved)
-                        logger.info(
-                            "gitnexus: repo already indexed as %s after queue wait "
-                            "(resolved by path %s), skipping analyze",
-                            self._repo_name,
-                            resolved.get("path"),
-                        )
-                        self._schedule_embed_if_enabled()
-                        return
-                await self._wait_for_analyze_cooldown(self.base_url)
-                await self._prepare_via_analyze_job(
-                    tool_repo_path,
-                    cache_key,
-                    on_progress=on_progress,
-                )
-                return
+            queue.append(queue_entry)
+            if queued_for_analyze and on_progress:
+                await on_progress(0)
+            try:
+                async with analyze_lock:
+                    if queue_entry in queue:
+                        queue.remove(queue_entry)
+                    self._analyze_running[capacity_key] = tool_repo_path
+                    if not queue:
+                        self._analyze_queues.pop(capacity_key, None)
+                    if queued_for_analyze:
+                        # Another path may have completed while this prepare waited
+                        # for GitNexus's single analyze worker. Re-check before POSTing.
+                        resolved = await self._resolve_repo_for_path(tool_repo_path)
+                        if resolved:
+                            self._adopt_resolved_repo(cache_key, resolved)
+                            logger.info(
+                                "gitnexus: repo already indexed as %s after queue wait "
+                                "(resolved by path %s), skipping analyze",
+                                self._repo_name,
+                                resolved.get("path"),
+                            )
+                            self._schedule_embed_if_enabled()
+                            return
+                    await self._wait_for_analyze_cooldown(self.base_url)
+                    await self._prepare_via_analyze_job(
+                        tool_repo_path,
+                        cache_key,
+                        on_progress=on_progress,
+                    )
+                    return
+            finally:
+                if queue_entry in queue:
+                    queue.remove(queue_entry)
+                if not queue:
+                    self._analyze_queues.pop(capacity_key, None)
+                if self._analyze_running.get(capacity_key) == tool_repo_path:
+                    self._analyze_running.pop(capacity_key, None)
 
     async def _prepare_via_analyze_job(
         self,
@@ -589,23 +676,34 @@ class GitNexusAdapter(BaseToolAdapter):
         """Start a GitNexus analyze job, tolerating transient 429 busy replies."""
         payload = {"path": tool_repo_path}
         attempts = max(1, _ANALYZE_BUSY_RETRY_ATTEMPTS)
-        for attempt in range(attempts):
-            resp = await self.client.post("/api/analyze", json=payload)
-            if resp.status_code != 429:
-                return resp, None
-            resolved = await self._resolve_repo_for_path(tool_repo_path)
-            if resolved:
-                return resp, resolved
-            if attempt >= attempts - 1:
-                return resp, None
-            logger.info(
-                "gitnexus: analyze busy for %s (HTTP 429), retrying %d/%d",
-                tool_repo_path,
-                attempt + 1,
-                attempts - 1,
-            )
-            await asyncio.sleep(_ANALYZE_BUSY_RETRY_INTERVAL)
-        return resp, None
+        capacity_key = self._capacity_key(self.base_url)
+        try:
+            for attempt in range(attempts):
+                resp = await self.client.post("/api/analyze", json=payload)
+                if resp.status_code != 429:
+                    return resp, None
+                resolved = await self._resolve_repo_for_path(tool_repo_path)
+                if resolved:
+                    return resp, resolved
+                if attempt >= attempts - 1:
+                    return resp, None
+                delay = _busy_retry_delay(resp, attempt)
+                self._analyze_retrying[capacity_key] = {
+                    "repo_path": tool_repo_path,
+                    "attempt": attempt + 1,
+                    "retry_after_seconds": delay,
+                }
+                logger.info(
+                    "gitnexus: analyze busy for %s (HTTP 429), retrying %d/%d in %.1fs",
+                    tool_repo_path,
+                    attempt + 1,
+                    attempts - 1,
+                    delay,
+                )
+                await asyncio.sleep(delay)
+            return resp, None
+        finally:
+            self._analyze_retrying.pop(capacity_key, None)
 
     async def _repo_exists(self, repo_name: str) -> bool:
         """Lightweight existence check so fresh adapter instances can reuse indexed repos."""

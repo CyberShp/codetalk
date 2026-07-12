@@ -10,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from app.adapters import get_adapter, get_all_adapters
 from app.adapters.external_agent import ExternalAgentAdapter
-from app.adapters.gitnexus import resolve_indexed_repo
+from app.adapters.gitnexus import GitNexusAdapter, resolve_indexed_repo
 from app.config import settings
 from app.services.agent_provider_settings import apply_persisted_agent_provider_settings
 from app.services import process_manager as process_manager_module
@@ -332,6 +332,12 @@ async def get_tool_procs(request: Request) -> list[dict[str, Any]]:
         if adapter.name() in _adapter_only_tool_names() and adapter.name() not in managed_names
     ])
     return [*process_status, *adapter_status]
+
+
+@router.get("/gitnexus/capacity")
+async def get_gitnexus_capacity() -> dict[str, object]:
+    """Expose GitNexus's single-worker queue without probing or starting a job."""
+    return GitNexusAdapter.capacity_snapshot(settings.gitnexus_base_url)
 
 
 @router.get("/{tool_name}/health")

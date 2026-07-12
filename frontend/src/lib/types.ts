@@ -186,6 +186,18 @@ export interface ToolInfo {
   agent_provider_diagnostics?: AgentProviderDiagnosticsSummary;
 }
 
+export interface GitNexusCapacity {
+  version: "gitnexus-capacity-v1";
+  status: "idle" | "queued" | "running" | "retrying" | "cooldown";
+  capacity: number;
+  running_repo: string | null;
+  queued: number;
+  queue: Array<{ position: number; repo_path: string }>;
+  retry_after_seconds: number | null;
+  retry_attempt: number | null;
+  cooldown_seconds: number;
+}
+
 export interface AgentProviderCapabilities {
   provider: string;
   supports_mcp: boolean;
