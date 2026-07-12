@@ -1799,8 +1799,10 @@ def _source_flow_sfmea_item(
             f"detection={detection_score} from {evidence_line_count} source line(s) available for review."
         ),
         "mitigation": (
-            f"Add or extend tests in {test_directory} for normal path, invalid input, timeout, reconnect/reset, "
-            "concurrency, recovery, and performance degradation without calling internal functions."
+            f"Enforce bounded state transitions and guaranteed resource cleanup/recovery in the {module} "
+            f"public workflow; add or extend black-box tests in {test_directory} for normal path, invalid input, "
+            "timeout, reconnect/reset, concurrency, recovery, and performance degradation while monitoring "
+            "RPC/tool results, logs, metrics, and persisted state."
         ),
         "source_evidence": [file_path] if file_path != "repo" else [],
         "test_mapping": [test_directory],

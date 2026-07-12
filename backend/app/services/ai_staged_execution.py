@@ -594,7 +594,10 @@ def _stage_format_rules(stage_id: str, artifact: str) -> list[str]:
             "必须使用四个独立二级标题：## 外部触发、## 流程步骤、## 异常分支、## 观测点；"
             "至少引用一个真实源码路径和一个真实测试路径。"
         ),
-        "sfmea": "- 只返回 8-10 条最高风险 SFMEA JSON 数组；每条必须有评分依据、mitigation 和源码/测试映射。",
+        "sfmea": (
+            "- 只返回 8-10 条最高风险 SFMEA JSON 数组；每条必须有评分依据、mitigation 和源码/测试映射；"
+            "每条 mitigation 必须同时写明具体整改和可执行的测试或监控验证动作。"
+        ),
         "black_box_cases": "- 只返回 8-12 条黑盒用例 JSON 数组；八个必需维度各至少一条，步骤只能使用外部操作和可观测结果。",
     }
     rule = rules.get(base_stage_id)

@@ -584,7 +584,7 @@ def test_workbench_runner_builtin_llm_uses_handoff_contract_and_writes_outputs(
                                     "detection_score": 4,
                                     "rpn": 108,
                                     "score_explanation": "High security impact, uncommon but observable by negative CHAP login.",
-                                    "mitigation": "Add black-box CHAP failure test case and monitor login failure metrics.",
+                                    "mitigation": "Reject invalid CHAP credentials before session creation; add a black-box failure test case and monitor login failure metrics.",
                                         "file_path": "lib/iscsi/login.c",
                                     "line_start": 1,
                                 }
@@ -755,7 +755,7 @@ def test_workbench_runner_staged_builtin_llm_writes_each_declared_artifact(
                 "source_scope.json": {"scope_id": "iscsi", "query": "login", "repo": "spdk", "discovery": {"provider": "builtin-llm", "method": "source_context", "file_count": 2}, "files": ["lib/iscsi/iscsi.c", "test/iscsi_tgt/login.sh"], "entry_points": []},
                 "evidence_cards.json": [{"evidence_id": "ev-1", "kind": "source", "file_path": "lib/iscsi/iscsi.c", "symbols": ["spdk_iscsi_login_authenticate"], "reason": "login entry", "source": "local-source"}],
                     "flow_map.md": "# Login flow\n## 外部触发\nlogin PDU\n## 流程步骤\n1. negotiate via lib/iscsi/iscsi.c\n## 异常分支\ntimeout\n## 观测点\nlog and test/iscsi_tgt/login.sh",
-                "sfmea.json": [{"failure_mode": "auth rejected", "cause": "bad CHAP", "effect": "session unavailable", "detection": "login response", "severity": 7, "occurrence": 3, "detection_score": 2, "rpn": 42, "score_explanation": "authentication failure blocks session establishment", "mitigation": "negative login test", "source_evidence": "lib/iscsi/iscsi.c:1", "test_mapping": "test/iscsi_tgt/login.sh"}],
+                "sfmea.json": [{"failure_mode": "auth rejected", "cause": "bad CHAP", "effect": "session unavailable", "detection": "login response", "severity": 7, "occurrence": 3, "detection_score": 2, "rpn": 42, "score_explanation": "authentication failure blocks session establishment", "mitigation": "reject invalid CHAP before session creation and add a negative login test monitoring target logs", "source_evidence": "lib/iscsi/iscsi.c:1", "test_mapping": "test/iscsi_tgt/login.sh"}],
                 "black_box_cases.json": [
                     {
                         "case_id": f"TC-{index}",

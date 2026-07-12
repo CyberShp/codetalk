@@ -39,6 +39,7 @@ from app.services.test_semantic_library import (
     SemanticCaseValidationError,
     TestSemanticLibraryStore,
 )
+from app.services.test_activity_contract import sfmea_mitigation_is_actionable
 from app.services.workbench_artifact_manifest import (
     TEXT_ARTIFACT_SUFFIXES,
     artifact_preview,
@@ -6557,7 +6558,12 @@ def _acceptance_black_box_case_quality_check(
             invalid_cases.append({
                 "index": index,
                 "case_id": str(case.get("case_id") or ""),
-                "title": str(case.get("title") or case.get("scenario") or ""),
+                "title": str(
+                    case.get("title")
+                    or case.get("scenario")
+                    or case.get("scenario_name")
+                    or ""
+                ),
                 "reasons": reasons,
             })
     if invalid_cases:
@@ -6583,7 +6589,6 @@ _BLACK_BOX_WHITE_BOX_RE = re.compile(
     r"(?i)("
     r"\b(?:invoke|call|mock|stub|patch|unit\s*test|internal\s+function|"
     r"direct\s+function|private\s+function|return\s+value)\b|"
-    r"\b[a-z_][a-z0-9_]*\s*\(|"
     r"\b[a-z0-9_./-]+\.(?:c|cc|cpp|cxx|h|hpp):\d+\b|"
     r"->|::|"
     r"调用\s*(?:内部|私有)?\s*(?:函数|方法)|"
@@ -6592,6 +6597,10 @@ _BLACK_BOX_WHITE_BOX_RE = re.compile(
     r"修改[^，。；;\n]*?(?:变量|状态|字段)|"
     r"进入[^，。；;\n]*?:\d+[^，。；;\n]*?分支"
     r")"
+)
+_BLACK_BOX_FUNCTION_CALL_RE = re.compile(r"(?i)\b[a-z_][a-z0-9_]*_[a-z0-9_]+\s*\(")
+_BLACK_BOX_EXTERNAL_COMMAND_CONTEXT_RE = re.compile(
+    r"(?i)\b(?:rpc|cli|command|api)\b|(?:RPC|CLI|命令|接口)"
 )
 _BLACK_BOX_OBSERVABLE_EXPECTED_RE = re.compile(
     r"(?i)\b("
@@ -6700,22 +6709,42 @@ def _black_box_case_quality_reasons(case: dict[str, Any]) -> list[str]:
         reasons.append("missing_observability")
     if not diagnostics:
         reasons.append("missing_diagnostics")
-    if not test_directory.startswith("test/"):
+    if not (
+        test_directory.startswith("test/")
+        or _is_explicit_unverified_mapping(test_directory)
+    ):
         reasons.append("missing_test_directory_mapping")
-    boundary_text = " ".join([
+    boundary_components = [
         str(case.get("title") or ""),
         str(case.get("scenario") or case.get("scenario_name") or ""),
         str(case.get("inputs") or ""),
-        " ".join(steps),
-        " ".join(expected),
-        " ".join(preconditions),
-        " ".join(observability),
-        " ".join(diagnostics),
+        *steps,
+        *expected,
+        *preconditions,
+        *observability,
+        *diagnostics,
         test_directory,
-    ])
-    if _BLACK_BOX_WHITE_BOX_RE.search(boundary_text):
+    ]
+    if any(_black_box_component_has_white_box_boundary(item) for item in boundary_components):
         reasons.append("white_box_boundary")
     return _semantic_dedupe(reasons)
+
+
+def _is_explicit_unverified_mapping(value: str) -> bool:
+    marker = "ai_suggested_unverified"
+    normalized = str(value or "").strip()
+    return normalized == marker or normalized.startswith((marker + ":", marker + "："))
+
+
+def _black_box_component_has_white_box_boundary(value: str) -> bool:
+    text = str(value or "")
+    if _BLACK_BOX_WHITE_BOX_RE.search(text):
+        return True
+    for match in _BLACK_BOX_FUNCTION_CALL_RE.finditer(text):
+        context = text[max(0, match.start() - 80):min(len(text), match.end() + 80)]
+        if not _BLACK_BOX_EXTERNAL_COMMAND_CONTEXT_RE.search(context):
+            return True
+    return False
 
 
 def _black_box_case_expected(case: dict[str, Any]) -> list[str]:
@@ -6799,7 +6828,9 @@ def _acceptance_risk_finding_quality_check(
         if reasons:
             invalid_findings.append({
                 "index": index,
-                "finding_id": str(finding.get("finding_id") or ""),
+                "finding_id": str(
+                    finding.get("finding_id") or finding.get("sfmea_id") or ""
+                ),
                 "summary": str(finding.get("summary") or finding.get("failure_mode") or ""),
                 "reasons": reasons,
             })
@@ -6831,25 +6862,20 @@ _SFMEA_TEXT_FIELDS = (
     "mitigation",
 )
 _SFMEA_SCORE_FIELDS = ("severity_score", "occurrence_score", "detection_score", "rpn")
-_SFMEA_ACTIONABLE_MITIGATION_RE = re.compile(
-    r"(?i)\b("
-    r"test|case|coverage|monitor|metric|log|alert|probe|trace|diagnos|"
-    r"instrument|validate|check|assert|runbook|playbook|observable"
-    r")\b"
-)
 
 
 def _risk_finding_duplicate_key(finding: dict[str, Any]) -> str:
+    source_candidates = _risk_finding_source_candidates(finding)
     parts = [
-        str(finding.get("file_path") or finding.get("path") or ""),
+        source_candidates[0] if source_candidates else "",
         str(finding.get("function") or finding.get("symbol") or ""),
         str(finding.get("failure_mode") or ""),
         str(finding.get("cause") or ""),
         str(finding.get("effect") or ""),
         str(finding.get("detection") or ""),
         str(finding.get("mitigation") or ""),
-        str(_safe_int(finding.get("severity_score"))),
-        str(_safe_int(finding.get("occurrence_score"))),
+        str(_sfmea_score(finding, "severity_score")),
+        str(_sfmea_score(finding, "occurrence_score")),
         str(_safe_int(finding.get("detection_score"))),
     ]
     normalized = [
@@ -6867,37 +6893,80 @@ def _risk_finding_quality_reasons(finding: dict[str, Any], *, repo_path: str) ->
         field for field in _SFMEA_TEXT_FIELDS
         if not str(finding.get(field) or "").strip()
     ]
-    missing_scores = [
-        field for field in _SFMEA_SCORE_FIELDS
-        if _safe_int(finding.get(field)) <= 0
-    ]
+    missing_scores = [field for field in _SFMEA_SCORE_FIELDS if _sfmea_score(finding, field) <= 0]
     if missing_text or missing_scores:
         reasons.append("missing_sfmea_fields")
     score_explanation = str(finding.get("score_explanation") or "").strip()
     if not score_explanation:
         reasons.append("missing_score_explanation")
     mitigation = str(finding.get("mitigation") or "").strip()
-    if mitigation and not _SFMEA_ACTIONABLE_MITIGATION_RE.search(mitigation):
+    if mitigation and not sfmea_mitigation_is_actionable(mitigation):
         reasons.append("non_actionable_mitigation")
-    severity_score = _safe_int(finding.get("severity_score"))
-    occurrence_score = _safe_int(finding.get("occurrence_score"))
-    detection_score = _safe_int(finding.get("detection_score"))
+    severity_score = _sfmea_score(finding, "severity_score")
+    occurrence_score = _sfmea_score(finding, "occurrence_score")
+    detection_score = _sfmea_score(finding, "detection_score")
     rpn = _safe_int(finding.get("rpn"))
     if any(score and not (1 <= score <= 10) for score in (severity_score, occurrence_score, detection_score)):
         reasons.append("sfmea_score_out_of_range")
     if severity_score and occurrence_score and detection_score and rpn:
         if rpn != severity_score * occurrence_score * detection_score:
             reasons.append("rpn_mismatch")
-    file_path = str(finding.get("file_path") or finding.get("path") or "").strip()
-    if not file_path:
+    source_candidates = _risk_finding_source_candidates(finding)
+    if not source_candidates:
         reasons.append("source_file_required")
     else:
-        resolved = _validated_repo_source_path(repo_path, file_path)
-        if resolved is None:
+        resolved_sources = [
+            _validated_repo_source_path(repo_path, candidate)
+            for candidate in source_candidates
+        ]
+        if any(item is None for item in resolved_sources):
             reasons.append("source_file_missing")
-        elif not _risk_finding_source_lines_valid(finding, resolved[1]):
-            reasons.append("source_line_out_of_range")
+        else:
+            validated_sources = [item for item in resolved_sources if item is not None]
+            if validated_sources and not _risk_finding_source_lines_valid(
+                finding,
+                validated_sources[0][1],
+            ):
+                reasons.append("source_line_out_of_range")
     return _semantic_dedupe(reasons)
+
+
+def _sfmea_score(finding: dict[str, Any], field: str) -> int:
+    canonical_fields = {
+        "severity_score": "severity",
+        "occurrence_score": "occurrence",
+    }
+    canonical = canonical_fields.get(field)
+    if canonical and canonical in finding:
+        canonical_value = finding.get(canonical)
+        if not isinstance(canonical_value, bool) and re.fullmatch(
+            r"-?\d+",
+            str(canonical_value or "").strip(),
+        ):
+            return _safe_int(canonical_value)
+    return _safe_int(finding.get(field))
+
+
+def _risk_finding_source_candidates(finding: dict[str, Any]) -> list[str]:
+    candidates = [
+        str(finding.get("file_path") or "").strip(),
+        str(finding.get("path") or "").strip(),
+    ]
+    raw_evidence = finding.get("source_evidence")
+    evidence_items = raw_evidence if isinstance(raw_evidence, list) else [raw_evidence]
+    for item in evidence_items:
+        if isinstance(item, dict):
+            candidate = str(item.get("file_path") or item.get("path") or "").strip()
+        else:
+            candidate = str(item or "").strip()
+            if "::" in candidate:
+                candidate = candidate.split("::", 1)[0].strip()
+            candidate = re.sub(r":\d+(?:-\d+)?$", "", candidate)
+        if candidate:
+            candidates.append(candidate)
+    if not any(candidates):
+        candidates.append(str(finding.get("module") or "").strip())
+    return _semantic_dedupe([item for item in candidates if item])
 
 
 def _risk_finding_source_lines_valid(finding: dict[str, Any], source_path: Path) -> bool:

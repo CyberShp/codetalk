@@ -485,6 +485,148 @@ def test_sfmea_audit_rejects_invalid_scores_and_rpn(tmp_path):
     assert "sfmea_rpn_mismatch" in codes
 
 
+def test_sfmea_audit_requires_test_or_monitor_verification_in_mitigation(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_artifacts,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login;\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    base_row = {
+        "failure_mode": "login state is not released",
+        "cause": "error path skips cleanup",
+        "effect": "later login attempts fail",
+        "detection": "connection state and target log",
+        "severity": 7,
+        "occurrence": 3,
+        "detection_score": 2,
+        "rpn": 42,
+        "score_explanation": "S=7 unavailable; O=3 bounded; D=2 visible",
+        "source_evidence": "lib/iscsi/iscsi.c",
+        "test_mapping": "test/iscsi_tgt",
+    }
+    artifact_dir = tmp_path / "run"
+    artifact_dir.mkdir()
+    (artifact_dir / "sfmea.json").write_text(
+        json.dumps(
+            [
+                {**base_row, "mitigation": "在错误路径释放连接并重置状态位"},
+                {
+                    **base_row,
+                    "failure_mode": "login timeout is not bounded",
+                    "mitigation": "增加超时清理，并用黑盒重连用例检查连接状态和告警日志",
+                },
+                {
+                    **base_row,
+                    "failure_mode": "login error is not observable",
+                    "mitigation": "增加日志和监控告警",
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    contract = build_test_activity_contract(
+        target="iSCSI login SFMEA",
+        repo_path=str(repo),
+        workflow_outputs=[{"id": "sfmea", "artifact": "sfmea.json", "type": "json"}],
+    )
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    mitigation_issues = [
+        issue for issue in audit["issues"] if issue["code"] == "non_actionable_mitigation"
+    ]
+    assert [issue["index"] for issue in mitigation_issues] == [1, 3]
+    assert "验证动作" in mitigation_issues[0]["message"]
+    assert "具体整改" in mitigation_issues[1]["message"]
+
+
+@pytest.mark.parametrize(
+    "mitigation",
+    [
+        "close the stale connection and add a reconnect test",
+        "add input validation and a regression test",
+        "增加参数校验，并添加边界测试",
+        "Add timeout cleanup and regression tests",
+        "Add timeout cleanup plus regression tests and monitor metrics",
+        "新增超时清理及回归测试并监控日志",
+        "Prevent session creation for invalid CHAP credentials; add negative tests",
+        "Block invalid transitions and monitor error metrics",
+        "Monitor logs and reset stale state",
+        "Record metrics, then block invalid transitions",
+        "监控日志并清理残留状态",
+        "Add regression tests and reset stale state",
+        "Run retry tests then block invalid transitions",
+        "新增回归测试并清理残留状态",
+        "执行重试测试然后限制重试次数",
+        "Add regression tests, reset stale state",
+        "Run retry tests, block invalid transitions",
+        "新增回归测试，清理残留状态",
+        "执行重试测试，限制重试次数",
+        "Reset stale state and assert reconnect succeeds",
+        "Limit retries and check the connection state",
+        "限制重试次数并检查连接状态",
+        "防止创建未授权会话并添加负向测试",
+        "阻止非法状态迁移并监控日志",
+    ],
+)
+def test_sfmea_mitigation_accepts_remediation_plus_verification(mitigation):
+    from app.services.test_activity_contract import sfmea_mitigation_is_actionable
+
+    assert sfmea_mitigation_is_actionable(mitigation) is True
+
+
+@pytest.mark.parametrize(
+    "mitigation",
+    [
+        "run retry test and monitor logs",
+        "add reset/recovery black-box tests and inspect metrics",
+        "新增重试测试并监控日志",
+        "Add tests for normal path, timeout, reconnect/reset, concurrency, recovery, and monitor logs",
+        "test cleanup and monitor logs",
+        "测试重试并监控日志",
+        "执行重试场景并监控日志",
+        "monitor retry metrics and logs",
+        "alert on reset failures and monitor logs",
+        "监控重试指标和日志",
+        "记录清理失败日志并配置告警",
+        "Inspect retry metrics and logs",
+        "Check reset metrics and logs",
+        "Measure cleanup metrics and alert on failures",
+        "Assert retry succeeds",
+        "Validate reset behavior",
+        "断言重试成功",
+        "校验重置状态",
+    ],
+)
+def test_sfmea_mitigation_rejects_test_scenario_without_product_remediation(mitigation):
+    from app.services.test_activity_contract import sfmea_mitigation_is_actionable
+
+    assert sfmea_mitigation_is_actionable(mitigation) is False
+
+
+def test_local_source_flow_sfmea_generator_emits_remediation_and_verification():
+    from app.services.test_activity_contract import sfmea_mitigation_is_actionable
+    from app.services.workbench_workflow_runner import _source_flow_sfmea_item
+
+    item = _source_flow_sfmea_item(
+        task_run=None,
+        file_path="lib/nvmf/ctrlr.c",
+        evidence_card={"symbols": ["spdk_nvmf_ctrlr_connect"], "line_count": 20},
+        index=1,
+    )
+
+    assert "Enforce bounded state transitions" in item["mitigation"]
+    assert sfmea_mitigation_is_actionable(item["mitigation"]) is True
+
+
 def test_black_box_audit_rejects_duplicate_cases(tmp_path):
     from app.services.test_activity_contract import (
         audit_test_activity_artifacts,

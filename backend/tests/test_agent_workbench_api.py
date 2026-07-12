@@ -136,7 +136,7 @@ class _SourceFlowStageLLM:
                 "detection_score": 2,
                 "rpn": 42,
                 "score_explanation": "connection cannot progress",
-                "mitigation": "negative connect test",
+                "mitigation": "reject invalid requests early and add a negative connect black-box test monitoring response logs",
                 "source_evidence": ["lib/nvmf/ctrlr.c:1"],
                 "test_mapping": "test/nvmf/nvmf.sh",
             }],
@@ -6395,6 +6395,147 @@ async def test_workbench_task_run_acceptance_audit_rejects_non_black_box_case_co
     assert any("white_box_boundary" in item["reasons"] for item in quality_check["invalid_cases"])
 
 
+async def test_acceptance_quality_accepts_canonical_staged_sfmea_fields(tmp_path):
+    from app.api.agent_workbench import _risk_finding_quality_reasons
+
+    source = tmp_path / "lib" / "iscsi" / "iscsi.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int iscsi_login(void) { return 0; }\n", encoding="utf-8")
+    finding = {
+        "sfmea_id": "SFMEA-001",
+        "failure_mode": "login timeout",
+        "cause": "peer stops sending Login PDUs",
+        "effect": "session is unavailable",
+        "detection": "observe timeout log and connection state",
+        "severity": 7,
+        "occurrence": 3,
+        "detection_score": 2,
+        "rpn": 42,
+        "score_explanation": "S=7 service unavailable; O=3 bounded trigger; D=2 visible log",
+        "mitigation": "限制登录等待时间，添加超时黑盒用例并监控连接日志",
+        "source_evidence": ["lib/iscsi/iscsi.c::iscsi_login"],
+        "test_mapping": "test/iscsi_tgt/login.sh",
+    }
+
+    assert _risk_finding_quality_reasons(finding, repo_path=str(tmp_path)) == []
+
+
+async def test_acceptance_quality_prefers_canonical_sfmea_scores_over_legacy_aliases(tmp_path):
+    from app.api.agent_workbench import _risk_finding_quality_reasons
+
+    source = tmp_path / "lib" / "iscsi" / "iscsi.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int iscsi_login(void) { return 0; }\n", encoding="utf-8")
+    finding = {
+        "failure_mode": "login timeout",
+        "cause": "peer stalls",
+        "effect": "session unavailable",
+        "detection": "timeout log",
+        "severity": 7,
+        "severity_score": 9,
+        "occurrence": 3,
+        "occurrence_score": "bad",
+        "detection_score": 2,
+        "rpn": 42,
+        "score_explanation": "S=7; O=3; D=2",
+        "mitigation": "限制登录等待时间，并新增超时黑盒用例检查告警日志",
+        "source_evidence": ["lib/iscsi/iscsi.c::iscsi_login"],
+    }
+
+    assert _risk_finding_quality_reasons(finding, repo_path=str(tmp_path)) == []
+
+
+async def test_acceptance_quality_rejects_any_missing_source_evidence_path(tmp_path):
+    from app.api.agent_workbench import _risk_finding_quality_reasons
+
+    source = tmp_path / "lib" / "iscsi" / "iscsi.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int iscsi_login(void) { return 0; }\n", encoding="utf-8")
+    finding = {
+        "failure_mode": "login timeout",
+        "cause": "peer stalls",
+        "effect": "session unavailable",
+        "detection": "timeout log",
+        "severity": 7,
+        "occurrence": 3,
+        "detection_score": 2,
+        "rpn": 42,
+        "score_explanation": "S=7; O=3; D=2",
+        "mitigation": "限制登录等待时间，并新增超时黑盒用例检查告警日志",
+        "source_evidence": [
+            "lib/iscsi/iscsi.c::iscsi_login",
+            "lib/iscsi/not-real.c::missing_symbol",
+        ],
+    }
+
+    assert "source_file_missing" in _risk_finding_quality_reasons(
+        finding,
+        repo_path=str(tmp_path),
+    )
+
+
+async def test_acceptance_quality_rejects_verification_only_mitigation(tmp_path):
+    from app.api.agent_workbench import _risk_finding_quality_reasons
+
+    source = tmp_path / "lib" / "iscsi" / "iscsi.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int iscsi_login(void) { return 0; }\n", encoding="utf-8")
+    finding = {
+        "failure_mode": "login timeout",
+        "cause": "peer stalls",
+        "effect": "session unavailable",
+        "detection": "timeout log",
+        "severity": 7,
+        "occurrence": 3,
+        "detection_score": 2,
+        "rpn": 42,
+        "score_explanation": "S=7; O=3; D=2",
+        "mitigation": "增加日志和监控告警",
+        "source_evidence": ["lib/iscsi/iscsi.c::iscsi_login"],
+    }
+
+    assert "non_actionable_mitigation" in _risk_finding_quality_reasons(
+        finding,
+        repo_path=str(tmp_path),
+    )
+
+
+async def test_acceptance_quality_allows_external_protocol_steps_and_explicit_evidence_gap():
+    from app.api.agent_workbench import _black_box_case_quality_reasons
+
+    case = {
+        "case_id": "BLACKBOX-001",
+        "scenario_name": "iSCSI Login timeout",
+        "preconditions": ["SPDK target is running"],
+        "steps": [
+            "Initiator sends Login Request PDU (opcode=0x03)",
+            "Admin runs bdev_get_bdevs() RPC command and deletes the target",
+            "Observe Login Response PDU with an error status",
+        ],
+        "expected_result": "target log records the error and the connection is closed",
+        "observability": ["Login Response status", "target log"],
+        "failure_diagnostics": ["capture the PDU response and RPC result"],
+        "mapped_test_dir": "ai_suggested_unverified: add login-timeout harness",
+    }
+
+    assert _black_box_case_quality_reasons(case) == []
+
+
+async def test_acceptance_quality_rejects_invalid_unverified_mapping_prefix():
+    from app.api.agent_workbench import _black_box_case_quality_reasons
+
+    case = {
+        "preconditions": ["target is running"],
+        "steps": ["Initiator sends a Login Request"],
+        "expected_result": "target returns an error response",
+        "observability": ["response status", "target log"],
+        "failure_diagnostics": ["capture response and target log"],
+        "mapped_test_dir": "ai_suggested_unverified_typo",
+    }
+
+    assert "missing_test_directory_mapping" in _black_box_case_quality_reasons(case)
+
+
 async def test_workbench_task_run_acceptance_audit_rejects_chinese_white_box_case_content(
     workbench_client,
     tmp_path,
@@ -6954,7 +7095,7 @@ async def test_workbench_task_run_acceptance_audit_requires_declared_evidence_ma
         "'detection':'watch target logs and connection state after disconnect',"
         "'severity':'high',"
         "'severity_score':8,'occurrence_score':4,'detection_score':5,'rpn':160,"
-        "'mitigation':'add disconnect/reconnect black-box test and monitor logs',"
+        "'mitigation':'release TLS context on disconnect; add reconnect black-box test and monitor logs',"
         "'score_explanation':'severity=8 because leaked TLS state affects reconnect; "
         "occurrence=4 from disconnect branch frequency; detection=5 via target logs and connection metrics'}\n"
         "]), encoding='utf-8')\n",

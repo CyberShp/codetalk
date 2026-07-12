@@ -2743,6 +2743,7 @@ def _audit_json_artifact(
             )
         if artifact == "sfmea.json":
             issues.extend(_audit_sfmea_scores(row, artifact=artifact, index=index))
+            issues.extend(_audit_sfmea_mitigation(row, artifact=artifact, index=index))
         if artifact == "black_box_cases.json":
             dimension = str(row.get("test_dimension") or "").strip().lower()
             if dimension:
@@ -2926,6 +2927,124 @@ def _audit_sfmea_scores(
                 )
             )
     return issues
+
+
+_SFMEA_REMEDIATION_ACTION_RE = re.compile(
+    r"(?i)\b("
+    r"fix|release|reset|bound|limit|lock|retry|rollback|clean(?:up)?|reject|close|abort|"
+    r"prevent|block|"
+    r"recover|restore|serializ|sanitize|enforce|implement|replace|refactor|"
+    r"retain|buffer|input\s+validation"
+    r")\b|"
+    r"(修复|释放|重置|限制|加锁|重试|回滚|清理|拒绝|恢复|串行|净化|强制|"
+    r"实现|替换|重构|引用计数|持有.{0,12}引用|缓冲|关闭|中止|参数校验|输入校验|防止|阻止)"
+)
+_SFMEA_VERIFICATION_ACTION_RE = re.compile(
+    r"(?i)\b("
+    r"tests?|cases?|coverage|monitor(?:ing)?|metrics?|logs?|alerts?|probes?|traces?|diagnos|"
+    r"observable|validate|check|assert"
+    r")\b|"
+    r"(测试|用例|覆盖|监控|指标|日志|告警|探针|追踪|诊断|校验|检查|断言)"
+)
+_SFMEA_TEST_SCENARIO_ACTION_RE = re.compile(
+    r"(?i)\b(?:retry|reset|recovery|reconnect|rollback|cleanup|abort|close)"
+    r"(?=(?:\s*/\s*(?:retry|reset|recovery|reconnect|rollback|cleanup|abort|close))*"
+    r"\s+(?:black[- ]box\s+|regression\s+|negative\s+)?(?:tests?|cases?|coverage)\b)|"
+    r"(?:重试|重置|恢复|重连|回滚|清理|中止|关闭)"
+    r"(?=(?:\s*[/、]\s*(?:重试|重置|恢复|重连|回滚|清理|中止|关闭))*"
+    r"\s*(?:黑盒|回归|负向)?(?:测试|用例|覆盖))|"
+    r"\b(?:tests?|cases?|scenarios?)\s+"
+    r"(?:retry|reset|recovery|reconnect|rollback|cleanup|abort|close)\b|"
+    r"\b(?:execute|run)\s+"
+    r"(?:retry|reset|recovery|reconnect|rollback|cleanup|abort|close)"
+    r"\s+(?:scenarios?|cases?|tests?)\b|"
+    r"(?:测试|用例|场景|验证)\s*(?:重试|重置|恢复|重连|回滚|清理|中止|关闭)|"
+    r"执行\s*(?:重试|重置|恢复|重连|回滚|清理|中止|关闭)\s*(?:场景|用例|测试)"
+)
+_SFMEA_TEST_ONLY_SEGMENT_RE = re.compile(
+    r"(?i)^\s*(?:add|extend|run|execute|create|write)\b"
+    r"(?:(?!\b(?:and|then|plus)\b).){0,80}\b(?:tests?|cases?|coverage)\b|"
+    r"^\s*(?:新增|添加|运行|执行|编写|扩展)"
+    r"(?:(?!并|且|同时|及).){0,40}(?:测试|用例|覆盖)"
+)
+_SFMEA_OBSERVATION_CLAUSE_RE = re.compile(
+    r"(?i)^\s*(?:monitor|alert|log|record|observe|trace|probe|inspect|check|measure|"
+    r"assert|validate)\b|"
+    r"^\s*(?:监控|记录|告警|追踪|观察|采集|检查|测量|断言|校验)"
+)
+_SFMEA_BARE_TEST_DIMENSION_RE = re.compile(
+    r"(?i)^\s*(?:normal\s+path|invalid\s+input|resource\s+pressure|timeout|"
+    r"reconnect(?:\s*/\s*reset)?|reset|concurrency|recovery|"
+    r"performance(?:\s+degradation)?)\s*$|"
+    r"^\s*(?:正常路径|非法输入|资源压力|超时|重连(?:/重置)?|重置|并发|恢复|性能退化)\s*$"
+)
+_SFMEA_CONNECTOR_SPLIT_RE = re.compile(
+    r"(?i)\s+\b(?:and|then|plus)\b\s+|(?:并且|同时|然后|并|且|及)"
+)
+
+
+def sfmea_mitigation_quality_gaps(mitigation: Any) -> list[str]:
+    text = str(mitigation or "").strip()
+    if not text:
+        return ["missing_remediation_action", "missing_verification_action"]
+    remediation_clauses = []
+    for segment in re.split(r"[;；。\n]+", text):
+        normalized_segment = segment.strip()
+        if not normalized_segment:
+            continue
+        for logical_clause in _SFMEA_CONNECTOR_SPLIT_RE.split(normalized_segment):
+            normalized_logical_clause = logical_clause.strip()
+            if not normalized_logical_clause:
+                continue
+            for clause in re.split(r"[，,]+", normalized_logical_clause):
+                normalized_clause = clause.strip()
+                if (
+                    not normalized_clause
+                    or _SFMEA_TEST_ONLY_SEGMENT_RE.search(normalized_clause)
+                    or _SFMEA_OBSERVATION_CLAUSE_RE.search(normalized_clause)
+                    or _SFMEA_BARE_TEST_DIMENSION_RE.search(normalized_clause)
+                ):
+                    continue
+                remediation_clauses.append(
+                    _SFMEA_TEST_SCENARIO_ACTION_RE.sub("", normalized_clause)
+                )
+    remediation_text = " ".join(remediation_clauses)
+    gaps: list[str] = []
+    if not _SFMEA_REMEDIATION_ACTION_RE.search(remediation_text):
+        gaps.append("missing_remediation_action")
+    if not _SFMEA_VERIFICATION_ACTION_RE.search(text):
+        gaps.append("missing_verification_action")
+    return gaps
+
+
+def sfmea_mitigation_is_actionable(mitigation: Any) -> bool:
+    return not sfmea_mitigation_quality_gaps(mitigation)
+
+
+def _audit_sfmea_mitigation(
+    row: dict[str, Any],
+    *,
+    artifact: str,
+    index: int,
+) -> list[dict[str, Any]]:
+    mitigation = str(row.get("mitigation") or "").strip()
+    gaps = sfmea_mitigation_quality_gaps(mitigation)
+    if not mitigation or not gaps:
+        return []
+    missing_labels = []
+    if "missing_remediation_action" in gaps:
+        missing_labels.append("具体整改")
+    if "missing_verification_action" in gaps:
+        missing_labels.append("可执行的测试或监控验证动作")
+    return [
+        _issue(
+            "non_actionable_mitigation",
+            artifact,
+            f"{artifact} 第 {index} 项 mitigation 缺少{'和'.join(missing_labels)}",
+            index=index,
+            gaps=gaps,
+        )
+    ]
 
 
 def _integer_score(value: Any) -> int | None:

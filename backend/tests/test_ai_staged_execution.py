@@ -348,6 +348,14 @@ def test_evidence_stage_requires_file_local_verbatim_symbols():
     assert "每个 symbol 必须逐字出现在对应 file_path" in " ".join(rules)
 
 
+def test_sfmea_stage_requires_executable_verification_in_mitigation():
+    rules = _stage_format_rules("sfmea", "sfmea.json")
+
+    text = " ".join(rules)
+    assert "具体整改" in text
+    assert "可执行的测试或监控验证动作" in text
+
+
 @pytest.mark.asyncio
 async def test_executor_retries_transient_provider_error_and_invalid_json(tmp_path):
     class FlakyLLM(_StageLLM):
