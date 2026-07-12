@@ -547,10 +547,18 @@ class AgentRunHarness:
         agent_output_contract_sha256 = _json_sha256(
             agent_output_contract if isinstance(agent_output_contract, dict) else {}
         )
+        runtime_tmp_dir = _prepare_isolated_runtime_tmp(self.artifact_dir)
         env_hints = {
             "CODETALK_AGENT_READONLY": "1",
             "CODETALK_REPO_PATH": cwd,
             "CODETALK_AGENT_ARTIFACT_DIR": str(self.artifact_dir),
+            "GIT_CONFIG_COUNT": "1",
+            "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_CONFIG_KEY_0": "core.excludesFile",
+            "GIT_CONFIG_VALUE_0": os.devnull,
+            "TEMP": str(runtime_tmp_dir),
+            "TMP": str(runtime_tmp_dir),
+            "TMPDIR": str(runtime_tmp_dir),
         }
         env_hints.update(_agent_provider_env_hints(str(run_payload.get("provider") or "")))
         launch_command, command_resolution = _launch_command_from_provider_health(
@@ -579,6 +587,13 @@ class AgentRunHarness:
             artifact_dir=str(self.artifact_dir),
         )
         process_command, stdin_payload_bytes, prompt_transport, prompt_transport_reason = invocation_candidates[0]
+        codex_runtime_home, codex_runtime_read_targets = _prepare_isolated_codex_home(
+            provider=str(run_payload.get("provider") or ""),
+            command=process_command,
+            artifact_dir=self.artifact_dir,
+        )
+        if codex_runtime_home is not None:
+            env_hints["CODEX_HOME"] = str(codex_runtime_home)
         prompt_file_path: str | None = None
         if (
             prompt_transport not in {"stdin", "codex_exec_json"}
@@ -589,6 +604,7 @@ class AgentRunHarness:
                 encoding="utf-8",
                 prefix="codetalk-workflow-prompt-",
                 suffix=".json",
+                dir=runtime_tmp_dir,
                 delete=False,
             ) as prompt_file:
                 prompt_file.write(stdin_payload)
@@ -720,20 +736,51 @@ class AgentRunHarness:
             repo_path=cwd,
         )
         env.update(env_hints)
+        env = _prefer_native_macos_git_path(env)
         env["CODETALK_AGENT_ARTIFACT_DIR"] = str(self.artifact_dir.resolve())
         try:
             sandbox = prepare_agent_sandbox(
                 runtime={
                     "sandbox_mode": settings.external_agent_sandbox_mode,
                     "sandbox_allow_network": settings.external_agent_sandbox_allow_network,
+                    "sandbox_read_paths": [
+                        str(path) for path in _task_run_read_roots(self.artifact_dir)
+                    ] + [str(path) for path in codex_runtime_read_targets],
                     "sandbox_write_paths": settings.external_agent_sandbox_write_paths,
                     "sandbox_command": process_command[0] if process_command else "",
+                    "sandbox_codex_home": str(codex_runtime_home or ""),
                 },
                 cwd=cwd,
                 artifact_dir=self.artifact_dir,
             )
         except AgentSandboxError as exc:
             raise RuntimeError(str(exc)) from exc
+        invocation_candidates = _finalize_invocation_candidates_for_sandbox(
+            invocation_candidates,
+            sandbox_active=sandbox.status == "active",
+        )
+        process_command, stdin_payload_bytes, prompt_transport, prompt_transport_reason = (
+            invocation_candidates[0]
+        )
+        execution_input = self._read_json_file("execution_input.json")
+        if isinstance(execution_input, dict):
+            execution_input["process_command"] = process_command
+            execution_input["prompt_transport"] = prompt_transport
+            execution_input["prompt_transport_reason"] = prompt_transport_reason
+            execution_input["sandbox_status"] = sandbox.status
+            self._write_json("execution_input.json", execution_input)
+        self._write_json(
+            "runtime_events.jsonl",
+            {
+                "event": "agent_launch_finalized",
+                "run_id": run_id,
+                "turn_id": turn_id,
+                "process_command": process_command,
+                "sandbox_status": sandbox.status,
+                "created_at": _now(),
+            },
+            append_jsonl=True,
+        )
 
         def emit_process_output(stream: str, chunk: str) -> None:
             text = _redact(chunk)
@@ -815,6 +862,7 @@ class AgentRunHarness:
                 attempt["stderr_excerpt"] = _redact(stderr[:4000])
                 attempt["stdout_excerpt"] = _redact(stdout[:4000])
                 if completed.cancelled:
+                    transport_attempts.append(attempt)
                     break
             except OSError as exc:
                 exit_code = None
@@ -1549,6 +1597,77 @@ def _append_option_value_once(args: list[str], flag: str, value: str) -> list[st
     return result
 
 
+def _codex_external_sandbox_command(
+    command: list[str],
+    *,
+    sandbox_active: bool,
+) -> list[str]:
+    result = list(command)
+    if not sandbox_active or not result:
+        return result
+    executable = Path(result[0]).name.lower()
+    if executable not in {"codex", "codex.exe"}:
+        return result
+    bypass_flag = "--dangerously-bypass-approvals-and-sandbox"
+    if bypass_flag in result:
+        return result
+    try:
+        exec_index = result.index("exec")
+    except ValueError:
+        return result
+    result.insert(exec_index + 1, bypass_flag)
+    return result
+
+
+def _finalize_invocation_candidates_for_sandbox(
+    candidates: list[tuple[list[str], bytes, str, str]],
+    *,
+    sandbox_active: bool,
+) -> list[tuple[list[str], bytes, str, str]]:
+    return [
+        (
+            _codex_external_sandbox_command(
+                candidate_command,
+                sandbox_active=sandbox_active,
+            ),
+            candidate_stdin,
+            candidate_transport,
+            candidate_reason,
+        )
+        for (
+            candidate_command,
+            candidate_stdin,
+            candidate_transport,
+            candidate_reason,
+        ) in candidates
+    ]
+
+
+def _task_run_read_roots(artifact_dir: Path) -> list[Path]:
+    resolved = artifact_dir.resolve()
+    if resolved.parent.name != "agent_runs":
+        return []
+    return [resolved.parent.parent]
+
+
+def _prefer_native_macos_git_path(
+    env: dict[str, str],
+    *,
+    platform_name: str = sys.platform,
+    native_git: Path = Path("/Library/Developer/CommandLineTools/usr/bin/git"),
+    exists: Callable[[Path], bool] = Path.exists,
+) -> dict[str, str]:
+    result = dict(env)
+    if not str(platform_name).lower().startswith("darwin") or not exists(native_git):
+        return result
+    native_bin = str(native_git.parent)
+    current_path = str(result.get("PATH") or "")
+    path_parts = [part for part in current_path.split(os.pathsep) if part]
+    if native_bin not in path_parts:
+        result["PATH"] = os.pathsep.join([native_bin, *path_parts])
+    return result
+
+
 def _agent_process_env_for_harness(*, provider: str, repo_path: str) -> dict[str, str]:
     """Use the same environment hints as source discovery, including CCR config."""
     try:
@@ -1557,6 +1676,72 @@ def _agent_process_env_for_harness(*, provider: str, repo_path: str) -> dict[str
         return _agent_process_env(provider, repo_path)
     except Exception:
         return filtered_agent_environment()
+
+
+def _prepare_isolated_runtime_tmp(artifact_dir: Path) -> Path:
+    artifact_root = artifact_dir.resolve()
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    runtime_tmp = Path(
+        tempfile.mkdtemp(prefix=".runtime-tmp-", dir=artifact_root)
+    )
+    if runtime_tmp.is_symlink() or not runtime_tmp.is_dir():
+        raise AgentSandboxError("Agent 隔离临时目录不是安全的真实目录。")
+    runtime_tmp = runtime_tmp.resolve(strict=True)
+    if runtime_tmp.parent != artifact_root:
+        raise AgentSandboxError("Agent 隔离临时目录越过了任务产物边界。")
+    return runtime_tmp
+
+
+def _prepare_isolated_codex_home(
+    *,
+    provider: str,
+    command: list[str],
+    artifact_dir: Path,
+) -> tuple[Path | None, list[Path]]:
+    command_name = Path(command[0]).name.lower() if command else ""
+    if "codex" not in command_name and "codex" not in provider.lower():
+        return None, []
+
+    source_home = Path(
+        os.environ.get("CODEX_HOME") or Path.home() / ".codex"
+    ).expanduser().resolve()
+    artifact_root = artifact_dir.resolve()
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    runtime_home = Path(
+        tempfile.mkdtemp(prefix=".runtime-codex-home-", dir=artifact_root)
+    )
+    if runtime_home.is_symlink() or not runtime_home.is_dir():
+        raise AgentSandboxError("Codex 隔离运行目录不是安全的真实目录。")
+    runtime_home = runtime_home.resolve(strict=True)
+    if runtime_home.parent != artifact_root:
+        raise AgentSandboxError("Codex 隔离运行目录越过了任务产物边界。")
+    for state_name in ("sessions", "log", ".tmp", "tmp", "cache"):
+        state_path = runtime_home / state_name
+        state_path.mkdir()
+        if state_path.is_symlink() or not state_path.is_dir():
+            raise AgentSandboxError(f"Codex 状态目录不安全：{state_name}")
+        if state_path.resolve(strict=True).parent != runtime_home:
+            raise AgentSandboxError(f"Codex 状态目录越过任务边界：{state_name}")
+    read_targets: list[Path] = []
+    for name in ("auth.json", "config.toml", "models_cache.json", "skills"):
+        source = source_home / name
+        if not source.exists():
+            continue
+        resolved_source = source.resolve()
+        target = runtime_home / name
+        try:
+            target.symlink_to(
+                resolved_source,
+                target_is_directory=resolved_source.is_dir(),
+            )
+        except OSError:
+            if resolved_source.is_dir():
+                shutil.copytree(resolved_source, target, symlinks=False)
+            else:
+                shutil.copy2(resolved_source, target)
+        if resolved_source not in read_targets:
+            read_targets.append(resolved_source)
+    return runtime_home, read_targets
 
 
 def _launch_command_from_provider_health(

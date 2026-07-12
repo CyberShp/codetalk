@@ -4766,6 +4766,10 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
     inset 0 1px 0 rgba(255, 255, 255, 0.72);
 }
 
+.ct-workbench-shell .ct-run-cockpit-panel {
+  overflow-x: hidden;
+}
+
 .ct-workbench-panel::after {
   content: "";
   position: absolute;
@@ -5591,10 +5595,15 @@ textarea:focus-visible {
 }
 
 .ct-workbench-shell .ct-run-console {
-  position: sticky;
-  top: 72px;
   max-height: max(620px, calc(100vh - 180px));
   overflow: auto;
+}
+
+@media (min-width: 1280px) {
+  .ct-workbench-shell .ct-run-console {
+    position: sticky;
+    top: 72px;
+  }
 }
 
 .ct-workbench-shell .ct-run-state-card {

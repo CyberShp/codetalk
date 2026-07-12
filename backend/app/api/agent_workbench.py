@@ -412,7 +412,7 @@ def _public_task_run_runtime_summary(task_root: Path) -> dict[str, Any]:
         )
 
     acceptance = _read_json(task_root / "task_acceptance_audit.json")
-    if isinstance(acceptance, dict):
+    if task_status not in {"cancelled", "interrupted"} and isinstance(acceptance, dict):
         summary["acceptance_audit"] = {
             "status": str(acceptance.get("status") or "unknown"),
             "summary": acceptance.get("summary") or {},
@@ -454,15 +454,17 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
         and isinstance(task_run.task_bundle.get("workflow_contract"), dict)
         else {}
     )
+    task_payload = _read_json(task_root / "task_run.json")
+    task_status = (
+        str((task_payload or {}).get("status") or "").strip().lower()
+        if isinstance(task_payload, dict)
+        else ""
+    )
     execution = _read_json(task_root / "workflow_execution.json")
     if not isinstance(execution, dict):
-        task_payload = _read_json(task_root / "task_run.json")
-        task_status = (
-            str((task_payload or {}).get("status") or "").strip()
-            if isinstance(task_payload, dict)
-            else ""
-        )
         execution = {"status": task_status or "prepared"}
+    elif task_status in {"cancelled", "canceled"}:
+        execution = {**execution, "status": "cancelled"}
     step_results = {
         str(item.get("step_id") or ""): item
         for item in execution.get("step_results") or []
@@ -505,9 +507,24 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
             else node
             for node in nodes
         ]
+    if task_status in {"cancelled", "canceled"}:
+        nodes = [
+            {
+                **node,
+                "status": "cancelled",
+                "status_label": _task_run_ui_status_label("cancelled"),
+            }
+            if node.get("status_label") in {"运行中", "运行失败", "等待运行"}
+            else node
+            for node in nodes
+        ]
     execution_metadata = _task_run_ui_workflow_execution_metadata(workflow)
     status = _task_run_ui_status(execution=execution, nodes=nodes)
-    failed_node = next((node for node in nodes if node.get("status_label") == "运行失败"), None)
+    failed_node = (
+        None
+        if status["status"] == "cancelled"
+        else next((node for node in nodes if node.get("status_label") == "运行失败"), None)
+    )
     running_node = next((node for node in nodes if node.get("status_label") == "运行中"), None)
     waiting_node = next((node for node in nodes if node.get("status_label") == "等待运行"), None)
     current_node = failed_node or running_node or waiting_node or (nodes[-1] if nodes else {})
@@ -925,6 +942,8 @@ def _task_run_ui_deliverables(
 
 def _task_run_ui_status(*, execution: dict[str, Any], nodes: list[dict[str, Any]]) -> dict[str, str]:
     status = str(execution.get("status") or "")
+    if status in {"cancelled", "canceled"}:
+        return {"status": "cancelled", "label": "已取消"}
     if any(node.get("status_label") == "运行失败" for node in nodes):
         return {"status": "failed", "label": "运行失败"}
     if status in {"completed", "ok", "ready", "success"}:
@@ -933,8 +952,6 @@ def _task_run_ui_status(*, execution: dict[str, Any], nodes: list[dict[str, Any]
         return {"status": "completed_empty", "label": "完成但信息不足"}
     if status in {"needs_review", "needs_rework"}:
         return {"status": status, "label": "需要复核"}
-    if status in {"cancelled", "canceled"}:
-        return {"status": "cancelled", "label": "已取消"}
     if status in {"interrupted"}:
         return {"status": "failed", "label": "运行中断"}
     if status in {"invalid", "error", "failed", "failure"}:
@@ -954,6 +971,8 @@ def _task_run_ui_status_label(status: str) -> str:
         return "需要复核"
     if normalized in {"running", "queued"}:
         return "运行中"
+    if normalized in {"cancelled", "canceled"}:
+        return "已取消"
     if normalized in {"invalid", "error", "failed", "failure", "missing"}:
         return "运行失败"
     if normalized in {"prepared", "waiting", "not_started", "idle", ""}:
@@ -1969,26 +1988,39 @@ async def _execute_task_run_background(
                 {"status": "cancelled", "ignored_before_start": True},
             )
             return
-        event_store.mark_status(task_run_id, "running", started_at=datetime.now(timezone.utc).isoformat())
+        started, _ = event_store.mark_status_unless(
+            task_run_id,
+            "running",
+            blocked_statuses={"cancelled"},
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
+        if not started:
+            event_store.append(
+                task_run_id,
+                "cancelled",
+                {"status": "cancelled", "ignored_before_start": True},
+            )
+            return
         event_store.append(task_run_id, "running", {})
         result = await asyncio.to_thread(
             _execute_task_run_with_closure,
             task_run_id=task_run_id,
             payload=payload,
         )
-        if event_store.current_status(task_run_id) == "cancelled":
+        status = str(result.get("status") or "completed")
+        updated, _ = event_store.mark_status_unless(
+            task_run_id,
+            status,
+            blocked_statuses={"cancelled"},
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        if not updated:
             event_store.append(
                 task_run_id,
                 "cancelled",
                 {"status": "cancelled", "ignored_late_result": True},
             )
             return
-        status = str(result.get("status") or "completed")
-        event_store.mark_status(
-            task_run_id,
-            status,
-            completed_at=datetime.now(timezone.utc).isoformat(),
-        )
         event_store.append(
             task_run_id,
             "completed" if status in {"completed", "ok", "ready", "success"} else "step_failed",
@@ -1997,19 +2029,24 @@ async def _execute_task_run_background(
     except Exception as exc:  # pragma: no cover - defensive path is covered through API state.
         redacted = redact_agent_diagnostic_text(str(exc))
         try:
-            event_store.mark_status(
+            updated, _ = event_store.mark_status_unless(
                 task_run_id,
                 "failed",
+                blocked_statuses={"cancelled"},
                 completed_at=datetime.now(timezone.utc).isoformat(),
                 error=redacted,
             )
             event_store.append(
                 task_run_id,
-                "step_failed",
+                "step_failed" if updated else "cancelled",
                 {
-                    "status": "failed",
-                    "error": redacted,
-                    "user_message": "工作流后台执行失败，请查看内部诊断后重试。",
+                    "status": "failed" if updated else "cancelled",
+                    "error": redacted if updated else "",
+                    "user_message": (
+                        "工作流后台执行失败，请查看内部诊断后重试。"
+                        if updated
+                        else "已取消本次工作流运行。"
+                    ),
                 },
             )
         except KeyError:
@@ -2078,7 +2115,8 @@ async def list_task_run_events(
         WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
-    items = WorkbenchTaskRunEventStore(_task_runs_dir()).list_after(
+    event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
+    items = event_store.list_after(
         task_run_id,
         after_id=after_id,
         limit=limit,
@@ -2087,6 +2125,7 @@ async def list_task_run_events(
         "task_run_id": task_run_id,
         "items": items,
         "last_event_id": max((int(item.get("event_id") or 0) for item in items), default=after_id),
+        "latest_event_id": event_store.latest_event_id(task_run_id),
     }
 
 
@@ -2691,25 +2730,130 @@ async def execute_task_run_rerun_plan(
                 "validation": validation_before,
             },
         )
+    event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
+    event_store.mark_status(task_run_id, "queued")
+    event_store.append(
+        task_run_id,
+        "queued",
+        {
+            "rerun": True,
+            "timeout_sec": payload.timeout_sec,
+            "stop_on_error": payload.stop_on_error,
+        },
+    )
     _ACTIVE_TASK_RUN_IDS.add(task_run_id)
     try:
-        execution = await asyncio.to_thread(
-            WorkbenchWorkflowRunner(_task_runs_dir()).execute_task_run,
+        started, _ = event_store.mark_status_unless(
             task_run_id,
-            timeout_sec=payload.timeout_sec,
-            stop_on_error=payload.stop_on_error,
+            "running",
+            blocked_statuses={"cancelled"},
+            started_at=datetime.now(timezone.utc).isoformat(),
+        )
+        if not started:
+            event_store.append(
+                task_run_id,
+                "cancelled",
+                {"status": "cancelled", "rerun": True, "ignored_before_start": True},
+            )
+            execution = {
+                "task_run_id": task_run_id,
+                "status": "cancelled",
+                "step_results": [],
+                "outputs": [],
+            }
+        else:
+            event_store.append(task_run_id, "running", {"rerun": True})
+            execution = await asyncio.to_thread(
+                _execute_task_run_with_closure,
+                task_run_id=task_run_id,
+                payload=payload,
+            )
+        execution_status = str(execution.get("status") or "completed")
+        updated, _ = event_store.mark_status_unless(
+            task_run_id,
+            execution_status,
+            blocked_statuses={"cancelled"},
+            completed_at=datetime.now(timezone.utc).isoformat(),
+        )
+        if not updated:
+            execution_status = "cancelled"
+            execution["status"] = "cancelled"
+        event_store.append(
+            task_run_id,
+            (
+                "cancelled"
+                if execution_status == "cancelled"
+                else "completed"
+                if execution_status in {"completed", "ok", "ready", "success"}
+                else "step_failed"
+            ),
+            {"status": execution_status, "rerun": True},
         )
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        updated, _ = event_store.mark_status_unless(
+            task_run_id,
+            "failed",
+            blocked_statuses={"cancelled"},
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            error=str(exc),
+        )
+        event_store.append(
+            task_run_id,
+            "step_failed" if updated else "cancelled",
+            {
+                "status": "failed" if updated else "cancelled",
+                "error": str(exc) if updated else "",
+                "rerun": True,
+            },
+        )
+        if updated:
+            raise HTTPException(status_code=400, detail=str(exc))
+        execution = {
+            "task_run_id": task_run_id,
+            "status": "cancelled",
+            "step_results": [],
+            "outputs": [],
+        }
+    except Exception as exc:
+        redacted = redact_agent_diagnostic_text(str(exc))
+        updated, _ = event_store.mark_status_unless(
+            task_run_id,
+            "failed",
+            blocked_statuses={"cancelled"},
+            completed_at=datetime.now(timezone.utc).isoformat(),
+            error=redacted,
+        )
+        event_store.append(
+            task_run_id,
+            "step_failed" if updated else "cancelled",
+            {
+                "status": "failed" if updated else "cancelled",
+                "error": redacted if updated else "",
+                "rerun": True,
+                "user_message": (
+                    "工作流复跑失败，请查看内部诊断后重试。"
+                    if updated
+                    else "已取消本次工作流运行。"
+                ),
+            },
+        )
+        if updated:
+            raise
+        execution = {
+            "task_run_id": task_run_id,
+            "status": "cancelled",
+            "step_results": [],
+            "outputs": [],
+        }
     finally:
         _ACTIVE_TASK_RUN_IDS.discard(task_run_id)
     refreshed_task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
-    evidence_materialization = _materialize_task_run_outputs_if_available(
-        task_run=refreshed_task_run,
-    )
+    evidence_materialization = execution.get("evidence_materialization") or {}
     task_dir = Path(refreshed_task_run.artifact_dir)
-    semantic_output_import = evidence_materialization.get("semantic_output_import") or {}
-    acceptance = _build_task_acceptance_audit(refreshed_task_run)
+    semantic_output_import = execution.get("semantic_output_import") or {}
+    acceptance = execution.get("acceptance_audit") or _build_task_acceptance_audit(
+        refreshed_task_run
+    )
     _write_json(task_dir / "task_acceptance_audit.json", acceptance)
     refreshed_plan = _read_json(Path(refreshed_task_run.artifact_dir) / "task_rerun_plan.json")
     validation_after = (
@@ -2720,7 +2864,17 @@ async def execute_task_run_rerun_plan(
     result = {
         "status": "executed",
         "validation_before": validation_before,
-        "execution": asdict(execution),
+        "execution": {
+            key: value
+            for key, value in execution.items()
+            if key
+            not in {
+                "evidence_materialization",
+                "semantic_output_import",
+                "acceptance_audit",
+                "run_ui_summary",
+            }
+        },
         "evidence_materialization": evidence_materialization,
         "semantic_output_import": semantic_output_import,
         "acceptance_audit": acceptance,

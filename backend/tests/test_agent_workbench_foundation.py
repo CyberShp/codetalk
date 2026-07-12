@@ -1,6 +1,7 @@
 import hashlib
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -672,16 +673,102 @@ def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_pa
         if line.strip()
     ]
     assert all(event.get("turn_id") == "turn_1" for event in events)
+    runtime_tmp_dir = Path(execution_input["env_hints"]["TEMP"])
+    assert runtime_tmp_dir.parent == artifact_dir
+    assert runtime_tmp_dir.name.startswith(".runtime-tmp-")
     assert execution_input["env_hints"] == {
         "CODETALK_AGENT_READONLY": "1",
         "CODETALK_REPO_PATH": str(tmp_path),
         "CODETALK_AGENT_ARTIFACT_DIR": str(artifact_dir),
+        "GIT_CONFIG_COUNT": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_KEY_0": "core.excludesFile",
+        "GIT_CONFIG_VALUE_0": "/dev/null",
+        "TEMP": str(runtime_tmp_dir),
+        "TMP": str(runtime_tmp_dir),
+        "TMPDIR": str(runtime_tmp_dir),
     }
     assert execution_input["stdin_json_sha256"]
     events = (artifact_dir / "runtime_events.jsonl").read_text(encoding="utf-8")
     assert "agent_execution_input_prepared" in events
     assert "agent_run_started" in events
     assert "agent_run_completed" in events
+
+
+def test_agent_run_harness_preserves_cancelled_transport_attempt(tmp_path):
+    import time
+
+    from app.services.agent_run_harness import AgentRunHarness
+
+    artifact_dir = tmp_path / "agent-run-cancelled"
+    harness = AgentRunHarness(artifact_dir)
+    run = harness.create_run(
+        run_id="agent_run_cancelled",
+        provider="local-python",
+        command=["python", "-c", "import time; time.sleep(10)"],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf"},
+        task_bundle={"task_id": "task-cancelled"},
+    )
+    started = time.monotonic()
+
+    executed = harness.execute_run(
+        run.run_id,
+        timeout_sec=10,
+        is_cancelled=lambda: time.monotonic() - started > 0.1,
+    )
+
+    execution_input = json.loads(
+        (artifact_dir / "execution_input.json").read_text(encoding="utf-8")
+    )
+    assert executed.status == "cancelled"
+    assert execution_input["transport_attempts"][0]["status"] == "cancelled"
+
+
+def test_codex_disables_inner_sandbox_only_inside_active_outer_sandbox():
+    from pathlib import Path
+
+    from app.services.agent_run_harness import (
+        _finalize_invocation_candidates_for_sandbox,
+        _prefer_native_macos_git_path,
+        _task_run_read_roots,
+    )
+
+    command = ["/Users/dev/.local/bin/codex", "exec", "--json"]
+
+    finalized = _finalize_invocation_candidates_for_sandbox(
+        [(command, b"prompt", "codex_exec_json", "configured")],
+        sandbox_active=True,
+    )
+    assert finalized == [(
+        [
+        "/Users/dev/.local/bin/codex",
+        "exec",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--json",
+        ],
+        b"prompt",
+        "codex_exec_json",
+        "configured",
+    )]
+    assert _finalize_invocation_candidates_for_sandbox(
+        [(command, b"", "codex_exec_json", "")], sandbox_active=False
+    )[0][0] == command
+    assert _finalize_invocation_candidates_for_sandbox(
+        [(["python", "fake_codex.py", "exec", "--json"], b"", "stdin", "")],
+        sandbox_active=True,
+    )[0][0] == ["python", "fake_codex.py", "exec", "--json"]
+    assert _task_run_read_roots(
+        Path("/tmp/task_runs/task-1/agent_runs/analyze_module")
+    ) == [Path("/tmp/task_runs/task-1").resolve()]
+    assert _task_run_read_roots(Path("/tmp/unrelated")) == []
+    native_git = Path("/native/toolchain/bin/git")
+    assert _prefer_native_macos_git_path(
+        {"PATH": "/usr/bin:/bin"},
+        platform_name="darwin",
+        native_git=native_git,
+        exists=lambda path: path == native_git,
+    )["PATH"] == "/native/toolchain/bin:/usr/bin:/bin"
 
 
 def test_agent_run_harness_decodes_noisy_gbk_output(tmp_path):
@@ -821,6 +908,121 @@ def test_agent_run_harness_uses_provider_prompt_transport_for_argv_last(
     assert execution_input["prompt_transport"] == "argv"
 
 
+def test_codex_runtime_home_links_static_inputs_and_keeps_state_in_artifacts(
+    tmp_path, monkeypatch
+):
+    from app.services.agent_run_harness import _prepare_isolated_codex_home
+
+    real_home = tmp_path / "real-codex-home"
+    real_home.mkdir()
+    for name in ("auth.json", "config.toml", "models_cache.json"):
+        (real_home / name).write_text(name, encoding="utf-8")
+    (real_home / "skills").mkdir()
+    artifact_dir = tmp_path / "agent-run"
+    artifact_dir.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(real_home))
+
+    runtime_home, read_targets = _prepare_isolated_codex_home(
+        provider="agent-runtime:default-codex",
+        command=["/usr/local/bin/codex", "exec"],
+        artifact_dir=artifact_dir,
+    )
+
+    assert runtime_home.parent == artifact_dir.resolve()
+    assert runtime_home.name.startswith(".runtime-codex-home-")
+    assert set(read_targets) == {
+        (real_home / "auth.json").resolve(),
+        (real_home / "config.toml").resolve(),
+        (real_home / "models_cache.json").resolve(),
+        (real_home / "skills").resolve(),
+    }
+    assert (runtime_home / "auth.json").is_symlink()
+    assert (runtime_home / "config.toml").is_symlink()
+    assert (runtime_home / "models_cache.json").is_symlink()
+    assert (runtime_home / "skills").is_symlink()
+
+
+def test_codex_runtime_home_does_not_reuse_workspace_controlled_symlink(
+    tmp_path, monkeypatch
+):
+    from app.services.agent_run_harness import _prepare_isolated_codex_home
+
+    real_home = tmp_path / "real-codex-home"
+    real_home.mkdir()
+    (real_home / "auth.json").write_text("{}", encoding="utf-8")
+    artifact_dir = tmp_path / "agent-run"
+    artifact_dir.mkdir()
+    host_target = tmp_path / "must-stay-read-only"
+    host_target.mkdir()
+    planted_home = artifact_dir / ".runtime-codex-home-planted"
+    planted_home.mkdir()
+    (planted_home / "sessions").symlink_to(host_target, target_is_directory=True)
+    monkeypatch.setenv("CODEX_HOME", str(real_home))
+
+    runtime_home, _ = _prepare_isolated_codex_home(
+        provider="agent-runtime:default-codex",
+        command=["codex", "exec"],
+        artifact_dir=artifact_dir,
+    )
+
+    assert runtime_home != planted_home.resolve()
+    assert not (runtime_home / "sessions").is_symlink()
+    assert (runtime_home / "sessions").resolve() != host_target.resolve()
+
+
+def test_codex_runtime_home_copies_static_inputs_when_symlinks_are_unavailable(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from app.services.agent_run_harness import _prepare_isolated_codex_home
+
+    real_home = tmp_path / "real-codex-home"
+    real_home.mkdir()
+    (real_home / "auth.json").write_text("auth", encoding="utf-8")
+    (real_home / "skills").mkdir()
+    (real_home / "skills" / "SKILL.md").write_text("skill", encoding="utf-8")
+    artifact_dir = tmp_path / "agent-run"
+    artifact_dir.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(real_home))
+
+    def reject_symlink(*_args, **_kwargs):
+        raise OSError("symlink privilege unavailable")
+
+    monkeypatch.setattr(Path, "symlink_to", reject_symlink)
+    runtime_home, _ = _prepare_isolated_codex_home(
+        provider="agent-runtime:default-codex",
+        command=["codex", "exec"],
+        artifact_dir=artifact_dir,
+    )
+
+    assert (runtime_home / "auth.json").read_text(encoding="utf-8") == "auth"
+    assert not (runtime_home / "auth.json").is_symlink()
+    assert (runtime_home / "skills" / "SKILL.md").read_text(encoding="utf-8") == "skill"
+
+
+def test_runtime_tmp_directory_is_unique_and_ignores_planted_symlinks(tmp_path):
+    from app.services.agent_run_harness import _prepare_isolated_runtime_tmp
+
+    artifact_dir = tmp_path / "agent-run"
+    artifact_dir.mkdir()
+    host_target = tmp_path / "host-target"
+    host_target.mkdir()
+    planted = artifact_dir / ".runtime-tmp-planted"
+    planted.symlink_to(host_target, target_is_directory=True)
+
+    first = _prepare_isolated_runtime_tmp(artifact_dir)
+    second = _prepare_isolated_runtime_tmp(artifact_dir)
+
+    assert first != second
+    assert first.parent == artifact_dir.resolve()
+    assert second.parent == artifact_dir.resolve()
+    assert not first.is_symlink()
+    assert not second.is_symlink()
+    assert first.resolve() != host_target.resolve()
+    assert second.resolve() != host_target.resolve()
+
+
 def test_agent_run_harness_uses_prompt_file_for_large_argv_payload(
     tmp_path, monkeypatch
 ):
@@ -872,6 +1074,9 @@ def test_agent_run_harness_uses_prompt_file_for_large_argv_payload(
     execution_input = json.loads((artifact_dir / "execution_input.json").read_text(encoding="utf-8"))
     assert execution_input["prompt_transport"] == "argv"
     assert execution_input["prompt_transport_reason"] == "large_payload_prompt_file"
+    prompt_file = Path(execution_input["env_hints"]["CODETALK_AGENT_PROMPT_FILE"])
+    assert prompt_file.parent.parent == artifact_dir
+    assert prompt_file.parent.name.startswith(".runtime-tmp-")
     assert execution_input["command"] == ["python", "-c", script, str(output_file)]
     assert execution_input["process_command"][1:-1] == execution_input["command"][1:]
 

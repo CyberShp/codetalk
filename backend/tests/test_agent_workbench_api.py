@@ -3103,6 +3103,62 @@ async def test_workbench_task_run_events_stream_yields_incremental_events_until_
     assert '"last_event_id": 4' in body
 
 
+async def test_task_run_events_exposes_global_latest_id_beyond_page_limit(
+    workbench_client,
+    tmp_path,
+):
+    from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
+
+    workflow = {
+        "id": "event_tail_workflow",
+        "name": "Event tail workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["result.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "result",
+                "type": "json",
+                "from": "discover",
+                "artifact": "result.json",
+            }
+        ],
+    }
+    assert (
+        await workbench_client.post("/api/workbench/workflows", json=workflow)
+    ).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": workflow["id"],
+            "workspace_id": "ws-event-tail",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvmf"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    store = WorkbenchTaskRunEventStore(settings.data_path / "workbench" / "task_runs")
+    for index in range(205):
+        store.append(task_run_id, "running", {"index": index})
+
+    response = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/events",
+        params={"limit": 2},
+    )
+
+    assert response.status_code == 200
+    assert len(response.json()["items"]) == 2
+    assert response.json()["last_event_id"] == 2
+    assert response.json()["latest_event_id"] == 205
+
+
 async def test_workbench_task_run_cancel_running_execution_keeps_cancelled_status(
     workbench_client,
     tmp_path,
@@ -3158,13 +3214,168 @@ async def test_workbench_task_run_cancel_running_execution_keeps_cancelled_statu
     assert cancelled.json()["status"] == "cancelled"
     await asyncio.sleep(0.8)
 
+    task_dir = _task_run_dir(task_run_id)
+    (task_dir / "workflow_execution.json").write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "step_results": [
+                    {
+                        "step_id": "discover",
+                        "type": "agent_task",
+                        "status": "error",
+                        "error": "agent run cancelled by user",
+                    }
+                ],
+                "outputs": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
     loaded = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}")
     assert loaded.status_code == 200
     assert loaded.json()["status"] == "cancelled"
     assert loaded.json()["run_ui_summary"]["status_label"] == "已取消"
+    assert loaded.json()["run_ui_summary"]["failure"]["reasons"] == []
     events = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/events")
     assert events.status_code == 200
     assert "cancelled" in [item["event_type"] for item in events.json()["items"]]
+
+
+async def test_workbench_cancelled_status_survives_late_background_exception(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.api import agent_workbench
+
+    workflow = {
+        "id": "cancel_late_exception_workflow",
+        "name": "Cancel late exception workflow",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [
+            {
+                "id": "discover",
+                "type": "agent_task",
+                "provider": "local-python",
+                "required_artifacts": ["result.json"],
+            }
+        ],
+        "outputs": [
+            {
+                "id": "result",
+                "type": "json",
+                "from": "discover",
+                "artifact": "result.json",
+            }
+        ],
+    }
+    assert (
+        await workbench_client.post("/api/workbench/workflows", json=workflow)
+    ).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": workflow["id"],
+            "workspace_id": "ws-cancel-late-exception",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvmf"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+
+    def fail_after_cancel(**_kwargs):
+        time.sleep(0.2)
+        raise RuntimeError("late worker failure")
+
+    monkeypatch.setattr(
+        agent_workbench,
+        "_execute_task_run_with_closure",
+        fail_after_cancel,
+    )
+    scheduled = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/execute",
+        json={"timeout_sec": 10},
+    )
+    assert scheduled.status_code == 202
+    await _wait_for_task_run_status(
+        workbench_client,
+        task_run_id,
+        terminal_statuses={"running"},
+    )
+    cancelled = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/cancel"
+    )
+    assert cancelled.status_code == 200
+    await asyncio.sleep(0.3)
+
+    loaded = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}")
+    assert loaded.json()["status"] == "cancelled"
+    events = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/events"
+    )
+    assert events.json()["items"][-1]["event_type"] == "cancelled"
+
+
+async def test_task_run_ui_summary_prioritizes_cancelled_status_over_stale_failure(tmp_path):
+    from types import SimpleNamespace
+
+    from app.api.agent_workbench import (
+        _build_task_run_ui_summary,
+        _public_task_run_runtime_summary,
+    )
+
+    task_root = tmp_path / "task_run_cancelled"
+    task_root.mkdir()
+    (task_root / "task_run.json").write_text(
+        json.dumps({"status": "cancelled", "runtime": {"status": "cancelled"}}),
+        encoding="utf-8",
+    )
+    (task_root / "workflow_execution.json").write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "step_results": [
+                    {
+                        "step_id": "discover",
+                        "type": "agent_task",
+                        "status": "error",
+                        "error": "agent run cancelled by user",
+                    }
+                ],
+                "outputs": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (task_root / "task_acceptance_audit.json").write_text(
+        json.dumps(
+            {
+                "status": "incomplete",
+                "summary": {"missing_required": 14},
+            }
+        ),
+        encoding="utf-8",
+    )
+    task_run = SimpleNamespace(
+        workflow_id="cancel_agent_workflow",
+        workflow_snapshot={
+            "id": "cancel_agent_workflow",
+            "name": "Cancel agent workflow",
+            "steps": [{"id": "discover", "type": "agent_task"}],
+        },
+        task_bundle={"workflow_contract": {"outputs": []}},
+    )
+
+    summary = _build_task_run_ui_summary(task_run, task_root)
+
+    assert summary["status"] == "cancelled"
+    assert summary["status_label"] == "已取消"
+    assert summary["current_node"]["status_label"] == "已取消"
+    assert summary["failure"]["reasons"] == []
+    assert "acceptance_audit" not in _public_task_run_runtime_summary(task_root)
 
 
 async def test_workbench_task_run_reconcile_marks_queued_and_running_as_interrupted(tmp_path):
@@ -3206,6 +3417,30 @@ async def test_workbench_task_run_reconcile_marks_queued_and_running_as_interrup
         assert events[-1]["event_type"] == "step_failed"
         assert events[-1]["payload"]["kind"] == "service_restart_interrupted"
     assert store.current_status("task_run_completed") == "completed"
+
+
+async def test_task_run_status_cas_preserves_cancelled_terminal_state(tmp_path):
+    from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
+
+    root = tmp_path / "task_runs"
+    task_dir = root / "task_run_cancelled_cas"
+    task_dir.mkdir(parents=True)
+    (task_dir / "task_run.json").write_text(
+        json.dumps({"status": "cancelled", "runtime": {"status": "cancelled"}}),
+        encoding="utf-8",
+    )
+    store = WorkbenchTaskRunEventStore(root)
+
+    updated, payload = store.mark_status_unless(
+        "task_run_cancelled_cas",
+        "failed",
+        blocked_statuses={"cancelled"},
+        error="late worker failure",
+    )
+
+    assert updated is False
+    assert payload["status"] == "cancelled"
+    assert store.current_status("task_run_cancelled_cas") == "cancelled"
 
 
 async def test_workbench_task_run_materialize_workflow_outputs_api(
@@ -6047,6 +6282,10 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
         task_run_id,
         timeout_sec=10,
     )
+    events_before_rerun = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/events?limit=200"
+    )
+    last_event_id_before_rerun = events_before_rerun.json()["items"][-1]["event_id"]
     rerun_response = await workbench_client.post(
         f"/api/workbench/task-runs/{task_run_id}/rerun-plan/execute",
         json={"timeout_sec": 10},
@@ -6063,6 +6302,16 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
     assert rerun["acceptance_audit"]["status"] == "incomplete"
     assert rerun["acceptance_audit"]["summary"]["missing_required"] > 0
     assert rerun["validation_after"]["status"] == "ready"
+    rerun_events_response = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/events"
+        f"?after_id={last_event_id_before_rerun}&limit=200"
+    )
+    rerun_events = rerun_events_response.json()["items"]
+    assert rerun_events
+    assert rerun_events[0]["event_type"] == "queued"
+    assert any(item["event_type"] == "running" for item in rerun_events)
+    assert any(item["event_type"] == "step_started" for item in rerun_events)
+    assert rerun_events[-1]["event_type"] == "step_failed"
     artifacts_after_rerun = await workbench_client.get(
         f"/api/workbench/task-runs/{task_run_id}/artifacts"
     )
@@ -8230,6 +8479,79 @@ async def test_workbench_task_run_acceptance_audit_rejects_active_execution(
         f"/api/workbench/task-runs/{task_run_id}/acceptance-audit"
     )
     assert after_exit.status_code == 200
+
+
+async def test_rerun_cancelled_during_late_exception_returns_cancelled_result(
+    workbench_client,
+    tmp_path,
+    monkeypatch,
+):
+    from app.api import agent_workbench as workbench_api
+    from app.config import settings
+    from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
+
+    script_path = tmp_path / "rerun_initial_failure.py"
+    script_path.write_text("raise SystemExit(3)\n", encoding="utf-8")
+    monkeypatch.setattr(settings, "external_agent_custom_providers", [
+        {"id": "rerun-late-failure", "command": f"python {script_path}"}
+    ])
+    workflow = {
+        "id": "rerun_cancelled_late_exception",
+        "name": "Rerun cancelled late exception",
+        "version": 1,
+        "inputs": [{"id": "module", "type": "free_text"}],
+        "steps": [{
+            "id": "collect",
+            "type": "agent_task",
+            "provider": "rerun-late-failure",
+            "required_artifacts": ["result.json"],
+        }],
+        "outputs": [{
+            "id": "result",
+            "type": "json",
+            "from": "collect",
+            "artifact": "result.json",
+        }],
+    }
+    assert (await workbench_client.post("/api/workbench/workflows", json=workflow)).status_code == 201
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": workflow["id"],
+            "workspace_id": "ws-rerun-cancelled",
+            "repo_path": str(tmp_path),
+            "inputs": {"module": "nvme-tcp-tls"},
+        },
+    )
+    task_run_id = prepared.json()["task_run_id"]
+    await _execute_task_run_and_wait(workbench_client, task_run_id, timeout_sec=10)
+
+    def cancelled_late_failure(*, task_run_id: str, payload):
+        WorkbenchTaskRunEventStore(workbench_api._task_runs_dir()).mark_status(
+            task_run_id,
+            "cancelled",
+        )
+        raise RuntimeError("late worker failure")
+
+    monkeypatch.setattr(
+        workbench_api,
+        "_execute_task_run_with_closure",
+        cancelled_late_failure,
+    )
+    response = await workbench_client.post(
+        f"/api/workbench/task-runs/{task_run_id}/rerun-plan/execute",
+        json={"timeout_sec": 10},
+    )
+
+    assert response.status_code == 200
+    result = response.json()
+    assert result["execution"]["status"] == "cancelled"
+    assert result["run_ui_summary"]["status"] == "cancelled"
+    history = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/rerun-plan/history"
+    )
+    assert history.json()["count"] == 1
+    assert history.json()["records"][0]["execution"]["status"] == "cancelled"
 
 
 async def test_workbench_task_run_acceptance_audit_flags_invalid_workflow_output(

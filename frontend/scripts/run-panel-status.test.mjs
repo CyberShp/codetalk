@@ -27,3 +27,14 @@ test("hard execution failures remain failures", () => {
     "失败",
   );
 });
+
+test("cancelled runs remain a distinct terminal state", () => {
+  assert.equal(
+    deriveRunPanelStatus({
+      hasPreparedRun: true,
+      activeStatusLabel: "已取消",
+      workflowStatus: "failed",
+    }),
+    "已取消",
+  );
+});

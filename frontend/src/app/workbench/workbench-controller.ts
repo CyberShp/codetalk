@@ -33,6 +33,7 @@ export function useWorkbenchController({
   const startTaskRunPollingRef = useRef<(taskRunId: string) => void>(() => undefined);
   const taskRunEventSourceRef = useRef<EventSource | null>(null);
   const taskRunPollingIdRef = useRef<string | null>(null);
+  const taskRunPollingGenerationRef = useRef(0);
   const paletteDragModuleRef = useRef<string | null>(null);
   const palettePointerDragRef = useRef<{
     moduleId: string;
@@ -244,6 +245,7 @@ export function useWorkbenchController({
 
   useEffect(
     () => () => {
+      taskRunPollingGenerationRef.current += 1;
       taskRunPollingIdRef.current = null;
       taskRunEventSourceRef.current?.close();
       taskRunEventSourceRef.current = null;
@@ -694,6 +696,12 @@ export function useWorkbenchController({
     if (!label && !message) return null;
     return { label, message, subject };
   }, [activeRunUiSummary]);
+  const runIsCancelled =
+    activeRunUiSummary?.status === "cancelled" ||
+    (preparedRun ? taskRunRuntimeStatus(preparedRun) === "cancelled" : false);
+  const visibleTaskAcceptanceAudit = runIsCancelled
+    ? null
+    : taskAcceptanceAudit;
   const runPhaseCards = useMemo(
     () => {
       if (activeRunUiSummary?.nodes?.length) {
@@ -740,12 +748,12 @@ export function useWorkbenchController({
         },
         {
           label: "校验证据",
-          status: taskAcceptanceAudit
-            ? runStatusDisplayLabel(taskAcceptanceAudit.status)
+          status: visibleTaskAcceptanceAudit
+            ? runStatusDisplayLabel(visibleTaskAcceptanceAudit.status)
             : workflowExecution?.evidence_materialization?.status ??
               (preparedRun ? "待审计" : "等待"),
-          detail: taskAcceptanceAudit
-            ? `缺少 ${taskAcceptanceAudit.summary.missing_required} 个必需验收项`
+          detail: visibleTaskAcceptanceAudit
+            ? `缺少 ${visibleTaskAcceptanceAudit.summary.missing_required} 个必需验收项`
             : "等待校验 schema、证据和脱敏",
         },
         {
@@ -766,7 +774,7 @@ export function useWorkbenchController({
       repoPath,
       selectedRunMcpProfile,
       selectedRunProvider,
-      taskAcceptanceAudit,
+      visibleTaskAcceptanceAudit,
       workflowExecution,
       workflowOutputMaterialize,
     ],
@@ -775,21 +783,23 @@ export function useWorkbenchController({
     () => groupArtifactsByAudience(artifactManifest?.artifacts ?? []),
     [artifactManifest],
   );
-  const testActivityQuality = workflowExecution?.test_activity_quality;
+  const testActivityQuality = runIsCancelled
+    ? undefined
+    : workflowExecution?.test_activity_quality;
   const runPanelStatus = useMemo(
     () =>
       deriveRunPanelStatus({
         hasPreparedRun: Boolean(preparedRun),
         activeStatusLabel: activeRunUiSummary?.status_label,
         testActivityStatus: testActivityQuality?.status,
-        acceptanceStatus: taskAcceptanceAudit?.status,
-        missingRequired: taskAcceptanceAudit?.summary.missing_required,
+        acceptanceStatus: visibleTaskAcceptanceAudit?.status,
+        missingRequired: visibleTaskAcceptanceAudit?.summary.missing_required,
         workflowStatus: workflowExecution?.status,
         hasMaterializedOutput: Boolean(workflowOutputMaterialize?.status),
       }),
     [
       preparedRun,
-      taskAcceptanceAudit,
+      visibleTaskAcceptanceAudit,
       workflowExecution,
       workflowOutputMaterialize,
       activeRunUiSummary,
@@ -797,6 +807,7 @@ export function useWorkbenchController({
     ],
   );
   const runPanelFailureReasons = useMemo(() => {
+    if (runIsCancelled) return [];
     const summaryReasons = activeRunUiSummary?.failure?.reasons ?? [];
     if (summaryReasons.length > 0) {
       return Array.from(new Set(summaryReasons.map(compactReasonLabel))).slice(0, 5);
@@ -826,18 +837,18 @@ export function useWorkbenchController({
         reasons.push(item);
       });
     }
-    const missingRequired = taskAcceptanceAudit?.summary.missing_required ?? 0;
+    const missingRequired = visibleTaskAcceptanceAudit?.summary.missing_required ?? 0;
     if (missingRequired > 0) {
       reasons.push(`缺少 ${missingRequired} 个必需验收项`);
     }
-    taskAcceptanceAudit?.missing_required
+    visibleTaskAcceptanceAudit?.missing_required
       .map((issue) => acceptanceIssueLabel(issue))
       .filter(Boolean)
       .forEach((reason) => reasons.push(reason));
     preparedProviderReadiness?.blockingReasons
       .map(compactReasonLabel)
       .forEach((reason) => reasons.push(reason));
-    if (!taskAcceptanceAudit && preparedProviderReadiness?.warnings.length) {
+    if (!visibleTaskAcceptanceAudit && preparedProviderReadiness?.warnings.length) {
       preparedProviderReadiness.warnings
         .slice(0, 3)
         .map(compactReasonLabel)
@@ -847,7 +858,8 @@ export function useWorkbenchController({
   }, [
     activeRunUiSummary,
     preparedProviderReadiness,
-    taskAcceptanceAudit,
+    runIsCancelled,
+    visibleTaskAcceptanceAudit,
     testActivityQuality,
     workflowExecution,
   ]);
@@ -979,6 +991,7 @@ export function useWorkbenchController({
     const runningIndex = runPhaseCards.findIndex(
       (phase) => runStatusDisplayLabel(phase.status) === "进行中",
     );
+    const activeProgressCredit = runningIndex >= 0 ? 0.5 : 0;
     const currentIndex =
       failedIndex >= 0
         ? failedIndex
@@ -989,7 +1002,7 @@ export function useWorkbenchController({
     return {
       completed,
       currentIndex,
-      percent: Math.round((completed / total) * 100),
+      percent: Math.round(((completed + activeProgressCredit) / total) * 100),
       total,
     };
   }, [runPhaseCards]);
@@ -2359,6 +2372,23 @@ export function useWorkbenchController({
     return `工作流执行${status} · 任务 ${run.task_run_id}`;
   }
 
+  function taskRerunSettledMessage(
+    result: TaskRerunExecutionResult,
+    taskRunId: string,
+  ): string {
+    const status = String(result.execution?.status || result.status || "").toLowerCase();
+    if (["failed", "error", "invalid"].includes(status)) {
+      return `工作流复跑失败 · 任务 ${taskRunId}`;
+    }
+    if (status === "cancelled") {
+      return `工作流复跑已取消 · 任务 ${taskRunId}`;
+    }
+    if (["needs_rework", "needs_review", "completed_empty"].includes(status)) {
+      return `工作流复跑已结束，结果需要复核 · 任务 ${taskRunId}`;
+    }
+    return `工作流复跑已完成 · 任务 ${taskRunId}`;
+  }
+
   function mergePreparedRunSummary(
     taskRunId: string,
     runUiSummary: PreparedWorkbenchTaskRun["run_ui_summary"] | null | undefined,
@@ -2410,12 +2440,17 @@ export function useWorkbenchController({
     };
   }
 
-  function markTaskRunSubmitted(run: PreparedWorkbenchTaskRun) {
+  function markTaskRunSubmitted(
+    run: PreparedWorkbenchTaskRun,
+    options: { startPolling?: boolean } = {},
+  ) {
     const summary = submittedTaskRunSummary(run);
     setTaskRunEvents([]);
     mergePreparedRunSummary(run.task_run_id, summary);
     setMessage(`工作流已提交后台运行 · 任务 ${run.task_run_id}`);
-    startTaskRunPollingRef.current(run.task_run_id);
+    if (options.startPolling !== false) {
+      startTaskRunPollingRef.current(run.task_run_id);
+    }
   }
 
   function mergeTaskRunEvents(items: WorkbenchTaskRunEvent[]) {
@@ -2429,9 +2464,28 @@ export function useWorkbenchController({
     });
   }
 
-  function startTaskRunEventStream(taskRunId: string, afterEventId = 0): boolean {
+  function ownsTaskRunPolling(taskRunId: string, generation: number): boolean {
+    return (
+      taskRunPollingIdRef.current === taskRunId &&
+      taskRunPollingGenerationRef.current === generation
+    );
+  }
+
+  function stopTaskRunPolling(taskRunId?: string) {
+    if (taskRunId && taskRunPollingIdRef.current !== taskRunId) return;
+    taskRunPollingGenerationRef.current += 1;
+    taskRunPollingIdRef.current = null;
+    taskRunEventSourceRef.current?.close();
+    taskRunEventSourceRef.current = null;
+  }
+
+  function startTaskRunEventStream(
+    taskRunId: string,
+    afterEventId: number,
+    generation: number,
+  ): EventSource | null {
     if (typeof window === "undefined" || typeof EventSource === "undefined") {
-      return false;
+      return null;
     }
     taskRunEventSourceRef.current?.close();
     const query = new URLSearchParams({
@@ -2444,6 +2498,7 @@ export function useWorkbenchController({
     );
     taskRunEventSourceRef.current = source;
     source.addEventListener("task_run_event", (message) => {
+      if (!ownsTaskRunPolling(taskRunId, generation)) return;
       try {
         const event = JSON.parse((message as MessageEvent).data) as WorkbenchTaskRunEvent;
         mergeTaskRunEvents([event]);
@@ -2452,13 +2507,21 @@ export function useWorkbenchController({
       }
     });
     source.addEventListener("task_run_done", (message) => {
+      if (!ownsTaskRunPolling(taskRunId, generation)) {
+        source.close();
+        return;
+      }
       try {
         const payload = JSON.parse((message as MessageEvent).data) as {
           last_event_id?: number;
         };
-        void refreshTaskRunRuntime(taskRunId, Number(payload.last_event_id ?? 0));
+        void refreshTaskRunRuntime(
+          taskRunId,
+          Number(payload.last_event_id ?? 0),
+          generation,
+        );
       } catch {
-        void refreshTaskRunRuntime(taskRunId);
+        void refreshTaskRunRuntime(taskRunId, 0, generation);
       } finally {
         source.close();
         if (taskRunEventSourceRef.current === source) {
@@ -2472,13 +2535,19 @@ export function useWorkbenchController({
         taskRunEventSourceRef.current = null;
       }
     };
-    return true;
+    return source;
   }
 
   async function refreshTaskRunRuntime(
     taskRunId: string,
     afterEventId = 0,
-  ): Promise<{ run: PreparedWorkbenchTaskRun; lastEventId: number }> {
+    generation?: number,
+  ): Promise<{
+    run: PreparedWorkbenchTaskRun;
+    lastEventId: number;
+    owned: boolean;
+    sawActiveEvent: boolean;
+  }> {
     const [events, run] = await Promise.all([
       api.workbench.taskRuns.events(taskRunId, {
         after_id: afterEventId,
@@ -2486,6 +2555,14 @@ export function useWorkbenchController({
       }),
       api.workbench.taskRuns.get(taskRunId),
     ]);
+    if (generation !== undefined && !ownsTaskRunPolling(taskRunId, generation)) {
+      return {
+        run,
+        lastEventId: events.last_event_id,
+        owned: false,
+        sawActiveEvent: false,
+      };
+    }
     mergeTaskRunEvents(events.items);
     setPreparedRun(run);
     setTaskRuns((current) =>
@@ -2495,47 +2572,90 @@ export function useWorkbenchController({
       ].slice(0, 10),
     );
     mergePreparedRunSummary(taskRunId, run.run_ui_summary);
-    return { run, lastEventId: events.last_event_id };
+    return {
+      run,
+      lastEventId: events.last_event_id,
+      owned: true,
+      sawActiveEvent: events.items.some((item) =>
+        ["queued", "running", "step_started"].includes(item.event_type),
+      ),
+    };
   }
 
-  async function pollTaskRunUntilSettled(taskRunId: string) {
-    let cursor = 0;
+  async function pollTaskRunUntilSettled(
+    taskRunId: string,
+    generation: number,
+    options: { afterEventId?: number; requireActivity?: boolean } = {},
+  ) {
+    let cursor = options.afterEventId ?? 0;
+    let activitySeen = options.requireActivity !== true;
     let lastRun: PreparedWorkbenchTaskRun | null = null;
-    while (taskRunPollingIdRef.current === taskRunId) {
-      const result = await refreshTaskRunRuntime(taskRunId, cursor);
+    while (ownsTaskRunPolling(taskRunId, generation)) {
+      const result = await refreshTaskRunRuntime(taskRunId, cursor, generation);
+      if (!result.owned || !ownsTaskRunPolling(taskRunId, generation)) return;
       cursor = result.lastEventId;
+      activitySeen = activitySeen || result.sawActiveEvent;
       lastRun = result.run;
-      if (!isTaskRunActiveStatus(taskRunRuntimeStatus(result.run))) {
+      if (
+        activitySeen &&
+        !isTaskRunActiveStatus(taskRunRuntimeStatus(result.run))
+      ) {
         break;
       }
       await new Promise((resolve) => window.setTimeout(resolve, 700));
+      if (!ownsTaskRunPolling(taskRunId, generation)) return;
     }
     if (lastRun && !isTaskRunActiveStatus(taskRunRuntimeStatus(lastRun))) {
-      await restoreTaskRun(taskRunId);
+      if (!ownsTaskRunPolling(taskRunId, generation)) return;
+      await restoreTaskRun(taskRunId, workspaces, {
+        preserveDraft: true,
+        pollGeneration: generation,
+      });
     }
   }
 
-  function startTaskRunPolling(taskRunId: string) {
+  function startTaskRunPolling(
+    taskRunId: string,
+    options: {
+      restart?: boolean;
+      afterEventId?: number;
+      requireActivity?: boolean;
+    } = {},
+  ) {
+    if (taskRunPollingIdRef.current === taskRunId && !options.restart) return;
+    taskRunPollingGenerationRef.current += 1;
+    const generation = taskRunPollingGenerationRef.current;
     taskRunPollingIdRef.current = taskRunId;
     void (async () => {
-      startTaskRunEventStream(taskRunId);
+      const source = startTaskRunEventStream(
+        taskRunId,
+        options.afterEventId ?? 0,
+        generation,
+      );
       try {
-        await pollTaskRunUntilSettled(taskRunId);
+        await pollTaskRunUntilSettled(taskRunId, generation, options);
+        if (!ownsTaskRunPolling(taskRunId, generation)) return;
         const run = await api.workbench.taskRuns.get(taskRunId);
+        if (!ownsTaskRunPolling(taskRunId, generation)) return;
         setPreparedRun(run);
         setMessage(taskRunSettledMessage(run));
-        setTaskRerunPlanValidation(
-          await api.workbench.taskRuns.rerunPlanValidation(taskRunId),
-        );
+        const validation = await api.workbench.taskRuns.rerunPlanValidation(taskRunId);
+        if (!ownsTaskRunPolling(taskRunId, generation)) return;
+        setTaskRerunPlanValidation(validation);
         await loadWorkflows();
+        if (!ownsTaskRunPolling(taskRunId, generation)) return;
       } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : "刷新任务状态失败");
+        if (ownsTaskRunPolling(taskRunId, generation)) {
+          setError(err instanceof Error ? err.message : "刷新任务状态失败");
+        }
       } finally {
-        if (taskRunPollingIdRef.current === taskRunId) {
+        if (ownsTaskRunPolling(taskRunId, generation)) {
           taskRunPollingIdRef.current = null;
         }
-        taskRunEventSourceRef.current?.close();
-        taskRunEventSourceRef.current = null;
+        source?.close();
+        if (taskRunEventSourceRef.current === source) {
+          taskRunEventSourceRef.current = null;
+        }
       }
     })();
   }
@@ -2544,27 +2664,34 @@ export function useWorkbenchController({
   async function restoreTaskRun(
     taskRunId: string,
     availableWorkspaces: Workspace[] = workspaces,
+    options: { preserveDraft?: boolean; pollGeneration?: number } = {},
   ) {
     const [run, manifest, events] = await Promise.all([
       api.workbench.taskRuns.get(taskRunId),
       api.workbench.taskRuns.artifacts(taskRunId),
       api.workbench.taskRuns.events(taskRunId),
     ]);
-    selectedWorkflowIdRef.current = run.workflow_id;
-    setSelectedWorkflowId(run.workflow_id);
-    setWorkspaceId(run.workspace_id);
+    if (
+      options.pollGeneration !== undefined &&
+      !ownsTaskRunPolling(taskRunId, options.pollGeneration)
+    ) return;
     const restoredWorkspace = availableWorkspaces.find(
       (workspace) => workspace.id === run.workspace_id,
     );
     const restoredRepoPath = restoredWorkspace?.repo_path ?? "";
-    setRepoPath(restoredRepoPath);
-    setInputsJson(
-      pretty({
-        ...(run.input_snapshot ?? {}),
-        ...(restoredRepoPath ? { repo_path: restoredRepoPath } : {}),
-      }),
-    );
-    setProviderOverride(run.agent_runs.find((item) => item.provider)?.provider ?? "");
+    if (!options.preserveDraft) {
+      selectedWorkflowIdRef.current = run.workflow_id;
+      setSelectedWorkflowId(run.workflow_id);
+      setWorkspaceId(run.workspace_id);
+      setRepoPath(restoredRepoPath);
+      setInputsJson(
+        pretty({
+          ...(run.input_snapshot ?? {}),
+          ...(restoredRepoPath ? { repo_path: restoredRepoPath } : {}),
+        }),
+      );
+      setProviderOverride(run.agent_runs.find((item) => item.provider)?.provider ?? "");
+    }
     setPreparedRun(run);
     setArtifactManifest(manifest);
     setTaskRunEvents(events.items);
@@ -2596,6 +2723,10 @@ export function useWorkbenchController({
           taskRunId,
           "workflow_execution.json",
         );
+        if (
+          options.pollGeneration !== undefined &&
+          !ownsTaskRunPolling(taskRunId, options.pollGeneration)
+        ) return;
         const parsed = JSON.parse(
           content.content || "{}",
         ) as WorkflowExecutionResult;
@@ -2605,6 +2736,10 @@ export function useWorkbenchController({
         );
       } catch {
         // Keep restoring the acceptance audit and other valid artifacts.
+        if (
+          options.pollGeneration !== undefined &&
+          !ownsTaskRunPolling(taskRunId, options.pollGeneration)
+        ) return;
         setWorkflowExecution(null);
         setTaskRerunPlan(null);
       }
@@ -2614,6 +2749,10 @@ export function useWorkbenchController({
         taskRunId,
         "workflow_output_materialization.json",
       );
+      if (
+        options.pollGeneration !== undefined &&
+        !ownsTaskRunPolling(taskRunId, options.pollGeneration)
+      ) return;
       const parsed = JSON.parse(
         content.content || "{}",
       ) as MaterializeWorkflowOutputsResult;
@@ -2624,6 +2763,10 @@ export function useWorkbenchController({
         taskRunId,
         "semantic_output_import.json",
       );
+      if (
+        options.pollGeneration !== undefined &&
+        !ownsTaskRunPolling(taskRunId, options.pollGeneration)
+      ) return;
       const parsed = JSON.parse(content.content || "{}") as {
         result?: SemanticCaseImportResult;
       };
@@ -2635,6 +2778,10 @@ export function useWorkbenchController({
         api.workbench.taskRuns.rerunPlanValidation(taskRunId),
         api.workbench.taskRuns.rerunHistory(taskRunId),
       ]);
+      if (
+        options.pollGeneration !== undefined &&
+        !ownsTaskRunPolling(taskRunId, options.pollGeneration)
+      ) return;
       setTaskRerunPlan(plan);
       setTaskRerunPlanValidation(validation);
       setTaskRerunHistory(history);
@@ -2644,6 +2791,10 @@ export function useWorkbenchController({
         taskRunId,
         "task_acceptance_audit.json",
       );
+      if (
+        options.pollGeneration !== undefined &&
+        !ownsTaskRunPolling(taskRunId, options.pollGeneration)
+      ) return;
       const parsed = JSON.parse(
         content.content || "{}",
       ) as WorkbenchAcceptanceAudit;
@@ -3186,6 +3337,7 @@ export function useWorkbenchController({
 
   const restoreExistingTaskRun = (taskRunId: string) =>
     runAction(`restore-task-run-${taskRunId}`, async () => {
+      stopTaskRunPolling();
       await restoreTaskRun(taskRunId);
       setMessage(`任务已恢复 · ${taskRunId}`);
     });
@@ -3535,51 +3687,42 @@ export function useWorkbenchController({
   const executeTaskRerunPlan = () =>
     runAction("execute-rerun-plan", async () => {
       if (!preparedRun || !taskRerunPlanValidation?.can_rerun) return;
-      const result = await api.workbench.taskRuns.executeRerunPlan(
-        preparedRun.task_run_id,
-        undefined,
+      const taskRun = preparedRun;
+      const eventTail = await api.workbench.taskRuns.events(
+        taskRun.task_run_id,
+        { after_id: 0, limit: 1 },
+      );
+      const lastEventId = eventTail.latest_event_id;
+      markTaskRunSubmitted(taskRun, { startPolling: false });
+      const rerunRequest = api.workbench.taskRuns.executeRerunPlan(
+        taskRun.task_run_id,
+        0,
         true,
       );
+      startTaskRunPolling(taskRun.task_run_id, {
+        restart: true,
+        afterEventId: lastEventId,
+        requireActivity: true,
+      });
+      let result: TaskRerunExecutionResult;
+      try {
+        result = await rerunRequest;
+      } finally {
+        stopTaskRunPolling(taskRun.task_run_id);
+      }
       setTaskRerunExecution(result);
-      if (result.execution) {
-        setWorkflowExecution({
-          ...result.execution,
-          evidence_materialization:
-            result.evidence_materialization ??
-            result.execution.evidence_materialization,
-          semantic_output_import:
-            result.semantic_output_import ??
-            result.execution.semantic_output_import,
-          acceptance_audit:
-            result.acceptance_audit ?? result.execution.acceptance_audit,
-          run_ui_summary:
-            result.run_ui_summary ?? result.execution.run_ui_summary,
-        });
-        mergePreparedRunSummary(
-          preparedRun.task_run_id,
-          result.run_ui_summary ?? result.execution.run_ui_summary,
-        );
-        setTaskRerunPlan(
-          (result.execution.rerun_plan as TaskRerunPlan | undefined) ?? null,
-        );
+      setWorkflowExecution(result.execution ?? null);
+      if (result.validation_after) {
+        setTaskRerunPlanValidation(result.validation_after);
       }
       setWorkflowOutputMaterialize(result.evidence_materialization ?? null);
       setSemanticOutputImport(result.semantic_output_import ?? null);
-      setTaskRerunPlanValidation(result.validation_after ?? null);
-      setTaskRerunHistory(
-        await api.workbench.taskRuns.rerunHistory(preparedRun.task_run_id),
-      );
       setTaskAcceptanceAudit(result.acceptance_audit ?? null);
-      await refreshArtifactManifest(preparedRun.task_run_id);
-      setMessage(
-        workflowRunResultMessage("复跑执行", {
-          status: result.execution?.status ?? result.status,
-          task_run_id: preparedRun.task_run_id,
-          evidence_materialization: result.evidence_materialization,
-          semantic_output_import: result.semantic_output_import,
-          acceptance_audit: result.acceptance_audit,
-        }),
-      );
+      mergePreparedRunSummary(taskRun.task_run_id, result.run_ui_summary);
+      await restoreTaskRun(taskRun.task_run_id, workspaces, { preserveDraft: true });
+      const history = await api.workbench.taskRuns.rerunHistory(taskRun.task_run_id);
+      setTaskRerunHistory(history);
+      setMessage(taskRerunSettledMessage(result, taskRun.task_run_id));
     });
 
   const previewArtifact = (relativePath: string) =>
@@ -3613,7 +3756,6 @@ export function useWorkbenchController({
       setTaskRerunPlanValidation(null);
       setTaskAcceptanceAudit(result.acceptance_audit ?? null);
       setMessage(workflowRunResultMessage("工作流执行", result));
-      startTaskRunPolling(taskRun.task_run_id);
     });
 
   const materializePreparedWorkflowOutputs = () =>
@@ -3857,7 +3999,7 @@ export function useWorkbenchController({
     setMemoryQuery, setNewWorkflowInputId, setNewWorkflowInputName, setNewWorkflowInputResolver, setNewWorkflowInputType, setNewWorkflowOutputArtifact, setNewWorkflowOutputId, setNewWorkflowOutputName,
     setNewWorkflowOutputType, setProviderOverride, setSelectedPresetId, setSelectedWorkflowId, setSemanticFeature, setSemanticFile, setSemanticJson, setSemanticLines,
     setSemanticModule, setSemanticQuery, smokeE2EResult, startPalettePointerDrag, startWorkflowBoardPan, startWorkflowConnectionDrag, startWorkflowNodeDrag, systemAudit,
-    taskAcceptanceAudit, taskRerunExecution, taskRerunHistory, taskRerunPlan, taskRerunPlanValidation, taskRunActionBusy, taskRunEventDetail, taskRunEventTitle,
+    taskAcceptanceAudit: visibleTaskAcceptanceAudit, taskRerunExecution, taskRerunHistory, taskRerunPlan, taskRerunPlanValidation, taskRunActionBusy, taskRunEventDetail, taskRunEventTitle,
     taskRunEventTone, taskRunEvents, taskRunRuntimeStatus, taskRuns, testActivityQuality, uniqueWorkflowStrings, updateActiveWorkflowNodeConfig, updatePrepareInput,
     updateWorkflowJsonDraft, uploadPrepareInputFile, validatePreparedAgentRun, validationResults, visibleBuilderSkillOptions, visibleDeliveryArtifacts, visibleTaskRunEvents, visibleWorkflowCanvasEdges,
     visibleWorkflowInputs, workbenchRootRef, workflowAuditWarningLabel, workflowBoardRef, workflowCanvasInnerRef, workflowCanvasNodes, workflowDisplayName, workflowDraftAuditSummary,

@@ -54,7 +54,11 @@ EVIDENCE_CARDS_SCHEMA: dict[str, Any] = {
             "evidence_id": {"type": "string"},
             "kind": {"type": "string"},
             "file_path": {"type": "string"},
-            "symbols": {"type": "array", "items": {"type": "string"}},
+            "symbols": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string", "minLength": 1},
+            },
             "reason": {"type": "string"},
             "sha256": {"type": "string"},
             "line_count": {"type": "integer"},

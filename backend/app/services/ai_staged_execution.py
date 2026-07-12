@@ -587,7 +587,8 @@ def _stage_format_rules(stage_id: str, artifact: str) -> list[str]:
         "source_scope": "- 只写范围、真实文件和入口点；不要写流程、SFMEA 或测试用例。",
         "evidence_cards": (
             "- 每项只写可核验的文件、符号/行号、事实和证据来源；不要推演测试设计；"
-            "每个 symbol 必须逐字出现在对应 file_path，跨文件定义必须填写真正的定义文件。"
+            "每张卡至少提供一个真实的 file-local symbol；每个 symbol 必须逐字出现在对应 "
+            "file_path，跨文件定义必须填写真正的定义文件。"
         ),
         "business_flow": (
             "- 只写流程和证据引用，不要写 SFMEA 表或测试用例；"

@@ -567,6 +567,8 @@ def _iter_source_files(root: Path):
 
 def _source_query_tokens(query: str) -> list[str]:
     raw_tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", str(query or "").lower())
+    if re.search(r"\bio\b", str(query or ""), flags=re.IGNORECASE):
+        raw_tokens.append("io")
     stop = {
         "the", "and", "for", "with", "from", "this", "that", "shall",
         "must", "should", "when", "then", "only", "path", "file",
@@ -598,16 +600,26 @@ def _source_excerpt(
         "reconnect": 5,
         "session": 4,
         "timeout": 4,
+        "connect": 8,
+        "io": 6,
     }
     best_index = 0
     best_score = -1
     for index, line in enumerate(lower_lines):
-        matched = [token for token in tokens if token in line]
+        matched = [token for token in tokens if _source_token_matches_line(token, line)]
         if not matched:
             continue
         score = sum(token_weights.get(token, 1) for token in matched)
         if re.search(r"^\s*(?:static\s+)?(?:inline\s+)?[A-Za-z_][\w\s\*\(\)]{0,80}\s+[A-Za-z_][A-Za-z0-9_]*\s*\(", line):
             score += 3
+        if "(" in line and not re.match(r"^\s*(?:if|for|while|switch)\b", line):
+            signature_tail = "\n".join(lines[index : min(len(lines), index + 6)])
+            brace_index = signature_tail.find("{")
+            semicolon_index = signature_tail.find(";")
+            if brace_index >= 0 and (semicolon_index < 0 or brace_index < semicolon_index):
+                score += 3
+            elif semicolon_index >= 0:
+                score -= 4
         if re.search(r"\b(if|case|return|SPDK_ERRLOG|SPDK_NOTICELOG)\b", line):
             score += 2
         if score > best_score:
@@ -615,11 +627,30 @@ def _source_excerpt(
             best_index = index
     hit_index = best_index
     start = max(0, hit_index - radius)
-    end = min(len(lines), hit_index + radius + 1)
+    selected_tail = "\n".join(lines[hit_index : min(len(lines), hit_index + 6)])
+    selected_brace = selected_tail.find("{")
+    selected_semicolon = selected_tail.find(";")
+    selected_is_definition = (
+        not re.match(r"^\s*(?:if|for|while|switch)\b", lines[hit_index])
+        and selected_brace >= 0
+        and (selected_semicolon < 0 or selected_brace < selected_semicolon)
+    )
+    if selected_is_definition:
+        start = hit_index
+        if hit_index > 0 and "(" not in lines[hit_index - 1] and lines[hit_index - 1].strip():
+            start = hit_index - 1
+    end = min(len(lines), hit_index + (18 if selected_is_definition else radius + 1))
     excerpt = "\n".join(lines[start:end])
     if len(excerpt) > max_chars:
         excerpt = excerpt[:max_chars]
+        end = start + len(excerpt.splitlines())
     return excerpt, start + 1, end
+
+
+def _source_token_matches_line(token: str, line: str) -> bool:
+    if token in {"connect", "io"}:
+        return bool(re.search(rf"(?:^|[^a-z0-9]){re.escape(token)}(?:[^a-z0-9]|$)", line))
+    return token in line
 
 
 def _source_symbols(text: str) -> list[str]:
@@ -1641,10 +1672,11 @@ def _positive_int(value: Any, *, default: int = 0) -> int:
 
 def _agent_runtime_provider_capabilities(runtime: dict[str, Any]) -> dict[str, Any]:
     prompt_transport = str(runtime.get("prompt_transport") or "stdin")
+    mcp_profile = str(runtime.get("mcp_profile") or "").strip()
     return {
         "provider": agent_runtime_provider_id(str(runtime.get("id") or "")),
-        "supports_mcp": prompt_transport in {"claude_print_arg", "opencode_run_arg", "codex_exec_json"},
-        "mcp_profiles": [],
+        "supports_mcp": bool(mcp_profile),
+        "mcp_profiles": [mcp_profile] if mcp_profile else [],
         "supports_artifact_export": True,
         "supports_json_output": True,
         "prompt_transport": prompt_transport,

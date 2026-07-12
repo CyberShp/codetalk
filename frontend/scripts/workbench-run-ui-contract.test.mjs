@@ -5,6 +5,11 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = dirname(fileURLToPath(import.meta.url));
+const controllerSource = readFileSync(
+  join(root, "../src/app/workbench/workbench-controller.ts"),
+  "utf8",
+);
+const globalStyles = readFileSync(join(root, "../src/app/globals.css"), "utf8");
 const source = ["run-view.tsx", "workbench-controller.ts", "workbench-shared.tsx"]
   .map((name) =>
     readFileSync(join(root, "../src/app/workbench", name), "utf8"),
@@ -40,14 +45,108 @@ test("workbench renders the built-in workflow provider as a user-facing model la
 
 test("acceptance audit refreshes the task quality panel from persisted execution", () => {
   assert.match(
-    source,
+    controllerSource,
     /generateTaskAcceptanceAudit[\s\S]{0,1200}acceptanceAudit\([\s\S]{0,1200}restoreTaskRun\(/,
   );
 });
 
 test("corrupt workflow execution does not block restoring the acceptance audit", () => {
   assert.match(
-    source,
+    controllerSource,
     /workflow_execution\.json[\s\S]{0,900}try\s*\{[\s\S]{0,900}JSON\.parse[\s\S]{0,900}catch[\s\S]{0,2200}task_acceptance_audit\.json/,
+  );
+});
+
+test("failed-node retry uses the validated rerun-plan endpoint", () => {
+  assert.match(
+    controllerSource,
+    /executeTaskRerunPlan[\s\S]{0,900}markTaskRunSubmitted\(taskRun, \{ startPolling: false \}\)[\s\S]{0,400}const rerunRequest = api\.workbench\.taskRuns\.executeRerunPlan\([\s\S]{0,600}startTaskRunPolling\(taskRun\.task_run_id, \{[\s\S]{0,260}requireActivity: true[\s\S]{0,260}await rerunRequest/,
+  );
+  assert.match(
+    controllerSource,
+    /executeTaskRerunPlan[\s\S]{0,900}taskRuns\.executeRerunPlan\(/,
+  );
+  assert.doesNotMatch(
+    controllerSource,
+    /executeTaskRerunPlan[\s\S]{0,900}taskRuns\.execute\(/,
+  );
+});
+
+test("an active node contributes visible in-flight progress", () => {
+  assert.match(source, /activeProgressCredit\s*=\s*runningIndex\s*>=\s*0\s*\?\s*0\.5\s*:\s*0/);
+  assert.match(source, /completed\s*\+\s*activeProgressCredit/);
+});
+
+test("capability panel does not claim ready while MCP or executor warnings exist", () => {
+  assert.match(source, /runPanelCapabilitySummary\.warnings\.length\s*>\s*0\s*\?\s*["']降级可用["']/);
+});
+
+test("cancelled runs hide stale quality and acceptance warnings", () => {
+  assert.match(source, /runIsCancelled[\s\S]{0,300}visibleTaskAcceptanceAudit/);
+  assert.match(source, /const testActivityQuality = runIsCancelled[\s\S]{0,120}undefined/);
+  assert.match(source, /runPanelFailureReasons[\s\S]{0,150}if \(runIsCancelled\) return \[\]/);
+});
+
+test("background task settlement refreshes artifacts without overwriting the form draft", () => {
+  assert.match(
+    source,
+    /pollTaskRunUntilSettled[\s\S]{0,2200}restoreTaskRun\(taskRunId,\s*workspaces,\s*\{[\s\S]{0,160}preserveDraft: true,[\s\S]{0,160}pollGeneration: generation/,
+  );
+  assert.match(source, /if \(!options\.preserveDraft\)[\s\S]{0,900}setProviderOverride/);
+});
+
+test("polling uses a generation token so stale requests cannot overwrite a newer run", () => {
+  assert.match(controllerSource, /taskRunPollingGenerationRef\s*=\s*useRef\(0\)/);
+  assert.match(controllerSource, /ownsTaskRunPolling\(taskRunId, generation\)/);
+  assert.match(
+    controllerSource,
+    /refreshTaskRunRuntime[\s\S]{0,900}ownsTaskRunPolling\(taskRunId, generation\)[\s\S]{0,180}owned: false/,
+  );
+  assert.match(controllerSource, /function startTaskRunPolling\([\s\S]{0,400}restart\?: boolean/);
+  assert.match(controllerSource, /taskRunEventSourceRef\.current === source/);
+  assert.doesNotMatch(
+    controllerSource,
+    /executePreparedWorkflow[\s\S]{0,900}markTaskRunSubmitted\(taskRun\)[\s\S]{0,900}startTaskRunPolling\(taskRun\.task_run_id\)/,
+  );
+});
+
+test("rerun completion reports the actual terminal outcome and reloads history", () => {
+  assert.match(controllerSource, /taskRerunSettledMessage\(result/);
+  assert.match(controllerSource, /rerunHistory\(taskRun\.task_run_id\)/);
+  assert.doesNotMatch(controllerSource, /已从失败节点完成复跑/);
+});
+
+test("rerun starts after the backend event tail instead of a truncated local page", () => {
+  assert.match(controllerSource, /latest_event_id/);
+  assert.match(
+    controllerSource,
+    /executeTaskRerunPlan[\s\S]{0,900}taskRuns\.events\([\s\S]{0,400}latest_event_id[\s\S]{0,1000}afterEventId/,
+  );
+});
+
+test("stale restore failures cannot clear a newer task after generation changes", () => {
+  assert.match(
+    controllerSource,
+    /catch\s*\{[\s\S]{0,300}pollGeneration[\s\S]{0,300}ownsTaskRunPolling[\s\S]{0,200}setWorkflowExecution\(null\)/,
+  );
+});
+
+test("the sticky run console is enabled only in the two-column desktop layout", () => {
+  const baseRule = globalStyles.match(
+    /\.ct-workbench-shell \.ct-run-console\s*\{([^}]*)\}/,
+  );
+  assert.ok(baseRule);
+  assert.doesNotMatch(baseRule[1], /position:\s*sticky/);
+  assert.match(
+    globalStyles,
+    /\.ct-workbench-shell \.ct-run-console\s*\{[\s\S]{0,180}overflow:\s*auto[\s\S]{0,260}@media \(min-width:\s*1280px\)[\s\S]{0,220}\.ct-workbench-shell \.ct-run-console\s*\{[\s\S]{0,100}position:\s*sticky/,
+  );
+});
+
+test("the run cockpit panel suppresses horizontal page scrolling", () => {
+  assert.match(source, /ct-run-cockpit-panel/);
+  assert.match(
+    globalStyles,
+    /\.ct-workbench-shell \.ct-run-cockpit-panel\s*\{[\s\S]{0,100}overflow-x:\s*hidden/,
   );
 });

@@ -15,6 +15,7 @@ export function deriveRunPanelStatus({
   if (!hasPreparedRun) return "空";
 
   if (activeStatusLabel) {
+    if (activeStatusLabel === "已取消") return "已取消";
     if (activeStatusLabel === "运行失败") return "失败";
     if (activeStatusLabel === "运行完成") return "已完成";
     if (["完成但信息不足", "需要复核"].includes(activeStatusLabel)) return "需复核";

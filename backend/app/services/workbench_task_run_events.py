@@ -70,6 +70,22 @@ class WorkbenchTaskRunEventStore:
                     items.append(_with_public_event_metadata(event))
             return items[: max(1, int(limit))]
 
+    def latest_event_id(self, task_run_id: str) -> int:
+        """Return the global event tail independently of the requested page."""
+        with _LOCK:
+            events_path = self._events_path(task_run_id)
+            if not events_path.exists():
+                return 0
+            latest = 0
+            for line in events_path.read_text(encoding="utf-8").splitlines():
+                try:
+                    event = json.loads(line)
+                    event_id = int(event.get("event_id") or 0)
+                except (AttributeError, json.JSONDecodeError, TypeError, ValueError):
+                    continue
+                latest = max(latest, event_id)
+            return latest
+
     def mark_status(self, task_run_id: str, status: str, **extra: Any) -> dict[str, Any]:
         with _LOCK:
             task_path = self._task_path(task_run_id)
@@ -86,6 +102,38 @@ class WorkbenchTaskRunEventStore:
             payload["runtime"] = runtime
             _write_json(task_path, payload)
             return payload
+
+    def mark_status_unless(
+        self,
+        task_run_id: str,
+        status: str,
+        *,
+        blocked_statuses: set[str],
+        **extra: Any,
+    ) -> tuple[bool, dict[str, Any]]:
+        """Atomically avoid replacing an authoritative terminal status."""
+        with _LOCK:
+            task_path = self._task_path(task_run_id)
+            payload = _read_json(task_path)
+            if not isinstance(payload, dict):
+                raise KeyError(task_run_id)
+            current = str(payload.get("status") or "").strip()
+            if not current:
+                runtime = payload.get("runtime")
+                if isinstance(runtime, dict):
+                    current = str(runtime.get("status") or "").strip()
+            if current in blocked_statuses:
+                return False, payload
+            runtime = dict(payload.get("runtime") or {})
+            runtime.update({
+                "status": str(status),
+                "updated_at": _now(),
+                **extra,
+            })
+            payload["status"] = str(status)
+            payload["runtime"] = runtime
+            _write_json(task_path, payload)
+            return True, payload
 
     def current_status(self, task_run_id: str) -> str:
         payload = _read_json(self._task_path(task_run_id))

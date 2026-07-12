@@ -2938,6 +2938,8 @@ _SFMEA_REMEDIATION_ACTION_RE = re.compile(
     r")\b|"
     r"(修复|释放|重置|限制|加锁|重试|回滚|清理|拒绝|恢复|串行|净化|强制|"
     r"实现|替换|重构|引用计数|持有.{0,12}引用|缓冲|关闭|中止|参数校验|输入校验|防止|阻止)"
+    r"|(启用|严格校验|强制校验|返回.{0,12}(?:错误|失败)|添加.{0,20}(?:检查|校验)|"
+    r"确保.{0,24}(?:配置|状态|资源|连接|会话|参数).{0,20}(?:正确|有效|一致|释放|关闭))"
 )
 _SFMEA_VERIFICATION_ACTION_RE = re.compile(
     r"(?i)\b("
@@ -3090,6 +3092,7 @@ def _normalized_markdown_heading(value: str) -> str:
         "",
         text,
     )
+    text = re.sub(r"\s*[（(][^）)]*[）)]\s*$", "", text)
     return text.strip().rstrip(":：")
 
 

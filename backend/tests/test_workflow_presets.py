@@ -118,6 +118,10 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         item["id"]: item for item in source_flow_preset["definition"]["outputs"]
     }
     assert source_flow_outputs["code_evidence"]["schema"]["minItems"] == 1
+    assert (
+        source_flow_outputs["code_evidence"]["schema"]["items"]["properties"]["symbols"]["minItems"]
+        == 1
+    )
     assert source_flow_outputs["sfmea"]["schema"]["minItems"] == 1
     assert source_flow_outputs["black_box_cases"]["schema"]["minItems"] == 1
     sfmea_required = source_flow_outputs["sfmea"]["schema"]["items"]["required"]

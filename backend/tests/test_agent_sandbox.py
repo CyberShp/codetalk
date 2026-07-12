@@ -114,3 +114,115 @@ def test_auto_sandbox_records_actionable_degraded_mode(tmp_path):
     assert "不支持" in launch.message
     audit = json.loads((artifact_dir / "sandbox_policy.json").read_text(encoding="utf-8"))
     assert audit["status"] == "degraded"
+
+
+def test_sandbox_does_not_follow_workspace_controlled_skill_symlinks(tmp_path):
+    workspace = tmp_path / "repo"
+    skill_target = tmp_path / "shared-skills" / "storage-test"
+    skill_target.mkdir(parents=True)
+    (skill_target / "SKILL.md").write_text("storage test skill", encoding="utf-8")
+    skill_link = workspace / ".codex" / "skills" / "storage-test"
+    skill_link.parent.mkdir(parents=True)
+    skill_link.symlink_to(skill_target, target_is_directory=True)
+
+    launch = prepare_agent_sandbox(
+        runtime={"sandbox_mode": "auto"},
+        cwd=str(workspace),
+        artifact_dir=tmp_path / "artifacts",
+        platform_name="darwin",
+        which=lambda command: "/usr/bin/sandbox-exec" if command == "sandbox-exec" else None,
+    )
+
+    assert str(skill_target.resolve()) not in launch.audit["read_paths"]
+    assert str(skill_target.resolve()) not in launch.audit["write_paths"]
+
+
+def test_codex_sandbox_allows_user_skill_roots_and_symlink_targets_read_only(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    codex_home = home / ".codex"
+    skill_target = tmp_path / "shared-skills" / "storage-test"
+    skill_target.mkdir(parents=True)
+    (skill_target / "SKILL.md").write_text("storage test skill", encoding="utf-8")
+    skill_link = home / ".agents" / "skills" / "storage-test"
+    skill_link.parent.mkdir(parents=True)
+    skill_link.symlink_to(skill_target, target_is_directory=True)
+    (codex_home / "skills").mkdir(parents=True)
+    (codex_home / "sessions").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    launch = prepare_agent_sandbox(
+        runtime={
+            "sandbox_mode": "auto",
+            "sandbox_command": "/usr/local/bin/codex",
+        },
+        cwd=str(tmp_path / "repo"),
+        artifact_dir=tmp_path / "artifacts",
+        platform_name="darwin",
+        which=lambda command: "/usr/bin/sandbox-exec" if command == "sandbox-exec" else None,
+    )
+
+    assert str((home / ".agents" / "skills").resolve()) in launch.audit["read_paths"]
+    assert str((codex_home / "skills").resolve()) in launch.audit["read_paths"]
+    assert str(skill_target.resolve()) in launch.audit["read_paths"]
+    assert str(skill_target.resolve()) not in launch.audit["write_paths"]
+    assert str(codex_home.resolve()) not in launch.audit["write_paths"]
+    assert str((codex_home / "skills").resolve()) not in launch.audit["write_paths"]
+    assert str((codex_home / "sessions").resolve()) in launch.audit["write_paths"]
+
+
+def test_codex_sandbox_uses_isolated_runtime_home_without_writing_real_home(
+    tmp_path, monkeypatch
+):
+    real_home = tmp_path / "real-codex-home"
+    runtime_home = tmp_path / "task" / ".runtime-codex-home"
+    real_home.mkdir()
+    runtime_home.mkdir(parents=True)
+    auth_file = real_home / "auth.json"
+    auth_file.write_text("{}", encoding="utf-8")
+    monkeypatch.setenv("CODEX_HOME", str(real_home))
+
+    launch = prepare_agent_sandbox(
+        runtime={
+            "sandbox_mode": "required",
+            "sandbox_command": "/usr/local/bin/codex",
+            "sandbox_codex_home": str(runtime_home),
+            "sandbox_read_paths": [str(auth_file)],
+        },
+        cwd=str(tmp_path / "repo"),
+        artifact_dir=tmp_path / "task",
+        platform_name="darwin",
+        which=lambda command: "/usr/bin/sandbox-exec" if command == "sandbox-exec" else None,
+    )
+
+    assert str(runtime_home.resolve()) in launch.audit["read_paths"]
+    assert str(real_home.resolve()) not in launch.audit["write_paths"]
+    assert not any(
+        path.startswith(str(real_home.resolve()))
+        for path in launch.audit["runtime_state_paths"]
+    )
+
+
+def test_codex_sandbox_rejects_symlinked_runtime_state_directory(tmp_path):
+    runtime_home = tmp_path / "task" / ".runtime-codex-home-safe"
+    runtime_home.mkdir(parents=True)
+    host_target = tmp_path / "host-state"
+    host_target.mkdir()
+    (runtime_home / "sessions").symlink_to(host_target, target_is_directory=True)
+
+    with pytest.raises(AgentSandboxError, match="符号链接"):
+        prepare_agent_sandbox(
+            runtime={
+                "sandbox_mode": "required",
+                "sandbox_command": "/usr/local/bin/codex",
+                "sandbox_codex_home": str(runtime_home),
+            },
+            cwd=str(tmp_path / "repo"),
+            artifact_dir=tmp_path / "task",
+            platform_name="darwin",
+            which=lambda command: (
+                "/usr/bin/sandbox-exec" if command == "sandbox-exec" else None
+            ),
+        )

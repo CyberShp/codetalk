@@ -25,6 +25,20 @@ TEXT_ARTIFACT_SUFFIXES = {
     ".yml",
 }
 
+_RUNTIME_CACHE_DIRECTORY_NAMES = {
+    ".runtime-tmp",
+    "node-compile-cache",
+}
+
+
+def _is_runtime_cache_directory(name: str) -> bool:
+    return (
+        name in _RUNTIME_CACHE_DIRECTORY_NAMES
+        or name.startswith(".runtime-tmp-")
+        or name == ".runtime-codex-home"
+        or name.startswith(".runtime-codex-home-")
+    )
+
 
 def write_task_artifact_manifest(task_dir: Path, *, task_run_id: str) -> dict[str, Any]:
     artifacts = [
@@ -56,6 +70,12 @@ def build_task_artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
     artifacts: list[dict[str, Any]] = []
     for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
         if not path.is_file():
+            continue
+        try:
+            unresolved_relative = path.relative_to(root)
+        except ValueError:
+            continue
+        if any(_is_runtime_cache_directory(part) for part in unresolved_relative.parts[:-1]):
             continue
         try:
             resolved = path.resolve()

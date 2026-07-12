@@ -968,6 +968,7 @@ export interface WorkbenchTaskRunEventsResult {
   task_run_id: string;
   items: WorkbenchTaskRunEvent[];
   last_event_id: number;
+  latest_event_id: number;
 }
 
 export interface WorkbenchRunUiSummary {

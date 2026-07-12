@@ -49,3 +49,26 @@ def test_artifact_manifest_marks_deliverables_and_diagnostics(tmp_path):
     assert artifacts["task_bundle.json"]["audience"] == "diagnostic"
     assert artifacts["provider_snapshot.json"]["audience"] == "diagnostic"
     assert artifacts["inputs/requirements.md"]["audience"] == "input"
+
+
+def test_artifact_manifest_ignores_agent_runtime_cache_directories(tmp_path):
+    task_dir = tmp_path / "task"
+    agent_dir = task_dir / "agent_runs" / "analyze"
+    (agent_dir / "node-compile-cache" / "v1").mkdir(parents=True)
+    (agent_dir / ".runtime-tmp-abc123" / "cache").mkdir(parents=True)
+    (agent_dir / "node-compile-cache" / "v1" / "blob").write_bytes(b"cache")
+    (agent_dir / ".runtime-tmp-abc123" / "cache" / "blob").write_bytes(b"cache")
+    (agent_dir / ".runtime-codex-home-abc123").mkdir()
+    (agent_dir / ".runtime-codex-home-abc123" / "state_5.sqlite").write_bytes(b"state")
+    (agent_dir / ".tmp-report").mkdir()
+    (agent_dir / ".tmp-report" / "result.md").write_text("# result", encoding="utf-8")
+    (agent_dir / "module_analysis.md").write_text("# report", encoding="utf-8")
+
+    paths = {
+        item["relative_path"] for item in build_task_artifact_manifest(task_dir)
+    }
+
+    assert paths == {
+        "agent_runs/analyze/module_analysis.md",
+        "agent_runs/analyze/.tmp-report/result.md",
+    }

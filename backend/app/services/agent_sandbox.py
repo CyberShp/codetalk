@@ -91,7 +91,12 @@ def prepare_agent_sandbox(
     write_paths = _unique_paths([artifact_dir, *runtime_state_paths, *extra_write_paths])
     system_read_paths = _system_read_paths(platform, command)
     read_paths = _unique_paths(
-        [*system_read_paths, *runtime_read_paths, *write_paths, *([workspace] if workspace else [])]
+        [
+            *system_read_paths,
+            *runtime_read_paths,
+            *write_paths,
+            *([workspace] if workspace else []),
+        ]
     )
     base_audit = {
         "version": "agent-sandbox-policy-v1",
@@ -237,6 +242,29 @@ def _safe_read_paths(value: Any) -> list[Path]:
     return paths
 
 
+def _skill_symlink_targets(roots: list[Path | None]) -> list[Path]:
+    targets: list[Path] = []
+    for root in roots:
+        if root is None:
+            continue
+        if not root.is_dir():
+            continue
+        try:
+            entries = list(root.iterdir())
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_symlink():
+                continue
+            try:
+                target = entry.resolve(strict=True)
+            except OSError:
+                continue
+            if target not in targets:
+                targets.append(target)
+    return targets
+
+
 def _runtime_paths(runtime: dict[str, Any], command: str) -> tuple[list[Path], list[Path]]:
     read_paths = _safe_read_paths(runtime.get("sandbox_read_paths"))
     state_paths = _safe_extra_write_paths(runtime.get("sandbox_state_paths"))
@@ -248,11 +276,20 @@ def _runtime_paths(runtime: dict[str, Any], command: str) -> tuple[list[Path], l
         if path.exists() and path not in read_paths:
             read_paths.append(path)
 
-    def add_state(path: Path) -> None:
-        path = path.expanduser().resolve()
+    def add_state(path: Path, *, boundary: Path | None = None) -> None:
+        path = path.expanduser()
+        if path.is_symlink():
+            raise AgentSandboxError(f"拒绝将符号链接作为 Agent 可写目录：{path}")
         path.mkdir(parents=True, exist_ok=True)
-        if path not in state_paths:
-            state_paths.append(path)
+        if path.is_symlink() or not path.is_dir():
+            raise AgentSandboxError(f"Agent 可写状态路径不是安全目录：{path}")
+        resolved = path.resolve(strict=True)
+        if boundary is not None:
+            resolved_boundary = boundary.resolve(strict=True)
+            if resolved != resolved_boundary and resolved_boundary not in resolved.parents:
+                raise AgentSandboxError(f"Agent 状态路径越过运行目录：{path}")
+        if resolved not in state_paths:
+            state_paths.append(resolved)
 
     if "opencode" in command_name:
         add_read(home / ".config" / "opencode")
@@ -261,7 +298,25 @@ def _runtime_paths(runtime: dict[str, Any], command: str) -> tuple[list[Path], l
         add_state(home / ".local" / "state" / "opencode")
         add_state(home / ".cache" / "opencode")
     elif "codex" in command_name:
-        add_state(Path(os.environ.get("CODEX_HOME") or home / ".codex"))
+        codex_home = Path(
+            runtime.get("sandbox_codex_home")
+            or os.environ.get("CODEX_HOME")
+            or home / ".codex"
+        ).expanduser()
+        if codex_home.is_symlink():
+            raise AgentSandboxError("拒绝使用符号链接作为 Codex 运行目录。")
+        codex_home.mkdir(parents=True, exist_ok=True)
+        if not codex_home.is_dir():
+            raise AgentSandboxError("Codex 运行目录不可用。")
+        codex_home = codex_home.resolve(strict=True)
+        add_read(codex_home)
+        for state_name in ("sessions", "log", ".tmp", "tmp", "cache"):
+            add_state(codex_home / state_name, boundary=codex_home)
+        user_skill_roots = [codex_home / "skills", home / ".agents" / "skills"]
+        for skill_root in user_skill_roots:
+            add_read(skill_root)
+        for target in _skill_symlink_targets(user_skill_roots):
+            add_read(target)
     elif "claude" in command_name or command_name in {"ccr", "ccr.cmd"}:
         add_state(Path(os.environ.get("CLAUDE_CONFIG_DIR") or home / ".claude"))
         ccr_config = str(os.environ.get("CCR_CONFIG_PATH") or "").strip()

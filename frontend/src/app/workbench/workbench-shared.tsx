@@ -3784,13 +3784,15 @@ export function Panel({
   title,
   icon,
   children,
+  className = "",
 }: {
   title: string;
   icon: React.ReactNode;
   children: React.ReactNode;
+  className?: string;
 }) {
   return (
-    <section className="ct-workbench-panel ct-reveal ct-liquid-glass min-w-0 rounded-xl p-4">
+    <section className={`ct-workbench-panel ct-reveal ct-liquid-glass min-w-0 rounded-xl p-4 ${className}`}>
       <h2 className="ct-workbench-panel-title mb-3 flex items-center gap-2 text-sm font-semibold text-on-surface">
         {icon}
         {title}

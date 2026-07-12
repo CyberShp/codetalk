@@ -5,7 +5,7 @@ import type { WorkbenchTaskArtifact } from "@/lib/types";
 
 export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
   const { AlertTriangle, ArtifactPreviewCard, ClipboardList, Database, Download, Library, Loader2, MessageSquareText, Panel, PlayCircle, RefreshCw, Search, X, acceptanceCodetalkProviderIssues, acceptanceInputRedactionIssues, acceptanceInstructionPolicyIssues, acceptanceIssueLabel, acceptanceProviderIssues, acceptanceWorkflowOutputIssues, agentMcpRequestSummary, agentRunActionBusy, applyWorkspaceSelection, artifactAudience, artifactAudienceGroups, artifactAudienceLabel, artifactContent, artifactManifest, artifactShortName, blackBoxGenerationPolicySummary, busyAction, cancelPreparedTaskRun, compactReasonLabel, createAndRunTaskRun, currentApiBase, evidenceValidationSummary, executePreparedAgentRun, executePreparedWorkflow, executeTaskRerunPlan, executionInputSummary, executionResults, failureRetryContextSummary, fastContextDecisionSummary, filledInputCount, generateTaskAcceptanceAudit, importPreparedSemanticOutputs, inputContextSummary, inputMaterialsSummary, inputTextValue, inputsJson, isFileLikeWorkflowInput, isPatchLikeWorkflowInput, isTaskRunActiveStatus, loadPreparedArtifacts, loadTaskRerunPlan, materializationAuditOutputs, materializePreparedAgentRun, materializePreparedWorkflowOutputs, materializeResults, memoryArtifactSummary, openPreparedConversation, openingConversation, parsedPrepareInputs, prepareTaskRun, preparedProviderReadiness, preparedRun, preparedRunSnapshotSummary, previewArtifact, prioritizedAuditArtifacts, providerDisplayLabel, providerOverride, providerReadinessSummary, providerStatusDisplayLabel, rejectedOutputLabel, rejectedOutputReason, replayPlanSummary, repoPath, requiredInputCount, restoreExistingTaskRun, runExecutorProviderOptions, runPanelCapabilitySummary, runPanelDeliverables, runPanelExecutionNotice, runPanelFailureReasons, runPanelProgress, runPanelStatus, runPhaseCards, runStatusDisplayLabel, safeArtifactDownloadFilename, selectRunWorkflow, selectedAgentSkillIds, selectedAgentSkillInstructions, selectedAgentStep, selectedProviderCapability, selectedRunMcpProfile, selectedRunProvider, selectedWorkflowAudit, selectedWorkflowId, selectedWorkflowInputs, selectedWorkflowOutputs, semanticImportOutputIds, semanticOutputImport, setActiveWorkbenchView, setInputsJson, setProviderOverride, taskAcceptanceAudit, taskRerunExecution, taskRerunHistory, taskRerunPlan, taskRerunPlanValidation, taskRunActionBusy, taskRunEventDetail, taskRunEventTitle, taskRunEventTone, taskRunEvents, taskRunRuntimeStatus, taskRuns, testActivityQuality, updatePrepareInput, uploadPrepareInputFile, validatePreparedAgentRun, validationResults, visibleDeliveryArtifacts, visibleTaskRunEvents, visibleWorkflowInputs, workflowAuditWarningLabel, workflowDisplayName, workflowExecution, workflowInputDisplayName, workflowInputsUpdated, workflowOptions, workflowOutputDisplayName, workflowOutputMaterializationSummary, workflowOutputMaterialize, workspaceId, workspaces } = scope;
-  return (<Panel title="任务运行" icon={<PlayCircle size={16} />}>
+  return (<Panel title="任务运行" icon={<PlayCircle size={16} />} className="ct-run-cockpit-panel">
             <div className="grid gap-4 xl:grid-cols-[minmax(380px,0.95fr)_minmax(440px,1.05fr)] xl:items-start">
               <div className="min-w-0 space-y-3">
               <label className="block">
@@ -625,7 +625,7 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                   运行状态
                 </p>
                 <div className="mt-1 flex flex-wrap gap-1 rounded-lg border border-dashed border-outline-variant/40 bg-surface-container/40 p-1">
-                  {["空", "进行中", "需复核", "失败", "已完成"].map((status) => (
+                  {["空", "进行中", "需复核", "失败", "已取消", "已完成"].map((status) => (
                     <span
                       key={status}
                       className={[
@@ -663,6 +663,8 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                             ? "border-amber-300/70 bg-amber-50"
                           : runPanelStatus === "已完成"
                             ? "border-emerald-300/70 bg-emerald-50"
+                            : runPanelStatus === "已取消"
+                              ? "border-outline-variant/50 bg-surface-container/60"
                             : "border-sky-300/70 bg-sky-50",
                       ].join(" ")}
                     >
@@ -673,6 +675,8 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                               ? `运行失败 · ${workflowDisplayName(preparedRun.workflow_id)}`
                               : runPanelStatus === "需复核"
                                 ? `需要复核 · ${workflowDisplayName(preparedRun.workflow_id)}`
+                              : runPanelStatus === "已取消"
+                                ? `已取消 · ${workflowDisplayName(preparedRun.workflow_id)}`
                               : runPanelStatus === "已完成"
                                 ? `运行完成 · ${workflowDisplayName(preparedRun.workflow_id)}`
                                 : `运行中 · ${workflowDisplayName(preparedRun.workflow_id)}`}
@@ -710,6 +714,10 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                             <span className="grid h-7 w-7 place-items-center rounded-full bg-emerald-100 text-emerald-700">
                               ✓
                             </span>
+                          ) : runPanelStatus === "已取消" ? (
+                            <span className="grid h-7 w-7 place-items-center rounded-full bg-surface-container-high text-on-surface-variant">
+                              <X size={15} />
+                            </span>
                           ) : (
                             <Loader2 size={22} className="animate-spin text-primary" />
                           )}
@@ -725,6 +733,8 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                                 ? "bg-amber-500"
                               : runPanelStatus === "已完成"
                                 ? "bg-emerald-500"
+                                : runPanelStatus === "已取消"
+                                  ? "bg-outline-variant"
                                 : "bg-primary",
                           ].join(" ")}
                           style={{ width: `${runPanelProgress.percent}%` }}
@@ -867,15 +877,18 @@ export function RunCockpitView({ scope }: { scope: WorkbenchController }) {
                           <span
                             className={[
                               "rounded-full px-2 py-0.5 text-[10px] font-medium",
-                              preparedProviderReadiness?.status === "ready" ||
-                              preparedProviderReadiness?.status === "ok"
+                              runPanelCapabilitySummary.warnings.length === 0 &&
+                              (preparedProviderReadiness?.status === "ready" ||
+                              preparedProviderReadiness?.status === "ok")
                                 ? "bg-emerald-100 text-emerald-700"
                                 : "bg-amber-100 text-amber-800",
                             ].join(" ")}
                           >
-                            {providerStatusDisplayLabel(
-                              preparedProviderReadiness?.status ?? "pending",
-                            )}
+                            {runPanelCapabilitySummary.warnings.length > 0
+                              ? "降级可用"
+                              : providerStatusDisplayLabel(
+                                  preparedProviderReadiness?.status ?? "pending",
+                                )}
                           </span>
                         </div>
                         {runPanelCapabilitySummary.rows.length > 0 && (

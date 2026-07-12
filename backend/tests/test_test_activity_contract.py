@@ -320,6 +320,13 @@ def test_module_analysis_quality_audit_rejects_shallow_markdown(tmp_path):
     assert "missing_test_evidence" in codes
 
 
+def test_markdown_section_normalization_accepts_descriptive_parenthetical_suffix():
+    from app.services.test_activity_contract import _normalized_markdown_heading
+
+    assert _normalized_markdown_heading("主流程 (Connect 到首个 I/O)") == "主流程"
+    assert _normalized_markdown_heading("异常与恢复路径（网络与控制器）") == "异常与恢复路径"
+
+
 def test_module_analysis_quality_audit_rejects_combined_heading_and_path_traversal(
     tmp_path,
 ):
@@ -575,6 +582,9 @@ def test_sfmea_audit_requires_test_or_monitor_verification_in_mitigation(tmp_pat
         "限制重试次数并检查连接状态",
         "防止创建未授权会话并添加负向测试",
         "阻止非法状态迁移并监控日志",
+        "启用 HeaderDigest/DataDigest，并添加 digest 错误计数监控",
+        "确保 target 配置正确；添加 target 存在性检查；返回明确错误",
+        "严格校验 CSG；返回明确错误；添加协议状态机监控",
     ],
 )
 def test_sfmea_mitigation_accepts_remediation_plus_verification(mitigation):
@@ -604,6 +614,8 @@ def test_sfmea_mitigation_accepts_remediation_plus_verification(mitigation):
         "Validate reset behavior",
         "断言重试成功",
         "校验重置状态",
+        "添加重试测试并监控日志",
+        "确保测试通过并监控日志",
     ],
 )
 def test_sfmea_mitigation_rejects_test_scenario_without_product_remediation(mitigation):
