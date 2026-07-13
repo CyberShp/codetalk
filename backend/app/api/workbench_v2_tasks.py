@@ -120,7 +120,7 @@ async def list_tasks(
     if quality_status:
         enriched = [
             item for item in enriched
-            if str((item.get("latest_run") or {}).get("quality_status") or "not_evaluated")
+            if str((item.get("latest_run") or {}).get("quality_status") or "not_checked")
             == quality_status
         ]
     total = len(enriched)
@@ -236,26 +236,52 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
     task = _task(task_id)
     if task.lifecycle_status != "ready":
         raise HTTPException(status_code=409, detail="只有就绪任务可以启动运行")
-    version = _published_version(task.workflow_id, task.workflow_version_id)
     workspace = _workspace(task.workspace_id)
-    repo_path = Path(str(workspace["repo_path"])).expanduser().resolve()
-    if not repo_path.is_dir():
-        raise HTTPException(status_code=422, detail=f"工作空间源码目录不可用：{repo_path}")
-    effective = _effective_configuration_payload(
-        version=version,
-        execution_overrides=task.execution_overrides,
-        output_overrides=task.output_overrides,
-    )
-    effective_definition = effective["compiled_definition"]
-    effective_plan = effective["compiled_plan"]
 
     with _ATTEMPT_LOCK:
         previous = _task_runs(task_id)
         attempt_number = max((run.attempt_number for run in previous), default=0) + 1
         parent_run_id = str(payload.parent_task_run_id or "")
-        if parent_run_id and not any(run.task_run_id == parent_run_id for run in previous):
+        parent_run = next(
+            (run for run in previous if run.task_run_id == parent_run_id),
+            None,
+        )
+        if parent_run_id and parent_run is None:
             raise HTTPException(status_code=422, detail="父运行不属于当前任务")
-        resolved_inputs = dict(task.input_values)
+
+        if parent_run is not None:
+            effective_definition = dict(
+                parent_run.task_bundle.get("effective_compiled_definition")
+                or parent_run.workflow_snapshot
+            )
+            effective_plan = dict(parent_run.task_bundle.get("compiled_plan") or {})
+            resolved_inputs = _inputs_from_parent_snapshot(parent_run.input_snapshot)
+            repo_path = Path(str(parent_run.repo_path)).expanduser().resolve()
+            workflow_version_id = str(parent_run.task_bundle.get("workflow_version_id") or "")
+            execution_overrides = dict(parent_run.task_bundle.get("execution_overrides") or {})
+            output_overrides = dict(parent_run.task_bundle.get("output_overrides") or {})
+            retry_seed_results, retry_failed_node_ids = _retry_seed_results_from_parent(
+                parent_run,
+                effective_plan,
+            )
+        else:
+            version = _published_version(task.workflow_id, task.workflow_version_id)
+            effective = _effective_configuration_payload(
+                version=version,
+                execution_overrides=task.execution_overrides,
+                output_overrides=task.output_overrides,
+            )
+            effective_definition = effective["compiled_definition"]
+            effective_plan = effective["compiled_plan"]
+            resolved_inputs = dict(task.input_values)
+            repo_path = Path(str(workspace["repo_path"])).expanduser().resolve()
+            workflow_version_id = version.version_id
+            execution_overrides = task.execution_overrides
+            output_overrides = task.output_overrides
+            retry_seed_results = {}
+            retry_failed_node_ids = []
+        if not repo_path.is_dir():
+            raise HTTPException(status_code=422, detail=f"工作空间源码目录不可用：{repo_path}")
         for definition in effective_definition.get("inputs") or []:
             if str(definition.get("resolver") or "") == "workspace":
                 resolved_inputs[str(definition["id"])] = str(repo_path)
@@ -279,14 +305,131 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
             )
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=f"任务输入不完整或无效：{exc}") from exc
-        prepared.task_bundle["workflow_version_id"] = version.version_id
+        prepared.task_bundle["workflow_version_id"] = workflow_version_id
         prepared.task_bundle["compiled_plan"] = effective_plan
         prepared.task_bundle["effective_compiled_definition"] = effective_definition
-        prepared.task_bundle["execution_overrides"] = task.execution_overrides
-        prepared.task_bundle["output_overrides"] = task.output_overrides
+        prepared.task_bundle["execution_overrides"] = execution_overrides
+        prepared.task_bundle["output_overrides"] = output_overrides
+        if parent_run is not None:
+            prepared.task_bundle["retry_source"] = {
+                "task_run_id": parent_run.task_run_id,
+                "mode": "from_failed_node" if retry_failed_node_ids else "frozen_attempt",
+                "failed_node_ids": retry_failed_node_ids,
+            }
+            prepared.task_bundle["retry_seed_results"] = retry_seed_results
         _write_run(prepared)
         task_store().update_task(task_id, last_run_id=prepared.task_run_id)
     return _run_summary(prepared)
+
+
+def _inputs_from_parent_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
+    """Recover immutable inputs using the parent's copied files when available."""
+    recovered: dict[str, Any] = {}
+    for input_id, value in snapshot.items():
+        if not isinstance(value, dict):
+            recovered[input_id] = value
+            continue
+        if value.get("kind") == "file":
+            path = str(value.get("copied_path") or value.get("original_path") or "")
+            if not path:
+                raise HTTPException(status_code=409, detail=f"父运行输入文件不可复用：{input_id}")
+            recovered[input_id] = path
+            continue
+        if value.get("kind") == "file_set":
+            paths = [
+                str(item.get("copied_path") or item.get("original_path") or "")
+                for item in value.get("files") or []
+                if isinstance(item, dict)
+            ]
+            if not paths or any(not item for item in paths):
+                raise HTTPException(status_code=409, detail=f"父运行文件集合不可复用：{input_id}")
+            recovered[input_id] = paths
+            continue
+        recovered[input_id] = value
+    return recovered
+
+
+def _retry_seed_results_from_parent(
+    parent_run: Any,
+    compiled_plan: dict[str, Any],
+) -> tuple[dict[str, dict[str, Any]], list[str]]:
+    execution_path = Path(str(parent_run.artifact_dir)) / "workflow_execution.json"
+    try:
+        execution = json.loads(execution_path.read_text(encoding="utf-8"))
+    except (OSError, TypeError, ValueError):
+        return {}, []
+    if not isinstance(execution, dict):
+        return {}, []
+    step_results = [
+        item for item in execution.get("step_results") or []
+        if isinstance(item, dict) and str(item.get("step_id") or "")
+    ]
+    success_statuses = {"completed", "completed_empty", "needs_review", "succeeded", "success"}
+    failure_statuses = {"error", "failed", "failure", "invalid", "interrupted"}
+    failed_nodes = {
+        str(item.get("step_id") or "")
+        for item in step_results
+        if str(item.get("status") or "").lower() in failure_statuses
+    }
+    failed_nodes.update(
+        str(item.get("from") or "")
+        for item in execution.get("outputs") or []
+        if isinstance(item, dict)
+        and str(item.get("status") or "").lower() in {"missing", "invalid", "failed"}
+        and str(item.get("from") or "")
+    )
+    if not failed_nodes:
+        return {}, []
+
+    plan_nodes = {
+        str(item.get("node_id") or ""): item
+        for item in compiled_plan.get("nodes") or []
+        if isinstance(item, dict) and str(item.get("node_id") or "")
+    }
+    impacted = set(failed_nodes)
+    changed = True
+    while changed:
+        changed = False
+        for node_id, node in plan_nodes.items():
+            dependencies = {str(item) for item in node.get("depends_on") or [] if str(item)}
+            if node_id not in impacted and dependencies & impacted:
+                impacted.add(node_id)
+                changed = True
+
+    seeds: dict[str, dict[str, Any]] = {}
+    for item in step_results:
+        step_id = str(item.get("step_id") or "")
+        if (
+            step_id not in plan_nodes
+            or step_id in impacted
+            or str(item.get("status") or "").lower() not in success_statuses
+        ):
+            continue
+        reused = dict(item)
+        reused["node_id"] = step_id
+        reused["reused_from_task_run_id"] = str(parent_run.task_run_id)
+        validated = reused.get("validated_outputs")
+        if not isinstance(validated, dict):
+            validated = {
+                key: reused[key]
+                for key in (
+                    "artifact",
+                    "artifacts",
+                    "artifact_dir",
+                    "count",
+                    "validation",
+                    "accepted_artifact_details",
+                )
+                if reused.get(key) not in (None, "", [], {})
+            }
+        reused["validated_outputs"] = validated
+        seeds[step_id] = reused
+    ordered_failures = [
+        str(item)
+        for item in compiled_plan.get("topological_order") or []
+        if str(item) in failed_nodes
+    ]
+    return seeds, ordered_failures or sorted(failed_nodes)
 
 
 def _task(task_id: str) -> WorkbenchTask:
@@ -387,7 +530,15 @@ def _run_summary(run: Any) -> dict[str, Any]:
 
 
 def _write_run(run: Any) -> None:
-    path = Path(run.artifact_dir) / "task_run.json"
+    artifact_dir = Path(run.artifact_dir)
+    path = artifact_dir / "task_run.json"
     temporary = path.with_suffix(".json.tmp")
     temporary.write_text(json.dumps(asdict(run), ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     temporary.replace(path)
+    bundle_path = artifact_dir / "task_bundle.json"
+    bundle_temporary = bundle_path.with_suffix(".json.tmp")
+    bundle_temporary.write_text(
+        json.dumps(run.task_bundle, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    bundle_temporary.replace(bundle_path)

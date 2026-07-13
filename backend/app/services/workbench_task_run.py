@@ -63,8 +63,8 @@ class PreparedWorkbenchTaskRun:
     attempt_number: int = 0
     parent_task_run_id: str = ""
     execution_status: str = "prepared"
-    quality_status: str = "not_evaluated"
-    delivery_status: str = "pending"
+    quality_status: str = "not_checked"
+    delivery_status: str = "none"
     started_at: str = ""
     completed_at: str = ""
     agent_runs: list[dict[str, Any]] = field(default_factory=list)
@@ -2973,8 +2973,8 @@ def _prepared_task_run_from_payload(payload: dict[str, Any]) -> PreparedWorkbenc
             or runtime.get("status")
             or "prepared"
         ),
-        quality_status=str(payload.get("quality_status") or "not_evaluated"),
-        delivery_status=str(payload.get("delivery_status") or "pending"),
+        quality_status=_normalized_quality_status(payload.get("quality_status")),
+        delivery_status=_normalized_delivery_status(payload.get("delivery_status")),
         started_at=str(payload.get("started_at") or runtime.get("started_at") or ""),
         completed_at=str(payload.get("completed_at") or runtime.get("completed_at") or ""),
         agent_runs=[
@@ -2990,6 +2990,20 @@ def _safe_segment(value: str) -> str:
     if not text or "/" in text or "\\" in text or ".." in text:
         raise KeyError(value)
     return text
+
+
+def _normalized_quality_status(value: Any) -> str:
+    status = str(value or "").strip()
+    if status == "not_evaluated" or not status:
+        return "not_checked"
+    return status if status in {"not_checked", "pending", "passed", "warning", "blocked"} else "not_checked"
+
+
+def _normalized_delivery_status(value: Any) -> str:
+    status = str(value or "").strip()
+    if status == "pending" or not status:
+        return "none"
+    return status if status in {"none", "partial", "complete"} else "none"
 
 
 def _context_query_from_inputs(input_snapshot: dict[str, Any]) -> str:

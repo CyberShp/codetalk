@@ -76,6 +76,48 @@ def test_agent_output_event_is_public_output_not_diagnostic(tmp_path):
     assert event["event_kind"] == "output"
 
 
+def test_scheduler_reuses_seeded_successful_nodes_and_starts_at_failed_node():
+    from app.services.workflow_scheduler import WorkflowDagScheduler
+
+    plan = {
+        "plan_version": 1,
+        "topological_order": ["discover", "analyze", "report"],
+        "max_parallelism": 1,
+        "nodes": [
+            {"node_id": "discover", "type": "local_scope_discover", "depends_on": []},
+            {"node_id": "analyze", "type": "agent_task", "depends_on": ["discover"]},
+            {"node_id": "report", "type": "report_render", "depends_on": ["analyze"]},
+        ],
+    }
+    executed: list[str] = []
+    events: list[tuple[str, dict]] = []
+
+    result = WorkflowDagScheduler(event_sink=lambda kind, payload: events.append((kind, payload))).run(
+        plan,
+        seed_results={
+            "discover": {
+                "node_id": "discover",
+                "step_id": "discover",
+                "type": "local_scope_discover",
+                "status": "completed",
+                "validated_outputs": {"artifact": "scope.json"},
+                "reused_from_task_run_id": "task_run_parent",
+            }
+        },
+        execute_node=lambda node, _deps: (
+            executed.append(node["node_id"])
+            or {"status": "completed", "validated_outputs": {"artifact": f"{node['node_id']}.json"}}
+        ),
+    )
+
+    assert executed == ["analyze", "report"]
+    assert result.results_by_node["discover"]["reused_from_task_run_id"] == "task_run_parent"
+    assert result.results_by_node["analyze"]["direct_dependencies"] == {
+        "discover": {"artifact": "scope.json"}
+    }
+    assert ("node_reused", {"node_id": "discover", "source_task_run_id": "task_run_parent"}) in events
+
+
 def test_real_workbench_runner_uses_frozen_plan_and_marks_blocked_nodes(tmp_path, monkeypatch):
     import json
 
@@ -138,3 +180,62 @@ def test_real_workbench_runner_uses_frozen_plan_and_marks_blocked_nodes(tmp_path
         "node_blocked",
         "run_completed",
     }
+
+
+def test_real_runner_passes_parent_successes_to_retry_scheduler(tmp_path, monkeypatch):
+    import json
+
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    root = tmp_path / "task_runs"
+    task_dir = root / "task_retry"
+    task_dir.mkdir(parents=True)
+    workflow = {
+        "id": "dag-flow",
+        "name": "DAG flow",
+        "version": 1,
+        "inputs": [],
+        "steps": [
+            {"id": "a", "type": "memory_retrieve"},
+            {"id": "b", "type": "semantic_retrieve"},
+            {"id": "c", "type": "report_render"},
+        ],
+        "outputs": [],
+    }
+    payload = {
+        "task_run_id": "task_retry",
+        "workflow_id": "dag-flow",
+        "workspace_id": "ws",
+        "repo_path": str(tmp_path),
+        "artifact_dir": str(task_dir),
+        "workflow_snapshot": workflow,
+        "input_snapshot": {},
+        "task_bundle": {
+            "compiled_plan": _plan(),
+            "context_bundle": {},
+            "retry_seed_results": {
+                "a": {
+                    "node_id": "a",
+                    "step_id": "a",
+                    "type": "memory_retrieve",
+                    "status": "completed",
+                    "validated_outputs": {"artifact": "parent-memory.json"},
+                    "reused_from_task_run_id": "task_run_parent",
+                }
+            },
+        },
+        "agent_runs": [],
+        "created_at": "2026-07-13T00:00:00+00:00",
+    }
+    (task_dir / "task_run.json").write_text(json.dumps(payload), encoding="utf-8")
+    calls: list[tuple[str, list[str]]] = []
+
+    def execute_builtin(self, *, task_run, step, prior_step_results):
+        calls.append((step["id"], [item["step_id"] for item in prior_step_results]))
+        return {"step_id": step["id"], "type": step["type"], "status": "completed"}
+
+    monkeypatch.setattr(WorkbenchWorkflowRunner, "_execute_builtin_step", execute_builtin)
+    result = WorkbenchWorkflowRunner(root).execute_task_run("task_retry")
+
+    assert calls == [("b", []), ("c", ["a"])]
+    assert result.step_results[0]["reused_from_task_run_id"] == "task_run_parent"

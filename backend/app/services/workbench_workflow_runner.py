@@ -247,9 +247,17 @@ class WorkbenchWorkflowRunner:
             self._emit_step_finished(result)
             return result
 
+        retry_seed_payload = task_run.task_bundle.get("retry_seed_results")
+        if not isinstance(retry_seed_payload, dict):
+            retry_seed_payload = {}
         scheduled = WorkflowDagScheduler(event_sink=self._emit_event).run(
             effective_plan,
             execute_node=execute_node,
+            seed_results={
+                str(node_id): dict(result)
+                for node_id, result in retry_seed_payload.items()
+                if isinstance(result, dict)
+            },
         )
         normalized: list[dict[str, Any]] = []
         for item in scheduled.ordered_results:

@@ -29,6 +29,7 @@ class WorkflowDagScheduler:
         plan: dict[str, Any],
         *,
         execute_node: Callable[[dict[str, Any], dict[str, dict[str, Any]]], dict[str, Any]],
+        seed_results: dict[str, dict[str, Any]] | None = None,
     ) -> WorkflowScheduleResult:
         nodes = {
             str(item.get("node_id") or ""): dict(item)
@@ -49,11 +50,34 @@ class WorkflowDagScheduler:
 
         ordered_results: list[dict[str, Any]] = []
         results: dict[str, dict[str, Any]] = {}
+        reusable = {
+            str(node_id): dict(result)
+            for node_id, result in (seed_results or {}).items()
+            if str(node_id) in nodes
+            and isinstance(result, dict)
+            and str(result.get("status") or "") in SUCCESS_STATUSES
+        }
         stop_remaining = False
         stop_source = ""
         for node_id in order:
             node = nodes[node_id]
             self._emit("node_queued", {"node_id": node_id})
+            if node_id in reusable:
+                reused = reusable[node_id]
+                reused.setdefault("node_id", node_id)
+                reused.setdefault("type", str(node.get("type") or ""))
+                reused.setdefault("validated_outputs", {})
+                reused.setdefault("direct_dependencies", {})
+                results[node_id] = reused
+                ordered_results.append(reused)
+                self._emit(
+                    "node_reused",
+                    {
+                        "node_id": node_id,
+                        "source_task_run_id": str(reused.get("reused_from_task_run_id") or ""),
+                    },
+                )
+                continue
             dependencies = _dependencies(node)
             blocked_by = [
                 dependency

@@ -64,7 +64,10 @@ test("filters a real Task, creates Attempt 2, and clones it without rewriting At
 
   await page.getByRole("button", { name: "启动新运行" }).hover();
   await page.getByRole("button", { name: "启动新运行" }).click();
+  await expect(page).toHaveURL(new RegExp(`/tasks/${taskId}/runs/task_run_`));
   await expect(page.getByText("Attempt 2", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await page.getByRole("link", { name: "返回任务" }).click();
+  await page.getByRole("button", { name: "运行记录" }).click();
   await expect(page.getByText("Attempt 1", { exact: true })).toBeVisible();
 
   await page.getByRole("link", { name: "任务中心" }).first().click();

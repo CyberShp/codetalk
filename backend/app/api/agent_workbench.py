@@ -1286,6 +1286,7 @@ async def list_workflows() -> list[dict[str, Any]]:
     v2_items = {
         header.workflow_id: _v2_workflow_compatibility_response(version_store, header)
         for header in version_store.list_workflows()
+        if not _is_builtin_workflow_id(header.workflow_id)
     }
     merged = [v2_items.pop(str(item.get("id") or ""), item) for item in legacy_items]
     merged.extend(v2_items.values())
@@ -1305,7 +1306,7 @@ async def restore_builtin_workflows() -> dict[str, Any]:
 
 @router.get("/workflows/{workflow_id}")
 async def get_workflow(workflow_id: str) -> dict[str, Any]:
-    if settings.workbench_v2_enabled:
+    if settings.workbench_v2_enabled and not _is_builtin_workflow_id(workflow_id):
         from app.services.workflow_version_store import WorkflowVersionStore
 
         version_store = WorkflowVersionStore(_workbench_dir() / "workflows.db")
@@ -2044,6 +2045,11 @@ async def _execute_task_run_background(
                 {"status": "cancelled", "ignored_before_start": True},
             )
             return
+        event_store.mark_outcomes(
+            task_run_id,
+            quality_status="pending",
+            delivery_status="none",
+        )
         event_store.append(task_run_id, "running", {})
         result = await asyncio.to_thread(
             _execute_task_run_with_closure,
@@ -2079,6 +2085,20 @@ async def _execute_task_run_background(
                 completed_at=datetime.now(timezone.utc).isoformat(),
                 error=redacted,
             )
+            if updated:
+                failed_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+                _, delivery_status = _derive_task_run_outcomes(
+                    execution={"test_activity_quality": {"deliverable": False}},
+                    run_summary=_build_task_run_ui_summary(
+                        failed_run,
+                        Path(failed_run.artifact_dir),
+                    ),
+                )
+                event_store.mark_outcomes(
+                    task_run_id,
+                    quality_status="blocked",
+                    delivery_status=delivery_status,
+                )
             event_store.append(
                 task_run_id,
                 "step_failed" if updated else "cancelled",
@@ -2118,6 +2138,11 @@ async def cancel_task_run(task_run_id: str) -> dict[str, Any]:
         task_run_id,
         "cancelled",
         completed_at=datetime.now(timezone.utc).isoformat(),
+    )
+    event_store.mark_outcomes(
+        task_run_id,
+        quality_status="not_checked",
+        delivery_status="none",
     )
     event_store.append(
         task_run_id,
@@ -2267,8 +2292,65 @@ def _execute_task_run_with_closure(
         response.update(execution_payload)
     write_task_artifact_manifest(task_dir, task_run_id=refreshed.task_run_id)
     response["acceptance_audit"] = acceptance
+    run_summary = _build_task_run_ui_summary(refreshed, task_dir)
+    quality_status, delivery_status = _derive_task_run_outcomes(
+        execution=response,
+        run_summary=run_summary,
+    )
+    WorkbenchTaskRunEventStore(_task_runs_dir()).mark_outcomes(
+        task_run_id,
+        quality_status=quality_status,
+        delivery_status=delivery_status,
+    )
+    refreshed = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    response["quality_status"] = refreshed.quality_status
+    response["delivery_status"] = refreshed.delivery_status
     response["run_ui_summary"] = _build_task_run_ui_summary(refreshed, task_dir)
     return response
+
+
+def _derive_task_run_outcomes(
+    *,
+    execution: dict[str, Any],
+    run_summary: dict[str, Any],
+) -> tuple[str, str]:
+    quality = execution.get("test_activity_quality")
+    if not isinstance(quality, dict):
+        quality_status = "not_checked"
+    elif quality.get("deliverable") is False:
+        quality_status = "blocked"
+    elif int(quality.get("issue_count") or 0) > 0 or str(quality.get("status") or "") in {"warning", "partial"}:
+        quality_status = "warning"
+    elif quality.get("deliverable") is True:
+        quality_status = "passed"
+    else:
+        quality_status = "not_checked"
+
+    expected_outputs: list[dict[str, Any]] = []
+    for node in run_summary.get("nodes") or []:
+        if isinstance(node, dict):
+            expected_outputs.extend(
+                output for output in node.get("outputs") or [] if isinstance(output, dict)
+            )
+    if not expected_outputs:
+        expected_outputs = [
+            item for item in run_summary.get("deliverables") or [] if isinstance(item, dict)
+        ]
+    available = sum(
+        1
+        for output in expected_outputs
+        if str(output.get("status_label") or "")
+        in {"已生成", "已生成但信息不足", "需要复核", "可下载"}
+        and bool(str(output.get("path") or output.get("artifact") or "").strip())
+    )
+    delivery_status = (
+        "none"
+        if not expected_outputs or available == 0
+        else "complete"
+        if available == len(expected_outputs)
+        else "partial"
+    )
+    return quality_status, delivery_status
 
 
 def _materialize_task_run_outputs_if_available(*, task_run: Any) -> dict[str, Any]:

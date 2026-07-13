@@ -302,3 +302,68 @@ created: 2026-07-13
   with the dedicated run route and live event/quality/delivery hierarchy.
 - Next dependency: Phase 6 reads the frozen effective plan and existing public events to present a
   run-focused cockpit without re-deriving Task or Workflow configuration in the browser.
+
+## Phase 6 - Real-Time Run Cockpit
+
+### Before implementation
+
+- Goal: replace the compatibility card stack with one Attempt-focused cockpit where execution,
+  quality, delivery, current node, public Agent output, tools, artifacts, and recovery are visible
+  from the same frozen run and append-only event stream.
+- Expected files: normalized Attempt outcome persistence, retry/diagnostic compatibility APIs,
+  a typed live-event hook, `/tasks/[taskId]/runs/[runId]`, cockpit summary/output/tool/event tabs,
+  node inspector, deliverable/quality sections, diagnostic drawer, Task links, styles, and E2E.
+- Migration impact: no new tables. Newly written run JSON uses the fixed V2 quality and delivery
+  enums; deserialization maps Phase 4 compatibility values without rewriting old artifacts.
+- Compatibility strategy: all data continues through existing task-run, events, artifacts,
+  cancellation, acceptance-audit, and diagnostic-package APIs. `/workbench?task_run_id=` remains a
+  valid legacy entry until Phase 8, while Task-owned Attempts link to the dedicated route.
+- Test plan: status normalization and outcome persistence; real event pagination/SSE; current-node
+  and failure summaries; stdout/stderr/Agent/tool filtering; auto-scroll pause; artifact preview and
+  download; diagnostics collapsed; cancel; failed retry lineage; Task links; desktop containment;
+  frontend lint/build and no-mock browser coverage.
+
+### Result
+
+- Added the Task-owned `/tasks/[taskId]/runs/[runId]` cockpit and moved Task detail and six-step
+  save-and-run navigation away from the compatibility `/workbench?task_run_id=` surface.
+- The fixed header separates execution, quality, and delivery state, Attempt lineage, duration, and
+  current node. The bounded body separates summary, public live output, tool calls, all events, the
+  current-node inspector, deliverables, quality, supporting files, and recovery.
+- Connected the existing append-only SSE endpoint directly. The client merges event IDs, caps the
+  retained window, keeps Agent/output/error/tool event classes distinct, supports search/node/type
+  filters, pause, copy, and user-controlled auto-follow, and never displays private runtime paths.
+- Added artifact preview and download from the public artifact manifest. Deliverables are primary;
+  inputs/support are collapsed; raw snapshot/events and diagnostic artifacts stay in a closed
+  technical drawer with a redacted diagnostic-package download.
+- Failure state now answers the failed node, type, Chinese user-readable reason, retryability, and
+  reuse behavior in the first viewport. Retry creates Attempt N+1 with parent lineage instead of
+  mutating the failed Attempt.
+- Parent retry now reconstructs inputs from the parent's copied file snapshot and freezes the parent
+  effective definition, compiled plan, execution resources, and output contract. The scheduler seeds
+  the child Attempt with successful parent-node results and validated outputs, emits `node_reused`,
+  and executes only failed nodes and affected downstream. Later Task edits do not alter the retry.
+  The canonical `task_run.json` and `task_bundle.json` are written from the same bundle.
+- Normalized legacy outcome values on read and persisted fixed V2 enums. Execution exceptions finish
+  quality as blocked, cancellation resets it to not checked, and delivery counts only outputs whose
+  runtime status proves generation; an artifact declaration alone no longer means delivered.
+- Preserved read-only built-in workflow precedence in both list and detail APIs when V2 is enabled,
+  preventing an old same-ID user shadow from replacing an installed preset.
+- Verification:
+  - Focused retry/outcome/cancel/built-in compatibility tests: passed.
+  - Expanded task-run, workflow runner, scheduler, Task, and API regression: `221 passed`.
+  - Related real browser E2E (cockpit, Task center, six-step Task wizard): `3 passed` after updating
+    the Task-center expectation to the intentional cockpit navigation.
+  - Cockpit E2E used mouse hover/click and a real backend Attempt; no request mocking or route
+    interception. It verified SSE events, pause/resume, collapsed/open diagnostics, bounded desktop
+    layout, `390x844` horizontal containment, and a real child Attempt created by clicking
+    “从失败节点重试” with verified parent lineage and retry-source metadata.
+  - Frontend full ESLint: passed with zero warnings. TypeScript and production build passed; the new
+    dynamic run route is present in the Next.js route manifest.
+  - Screenshots: `output/playwright/phase6/run-cockpit-desktop.png` and
+    `output/playwright/phase6/run-cockpit-mobile.png` (ignored runtime evidence).
+- Compatibility fallback: if a historical parent has no execution snapshot or identifiable failed
+  node, retry still creates a frozen child Attempt but executes the full DAG. Current V2 failures use
+  node-level retry with successful upstream outputs reused from immutable parent artifacts.
+- Next dependency: Phase 7 can link completed run assets into first-class Semantic and Evidence
+  libraries while preserving the public/diagnostic audience boundary introduced here.

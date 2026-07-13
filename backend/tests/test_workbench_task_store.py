@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -198,6 +199,106 @@ def test_task_effective_config_keeps_migrated_terminal_only_output_runnable():
     assert result["compiled_definition"]["outputs"] == definition["outputs"]
 
 
+def test_run_outcomes_keep_quality_and_delivery_independent():
+    from app.api.agent_workbench import _derive_task_run_outcomes
+
+    quality_status, delivery_status = _derive_task_run_outcomes(
+        execution={"test_activity_quality": {"deliverable": True, "issue_count": 1}},
+        run_summary={
+            "nodes": [{
+                "outputs": [
+                    {"artifact": "report.md", "path": "agent/report.md", "status_label": "可下载"},
+                    {"artifact": "cases.json", "path": "agent/cases.json", "status_label": "缺少交付文件"},
+                ]
+            }]
+        },
+    )
+
+    assert quality_status == "warning"
+    assert delivery_status == "partial"
+
+
+def test_retry_seed_results_reuse_only_successful_nodes_before_failure(tmp_path):
+    from app.api.workbench_v2_tasks import _retry_seed_results_from_parent
+
+    parent_dir = tmp_path / "parent"
+    parent_dir.mkdir()
+    (parent_dir / "workflow_execution.json").write_text(
+        json.dumps({
+            "status": "failed",
+            "step_results": [
+                {
+                    "step_id": "discover",
+                    "type": "local_scope_discover",
+                    "status": "completed",
+                    "artifact": "scope.json",
+                    "validated_outputs": {"artifact": "scope.json"},
+                },
+                {"step_id": "analyze", "type": "agent_task", "status": "error"},
+                {"step_id": "report", "type": "report_render", "status": "blocked"},
+            ],
+            "outputs": [],
+        }),
+        encoding="utf-8",
+    )
+    plan = {
+        "nodes": [
+            {"node_id": "discover", "depends_on": []},
+            {"node_id": "analyze", "depends_on": ["discover"]},
+            {"node_id": "report", "depends_on": ["analyze"]},
+        ],
+    }
+
+    seeds, failed_nodes = _retry_seed_results_from_parent(
+        SimpleNamespace(task_run_id="task_run_parent", artifact_dir=str(parent_dir)),
+        plan,
+    )
+
+    assert failed_nodes == ["analyze"]
+    assert set(seeds) == {"discover"}
+    assert seeds["discover"]["reused_from_task_run_id"] == "task_run_parent"
+    assert seeds["discover"]["validated_outputs"] == {"artifact": "scope.json"}
+
+
+@pytest.mark.asyncio
+async def test_background_exception_finishes_quality_in_blocked_state(tmp_path, monkeypatch):
+    from app.api import agent_workbench
+    from app.config import settings
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer, WorkbenchTaskRunStore
+    from app.services.workflow_dsl import WorkflowStore
+
+    data_dir = tmp_path / "data"
+    run_root = data_dir / "workbench" / "task_runs"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+    workflow_store = WorkflowStore(data_dir / "workbench" / "task_workflows.db")
+    workflow_store.save_workflow(_workflow())
+    prepared = WorkbenchTaskRunPreparer(
+        artifact_root=run_root,
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="source-review",
+        workspace_id="ws-1",
+        repo_path=str(repo),
+        inputs={"target": "lib/nvmf"},
+    )
+
+    def fail_execution(**_kwargs):
+        raise RuntimeError("provider transport crashed")
+
+    monkeypatch.setattr(agent_workbench, "_execute_task_run_with_closure", fail_execution)
+    await agent_workbench._execute_task_run_background(
+        task_run_id=prepared.task_run_id,
+        payload=agent_workbench.TaskRunExecuteRequest(),
+    )
+
+    failed = WorkbenchTaskRunStore(run_root).load(prepared.task_run_id)
+    assert failed.execution_status == "failed"
+    assert failed.quality_status == "blocked"
+    assert failed.delivery_status == "none"
+
+
 def test_prepared_runs_persist_task_attempt_metadata_and_legacy_defaults(tmp_path):
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer, WorkbenchTaskRunStore
     from app.services.workflow_dsl import WorkflowStore
@@ -225,8 +326,19 @@ def test_prepared_runs_persist_task_attempt_metadata_and_legacy_defaults(tmp_pat
     assert loaded.attempt_number == 2
     assert loaded.parent_task_run_id == "task_run_parent"
     assert loaded.execution_status == "prepared"
-    assert loaded.quality_status == "not_evaluated"
-    assert loaded.delivery_status == "pending"
+    assert loaded.quality_status == "not_checked"
+    assert loaded.delivery_status == "none"
+
+    from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
+
+    WorkbenchTaskRunEventStore(tmp_path / "task-runs").mark_outcomes(
+        prepared.task_run_id,
+        quality_status="warning",
+        delivery_status="partial",
+    )
+    updated_outcomes = run_store.load(prepared.task_run_id)
+    assert updated_outcomes.quality_status == "warning"
+    assert updated_outcomes.delivery_status == "partial"
 
     legacy_dir = tmp_path / "task-runs" / "task_run_legacy"
     legacy_dir.mkdir()
@@ -287,7 +399,14 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
             "plan_version": 1,
             "workflow_version_id": draft.version_id,
             "topological_order": ["scope"],
-            "nodes": [],
+            "nodes": [
+                {
+                    "node_id": "scope",
+                    "type": "local_scope_discover",
+                    "depends_on": [],
+                    "failure_policy": "stop",
+                }
+            ],
             "max_parallelism": 1,
             "stop_on_error": True,
         },
@@ -320,6 +439,26 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
         compiled = await client.post(f"/api/workbench/tasks/{task_id}/compile")
 
         first = await client.post(f"/api/workbench/tasks/{task_id}/runs", json={})
+        first_run_dir = data_dir / "workbench" / "task_runs" / first.json()["task_run_id"]
+        (first_run_dir / "workflow_execution.json").write_text(
+            json.dumps({
+                "status": "failed",
+                "step_results": [
+                    {"step_id": "scope", "type": "local_scope_discover", "status": "error"}
+                ],
+                "outputs": [],
+            }),
+            encoding="utf-8",
+        )
+        changed_after_first = await client.patch(
+            f"/api/workbench/tasks/{task_id}",
+            json={
+                "input_values": {"target": "lib/changed-after-first"},
+                "output_overrides": {
+                    "outputs": {"report": {"artifact": "changed-after-first.md"}}
+                },
+            },
+        )
         second = await client.post(
             f"/api/workbench/tasks/{task_id}/runs",
             json={"parent_task_run_id": first.json()["task_run_id"]},
@@ -346,6 +485,7 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
         archived = await client.post(f"/api/workbench/tasks/{task_id}/archive")
 
     assert first.status_code == 201
+    assert changed_after_first.status_code == 200
     assert first.json()["attempt_number"] == 1
     assert second.status_code == 201
     assert second.json()["attempt_number"] == 2
@@ -365,7 +505,22 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
     run_bundle = json.loads(
         (data_dir / "workbench" / "task_runs" / first.json()["task_run_id"] / "task_run.json").read_text(encoding="utf-8")
     )["task_bundle"]
+    retried_bundle = json.loads(
+        (data_dir / "workbench" / "task_runs" / second.json()["task_run_id"] / "task_run.json").read_text(encoding="utf-8")
+    )["task_bundle"]
+    retried_bundle_artifact = json.loads(
+        (data_dir / "workbench" / "task_runs" / second.json()["task_run_id"] / "task_bundle.json").read_text(encoding="utf-8")
+    )
     assert run_bundle["effective_compiled_definition"]["outputs"][0]["artifact"] == "task-report.md"
+    assert retried_bundle["inputs"]["target"] == "lib/nvmf"
+    assert retried_bundle["effective_compiled_definition"]["outputs"][0]["artifact"] == "task-report.md"
+    assert retried_bundle["retry_source"] == {
+        "task_run_id": first.json()["task_run_id"],
+        "mode": "from_failed_node",
+        "failed_node_ids": ["scope"],
+    }
+    assert retried_bundle["retry_seed_results"] == {}
+    assert retried_bundle_artifact == retried_bundle
     assert published.compiled_definition["outputs"][0]["artifact"] == "report.md"
 
 

@@ -109,3 +109,25 @@ created: 2026-07-13
 - Decision: preserve a migrated output with no artifact when it is not customized. New Task-only and
   customized file outputs still require safe unique artifact paths; custom JSON also requires Schema.
 - Consequence: V2 validation remains strict for new work without making historical workflows unusable.
+
+## D011 - Run State Has Three Independent Outcomes
+
+- Status: accepted
+- Context: one overloaded status made a failed execution look like a failed delivery, left cancelled
+  quality checks pending, and let declared artifact filenames appear as completed deliverables.
+- Decision: persist execution, quality, and delivery independently. Compatibility values normalize
+  only on read; output delivery requires a positive runtime generation status, not just a contract.
+- Consequence: the cockpit can report “execution failed / quality blocked / no delivery” without
+  inventing one aggregate state, and historical artifacts remain readable without rewrite.
+
+## D012 - Retry Creates A Frozen Child Attempt
+
+- Status: accepted
+- Context: re-running in the same artifact directory destroys history, while compiling the current
+  mutable Task can silently change the user's original inputs, Agent resources, or output contract.
+- Decision: retry creates Attempt N+1, records `parent_task_run_id`, reconstructs file inputs from the
+  parent's copied snapshot, and reuses the parent's effective definition and compiled plan.
+- Consequence: the failed Attempt remains immutable and reproducible. The child scheduler reuses
+  successful parent results and their validated artifact references, starts at failed nodes, and
+  reruns affected downstream nodes. Old runs without an execution snapshot fall back to full-DAG
+  execution without pretending that node-level resume occurred.

@@ -9,11 +9,13 @@ export const taskExecutionLabels: Record<string, string> = {
 };
 
 export const taskQualityLabels: Record<string, string> = {
-  not_evaluated: "未评估", passed: "通过", failed: "未通过", warning: "有警告",
+  not_checked: "未检查", pending: "检查中", passed: "通过", warning: "有警告", blocked: "已阻断",
+  not_evaluated: "未检查", failed: "已阻断",
 };
 
 export const taskDeliveryLabels: Record<string, string> = {
-  pending: "待交付", ready: "可交付", partial: "部分交付", failed: "交付失败",
+  none: "暂无交付", partial: "部分交付", complete: "交付完整",
+  pending: "暂无交付", ready: "交付完整", failed: "部分交付",
 };
 
 export function taskStatusLabel(labels: Record<string, string>, value: string) {

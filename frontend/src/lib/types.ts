@@ -931,10 +931,28 @@ export interface PreparedAgentRun {
 
 export interface PreparedWorkbenchTaskRun {
   task_run_id: string;
+  task_id?: string;
+  attempt_number?: number;
+  parent_task_run_id?: string;
   workflow_id: string;
   workspace_id: string;
   repo_path: string;
   status?: string;
+  execution_status?: string;
+  quality_status?: string;
+  delivery_status?: string;
+  started_at?: string;
+  completed_at?: string;
+  runtime?: {
+    status?: string;
+    updated_at?: string;
+    started_at?: string;
+    completed_at?: string;
+  };
+  acceptance_audit?: {
+    status?: string;
+    summary?: Record<string, unknown>;
+  };
   artifact_dir: string;
   workflow_snapshot: Record<string, unknown>;
   input_snapshot: Record<string, unknown>;
@@ -951,6 +969,7 @@ export interface WorkbenchTaskRunEvent {
     | "status"
     | "done"
     | "artifact"
+    | "output"
     | "error"
     | "thinking"
     | "reasoning"

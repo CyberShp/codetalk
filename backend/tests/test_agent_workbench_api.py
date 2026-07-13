@@ -1056,7 +1056,10 @@ async def test_builtin_workflow_read_path_does_not_overwrite_or_trust_user_shado
     assert "local_scope_discover" in {
         step["type"] for step in loaded.json()["steps"]
     }
-    assert [item["id"] for item in listed.json()].count("module_analysis") == 1
+    listed_builtin = [item for item in listed.json() if item["id"] == "module_analysis"]
+    assert len(listed_builtin) == 1
+    assert listed_builtin[0]["name"] != "Shadowed Module Analysis"
+    assert listed_builtin[0]["version"] != 77
     assert store.get_workflow("module_analysis").raw["name"] == "Shadowed Module Analysis"
 
 
@@ -3266,6 +3269,11 @@ async def test_workbench_task_run_cancel_running_execution_keeps_cancelled_statu
         json={"timeout_sec": 10},
     )
     assert scheduled.status_code == 202
+    from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
+
+    WorkbenchTaskRunEventStore(
+        settings.data_path / "workbench" / "task_runs"
+    ).mark_outcomes(task_run_id, quality_status="pending", delivery_status="none")
 
     cancelled = await workbench_client.post(f"/api/workbench/task-runs/{task_run_id}/cancel")
     assert cancelled.status_code == 200
@@ -3294,6 +3302,8 @@ async def test_workbench_task_run_cancel_running_execution_keeps_cancelled_statu
     loaded = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}")
     assert loaded.status_code == 200
     assert loaded.json()["status"] == "cancelled"
+    assert loaded.json()["quality_status"] == "not_checked"
+    assert loaded.json()["delivery_status"] == "none"
     assert loaded.json()["run_ui_summary"]["status_label"] == "已取消"
     assert loaded.json()["run_ui_summary"]["failure"]["reasons"] == []
     events = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/events")

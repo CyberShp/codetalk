@@ -158,6 +158,27 @@ class WorkbenchTaskRunEventStore:
                     return status
         return "prepared"
 
+    def mark_outcomes(
+        self,
+        task_run_id: str,
+        *,
+        quality_status: str,
+        delivery_status: str,
+    ) -> dict[str, Any]:
+        if quality_status not in {"not_checked", "pending", "passed", "warning", "blocked"}:
+            raise ValueError(f"invalid quality status: {quality_status}")
+        if delivery_status not in {"none", "partial", "complete"}:
+            raise ValueError(f"invalid delivery status: {delivery_status}")
+        with _LOCK:
+            task_path = self._task_path(task_run_id)
+            payload = _read_json(task_path)
+            if not isinstance(payload, dict):
+                raise KeyError(task_run_id)
+            payload["quality_status"] = quality_status
+            payload["delivery_status"] = delivery_status
+            _write_json(task_path, payload)
+            return payload
+
     def _events_path(self, task_run_id: str) -> Path:
         return self.artifact_root / _safe_segment(task_run_id) / "task_run_events.jsonl"
 
@@ -260,6 +281,7 @@ def _public_event_kind(event: dict[str, Any]) -> str:
     if event_type in {
         "queued", "running", "step_started", "step_completed", "cancelled", "interrupted",
         "node_queued", "node_started", "node_progress", "node_completed", "node_blocked",
+        "node_reused",
         "quality_started", "quality_completed",
     }:
         return "status"
