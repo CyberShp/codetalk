@@ -89,3 +89,23 @@ created: 2026-07-13
 - Consequence: one Task can own many immutable Attempts without duplicating artifacts; legacy runs
   remain readable as history, and execution/quality/delivery state can evolve independently while old
   `status`/`runtime` consumers continue working for one release cycle.
+
+## D009 - Task Overrides Compile As A Pure Projection
+
+- Status: accepted
+- Context: per-run Agent, Skills, MCP, and output changes must not mutate the Published Version or
+  become an unstructured second workflow definition.
+- Decision: store only explicit `inherit`/`replace` directives and Task-only output contracts. The
+  server deep-copies and validates the Published Version, compiles an effective definition and plan,
+  and freezes both in every Attempt.
+- Consequence: empty overrides preserve defaults, retries can reproduce the original configuration,
+  and the UI can restore a default without reconstructing the workflow.
+
+## D010 - Migrated Terminal-Only Outputs Stay Runnable
+
+- Status: accepted
+- Context: some historical read-only definitions expose terminal output without an artifact filename,
+  while V2 output nodes require explicit downloadable artifacts.
+- Decision: preserve a migrated output with no artifact when it is not customized. New Task-only and
+  customized file outputs still require safe unique artifact paths; custom JSON also requires Schema.
+- Consequence: V2 validation remains strict for new work without making historical workflows unusable.

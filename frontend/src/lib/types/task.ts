@@ -36,6 +36,12 @@ export interface WorkbenchTask {
   created_at: string;
   updated_at: string;
   archived_at: string | null;
+  workflow_version?: {
+    version_id: string;
+    version_number: number;
+    compiled_definition: Record<string, unknown>;
+    compiled_plan: Record<string, unknown>;
+  };
 }
 
 export interface WorkbenchTaskListQuery {

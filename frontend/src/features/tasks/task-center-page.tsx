@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Archive, Copy, ExternalLink, History, Search } from "lucide-react";
+import { Archive, Copy, ExternalLink, History, Plus, Search } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { workbenchTasksApi } from "@/lib/api/workbench-tasks";
@@ -59,7 +59,7 @@ export function TaskCenterPage() {
   const toggleHistory = async () => { if (history) { setHistory(null); return; } try { setHistory((await workbenchTasksApi.history()).items); } catch (cause) { setError(cause instanceof Error ? cause.message : "历史运行加载失败"); } };
 
   return <main className="ct-v2-library ct-v2-task-center">
-    <header className="ct-v2-page-header"><div><span className="ct-v2-eyebrow">Workbench V2</span><h1>任务中心</h1><p>任务保存一次分析意图；每次运行都会形成独立、可追溯的 Attempt。</p></div><button type="button" onClick={() => void toggleHistory()}><History size={15} />历史运行</button></header>
+    <header className="ct-v2-page-header"><div><span className="ct-v2-eyebrow">Workbench V2</span><h1>任务中心</h1><p>任务保存一次分析意图；每次运行都会形成独立、可追溯的 Attempt。</p></div><div className="ct-v2-page-actions"><button type="button" onClick={() => void toggleHistory()}><History size={15} />历史运行</button><Link className="ct-v2-primary-button" href="/tasks/new"><Plus size={15} />新建任务</Link></div></header>
     <section className="ct-v2-task-filters" aria-label="任务筛选">
       <label className="ct-v2-search-field"><Search size={15} /><input aria-label="搜索任务" value={query.q} onChange={(event) => setFilter("q", event.target.value)} placeholder="搜索任务名称、描述或标签" /></label>
       <label><span>生命周期</span><select value={query.lifecycle_status} onChange={(event) => setFilter("lifecycle_status", event.target.value)}><option value="">全部</option><option value="draft">草稿</option><option value="ready">就绪</option><option value="archived">已归档</option></select></label>

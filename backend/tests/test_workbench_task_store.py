@@ -12,8 +12,8 @@ def _workflow() -> dict:
         "name": "Source review",
         "version": 1,
         "inputs": [{"id": "target", "type": "text", "required": True}],
-        "steps": [{"id": "scope", "type": "local_scope_discover"}],
-        "outputs": [{"id": "report", "type": "markdown", "from": "scope"}],
+        "steps": [{"id": "scope", "type": "local_scope_discover", "required_artifacts": ["report.md"]}],
+        "outputs": [{"id": "report", "type": "markdown", "from": "scope", "artifact": "report.md", "required": True}],
     }
 
 
@@ -85,6 +85,117 @@ def test_task_store_rejects_workflow_identity_mutation(tmp_path):
         assert "workflow_version_id" in str(exc)
     else:
         raise AssertionError("workflow version mutation must be rejected")
+
+
+def test_task_effective_config_uses_explicit_replace_and_keeps_workflow_immutable():
+    from app.services.workbench_task_compile import compile_task_configuration
+
+    definition = {
+        "id": "flow",
+        "name": "Flow",
+        "version": 1,
+        "inputs": [],
+        "steps": [{
+            "id": "analyze", "type": "agent_task", "provider": "builtin-llm",
+            "mcp_profiles": ["gitnexus"], "skills": ["source-evidence-first"],
+            "required_artifacts": ["report.md"],
+        }],
+        "outputs": [{"id": "report", "type": "markdown", "from": "analyze", "artifact": "report.md", "required": True}],
+    }
+    plan = {
+        "plan_version": 1,
+        "workflow_version_id": "wfv-1",
+        "topological_order": ["analyze"],
+        "nodes": [{
+            "node_id": "analyze", "provider": "builtin-llm", "mcp_profiles": ["gitnexus"],
+            "skill_ids": ["source-evidence-first"], "output_contracts": [definition["outputs"][0]],
+        }],
+    }
+
+    compiled = compile_task_configuration(
+        compiled_definition=definition,
+        compiled_plan=plan,
+        execution_overrides={
+            "nodes": {
+                "analyze": {
+                    "provider": {"mode": "inherit"},
+                    "mcp_profiles": {"mode": "replace", "value": ["cgc"]},
+                    "skill_ids": {"mode": "replace", "value": ["sfmea-analysis"]},
+                }
+            }
+        },
+        output_overrides={
+            "outputs": {"report": {"label": "测试报告", "artifact": "task-report.md", "enabled": True}},
+            "custom_outputs": [{
+                "id": "trace", "label": "调用链", "type": "markdown", "from": "analyze",
+                "artifact": "trace.md", "required": False,
+            }],
+        },
+    )
+
+    step = compiled["compiled_definition"]["steps"][0]
+    assert step["provider"] == "builtin-llm"
+    assert step["mcp_profiles"] == ["cgc"]
+    assert step["skills"] == ["sfmea-analysis"]
+    assert step["required_artifacts"] == ["task-report.md"]
+    assert [item["artifact"] for item in compiled["compiled_definition"]["outputs"]] == ["task-report.md", "trace.md"]
+    assert definition["steps"][0]["mcp_profiles"] == ["gitnexus"]
+    assert definition["outputs"][0]["artifact"] == "report.md"
+
+
+def test_task_effective_config_rejects_required_disable_unsafe_and_unknown_source():
+    from app.services.workbench_task_compile import TaskConfigurationError, compile_task_configuration
+
+    definition = {
+        "id": "flow", "name": "Flow", "version": 1, "inputs": [],
+        "steps": [{"id": "analyze", "type": "agent_task", "required_artifacts": ["report.md"]}],
+        "outputs": [{"id": "report", "type": "markdown", "from": "analyze", "artifact": "report.md", "required": True}],
+    }
+    plan = {"topological_order": ["analyze"], "nodes": [{"node_id": "analyze", "output_contracts": definition["outputs"]}]}
+
+    for output_overrides, marker in [
+        ({"outputs": {"report": {"enabled": False}}}, "必需输出"),
+        ({"outputs": {"report": {"artifact": "../escape.md"}}}, "artifact"),
+        ({"custom_outputs": [{"id": "extra", "type": "markdown", "from": "missing", "artifact": "extra.md"}]}, "来源节点"),
+        ({"custom_outputs": [{"id": "extra", "type": "json", "from": "analyze", "artifact": "extra.json"}]}, "Schema"),
+    ]:
+        with pytest.raises(TaskConfigurationError, match=marker):
+            compile_task_configuration(
+                compiled_definition=definition,
+                compiled_plan=plan,
+                execution_overrides={},
+                output_overrides=output_overrides,
+            )
+
+    for execution_overrides, marker in [
+        ({"nodes": {"analyze": {"skill_ids": {"mode": "replace", "value": "sfmea"}}}}, "字符串数组"),
+        ({"nodes": {"analyze": {"timeout_sec": {"mode": "replace", "value": 0}}}}, "正整数"),
+        ({"nodes": {"analyze": {"failure_policy": {"mode": "replace", "value": "ignore"}}}}, "不受支持"),
+    ]:
+        with pytest.raises(TaskConfigurationError, match=marker):
+            compile_task_configuration(
+                compiled_definition=definition,
+                compiled_plan=plan,
+                execution_overrides=execution_overrides,
+                output_overrides={},
+            )
+
+
+def test_task_effective_config_keeps_migrated_terminal_only_output_runnable():
+    from app.services.workbench_task_compile import compile_task_configuration
+
+    definition = {
+        "steps": [{"id": "scope", "type": "local_scope_discover"}],
+        "outputs": [{"id": "report", "type": "markdown", "from": "scope"}],
+    }
+    result = compile_task_configuration(
+        compiled_definition=definition,
+        compiled_plan={"nodes": [{"node_id": "scope", "output_contracts": []}]},
+        execution_overrides={},
+        output_overrides={},
+    )
+
+    assert result["compiled_definition"]["outputs"] == definition["outputs"]
 
 
 def test_prepared_runs_persist_task_attempt_metadata_and_legacy_defaults(tmp_path):
@@ -197,11 +308,16 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
                 "workflow_version_id": published.version_id,
                 "lifecycle_status": "ready",
                 "input_values": {"target": "lib/nvmf"},
+                "output_overrides": {
+                    "outputs": {"report": {"artifact": "task-report.md", "label": "Task report"}}
+                },
                 "tags": ["storage"],
             },
         )
         assert created.status_code == 201
         task_id = created.json()["task_id"]
+
+        compiled = await client.post(f"/api/workbench/tasks/{task_id}/compile")
 
         first = await client.post(f"/api/workbench/tasks/{task_id}/runs", json={})
         second = await client.post(
@@ -244,6 +360,13 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
     assert "取消" in archive_blocked.json()["detail"]
     assert archived.status_code == 200
     assert archived.json()["lifecycle_status"] == "archived"
+    assert compiled.status_code == 200
+    assert compiled.json()["compiled_definition"]["outputs"][0]["artifact"] == "task-report.md"
+    run_bundle = json.loads(
+        (data_dir / "workbench" / "task_runs" / first.json()["task_run_id"] / "task_run.json").read_text(encoding="utf-8")
+    )["task_bundle"]
+    assert run_bundle["effective_compiled_definition"]["outputs"][0]["artifact"] == "task-report.md"
+    assert published.compiled_definition["outputs"][0]["artifact"] == "report.md"
 
 
 @pytest.mark.asyncio

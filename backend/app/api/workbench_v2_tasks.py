@@ -18,6 +18,7 @@ from app.services.test_semantic_library import TestSemanticLibraryStore
 from app.services.workbench_task_run import WorkbenchTaskRunPreparer, WorkbenchTaskRunStore
 from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
 from app.services.workbench_task_store import WorkbenchTask, WorkbenchTaskStore
+from app.services.workbench_task_compile import TaskConfigurationError, compile_task_configuration
 from app.services.workflow_dsl import WorkflowStore
 from app.services.workflow_version_store import WorkflowVersionStore
 
@@ -134,6 +135,11 @@ async def create_task(payload: TaskCreateRequest) -> dict[str, Any]:
     _workspace(payload.workspace_id)
     if payload.lifecycle_status == "ready":
         _validate_ready_inputs(version.compiled_definition or {}, payload.input_values)
+    _effective_configuration_payload(
+        version=version,
+        execution_overrides=payload.execution_overrides,
+        output_overrides=payload.output_overrides,
+    )
     try:
         task = task_store().create_task(**payload.model_dump())
     except (sqlite3.IntegrityError, ValueError) as exc:
@@ -145,7 +151,17 @@ async def create_task(payload: TaskCreateRequest) -> dict[str, Any]:
 async def get_task(task_id: str) -> dict[str, Any]:
     _require_v2()
     task = _task(task_id)
-    return {**_task_payload(task), "runs": [_run_summary(run) for run in _task_runs(task_id)]}
+    version = _published_version(task.workflow_id, task.workflow_version_id)
+    return {
+        **_task_payload(task),
+        "runs": [_run_summary(run) for run in _task_runs(task_id)],
+        "workflow_version": {
+            "version_id": version.version_id,
+            "version_number": version.version_number,
+            "compiled_definition": version.compiled_definition,
+            "compiled_plan": version.compiled_plan,
+        },
+    }
 
 
 @router.patch("/{task_id}")
@@ -157,6 +173,13 @@ async def update_task(task_id: str, payload: TaskUpdateRequest) -> dict[str, Any
         version = _published_version(current.workflow_id, current.workflow_version_id)
         values = changes.get("input_values", current.input_values)
         _validate_ready_inputs(version.compiled_definition or {}, values)
+    if any(key in changes for key in {"execution_overrides", "output_overrides"}):
+        version = _published_version(current.workflow_id, current.workflow_version_id)
+        _effective_configuration_payload(
+            version=version,
+            execution_overrides=changes.get("execution_overrides", current.execution_overrides),
+            output_overrides=changes.get("output_overrides", current.output_overrides),
+        )
     try:
         return _task_payload(task_store().update_task(task_id, **changes))
     except ValueError as exc:
@@ -190,6 +213,23 @@ async def list_task_attempts(task_id: str) -> dict[str, Any]:
     return {"items": [_run_summary(run) for run in _task_runs(task_id)]}
 
 
+@router.post("/{task_id}/compile")
+async def compile_task(task_id: str) -> dict[str, Any]:
+    _require_v2()
+    task = _task(task_id)
+    version = _published_version(task.workflow_id, task.workflow_version_id)
+    _validate_ready_inputs(version.compiled_definition or {}, task.input_values)
+    effective = _effective_configuration_payload(
+        version=version,
+        execution_overrides=task.execution_overrides,
+        output_overrides=task.output_overrides,
+    )
+    return {
+        **effective,
+        "validation": {"valid": True, "errors": [], "warnings": []},
+    }
+
+
 @router.post("/{task_id}/runs", status_code=201)
 async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> dict[str, Any]:
     _require_v2()
@@ -201,8 +241,13 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
     repo_path = Path(str(workspace["repo_path"])).expanduser().resolve()
     if not repo_path.is_dir():
         raise HTTPException(status_code=422, detail=f"工作空间源码目录不可用：{repo_path}")
-    if not version.compiled_definition or not version.compiled_plan:
-        raise HTTPException(status_code=422, detail="工作流发布版本没有可执行编译计划")
+    effective = _effective_configuration_payload(
+        version=version,
+        execution_overrides=task.execution_overrides,
+        output_overrides=task.output_overrides,
+    )
+    effective_definition = effective["compiled_definition"]
+    effective_plan = effective["compiled_plan"]
 
     with _ATTEMPT_LOCK:
         previous = _task_runs(task_id)
@@ -211,12 +256,12 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
         if parent_run_id and not any(run.task_run_id == parent_run_id for run in previous):
             raise HTTPException(status_code=422, detail="父运行不属于当前任务")
         resolved_inputs = dict(task.input_values)
-        for definition in version.compiled_definition.get("inputs") or []:
+        for definition in effective_definition.get("inputs") or []:
             if str(definition.get("resolver") or "") == "workspace":
                 resolved_inputs[str(definition["id"])] = str(repo_path)
-        _validate_ready_inputs(version.compiled_definition, resolved_inputs)
+        _validate_ready_inputs(effective_definition, resolved_inputs)
         workflow_store = WorkflowStore(settings.data_path / "workbench" / "task_workflows.db")
-        workflow_store.save_workflow(version.compiled_definition)
+        workflow_store.save_workflow(effective_definition)
         try:
             prepared = WorkbenchTaskRunPreparer(
                 artifact_root=settings.data_path / "workbench" / "task_runs",
@@ -235,7 +280,8 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=f"任务输入不完整或无效：{exc}") from exc
         prepared.task_bundle["workflow_version_id"] = version.version_id
-        prepared.task_bundle["compiled_plan"] = version.compiled_plan
+        prepared.task_bundle["compiled_plan"] = effective_plan
+        prepared.task_bundle["effective_compiled_definition"] = effective_definition
         prepared.task_bundle["execution_overrides"] = task.execution_overrides
         prepared.task_bundle["output_overrides"] = task.output_overrides
         _write_run(prepared)
@@ -288,6 +334,20 @@ def _validate_ready_inputs(definition: dict[str, Any], values: dict[str, Any]) -
             missing.append(str(item.get("label") or item.get("id") or "未命名输入"))
     if missing:
         raise HTTPException(status_code=422, detail=f"任务缺少必填输入：{'、'.join(missing)}")
+
+
+def _effective_configuration_payload(*, version: Any, execution_overrides: dict[str, Any], output_overrides: dict[str, Any]) -> dict[str, Any]:
+    if not version.compiled_definition or not version.compiled_plan:
+        raise HTTPException(status_code=422, detail="工作流发布版本没有可执行编译计划")
+    try:
+        return compile_task_configuration(
+            compiled_definition=version.compiled_definition,
+            compiled_plan=version.compiled_plan,
+            execution_overrides=execution_overrides,
+            output_overrides=output_overrides,
+        )
+    except TaskConfigurationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _task_runs(task_id: str) -> list[Any]:

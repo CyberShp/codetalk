@@ -248,3 +248,57 @@ created: 2026-07-13
   recovery, and final compile are intentionally deferred to Phase 5.
 - Next dependency: Phase 5 consumes the immutable Task store and published workflow contracts to
   implement the six-step task wizard without changing Task/Attempt identity or old run artifacts.
+
+## Phase 5 - Six-Step Task Wizard And Effective Configuration
+
+### Before implementation
+
+- Goal: let normal users create a Task from a Published Workflow Version through six bounded steps,
+  while advanced users can explicitly replace per-node execution resources and customize allowed
+  outputs without mutating the workflow version.
+- Expected files: a task effective-configuration compiler/validator, Task compile API and run adapter,
+  override/output unit and API tests, six-step `/tasks/new` UI, dynamic input/upload controls, draft
+  recovery, review/run actions, focused styles, and a real browser E2E.
+- Migration impact: none. Existing Task JSON columns store the structured overrides; every Attempt
+  freezes the resulting effective definition and plan in its existing artifact bundle.
+- Compatibility strategy: empty overrides mean complete inheritance. Arrays use only explicit
+  `inherit` or `replace`; required workflow outputs cannot be disabled; legacy tasks/runs and
+  published versions are not modified. Existing input upload and execution APIs remain authoritative.
+- Test plan: inherit/replace semantics, required-output protection, artifact path safety, custom
+  output isolation, required input validation, workflow default immutability, draft save/refresh,
+  six wizard blockers, final compile, save-ready, save-and-run, frontend build, and real Playwright.
+
+### Result
+
+- Added a pure effective-configuration compiler. It deep-copies the Published Workflow Version,
+  applies only explicit node-level `inherit`/`replace` directives, updates both the executable
+  definition and DAG plan, synchronizes renamed required artifacts, and never edits the version.
+- Added output-level enable/rename controls and Task-only outputs with source-node, artifact path,
+  type, and JSON Schema validation. Required outputs cannot be disabled; duplicate and unsafe
+  artifact paths fail before a run is prepared.
+- Added Task compile validation and changed Attempt preparation to freeze the effective definition,
+  effective plan, inputs, and overrides into the run bundle. Empty overrides remain full inheritance.
+- Added a six-step `/tasks/new` experience for published workflow selection, Task/workspace metadata,
+  dynamic inputs and uploads, execution confirmation/override, output confirmation/customization,
+  and final review. Draft IDs and current steps survive refresh through server state and the URL.
+- Provider choices come from runtime settings and are limited to artifact-capable executors. Skills
+  and MCP Profiles use bounded searchable structured selectors; changing Provider recalculates MCP
+  choices. File-set inputs support multiple real uploads instead of storing only the first file.
+- Normal users can run the workflow defaults without touching execution configuration. Advanced
+  users can switch Agent, Skills, MCP, output names/files, and add schema-backed outputs without JSON.
+- Compatibility: migrated terminal-only outputs without an artifact remain runnable, while every
+  new Task-only JSON output requires a Schema and every new file output keeps strict path checks.
+- Verification:
+  - Task store/effective compiler/API compatibility: `8 passed`.
+  - Real no-mock six-step browser E2E: `1 passed` after proving required-input blocking, refresh
+    recovery, Codex/SFMEA override, output customization, final server compile, and version immutability.
+  - Manual browser pass repeated the same flow against the persistent local runtime and saved a
+    ready Task with two effective artifacts while the Published Version remained unchanged.
+  - Frontend ESLint: passed with zero warnings.
+  - Frontend TypeScript and production build: passed.
+  - Desktop visual inspection at `1440x900`: bounded selectors, footer, and content fit without
+    overlap or horizontal overflow. Screenshot: `output/playwright/phase5/task-wizard-execution.png`.
+- Known limitation: the final action enters the Phase 4 compatibility cockpit. Phase 6 replaces it
+  with the dedicated run route and live event/quality/delivery hierarchy.
+- Next dependency: Phase 6 reads the frozen effective plan and existing public events to present a
+  run-focused cockpit without re-deriving Task or Workflow configuration in the browser.

@@ -200,6 +200,7 @@ export interface WorkflowProviderCapability {
   capabilities?: {
     mcp_profiles?: string[];
     supports_mcp?: boolean;
+    supports_artifact_export?: boolean;
   };
 }
 
