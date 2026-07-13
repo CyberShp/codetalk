@@ -4533,6 +4533,48 @@ class TestAgentRuntimes:
             "TOOL: exit_code: 0\n"
             "TOOL: lib/nvmf/ctrlr.c: spdk_nvmf_connect"
         )
+        assert (
+            _parse_event_text(
+                json.dumps(
+                    {
+                        "type": "item.updated",
+                        "item": {
+                            "type": "command_execution",
+                            "command": "rg spdk_nvmf_connect lib/nvmf",
+                            "status": "in_progress",
+                            "aggregated_output": "\n".join(
+                                f"lib/nvmf/ctrlr.c:{line}: spdk_nvmf_connect"
+                                for line in range(200)
+                            ),
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                "stream_json",
+            )
+            is None
+        )
+        compacted = _parse_event_text(
+            json.dumps(
+                {
+                    "type": "item.completed",
+                    "item": {
+                        "type": "command_execution",
+                        "command": "rg spdk_nvmf_connect lib/nvmf",
+                        "status": "completed",
+                        "exit_code": 0,
+                        "aggregated_output": "\n".join(f"source line {line}" for line in range(200)),
+                    },
+                },
+                ensure_ascii=False,
+            ),
+            "stream_json",
+        )
+        assert compacted is not None
+        assert "TOOL: source line 0" in compacted
+        assert "TOOL: ... 194 lines omitted ..." in compacted
+        assert "TOOL: source line 199" in compacted
+        assert "source line 100" not in compacted
         assert _parse_event_text(json.dumps({"type": "message_start", "index": 0}), "stream_json") == ""
         assert (
             _parse_event_text(
@@ -5792,6 +5834,11 @@ class TestAgentRuntimes:
             "stream disconnected - retrying sampling request (3/5 in 400ms)\n"
             "2026-07-10T15:58:04Z ERROR codex_core_plugins::manifest: "
             "failed to parse plugin manifest\n"
+            "2026-07-10T15:58:05Z ERROR codex_models_manager::cache: "
+            "failed to write models cache: Operation not permitted (os error 1)\n"
+            "2026-07-10T15:58:06Z ERROR codex_core_skills::loader: "
+            "failed to read skills symlink dir /repo/.codex/skills/example: "
+            "Operation not permitted (os error 1)\n"
         )
 
         assert lines == [

@@ -1111,10 +1111,14 @@ ARTIFACT_TEMPLATES: dict[str, dict[str, Any]] = {
     "source_reading_plan.md": {"preview": "markdown", "sections": ["阅读目标", "阅读顺序", "证据缺口"], "required_fields": ["target", "read_order", "evidence_policy"]},
     "module_map.md": {"preview": "markdown", "sections": ["模块边界", "入口", "依赖", "测试映射"], "required_fields": ["module", "entries", "test_mapping"]},
     "business_flow.md": {"preview": "markdown", "sections": ["外部触发", "流程步骤", "异常分支", "观测点"], "required_fields": ["steps", "evidence"]},
+    "flow_map.md": {"preview": "markdown", "sections": ["外部触发", "流程步骤", "异常分支", "观测点"], "required_fields": ["steps", "evidence"]},
     "tester_code_understanding.md": {"preview": "markdown", "sections": ["测试视角摘要", "可观测行为", "不可直接依赖的内部细节"], "required_fields": ["observable_behavior", "boundaries"]},
     "sfmea.json": {
         "preview": "table",
         "required_fields": ["failure_mode", "cause", "effect", "detection", "severity", "occurrence", "detection_score", "rpn", "score_explanation", "mitigation", "source_evidence", "test_mapping"],
+        "field_rules": {
+            "mitigation": "每条 mitigation 必须同时包含具体整改动作，以及可执行的测试、监控或日志验证动作。",
+        },
         "schema": {"type": "array"},
     },
     "black_box_cases.json": {
@@ -1220,6 +1224,28 @@ def build_test_activity_contract(
     }
 
 
+def refresh_test_activity_contract(
+    contract: dict[str, Any],
+    *,
+    declared_artifacts: list[str],
+) -> dict[str, Any]:
+    """Upgrade artifact rules for a saved task while preserving its domain analysis."""
+    refreshed = dict(contract or {})
+    declared = _unique_strings(
+        str(item).strip()
+        for item in declared_artifacts
+        if str(item).strip() in ARTIFACT_TEMPLATES
+    )
+    if not declared:
+        return refreshed
+    refreshed["required_outputs"] = declared
+    refreshed["artifact_contract"] = {
+        artifact: _artifact_contract_payload(artifact, ARTIFACT_TEMPLATES[artifact])
+        for artifact in declared
+    }
+    return refreshed
+
+
 def audit_test_activity_artifacts(
     *,
     artifact_dir: str | Path,
@@ -1313,7 +1339,12 @@ def audit_test_activity_response(
             )
         )
 
-    if "business_flow.md" in required_outputs:
+    flow_artifact = (
+        "flow_map.md"
+        if "flow_map.md" in required_outputs
+        else "business_flow.md"
+    )
+    if required_outputs & {"business_flow.md", "flow_map.md"}:
         numbered_steps = re.findall(r"(?m)^\s*(?:\d+[.)]|步骤\s*\d+)\s*", text)
         named_flows = re.findall(
             r"(?mi)^\s*#{2,6}\s*(?:流程|flow)\s*(?:[a-z]|\d+|[一二三四五六七八九十]+)\s*[:：.)、-]",
@@ -1340,7 +1371,7 @@ def audit_test_activity_response(
             issues.append(
                 _issue(
                     "missing_combined_business_flow",
-                    "business_flow.md",
+                    flow_artifact,
                     "组合交付件缺少至少 3 步的代码流程与异常/恢复说明",
                 )
             )
@@ -1476,7 +1507,7 @@ def audit_test_activity_response(
             path
             for path in evidence_paths
             if path not in proposed_paths
-            and not (repo / path).exists()
+            and not _repo_path_exists(repo, path)
             and not _looks_like_runtime_generated_path(path)
         ]
         for path in missing_paths:
@@ -2649,6 +2680,10 @@ def _requested_outputs(outputs: list[dict[str, Any]], text: str) -> list[str]:
                 item in requested for item in ("black_box_cases.json", "black_box_cases.md")
             ):
                 continue
+            if artifact == "business_flow.md" and any(
+                item in requested for item in ("business_flow.md", "flow_map.md")
+            ):
+                continue
             requested.append(artifact)
     return _unique_strings(requested or ["business_flow.md", "sfmea.json", "black_box_cases.json"])
 
@@ -2672,6 +2707,8 @@ def _artifact_contract_payload(artifact: str, template: dict[str, Any]) -> dict[
         payload["required_dimensions"] = [
             str(item) for item in template["required_dimensions"] if str(item).strip()
         ]
+    if isinstance(template.get("field_rules"), dict):
+        payload["field_rules"] = dict(template["field_rules"])
     return payload
 
 
@@ -2932,13 +2969,14 @@ def _audit_sfmea_scores(
 _SFMEA_REMEDIATION_ACTION_RE = re.compile(
     r"(?i)\b("
     r"fix|release|reset|bound|limit|lock|retry|rollback|clean(?:up)?|reject|close|abort|"
-    r"prevent|block|"
+    r"prevent|block|add|introduce|validate|require|keep|configure|emit|expose|ensure|"
     r"recover|restore|serializ|sanitize|enforce|implement|replace|refactor|"
     r"retain|buffer|input\s+validation"
     r")\b|"
     r"(修复|释放|重置|限制|加锁|重试|回滚|清理|拒绝|恢复|串行|净化|强制|"
     r"实现|替换|重构|引用计数|持有.{0,12}引用|缓冲|关闭|中止|参数校验|输入校验|防止|阻止)"
     r"|(启用|严格校验|强制校验|返回.{0,12}(?:错误|失败)|添加.{0,20}(?:检查|校验)|"
+    r"增加.{0,24}(?:检查|校验|断言|处理|保护|上限|清理|析构|回调)|"
     r"确保.{0,24}(?:配置|状态|资源|连接|会话|参数).{0,20}(?:正确|有效|一致|释放|关闭))"
 )
 _SFMEA_VERIFICATION_ACTION_RE = re.compile(
@@ -3228,7 +3266,17 @@ def _repo_path_exists(repo: Path, value: str) -> bool:
         candidate = (repo_root / relative).resolve()
     except OSError:
         return False
-    return repo_root in candidate.parents and candidate.exists()
+    if repo_root not in candidate.parents:
+        return False
+    if candidate.exists():
+        return True
+    return (
+        not relative.suffix
+        and bool(relative.parts)
+        and relative.parts[0].lower() in {"test", "tests"}
+        and candidate.with_suffix(".c").is_file()
+        and (candidate.parent / "Makefile").is_file()
+    )
 
 
 def _issue(code: str, artifact: str, message: str, **extra: Any) -> dict[str, Any]:

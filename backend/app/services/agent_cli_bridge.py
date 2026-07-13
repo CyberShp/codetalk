@@ -18,7 +18,10 @@ from typing import Any, Callable
 from app.config import settings
 from app.services.agent_sandbox import (
     AgentSandboxError,
+    codex_command_for_outer_sandbox,
     filtered_agent_environment,
+    prepare_isolated_codex_home,
+    prepare_isolated_runtime_tmp,
     prepare_agent_sandbox,
 )
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
@@ -90,6 +93,12 @@ async def stream_agent_runtime(
     args = _runtime_args(runtime, resume_session_id=resume_session_id)
     prompt_transport = str(runtime.get("prompt_transport") or "stdin")
     env = _build_env(runtime)
+    artifact_dir = Path(env["CODETALK_AGENT_ARTIFACT_DIR"]).expanduser().resolve()
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    runtime_tmp_dir = prepare_isolated_runtime_tmp(artifact_dir)
+    for temp_name in ("TMPDIR", "TMP", "TEMP"):
+        env[temp_name] = str(runtime_tmp_dir)
+    env["TMPPREFIX"] = str(runtime_tmp_dir / "zsh")
     prompt_file_path: str | None = None
     try:
         with tempfile.NamedTemporaryFile(
@@ -97,6 +106,7 @@ async def stream_agent_runtime(
             encoding="utf-8",
             prefix="codetalk-agent-prompt-",
             suffix=".md",
+            dir=str(runtime_tmp_dir),
             delete=False,
         ) as prompt_file:
             prompt_file.write(prompt)
@@ -134,7 +144,6 @@ async def stream_agent_runtime(
     process_kwargs: dict[str, Any] = {}
     if isolate_process_group:
         process_kwargs["start_new_session"] = True
-    artifact_dir = Path(env["CODETALK_AGENT_ARTIFACT_DIR"])
     sandbox_runtime = {
         **runtime,
         "sandbox_mode": runtime.get("sandbox_mode") or settings.external_agent_sandbox_mode,
@@ -152,6 +161,19 @@ async def stream_agent_runtime(
             *([prompt_file_path] if prompt_file_path else []),
         ],
     }
+    codex_runtime_home, codex_runtime_read_targets = prepare_isolated_codex_home(
+        provider=str(runtime.get("name") or runtime.get("id") or ""),
+        command=[command, *args],
+        artifact_dir=artifact_dir,
+    )
+    if codex_runtime_home is not None:
+        env["CODEX_HOME"] = str(codex_runtime_home)
+        sandbox_runtime["sandbox_codex_home"] = str(codex_runtime_home)
+        sandbox_runtime["sandbox_read_paths"] = [
+            *sandbox_runtime["sandbox_read_paths"],
+            *[str(path) for path in codex_runtime_read_targets],
+            str(Path(command).parent),
+        ]
     try:
         sandbox = prepare_agent_sandbox(
             runtime=sandbox_runtime,
@@ -166,6 +188,11 @@ async def stream_agent_runtime(
         update_result = stderr_update(f"Agent 隔离：{sandbox.message}")
         if asyncio.iscoroutine(update_result):
             await update_result
+    process_command = codex_command_for_outer_sandbox(
+        [command, *args],
+        sandbox_active=sandbox.status == "active",
+    )
+    command, args = process_command[0], process_command[1:]
     if sandbox.wrapper:
         command, args = sandbox.wrapper[0], [*sandbox.wrapper[1:], command, *args]
     try:
@@ -345,8 +372,20 @@ def _stderr_reports_productive_activity(text: str) -> bool:
 def _looks_like_agent_initialization_noise(value: str) -> bool:
     lowered = str(value or "").lower()
     return (
-        "codex_core_plugins::manifest" in lowered
-        and "ignoring interface.defaultprompt" in lowered
+        (
+            "codex_core_plugins::manifest" in lowered
+            and "ignoring interface.defaultprompt" in lowered
+        )
+        or (
+            "codex_models_manager" in lowered
+            and "operation not permitted" in lowered
+            and ("models cache" in lowered or "cache ttl" in lowered)
+        )
+        or (
+            "codex_core_skills::loader" in lowered
+            and "failed to read skills symlink dir" in lowered
+            and "operation not permitted" in lowered
+        )
     )
 
 
@@ -965,6 +1004,8 @@ def _event_text(event: dict[str, Any], *, stream_state: dict[Any, Any] | None = 
     codex_item = event.get("item")
     if isinstance(codex_item, dict):
         item_type = str(codex_item.get("type") or "").strip()
+        if str(event.get("type") or "").strip() == "item.updated" and item_type == "command_execution":
+            return None
         if item_type == "agent_message":
             value = codex_item.get("text") or codex_item.get("content")
             if isinstance(value, str):
@@ -1350,7 +1391,7 @@ def _codex_item_process_text(item: dict[str, Any]) -> str:
             sections.append(f"exit_code: {exit_code}")
         output = str(item.get("aggregated_output") or "").strip()
         if output:
-            sections.append(output)
+            sections.append(_compact_command_output(output))
         return "\n".join(sections)
     if item_type == "file_change":
         changes = item.get("changes")
@@ -1366,6 +1407,24 @@ def _codex_item_process_text(item: dict[str, Any]) -> str:
         message = str(item.get("message") or "").strip()
         return f"ERROR: {message}" if message else ""
     return ""
+
+
+def _compact_command_output(output: str, *, edge_lines: int = 3) -> str:
+    """Keep process diagnostics useful without streaming entire command transcripts."""
+    cleaned = str(output or "").strip()
+    lines = cleaned.splitlines()
+    if len(lines) <= edge_lines * 2 and len(cleaned) <= 1_200:
+        return cleaned
+    if len(lines) <= edge_lines * 2:
+        return f"output: {len(cleaned)} chars; preview: {cleaned[:900]}..."
+    omitted = len(lines) - (edge_lines * 2)
+    return "\n".join(
+        [
+            *lines[:edge_lines],
+            f"... {omitted} lines omitted ...",
+            *lines[-edge_lines:],
+        ]
+    )
 
 
 def _looks_like_protocol_noise(event: dict[str, Any]) -> bool:
@@ -1429,6 +1488,8 @@ def _diagnostic_event_text(event: dict[str, Any]) -> str | None:
     codex_item_event = event_type in {"item.started", "item.updated", "item.completed"}
     codex_item = event.get("item") if codex_item_event else None
     codex_item_type = str(codex_item.get("type") or "").strip() if isinstance(codex_item, dict) else ""
+    if event_type == "item.updated" and codex_item_type == "command_execution":
+        return None
     assistant_tool_event = False
     if event_type == "assistant":
         message = event.get("message")

@@ -2214,6 +2214,14 @@ def _execute_task_run_with_closure(
     acceptance = _build_task_acceptance_audit(refreshed)
     task_dir = Path(refreshed.artifact_dir)
     _write_json(task_dir / "task_acceptance_audit.json", acceptance)
+    execution_payload = _read_json(task_dir / "workflow_execution.json")
+    if isinstance(execution_payload, dict):
+        execution_payload = _reconcile_acceptance_quality(
+            task_dir=task_dir,
+            execution=execution_payload,
+            acceptance=acceptance,
+        )
+        response.update(execution_payload)
     write_task_artifact_manifest(task_dir, task_run_id=refreshed.task_run_id)
     response["acceptance_audit"] = acceptance
     response["run_ui_summary"] = _build_task_run_ui_summary(refreshed, task_dir)
@@ -2670,6 +2678,13 @@ async def create_task_run_acceptance_audit(task_run_id: str) -> dict[str, Any]:
         _write_json(execution_path, execution)
     payload = _build_task_acceptance_audit(task_run)
     _write_json(task_dir / "task_acceptance_audit.json", payload)
+    reconciled_execution = _read_json(task_dir / "workflow_execution.json")
+    if isinstance(reconciled_execution, dict):
+        _reconcile_acceptance_quality(
+            task_dir=task_dir,
+            execution=reconciled_execution,
+            acceptance=payload,
+        )
     write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
     return payload
 
@@ -6825,6 +6840,10 @@ _BLACK_BOX_FUNCTION_CALL_RE = re.compile(r"(?i)\b[a-z_][a-z0-9_]*_[a-z0-9_]+\s*\
 _BLACK_BOX_EXTERNAL_COMMAND_CONTEXT_RE = re.compile(
     r"(?i)\b(?:rpc|cli|command|api)\b|(?:RPC|CLI|命令|接口)"
 )
+_BLACK_BOX_EXTERNAL_PROTOCOL_FIELD_CONTEXT_RE = re.compile(
+    r"(?i)\b(?:pdu|packet|frame|request|response|header|digest|opcode|flag)\b|"
+    r"(?:报文|数据包|请求|响应|协议|包头|摘要|标志位)"
+)
 _BLACK_BOX_OBSERVABLE_EXPECTED_RE = re.compile(
     r"(?i)\b("
     r"log|metric|status|state|exit\s*code|error|timeout|reject|accept|connect|disconnect|"
@@ -6961,13 +6980,87 @@ def _is_explicit_unverified_mapping(value: str) -> bool:
 
 def _black_box_component_has_white_box_boundary(value: str) -> bool:
     text = str(value or "")
-    if _BLACK_BOX_WHITE_BOX_RE.search(text):
+    for match in _BLACK_BOX_WHITE_BOX_RE.finditer(text):
+        token = match.group(0)
+        if (
+            token.startswith("修改")
+            and _BLACK_BOX_EXTERNAL_PROTOCOL_FIELD_CONTEXT_RE.search(token)
+            and not re.search(r"(?:内部|私有|变量|状态)", token)
+        ):
+            continue
         return True
     for match in _BLACK_BOX_FUNCTION_CALL_RE.finditer(text):
         context = text[max(0, match.start() - 80):min(len(text), match.end() + 80)]
         if not _BLACK_BOX_EXTERNAL_COMMAND_CONTEXT_RE.search(context):
             return True
     return False
+
+
+def _reconcile_acceptance_quality(
+    *,
+    task_dir: Path,
+    execution: dict[str, Any],
+    acceptance: dict[str, Any],
+) -> dict[str, Any]:
+    """Make required acceptance checks the final delivery truth source."""
+    missing_required = [
+        dict(item)
+        for item in acceptance.get("missing_required") or []
+        if isinstance(item, dict)
+    ]
+    if not missing_required:
+        return execution
+
+    reconciled = dict(execution)
+    if str(reconciled.get("status") or "") in {
+        "completed",
+        "completed_empty",
+        "ok",
+        "ready",
+        "success",
+    }:
+        reconciled["quality_audit_base_status"] = str(
+            reconciled.get("status") or "completed"
+        )
+        reconciled["status"] = "needs_rework"
+
+    quality = _read_json(task_dir / "test_activity_quality_audit.json")
+    if not isinstance(quality, dict):
+        quality = (
+            dict(reconciled.get("test_activity_quality") or {})
+            if isinstance(reconciled.get("test_activity_quality"), dict)
+            else {}
+        )
+    existing_issues = [
+        dict(item)
+        for item in quality.get("issues") or []
+        if isinstance(item, dict)
+    ]
+    existing_ids = {str(item.get("id") or "") for item in existing_issues}
+    for item in missing_required:
+        issue_id = f"acceptance:{item.get('id') or item.get('reason') or 'required'}"
+        if issue_id in existing_ids:
+            continue
+        existing_issues.append({
+            "id": issue_id,
+            "type": str(item.get("reason") or "required_acceptance_failed"),
+            "artifact": str(item.get("relative_path") or ""),
+            "message": "必需验收项未通过，当前结果不能交付。",
+        })
+        existing_ids.add(issue_id)
+    quality.update({
+        "kind": "test_activity_quality_audit",
+        "status": "needs_rework",
+        "deliverable": False,
+        "score": min(int(quality.get("score") or 0), 79),
+        "issue_count": len(existing_issues),
+        "issues": existing_issues,
+        "recommendations": ["必需验收项未通过，请查看验收提醒并重跑对应交付件。"],
+    })
+    reconciled["test_activity_quality"] = quality
+    _write_json(task_dir / "test_activity_quality_audit.json", quality)
+    _write_json(task_dir / "workflow_execution.json", reconciled)
+    return reconciled
 
 
 def _black_box_case_expected(case: dict[str, Any]) -> list[str]:
@@ -7182,6 +7275,8 @@ def _risk_finding_source_candidates(finding: dict[str, Any]) -> list[str]:
             candidate = str(item.get("file_path") or item.get("path") or "").strip()
         else:
             candidate = str(item or "").strip()
+            if re.match(r"(?i)^EV[-_][A-Za-z0-9_-]+(?::\d+(?:-\d+)?)?$", candidate):
+                continue
             if "::" in candidate:
                 candidate = candidate.split("::", 1)[0].strip()
             candidate = re.sub(r":\d+(?:-\d+)?$", "", candidate)
@@ -7345,6 +7440,27 @@ def _validate_task_rerun_plan(*, task_run: Any, plan: dict[str, Any]) -> dict[st
         if not isinstance(step, dict):
             continue
         step_id = str(step.get("step_id") or "")
+        step_type = str(step.get("type") or "")
+        if step_type != "agent_task":
+            artifact_dir = task_dir / "steps" / _safe_segment(
+                step_id or "step",
+                "step_id",
+            )
+            step_validations.append({
+                "step_id": step_id,
+                "type": step_type,
+                "status": "ready",
+                "recommended_action": str(step.get("recommended_action") or ""),
+                "failure_kind": str(step.get("failure_kind") or ""),
+                "artifact_dir": str(artifact_dir),
+                "artifact_dir_exists": artifact_dir.exists() and artifact_dir.is_dir(),
+                "missing_artifacts": [
+                    str(item) for item in step.get("missing_artifacts") or []
+                ],
+                "overwrite_risk_artifacts": [],
+                "replay_artifacts": [],
+            })
+            continue
         agent_run = agent_runs_by_step.get(step_id, {})
         artifact_dir = Path(str(agent_run.get("artifact_dir") or ""))
         artifact_dir_exists = bool(artifact_dir and artifact_dir.exists() and artifact_dir.is_dir())
@@ -7369,6 +7485,7 @@ def _validate_task_rerun_plan(*, task_run: Any, plan: dict[str, Any]) -> dict[st
         )
         step_payload = {
             "step_id": step_id,
+            "type": step_type,
             "status": status,
             "recommended_action": str(step.get("recommended_action") or ""),
             "failure_kind": str(step.get("failure_kind") or ""),

@@ -4,6 +4,8 @@ import json
 import os
 import shutil
 import sys
+import tempfile
+import tomllib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,6 +14,38 @@ from typing import Any, Callable
 
 class AgentSandboxError(RuntimeError):
     pass
+
+
+_CODEX_RUNTIME_CONFIG_KEYS = (
+    "model",
+    "model_provider",
+    "model_reasoning_effort",
+    "model_context_window",
+    "model_auto_compact_token_limit",
+    "disable_response_storage",
+    "network_access",
+)
+
+
+def _write_sanitized_codex_config(source: Path, target: Path) -> None:
+    try:
+        payload = tomllib.loads(source.read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return
+    lines: list[str] = []
+    for key in _CODEX_RUNTIME_CONFIG_KEYS:
+        value = payload.get(key)
+        if isinstance(value, bool):
+            rendered = "true" if value else "false"
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            rendered = str(value)
+        elif isinstance(value, str):
+            rendered = json.dumps(value, ensure_ascii=False)
+        else:
+            continue
+        lines.append(f"{key} = {rendered}")
+    if lines:
+        target.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 @dataclass(frozen=True)
@@ -67,6 +101,100 @@ def filtered_agent_environment(explicit: dict[str, Any] | None = None) -> dict[s
         if name:
             env[name] = str(value)
     return env
+
+
+def prepare_isolated_runtime_tmp(artifact_dir: Path) -> Path:
+    artifact_root = artifact_dir.resolve()
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    runtime_tmp = Path(
+        tempfile.mkdtemp(prefix=".runtime-tmp-", dir=artifact_root)
+    )
+    if runtime_tmp.is_symlink() or not runtime_tmp.is_dir():
+        raise AgentSandboxError("Agent 隔离临时目录不是安全的真实目录。")
+    runtime_tmp = runtime_tmp.resolve(strict=True)
+    if runtime_tmp.parent != artifact_root:
+        raise AgentSandboxError("Agent 隔离临时目录越过了任务产物边界。")
+    return runtime_tmp
+
+
+def prepare_isolated_codex_home(
+    *,
+    provider: str,
+    command: list[str],
+    artifact_dir: Path,
+) -> tuple[Path | None, list[Path]]:
+    command_name = Path(command[0]).name.lower() if command else ""
+    if "codex" not in command_name and "codex" not in provider.lower():
+        return None, []
+
+    source_home = Path(
+        os.environ.get("CODEX_HOME") or Path.home() / ".codex"
+    ).expanduser().resolve()
+    artifact_root = artifact_dir.resolve()
+    artifact_root.mkdir(parents=True, exist_ok=True)
+    runtime_home = Path(
+        tempfile.mkdtemp(prefix=".runtime-codex-home-", dir=artifact_root)
+    )
+    if runtime_home.is_symlink() or not runtime_home.is_dir():
+        raise AgentSandboxError("Codex 隔离运行目录不是安全的真实目录。")
+    runtime_home = runtime_home.resolve(strict=True)
+    if runtime_home.parent != artifact_root:
+        raise AgentSandboxError("Codex 隔离运行目录越过了任务产物边界。")
+    for state_name in ("sessions", "log", ".tmp", "tmp", "cache"):
+        state_path = runtime_home / state_name
+        state_path.mkdir()
+        if state_path.is_symlink() or not state_path.is_dir():
+            raise AgentSandboxError(f"Codex 状态目录不安全：{state_name}")
+        if state_path.resolve(strict=True).parent != runtime_home:
+            raise AgentSandboxError(f"Codex 状态目录越过任务边界：{state_name}")
+    read_targets: list[Path] = []
+    for name in ("auth.json", "config.toml", "models_cache.json", "skills"):
+        source = source_home / name
+        if not source.exists():
+            continue
+        resolved_source = source.resolve()
+        target = runtime_home / name
+        if name == "config.toml":
+            _write_sanitized_codex_config(resolved_source, target)
+            continue
+        if name == "models_cache.json":
+            shutil.copy2(resolved_source, target)
+            continue
+        try:
+            target.symlink_to(
+                resolved_source,
+                target_is_directory=resolved_source.is_dir(),
+            )
+        except OSError:
+            if resolved_source.is_dir():
+                shutil.copytree(resolved_source, target, symlinks=False)
+            else:
+                shutil.copy2(resolved_source, target)
+        if resolved_source not in read_targets:
+            read_targets.append(resolved_source)
+    return runtime_home, read_targets
+
+
+def codex_command_for_outer_sandbox(
+    command: list[str],
+    *,
+    sandbox_active: bool,
+) -> list[str]:
+    result = list(command)
+    if not sandbox_active or not result:
+        return result
+    executable = Path(result[0]).name.lower()
+    if executable not in {"codex", "codex.exe"}:
+        return result
+    bypass_flag = "--dangerously-bypass-approvals-and-sandbox"
+    if bypass_flag in result:
+        return result
+    try:
+        exec_index = result.index("exec")
+    except ValueError:
+        return result
+    result.insert(exec_index + 1, bypass_flag)
+    return result
 
 
 def prepare_agent_sandbox(
@@ -368,6 +496,7 @@ def _macos_profile(
         "(allow file-read-metadata)",
         "(allow sysctl-read)",
         "(allow mach-lookup)",
+        "(allow ipc-posix-shm*)",
         "(allow signal (target same-sandbox))",
         '(allow file-write* (literal "/dev/null"))',
     ]

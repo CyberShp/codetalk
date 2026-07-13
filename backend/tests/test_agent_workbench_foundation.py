@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -634,6 +635,9 @@ def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_pa
         "done",
     ]
     assert invocation["artifact_contract"]["run_id"] == "agent_run_exec"
+    symbol_rules = invocation["artifact_contract"]["evidence_rules"]["evidence_card_symbol_validation"]
+    assert "exact filename" in symbol_rules["shell_files"]
+    assert "empty symbols list" in symbol_rules["metadata_files"]
     assert "agent_invocation.json" in invocation["artifact_contract"]["audit_artifacts"]
     assert invocation["mcp_profile"] == ""
     assert invocation["skills"] == []
@@ -687,12 +691,192 @@ def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_pa
         "TEMP": str(runtime_tmp_dir),
         "TMP": str(runtime_tmp_dir),
         "TMPDIR": str(runtime_tmp_dir),
+        "TMPPREFIX": str(runtime_tmp_dir / "zsh"),
     }
     assert execution_input["stdin_json_sha256"]
     events = (artifact_dir / "runtime_events.jsonl").read_text(encoding="utf-8")
     assert "agent_execution_input_prepared" in events
     assert "agent_run_started" in events
     assert "agent_run_completed" in events
+
+
+def test_agent_run_harness_refreshes_output_contract_for_rerun(tmp_path):
+    from app.services.agent_run_harness import AgentRunHarness
+
+    artifact_dir = tmp_path / "agent-rerun"
+    harness = AgentRunHarness(artifact_dir)
+    run = harness.create_run(
+        run_id="agent_rerun_contract",
+        provider="local-python",
+        command=["python", "-c", "import json, sys; json.load(sys.stdin)"],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "source_flow"},
+        task_bundle={
+            "task_id": "task-rerun",
+            "retry_validation_feedback": {
+                "rejected_count": 1,
+                "rejected_artifact_details": [{"symbol": "conceptual label"}],
+                "instruction": "必须修正被拒绝证据。",
+            },
+            "retry_quality_feedback": {
+                "score": 42,
+                "issue_count": 1,
+                "issues": [{"code": "non_actionable_mitigation"}],
+                "instruction": "必须逐项修正质量问题。",
+            },
+        },
+    )
+    (artifact_dir / "agent_output_contract.json").write_text(
+        '{"contract_version": 0, "evidence_rules": {}}',
+        encoding="utf-8",
+    )
+
+    executed = harness.execute_run(run.run_id, timeout_sec=10)
+
+    assert executed.status == "completed"
+    execution_input = json.loads(
+        (artifact_dir / "execution_input.json").read_text(encoding="utf-8")
+    )
+    contract = execution_input["stdin"]["agent_output_contract"]
+    assert contract["contract_version"] == 1
+    assert "exact filename" in contract["evidence_rules"]["evidence_card_symbol_validation"]["shell_files"]
+    assert contract["retry_validation_feedback"]["rejected_count"] == 1
+    assert contract["retry_quality_feedback"]["score"] == 42
+
+
+def test_quality_retry_prompt_bundle_preserves_user_input_and_omits_redundant_discovery_context():
+    from app.services.agent_run_harness import _task_bundle_for_agent_prompt
+
+    bundle = {
+        "inputs": {"analysis_object": "line one\nline two\n用户输入不能丢"},
+        "input_materials": {"read_order": ["requirements.md"]},
+        "goal": "fix rejected deliverables",
+        "retry_quality_feedback": {
+            "affected_artifacts": ["sfmea.json"],
+            "protected_artifacts": ["evidence_cards.json"],
+        },
+        "context_bundle": {"large": "x" * 1000},
+        "local_source_context": {"large": "x" * 1000},
+        "source_read_chain": [{"large": "x" * 1000}],
+        "evidence_consumption_trajectory": [{"large": "x" * 1000}],
+        "provider_snapshot": {"large": "x" * 1000},
+        "workflow_contract": {"large": "x" * 1000},
+    }
+
+    prompt_bundle = _task_bundle_for_agent_prompt(bundle)
+
+    assert prompt_bundle["inputs"] == bundle["inputs"]
+    assert prompt_bundle["input_materials"] == bundle["input_materials"]
+    assert prompt_bundle["retry_quality_feedback"] == bundle["retry_quality_feedback"]
+    assert "context_bundle" not in prompt_bundle
+    assert "local_source_context" not in prompt_bundle
+    assert "workflow_contract" not in prompt_bundle
+    assert set(prompt_bundle["quality_retry_context_omissions"]) >= {
+        "context_bundle",
+        "local_source_context",
+        "workflow_contract",
+    }
+
+
+def test_workflow_command_resolution_uses_windows_pathext(monkeypatch):
+    from app.services import agent_run_harness
+
+    monkeypatch.setattr(agent_run_harness.os, "name", "nt")
+    monkeypatch.setattr(
+        agent_run_harness.shutil,
+        "which",
+        lambda command: r"C:\Users\tester\AppData\Roaming\npm\opencode.cmd"
+        if command == "opencode"
+        else None,
+    )
+
+    assert agent_run_harness._resolve_local_process_command(["opencode", "run"]) == [
+        r"C:\Users\tester\AppData\Roaming\npm\opencode.cmd",
+        "run",
+    ]
+
+
+def test_idle_timeout_observes_output_without_newlines(tmp_path):
+    from app.services.agent_run_harness import _run_cancellable_subprocess
+
+    script = (
+        "import sys,time\n"
+        "for _ in range(8):\n"
+        " sys.stdout.write('.')\n"
+        " sys.stdout.flush()\n"
+        " time.sleep(0.1)\n"
+    )
+    result = _run_cancellable_subprocess(
+        [sys.executable, "-c", script],
+        cwd=str(tmp_path),
+        input_bytes=None,
+        timeout=5,
+        idle_timeout=0.25,
+        env=dict(os.environ),
+    )
+
+    assert result.timed_out is False
+    assert result.exit_code == 0
+    assert result.stdout == "........"
+
+
+def test_workflow_agent_process_output_compacts_codex_command_updates():
+    from app.services.agent_run_harness import _public_agent_process_output
+
+    stream_state: dict[object, object] = {}
+    updated = json.dumps(
+        {
+            "type": "item.updated",
+            "item": {
+                "type": "command_execution",
+                "command": "rg tls lib/nvmf",
+                "aggregated_output": "\n".join(f"source {line}" for line in range(300)),
+            },
+        }
+    )
+    completed = json.dumps(
+        {
+            "type": "item.completed",
+            "item": {
+                "type": "command_execution",
+                "command": "rg tls lib/nvmf",
+                "status": "completed",
+                "exit_code": 0,
+                "aggregated_output": "\n".join(f"source {line}" for line in range(300)),
+            },
+        }
+    )
+
+    assert _public_agent_process_output("stdout", updated, stream_state=stream_state) == ""
+    visible = _public_agent_process_output("stdout", completed, stream_state=stream_state)
+    assert "command: rg tls lib/nvmf" in visible
+    assert "294 lines omitted" in visible
+    assert "source 150" not in visible
+
+
+def test_workflow_agent_process_output_hides_known_codex_runtime_noise():
+    from app.services.agent_run_harness import _public_agent_process_output
+
+    stream_state: dict[object, object] = {}
+    skill_warning = (
+        "2026-07-13T01:23:42Z ERROR codex_core_skills::loader: "
+        "failed to read skills symlink dir /repo/.codex/skills/tdd: "
+        "Operation not permitted (os error 1)"
+    )
+    cache_warning = (
+        "2026-07-13T01:23:42Z WARN failed to load models cache from "
+        "/tmp/runtime-codex-home/models_cache.json: Operation not permitted"
+    )
+
+    assert _public_agent_process_output(
+        "stderr", skill_warning, stream_state=stream_state
+    ) == ""
+    assert _public_agent_process_output(
+        "stderr", cache_warning, stream_state=stream_state
+    ) == ""
+    assert "request timed out" in _public_agent_process_output(
+        "stderr", "ERROR: Reconnecting... request timed out", stream_state=stream_state
+    )
 
 
 def test_agent_run_harness_preserves_cancelled_transport_attempt(tmp_path):
@@ -915,8 +1099,22 @@ def test_codex_runtime_home_links_static_inputs_and_keeps_state_in_artifacts(
 
     real_home = tmp_path / "real-codex-home"
     real_home.mkdir()
-    for name in ("auth.json", "config.toml", "models_cache.json"):
-        (real_home / name).write_text(name, encoding="utf-8")
+    (real_home / "auth.json").write_text("auth.json", encoding="utf-8")
+    (real_home / "config.toml").write_text(
+        '\n'.join([
+            'model = "gpt-5.5"',
+            'model_reasoning_effort = "high"',
+            'network_access = "enabled"',
+            '[plugins."browser@openai-bundled"]',
+            'enabled = true',
+            '[marketplaces.openai-bundled]',
+            'source = "/host/private/plugins"',
+            '[mcp_servers.node_repl]',
+            'command = "/host/private/node_repl"',
+        ]),
+        encoding="utf-8",
+    )
+    (real_home / "models_cache.json").write_text("models_cache.json", encoding="utf-8")
     (real_home / "skills").mkdir()
     artifact_dir = tmp_path / "agent-run"
     artifact_dir.mkdir()
@@ -932,13 +1130,20 @@ def test_codex_runtime_home_links_static_inputs_and_keeps_state_in_artifacts(
     assert runtime_home.name.startswith(".runtime-codex-home-")
     assert set(read_targets) == {
         (real_home / "auth.json").resolve(),
-        (real_home / "config.toml").resolve(),
-        (real_home / "models_cache.json").resolve(),
         (real_home / "skills").resolve(),
     }
     assert (runtime_home / "auth.json").is_symlink()
-    assert (runtime_home / "config.toml").is_symlink()
-    assert (runtime_home / "models_cache.json").is_symlink()
+    assert not (runtime_home / "config.toml").is_symlink()
+    isolated_config = (runtime_home / "config.toml").read_text(encoding="utf-8")
+    assert 'model = "gpt-5.5"' in isolated_config
+    assert 'model_reasoning_effort = "high"' in isolated_config
+    assert 'network_access = "enabled"' in isolated_config
+    assert "plugins." not in isolated_config
+    assert "marketplaces." not in isolated_config
+    assert "mcp_servers." not in isolated_config
+    assert "/host/private" not in isolated_config
+    assert not (runtime_home / "models_cache.json").is_symlink()
+    assert (runtime_home / "models_cache.json").read_text(encoding="utf-8") == "models_cache.json"
     assert (runtime_home / "skills").is_symlink()
 
 

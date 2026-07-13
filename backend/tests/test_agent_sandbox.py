@@ -30,6 +30,7 @@ def test_macos_sandbox_wraps_command_and_persists_audit(tmp_path):
     profile = profile_path.read_text(encoding="utf-8")
     assert "(deny default)" in profile
     assert "(allow file-read*)\n" not in profile
+    assert "(allow ipc-posix-shm*)" in profile
     assert f'(allow file-read* (subpath "{repo.resolve()}"))' in profile
     assert '(allow file-read* (subpath "/opt"))' in profile
     assert str(artifact_dir.resolve()) in profile

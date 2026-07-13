@@ -26,7 +26,11 @@ from app.services.agent_run_harness import (
     AgentRunHarness,
     ArtifactValidationHarness,
 )
-from app.services.test_activity_contract import ARTIFACT_TEMPLATES, audit_test_activity_artifacts
+from app.services.test_activity_contract import (
+    ARTIFACT_TEMPLATES,
+    audit_test_activity_artifacts,
+    refresh_test_activity_contract,
+)
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_task_run import BUILTIN_LLM_PROVIDER_ID
 from app.services.workbench_task_run import WorkbenchTaskRunStore
@@ -245,6 +249,45 @@ class WorkbenchWorkflowRunner:
         prior_step_results: list[dict[str, Any]],
         timeout_sec: int,
     ) -> dict[str, Any]:
+        artifact_dir = Path(str(agent_run.get("artifact_dir") or ""))
+        _inject_prior_step_context(
+            artifact_dir=artifact_dir,
+            prior_step_results=prior_step_results,
+        )
+        quality_retry_bundle = _read_json(artifact_dir / "task_bundle.json")
+        quality_retry_feedback = (
+            quality_retry_bundle.get("retry_quality_feedback")
+            if isinstance(quality_retry_bundle, dict)
+            and isinstance(quality_retry_bundle.get("retry_quality_feedback"), dict)
+            else {}
+        )
+        protected_artifact_snapshot = _snapshot_protected_artifacts(
+            artifact_dir,
+            [
+                str(item)
+                for item in quality_retry_feedback.get("protected_artifacts") or []
+            ],
+        )
+        try:
+            return self._execute_agent_step_unprotected(
+                task_run_id=task_run_id,
+                step=step,
+                agent_run=agent_run,
+                prior_step_results=prior_step_results,
+                timeout_sec=timeout_sec,
+            )
+        finally:
+            _restore_protected_artifacts(artifact_dir, protected_artifact_snapshot)
+
+    def _execute_agent_step_unprotected(
+        self,
+        *,
+        task_run_id: str,
+        step: dict[str, Any],
+        agent_run: dict[str, Any],
+        prior_step_results: list[dict[str, Any]],
+        timeout_sec: int,
+    ) -> dict[str, Any]:
         step_id = str(step.get("id") or agent_run.get("step_id") or "")
         artifact_dir = Path(str(agent_run.get("artifact_dir") or ""))
         run_payload = _read_json(artifact_dir / "agent_run.json")
@@ -270,6 +313,21 @@ class WorkbenchWorkflowRunner:
                 run_id=run_id,
                 timeout_sec=timeout_sec,
             )
+
+        quality_retry_bundle = _read_json(artifact_dir / "task_bundle.json")
+        quality_retry_feedback = (
+            quality_retry_bundle.get("retry_quality_feedback")
+            if isinstance(quality_retry_bundle, dict)
+            and isinstance(quality_retry_bundle.get("retry_quality_feedback"), dict)
+            else {}
+        )
+        protected_artifact_snapshot = _snapshot_protected_artifacts(
+            artifact_dir,
+            [
+                str(item)
+                for item in quality_retry_feedback.get("protected_artifacts") or []
+            ],
+        )
 
         def emit_agent_event(event_type: str, event_payload: dict[str, Any]) -> None:
             self._emit_event(
@@ -329,6 +387,7 @@ class WorkbenchWorkflowRunner:
             )
             executions.append(asdict(execution))
             turn_artifacts.append(_snapshot_agent_turn_artifacts(artifact_dir, turn_id="turn_2"))
+        _restore_protected_artifacts(artifact_dir, protected_artifact_snapshot)
         required_artifacts = [
             str(item)
             for item in (
@@ -434,10 +493,30 @@ class WorkbenchWorkflowRunner:
             if isinstance(task_bundle.get("execution_contract"), dict)
             else {}
         )
-        messages = _builtin_llm_messages(
-            execution_contract=execution_contract,
+        required_artifacts = [
+            str(item)
+            for item in (
+                step.get("required_artifacts")
+                or agent_run.get("required_artifacts")
+                or []
+            )
+        ]
+        generation_artifacts = _quality_retry_generation_artifacts(
             task_bundle=task_bundle,
-            output_contract=output_contract,
+            required_artifacts=required_artifacts,
+        )
+        scoped_execution_contract = _scope_builtin_execution_contract(
+            execution_contract,
+            generation_artifacts,
+        )
+        scoped_output_contract = _scope_builtin_output_contract(
+            output_contract,
+            generation_artifacts,
+        )
+        messages = _builtin_llm_messages(
+            execution_contract=scoped_execution_contract,
+            task_bundle=task_bundle,
+            output_contract=scoped_output_contract,
         )
         _write_json(
             artifact_dir / "builtin_llm_execution_input.json",
@@ -445,8 +524,9 @@ class WorkbenchWorkflowRunner:
                 "run_id": run_id,
                 "provider": BUILTIN_LLM_PROVIDER_ID,
                 "messages": messages,
-                "execution_contract": execution_contract,
-                "agent_output_contract": output_contract,
+                "execution_contract": scoped_execution_contract,
+                "agent_output_contract": scoped_output_contract,
+                "generation_artifacts": generation_artifacts,
             },
         )
         started_at = _now()
@@ -457,7 +537,7 @@ class WorkbenchWorkflowRunner:
             llm = _run_async_blocking(create_llm_client_from_active())
             if str(step.get("execution_mode") or "") == "staged":
                 staged_context = _staged_builtin_context(
-                    execution_contract=execution_contract,
+                    execution_contract=scoped_execution_contract,
                     task_bundle=task_bundle,
                 )
                 _write_json(
@@ -466,17 +546,10 @@ class WorkbenchWorkflowRunner:
                 )
                 staged_plan = _build_workbench_staged_plan(
                     run_id=run_id,
-                    execution_contract=execution_contract,
+                    execution_contract=scoped_execution_contract,
                     task_bundle=task_bundle,
-                    output_contract=output_contract,
-                    required_artifacts=[
-                        str(item)
-                        for item in (
-                            step.get("required_artifacts")
-                            or agent_run.get("required_artifacts")
-                            or []
-                        )
-                    ],
+                    output_contract=scoped_output_contract,
+                    required_artifacts=generation_artifacts,
                 )
 
                 def emit_stage_progress(payload: dict[str, Any]) -> None:
@@ -528,14 +601,7 @@ class WorkbenchWorkflowRunner:
                 written_artifacts = _write_builtin_llm_artifacts(
                     artifact_dir=artifact_dir,
                     raw_output=raw_output,
-                    required_artifacts=[
-                        str(item)
-                        for item in (
-                            step.get("required_artifacts")
-                            or agent_run.get("required_artifacts")
-                            or []
-                        )
-                    ],
+                    required_artifacts=generation_artifacts,
                 )
         except Exception as exc:
             raw_output = ""
@@ -543,14 +609,6 @@ class WorkbenchWorkflowRunner:
             status = "error"
             error = str(exc)
         (artifact_dir / "raw_output.txt").write_text(raw_output, encoding="utf-8")
-        required_artifacts = [
-            str(item)
-            for item in (
-                step.get("required_artifacts")
-                or agent_run.get("required_artifacts")
-                or []
-            )
-        ]
         validation = asdict(_validate_step_artifacts(artifact_dir, required_artifacts))
         if status == "completed" and validation["status"] != "ok":
             status = "invalid"
@@ -1083,6 +1141,14 @@ def _staged_builtin_context(
             "memory_retrieval": task_bundle.get("memory_retrieval") or {},
             "degraded_retrieval": task_bundle.get("degraded_retrieval") or {},
         },
+        "quality_retry": {
+            "required_artifacts": task_bundle.get("quality_retry_required_artifacts") or [],
+            "feedback": task_bundle.get("retry_quality_feedback") or {},
+            "instruction": (
+                "质量复跑时只生成 required_artifacts，并逐项修正 feedback.issue_groups；"
+                "不得返回、覆盖或弱化已通过交付件。"
+            ),
+        },
     }
 
 
@@ -1102,12 +1168,19 @@ def _workflow_scoped_test_activity_contract(
         and str(step.get("execution_mode") or "") == "staged"
         for step in workflow_snapshot.get("steps") or []
     )
+    legacy_local_flow = any(
+        isinstance(step, dict)
+        and str(step.get("type") or "") == "local_source_flow_sfmea_blackbox"
+        for step in workflow_snapshot.get("steps") or []
+    )
     scoped_artifacts: dict[str, Any] = {}
     for output in workflow_snapshot.get("outputs") or []:
         if not isinstance(output, dict):
             continue
         artifact = str(output.get("artifact") or "").strip()
         if not artifact:
+            continue
+        if legacy_local_flow and artifact == "flow_map.md":
             continue
         template_artifact = _test_activity_template_for_declaration(
             output,
@@ -1126,6 +1199,8 @@ def _workflow_scoped_test_activity_contract(
         for declared in step.get("required_artifacts") or []:
             artifact = str(declared or "").strip()
             if not artifact or artifact in scoped_artifacts:
+                continue
+            if legacy_local_flow and artifact == "flow_map.md":
                 continue
             template_artifact = _test_activity_template_for_declaration(
                 {"artifact": artifact},
@@ -1152,10 +1227,10 @@ def _test_activity_template_for_declaration(
     allow_flow_map_alias: bool = False,
 ) -> str:
     artifact = str(declaration.get("artifact") or declaration.get("path") or "").strip()
-    if artifact in ARTIFACT_TEMPLATES:
-        return artifact
     if allow_flow_map_alias and artifact == "flow_map.md":
         return "business_flow.md"
+    if artifact in ARTIFACT_TEMPLATES:
+        return artifact
     output_type = str(declaration.get("type") or "").strip().lower()
     by_type = {
         "business_flow": "business_flow.md",
@@ -1253,6 +1328,8 @@ def _builtin_llm_messages(
                 "才可以说明未获得源码片段。遵守 skills 和 MCP 边界，并输出可落盘的工作流产物。"
                 "只返回 JSON：{\"summary\": string, \"artifacts\": [{\"path\": string, \"content\": string|object|array}]}。"
                 "path 必须等于 required_artifacts 或 declared_outputs 中声明的 artifact。"
+                "质量复跑时 quality_retry_required_artifacts 是唯一允许生成的文件集合，"
+                "必须逐项修复 retry_quality_feedback，禁止返回或改写其他已通过文件。"
             ),
         },
         {
@@ -1267,6 +1344,12 @@ def _builtin_llm_messages(
                     "prior_step_artifacts": _builtin_prior_step_artifacts(task_bundle),
                     "workflow_contract": task_bundle.get("workflow_contract") or {},
                     "agent_output_contract": output_contract,
+                    "quality_retry_required_artifacts": (
+                        task_bundle.get("quality_retry_required_artifacts") or []
+                    ),
+                    "retry_quality_feedback": (
+                        task_bundle.get("retry_quality_feedback") or {}
+                    ),
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -1274,6 +1357,72 @@ def _builtin_llm_messages(
             ),
         },
     ]
+
+
+def _scope_builtin_execution_contract(
+    execution_contract: dict[str, Any],
+    allowed_artifacts: list[str],
+) -> dict[str, Any]:
+    scoped = dict(execution_contract)
+    outputs = execution_contract.get("outputs")
+    if isinstance(outputs, dict):
+        scoped["outputs"] = _scope_builtin_outputs_payload(outputs, allowed_artifacts)
+    activity_contract = execution_contract.get("test_activity_contract")
+    if isinstance(activity_contract, dict):
+        allowed = {
+            str(item).strip()
+            for item in allowed_artifacts
+            if str(item).strip()
+        }
+        scoped_activity = dict(activity_contract)
+        scoped_activity["required_outputs"] = [
+            str(item)
+            for item in activity_contract.get("required_outputs") or []
+            if str(item).strip() in allowed
+        ]
+        artifact_contract = activity_contract.get("artifact_contract")
+        if isinstance(artifact_contract, dict):
+            scoped_activity["artifact_contract"] = {
+                str(name): dict(contract) if isinstance(contract, dict) else contract
+                for name, contract in artifact_contract.items()
+                if str(name) in allowed
+            }
+        scoped["test_activity_contract"] = scoped_activity
+    return scoped
+
+
+def _scope_builtin_output_contract(
+    output_contract: dict[str, Any],
+    allowed_artifacts: list[str],
+) -> dict[str, Any]:
+    scoped = _scope_builtin_outputs_payload(output_contract, allowed_artifacts)
+    execution_contract = output_contract.get("execution_contract")
+    if isinstance(execution_contract, dict):
+        scoped["execution_contract"] = _scope_builtin_execution_contract(
+            execution_contract,
+            allowed_artifacts,
+        )
+    scoped["required_artifacts"] = list(allowed_artifacts)
+    return scoped
+
+
+def _scope_builtin_outputs_payload(
+    payload: dict[str, Any],
+    allowed_artifacts: list[str],
+) -> dict[str, Any]:
+    allowed = {str(item).strip() for item in allowed_artifacts if str(item).strip()}
+    scoped = dict(payload)
+    for key in ("declared_outputs", "expected_output_schemas", "outputs"):
+        items = payload.get(key)
+        if not isinstance(items, list):
+            continue
+        scoped[key] = [
+            dict(item)
+            for item in items
+            if isinstance(item, dict)
+            and str(item.get("artifact") or item.get("path") or "").strip() in allowed
+        ]
+    return scoped
 
 
 def _builtin_prior_step_artifacts(task_bundle: dict[str, Any]) -> dict[str, Any]:
@@ -1342,12 +1491,19 @@ def _write_builtin_llm_artifacts(
 ) -> list[str]:
     payload = _parse_builtin_llm_artifact_payload(raw_output)
     artifacts = payload.get("artifacts") if isinstance(payload, dict) else None
+    allowed = {
+        Path(str(item)).as_posix()
+        for item in required_artifacts
+        if str(item).strip()
+    }
     written: list[str] = []
     if isinstance(artifacts, list):
         for item in artifacts:
             if not isinstance(item, dict):
                 continue
             artifact_name = str(item.get("path") or item.get("artifact") or "").strip()
+            if Path(artifact_name).as_posix() not in allowed:
+                continue
             content = item.get("content", "")
             if _write_builtin_llm_artifact(
                 artifact_dir=artifact_dir,
@@ -3067,6 +3223,48 @@ def _snapshot_agent_turn_artifacts(artifact_dir: Path, *, turn_id: str) -> str:
     return f"turns/{safe_turn_id}"
 
 
+def _snapshot_protected_artifacts(
+    artifact_dir: Path,
+    artifact_names: list[str],
+) -> dict[str, bytes]:
+    snapshot: dict[str, bytes] = {}
+    for artifact_name in artifact_names:
+        path = _resolve_artifact_path(artifact_dir, artifact_name)
+        if path is None or not path.is_file():
+            continue
+        try:
+            relative = path.relative_to(artifact_dir).as_posix()
+            snapshot[relative] = path.read_bytes()
+        except (OSError, ValueError):
+            continue
+    return snapshot
+
+
+def _quality_retry_generation_artifacts(
+    *,
+    task_bundle: dict[str, Any],
+    required_artifacts: list[str],
+) -> list[str]:
+    scoped = [
+        str(item)
+        for item in task_bundle.get("quality_retry_required_artifacts") or []
+        if str(item).strip()
+    ]
+    return scoped or required_artifacts
+
+
+def _restore_protected_artifacts(
+    artifact_dir: Path,
+    snapshot: dict[str, bytes],
+) -> None:
+    for artifact_name, content in snapshot.items():
+        path = _resolve_artifact_path(artifact_dir, artifact_name)
+        if path is None:
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+
 def _provider_diagnostics_summary(artifact_dir: Path) -> dict[str, Any]:
     payload = _read_json(artifact_dir / "provider_diagnostics.json")
     execution_input = _read_json(artifact_dir / "execution_input.json")
@@ -3862,7 +4060,177 @@ def _inject_prior_step_context(
         return
     bundle["prior_step_results"] = prior_step_results
     bundle["workflow_step_artifacts"] = _workflow_step_artifact_map(prior_step_results)
+    test_activity_contract = bundle.get("test_activity_contract")
+    if isinstance(test_activity_contract, dict):
+        bundle["test_activity_contract"] = refresh_test_activity_contract(
+            test_activity_contract,
+            declared_artifacts=[
+                str(item) for item in bundle.get("required_artifacts") or []
+            ],
+        )
+    retry_feedback = _previous_evidence_validation_feedback(artifact_dir)
+    if retry_feedback:
+        bundle["retry_validation_feedback"] = retry_feedback
+    else:
+        bundle.pop("retry_validation_feedback", None)
+    retry_quality_feedback = _previous_test_activity_quality_feedback(artifact_dir)
+    if retry_quality_feedback:
+        affected = {
+            Path(str(item)).name
+            for item in retry_quality_feedback.get("affected_artifacts") or []
+            if str(item).strip()
+        }
+        retry_quality_feedback["protected_artifacts"] = [
+            str(item)
+            for item in bundle.get("required_artifacts") or []
+            if Path(str(item)).name not in affected
+        ]
+        retry_required_artifacts = [
+            str(item)
+            for item in bundle.get("required_artifacts") or []
+            if Path(str(item)).name in affected
+        ]
+        bundle["quality_retry_required_artifacts"] = retry_required_artifacts
+        if isinstance(bundle.get("test_activity_contract"), dict):
+            bundle["test_activity_contract"] = refresh_test_activity_contract(
+                bundle["test_activity_contract"],
+                declared_artifacts=retry_required_artifacts,
+            )
+        bundle["retry_quality_feedback"] = retry_quality_feedback
+    else:
+        bundle.pop("retry_quality_feedback", None)
+        bundle.pop("quality_retry_required_artifacts", None)
     _write_json(bundle_path, bundle)
+
+
+def _previous_evidence_validation_feedback(artifact_dir: Path) -> dict[str, Any]:
+    try:
+        task_dir = artifact_dir.parent.parent
+    except IndexError:
+        return {}
+    candidates = sorted(
+        (task_dir / "steps").glob("*/evidence_validation.json"),
+        key=lambda path: path.stat().st_mtime if path.exists() else 0,
+        reverse=True,
+    )
+    for path in candidates:
+        payload = _read_json(path)
+        if not isinstance(payload, dict) or payload.get("status") != "invalid":
+            continue
+        rejected = [
+            dict(item)
+            for item in payload.get("rejected_artifact_details") or []
+            if isinstance(item, dict)
+        ][:50]
+        if not rejected:
+            continue
+        return {
+            "source_step_id": path.parent.name,
+            "validation_artifact": str(path.relative_to(task_dir)),
+            "accepted_count": int(payload.get("accepted_count") or 0),
+            "rejected_count": int(payload.get("rejected_count") or len(rejected)),
+            "rejected_artifact_details": rejected,
+            "instruction": (
+                "这是上一轮质量门禁的拒绝明细。复跑时必须修正每一项；"
+                "不得照抄被拒绝的文件、符号或声明，也不得绕过、删除或弱化校验。"
+            ),
+        }
+    return {}
+
+
+def _previous_test_activity_quality_feedback(artifact_dir: Path) -> dict[str, Any]:
+    try:
+        task_dir = artifact_dir.parent.parent
+    except IndexError:
+        return {}
+    audit_path = task_dir / "test_activity_quality_audit.json"
+    payload = _read_json(audit_path)
+    if not isinstance(payload, dict):
+        return {}
+    status = str(payload.get("status") or "")
+    if status not in {"needs_rework", "invalid"} and payload.get("deliverable") is not False:
+        return {}
+    all_issues = [
+        dict(item)
+        for item in payload.get("issues") or []
+        if isinstance(item, dict)
+    ]
+    if not all_issues:
+        return {}
+    issues = all_issues[:50]
+    grouped_issues: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for issue in all_issues:
+        artifact = str(issue.get("artifact") or "").strip()
+        code = str(issue.get("code") or "").strip()
+        field_name = str(issue.get("field") or issue.get("field_name") or "").strip()
+        key = (artifact, code, field_name)
+        group = grouped_issues.setdefault(
+            key,
+            {
+                "artifact": artifact,
+                "code": code,
+                "field": field_name,
+                "count": 0,
+                "messages": [],
+            },
+        )
+        group["count"] += 1
+        message = str(issue.get("message") or issue.get("reason") or "").strip()
+        if message and message not in group["messages"] and len(group["messages"]) < 3:
+            group["messages"].append(message)
+    affected_artifacts = []
+    for issue in all_issues:
+        artifact = str(issue.get("artifact") or "").strip()
+        if artifact and artifact not in affected_artifacts:
+            affected_artifacts.append(artifact)
+    affected_names = {Path(item).name for item in affected_artifacts}
+    acceptance_payload = _read_json(task_dir / "task_acceptance_audit.json")
+    acceptance_failures = []
+    if isinstance(acceptance_payload, dict):
+        for check in acceptance_payload.get("checks") or []:
+            if not isinstance(check, dict):
+                continue
+            status_value = str(check.get("status") or "")
+            relative_path = str(check.get("relative_path") or "")
+            if status_value in {"ok", "pass", "passed", "completed"}:
+                continue
+            if affected_names and Path(relative_path).name not in affected_names:
+                continue
+            detail = dict(check)
+            for detail_key in ("invalid_findings", "invalid_cases"):
+                if isinstance(detail.get(detail_key), list):
+                    detail[detail_key] = [
+                        dict(item)
+                        for item in detail[detail_key]
+                        if isinstance(item, dict)
+                    ][:50]
+            acceptance_failures.append(detail)
+            if len(acceptance_failures) >= 20:
+                break
+    return {
+        "quality_artifact": str(audit_path.relative_to(task_dir)),
+        "status": status,
+        "score": int(payload.get("score") or 0),
+        "issue_count": int(payload.get("issue_count") or len(all_issues)),
+        "total_issue_count": len(all_issues),
+        "issues_truncated": len(all_issues) > len(issues),
+        "issues": issues,
+        "issue_groups": list(grouped_issues.values()),
+        "affected_artifacts": affected_artifacts,
+        "acceptance_failures": acceptance_failures,
+        "recommendations": [
+            str(item)
+            for item in payload.get("recommendations") or []
+            if str(item).strip()
+        ][:50],
+        "instruction": (
+            "这是上一轮产品质量门禁的失败明细。仅修改受影响交付件，复用已通过验证的源码证据，"
+            "不要重新执行整仓发现；复跑时必须逐项修正所有问题；"
+            "SFMEA 的具体整改必须是生产代码、配置防线或运行控制的变更，不能只写新增测试；"
+            "每条整改还必须附带独立、可执行的测试、监控或日志验证动作；"
+            "不得删除、绕过或弱化质量门禁。"
+        ),
+    }
 
 
 def _workflow_step_artifact_map(
@@ -4840,6 +5208,11 @@ def _evidence_card_validation_issues(
         )
         for symbol in symbols:
             symbol_text = str(symbol or "").strip()
+            if (
+                candidate.suffix.lower() in {".sh", ".bash", ".zsh", ".ksh"}
+                and symbol_text in {candidate.name, Path(file_path).as_posix()}
+            ):
+                continue
             symbol_pattern = re.compile(
                 rf"(?<![A-Za-z0-9_]){re.escape(symbol_text)}(?![A-Za-z0-9_])"
             )

@@ -21,12 +21,18 @@ from typing import Any, Callable
 
 from app.config import settings
 from app.services.agent_cli_bridge import (
+    AGENT_ANSWER_DELTA_PREFIX,
+    AGENT_FINAL_ANSWER_PREFIX,
     _decode as _decode_agent_cli_output,
+    _parse_event_text,
     _prompt_argument_or_file_bootstrap,
 )
 from app.services.agent_sandbox import (
     AgentSandboxError,
+    codex_command_for_outer_sandbox,
     filtered_agent_environment,
+    prepare_isolated_codex_home as _prepare_isolated_codex_home,
+    prepare_isolated_runtime_tmp as _prepare_isolated_runtime_tmp,
     prepare_agent_sandbox,
 )
 from app.services.agent_invocation_contract import (
@@ -55,6 +61,46 @@ _DEFAULT_AGENT_TOTAL_TIMEOUT_SEC = 900
 _DEFAULT_AGENT_IDLE_TIMEOUT_SEC = 300.0
 
 
+def _public_agent_process_output(
+    stream: str,
+    chunk: str,
+    *,
+    stream_state: dict[Any, Any],
+) -> str:
+    text = _redact(chunk).strip()
+    if not text:
+        return ""
+    if _is_known_codex_runtime_noise(text):
+        return ""
+    if stream == "stdout" and text.startswith("{"):
+        parsed = _parse_event_text(
+            text,
+            "stream_json",
+            stream_state=stream_state,
+        )
+        if not parsed:
+            return ""
+        if parsed.startswith((AGENT_FINAL_ANSWER_PREFIX, AGENT_ANSWER_DELTA_PREFIX)):
+            return "Agent 正在整理最终回答与交付件。"
+        text = parsed.strip()
+    return text[-2000:]
+
+
+def _is_known_codex_runtime_noise(text: str) -> bool:
+    lowered = text.lower()
+    if (
+        "codex_core_skills::loader" in lowered
+        and "failed to read skills symlink dir" in lowered
+        and "operation not permitted" in lowered
+    ):
+        return True
+    return (
+        "failed to load models cache" in lowered
+        and "runtime-codex-home" in lowered
+        and "operation not permitted" in lowered
+    )
+
+
 def _default_agent_session_policy() -> dict[str, Any]:
     return {
         "external_session_mode": "disposable_process",
@@ -72,19 +118,66 @@ def _default_agent_session_policy() -> dict[str, Any]:
     }
 
 
+_QUALITY_RETRY_REDUNDANT_CONTEXT_KEYS = (
+    "context_bundle",
+    "local_source_context",
+    "memory_retrieval",
+    "source_read_chain",
+    "evidence_consumption_trajectory",
+    "provider_snapshot",
+    "provider_readiness",
+    "workflow_contract",
+    "execution_contract",
+    "output_schemas_by_step",
+    "semantic_import_outputs_by_step",
+)
+
+
+def _task_bundle_for_agent_prompt(task_bundle: dict[str, Any]) -> dict[str, Any]:
+    """Keep retry prompts small without dropping user-authored inputs or files."""
+    retry_feedback = task_bundle.get("retry_quality_feedback")
+    if not isinstance(retry_feedback, dict) or not retry_feedback:
+        return task_bundle
+    prompt_bundle = dict(task_bundle)
+    omitted = []
+    for key in _QUALITY_RETRY_REDUNDANT_CONTEXT_KEYS:
+        if key in prompt_bundle:
+            prompt_bundle.pop(key, None)
+            omitted.append(key)
+    prompt_bundle["quality_retry_context_omissions"] = omitted
+    prompt_bundle["quality_retry_context_rule"] = (
+        "Omitted discovery payloads are already represented by protected artifacts in artifact_dir. "
+        "Read those artifacts directly; preserve every character in inputs and input_materials."
+    )
+    return prompt_bundle
+
+
 def _agent_output_contract_payload(
     *,
     run: "AgentRunRecord",
     task_bundle: dict[str, Any],
     workflow_snapshot: dict[str, Any],
 ) -> dict[str, Any]:
-    required_artifacts = [
+    retry_required_artifacts = [
+        str(item)
+        for item in task_bundle.get("quality_retry_required_artifacts") or []
+        if str(item).strip()
+    ]
+    required_artifacts = retry_required_artifacts or [
         str(item) for item in task_bundle.get("required_artifacts") or []
     ]
     expected_output_schemas = [
         item for item in task_bundle.get("expected_output_schemas") or []
         if isinstance(item, dict)
     ]
+    if retry_required_artifacts:
+        retry_names = {Path(item).name for item in retry_required_artifacts}
+        expected_output_schemas = [
+            item
+            for item in expected_output_schemas
+            if Path(str(item.get("artifact") or item.get("path") or "")).name
+            in retry_names
+        ]
     expected_semantic_outputs = [
         item for item in task_bundle.get("expected_semantic_outputs") or []
         if isinstance(item, dict)
@@ -116,6 +209,16 @@ def _agent_output_contract_payload(
         if isinstance(execution_contract.get("test_activity_contract"), dict)
         else {}
     )
+    retry_validation_feedback = (
+        task_bundle.get("retry_validation_feedback")
+        if isinstance(task_bundle.get("retry_validation_feedback"), dict)
+        else {}
+    )
+    retry_quality_feedback = (
+        task_bundle.get("retry_quality_feedback")
+        if isinstance(task_bundle.get("retry_quality_feedback"), dict)
+        else {}
+    )
     return {
         "contract_version": 1,
         "run_id": run.run_id,
@@ -145,11 +248,23 @@ def _agent_output_contract_payload(
             "rules": input_materials.get("rules") if isinstance(input_materials.get("rules"), dict) else {},
         },
         "black_box_generation_policy": black_box_generation_policy,
+        "retry_validation_feedback": retry_validation_feedback,
+        "retry_quality_feedback": retry_quality_feedback,
         "evidence_rules": {
             "raw_output_reuse": "never_without_validation",
             "required_artifacts_are_authoritative": True,
             "codetalk_validates_before_evidence": True,
             "unvalidated_agent_claims": "diagnostic_only",
+            "evidence_card_symbol_validation": {
+                "code_files": "symbols must occur in executable source, not only comments or strings",
+                "shell_files": (
+                    "symbols must occur in executable shell outside comments, quoted data, and heredoc bodies; "
+                    "for script-level or heredoc-backed test evidence use the exact filename as the sole symbol"
+                ),
+                "metadata_files": (
+                    "for JSON/index metadata use an empty symbols list plus exact sha256 and line_count"
+                ),
+            },
         },
         "execution_rules": {
             "readonly_env": True,
@@ -440,6 +555,25 @@ class AgentRunHarness:
             if isinstance(run_payload.get("session_policy"), dict)
             else _default_agent_session_policy()
         )
+        if isinstance(task_bundle, dict) and isinstance(workflow_snapshot, dict):
+            agent_output_contract = _agent_output_contract_payload(
+                run=AgentRunRecord(
+                    run_id=run_id,
+                    turn_id=turn_id,
+                    provider=str(run_payload.get("provider") or ""),
+                    command=configured_command,
+                    cwd=cwd,
+                    artifact_dir=str(self.artifact_dir),
+                    mcp_profile=str(run_payload.get("mcp_profile") or ""),
+                    prompt_transport=str(run_payload.get("prompt_transport") or ""),
+                    session_policy=session_policy,
+                    status=str(run_payload.get("status") or "created"),
+                    created_at=str(run_payload.get("created_at") or _now()),
+                ),
+                task_bundle=task_bundle,
+                workflow_snapshot=workflow_snapshot,
+            )
+            self._write_json("agent_output_contract.json", agent_output_contract)
         self._write_json("provider_diagnostics.json", provider_diagnostics)
         execution_contract = (
             task_bundle.get("execution_contract")
@@ -475,7 +609,11 @@ class AgentRunHarness:
             "mcp_profile": run_payload.get("mcp_profile") or "",
             "session_policy": session_policy,
             "workflow_snapshot": workflow_snapshot if isinstance(workflow_snapshot, dict) else {},
-            "task_bundle": task_bundle if isinstance(task_bundle, dict) else {},
+            "task_bundle": (
+                _task_bundle_for_agent_prompt(task_bundle)
+                if isinstance(task_bundle, dict)
+                else {}
+            ),
             "execution_contract": execution_contract,
             "test_activity_contract": test_activity_contract,
             "agent_output_contract": (
@@ -559,6 +697,7 @@ class AgentRunHarness:
             "TEMP": str(runtime_tmp_dir),
             "TMP": str(runtime_tmp_dir),
             "TMPDIR": str(runtime_tmp_dir),
+            "TMPPREFIX": str(runtime_tmp_dir / "zsh"),
         }
         env_hints.update(_agent_provider_env_hints(str(run_payload.get("provider") or "")))
         launch_command, command_resolution = _launch_command_from_provider_health(
@@ -782,9 +921,15 @@ class AgentRunHarness:
             append_jsonl=True,
         )
 
+        process_stream_state: dict[Any, Any] = {}
+
         def emit_process_output(stream: str, chunk: str) -> None:
-            text = _redact(chunk)
-            if not text.strip():
+            text = _public_agent_process_output(
+                stream,
+                chunk,
+                stream_state=process_stream_state,
+            )
+            if not text:
                 return
             _emit_agent_run_event(
                 event_sink,
@@ -795,7 +940,7 @@ class AgentRunHarness:
                     "turn_id": turn_id,
                     "provider": str(run_payload.get("provider") or ""),
                     "stream": stream,
-                    "content": text[-2000:],
+                    "content": text,
                 },
             )
 
@@ -1385,6 +1530,11 @@ def _resolve_local_process_command(command: list[str]) -> list[str]:
         return []
     resolved = [str(part) for part in command]
     executable = resolved[0]
+    if os.name == "nt" and not Path(executable).is_absolute():
+        located = shutil.which(executable)
+        if located:
+            resolved[0] = located
+            return resolved
     if executable != "python" or shutil.which(executable):
         return resolved
     if sys.executable:
@@ -1602,21 +1752,10 @@ def _codex_external_sandbox_command(
     *,
     sandbox_active: bool,
 ) -> list[str]:
-    result = list(command)
-    if not sandbox_active or not result:
-        return result
-    executable = Path(result[0]).name.lower()
-    if executable not in {"codex", "codex.exe"}:
-        return result
-    bypass_flag = "--dangerously-bypass-approvals-and-sandbox"
-    if bypass_flag in result:
-        return result
-    try:
-        exec_index = result.index("exec")
-    except ValueError:
-        return result
-    result.insert(exec_index + 1, bypass_flag)
-    return result
+    return codex_command_for_outer_sandbox(
+        command,
+        sandbox_active=sandbox_active,
+    )
 
 
 def _finalize_invocation_candidates_for_sandbox(
@@ -1676,72 +1815,6 @@ def _agent_process_env_for_harness(*, provider: str, repo_path: str) -> dict[str
         return _agent_process_env(provider, repo_path)
     except Exception:
         return filtered_agent_environment()
-
-
-def _prepare_isolated_runtime_tmp(artifact_dir: Path) -> Path:
-    artifact_root = artifact_dir.resolve()
-    artifact_root.mkdir(parents=True, exist_ok=True)
-    runtime_tmp = Path(
-        tempfile.mkdtemp(prefix=".runtime-tmp-", dir=artifact_root)
-    )
-    if runtime_tmp.is_symlink() or not runtime_tmp.is_dir():
-        raise AgentSandboxError("Agent 隔离临时目录不是安全的真实目录。")
-    runtime_tmp = runtime_tmp.resolve(strict=True)
-    if runtime_tmp.parent != artifact_root:
-        raise AgentSandboxError("Agent 隔离临时目录越过了任务产物边界。")
-    return runtime_tmp
-
-
-def _prepare_isolated_codex_home(
-    *,
-    provider: str,
-    command: list[str],
-    artifact_dir: Path,
-) -> tuple[Path | None, list[Path]]:
-    command_name = Path(command[0]).name.lower() if command else ""
-    if "codex" not in command_name and "codex" not in provider.lower():
-        return None, []
-
-    source_home = Path(
-        os.environ.get("CODEX_HOME") or Path.home() / ".codex"
-    ).expanduser().resolve()
-    artifact_root = artifact_dir.resolve()
-    artifact_root.mkdir(parents=True, exist_ok=True)
-    runtime_home = Path(
-        tempfile.mkdtemp(prefix=".runtime-codex-home-", dir=artifact_root)
-    )
-    if runtime_home.is_symlink() or not runtime_home.is_dir():
-        raise AgentSandboxError("Codex 隔离运行目录不是安全的真实目录。")
-    runtime_home = runtime_home.resolve(strict=True)
-    if runtime_home.parent != artifact_root:
-        raise AgentSandboxError("Codex 隔离运行目录越过了任务产物边界。")
-    for state_name in ("sessions", "log", ".tmp", "tmp", "cache"):
-        state_path = runtime_home / state_name
-        state_path.mkdir()
-        if state_path.is_symlink() or not state_path.is_dir():
-            raise AgentSandboxError(f"Codex 状态目录不安全：{state_name}")
-        if state_path.resolve(strict=True).parent != runtime_home:
-            raise AgentSandboxError(f"Codex 状态目录越过任务边界：{state_name}")
-    read_targets: list[Path] = []
-    for name in ("auth.json", "config.toml", "models_cache.json", "skills"):
-        source = source_home / name
-        if not source.exists():
-            continue
-        resolved_source = source.resolve()
-        target = runtime_home / name
-        try:
-            target.symlink_to(
-                resolved_source,
-                target_is_directory=resolved_source.is_dir(),
-            )
-        except OSError:
-            if resolved_source.is_dir():
-                shutil.copytree(resolved_source, target, symlinks=False)
-            else:
-                shutil.copy2(resolved_source, target)
-        if resolved_source not in read_targets:
-            read_targets.append(resolved_source)
-    return runtime_home, read_targets
 
 
 def _launch_command_from_provider_health(
@@ -1996,15 +2069,22 @@ def _run_cancellable_subprocess(
             last_activity["at"] = time.monotonic()
 
     def _read_stream(pipe: Any, chunks: list[bytes], name: str) -> None:
+        pending = b""
         try:
             while True:
-                chunk = pipe.readline()
+                chunk = os.read(pipe.fileno(), 4096)
                 if not chunk:
                     break
                 chunks.append(chunk)
                 _mark_activity()
-                if output_sink is not None:
-                    output_sink(name, _decode_subprocess_text(chunk))
+                if output_sink is None:
+                    continue
+                pending += chunk
+                while b"\n" in pending:
+                    line, pending = pending.split(b"\n", 1)
+                    output_sink(name, _decode_subprocess_text(line + b"\n"))
+            if pending and output_sink is not None:
+                output_sink(name, _decode_subprocess_text(pending))
         except BaseException as exc:  # pragma: no cover - defensive bridge for OS process edge cases.
             captured[f"{name}_error"] = exc
 

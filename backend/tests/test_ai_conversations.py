@@ -3409,6 +3409,14 @@ class TestAIConversationsAPI:
         assert repair_draft.startswith("REJECTED_DRAFT_TO_REPAIR")
         assert "只能修订" in repair_draft
         assert "Protocol Error=0x05" in repair_draft
+        assert (
+            _quality_retry_draft_text(
+                "# Agent 输出文件包\n\n"
+                "## .runtime-codex-home-abcd/plugins/shopify/skills/hydrogen/SKILL.md\n\n"
+                "You are an assistant that helps Shopify developers."
+            )
+            == ""
+        )
         original = "分析 iSCSI Login 并输出完整测试设计"
         stale_answer = "STALE_REJECTED_ANSWER: Protocol Error=0x05"
         prompt_history = [
@@ -5935,6 +5943,63 @@ async def test_bound_workflow_rejects_symlink_artifact_and_never_copies_target(
         for path in delivery_dir.rglob("*")
         if path.is_file()
     )
+
+
+async def test_agent_thread_artifact_content_excludes_runtime_private_directories(tmp_path):
+    from app.services.ai_conversations import (
+        _agent_invocation_delivery_contracts,
+        _agent_thread_artifact_content,
+    )
+
+    artifact_dir = tmp_path / "agent-artifacts"
+    runtime_home = artifact_dir / ".runtime-codex-home-test"
+    runtime_home.mkdir(parents=True)
+    (runtime_home / "plugin.md").write_text(
+        "PRIVATE_RUNTIME_PLUGIN_MUST_NOT_BE_DELIVERED",
+        encoding="utf-8",
+    )
+    (runtime_home / "state.json").write_text(
+        '{"private":"runtime"}',
+        encoding="utf-8",
+    )
+    (artifact_dir / "deliverable.md").write_text(
+        "# SPDK NVMe/TCP TLS report",
+        encoding="utf-8",
+    )
+    (artifact_dir / "black_box_cases.json").write_text(
+        '[{"case_id":"BB-001"}]',
+        encoding="utf-8",
+    )
+    (artifact_dir / "test_write.txt").write_text(
+        "UNDECLARED_PROBE_MUST_NOT_BE_DELIVERED",
+        encoding="utf-8",
+    )
+    invocation = {
+        "test_activity_contract": {
+            "required_outputs": ["black_box_cases.json"],
+            "artifact_contract": {
+                "black_box_cases.json": {
+                    "artifact": "black_box_cases.json",
+                    "schema": {"type": "array"},
+                }
+            },
+        }
+    }
+    (artifact_dir / "agent_invocation.json").write_text(
+        json.dumps(invocation),
+        encoding="utf-8",
+    )
+
+    content = await _agent_thread_artifact_content(artifact_dir)
+
+    assert "# SPDK NVMe/TCP TLS report" in content
+    assert "BB-001" in content
+    assert "PRIVATE_RUNTIME_PLUGIN_MUST_NOT_BE_DELIVERED" not in content
+    assert "UNDECLARED_PROBE_MUST_NOT_BE_DELIVERED" not in content
+    assert [item["artifact"] for item in _agent_invocation_delivery_contracts(invocation)] == [
+        "black_box_cases.json",
+        "deliverable.md",
+    ]
 
 
 async def test_fail_run_does_not_overwrite_cancelled_terminal_state(sqlite_db):

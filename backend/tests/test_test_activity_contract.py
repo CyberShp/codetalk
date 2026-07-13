@@ -31,6 +31,7 @@ def test_test_activity_contract_covers_storage_testing_profiles_and_templates():
         "source_reading_plan.md",
         "module_map.md",
         "business_flow.md",
+        "flow_map.md",
         "tester_code_understanding.md",
         "sfmea.json",
         "black_box_cases.json",
@@ -104,6 +105,85 @@ def test_test_activity_contract_covers_storage_testing_profiles_and_templates():
     assert any(
         item["source"] == "domain_test_profile" and item["profile_id"] == "iscsi_login"
         for item in contract["focus_rationale"]
+    )
+
+
+def test_refresh_test_activity_contract_upgrades_declared_artifacts_without_losing_domain_rules():
+    from app.services.test_activity_contract import refresh_test_activity_contract
+
+    stale = {
+        "domain_profiles": ["security_tls"],
+        "required_outputs": ["business_flow.md", "sfmea.json"],
+        "artifact_contract": {
+            "business_flow.md": {"sections": ["old"]},
+            "sfmea.json": {"required_fields": ["failure_mode"]},
+        },
+    }
+
+    refreshed = refresh_test_activity_contract(
+        stale,
+        declared_artifacts=["flow_map.md", "sfmea.json", "evidence_cards.json"],
+    )
+
+    assert refreshed["domain_profiles"] == ["security_tls"]
+    assert refreshed["required_outputs"] == ["flow_map.md", "sfmea.json"]
+    assert refreshed["artifact_contract"]["flow_map.md"]["sections"] == [
+        "外部触发",
+        "流程步骤",
+        "异常分支",
+        "观测点",
+    ]
+    assert "mitigation" in refreshed["artifact_contract"]["sfmea.json"]["field_rules"]
+
+
+@pytest.mark.parametrize("verb", ["add", "validate", "require", "keep", "configure", "emit"])
+def test_sfmea_actionable_mitigation_accepts_explicit_english_production_controls(verb):
+    from app.services.test_activity_contract import sfmea_mitigation_is_actionable
+
+    mitigation = (
+        f"Production/config control: {verb} a preflight guard that rejects invalid credentials. "
+        "Verification: run the negative attach test and assert the rejection log."
+    )
+
+    assert sfmea_mitigation_is_actionable(mitigation) is True
+
+
+def test_combined_response_audits_declared_flow_map_like_business_flow():
+    from app.services.test_activity_contract import audit_test_activity_response
+
+    audit = audit_test_activity_response(
+        content="# flow_map\n只有一句结论。" + "补充" * 400,
+        contract={"required_outputs": ["flow_map.md"]},
+    )
+
+    assert any(
+        issue["code"] == "missing_combined_business_flow"
+        and issue["artifact"] == "flow_map.md"
+        for issue in audit["issues"]
+    )
+
+
+def test_test_activity_contract_uses_declared_flow_artifact_and_actionable_sfmea_rules():
+    from app.services.test_activity_contract import build_test_activity_contract
+
+    contract = build_test_activity_contract(
+        target="NVMe/TCP TLS 流程与 SFMEA",
+        workflow_outputs=[
+            {"id": "flow", "artifact": "flow_map.md", "type": "markdown"},
+            {"id": "sfmea", "artifact": "sfmea.json", "type": "json"},
+        ],
+    )
+
+    assert "flow_map.md" in contract["required_outputs"]
+    assert "business_flow.md" not in contract["required_outputs"]
+    assert contract["artifact_contract"]["flow_map.md"]["sections"] == [
+        "外部触发",
+        "流程步骤",
+        "异常分支",
+        "观测点",
+    ]
+    assert contract["artifact_contract"]["sfmea.json"]["field_rules"]["mitigation"] == (
+        "每条 mitigation 必须同时包含具体整改动作，以及可执行的测试、监控或日志验证动作。"
     )
 
 
@@ -577,6 +657,8 @@ def test_sfmea_audit_requires_test_or_monitor_verification_in_mitigation(tmp_pat
         "Run retry tests, block invalid transitions",
         "新增回归测试，清理残留状态",
         "执行重试测试，限制重试次数",
+        "在登录状态机中增加状态断言并返回错误；新增集成测试验证拒绝路径",
+        "在参数解析路径增加长度上限保护；新增模糊测试验证超长参数处理",
         "Reset stale state and assert reconnect succeeds",
         "Limit retries and check the connection state",
         "限制重试次数并检查连接状态",
@@ -2759,6 +2841,39 @@ def test_runtime_generated_observation_path_is_not_repository_evidence(tmp_path)
 
     assert not any(
         issue["code"] == "evidence_path_not_found"
+        for issue in audit["issues"]
+    )
+
+
+def test_repo_path_exists_accepts_declared_test_binary_build_target(tmp_path):
+    from app.services.test_activity_contract import (
+        _repo_path_exists,
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    target_dir = repo / "test" / "nvme" / "connect_stress"
+    target_dir.mkdir(parents=True)
+    (target_dir / "connect_stress.c").write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    (target_dir / "Makefile").write_text("SPDK_ROOT_DIR := ../../..\n", encoding="utf-8")
+
+    assert _repo_path_exists(repo, "test/nvme/connect_stress/connect_stress") is True
+    assert _repo_path_exists(repo, "test/nvme/connect_stress/imaginary_binary") is False
+    audit = audit_test_activity_response(
+        content=(
+            "源码证据：`test/nvme/connect_stress/connect_stress.c`。\n"
+            "外部运行目标：`test/nvme/connect_stress/connect_stress`。"
+        ),
+        contract=build_test_activity_contract(
+            target="NVMe connect stress 测试设计",
+            repo_path=str(repo),
+        ),
+        repo_path=str(repo),
+    )
+    assert not any(
+        issue["code"] == "evidence_path_not_found"
+        and "test/nvme/connect_stress/connect_stress" in issue["message"]
         for issue in audit["issues"]
     )
 

@@ -1,5 +1,6 @@
 import shutil
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -47,6 +48,9 @@ async def test_stream_runtime_enforces_real_workspace_readonly_sandbox(tmp_path)
     artifacts = tmp_path / "artifacts"
     script = (
         'cat >/dev/null; cat "$CODETALK_REPO_PATH/source.txt" > "$CODETALK_AGENT_ARTIFACT_DIR/result.md"; '
+        'printf "%s" "$TMPDIR" > "$CODETALK_AGENT_ARTIFACT_DIR/tmpdir.txt"; '
+        'printf "%s" "$TMPPREFIX" > "$CODETALK_AGENT_ARTIFACT_DIR/tmpprefix.txt"; '
+        'printf runtime > "$TMPDIR/runtime-state.txt"; '
         'if echo forbidden > "$CODETALK_REPO_PATH/blocked.txt"; then echo WRITE_ESCAPED; '
         'else echo SANDBOX_BLOCKED; fi; '
         'if secret_value=$(cat "$CODETALK_HOST_SECRET"); '
@@ -80,6 +84,11 @@ async def test_stream_runtime_enforces_real_workspace_readonly_sandbox(tmp_path)
     assert "SANDBOX_READ_BLOCKED" in "".join(output)
     assert "READ_ESCAPED" not in "".join(output)
     assert (artifacts / "result.md").read_text(encoding="utf-8") == "source"
+    runtime_tmp = Path((artifacts / "tmpdir.txt").read_text(encoding="utf-8"))
+    assert runtime_tmp.parent == artifacts.resolve()
+    assert runtime_tmp.name.startswith(".runtime-tmp-")
+    assert (runtime_tmp / "runtime-state.txt").read_text(encoding="utf-8") == "runtime"
+    assert (artifacts / "tmpprefix.txt").read_text(encoding="utf-8") == str(runtime_tmp / "zsh")
     assert not (repo / "blocked.txt").exists()
     assert not (artifacts / "leak.txt").exists()
     policy = (artifacts / "sandbox_policy.json").read_text(encoding="utf-8")
@@ -99,6 +108,20 @@ def test_codex_artifact_dir_is_added_as_writable_before_exec():
         "exec",
         "--json",
     ]
+
+
+def test_ai_thread_codex_disables_inner_sandbox_only_with_active_outer_sandbox():
+    from app.services.agent_sandbox import codex_command_for_outer_sandbox
+
+    command = ["/Users/dev/.local/bin/codex", "exec", "--json"]
+
+    assert codex_command_for_outer_sandbox(command, sandbox_active=True) == [
+        "/Users/dev/.local/bin/codex",
+        "exec",
+        "--dangerously-bypass-approvals-and-sandbox",
+        "--json",
+    ]
+    assert codex_command_for_outer_sandbox(command, sandbox_active=False) == command
 
 
 def test_codex_artifact_dir_is_not_duplicated():

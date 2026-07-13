@@ -7,6 +7,7 @@ import sys
 import time
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -15,6 +16,63 @@ from httpx import ASGITransport, AsyncClient
 from app.config import settings
 
 pytestmark = [pytest.mark.asyncio]
+
+
+async def test_rerun_plan_allows_failed_local_validation_step_without_agent_replay(
+    tmp_path,
+):
+    from app.api.agent_workbench import _validate_task_rerun_plan
+
+    repo_path = tmp_path / "repo"
+    repo_path.mkdir()
+    task_dir = tmp_path / "task-run"
+    task_dir.mkdir()
+    for artifact in (
+        "task_run.json",
+        "input_snapshot.json",
+        "task_bundle.json",
+        "workflow_snapshot.json",
+    ):
+        (task_dir / artifact).write_text("{}", encoding="utf-8")
+
+    task_run = SimpleNamespace(
+        task_run_id="task-local-validation",
+        artifact_dir=str(task_dir),
+        repo_path=str(repo_path),
+        agent_runs=[],
+    )
+    plan = {
+        "task_run_id": task_run.task_run_id,
+        "status": "needs_rerun",
+        "steps": [
+            {
+                "step_id": "validate_evidence",
+                "type": "evidence_validate",
+                "status": "invalid",
+                "recommended_action": "rerun_workflow_from_step",
+                "failure_kind": "artifact_validation_failed",
+            }
+        ],
+    }
+
+    validation = _validate_task_rerun_plan(task_run=task_run, plan=plan)
+
+    assert validation["can_rerun"] is True
+    assert validation["status"] == "ready"
+    assert validation["steps"] == [
+        {
+            "step_id": "validate_evidence",
+            "type": "evidence_validate",
+            "status": "ready",
+            "recommended_action": "rerun_workflow_from_step",
+            "failure_kind": "artifact_validation_failed",
+            "artifact_dir": str(task_dir / "steps" / "validate_evidence"),
+            "artifact_dir_exists": False,
+            "missing_artifacts": [],
+            "overwrite_risk_artifacts": [],
+            "replay_artifacts": [],
+        }
+    ]
 
 
 def _workbench_path(relative_path: str) -> Path:
@@ -146,12 +204,12 @@ class _SourceFlowStageLLM:
                     "case_type": "black_box_ready",
                     "scenario_name": dimension,
                     "test_dimension": dimension,
-                    "inputs": "public workflow",
-                    "preconditions": ["target running"],
-                    "steps": ["exercise the public connection interface"],
-                    "expected_result": "observable connection result",
-                    "observability": ["connection response"],
-                    "failure_diagnostics": ["target log"],
+                    "inputs": f"public workflow input for {dimension}",
+                    "preconditions": [f"target running for {dimension}"],
+                    "steps": [f"exercise the public {dimension} connection scenario"],
+                    "expected_result": f"observable {dimension} connection result",
+                    "observability": [f"{dimension} connection response"],
+                    "failure_diagnostics": [f"target log for {dimension}"],
                     "mapped_test_dir": "test/nvmf",
                     "source_or_test_evidence": ["lib/nvmf/ctrlr.c:1"],
                 }
@@ -4746,7 +4804,7 @@ async def test_workbench_materialize_outputs_auto_imports_declared_semantic_outp
     )
 
 
-async def test_workbench_materialize_workflow_outputs_preserves_rejection_details(
+async def test_workbench_materialize_workflow_outputs_blocks_failed_quality_gate(
     workbench_client,
     tmp_path,
     monkeypatch,
@@ -4811,23 +4869,13 @@ async def test_workbench_materialize_workflow_outputs_preserves_rejection_detail
 
     assert materialized.status_code == 200
     body = materialized.json()
-    assert body["status"] == "partial"
+    assert body["status"] == "skipped"
+    assert body["reason"] == "test_activity_quality_gate_failed"
     assert body["evidence_count"] == 0
     assert body["materialization_audit"]["outputs"][0]["output_id"] == "scope"
-    assert body["materialization_audit"]["outputs"][0]["materialization_status"] == "rejected"
-    assert body["materialization_audit"]["outputs"][0]["rejection_reasons"] == ["output_not_ok"]
-    assert body["rejected_outputs"] == [
-        {
-            "output": "scope",
-            "reason": "output_not_ok",
-            "output_status": "invalid",
-            "output_reason": "schema_validation_failed",
-            "artifact": "scope.json",
-            "path": executed.json()["outputs"][0]["path"],
-            "from": "discover",
-            "schema_errors": ["missing required field: files"],
-        }
-    ]
+    assert body["materialization_audit"]["outputs"][0]["materialization_status"] == "output_not_ok"
+    assert body["materialization_audit"]["outputs"][0]["produced_status"] == "invalid"
+    assert body["rejected_outputs"] == []
     materialization = json.loads(
         (_task_run_dir(prepared.json()["task_run_id"]) / "workflow_output_materialization.json")
         .read_text(encoding="utf-8")
@@ -6745,6 +6793,33 @@ async def test_acceptance_quality_accepts_canonical_staged_sfmea_fields(tmp_path
     assert _risk_finding_quality_reasons(finding, repo_path=str(tmp_path)) == []
 
 
+async def test_acceptance_quality_uses_direct_file_path_when_source_evidence_references_cards(tmp_path):
+    from app.api.agent_workbench import _risk_finding_quality_reasons
+
+    source = tmp_path / "lib" / "nvme" / "nvme_tcp.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int nvme_tcp_guard(void) { return 0; }\n", encoding="utf-8")
+    finding = {
+        "failure_mode": "TLS credential mismatch",
+        "cause": "identity differs",
+        "effect": "connection rejected",
+        "detection": "attach error and TLS log",
+        "severity": 8,
+        "occurrence": 3,
+        "detection_score": 2,
+        "rpn": 48,
+        "score_explanation": "S=8 connection blocked; O=3 bounded; D=2 visible",
+        "mitigation": (
+            "Production control: add a credential preflight guard. "
+            "Verification: run a negative attach test and assert the TLS log."
+        ),
+        "file_path": "lib/nvme/nvme_tcp.c",
+        "source_evidence": ["EV-TLS-002:1-1"],
+    }
+
+    assert _risk_finding_quality_reasons(finding, repo_path=str(tmp_path)) == []
+
+
 async def test_acceptance_quality_prefers_canonical_sfmea_scores_over_legacy_aliases(tmp_path):
     from app.api.agent_workbench import _risk_finding_quality_reasons
 
@@ -6844,6 +6919,89 @@ async def test_acceptance_quality_allows_external_protocol_steps_and_explicit_ev
     }
 
     assert _black_box_case_quality_reasons(case) == []
+
+
+async def test_acceptance_quality_allows_external_protocol_field_fault_injection():
+    from app.api.agent_workbench import _black_box_case_quality_reasons
+
+    case = {
+        "case_id": "BLACKBOX-DIGEST-001",
+        "scenario_name": "iSCSI HeaderDigest mismatch",
+        "preconditions": [
+            "SPDK target and initiator enable HeaderDigest=CRC32C",
+            "A network proxy can modify an initiator Login Request PDU field",
+        ],
+        "steps": [
+            "Initiator sends a Login Request PDU and the proxy modifies the HeaderDigest field",
+            "Capture the target response PDU",
+        ],
+        "expected_result": "target returns a protocol error and closes the connection",
+        "observability": ["Reject PDU reason", "target digest mismatch log"],
+        "failure_diagnostics": ["compare the captured PDU digest with the configured algorithm"],
+        "mapped_test_dir": "test/iscsi_tgt/digests/digests.sh",
+    }
+
+    assert _black_box_case_quality_reasons(case) == []
+
+
+async def test_black_box_boundary_does_not_allow_internal_state_when_protocol_words_are_elsewhere():
+    from app.api.agent_workbench import _black_box_component_has_white_box_boundary
+
+    assert _black_box_component_has_white_box_boundary(
+        "修改私有字段 state 后发送 Login Request 报文"
+    ) is True
+    assert _black_box_component_has_white_box_boundary(
+        "修改内部变量 state，然后构造协议请求"
+    ) is True
+    assert _black_box_component_has_white_box_boundary(
+        "修改 Login Request 报文字段并发送请求"
+    ) is False
+
+
+async def test_acceptance_reconciliation_blocks_delivery_when_required_check_failed(tmp_path):
+    from app.api.agent_workbench import _reconcile_acceptance_quality
+
+    quality = {
+        "kind": "test_activity_quality_audit",
+        "status": "deliverable",
+        "deliverable": True,
+        "score": 100,
+        "issue_count": 0,
+        "issues": [],
+        "recommendations": ["质量门禁已通过，可以交付。"],
+    }
+    (tmp_path / "test_activity_quality_audit.json").write_text(
+        json.dumps(quality),
+        encoding="utf-8",
+    )
+    execution = {"status": "completed", "test_activity_quality": quality}
+    acceptance = {
+        "status": "incomplete",
+        "missing_required": [
+            {
+                "id": "black_box_case_quality:design:black_box_cases.json",
+                "reason": "black_box_case_quality_failed",
+                "relative_path": "agent_runs/design/black_box_cases.json",
+            }
+        ],
+        "summary": {"missing_required": 1},
+    }
+
+    reconciled = _reconcile_acceptance_quality(
+        task_dir=tmp_path,
+        execution=execution,
+        acceptance=acceptance,
+    )
+
+    assert reconciled["status"] == "needs_rework"
+    assert reconciled["test_activity_quality"]["deliverable"] is False
+    assert reconciled["test_activity_quality"]["status"] == "needs_rework"
+    assert reconciled["test_activity_quality"]["issue_count"] == 1
+    assert reconciled["test_activity_quality"]["score"] == 79
+    persisted = json.loads(
+        (tmp_path / "test_activity_quality_audit.json").read_text(encoding="utf-8")
+    )
+    assert persisted["deliverable"] is False
 
 
 async def test_acceptance_quality_rejects_invalid_unverified_mapping_prefix():

@@ -2471,6 +2471,11 @@ async def run_agent_generation(
             force_artifact=adopted_agent_artifact
             or _agent_task_requests_downloadable_artifact(user_message["content"], content),
             artifact_only=adopted_agent_artifact,
+            declared_artifacts=_materializable_agent_delivery_contracts(
+                invocation_manifest,
+                agent_artifact_dir,
+            ),
+            source_artifact_dir=agent_artifact_dir,
         )
         workflow_action = _bound_workflow_action(conversation)
         if workflow_action:
@@ -4054,6 +4059,12 @@ def _quality_retry_feedback_text(audit: dict[str, Any]) -> str:
 def _quality_retry_draft_text(content: str, *, limit: int = 40_000) -> str:
     draft = redact_agent_diagnostic_text(str(content or "").strip())
     if not draft:
+        return ""
+    lowered = draft.lower()
+    if (
+        "# agent 输出文件包" in lowered
+        and any(marker in lowered for marker in ("/.runtime-", "## .runtime-", "/.codex-", "## .codex-"))
+    ):
         return ""
     if len(draft) > limit:
         draft = draft[:limit] + "\n\n[草稿已按长度上限截断]"
@@ -5713,11 +5724,94 @@ _AI_THREAD_AGENT_AUDIT_ARTIFACT_NAMES = {
     "trace",
 }
 
+_AI_THREAD_AGENT_PRIVATE_DIR_PREFIXES = (
+    ".runtime-",
+    ".codex-",
+)
+
 
 def _is_agent_audit_artifact_path(path: Path) -> bool:
     parts = [path.stem.lower(), *(part.lower() for part in path.parts[:-1])]
     normalized = {re.sub(r"[^a-z0-9]+", "_", part).strip("_") for part in parts}
     return any(part in _AI_THREAD_AGENT_AUDIT_ARTIFACT_NAMES for part in normalized)
+
+
+def _agent_invocation_delivery_contracts(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    activity = manifest.get("test_activity_contract")
+    if not isinstance(activity, dict):
+        return []
+    required = [
+        str(item).strip()
+        for item in activity.get("required_outputs") or []
+        if str(item).strip()
+    ]
+    if not required:
+        return []
+    specs = activity.get("artifact_contract")
+    specs = specs if isinstance(specs, dict) else {}
+    contracts: list[dict[str, Any]] = []
+    for artifact in required:
+        raw = specs.get(artifact)
+        contract = dict(raw) if isinstance(raw, dict) else {}
+        contract["artifact"] = artifact
+        contract["required"] = True
+        contract.setdefault("type", "json" if artifact.endswith(".json") else "markdown")
+        contracts.append(contract)
+    contracts.append(
+        {
+            "artifact": "deliverable.md",
+            "type": "markdown",
+            "required": True,
+        }
+    )
+    return contracts
+
+
+def _declared_agent_artifact_names(artifact_dir: Path) -> set[str] | None:
+    invocation_path = artifact_dir / "agent_invocation.json"
+    try:
+        manifest = json.loads(invocation_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(manifest, dict):
+        return None
+    contracts = _agent_invocation_delivery_contracts(manifest)
+    if not contracts:
+        return None
+    required_outputs = [
+        Path(str(contract.get("artifact") or ""))
+        for contract in contracts
+        if str(contract.get("artifact") or "") != "deliverable.md"
+    ]
+    if not required_outputs or not all((artifact_dir / path).is_file() for path in required_outputs):
+        return None
+    return {
+        Path(str(contract.get("artifact") or "")).as_posix()
+        for contract in contracts
+        if str(contract.get("artifact") or "").strip()
+    }
+
+
+def _materializable_agent_delivery_contracts(
+    manifest: dict[str, Any],
+    artifact_dir: Path,
+) -> list[dict[str, Any]]:
+    contracts = _agent_invocation_delivery_contracts(manifest)
+    required_outputs = [
+        contract
+        for contract in contracts
+        if str(contract.get("artifact") or "") != "deliverable.md"
+    ]
+    if not required_outputs or not all(
+        (artifact_dir / Path(str(contract.get("artifact") or ""))).is_file()
+        for contract in required_outputs
+    ):
+        return []
+    return [
+        contract
+        for contract in contracts
+        if (artifact_dir / Path(str(contract.get("artifact") or ""))).is_file()
+    ]
 
 
 async def _agent_thread_artifact_content(artifact_dir: Path) -> str:
@@ -5726,9 +5820,18 @@ async def _agent_thread_artifact_content(artifact_dir: Path) -> str:
 
     def collect_candidates() -> list[Path]:
         root = artifact_dir.resolve()
+        declared_names = _declared_agent_artifact_names(artifact_dir)
         candidates: list[Path] = []
         for path in artifact_dir.rglob("*"):
             if not path.is_file():
+                continue
+            relative = path.relative_to(artifact_dir)
+            if declared_names is not None and relative.as_posix() not in declared_names:
+                continue
+            if any(
+                part.startswith(_AI_THREAD_AGENT_PRIVATE_DIR_PREFIXES)
+                for part in relative.parts
+            ):
                 continue
             suffix = path.suffix.lower()
             if suffix not in _AI_THREAD_AGENT_ARTIFACT_SUFFIX_PRIORITY:
@@ -5739,7 +5842,7 @@ async def _agent_thread_artifact_content(artifact_dir: Path) -> str:
                 continue
             if root not in (resolved, *resolved.parents):
                 continue
-            if _is_agent_audit_artifact_path(path.relative_to(artifact_dir)):
+            if _is_agent_audit_artifact_path(relative):
                 continue
             if path.stat().st_size <= 0 or path.stat().st_size > 2_000_000:
                 continue
