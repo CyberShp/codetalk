@@ -422,7 +422,7 @@ def _parse_input(item: Any) -> WorkflowInput:
     if input_type not in ALLOWED_INPUT_TYPES:
         raise WorkflowValidationError(f"unsupported workflow input type: {input_type}")
     resolver = str(item.get("resolver") or "")
-    if resolver and resolver not in {"agent_mcp", "local", "manual"}:
+    if resolver and resolver not in {"agent_mcp", "local", "manual", "workspace"}:
         raise WorkflowValidationError(f"unsupported workflow input resolver: {resolver}")
     schema = item.get("schema") or item.get("json_schema")
     if schema is not None:

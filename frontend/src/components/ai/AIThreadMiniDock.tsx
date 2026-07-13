@@ -12,6 +12,7 @@ const IDLE_THREAD_POLL_MS = 60000;
 
 export default function AIThreadMiniDock() {
   const pathname = usePathname();
+  const isFocusedToolRoute = pathname.startsWith("/ai") || pathname.startsWith("/workflows") || pathname.startsWith("/tasks");
   const [items, setItems] = useState<AIConversation[]>([]);
   const [loading, setLoading] = useState(false);
   const mountedRef = useRef(true);
@@ -37,33 +38,33 @@ export default function AIThreadMiniDock() {
   }, []);
 
   useEffect(() => {
-    if (pathname.startsWith("/ai")) return;
+    if (isFocusedToolRoute) return;
     void loadThreads({ showSpinner: true });
-  }, [loadThreads, pathname]);
+  }, [isFocusedToolRoute, loadThreads]);
 
   const hasRunningThread = items.some((item) => item.status === "running");
   const pollDelay = hasRunningThread ? ACTIVE_THREAD_POLL_MS : IDLE_THREAD_POLL_MS;
 
   useEffect(() => {
-    if (pathname.startsWith("/ai")) return;
+    if (isFocusedToolRoute) return;
     const timer = window.setInterval(() => {
       void loadThreads();
     }, pollDelay);
     return () => {
       window.clearInterval(timer);
     };
-  }, [loadThreads, pathname, pollDelay]);
+  }, [isFocusedToolRoute, loadThreads, pollDelay]);
 
   useEffect(() => {
-    if (pathname.startsWith("/ai")) return;
+    if (isFocusedToolRoute) return;
     const handleVisibilityChange = () => {
       if (!document.hidden) void loadThreads();
     };
     document.addEventListener("visibilitychange", handleVisibilityChange);
     return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
-  }, [loadThreads, pathname]);
+  }, [isFocusedToolRoute, loadThreads]);
 
-  if (pathname.startsWith("/ai")) return null;
+  if (isFocusedToolRoute) return null;
 
   const active = items.find((item) => item.status === "running");
   const target = active ?? items[0];

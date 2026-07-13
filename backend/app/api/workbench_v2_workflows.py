@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.config import settings
+from app.services.agent_runtimes import list_agent_runtimes_sync
+from app.services.evidence_memory import EvidenceMemoryStore
 from app.services.external_agent_discovery import external_agent_provider_specs
+from app.services.test_semantic_library import TestSemanticLibraryStore
+from app.services.workbench_task_run import WorkbenchTaskRunPreparer
 from app.services.workflow_graph import (
     WorkflowGraphValidationError,
     compile_workflow_graph,
     validate_workflow_graph,
 )
+from app.services.workflow_dsl import WorkflowStore
 from app.services.workflow_version_store import (
     PublishedWorkflowVersionError,
     WorkflowDraftExistsError,
@@ -41,6 +49,11 @@ class WorkflowDraftUpdateRequest(BaseModel):
 
 class WorkflowPublishRequest(BaseModel):
     pass
+
+
+class WorkflowTrialRunRequest(BaseModel):
+    workspace_id: str = Field(min_length=1)
+    inputs: dict[str, Any] = Field(default_factory=dict)
 
 
 def workflow_version_store() -> WorkflowVersionStore:
@@ -219,6 +232,91 @@ async def publish_workflow_version(
     return asdict(version)
 
 
+@router.post(
+    "/workflows/{workflow_id}/versions/{version_id}/test-run",
+    status_code=201,
+)
+async def prepare_workflow_trial_run(
+    workflow_id: str,
+    version_id: str,
+    payload: WorkflowTrialRunRequest,
+) -> dict[str, Any]:
+    """Compile a draft server-side and prepare a real, isolated run snapshot."""
+    _require_v2()
+    version = _version_for_workflow(workflow_id, version_id)
+    if version.state != "draft":
+        raise HTTPException(status_code=409, detail="只能试运行工作流草稿")
+    workspace = _resolve_workspace(payload.workspace_id)
+    repo_path = Path(str(workspace["repo_path"])).expanduser().resolve()
+    if not repo_path.exists() or not repo_path.is_dir():
+        raise HTTPException(
+            status_code=422,
+            detail=f"工作空间源码目录不可用：{repo_path}",
+        )
+    try:
+        compiled = compile_workflow_graph(
+            version.authoring_graph,
+            capabilities=_workflow_graph_capabilities(),
+            workflow_version_id=version.version_id,
+            workflow_version_number=version.version_number,
+        )
+    except WorkflowGraphValidationError as exc:
+        workflow_version_store().update_draft(
+            version_id,
+            authoring_graph=version.authoring_graph,
+            validation=exc.validation,
+        )
+        raise HTTPException(status_code=422, detail=exc.validation)
+
+    root = settings.data_path / "workbench"
+    trial_workflow_store = WorkflowStore(root / "trial_workflows.db")
+    trial_workflow_store.save_workflow(compiled["compiled_definition"])
+    resolved_inputs = dict(payload.inputs)
+    for input_definition in compiled["compiled_definition"].get("inputs") or []:
+        if str(input_definition.get("resolver") or "") == "workspace":
+            resolved_inputs[str(input_definition["id"])] = str(repo_path)
+    try:
+        prepared = WorkbenchTaskRunPreparer(
+            artifact_root=root / "task_runs",
+            workflow_store=trial_workflow_store,
+            evidence_memory=EvidenceMemoryStore(root / "evidence_memory.db"),
+            semantic_library=TestSemanticLibraryStore(root / "test_semantics.db"),
+        ).prepare(
+            workflow_id=workflow_id,
+            workspace_id=payload.workspace_id,
+            repo_path=str(repo_path),
+            inputs=resolved_inputs,
+        )
+    except (FileNotFoundError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=f"工作流输入不完整或无效：{exc}",
+        ) from exc
+    prepared.task_bundle["compiled_plan"] = compiled["compiled_plan"]
+    prepared.task_bundle["workflow_version_id"] = version.version_id
+    prepared.task_bundle["trial_run"] = True
+    task_run_file = Path(prepared.artifact_dir) / "task_run.json"
+    task_run_file.write_text(
+        json.dumps(asdict(prepared), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    workflow_version_store().update_draft(
+        version_id,
+        authoring_graph=version.authoring_graph,
+        compiled_definition=compiled["compiled_definition"],
+        compiled_plan=compiled["compiled_plan"],
+        validation=compiled["validation_result"],
+    )
+    return {
+        "status": "prepared",
+        "task_run_id": prepared.task_run_id,
+        "workflow_id": workflow_id,
+        "workflow_version_id": version_id,
+        "workspace_id": payload.workspace_id,
+        "compiled_plan": compiled["compiled_plan"],
+    }
+
+
 def _version_for_workflow(workflow_id: str, version_id: str):
     try:
         version = workflow_version_store().get_version(version_id)
@@ -238,6 +336,15 @@ def _workflow_graph_capabilities() -> dict[str, Any]:
             "available": bool(spec.command),
             "mcp_profiles": sorted(str(item) for item in spec.mcp_profiles),
         }
+    for runtime in list_agent_runtimes_sync(enabled=True):
+        runtime_id = str(runtime.get("id") or "").strip()
+        if not runtime_id:
+            continue
+        mcp_profile = str(runtime.get("mcp_profile") or "").strip()
+        providers[f"agent-runtime:{runtime_id}"] = {
+            "available": bool(str(runtime.get("command") or "").strip()),
+            "mcp_profiles": [mcp_profile] if mcp_profile else [],
+        }
     return {
         "providers": providers,
         "skills": [
@@ -253,3 +360,18 @@ def _workflow_graph_capabilities() -> dict[str, Any]:
             "test-strategy-planning",
         ],
     }
+
+
+def _resolve_workspace(workspace_id: str) -> dict[str, Any]:
+    try:
+        with sqlite3.connect(str(settings.sqlite_db)) as db:
+            db.row_factory = sqlite3.Row
+            row = db.execute(
+                "SELECT id, name, repo_path FROM workspaces WHERE id = ?",
+                (workspace_id,),
+            ).fetchone()
+    except sqlite3.Error as exc:
+        raise HTTPException(status_code=503, detail=f"工作空间存储不可用：{exc}")
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"工作空间不存在：{workspace_id}")
+    return dict(row)

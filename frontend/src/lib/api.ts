@@ -228,7 +228,7 @@ function isRetryable(status: number): boolean {
   return status >= 500 && status <= 599;
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   let lastError: Error | null = null;
 
   for (const base of apiBaseCandidates()) {

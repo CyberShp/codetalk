@@ -1,4 +1,5 @@
 import sqlite3
+from dataclasses import asdict
 
 import pytest
 from fastapi import FastAPI
@@ -44,6 +45,39 @@ def _graph(label: str = "Analyze") -> dict:
         "edges": [],
         "settings": {"stop_on_error": True, "max_parallelism": 1},
     }
+
+
+def _workspace_graph() -> dict:
+    graph = _graph()
+    graph["nodes"][0]["config"]["input_ports"] = [
+        {"id": "repo_path", "type": "directory", "required": True}
+    ]
+    graph["nodes"].insert(
+        0,
+        {
+            "id": "repository",
+            "kind": "input",
+            "label": "Repository",
+            "position": {"x": 0, "y": 2},
+            "config": {
+                "contract_id": "repo_path",
+                "label": "Repository",
+                "type": "directory",
+                "required": True,
+                "resolver": "workspace",
+                "role": "source repository",
+            },
+        },
+    )
+    graph["edges"] = [
+        {
+            "id": "repository-agent",
+            "kind": "data",
+            "source": {"node_id": "repository", "port_id": "value"},
+            "target": {"node_id": "agent", "port_id": "repo_path"},
+        }
+    ]
+    return graph
 
 
 def test_workflow_version_migration_is_idempotent_and_preserves_legacy_table(tmp_path):
@@ -158,6 +192,17 @@ def test_workflow_version_rejects_invalid_identifiers_and_cross_workflow_version
         )
 
 
+def test_legacy_compatibility_parser_accepts_v2_workspace_resolver():
+    from app.services.workflow_dsl import validate_workflow_definition
+
+    definition = _legacy_definition()
+    definition["inputs"][0]["resolver"] = "workspace"
+
+    parsed = validate_workflow_definition(definition)
+
+    assert parsed.inputs[0].resolver == "workspace"
+
+
 @pytest.mark.asyncio
 async def test_workflow_version_api_creates_updates_publishes_and_rejects_mutation(
     tmp_path, monkeypatch
@@ -229,6 +274,10 @@ async def test_workflow_version_api_creates_updates_publishes_and_rejects_mutati
         assert published.status_code == 200
         assert published.json()["state"] == "published"
 
+        loaded_published = await client.get("/api/workbench/workflows/new_flow")
+        assert loaded_published.status_code == 200
+        assert loaded_published.json()["v2"]["published_version_id"] == draft_id
+
         immutable = await client.put(
             f"/api/workbench/workflows/new_flow/versions/{draft_id}",
             json={"authoring_graph": _graph("Illegal")},
@@ -238,3 +287,137 @@ async def test_workflow_version_api_creates_updates_publishes_and_rejects_mutati
         archived = await client.post("/api/workbench/workflows/new_flow/archive")
         assert archived.status_code == 200
         assert archived.json()["status"] == "archived"
+
+
+def test_workflow_graph_capabilities_include_configured_agent_runtimes(monkeypatch):
+    from app.api import workbench_v2_workflows
+
+    monkeypatch.setattr(
+        workbench_v2_workflows,
+        "list_agent_runtimes_sync",
+        lambda enabled=True: [
+            {
+                "id": "codex-local",
+                "name": "Codex Local",
+                "enabled": True,
+                "command": "codex",
+                "mcp_profile": "gitnexus",
+            }
+        ],
+    )
+
+    capabilities = workbench_v2_workflows._workflow_graph_capabilities()
+
+    assert capabilities["providers"]["agent-runtime:codex-local"] == {
+        "available": True,
+        "mcp_profiles": ["gitnexus"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_draft_trial_compiles_server_graph_and_prepares_real_task_run(
+    tmp_path, monkeypatch
+):
+    from app.api import agent_workbench, workbench_v2_workflows
+    from app.config import settings
+    from app.services.workbench_task_run import WorkbenchTaskRunStore
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    sqlite_db = data_dir / "codetalk.db"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "README.md").write_text("source evidence", encoding="utf-8")
+    with sqlite3.connect(sqlite_db) as db:
+        db.execute(
+            """
+            CREATE TABLE workspaces (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                repo_path TEXT NOT NULL
+            )
+            """
+        )
+        db.execute(
+            "INSERT INTO workspaces (id, name, repo_path) VALUES (?, ?, ?)",
+            ("ws-1", "Repository", str(repo)),
+        )
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+    monkeypatch.setattr(settings, "sqlite_db", str(sqlite_db))
+    monkeypatch.setattr(settings, "workbench_v2_enabled", True)
+
+    app = FastAPI()
+    app.include_router(agent_workbench.router)
+    app.include_router(workbench_v2_workflows.router)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        created = await client.post(
+            "/api/workbench/workflows",
+            json={
+                "id": "new_flow",
+                "name": "New flow",
+                "description": "Analyze code",
+                "authoring_graph": _workspace_graph(),
+            },
+        )
+        draft_id = created.json()["current_draft_version_id"]
+
+        trial = await client.post(
+            f"/api/workbench/workflows/new_flow/versions/{draft_id}/test-run",
+            json={"workspace_id": "ws-1", "inputs": {}},
+        )
+
+    assert trial.status_code == 201
+    payload = trial.json()
+    assert payload["status"] == "prepared"
+    assert payload["workspace_id"] == "ws-1"
+    task_run = WorkbenchTaskRunStore(
+        data_dir / "workbench" / "task_runs"
+    ).load(payload["task_run_id"])
+    assert task_run.repo_path == str(repo.resolve())
+    assert task_run.input_snapshot["repo_path"] == str(repo.resolve())
+    assert task_run.task_bundle["compiled_plan"]["workflow_version_id"] == draft_id
+    assert task_run.workflow_snapshot["id"] == "new_flow"
+    assert task_run.task_bundle["trial_run"] is True
+
+
+@pytest.mark.asyncio
+async def test_draft_trial_rejects_unknown_workspace(tmp_path, monkeypatch):
+    from app.api import agent_workbench, workbench_v2_workflows
+    from app.config import settings
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    sqlite_db = data_dir / "codetalk.db"
+    with sqlite3.connect(sqlite_db) as db:
+        db.execute(
+            "CREATE TABLE workspaces (id TEXT PRIMARY KEY, name TEXT, repo_path TEXT)"
+        )
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+    monkeypatch.setattr(settings, "sqlite_db", str(sqlite_db))
+    monkeypatch.setattr(settings, "workbench_v2_enabled", True)
+
+    app = FastAPI()
+    app.include_router(agent_workbench.router)
+    app.include_router(workbench_v2_workflows.router)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        created = await client.post(
+            "/api/workbench/workflows",
+            json={
+                "id": "new_flow",
+                "name": "New flow",
+                "description": "Analyze code",
+                "authoring_graph": _graph(),
+            },
+        )
+        draft_id = created.json()["current_draft_version_id"]
+        trial = await client.post(
+            f"/api/workbench/workflows/new_flow/versions/{draft_id}/test-run",
+            json={"workspace_id": "missing", "inputs": {}},
+        )
+
+    assert trial.status_code == 404
+    assert "工作空间不存在" in trial.json()["detail"]

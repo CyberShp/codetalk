@@ -37,9 +37,13 @@ const navItems: NavItem[] = [
 
 const orchestrationChildren: OrchestrationChild[] = [
   { label: "运行驾驶舱", href: "/workbench" },
-  { label: "工作流设计", href: "/workbench/designer" },
+  { label: "工作流", href: "/workflows" },
   { label: "语义库", href: "/workbench/semantic" },
 ];
+
+function isOrchestrationPath(pathname: string): boolean {
+  return pathname.startsWith("/workbench") || pathname.startsWith("/workflows");
+}
 
 function isActive(pathname: string, href: string): boolean {
   if (href === "/") return pathname === "/";
@@ -98,17 +102,17 @@ export default function Sidebar() {
 
   const orchestrationGroup = (
     <div
-      className={`ct-app-sidebar__group ${pathname.startsWith("/workbench") ? "is-open" : ""}`}
+      className={`ct-app-sidebar__group ${isOrchestrationPath(pathname) ? "is-open" : ""}`}
     >
       <Link
         href="/workbench"
         className={`ct-app-sidebar__link ct-app-sidebar__group-root ${
-          pathname.startsWith("/workbench") ? "is-active" : ""
+          isOrchestrationPath(pathname) ? "is-active" : ""
         }`}
         title={collapsed ? "智能体编排" : undefined}
-        aria-expanded={pathname.startsWith("/workbench")}
+        aria-expanded={isOrchestrationPath(pathname)}
       >
-        {pathname.startsWith("/workbench") && (
+        {isOrchestrationPath(pathname) && (
           <>
             <span className="ct-app-sidebar__active-bar" aria-hidden="true" />
             <span className="ct-app-sidebar__active-glow" aria-hidden="true" />
@@ -124,10 +128,10 @@ export default function Sidebar() {
           aria-hidden="true"
         />
       </Link>
-      {!collapsed && pathname.startsWith("/workbench") && (
+      {!collapsed && isOrchestrationPath(pathname) && (
         <div className="ct-app-sidebar__children" aria-label="智能体编排子导航">
           {orchestrationChildren.map((child) => {
-            const active = pathname === child.href;
+            const active = child.href === "/workflows" ? pathname.startsWith("/workflows") : pathname === child.href;
             return (
               <Link
                 key={child.href}

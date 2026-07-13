@@ -143,3 +143,54 @@ created: 2026-07-13
   consumes the same API surface.
 - Next dependency: Phase 3 can use validation issues for canvas focus, compiled plan preview for the
   review step, and immutable version APIs for draft auto-save and publication.
+
+## Phase 3 - Workflow Library, Wizard, And Canvas Designer
+
+### Before implementation
+
+- Goal: replace the legacy JSON-first authoring surface with a workflow library, a six-step guided
+  creation flow, and a direct-manipulation canvas while keeping server validation and compilation
+  authoritative.
+- Expected files: typed frontend workflow client and graph model, library/version routes, wizard,
+  canvas, inspector, trial-run panel, focused V2 styles, capability discovery, and real E2E coverage.
+- Migration impact: no new schema. Draft auto-save, compile results, and publication use the Phase 1
+  version store; trial runs freeze the Phase 2 compiled plan into the existing task-run artifact.
+- Compatibility strategy: legacy Workbench routes remain available. The new `/workflows` routes are
+  feature-flagged and consume existing workspace, runtime-provider, upload, execution, and artifact
+  APIs instead of introducing independent copies.
+- Test plan: create and publish through the browser; drag nodes with the mouse; connect and delete
+  edges directly; restore a draft; validate and compile server-side; select a real workspace and
+  start execution; verify production build, desktop containment, and legacy backend regressions.
+
+### Result
+
+- Added a compact workflow library with search/status filters, archive/edit/version actions, guided
+  creation, immutable version history, and a read-only compiled-plan detail view.
+- Added a six-step wizard for metadata, named inputs, Agent/provider/Skills/MCP selection, named
+  outputs, graph arrangement, validation, trial run, and publication. Normal users never edit JSON.
+- Added a direct-manipulation canvas with node-library drag/drop, free node movement, canvas pan,
+  zoom/fit, direct port-to-port connections, edge selection/deletion, keyboard deletion, and a
+  50-operation undo/redo history.
+- Added a contextual inspector with form controls and searchable Skills/MCP choices. Provider options
+  are sourced from configured runtimes and identify duplicate display names by stable provider ID.
+- Drafts auto-save after 800 ms; validation, compilation, trial preparation, and publication always
+  use the stored server graph. Published versions are immutable and new edits create the next draft.
+- Added a real trial-run adapter that resolves the selected workspace on the server, injects every
+  `resolver: workspace` input, ingests uploaded files through the existing service, freezes the
+  compiled plan, and starts the existing execution endpoint. Invalid inputs return actionable 422
+  responses instead of leaking internal exceptions.
+- Real browser verification created and indexed a workspace, completed all wizard steps, dragged a
+  node, deleted and reconnected an edge through its ports, validated, compiled, started a real task,
+  published V1, created V2, and restored it in the full designer.
+- Verification:
+  - Workflow version/trial backend tests: `9 passed`.
+  - Real no-mock workflow browser E2E: `1 passed`.
+  - Frontend ESLint: passed with zero warnings.
+  - Frontend TypeScript and production build: passed; all V2 dynamic routes generated.
+  - Desktop containment at `1440x900`: document width equals viewport width; no horizontal overflow.
+  - Screenshot: `output/playwright/phase3/workflow-designer-trial.png` (ignored runtime evidence).
+- Known limitation: trial execution links into the legacy run cockpit because the Task/Attempt model
+  and V2 run-detail surface are Phase 4 and Phase 5 work. Canvas touch/mobile ergonomics remain a
+  final Phase 8 validation item; desktop mouse authoring is the supported Phase 3 path.
+- Next dependency: Phase 4 can associate immutable workflow versions and prepared task runs with a
+  first-class Task plus Attempt history without changing this authoring contract.

@@ -66,3 +66,14 @@ created: 2026-07-13
   still models queued, running, failed, blocked, and independent branches explicitly.
 - Consequence: future parallel execution can replace the dispatch loop without changing plans or UI
   status semantics.
+
+## D007 - Server-Owned Graph With Form-Based Authoring
+
+- Status: accepted
+- Context: exposing workflow JSON made the designer, cockpit, and execution contract drift apart;
+  client-only validation could also publish a plan different from the graph a user saw.
+- Decision: the canvas edits Authoring Graph V2 through typed form controls, while draft persistence,
+  capability validation, deterministic compilation, workspace resolution, and publication remain
+  server-owned. JSON is read-only diagnostic and import/export material, never the normal workflow.
+- Consequence: named inputs and outputs drive both authoring and runtime forms, configured providers
+  drive Agent choices, and every trial/publish operation executes the same stored graph revision.
