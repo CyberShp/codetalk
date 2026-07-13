@@ -194,3 +194,57 @@ created: 2026-07-13
   final Phase 8 validation item; desktop mouse authoring is the supported Phase 3 path.
 - Next dependency: Phase 4 can associate immutable workflow versions and prepared task runs with a
   first-class Task plus Attempt history without changing this authoring contract.
+
+## Phase 4 - Task Model, Attempts, And Task Center
+
+### Before implementation
+
+- Goal: separate reusable user Tasks from immutable Run Attempts, add task lifecycle management and
+  filtering, and introduce task list/detail routes while preserving all historical task-run access.
+- Expected files: a task SQLite store/migration, a focused task API router, compatible task-run
+  metadata helpers, backend migration/API tests, typed frontend task client, `/tasks` list and
+  `/tasks/[taskId]` detail pages, navigation changes, and a real browser contract test.
+- Migration impact: add `workbench_tasks` and a schema metadata entry in the existing Workbench
+  database. Existing artifact directories are not rewritten; new run snapshots gain optional
+  `task_id`, `attempt_number`, `parent_task_run_id`, and separated execution/quality/delivery states.
+- Compatibility strategy: runs without `task_id` remain visible through a read-only historical-runs
+  API and the legacy run route. Existing task-run JSON deserialization supplies safe defaults for
+  all new optional fields. Task archive is soft-delete and cannot remove running attempts.
+- Test plan: idempotent migration; CRUD/filter/archive/clone; fixed workflow version; attempt number
+  monotonicity; one Task with multiple attempts; legacy-run read compatibility; URL-synchronized
+  task filters; list/detail browser rendering; existing task-run and workflow regressions.
+
+### Result
+
+- Added the exact `workbench_tasks` Task model with idempotent schema metadata, JSON input/config/
+  output snapshots, tags, soft archive, fixed workspace/workflow/version identity, and last-run link.
+- Added Task create/read/update/archive/clone APIs plus keyword, lifecycle, execution, quality,
+  workflow, workspace, date, and pagination filters. Ready tasks are checked against required inputs;
+  normal tasks can reference only a Published Workflow Version.
+- Extended existing run artifacts with backward-compatible Task/Attempt metadata and separate
+  execution, quality, and delivery states. Legacy JSON loads with safe defaults and is never rewritten
+  merely to appear in the read-only historical-runs endpoint.
+- Added monotonic Attempt creation for each Task, optional parent-run lineage, server workspace input
+  resolution, frozen workflow version/compiled plan/task overrides, and `last_run_id` updates. Starting
+  a run from Task detail uses the existing execution endpoint rather than a parallel runner.
+- Event status transitions now synchronize the public `execution_status`, `started_at`, and
+  `completed_at` fields while preserving the existing `status` and `runtime` compatibility fields.
+- Added `/tasks` with URL-backed filters, bounded table scrolling, workflow/workspace labels, archive,
+  clone, and a bounded old-run panel. Added `/tasks/task_*` details with overview, Attempt history,
+  inputs, execution configuration, outputs, and activity tabs.
+- Preserved legacy UUID task pages by routing only the new `task_` IDs to the V2 detail component;
+  existing report/export routes and legacy task behavior remain intact.
+- Verification:
+  - Task store, migration, API, association, archive guard, and legacy compatibility: `5 passed`.
+  - Expanded task-run, event recovery, characterization, and DAG regression: `94 passed`.
+  - Real no-mock task-center browser E2E: `1 passed` after its locator ambiguity was corrected.
+  - Frontend ESLint: passed with zero warnings.
+  - Frontend TypeScript and production build: passed; `/tasks` and `/tasks/[id]` generated.
+  - Real browser created Attempt 3 from a two-Attempt Task and showed all three without overwrite.
+  - Desktop containment at `1440x900`: no horizontal overflow; list uses an internal scroll boundary.
+  - Screenshot: `output/playwright/phase4/task-attempt-history.png` (ignored runtime evidence).
+- Known limitation: task creation currently uses the Phase 4 API and Task detail defaults. The normal
+  six-step creation/configuration experience, inherit/replace overrides, output customization, draft
+  recovery, and final compile are intentionally deferred to Phase 5.
+- Next dependency: Phase 5 consumes the immutable Task store and published workflow contracts to
+  implement the six-step task wizard without changing Task/Attempt identity or old run artifacts.

@@ -99,6 +99,11 @@ class WorkbenchTaskRunEventStore:
                 **extra,
             })
             payload["status"] = str(status)
+            payload["execution_status"] = str(status)
+            if extra.get("started_at"):
+                payload["started_at"] = str(extra["started_at"])
+            if extra.get("completed_at"):
+                payload["completed_at"] = str(extra["completed_at"])
             payload["runtime"] = runtime
             _write_json(task_path, payload)
             return payload
@@ -131,6 +136,11 @@ class WorkbenchTaskRunEventStore:
                 **extra,
             })
             payload["status"] = str(status)
+            payload["execution_status"] = str(status)
+            if extra.get("started_at"):
+                payload["started_at"] = str(extra["started_at"])
+            if extra.get("completed_at"):
+                payload["completed_at"] = str(extra["completed_at"])
             payload["runtime"] = runtime
             _write_json(task_path, payload)
             return True, payload

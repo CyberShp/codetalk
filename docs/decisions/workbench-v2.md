@@ -77,3 +77,15 @@ created: 2026-07-13
   server-owned. JSON is read-only diagnostic and import/export material, never the normal workflow.
 - Consequence: named inputs and outputs drive both authoring and runtime forms, configured providers
   drive Agent choices, and every trial/publish operation executes the same stored graph revision.
+
+## D008 - Tasks In SQLite, Attempts In Existing Artifact Storage
+
+- Status: accepted
+- Context: user Tasks need indexed CRUD/filtering, while existing task runs already have immutable
+  artifact directories, event logs, restart recovery, hashes, diagnostics, and compatibility APIs.
+- Decision: persist Task definitions in `workbench_tasks` within `workflows.db`, and extend each new
+  task-run JSON with optional Task/Attempt metadata. Do not copy run payloads into SQLite or rewrite
+  historical run artifacts. `last_run_id` is a navigation index, not the Attempt source of truth.
+- Consequence: one Task can own many immutable Attempts without duplicating artifacts; legacy runs
+  remain readable as history, and execution/quality/delivery state can evolve independently while old
+  `status`/`runtime` consumers continue working for one release cycle.

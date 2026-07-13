@@ -59,6 +59,14 @@ class PreparedWorkbenchTaskRun:
     workflow_snapshot: dict[str, Any]
     input_snapshot: dict[str, Any]
     task_bundle: dict[str, Any]
+    task_id: str = ""
+    attempt_number: int = 0
+    parent_task_run_id: str = ""
+    execution_status: str = "prepared"
+    quality_status: str = "not_evaluated"
+    delivery_status: str = "pending"
+    started_at: str = ""
+    completed_at: str = ""
     agent_runs: list[dict[str, Any]] = field(default_factory=list)
     created_at: str = field(default_factory=_now)
 
@@ -87,6 +95,9 @@ class WorkbenchTaskRunPreparer:
         repo_path: str,
         inputs: dict[str, Any],
         provider_override: str | None = None,
+        task_id: str = "",
+        attempt_number: int = 0,
+        parent_task_run_id: str = "",
     ) -> PreparedWorkbenchTaskRun:
         workflow_snapshot = self.workflow_store.freeze_workflow_snapshot(workflow_id)
         has_agent_step = any(
@@ -192,6 +203,9 @@ class WorkbenchTaskRunPreparer:
         workflow_contract["test_activity_contract"] = test_activity_contract
         task_bundle = {
             "task_run_id": task_run_id,
+            "task_id": str(task_id or ""),
+            "attempt_number": max(0, int(attempt_number)),
+            "parent_task_run_id": str(parent_task_run_id or ""),
             "workflow_id": workflow_id,
             "workspace_id": workspace_id,
             "repo_path": repo_path,
@@ -289,6 +303,9 @@ class WorkbenchTaskRunPreparer:
             workflow_snapshot=workflow_snapshot,
             input_snapshot=input_snapshot,
             task_bundle=task_bundle,
+            task_id=str(task_id or ""),
+            attempt_number=max(0, int(attempt_number)),
+            parent_task_run_id=str(parent_task_run_id or ""),
             agent_runs=agent_runs,
         )
         _write_json(artifact_dir / "task_run.json", asdict(result))
@@ -340,6 +357,7 @@ class WorkbenchTaskRunStore:
         self,
         *,
         workspace_id: str | None = None,
+        task_id: str | None = None,
         limit: int = 50,
     ) -> list[PreparedWorkbenchTaskRun]:
         if not self.artifact_root.exists():
@@ -352,6 +370,8 @@ class WorkbenchTaskRunStore:
             if not isinstance(payload, dict):
                 continue
             if workspace_id and payload.get("workspace_id") != workspace_id:
+                continue
+            if task_id is not None and str(payload.get("task_id") or "") != task_id:
                 continue
             try:
                 runs.append(_prepared_task_run_from_payload(payload))
@@ -2934,6 +2954,7 @@ def _read_json(path: Path) -> Any:
 
 
 def _prepared_task_run_from_payload(payload: dict[str, Any]) -> PreparedWorkbenchTaskRun:
+    runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
     return PreparedWorkbenchTaskRun(
         task_run_id=str(payload["task_run_id"]),
         workflow_id=str(payload["workflow_id"]),
@@ -2943,6 +2964,19 @@ def _prepared_task_run_from_payload(payload: dict[str, Any]) -> PreparedWorkbenc
         workflow_snapshot=dict(payload.get("workflow_snapshot") or {}),
         input_snapshot=dict(payload.get("input_snapshot") or {}),
         task_bundle=dict(payload.get("task_bundle") or {}),
+        task_id=str(payload.get("task_id") or ""),
+        attempt_number=max(0, int(payload.get("attempt_number") or 0)),
+        parent_task_run_id=str(payload.get("parent_task_run_id") or ""),
+        execution_status=str(
+            payload.get("execution_status")
+            or payload.get("status")
+            or runtime.get("status")
+            or "prepared"
+        ),
+        quality_status=str(payload.get("quality_status") or "not_evaluated"),
+        delivery_status=str(payload.get("delivery_status") or "pending"),
+        started_at=str(payload.get("started_at") or runtime.get("started_at") or ""),
+        completed_at=str(payload.get("completed_at") or runtime.get("completed_at") or ""),
         agent_runs=[
             dict(item) for item in payload.get("agent_runs") or []
             if isinstance(item, dict)

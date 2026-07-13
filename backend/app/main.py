@@ -32,12 +32,20 @@ async def lifespan(app: FastAPI):
     settings.tiktoken_cache_path.mkdir(parents=True, exist_ok=True)
     await init_db()
     if settings.workbench_v2_enabled:
+        from app.services.workbench_task_store import WorkbenchTaskStore
         from app.services.workflow_version_store import WorkflowVersionStore
 
-        migration = WorkflowVersionStore(
+        workflow_migration = WorkflowVersionStore(
             settings.data_path / "workbench" / "workflows.db"
         ).initialize_and_migrate()
-        logger.info("Workbench V2 workflow migration ready: %s", migration)
+        task_migration = WorkbenchTaskStore(
+            settings.data_path / "workbench" / "workflows.db"
+        ).initialize_and_migrate()
+        logger.info(
+            "Workbench V2 migrations ready: workflows=%s tasks=%s",
+            workflow_migration,
+            task_migration,
+        )
     ai_reconcile = await AIConversationStore().reconcile_interrupted_runs()
     if ai_reconcile.get("interrupted_count"):
         logger.warning("Reconciled interrupted AI conversation runs: %s", ai_reconcile)
@@ -68,13 +76,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-from app.api import agent_runtimes, agent_workbench, ai_conversations, tasks, settings as settings_router, tools, export, prompts, coverage, ws, workbench_v2_workflows  # noqa: E402
+from app.api import agent_runtimes, agent_workbench, ai_conversations, tasks, settings as settings_router, tools, export, prompts, coverage, ws, workbench_v2_tasks, workbench_v2_workflows  # noqa: E402
 from app.api.repo_analysis import router as repo_analysis_router  # noqa: E402
 from app.api.workspaces import router as workspaces_router  # noqa: E402
 
 app.include_router(tasks.router)
 app.include_router(agent_workbench.router)
 app.include_router(workbench_v2_workflows.router)
+app.include_router(workbench_v2_tasks.router)
 app.include_router(ai_conversations.router)
 app.include_router(agent_runtimes.router)
 app.include_router(settings_router.router)

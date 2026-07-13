@@ -1,0 +1,21 @@
+import { request } from "@/lib/api";
+import type { WorkbenchRunSummary, WorkbenchTask, WorkbenchTaskListQuery } from "@/lib/types/task";
+
+const taskPath = (taskId: string) => `/api/workbench/tasks/${encodeURIComponent(taskId)}`;
+
+export const workbenchTasksApi = {
+  list: (query: WorkbenchTaskListQuery = {}) => {
+    const params = new URLSearchParams();
+    Object.entries(query).forEach(([key, value]) => {
+      if (value !== undefined && value !== "") params.set(key, String(value));
+    });
+    const suffix = params.size ? `?${params.toString()}` : "";
+    return request<{ items: WorkbenchTask[]; total: number; page: number; page_size: number }>(`/api/workbench/tasks${suffix}`);
+  },
+  get: (taskId: string) => request<WorkbenchTask>(taskPath(taskId)),
+  update: (taskId: string, changes: Partial<Pick<WorkbenchTask, "name" | "description" | "lifecycle_status" | "input_values" | "execution_overrides" | "output_overrides" | "tags">>) => request<WorkbenchTask>(taskPath(taskId), { method: "PATCH", body: JSON.stringify(changes) }),
+  archive: (taskId: string) => request<WorkbenchTask>(`${taskPath(taskId)}/archive`, { method: "POST" }),
+  clone: (taskId: string, name?: string) => request<WorkbenchTask>(`${taskPath(taskId)}/clone`, { method: "POST", body: JSON.stringify({ name: name || null }) }),
+  createRun: (taskId: string, parentTaskRunId = "") => request<WorkbenchRunSummary>(`${taskPath(taskId)}/runs`, { method: "POST", body: JSON.stringify({ parent_task_run_id: parentTaskRunId }) }),
+  history: () => request<{ items: WorkbenchRunSummary[] }>("/api/workbench/tasks/history/runs"),
+};
