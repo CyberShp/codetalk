@@ -53,3 +53,45 @@ created: 2026-07-13
 - Known limitation: V2 remains dark and no new schema or route is present by design.
 - Next dependency: Phase 1 can rely on frozen legacy read/write and snapshot contracts while adding
   a separate idempotent version store and compatibility adapter.
+
+## Phase 1 - Workflow Version Store And Migration
+
+### Before implementation
+
+- Goal: add workflow headers and immutable versions, migrate each legacy definition to Published
+  V1, expose draft/version lifecycle APIs, and preserve legacy execution reads.
+- Expected files: a version-store service, a focused V2 workflow router, the existing Workbench
+  router compatibility dispatch, application router registration, migration/API tests, and docs.
+- Migration impact: add `workbench_schema_meta`, `workflow_headers`, and `workflow_versions` to the
+  existing `workflows.db`; copy legacy rows transactionally and never delete or rewrite the old table.
+- Compatibility strategy: legacy rows remain the execution source while V2 is dark. When enabled,
+  compatibility responses resolve the published compiled definition and continue exposing legacy
+  `inputs/steps/outputs`; existing snapshots and run artifacts are untouched.
+- Test plan: idempotent old-row migration; one-current-draft invariant; draft updates; published
+  immutability; monotonically increasing published versions; archive behavior; V2 API error/status
+  contracts; existing workflow CRUD and task-run preparation regression.
+
+### Result
+
+- Added `workbench_schema_meta`, `workflow_headers`, and `workflow_versions` with an idempotent,
+  transactional migration in the existing `workflows.db`.
+- Legacy definitions migrate once to immutable Published V1 records; the original table and exact
+  compiled definition remain intact, and migration is safe to rerun.
+- Added workflow header/draft/version lifecycle storage, one-current-draft enforcement, published
+  immutability, monotonic published numbers, archive, compatibility definition reads, and strict
+  identifier validation for newly authored workflows.
+- Added V2 version lifecycle routes plus feature-flagged creation through the existing workflow
+  endpoint. Existing DSL requests are unchanged while V2 is dark.
+- With V2 enabled, legacy list/detail routes merge workflow header metadata and authoring graph data
+  while retaining `inputs/steps/outputs` for old clients and task-run preparation.
+- Application startup runs the migration only when V2 is enabled and fails visibly on migration
+  errors instead of continuing with a partial schema.
+- Verification:
+  - New store, migration, immutability, and API tests: `5 passed`.
+  - Workflow API/preset/foundation regression: `34 passed`.
+  - Phase 0 compatibility subset: passed.
+  - Frontend ESLint: passed.
+- Known limitation: Phase 1 publishing performs server-side legacy DSL validation. Authoring Graph
+  V2 validation and deterministic compilation replace this bridge in Phase 2.
+- Next dependency: Phase 2 consumes immutable draft graphs and persists its validation result,
+  compiled definition, and execution plan on the draft before publication.

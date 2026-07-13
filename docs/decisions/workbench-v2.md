@@ -28,3 +28,21 @@ created: 2026-07-13
   legacy routes and persisted artifacts remain readable throughout migration.
 - Consequence: compatibility tests must cover both flag states and Phase 8 performs the explicit
   default switch.
+
+## D003 - Workflow Versions Share The Legacy Workflows Database
+
+- Status: accepted
+- Context: workflow definitions already live in `workbench/workflows.db`, without Alembic.
+- Decision: add an explicit schema metadata table and idempotent migrations in the same database.
+  Legacy rows are copied to immutable Published V1 records and the old table is retained.
+- Consequence: upgrades are atomic and reversible by disabling V2; old task-run snapshots remain
+  byte-for-byte unchanged.
+
+## D004 - Legacy Graphs Start Read-Only
+
+- Status: accepted
+- Context: legacy `inputs/steps/outputs/ui` cannot always express typed ports and edges safely.
+- Decision: migration stores the complete compiled legacy definition and a read-only legacy graph
+  envelope. Phase 2's compatibility compiler may produce an executable V2 plan; users edit a copy,
+  never the migrated published record.
+- Consequence: migration cannot invent dependencies or silently alter execution order.

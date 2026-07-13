@@ -1134,6 +1134,27 @@ def _safe_segment(value: str, label: str) -> str:
 
 @router.post("/workflows", status_code=201)
 async def save_workflow(payload: dict[str, Any]) -> dict[str, Any]:
+    if settings.workbench_v2_enabled and isinstance(payload.get("authoring_graph"), dict):
+        from dataclasses import asdict
+
+        from app.services.workflow_version_store import (
+            WorkflowVersionError,
+            WorkflowVersionStore,
+        )
+
+        try:
+            header, _draft = WorkflowVersionStore(
+                _workbench_dir() / "workflows.db"
+            ).create_workflow(
+                workflow_id=str(payload.get("id") or ""),
+                name=str(payload.get("name") or ""),
+                description=str(payload.get("description") or ""),
+                authoring_graph=dict(payload["authoring_graph"]),
+            )
+        except (ValueError, WorkflowVersionError) as exc:
+            status_code = 409 if "already exists" in str(exc) else 422
+            raise HTTPException(status_code=status_code, detail=str(exc))
+        return asdict(header)
     workflow_id = str(payload.get("id") or "").strip() if isinstance(payload, dict) else ""
     if _is_builtin_workflow_id(workflow_id):
         raise HTTPException(
@@ -1256,7 +1277,19 @@ async def generate_workflow_draft(payload: GenerateWorkflowDraftRequest) -> dict
 @router.get("/workflows")
 async def list_workflows() -> list[dict[str, Any]]:
     store = _workflow_store_with_builtin_presets()
-    return [_workflow_response(item.raw) for item in store.list_workflows()]
+    legacy_items = [_workflow_response(item.raw) for item in store.list_workflows()]
+    if not settings.workbench_v2_enabled:
+        return legacy_items
+    from app.services.workflow_version_store import WorkflowVersionStore
+
+    version_store = WorkflowVersionStore(_workbench_dir() / "workflows.db")
+    v2_items = {
+        header.workflow_id: _v2_workflow_compatibility_response(version_store, header)
+        for header in version_store.list_workflows()
+    }
+    merged = [v2_items.pop(str(item.get("id") or ""), item) for item in legacy_items]
+    merged.extend(v2_items.values())
+    return merged
 
 
 @router.post("/workflows/restore-builtins")
@@ -1272,6 +1305,16 @@ async def restore_builtin_workflows() -> dict[str, Any]:
 
 @router.get("/workflows/{workflow_id}")
 async def get_workflow(workflow_id: str) -> dict[str, Any]:
+    if settings.workbench_v2_enabled:
+        from app.services.workflow_version_store import WorkflowVersionStore
+
+        version_store = WorkflowVersionStore(_workbench_dir() / "workflows.db")
+        try:
+            header = version_store.get_workflow(workflow_id)
+        except KeyError:
+            pass
+        else:
+            return _v2_workflow_compatibility_response(version_store, header)
     try:
         workflow = _workflow_store_with_builtin_presets().get_workflow(workflow_id)
     except KeyError:
@@ -3110,6 +3153,35 @@ async def prepare_and_execute_task_run(payload: RunTaskRunRequest) -> dict[str, 
 def _workflow_response(payload: dict[str, Any]) -> dict[str, Any]:
     response = dict(payload)
     response["audit"] = audit_workflow_definition(payload)
+    return response
+
+
+def _v2_workflow_compatibility_response(version_store: Any, header: Any) -> dict[str, Any]:
+    from dataclasses import asdict
+
+    selected_version_id = header.current_draft_version_id or header.published_version_id
+    version = version_store.get_version(selected_version_id) if selected_version_id else None
+    definition = dict(version.compiled_definition or {}) if version else {}
+    response = {
+        "id": header.workflow_id,
+        "name": header.name,
+        "description": header.description,
+        "version": int(version.version_number if version else 1),
+        "inputs": list(definition.get("inputs") or []),
+        "steps": list(definition.get("steps") or []),
+        "outputs": list(definition.get("outputs") or []),
+        "authoring_graph": dict(version.authoring_graph or {}) if version else {},
+        "v2": asdict(header),
+    }
+    if definition:
+        response.update(definition)
+        response["authoring_graph"] = dict(version.authoring_graph or {})
+        response["v2"] = asdict(header)
+    response["audit"] = (
+        audit_workflow_definition(definition)
+        if definition
+        else {"status": "draft", "warnings": []}
+    )
     return response
 
 
