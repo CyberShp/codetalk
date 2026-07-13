@@ -1,0 +1,203 @@
+import copy
+
+
+def _capabilities() -> dict:
+    return {
+        "providers": {
+            "codex": {"available": True, "mcp_profiles": ["gitnexus"]},
+            "builtin-llm": {"available": True, "mcp_profiles": []},
+        },
+        "skills": ["source-evidence-first", "sfmea"],
+    }
+
+
+def _graph() -> dict:
+    return {
+        "schema_version": 2,
+        "workflow_id": "source_flow",
+        "name": "Source flow",
+        "description": "Analyze source and render report",
+        "nodes": [
+            {
+                "id": "report",
+                "kind": "output",
+                "label": "Report",
+                "position": {"x": 900, "y": 100},
+                "config": {
+                    "output_id": "report",
+                    "type": "markdown",
+                    "artifact": "report.md",
+                    "required": True,
+                    "source_node_id": "render",
+                    "source_port_id": "report",
+                },
+            },
+            {
+                "id": "render",
+                "kind": "agent",
+                "label": "Render",
+                "position": {"x": 600, "y": 100},
+                "config": {
+                    "step_id": "render",
+                    "goal": "render a source-backed report",
+                    "provider": "builtin-llm",
+                    "mcp_profiles": [],
+                    "skill_ids": ["sfmea"],
+                    "required_artifacts": ["report.md"],
+                    "input_ports": [{"id": "analysis", "type": "markdown", "required": True}],
+                    "output_ports": [{"id": "report", "type": "markdown"}],
+                    "timeout_sec": 900,
+                    "failure_policy": "stop",
+                },
+            },
+            {
+                "id": "repo",
+                "kind": "input",
+                "label": "Repository",
+                "position": {"x": 0, "y": 100},
+                "config": {
+                    "contract_id": "repo_path",
+                    "label": "Repository",
+                    "type": "directory",
+                    "required": True,
+                    "resolver": "workspace",
+                    "role": "source repository",
+                },
+            },
+            {
+                "id": "analyze",
+                "kind": "agent",
+                "label": "Analyze",
+                "position": {"x": 300, "y": 100},
+                "config": {
+                    "step_id": "analyze",
+                    "goal": "analyze source",
+                    "provider": "codex",
+                    "mcp_profiles": ["gitnexus"],
+                    "skill_ids": ["source-evidence-first"],
+                    "required_artifacts": [],
+                    "input_ports": [{"id": "repo_path", "type": "directory", "required": True}],
+                    "output_ports": [{"id": "analysis", "type": "markdown"}],
+                    "timeout_sec": 900,
+                    "failure_policy": "continue_independent",
+                },
+            },
+        ],
+        "edges": [
+            {
+                "id": "edge-render-report",
+                "kind": "data",
+                "source": {"node_id": "render", "port_id": "report"},
+                "target": {"node_id": "report", "port_id": "value"},
+            },
+            {
+                "id": "edge-repo-analyze",
+                "kind": "data",
+                "source": {"node_id": "repo", "port_id": "value"},
+                "target": {"node_id": "analyze", "port_id": "repo_path"},
+            },
+            {
+                "id": "edge-analyze-render",
+                "kind": "data",
+                "source": {"node_id": "analyze", "port_id": "analysis"},
+                "target": {"node_id": "render", "port_id": "analysis"},
+            },
+        ],
+        "settings": {"stop_on_error": True, "max_parallelism": 1},
+    }
+
+
+def test_graph_validator_and_compiler_are_deterministic_for_shuffled_nodes():
+    from app.services.workflow_graph import compile_workflow_graph, validate_workflow_graph
+
+    graph = _graph()
+    validation = validate_workflow_graph(graph, capabilities=_capabilities())
+    assert validation == {"valid": True, "errors": [], "warnings": []}
+
+    first = compile_workflow_graph(
+        graph, capabilities=_capabilities(), workflow_version_id="wfv_1"
+    )
+    shuffled = copy.deepcopy(graph)
+    shuffled["nodes"].reverse()
+    shuffled["edges"].reverse()
+    second = compile_workflow_graph(
+        shuffled, capabilities=_capabilities(), workflow_version_id="wfv_1"
+    )
+
+    assert first == second
+    assert first["compiled_plan"]["topological_order"] == ["analyze", "render"]
+    assert [item["id"] for item in first["compiled_definition"]["steps"]] == [
+        "analyze",
+        "render",
+    ]
+    render = first["compiled_plan"]["nodes"][1]
+    assert render["depends_on"] == ["analyze"]
+    assert render["resolved_input_bindings"] == {
+        "analysis": {"source_node_id": "analyze", "source_port_id": "analysis"}
+    }
+
+
+def test_graph_validator_reports_cycle_port_type_artifact_and_reachability_errors():
+    from app.services.workflow_graph import validate_workflow_graph
+
+    graph = _graph()
+    graph["nodes"].append({
+        "id": "orphan",
+        "kind": "semantic_retrieve",
+        "label": "Orphan",
+        "position": {"x": 0, "y": 0},
+        "config": {"input_ports": [], "output_ports": []},
+    })
+    graph["edges"].append({
+        "id": "edge-cycle",
+        "kind": "dependency",
+        "source": {"node_id": "render", "port_id": "done"},
+        "target": {"node_id": "analyze", "port_id": "start"},
+    })
+    graph["nodes"][3]["config"]["input_ports"][0]["type"] = "json"
+    graph["nodes"][1]["config"]["required_artifacts"] = ["../escape.md"]
+
+    validation = validate_workflow_graph(graph, capabilities=_capabilities())
+    codes = {item["code"] for item in validation["errors"]}
+    assert {"graph_cycle", "port_type_mismatch", "unsafe_artifact", "orphan_node"} <= codes
+
+
+def test_graph_validator_reports_provider_mcp_skill_and_required_binding_contracts():
+    from app.services.workflow_graph import validate_workflow_graph
+
+    graph = _graph()
+    analyze = next(item for item in graph["nodes"] if item["id"] == "analyze")
+    analyze["config"].update({
+        "goal": "",
+        "provider": "missing-provider",
+        "mcp_profiles": ["unknown-mcp"],
+        "skill_ids": ["unknown-skill"],
+    })
+    graph["edges"] = [
+        edge for edge in graph["edges"] if edge["id"] != "edge-repo-analyze"
+    ]
+
+    validation = validate_workflow_graph(graph, capabilities=_capabilities())
+    error_codes = {item["code"] for item in validation["errors"]}
+    warning_codes = {item["code"] for item in validation["warnings"]}
+    assert {"required_input_unbound", "agent_goal_missing", "provider_unknown", "mcp_incompatible"} <= error_codes
+    assert "skill_unknown" in warning_codes
+
+
+def test_legacy_compiler_preserves_historical_sequential_execution():
+    from app.services.workflow_graph import compile_legacy_workflow
+
+    legacy = {
+        "id": "legacy",
+        "name": "Legacy",
+        "version": 4,
+        "inputs": [],
+        "steps": [
+            {"id": "second-by-name", "type": "report_render"},
+            {"id": "first-by-name", "type": "evidence_validate"},
+        ],
+        "outputs": [],
+    }
+    compiled = compile_legacy_workflow(legacy, workflow_version_id="legacy-v4")
+    assert compiled["topological_order"] == ["second-by-name", "first-by-name"]
+    assert compiled["nodes"][1]["depends_on"] == ["second-by-name"]

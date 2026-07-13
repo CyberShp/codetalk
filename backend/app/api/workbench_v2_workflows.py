@@ -6,13 +6,14 @@ from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from app.config import settings
-from app.services.workflow_dsl import (
-    WorkflowValidationError,
-    audit_workflow_definition,
-    validate_workflow_definition,
+from app.services.external_agent_discovery import external_agent_provider_specs
+from app.services.workflow_graph import (
+    WorkflowGraphValidationError,
+    compile_workflow_graph,
+    validate_workflow_graph,
 )
 from app.services.workflow_version_store import (
     PublishedWorkflowVersionError,
@@ -39,9 +40,7 @@ class WorkflowDraftUpdateRequest(BaseModel):
 
 
 class WorkflowPublishRequest(BaseModel):
-    authoring_graph: dict[str, Any]
-    compiled_definition: dict[str, Any]
-    compiled_plan: dict[str, Any] = Field(default_factory=dict)
+    pass
 
 
 def workflow_version_store() -> WorkflowVersionStore:
@@ -136,6 +135,54 @@ async def update_workflow_draft(
     return asdict(version)
 
 
+@router.post("/workflows/{workflow_id}/versions/{version_id}/validate")
+async def validate_workflow_version(workflow_id: str, version_id: str) -> dict[str, Any]:
+    _require_v2()
+    version = _version_for_workflow(workflow_id, version_id)
+    if version.state != "draft":
+        raise HTTPException(status_code=409, detail="Published workflow versions are immutable")
+    validation = validate_workflow_graph(
+        version.authoring_graph,
+        capabilities=_workflow_graph_capabilities(),
+    )
+    workflow_version_store().update_draft(
+        version_id,
+        authoring_graph=version.authoring_graph,
+        validation=validation,
+    )
+    return validation
+
+
+@router.post("/workflows/{workflow_id}/versions/{version_id}/compile")
+async def compile_workflow_version(workflow_id: str, version_id: str) -> dict[str, Any]:
+    _require_v2()
+    version = _version_for_workflow(workflow_id, version_id)
+    if version.state != "draft":
+        raise HTTPException(status_code=409, detail="Published workflow versions are immutable")
+    try:
+        compiled = compile_workflow_graph(
+            version.authoring_graph,
+            capabilities=_workflow_graph_capabilities(),
+            workflow_version_id=version.version_id,
+            workflow_version_number=version.version_number,
+        )
+    except WorkflowGraphValidationError as exc:
+        workflow_version_store().update_draft(
+            version_id,
+            authoring_graph=version.authoring_graph,
+            validation=exc.validation,
+        )
+        raise HTTPException(status_code=422, detail=exc.validation)
+    workflow_version_store().update_draft(
+        version_id,
+        authoring_graph=version.authoring_graph,
+        compiled_definition=compiled["compiled_definition"],
+        compiled_plan=compiled["compiled_plan"],
+        validation=compiled["validation_result"],
+    )
+    return compiled
+
+
 @router.post("/workflows/{workflow_id}/versions/{version_id}/publish")
 async def publish_workflow_version(
     workflow_id: str,
@@ -143,26 +190,31 @@ async def publish_workflow_version(
     payload: WorkflowPublishRequest,
 ) -> dict[str, Any]:
     _require_v2()
-    _version_for_workflow(workflow_id, version_id)
+    version = _version_for_workflow(workflow_id, version_id)
     try:
-        compiled = validate_workflow_definition(payload.compiled_definition)
-        audit = audit_workflow_definition(compiled.raw)
-        validation = {
-            "valid": True,
-            "errors": [],
-            "warnings": list(audit.get("warnings") or []),
-            "validator": "legacy-dsl-phase-1",
-        }
+        compiled = compile_workflow_graph(
+            version.authoring_graph,
+            capabilities=_workflow_graph_capabilities(),
+            workflow_version_id=version.version_id,
+            workflow_version_number=version.version_number,
+        )
         version = workflow_version_store().publish_version(
             version_id,
-            authoring_graph=payload.authoring_graph,
-            compiled_definition=compiled.raw,
-            compiled_plan=payload.compiled_plan,
-            validation=validation,
+            authoring_graph=version.authoring_graph,
+            compiled_definition=compiled["compiled_definition"],
+            compiled_plan=compiled["compiled_plan"],
+            validation=compiled["validation_result"],
         )
+    except WorkflowGraphValidationError as exc:
+        workflow_version_store().update_draft(
+            version_id,
+            authoring_graph=version.authoring_graph,
+            validation=exc.validation,
+        )
+        raise HTTPException(status_code=422, detail=exc.validation)
     except PublishedWorkflowVersionError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
-    except (WorkflowValidationError, WorkflowVersionError, ValueError) as exc:
+    except (WorkflowVersionError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return asdict(version)
 
@@ -175,3 +227,29 @@ def _version_for_workflow(workflow_id: str, version_id: str):
     if version.workflow_id != workflow_id:
         raise HTTPException(status_code=404, detail=f"Unknown workflow version: {version_id}")
     return version
+
+
+def _workflow_graph_capabilities() -> dict[str, Any]:
+    providers: dict[str, dict[str, Any]] = {
+        "builtin-llm": {"available": True, "mcp_profiles": []},
+    }
+    for provider_id, spec in external_agent_provider_specs().items():
+        providers[provider_id] = {
+            "available": bool(spec.command),
+            "mcp_profiles": sorted(str(item) for item in spec.mcp_profiles),
+        }
+    return {
+        "providers": providers,
+        "skills": [
+            "artifact-contract",
+            "black-box-test-design",
+            "coverage-gap-analysis",
+            "defect-triage-regression",
+            "performance-reliability-testing",
+            "sfmea",
+            "source-evidence-first",
+            "storage-flow-analysis",
+            "test-execution-orchestration",
+            "test-strategy-planning",
+        ],
+    }

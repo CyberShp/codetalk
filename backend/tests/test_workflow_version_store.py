@@ -23,7 +23,23 @@ def _graph(label: str = "Analyze") -> dict:
         "name": "New flow",
         "description": "",
         "nodes": [
-            {"id": "agent", "kind": "agent", "label": label, "position": {"x": 1, "y": 2}, "config": {}},
+            {
+                "id": "agent",
+                "kind": "agent",
+                "label": label,
+                "position": {"x": 1, "y": 2},
+                "config": {
+                    "step_id": "agent",
+                    "goal": "analyze source",
+                    "provider": "builtin-llm",
+                    "mcp_profiles": [],
+                    "skill_ids": [],
+                    "required_artifacts": [],
+                    "input_ports": [],
+                    "output_ports": [],
+                    "failure_policy": "stop",
+                },
+            },
         ],
         "edges": [],
         "settings": {"stop_on_error": True, "max_parallelism": 1},
@@ -194,20 +210,21 @@ async def test_workflow_version_api_creates_updates_publishes_and_rejects_mutati
         assert updated.status_code == 200
         assert updated.json()["authoring_graph"]["nodes"][0]["label"] == "Updated"
 
+        validated = await client.post(
+            f"/api/workbench/workflows/new_flow/versions/{draft_id}/validate"
+        )
+        assert validated.status_code == 200
+        assert validated.json()["valid"] is True
+
+        compiled = await client.post(
+            f"/api/workbench/workflows/new_flow/versions/{draft_id}/compile"
+        )
+        assert compiled.status_code == 200
+        assert compiled.json()["compiled_plan"]["topological_order"] == ["agent"]
+
         published = await client.post(
             f"/api/workbench/workflows/new_flow/versions/{draft_id}/publish",
-            json={
-                "authoring_graph": _graph("Updated"),
-                "compiled_definition": {
-                    "id": "new_flow",
-                    "name": "New flow",
-                    "version": 1,
-                    "inputs": [],
-                    "steps": [],
-                    "outputs": [],
-                },
-                "compiled_plan": {"schema_version": 1, "nodes": []},
-            },
+            json={},
         )
         assert published.status_code == 200
         assert published.json()["state"] == "published"

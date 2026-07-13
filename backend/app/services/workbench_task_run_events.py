@@ -247,13 +247,19 @@ def _with_public_event_metadata(event: dict[str, Any]) -> dict[str, Any]:
 
 def _public_event_kind(event: dict[str, Any]) -> str:
     event_type = str(event.get("event_type") or "").strip().lower()
-    if event_type in {"queued", "running", "step_started", "step_completed", "cancelled", "interrupted"}:
+    if event_type in {
+        "queued", "running", "step_started", "step_completed", "cancelled", "interrupted",
+        "node_queued", "node_started", "node_progress", "node_completed", "node_blocked",
+        "quality_started", "quality_completed",
+    }:
         return "status"
-    if event_type in {"completed", "done"}:
+    if event_type in {"completed", "done", "run_completed"}:
         return "done"
     if event_type in {"artifact_created", "artifact", "artifact_progress"}:
         return "artifact"
-    if event_type in {"step_failed", "failed", "error"}:
+    if event_type == "agent_output":
+        return "output"
+    if event_type in {"step_failed", "node_failed", "failed", "error"}:
         return "error"
     if event_type in {"thinking", "reasoning", "diagnostic", "trace", "tool_use", "tool_result"}:
         return event_type

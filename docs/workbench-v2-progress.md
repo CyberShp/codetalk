@@ -95,3 +95,51 @@ created: 2026-07-13
   V2 validation and deterministic compilation replace this bridge in Phase 2.
 - Next dependency: Phase 2 consumes immutable draft graphs and persists its validation result,
   compiled definition, and execution plan on the draft before publication.
+
+## Phase 2 - Graph Validator, Compiler, And Scheduler
+
+### Before implementation
+
+- Goal: define Authoring Graph V2, validate all publish invariants, deterministically compile legacy
+  Workflow Definition plus a real Execution Plan, and execute strictly from DAG dependencies.
+- Expected files: graph types/validator/compiler, DAG scheduler, workflow version compile/publish API,
+  task-run preparation/runner/event compatibility adapters, focused backend tests, and docs.
+- Migration impact: no new tables. Draft rows gain persisted validation, compiled definition, and
+  compiled plan JSON; migrated Published V1 definitions remain immutable.
+- Compatibility strategy: a legacy compiler emits a sequential dependency plan matching historic
+  array execution. V2 runs carry their compiled plan in the frozen task bundle; old task runs without
+  one continue through the legacy adapter.
+- Test plan: duplicate IDs, missing refs/ports, type mismatch, cycles, provider/MCP/skill capability
+  checks, unsafe/duplicate artifacts, reachability, deterministic compile, shuffled node arrays,
+  direct-dependency inputs, independent branch continuation, blocked downstream nodes, legacy plan,
+  and public `agent_output` event mapping.
+
+### Result
+
+- Added Authoring Graph V2 validation for IDs, supported node/edge kinds, node/port references,
+  port types, cycles, required input/output/port bindings, Agent goals, provider availability,
+  MCP compatibility, unknown skills, retry/failure policies, artifact safety/uniqueness/mapping,
+  and orphan reachability.
+- Added deterministic compilation to legacy Workflow Definition and Execution Plan. Stable sorting
+  makes shuffled node/edge arrays produce identical output, while version metadata is embedded in
+  both compiled forms.
+- Added an explicit legacy compiler that preserves historical sequential execution without editing
+  migrated definitions.
+- Added a serial DAG scheduler with direct-dependency validated outputs, explicit queued/running/
+  completed/failed/blocked states, downstream blocking, independent branch continuation, and
+  stop-policy handling.
+- Integrated frozen compiled plans into the real Workbench runner. Plan-driven runs execute by DAG,
+  inject only direct validated dependency outputs, emit both new node events and compatible step
+  events, and persist blocked results in the normal execution artifact.
+- Added public event mappings for `agent_output`, node lifecycle, quality lifecycle, and run completion.
+- Added server-side validate/compile/publish routes. Publish always recompiles the stored graph with
+  the current capability matrix and never trusts client validation or compiled payloads.
+- Verification:
+  - Graph/compiler/scheduler/version API tests: `14 passed`.
+  - Workbench task-run regression: `94 passed`.
+  - Workflow API/foundation/preset regression: `36 passed`.
+- Known limitation: execution is intentionally serial (`max_parallelism = 1`). Capability discovery
+  currently includes built-in LLM plus configured external provider specs; the Phase 3 inspector
+  consumes the same API surface.
+- Next dependency: Phase 3 can use validation issues for canvas focus, compiled plan preview for the
+  review step, and immutable version APIs for draft auto-save and publication.

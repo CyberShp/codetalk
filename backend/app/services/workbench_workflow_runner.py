@@ -85,6 +85,21 @@ class WorkbenchWorkflowRunner:
             if isinstance(item, dict)
         }
 
+        compiled_plan = task_run.task_bundle.get("compiled_plan")
+        if isinstance(compiled_plan, dict) and compiled_plan.get("plan_version"):
+            step_results = self._execute_compiled_plan(
+                task_run=task_run,
+                compiled_plan=compiled_plan,
+                agent_runs_by_step=agent_runs_by_step,
+                timeout_sec=timeout_sec,
+                stop_on_error=stop_on_error,
+            )
+            return self._finalize_execution(
+                task_run=task_run,
+                started_at=started_at,
+                step_results=step_results,
+            )
+
         for step in task_run.workflow_snapshot.get("steps") or []:
             if not isinstance(step, dict):
                 continue
@@ -142,6 +157,116 @@ class WorkbenchWorkflowRunner:
             if stop_on_error and step_result.get("status") != "completed":
                 break
 
+        return self._finalize_execution(
+            task_run=task_run,
+            started_at=started_at,
+            step_results=step_results,
+        )
+
+    def _execute_compiled_plan(
+        self,
+        *,
+        task_run: Any,
+        compiled_plan: dict[str, Any],
+        agent_runs_by_step: dict[str, dict[str, Any]],
+        timeout_sec: int,
+        stop_on_error: bool,
+    ) -> list[dict[str, Any]]:
+        from app.services.workflow_scheduler import WorkflowDagScheduler
+
+        steps_by_id = {
+            str(step.get("id") or ""): step
+            for step in task_run.workflow_snapshot.get("steps") or []
+            if isinstance(step, dict) and str(step.get("id") or "")
+        }
+        effective_plan = json.loads(json.dumps(compiled_plan))
+        if not stop_on_error:
+            for node in effective_plan.get("nodes") or []:
+                if isinstance(node, dict):
+                    node["failure_policy"] = "continue_independent"
+
+        def execute_node(
+            plan_node: dict[str, Any],
+            direct_dependency_outputs: dict[str, dict[str, Any]],
+        ) -> dict[str, Any]:
+            step_id = str(plan_node.get("node_id") or "")
+            step = steps_by_id.get(step_id)
+            if not step:
+                return {
+                    "step_id": step_id,
+                    "type": str(plan_node.get("type") or ""),
+                    "status": "error",
+                    "error": "compiled_plan_step_missing",
+                    "validated_outputs": {},
+                }
+            if self._is_cancelled():
+                result = _cancelled_step_result(step)
+                result["validated_outputs"] = {}
+                self._emit_step_finished(result)
+                return result
+            agent_run = agent_runs_by_step.get(step_id)
+            self._emit_event(
+                "step_started",
+                _step_started_event_payload(
+                    task_run=task_run,
+                    step=step,
+                    agent_run=agent_run,
+                ),
+            )
+            prior_step_results = [
+                {
+                    "step_id": dependency_id,
+                    "status": "completed",
+                    **dict(direct_dependency_outputs[dependency_id]),
+                }
+                for dependency_id in sorted(direct_dependency_outputs)
+            ]
+            if str(step.get("type") or "") == "agent_task":
+                if not agent_run:
+                    result = {
+                        "step_id": step_id,
+                        "type": "agent_task",
+                        "status": "error",
+                        "error": "missing_agent_run",
+                    }
+                else:
+                    result = self._execute_agent_step(
+                        task_run_id=task_run.task_run_id,
+                        step=step,
+                        agent_run=agent_run,
+                        prior_step_results=prior_step_results,
+                        timeout_sec=timeout_sec,
+                    )
+            else:
+                result = self._execute_builtin_step(
+                    task_run=task_run,
+                    step=step,
+                    prior_step_results=prior_step_results,
+                )
+            result["validated_outputs"] = _validated_step_outputs(result)
+            self._emit_step_finished(result)
+            return result
+
+        scheduled = WorkflowDagScheduler(event_sink=self._emit_event).run(
+            effective_plan,
+            execute_node=execute_node,
+        )
+        normalized: list[dict[str, Any]] = []
+        for item in scheduled.ordered_results:
+            result = dict(item)
+            result.setdefault("step_id", str(result.get("node_id") or ""))
+            if result.get("status") == "failed":
+                result["status"] = "error"
+            normalized.append(result)
+        return normalized
+
+    def _finalize_execution(
+        self,
+        *,
+        task_run: Any,
+        started_at: str,
+        step_results: list[dict[str, Any]],
+    ) -> WorkbenchWorkflowExecutionResult:
         outputs = self._collect_workflow_outputs(
             task_run=task_run,
             workflow_snapshot=task_run.workflow_snapshot,
@@ -4281,6 +4406,28 @@ def _overall_status(step_results: list[dict[str, Any]]) -> str:
     if any(item.get("status") == "error" for item in actionable):
         return "error"
     return "invalid"
+
+
+def _validated_step_outputs(step_result: dict[str, Any]) -> dict[str, Any]:
+    if str(step_result.get("status") or "") not in {
+        "completed",
+        "completed_empty",
+        "needs_review",
+    }:
+        return {}
+    outputs: dict[str, Any] = {}
+    for key in (
+        "artifact",
+        "artifacts",
+        "artifact_dir",
+        "count",
+        "validation",
+        "accepted_artifact_details",
+    ):
+        value = step_result.get(key)
+        if value not in (None, "", [], {}):
+            outputs[key] = value
+    return outputs
 
 
 def _cancelled_step_result(step: dict[str, Any]) -> dict[str, Any]:

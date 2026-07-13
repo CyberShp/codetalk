@@ -46,3 +46,23 @@ created: 2026-07-13
   envelope. Phase 2's compatibility compiler may produce an executable V2 plan; users edit a copy,
   never the migrated published record.
 - Consequence: migration cannot invent dependencies or silently alter execution order.
+
+## D005 - Execution Plans Are Frozen Run Inputs
+
+- Status: accepted
+- Context: resolving graph dependencies at runtime would let later edits change historical behavior.
+- Decision: compile deterministically at validation/publish time and copy the compiled plan into each
+  task-run snapshot. The runner consumes that plan; legacy runs receive an in-memory compatibility
+  plan that chains their historical step order.
+- Consequence: a run is reproducible and direct dependency outputs can be scoped without consulting
+  a mutable workflow record.
+
+## D006 - Scheduler Correctness Before Parallelism
+
+- Status: accepted
+- Context: V2 exposes `max_parallelism`, but the first release explicitly prioritizes dependency
+  correctness and deterministic artifacts.
+- Decision: validate `max_parallelism = 1` in this phase and use a serial DAG scheduler. The scheduler
+  still models queued, running, failed, blocked, and independent branches explicitly.
+- Consequence: future parallel execution can replace the dispatch loop without changing plans or UI
+  status semantics.
