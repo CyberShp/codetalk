@@ -122,3 +122,29 @@ async def test_evidence_asset_api_uses_existing_memory_and_source_slices(assets_
     facets = await client.get("/api/workbench/evidence/facets")
     assert facets.status_code == 200
     assert facets.json()["kinds"] == [{"value": "source_file", "count": 1}]
+
+
+async def test_asset_lists_default_to_25_and_reject_page_sizes_over_100(assets_client):
+    client, module = assets_client
+    store = module.semantic_store()
+    for index in range(30):
+        store.upsert_case({
+            "case_id": f"TC_PAGE_{index:03d}",
+            "scenario": f"pagination scenario {index}",
+            "expected": ["visible result"],
+        })
+
+    semantic = await client.get("/api/workbench/semantic-cases")
+    evidence = await client.get("/api/workbench/evidence")
+
+    assert semantic.status_code == 200
+    assert semantic.json()["page_size"] == 25
+    assert len(semantic.json()["items"]) == 25
+    assert evidence.status_code == 200
+    assert evidence.json()["page_size"] == 25
+    assert (await client.get(
+        "/api/workbench/semantic-cases", params={"page_size": 101}
+    )).status_code == 422
+    assert (await client.get(
+        "/api/workbench/evidence", params={"page_size": 101}
+    )).status_code == 422

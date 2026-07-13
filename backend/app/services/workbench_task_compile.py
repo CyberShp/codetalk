@@ -15,6 +15,7 @@ _EXECUTION_FIELDS = frozenset({
     "provider", "mcp_profiles", "skill_ids", "timeout_sec", "idle_timeout_sec",
     "failure_policy", "retry_policy",
 })
+_AGENT_RESOURCE_FIELDS = frozenset({"provider", "mcp_profiles", "skill_ids"})
 _OUTPUT_TYPES = frozenset({"json", "markdown", "text", "patch", "diff", "test_cases", "scope_report"})
 
 
@@ -38,6 +39,14 @@ def compile_task_configuration(
     for step_id, fields in raw_nodes.items():
         if str(step_id) not in steps or not isinstance(fields, dict):
             raise TaskConfigurationError(f"任务覆盖引用未知执行节点：{step_id}")
+        step = steps[str(step_id)]
+        if str(step.get("type") or "") != "agent_task":
+            invalid_resources = _AGENT_RESOURCE_FIELDS.intersection(fields)
+            if invalid_resources:
+                labels = "、".join(sorted(invalid_resources))
+                raise TaskConfigurationError(
+                    f"仅 Agent 节点可覆盖执行器资源；{step_id} 不能覆盖 {labels}"
+                )
         for field, directive in fields.items():
             if field not in _EXECUTION_FIELDS:
                 raise TaskConfigurationError(f"不支持的任务执行覆盖字段：{field}")

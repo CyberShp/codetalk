@@ -155,7 +155,8 @@ def test_real_workbench_runner_uses_frozen_plan_and_marks_blocked_nodes(tmp_path
 
     calls = []
 
-    def execute_builtin(self, *, task_run, step, prior_step_results):
+    def execute_builtin(self, *, task_run, step, prior_step_results, resolved_inputs):
+        assert resolved_inputs == {}
         calls.append((step["id"], [item["step_id"] for item in prior_step_results]))
         return {
             "step_id": step["id"],
@@ -230,7 +231,8 @@ def test_real_runner_passes_parent_successes_to_retry_scheduler(tmp_path, monkey
     (task_dir / "task_run.json").write_text(json.dumps(payload), encoding="utf-8")
     calls: list[tuple[str, list[str]]] = []
 
-    def execute_builtin(self, *, task_run, step, prior_step_results):
+    def execute_builtin(self, *, task_run, step, prior_step_results, resolved_inputs):
+        assert resolved_inputs == {}
         calls.append((step["id"], [item["step_id"] for item in prior_step_results]))
         return {"step_id": step["id"], "type": step["type"], "status": "completed"}
 
@@ -239,3 +241,221 @@ def test_real_runner_passes_parent_successes_to_retry_scheduler(tmp_path, monkey
 
     assert calls == [("b", []), ("c", ["a"])]
     assert result.step_results[0]["reused_from_task_run_id"] == "task_run_parent"
+
+
+def test_real_runner_resolves_declared_ports_without_exposing_unbound_inputs(
+    tmp_path, monkeypatch
+):
+    import json
+
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    root = tmp_path / "task_runs"
+    task_dir = root / "task_bindings"
+    task_dir.mkdir(parents=True)
+    agent_dir = task_dir / "agent_runs" / "consume"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "task_bundle.json").write_text("{}", encoding="utf-8")
+    workflow = {
+        "id": "binding-flow",
+        "name": "Binding flow",
+        "version": 1,
+        "inputs": [],
+        "steps": [
+            {"id": "produce", "type": "memory_retrieve"},
+            {"id": "consume", "type": "agent_task"},
+        ],
+        "outputs": [],
+    }
+    plan = {
+        "plan_version": 1,
+        "workflow_version_id": "wfv-bindings",
+        "topological_order": ["produce", "consume"],
+        "max_parallelism": 1,
+        "nodes": [
+            {
+                "node_id": "produce",
+                "type": "memory_retrieve",
+                "depends_on": [],
+                "resolved_input_bindings": {},
+                "output_ports": [{"id": "analysis", "type": "markdown"}],
+                "failure_policy": "stop",
+            },
+            {
+                "node_id": "consume",
+                "type": "agent_task",
+                "depends_on": ["produce"],
+                "resolved_input_bindings": {
+                    "request": {"source_node_id": "request", "source_port_id": "value"},
+                    "analysis": {"source_node_id": "produce", "source_port_id": "analysis"},
+                },
+                "output_ports": [],
+                "failure_policy": "stop",
+            },
+        ],
+    }
+    payload = {
+        "task_run_id": "task_bindings",
+        "workflow_id": "binding-flow",
+        "workspace_id": "ws",
+        "repo_path": str(tmp_path),
+        "artifact_dir": str(task_dir),
+        "workflow_snapshot": workflow,
+        "input_snapshot": {"request": "READ THIS", "unbound_secret": "DO NOT EXPOSE"},
+        "task_bundle": {"compiled_plan": plan, "context_bundle": {}},
+        "agent_runs": [
+            {
+                "step_id": "consume",
+                "run_id": "agent-consume",
+                "provider": "builtin-llm",
+                "artifact_dir": str(agent_dir),
+            }
+        ],
+        "created_at": "2026-07-13T00:00:00+00:00",
+    }
+    (task_dir / "task_run.json").write_text(json.dumps(payload), encoding="utf-8")
+    captured: dict = {}
+
+    def execute_builtin(self, *, task_run, step, prior_step_results, resolved_inputs):
+        assert resolved_inputs == {}
+        return {
+            "step_id": step["id"],
+            "type": step["type"],
+            "status": "completed",
+            "analysis": "SOURCE EVIDENCE",
+        }
+
+    def execute_agent(
+        self, *, task_run_id, step, agent_run, prior_step_results, resolved_inputs, timeout_sec
+    ):
+        captured.update(resolved_inputs)
+        return {"step_id": step["id"], "type": step["type"], "status": "completed"}
+
+    monkeypatch.setattr(WorkbenchWorkflowRunner, "_execute_builtin_step", execute_builtin)
+    monkeypatch.setattr(WorkbenchWorkflowRunner, "_execute_agent_step", execute_agent)
+
+    result = WorkbenchWorkflowRunner(root).execute_task_run("task_bindings")
+
+    assert result.execution_status == "completed"
+    assert captured == {"request": "READ THIS", "analysis": "SOURCE EVIDENCE"}
+    scoped_bundle = json.loads((agent_dir / "task_bundle.json").read_text(encoding="utf-8"))
+    assert scoped_bundle["resolved_inputs"] == captured
+    assert "unbound_secret" not in json.dumps(scoped_bundle)
+
+
+def test_compiled_plan_failure_policy_cannot_be_overridden_at_run_time(tmp_path, monkeypatch):
+    import json
+
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    root = tmp_path / "task_runs"
+    task_dir = root / "task_policy"
+    task_dir.mkdir(parents=True)
+    workflow = {
+        "id": "policy-flow",
+        "name": "Policy flow",
+        "version": 1,
+        "inputs": [],
+        "steps": [
+            {"id": "a", "type": "memory_retrieve"},
+            {"id": "b", "type": "semantic_retrieve"},
+        ],
+        "outputs": [],
+    }
+    plan = {
+        "plan_version": 1,
+        "workflow_version_id": "wfv-policy",
+        "topological_order": ["a", "b"],
+        "max_parallelism": 1,
+        "nodes": [
+            {"node_id": "a", "type": "memory_retrieve", "depends_on": [], "failure_policy": "stop"},
+            {"node_id": "b", "type": "semantic_retrieve", "depends_on": [], "failure_policy": "stop"},
+        ],
+    }
+    payload = {
+        "task_run_id": "task_policy",
+        "workflow_id": "policy-flow",
+        "workspace_id": "ws",
+        "repo_path": str(tmp_path),
+        "artifact_dir": str(task_dir),
+        "workflow_snapshot": workflow,
+        "input_snapshot": {},
+        "task_bundle": {"compiled_plan": plan, "context_bundle": {}},
+        "agent_runs": [],
+        "created_at": "2026-07-13T00:00:00+00:00",
+    }
+    (task_dir / "task_run.json").write_text(json.dumps(payload), encoding="utf-8")
+    executed: list[str] = []
+
+    def execute_builtin(self, *, task_run, step, prior_step_results, resolved_inputs):
+        executed.append(step["id"])
+        return {"step_id": step["id"], "type": step["type"], "status": "error"}
+
+    monkeypatch.setattr(WorkbenchWorkflowRunner, "_execute_builtin_step", execute_builtin)
+
+    result = WorkbenchWorkflowRunner(root).execute_task_run("task_policy", stop_on_error=False)
+
+    assert executed == ["a"]
+    assert result.step_results[1]["status"] == "blocked"
+
+
+def test_scheduler_public_event_payloads_redact_exception_secrets(tmp_path):
+    from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
+    from app.services.workflow_scheduler import WorkflowDagScheduler
+
+    store = WorkbenchTaskRunEventStore(tmp_path)
+    scheduler = WorkflowDagScheduler(
+        event_sink=lambda event_type, payload: store.append("run-secret", event_type, payload)
+    )
+
+    scheduler.run(
+        {
+            "plan_version": 1,
+            "topological_order": ["agent"],
+            "max_parallelism": 1,
+            "nodes": [{"node_id": "agent", "type": "agent_task", "depends_on": []}],
+        },
+        execute_node=lambda _node, _deps: (_ for _ in ()).throw(
+            RuntimeError("provider failed token=sk-review-secret-123456789")
+        ),
+    )
+
+    event = next(
+        item for item in store.list_after("run-secret") if item["event_type"] == "node_failed"
+    )
+    serialized = str(event["payload"])
+    assert "sk-review-secret" not in serialized
+    assert "<redacted>" in serialized
+
+
+def test_legacy_event_payloads_are_redacted_at_every_public_read_boundary(tmp_path):
+    import json
+
+    from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
+
+    run_dir = tmp_path / "legacy-secret-run"
+    run_dir.mkdir(parents=True)
+    raw_secret = "sk-legacy-secret-12345678901234567890"
+    legacy_event = {
+        "event_id": 1,
+        "task_run_id": "legacy-secret-run",
+        "event_type": "node_failed",
+        "payload": {
+            "error": f"provider failed Authorization: Bearer {raw_secret}",
+            "nested": [{"api_key": raw_secret}],
+        },
+        "created_at": "2026-07-13T00:00:00+00:00",
+    }
+    (run_dir / "task_run_events.jsonl").write_text(
+        json.dumps(legacy_event, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    store = WorkbenchTaskRunEventStore(tmp_path)
+
+    forward = store.list_after("legacy-secret-run")
+    backward = store.list_before("legacy-secret-run")
+
+    for event in [*forward, *backward]:
+        serialized = json.dumps(event, ensure_ascii=False)
+        assert raw_secret not in serialized
+        assert "<redacted>" in serialized

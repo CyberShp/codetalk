@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.services.external_agent_discovery import redact_agent_diagnostic_text
+
 
 _LOCK = threading.RLock()
 
@@ -34,7 +36,7 @@ class WorkbenchTaskRunEventStore:
                 "event_id": self._next_event_id(events_path),
                 "task_run_id": task_run_id,
                 "event_type": str(event_type),
-                "payload": dict(payload or {}),
+                "payload": _redact_public_payload(dict(payload or {})),
                 "created_at": _now(),
             }
             event = _with_public_event_metadata(event)
@@ -67,8 +69,33 @@ class WorkbenchTaskRunEventStore:
                 except (TypeError, ValueError):
                     continue
                 if event_id > after_id:
-                    items.append(_with_public_event_metadata(event))
+                    items.append(_public_event(event))
             return items[: max(1, int(limit))]
+
+    def list_before(
+        self,
+        task_run_id: str,
+        *,
+        before_id: int | None = None,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        """Return the newest page strictly before an event id, oldest first."""
+
+        with _LOCK:
+            events_path = self._events_path(task_run_id)
+            if not events_path.exists():
+                return []
+            items: list[dict[str, Any]] = []
+            boundary = int(before_id) if before_id is not None else None
+            for line in events_path.read_text(encoding="utf-8").splitlines():
+                try:
+                    event = json.loads(line)
+                    event_id = int(event.get("event_id") or 0)
+                except (AttributeError, json.JSONDecodeError, TypeError, ValueError):
+                    continue
+                if boundary is None or event_id < boundary:
+                    items.append(_public_event(event))
+            return items[-max(1, int(limit)):]
 
     def latest_event_id(self, task_run_id: str) -> int:
         """Return the global event tail independently of the requested page."""
@@ -248,6 +275,16 @@ def _read_json(path: Path) -> Any:
         return None
 
 
+def _redact_public_payload(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _redact_public_payload(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_redact_public_payload(item) for item in value]
+    if isinstance(value, str):
+        return redact_agent_diagnostic_text(value)
+    return value
+
+
 def _write_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
@@ -274,6 +311,11 @@ def _with_public_event_metadata(event: dict[str, Any]) -> dict[str, Any]:
         next_event["seq"] = 0
     next_event.setdefault("event_kind", _public_event_kind(next_event))
     return next_event
+
+
+def _public_event(event: dict[str, Any]) -> dict[str, Any]:
+    redacted = _redact_public_payload(event)
+    return _with_public_event_metadata(redacted)
 
 
 def _public_event_kind(event: dict[str, Any]) -> str:

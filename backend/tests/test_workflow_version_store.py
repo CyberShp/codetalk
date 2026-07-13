@@ -107,6 +107,36 @@ def test_workflow_version_migration_is_idempotent_and_preserves_legacy_table(tmp
         ).fetchone()[0] == 1
 
 
+def test_migrated_legacy_version_creates_an_editable_v2_draft(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workflow_graph import compile_workflow_graph
+    from app.services.workflow_version_store import WorkflowVersionStore
+
+    db_path = tmp_path / "workflows.db"
+    WorkflowStore(db_path).save_workflow(_legacy_definition())
+    store = WorkflowVersionStore(db_path)
+    store.initialize_and_migrate()
+
+    published = store.get_version(store.get_workflow("legacy_module").published_version_id)
+    draft = store.create_draft("legacy_module", based_on_version_id=published.version_id)
+
+    assert published.authoring_graph["schema_version"] == 1
+    assert draft.authoring_graph["schema_version"] == 2
+    assert draft.authoring_graph.get("read_only") is not True
+    assert draft.authoring_graph["workflow_id"] == "legacy_module"
+    compiled = compile_workflow_graph(
+        draft.authoring_graph,
+        capabilities={
+            "providers": {"builtin-llm": {"available": True, "mcp_profiles": []}},
+            "skills": [],
+        },
+        workflow_version_id=draft.version_id,
+        workflow_version_number=draft.version_number,
+    )
+    assert compiled["validation_result"]["valid"] is True
+    assert compiled["compiled_definition"]["steps"][0]["type"] == "agent_task"
+
+
 def test_workflow_draft_publish_and_immutable_version_lifecycle(tmp_path):
     from app.services.workflow_version_store import (
         PublishedWorkflowVersionError,

@@ -20,9 +20,9 @@ created: 2026-07-13
 - Consequence: phase boundaries remain independently reviewable without violating the external
   operation boundary.
 
-## D002 - Feature Flag Defaults To Legacy
+## D002 - Feature Flag Defaults To Legacy During Construction
 
-- Status: accepted
+- Status: superseded by D015 in Phase 8
 - Context: the V2 data model and routes must be introduced without changing current behavior.
 - Decision: `WORKBENCH_V2_ENABLED` defaults to false. V2 code may be deployed dark until Phase 8;
   legacy routes and persisted artifacts remain readable throughout migration.
@@ -154,3 +154,107 @@ created: 2026-07-13
   provenance; missing historical relations stay empty.
 - Consequence: workflow output materialization, AI retrieval, asset management, and source-slice
   inspection observe the same records without synchronization jobs or a deceptive second database.
+
+## D015 - V2 Is Default With A Server-Owned Rollback Switch
+
+- Status: accepted
+- Context: Phase 8 must make V2 the normal experience while retaining a one-release rollback that
+  does not rely on rebuilding the frontend or restoring a database.
+- Decision: `WORKBENCH_V2_ENABLED` defaults to true. The three legacy route modules ask the backend
+  release endpoint and redirect to V2 when enabled; when false they dynamically load the quarantined
+  legacy experience. Failure to read release state shows an actionable error instead of guessing.
+- Consequence: operations can roll back entry behavior with one backend setting and restart. The
+  legacy UI cluster is still referenced and therefore is intentionally retained for this release;
+  confirmed deletion is deferred until the compatibility window closes.
+
+## D016 - Migration Backup Is Verified And One-Time
+
+- Status: accepted
+- Context: additive SQLite migration still needs a recovery point, including committed WAL data,
+  before any V2 schema write occurs.
+- Decision: before the first migration of a database containing Workbench data, use SQLite's backup
+  API to create a timestamped sibling file and require `PRAGMA quick_check = ok`. Never overwrite an
+  existing verified pre-V2 backup. Backup failure aborts migration and removes a partial backup.
+- Consequence: migration startup is fail-closed and has an auditable pre-write recovery point. Normal
+  feature-flag rollback does not restore this file because both schema generations remain readable.
+
+## D017 - Live Events Start At The Tail And Page Backward
+
+- Status: accepted
+- Context: loading the first 1,000 events and then opening SSE at the global latest ID silently
+  skipped the middle of long runs; repeatedly downloading the full log also violates the release
+  performance contract.
+- Decision: the event API supports an explicit latest-page tail and `before_id` pagination. The
+  cockpit starts with the newest 1,000, allows older pages on demand, merges SSE increments by ID,
+  and retains at most 2,000 events in memory.
+- Consequence: no event gap is hidden by the initial page limit, current progress appears quickly,
+  and long histories remain available without unbounded DOM or network growth.
+
+## D018 - New Frontend Domains Split Without Removing Compatibility Exports
+
+- Status: accepted
+- Context: V2 pages must stop expanding the giant API/type modules, while legacy pages and one-cycle
+  API compatibility still import those modules.
+- Decision: active V2 Workflow, Task, Run, Semantic and Evidence code uses domain clients and types.
+  Keep old exports and the legacy controller only as a rollback boundary until the next release.
+- Consequence: new code has explicit ownership and bounded imports without creating a big-bang
+  migration that would break rollback. Removing the compatibility cluster requires a later usage
+  audit and its own release decision.
+
+## D019 - Test Runtime Ports Are Never Universal API Fallbacks
+
+- Status: accepted
+- Context: the shared API client offered both 3004 and isolated-test 3124 to every frontend origin.
+  A frontend on 3013 therefore retried a read request nine times against another worktree's backend,
+  producing CORS failures, noise, latency, and possible cross-runtime data access.
+- Decision: only a frontend actually running on 3123 may infer backend 3124. Other deployments use
+  their configured API base and the public 3004 fallback. Bodyless GET requests do not send a JSON
+  Content-Type and therefore do not create an unnecessary CORS preflight.
+- Consequence: isolated E2E cannot be discovered by unrelated frontends, AI Mini Dock polling is one
+  GET instead of OPTIONS plus GET, and custom ports must be configured explicitly as documented.
+
+## D020 - Frozen Port Bindings Define Agent Input Scope
+
+- Status: accepted
+- Context: preparing one global context bundle for every Agent makes the canvas misleading and can
+  expose an unconnected input to a node that was never intended to receive it.
+- Decision: compile named data edges into input bindings, rebuild each Agent handoff from only bound
+  task inputs, and resolve runtime target ports from the input snapshot or validated outputs of direct
+  dependencies. Request-time execution options cannot rewrite this frozen plan.
+- Consequence: the words, files, links, MCP requests, retrieval query, test-activity contract, and
+  downstream values received by an Agent match the graph. Legacy definitions without binding metadata
+  retain their historical all-input behavior only on the compatibility path.
+
+## D021 - Public Run Events Are A Redacted Boundary
+
+- Status: accepted
+- Context: scheduler exceptions can contain provider messages, command lines, and credential-shaped
+  values before the API has a chance to translate an error for users.
+- Decision: recursively redact every string in a public event payload both before append-only
+  persistence and whenever an event is read from current or legacy JSONL. Raw process diagnostics
+  remain confined to diagnostic artifacts and their existing access path.
+- Consequence: SSE, event history, clipboard, and public JSON cannot expose an exception secret merely
+  because a node failed. User-facing status remains useful while technical detail stays downloadable
+  through the diagnostic boundary.
+
+## D022 - Phase 8 Deployment Is Single Process
+
+- Status: accepted
+- Context: migration backup serialization and Attempt-number allocation currently use process-local
+  locks around SQLite/filesystem operations. Multiple Uvicorn workers could bypass those locks.
+- Decision: the supported Phase 8 deployment runs exactly one backend application process, as shown
+  in `docs/DEPLOYMENT.md`. Do not add `--workers` or start parallel backend instances against the same
+  data directory. Multi-process support requires a database-owned lease/transaction design first.
+- Consequence: current backup and Attempt guarantees are valid for the documented deployment. This is
+  an explicit operational boundary rather than an unclaimed multi-worker safety property.
+
+## D023 - Paused Event History Is A Snapshot, Not A Moving Filter
+
+- Status: accepted
+- Context: retaining only an event-ID boundary inside the moving 2,000-event live window allows
+  reconnect refreshes or sustained output to evict every row the user paused to inspect.
+- Decision: quiet refreshes merge the latest server tail into the active bounded window, while the
+  pause action captures a separate immutable visible-event snapshot. Resume discards that snapshot
+  and returns to the live window.
+- Consequence: background execution and native SSE reconnect continue without unbounded memory, but
+  the user's paused reading view remains stable until they explicitly resume.

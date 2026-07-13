@@ -2056,7 +2056,7 @@ async def _execute_task_run_background(
             task_run_id=task_run_id,
             payload=payload,
         )
-        status = str(result.get("status") or "completed")
+        status = _terminal_execution_status(result)
         updated, _ = event_store.mark_status_unless(
             task_run_id,
             status,
@@ -2072,7 +2072,7 @@ async def _execute_task_run_background(
             return
         event_store.append(
             task_run_id,
-            "completed" if status in {"completed", "ok", "ready", "success"} else "step_failed",
+            "completed" if status == "completed" else "step_failed",
             {"status": status},
         )
     except Exception as exc:  # pragma: no cover - defensive path is covered through API state.
@@ -2116,6 +2116,23 @@ async def _execute_task_run_background(
             return
     finally:
         _ACTIVE_TASK_RUN_IDS.discard(task_run_id)
+
+
+def _terminal_execution_status(result: dict[str, Any]) -> str:
+    explicit = str(result.get("execution_status") or "").strip().lower()
+    if explicit in {"completed", "failed", "cancelled", "interrupted"}:
+        return explicit
+    legacy = str(result.get("status") or "completed").strip().lower()
+    if legacy in {
+        "completed", "completed_empty", "needs_review", "needs_rework",
+        "ok", "ready", "success",
+    }:
+        return "completed"
+    if legacy == "cancelled":
+        return "cancelled"
+    if legacy == "interrupted":
+        return "interrupted"
+    return "failed"
 
 
 @router.post("/task-runs/{task_run_id}/cancel")
@@ -2177,6 +2194,8 @@ def _scheduled_task_run_response(*, task_run: Any, status: str) -> dict[str, Any
 async def list_task_run_events(
     task_run_id: str,
     after_id: int = Query(default=0, ge=0),
+    before_id: int | None = Query(default=None, ge=1),
+    tail: bool = Query(default=False),
     limit: int = Query(default=200, ge=1, le=1000),
 ) -> dict[str, Any]:
     try:
@@ -2184,15 +2203,27 @@ async def list_task_run_events(
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
     event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
-    items = event_store.list_after(
-        task_run_id,
-        after_id=after_id,
-        limit=limit,
-    )
+    if after_id and (before_id is not None or tail):
+        raise HTTPException(status_code=422, detail="after_id cannot be combined with before_id or tail")
+    if before_id is not None or tail:
+        items = event_store.list_before(
+            task_run_id,
+            before_id=before_id,
+            limit=limit,
+        )
+    else:
+        items = event_store.list_after(
+            task_run_id,
+            after_id=after_id,
+            limit=limit,
+        )
+    first_event_id = min((int(item.get("event_id") or 0) for item in items), default=0)
     return {
         "task_run_id": task_run_id,
         "items": items,
         "last_event_id": max((int(item.get("event_id") or 0) for item in items), default=after_id),
+        "first_event_id": first_event_id,
+        "has_older": first_event_id > 1,
         "latest_event_id": event_store.latest_event_id(task_run_id),
     }
 

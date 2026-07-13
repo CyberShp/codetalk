@@ -28,23 +28,40 @@ test("creates, edits, compiles, trial-runs, and publishes a workflow through the
   await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/);
 
   await page.goto("/workflows/new", { waitUntil: "domcontentloaded" });
-  await page.getByLabel(/工作流名称/).fill(workflowName);
-  await page.getByLabel("工作流 ID").fill(workflowId);
-  await page.getByLabel("描述").fill("通过真实浏览器验证输入、Agent、输出、编译计划和试运行契约。");
+  await page.getByLabel(/工作流名称/).pressSequentially(workflowName);
+  const workflowIdInput = page.getByLabel("工作流 ID");
+  await workflowIdInput.focus();
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+a" : "Control+a");
+  await workflowIdInput.pressSequentially(workflowId);
+  await expect(workflowIdInput).toHaveValue(workflowId);
+  await page.getByLabel("描述").pressSequentially("通过真实浏览器验证输入、Agent、输出、编译计划和试运行契约。");
 
   const continueButton = page.getByRole("button", { name: /保存并继续/ });
-  await continueButton.hover();
-  await continueButton.click();
+  const continueWithKeyboard = async (currentStep: number) => {
+    if (currentStep > 1) await expect(page).toHaveURL(new RegExp(`[?&]step=${currentStep}(?:&|$)`));
+    await expect(continueButton).toBeEnabled();
+    await continueButton.focus();
+    expect(await continueButton.evaluate((button) => document.activeElement === button)).toBe(true);
+    await page.keyboard.press("Enter");
+  };
+  await continueWithKeyboard(1);
   await expect(page.getByText("定义输入", { exact: true }).first()).toBeVisible();
-  await continueButton.click();
+  await continueWithKeyboard(2);
   await expect(page.getByText("定义执行节点", { exact: true }).first()).toBeVisible();
   await expect(page.getByLabel("执行器").locator("option").filter({ hasText: "builtin-llm" })).toHaveCount(1);
-  await continueButton.click();
+  await continueWithKeyboard(3);
   await expect(page.getByText("定义输出", { exact: true }).first()).toBeVisible();
-  await continueButton.click();
+  await continueWithKeyboard(4);
   await expect(page.getByRole("region", { name: "工作流画布" })).toBeVisible();
 
-  const agentNode = page.getByRole("article", { name: /源码分析 Agent节点/ });
+  let agentNode = page.getByRole("article", { name: /源码分析 Agent节点/ });
+  await agentNode.focus();
+  await expect(agentNode).toBeFocused();
+  await page.keyboard.press("Delete");
+  await expect(agentNode).toHaveCount(0);
+  await page.keyboard.press(process.platform === "darwin" ? "Meta+z" : "Control+z");
+  agentNode = page.getByRole("article", { name: /源码分析 Agent节点/ });
+  await expect(agentNode).toBeVisible();
   const before = await agentNode.boundingBox();
   expect(before).not.toBeNull();
   await page.mouse.move(before!.x + 70, before!.y + 24);
@@ -54,7 +71,7 @@ test("creates, edits, compiles, trial-runs, and publishes a workflow through the
   const after = await agentNode.boundingBox();
   expect(after!.x).toBeGreaterThan(before!.x + 30);
 
-  await continueButton.click();
+  await continueWithKeyboard(5);
   await expect(page.getByText("验证结果", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "验证" }).click();
   await expect(page.getByText("验证通过", { exact: true })).toBeVisible();

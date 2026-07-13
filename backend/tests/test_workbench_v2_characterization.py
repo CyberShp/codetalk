@@ -12,14 +12,14 @@ def _legacy_workflow(*, name: str = "Legacy analysis") -> dict:
     }
 
 
-def test_workbench_v2_feature_flag_is_dark_by_default_and_env_configurable(monkeypatch):
+def test_workbench_v2_feature_flag_is_on_by_default_and_env_can_restore_legacy(monkeypatch):
     from app.config import Settings
 
     monkeypatch.delenv("WORKBENCH_V2_ENABLED", raising=False)
-    assert Settings(_env_file=None).workbench_v2_enabled is False
-
-    monkeypatch.setenv("WORKBENCH_V2_ENABLED", "true")
     assert Settings(_env_file=None).workbench_v2_enabled is True
+
+    monkeypatch.setenv("WORKBENCH_V2_ENABLED", "false")
+    assert Settings(_env_file=None).workbench_v2_enabled is False
 
 
 def test_legacy_workflow_store_keeps_mutable_definition_and_detached_snapshot(tmp_path):

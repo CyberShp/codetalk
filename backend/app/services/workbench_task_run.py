@@ -241,12 +241,69 @@ class WorkbenchTaskRunPreparer:
             command = _agent_task_provider_command(provider)
             runtime_limits = _agent_task_runtime_limits(provider)
             prompt_transport = _agent_task_prompt_transport(provider)
+            step_input_snapshot = _scoped_input_snapshot_for_step(step, input_snapshot)
+            step_input_context = build_input_context(step_input_snapshot)
+            step_input_materials = build_input_materials(
+                workflow_snapshot=workflow_snapshot,
+                input_snapshot=step_input_snapshot,
+                input_context=step_input_context,
+            )
+            step_context_bundle = build_workbench_context_bundle(
+                workspace_id=workspace_id,
+                repo_path=repo_path,
+                input_snapshot=step_input_snapshot,
+                evidence_memory=self.evidence_memory,
+                semantic_library=self.semantic_library,
+            )
+            step_local_source_context = build_local_source_context(
+                repo_path=repo_path,
+                query=str(step_context_bundle.get("query") or ""),
+            )
+            step_context_bundle["local_source_context"] = step_local_source_context
+            step_agent_instructions = collect_agent_instructions(
+                repo_path=repo_path,
+                input_snapshot=step_input_snapshot,
+            )
+            step_workflow_contract = json.loads(json.dumps(workflow_contract))
+            step_workflow_contract["local_source_context"] = step_local_source_context
+            step_agent_mcp_requests = build_agent_mcp_requests(
+                workflow_snapshot=workflow_snapshot,
+                input_snapshot=step_input_snapshot,
+                workflow_contract=step_workflow_contract,
+            )
+            step_context_discovery_decision = build_context_discovery_decision(
+                agent_instructions=step_agent_instructions,
+                provider_snapshot=provider_snapshot,
+            )
+            step_context_artifacts = build_context_artifact_payloads(
+                context_bundle=step_context_bundle,
+                context_discovery_decision=step_context_discovery_decision,
+                evidence_memory_configured=self.evidence_memory is not None,
+                semantic_library_configured=self.semantic_library is not None,
+            )
+            step_black_box_generation_policy = build_black_box_generation_policy(
+                context_bundle=step_context_bundle,
+            )
+            step_test_activity_contract = build_test_activity_contract(
+                target=_test_activity_target(
+                    workflow_snapshot=workflow_snapshot,
+                    input_snapshot=step_input_snapshot,
+                    context_bundle=step_context_bundle,
+                ),
+                repo_path=repo_path,
+                workflow_outputs=_test_activity_requested_outputs(workflow_snapshot),
+                user_requirements=_test_activity_user_requirements(
+                    workflow_snapshot=workflow_snapshot,
+                    input_snapshot=step_input_snapshot,
+                ),
+            )
+            step_workflow_contract["test_activity_contract"] = step_test_activity_contract
             execution_contract = build_executor_handoff_contract(
                 workflow_snapshot=workflow_snapshot,
-                workflow_contract=workflow_contract,
-                input_snapshot=input_snapshot,
-                input_materials=input_materials,
-                agent_mcp_requests=agent_mcp_requests,
+                workflow_contract=step_workflow_contract,
+                input_snapshot=step_input_snapshot,
+                input_materials=step_input_materials,
+                agent_mcp_requests=step_agent_mcp_requests,
                 repo_path=repo_path,
                 step=step,
                 step_id=step_id,
@@ -254,10 +311,25 @@ class WorkbenchTaskRunPreparer:
                 required_artifacts=required_artifacts_by_step.get(step_id, []),
                 expected_output_schemas=output_schemas_by_step.get(step_id, []),
                 expected_semantic_outputs=semantic_import_outputs_by_step.get(step_id, []),
-                test_activity_contract=test_activity_contract,
+                test_activity_contract=step_test_activity_contract,
             )
             step_bundle = {
                 **task_bundle,
+                "inputs": step_input_snapshot,
+                "input_context": step_input_context,
+                "input_materials": step_input_materials,
+                "workflow_contract": step_workflow_contract,
+                "agent_mcp_requests": step_agent_mcp_requests,
+                "agent_instructions": step_agent_instructions,
+                "context_discovery_decision": step_context_discovery_decision,
+                "context_bundle": step_context_bundle,
+                "local_source_context": step_local_source_context,
+                "memory_retrieval": step_context_artifacts["memory_retrieval"],
+                "source_read_chain": step_context_artifacts["source_read_chain"],
+                "evidence_consumption_trajectory": step_context_artifacts["evidence_consumption_trajectory"],
+                "degraded_retrieval": step_context_artifacts["degraded_retrieval"],
+                "black_box_generation_policy": step_black_box_generation_policy,
+                "test_activity_contract": step_test_activity_contract,
                 "step_id": step_id,
                 "goal": step.get("goal") or "",
                 "skills": [str(item) for item in step.get("skills") or []],
@@ -730,6 +802,24 @@ def build_input_context(input_snapshot: dict[str, Any], *, preview_chars: int = 
             if isinstance(item, dict)
         ),
         "preview_chars_per_file": preview_chars,
+    }
+
+
+def _scoped_input_snapshot_for_step(
+    step: dict[str, Any], input_snapshot: dict[str, Any]
+) -> dict[str, Any]:
+    bindings = step.get("input_bindings")
+    if not isinstance(bindings, dict):
+        return dict(input_snapshot)
+    source_ids = {
+        str(binding.get("source_node_id") or "")
+        for binding in bindings.values()
+        if isinstance(binding, dict)
+    }
+    return {
+        input_id: value
+        for input_id, value in input_snapshot.items()
+        if input_id in source_ids
     }
 
 
@@ -2967,7 +3057,7 @@ def _prepared_task_run_from_payload(payload: dict[str, Any]) -> PreparedWorkbenc
         task_id=str(payload.get("task_id") or ""),
         attempt_number=max(0, int(payload.get("attempt_number") or 0)),
         parent_task_run_id=str(payload.get("parent_task_run_id") or ""),
-        execution_status=str(
+        execution_status=_normalized_execution_status(
             payload.get("execution_status")
             or payload.get("status")
             or runtime.get("status")
@@ -2997,6 +3087,17 @@ def _normalized_quality_status(value: Any) -> str:
     if status == "not_evaluated" or not status:
         return "not_checked"
     return status if status in {"not_checked", "pending", "passed", "warning", "blocked"} else "not_checked"
+
+
+def _normalized_execution_status(value: Any) -> str:
+    status = str(value or "").strip().lower()
+    if status in {"completed_empty", "needs_review", "needs_rework", "ok", "ready", "success"}:
+        return "completed"
+    if status in {"invalid", "error"}:
+        return "failed"
+    return status if status in {
+        "prepared", "queued", "running", "completed", "failed", "cancelled", "interrupted"
+    } else "prepared"
 
 
 def _normalized_delivery_status(value: Any) -> str:

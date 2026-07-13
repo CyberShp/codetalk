@@ -110,10 +110,8 @@ function browserFallbackApiBases(): string[] {
   if (typeof window === "undefined") return ["http://localhost:3004"];
   const { protocol, hostname, port } = window.location;
   const sameHost = (apiPort: string) => `${protocol}//${hostname}:${apiPort}`;
-  const candidates = [sameHost("3004"), sameHost("3124")];
-  if (port === "3003") candidates.unshift(sameHost("3004"));
-  if (port === "3123") candidates.unshift(sameHost("3124"));
-  return candidates;
+  if (port === "3123") return [sameHost("3124")];
+  return [sameHost("3004")];
 }
 
 function apiBaseCandidates(): string[] {
@@ -241,10 +239,14 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     let res: Response;
     try {
+      const headers = new Headers(init?.headers);
+      if (init?.body && !headers.has("Content-Type")) {
+        headers.set("Content-Type", "application/json");
+      }
       res = await fetch(`${base}${path}`, {
-        credentials: "include",
-        headers: { "Content-Type": "application/json", ...init?.headers },
         ...init,
+        credentials: "include",
+        headers,
       });
     } catch {
       lastError = new Error(`网络连接失败，请检查后端服务是否运行 (${base})`);
@@ -278,7 +280,7 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   throw lastError ?? new Error("请求失败");
 }
 
-async function requestForm<T>(path: string, body: FormData): Promise<T> {
+export async function requestForm<T>(path: string, body: FormData): Promise<T> {
   let lastError: Error | null = null;
   for (const base of apiBaseCandidates()) {
     try {
@@ -1281,9 +1283,11 @@ export const api = {
           },
         ),
 
-      events: (taskRunId: string, params?: { after_id?: number; limit?: number }) => {
+      events: (taskRunId: string, params?: { after_id?: number; before_id?: number; tail?: boolean; limit?: number }) => {
         const query = new URLSearchParams({
           ...(params?.after_id ? { after_id: String(params.after_id) } : {}),
+          ...(params?.before_id ? { before_id: String(params.before_id) } : {}),
+          ...(params?.tail ? { tail: "true" } : {}),
           ...(params?.limit ? { limit: String(params.limit) } : {}),
         });
         const suffix = query.toString() ? `?${query.toString()}` : "";

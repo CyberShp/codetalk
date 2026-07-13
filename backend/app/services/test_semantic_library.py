@@ -294,7 +294,7 @@ class TestSemanticLibraryStore:
         status: str = "",
         source: str = "",
         page: int = 1,
-        page_size: int = 50,
+        page_size: int = 25,
     ) -> dict[str, Any]:
         self.initialize()
         clauses: list[str] = []
@@ -321,7 +321,7 @@ class TestSemanticLibraryStore:
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
         ordering = "bm25(semantic_case_fts), c.updated_at DESC" if q.strip() else "c.updated_at DESC"
         safe_page = max(1, int(page))
-        safe_page_size = max(1, min(200, int(page_size)))
+        safe_page_size = max(1, min(100, int(page_size)))
         with self._connect() as db:
             total = int(db.execute(
                 f"SELECT COUNT(*) FROM semantic_cases c {join} {where}", params

@@ -1062,6 +1062,8 @@ export interface WorkbenchTaskRunEventsResult {
   task_run_id: string;
   items: WorkbenchTaskRunEvent[];
   last_event_id: number;
+  first_event_id?: number;
+  has_older?: boolean;
   latest_event_id: number;
 }
 

@@ -82,7 +82,7 @@ async def list_semantic_cases(
     status: str = "",
     source: str = "",
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
+    page_size: int = Query(25, ge=1, le=100),
 ) -> dict[str, Any]:
     _require_v2()
     result = semantic_store().list_cases(
@@ -225,7 +225,7 @@ async def list_evidence_assets(
     status: str = "",
     source: str = "",
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
+    page_size: int = Query(25, ge=1, le=100),
 ) -> dict[str, Any]:
     _require_v2()
     result = evidence_store().list_evidence_assets(

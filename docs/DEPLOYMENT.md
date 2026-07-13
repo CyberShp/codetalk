@@ -1,3 +1,15 @@
+---
+feature_ids:
+  - deployment
+  - workbench-v2
+topics:
+  - native-deployment
+  - migration
+  - rollback
+doc_kind: operations-guide
+created: 2026-07-14
+---
+
 # CodeTalk Lightweight — 部署文档
 
 > 版本: 2.1 | 分支: feat | Sprint 4
@@ -108,6 +120,11 @@ cd backend
 uvicorn app.main:app --host 0.0.0.0 --port 3004 --reload
 ```
 
+> **Workbench V2 单进程约束：** 当前版本只支持一个后端应用进程访问同一 `DATA_DIR`。
+> 不要添加 `--workers`，也不要让多个 Uvicorn/Gunicorn 实例共享该目录。迁移备份和
+> Attempt 编号使用进程内锁；多进程部署必须等数据库级租约/事务协调实现后再启用。
+> `--reload` 只用于本地开发，生产环境去掉该参数并保持一个 worker。
+
 **前端:**
 ```bash
 cd frontend
@@ -125,6 +142,9 @@ npm run dev
 DATA_DIR=data
 SQLITE_DB=data/codetalk.db
 
+# Workbench V2 默认开启；仅在一个发布周期内用于旧入口回滚
+WORKBENCH_V2_ENABLED=true
+
 # 工具地址
 GITNEXUS_BASE_URL=http://localhost:7100
 
@@ -137,6 +157,40 @@ TOOL_HEALTH_INTERVAL=30          # 健康检查间隔(秒)
 # CORS（内网部署需添加客户端 IP）
 CORS_ORIGINS=http://localhost:3003,http://127.0.0.1:3003
 ```
+
+### 4.2 Workbench V2 迁移、备份与回滚
+
+Workbench V2 默认启用。后端首次打开已有 Workbench SQLite 并执行 V2 迁移前，使用 SQLite Backup API 在数据库同目录生成一次经过 `PRAGMA quick_check` 验证的备份：
+
+```text
+DATA_DIR/workbench/workflows.pre-workbench-v2.<UTC timestamp>.bak
+```
+
+迁移是附加且幂等的：旧 `workflow_definitions` 表、旧运行目录、事件、artifact、语义和证据数据不会被删除。备份或迁移失败会阻止启动，不会静默带着半迁移数据继续运行。
+
+上线前检查：
+
+```bash
+curl http://127.0.0.1:3004/health
+curl http://127.0.0.1:3004/api/workbench/release
+ls -lh "$DATA_DIR/workbench"/workflows.pre-workbench-v2.*.bak
+```
+
+默认发布状态应为：
+
+```json
+{"workbench_v2_enabled":true}
+```
+
+需要立即恢复旧页面时，不需要恢复数据库。修改后端环境并重启：
+
+```env
+WORKBENCH_V2_ENABLED=false
+```
+
+此时 `/workbench`、`/workbench/designer` 和 `/workbench/semantic` 渲染旧 Workbench；旧 API 和数据继续原位读取。恢复 V2 时改回 `true` 并重启后端。
+
+只有数据库文件本身损坏且经过维护窗口审批时，才考虑从 `.bak` 恢复。恢复前必须停止后端、再备份当前数据库及 `-wal`/`-shm` 文件；不要在运行中的 SQLite 上用普通文件复制覆盖。功能开关回滚不需要执行此破坏性操作。
 
 ### 4.2 前端 (.env.local)
 
@@ -240,10 +294,14 @@ TIKTOKEN_CACHE_DIR=data/tiktoken_cache
 
 ## 7. 使用流程
 
-1. **配置 AI**: 设置页 → 添加 LLM 配置 → 测试连接
-2. **启动工具**: 在设置或 Workbench 探测区确认 GitNexus / Agent 可用
-3. **创建分析**: 新建分析 → 填写任务名称、仓库路径 → **填写分析内容**（必填） → 选择/编辑提示词模板 → 选择工具 → 开始
-4. **查看结果**: 任务详情 → 报告查看 → 导出
+1. **配置 AI**：设置页添加 LLM 或外部 Agent，并执行连接/命令探测。
+2. **创建工作空间**：在浏览器选择真实仓库目录，确认源码可读；可选 GitNexus/CGC 不可用时允许明确降级。
+3. **发布工作流**：在 `/workflows` 用向导和画布定义输入、Agent、Skills、MCP、输出和 DAG，验证、编译、试运行后发布不可变版本。
+4. **创建 Task**：在 `/tasks/new` 选择已发布版本和已有工作空间，填写命名输入；默认继承执行配置，只保存明确覆盖。
+5. **观察 Attempt**：在 `/tasks/{taskId}/runs/{runId}` 查看真实节点、增量事件、执行/质量/交付状态、中文失败原因和可下载 artifact。
+6. **沉淀资产**：在语义库和证据库管理可复用测试用例、来源和 source slice。
+
+完整用户流程见 [`WORKBENCH_V2_USER_GUIDE.md`](WORKBENCH_V2_USER_GUIDE.md)。
 
 ### 7.1 提示词模板
 

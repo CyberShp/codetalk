@@ -33,7 +33,7 @@ test("workbench page module only exports App Router page-safe fields", () => {
   assert.deepEqual(illegalExports, []);
 });
 
-test("workbench sibling routes import shared experience outside page.tsx", () => {
+test("workbench sibling routes use the release gate without importing a page module", () => {
   const designerSource = readFileSync(
     new URL("../src/app/workbench/designer/page.tsx", import.meta.url),
     "utf8",
@@ -45,6 +45,8 @@ test("workbench sibling routes import shared experience outside page.tsx", () =>
 
   assert.doesNotMatch(designerSource, /from\s+["']\.\.\/page["']/);
   assert.doesNotMatch(semanticSource, /from\s+["']\.\.\/page["']/);
-  assert.match(designerSource, /from\s+["']\.\.\/agent-workbench-experience["']/);
-  assert.match(semanticSource, /from\s+["']\.\.\/agent-workbench-experience["']/);
+  assert.match(designerSource, /WorkbenchEntryGate/);
+  assert.match(semanticSource, /WorkbenchEntryGate/);
+  assert.match(designerSource, /destination="\/workflows"/);
+  assert.match(semanticSource, /destination="\/semantic-library"/);
 });

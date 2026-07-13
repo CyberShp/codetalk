@@ -433,3 +433,124 @@ created: 2026-07-13
 - Next dependency: Phase 8 can switch V2 on by default, redirect the three legacy Workbench pages,
   remove confirmed dead UI code, complete compatibility/manual documentation, and run the final
   migration, accessibility, performance, and end-to-end release gate.
+
+## Phase 8 - Release Switch, Compatibility, And Acceptance
+
+### Before implementation
+
+- Goal: make Workbench V2 the default product experience, preserve an explicit legacy rollback,
+  protect existing SQLite data before migration, and close the release accessibility, performance,
+  documentation, and real-browser acceptance gates.
+- Expected files: release/config and migration-backup tests, V2 list pagination contracts, legacy
+  route switch wrappers, domain-specific semantic/evidence clients and types, bounded event/search
+  behavior, release E2E coverage, README/user manual/deployment documentation, and this decision log.
+- Migration impact: create a timestamped sibling backup of the existing Workbench SQLite database
+  before the first V2 schema migration. The migration remains additive and idempotent; migration or
+  backup failure must abort startup without deleting or rewriting legacy rows.
+- Compatibility strategy: V2 is enabled when the flag is omitted. Setting
+  `WORKBENCH_V2_ENABLED=false` keeps legacy APIs and the legacy Workbench entry usable for one
+  release cycle. Existing run directories, event logs, artifacts, semantic rows, and evidence rows
+  remain in their original stores and are read in place.
+- Test plan: observe red tests for the default/rollback flag, backup-before-migrate behavior, and
+  25/100 pagination limits; then run focused and expanded backend suites, frontend lint/type/build,
+  all V2 Playwright journeys at 1440/1280/1024/mobile, keyboard and overflow assertions, legacy
+  rollback smoke, migration/no-loss checks, secret scan, quality gate, and independent review.
+
+### Result
+
+- Switched `WORKBENCH_V2_ENABLED` to true by default and added a minimal backend-owned release
+  endpoint. The three legacy entries now redirect to Tasks, Workflows, and Semantic Library by
+  default; a failed release check shows an actionable error instead of guessing.
+- Preserved a one-release rollback by dynamically loading the quarantined legacy experience only
+  when the backend flag is false. A dedicated false-flag backend and real Chromium proved that
+  `/workbench` stays on the legacy route and renders the old cockpit. No database restore is needed.
+- Added a one-time, verified SQLite backup before the first V2 migration of existing Workbench data.
+  SQLite Backup API includes committed WAL state; `PRAGMA quick_check` must pass, and backup failure
+  aborts before schema writes without retaining a partial file.
+- Kept old workflow rows, run directories, events, artifacts, semantic cases, evidence, and legacy
+  APIs in place. A post-migration integration test reads a pre-V2 run, lists its real Markdown
+  artifact, and retrieves the original content through the public compatibility API.
+- Added default-25/max-100 server pagination to Tasks, Semantic Cases, and Evidence, 300ms search
+  debounce, and bounded previous/next controls. Split active Semantic and Evidence clients/types out
+  of the legacy aggregate modules while retaining old exports for rollback callers.
+- Fixed long-run event loss: the cockpit now loads the latest 1,000-event tail, pages backward with
+  `before_id`, merges incremental SSE by event ID, and retains at most 2,000 loaded events. The API
+  reports global latest/first IDs and whether older events exist.
+- Fixed a release-discovered cross-runtime bug. An arbitrary frontend on 3013 could probe isolated
+  backend 3124 and retry nine CORS preflights because every GET declared JSON content. Only 3123 can
+  now infer 3124, and bodyless GET requests no longer send Content-Type. Real Chromium observed one
+  GET/200 with no OPTIONS or retry.
+- Fixed two keyboard/typing defects found by no-mock workflow E2E: focus now selects a canvas node so
+  Delete works, and workflow ID draft normalization preserves a typed trailing separator until final
+  submit normalization. The browser completed typed creation, keyboard navigation, node delete/undo,
+  mouse drag, server validation/compile, real trial run, and publication in 3.9 seconds.
+- Added release accessibility and containment checks. Tasks, Workflows, Semantic, and Evidence pages
+  have no page-level horizontal overflow or double main scrolling at 1440, 1280, and 1024 widths;
+  primary normal text meets WCAG AA contrast. Phase 6/7 mobile cockpit and asset checks remain green.
+- Verification:
+  - Backend full suite: `2251 passed, 8 skipped` in `1256.97s`.
+  - Phase 8 migration/release plus characterization focus: `8 passed`.
+  - Frontend ESLint: passed with zero warnings; `tsc --noEmit`: passed.
+  - Next.js production build: passed with all V2 and compatibility routes in the route manifest.
+  - Release/static contracts: `4 passed`; legacy workflow canvas contracts: `12 passed`.
+  - All V2 real-browser files in the default environment: `9 passed, 1 skipped` in `22.3s`; the
+    skipped false-flag case passed separately against the dedicated rollback backend (`1 passed`).
+  - Production UI 200-node measurement: 200 nodes materialized in `5077ms`; keyboard focus worked;
+    an actual mouse drag completed in `92ms` and moved the node 50px.
+  - Secret scan found only intentional synthetic redaction fixtures; no supplied real model key was
+    written to tracked source, documentation, logs, screenshots, or artifacts.
+- Compatibility boundary: the legacy UI controller is not dead code while rollback remains an
+  acceptance requirement, so it was retained and dynamically excluded from the default path. Its
+  removal belongs to the next release after a fresh usage audit. Windows native real-machine
+  regression remains outside this local macOS gate; Windows command resolution keeps automated
+  coverage but is not claimed as an in-person acceptance result.
+
+### Independent review remediation
+
+- The first independent review did not approve Phase 8 and reported five P1, four P2, and one P3
+  issue. All ten were reproduced before correction; none was waived.
+- Runtime input delivery now follows the frozen plan's `resolved_input_bindings`. Each Agent task
+  bundle is rebuilt from only its connected user inputs, and downstream values are resolved from
+  validated direct-dependency output ports. Unconnected user text and files no longer leak into
+  every Agent node.
+- Execution completion is persisted independently from quality outcomes. Legacy weak-success values
+  (`needs_review`, `needs_rework`, and `completed_empty`) normalize to completed execution while
+  quality remains warning/blocked as appropriate.
+- The rollback flag now guards every direct V2 route family (`/tasks`, `/workflows`, Semantic, and
+  Evidence), not only the three legacy entry aliases. A dedicated false-flag backend and real browser
+  verified each redirect to the corresponding legacy page.
+- Creating a draft from a migrated legacy workflow now converts the legacy definition into an
+  editable Authoring Graph V2 instead of copying a schema-1 compatibility envelope into the V2
+  designer.
+- Public run events recursively redact exception strings before append-only persistence. Scheduler
+  errors cannot publish provider tokens or similar secrets through SSE or event history. The same
+  recursive redaction is applied when legacy JSONL records are read, so pre-upgrade plaintext cannot
+  bypass the new append boundary.
+- A request-time `stop_on_error=false` can no longer mutate the immutable compiled plan. Task totals
+  and status-filter pagination scan beyond 500 rows, while the common unfiltered path uses a SQL
+  count plus server pagination. Provider/MCP/Skills overrides are accepted and shown only for Agent
+  nodes.
+- SSE transient errors keep the browser's native reconnect behavior and refresh state without
+  closing the stream permanently. Quiet refreshes merge the server tail into the current bounded
+  window. Pausing the cockpit owns a separate visible-event snapshot, so reconnects and high-volume
+  live output cannot evict the history the user stopped to read. Task filters use a native select change binding and a complete
+  URL replacement because production-browser evidence showed React's delegated select event was not
+  committing App Router navigation in this page.
+- Fresh post-review verification:
+  - Backend full suite: `2259 passed, 8 skipped` in `1249.91s`.
+  - Frontend ESLint, `tsc --noEmit`, and production build: passed.
+  - Frontend static contracts: `45 passed` across five contract files.
+  - Real Chromium V2 journeys with a dedicated false-flag rollback backend: `10 passed` in `22.7s`;
+    no mock or route interception was used.
+  - The cockpit browser test now proves pause leaves the existing event rows visible. The Task-center
+    browser test proves the lifecycle filter changes the URL, then clears an obsolete execution
+    filter after a new Attempt changes the task's latest state.
+- First re-review remediation verification:
+  - Historical read-boundary and scheduler event tests: `11 passed`; three public event API tests:
+    `3 passed`.
+  - Frontend ESLint, `tsc --noEmit`, production build, and all 45 static contracts passed.
+  - The complete real Chromium V2 suite passed `10/10` in `23.9s` on isolated `3123/3124`, with no
+    mock or request interception.
+  - Final backend full suite: `2260 passed, 8 skipped` in `1232.35s`.
+  - The same independent reviewer reported no remaining P0/P1/P2 and returned `APPROVED`. One
+    non-blocking P3 records that SSE disconnect is contract-tested but not browser fault-injected.

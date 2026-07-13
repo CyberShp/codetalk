@@ -71,6 +71,8 @@ test("filters a real Task, creates Attempt 2, and clones it without rewriting At
   await expect(page.getByText("Attempt 1", { exact: true })).toBeVisible();
 
   await page.getByRole("link", { name: "任务中心" }).first().click();
+  await page.getByLabel("运行状态").selectOption("");
+  await expect(page).not.toHaveURL(/execution_status=prepared/);
   await page.getByRole("row").filter({ hasText: taskName }).getByRole("button", { name: "复制任务" }).click();
   await page.waitForURL(/\/tasks\/task_/);
   await expect(page.getByText("草稿", { exact: true })).toBeVisible();

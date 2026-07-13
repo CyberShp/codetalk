@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.services.workbench_sqlite_backup import ensure_workbench_migration_backup
+
 
 WORKFLOW_SCHEMA_VERSION = 1
 _WORKFLOW_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
@@ -73,6 +75,7 @@ class WorkflowVersionStore:
 
     def initialize_and_migrate(self) -> dict[str, int]:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_workbench_migration_backup(self.db_path)
         migrated = 0
         with self._connect() as db:
             db.executescript(_SCHEMA)
@@ -229,7 +232,7 @@ class WorkflowVersionStore:
         version_number = self._next_version_number(header.workflow_id)
         version_id = _new_version_id()
         now = _now()
-        graph = base.authoring_graph if base else _empty_graph(header)
+        graph = _editable_graph_from_base(base, header) if base else _empty_graph(header)
         with self._connect() as db:
             try:
                 db.execute("BEGIN IMMEDIATE")
@@ -569,6 +572,188 @@ def _empty_graph(header: WorkflowHeader) -> dict[str, Any]:
         "edges": [],
         "settings": {"stop_on_error": True, "max_parallelism": 1},
     }
+
+
+def _editable_graph_from_base(
+    base: WorkflowVersion, header: WorkflowHeader
+) -> dict[str, Any]:
+    if base.authoring_graph.get("schema_version") == 2:
+        return json.loads(_dump(base.authoring_graph))
+    definition = base.authoring_graph.get("legacy_definition")
+    if not isinstance(definition, dict):
+        definition = base.compiled_definition
+    if not isinstance(definition, dict):
+        raise WorkflowVersionError("legacy workflow has no definition to convert")
+    return _legacy_definition_to_v2_graph(definition, header)
+
+
+def _legacy_definition_to_v2_graph(
+    definition: dict[str, Any], header: WorkflowHeader
+) -> dict[str, Any]:
+    inputs = [dict(item) for item in definition.get("inputs") or [] if isinstance(item, dict)]
+    steps = [dict(item) for item in definition.get("steps") or [] if isinstance(item, dict)]
+    outputs = [dict(item) for item in definition.get("outputs") or [] if isinstance(item, dict)]
+    supported_builtin = {
+        "semantic_retrieve", "memory_retrieve", "local_scope_discover",
+        "evidence_validate", "report_render", "artifact_export",
+    }
+    nodes: list[dict[str, Any]] = []
+    edges: list[dict[str, Any]] = []
+    input_node_by_contract: dict[str, str] = {}
+    step_node_by_id: dict[str, str] = {}
+
+    for index, item in enumerate(inputs):
+        contract_id = str(item.get("id") or f"input_{index + 1}")
+        node_id = f"input_{contract_id}"
+        input_node_by_contract[contract_id] = node_id
+        nodes.append({
+            "id": node_id,
+            "kind": "input",
+            "label": str(item.get("label") or contract_id),
+            "position": {"x": 80, "y": 100 + index * 140},
+            "config": {
+                "contract_id": contract_id,
+                "label": str(item.get("label") or contract_id),
+                "type": str(item.get("type") or "text"),
+                "required": bool(item.get("required")),
+                "resolver": str(item.get("resolver") or "manual"),
+                "role": str(item.get("role") or item.get("description") or ""),
+                **({"default_value": item["default_value"]} if "default_value" in item else {}),
+                **({"schema": item["schema"]} if isinstance(item.get("schema"), dict) else {}),
+            },
+        })
+
+    for index, step in enumerate(steps):
+        step_id = str(step.get("id") or f"step_{index + 1}")
+        node_id = f"step_{step_id}"
+        step_node_by_id[step_id] = node_id
+        step_type = str(step.get("type") or "agent_task")
+        kind = "agent" if step_type == "agent_task" or step_type not in supported_builtin else step_type
+        step_outputs = [
+            output for output in outputs
+            if str(output.get("from") or output.get("source") or "") == step_id
+        ]
+        input_ports = [
+            {
+                "id": str(item.get("id") or ""),
+                "type": str(item.get("type") or "any"),
+                "required": bool(item.get("required")),
+            }
+            for item in inputs
+            if str(item.get("id") or "")
+        ]
+        output_ports = [
+            {
+                "id": str(item.get("id") or f"output_{output_index + 1}"),
+                "type": str(item.get("type") or "any"),
+            }
+            for output_index, item in enumerate(step_outputs)
+        ]
+        config: dict[str, Any] = {
+            "step_id": step_id,
+            "input_ports": input_ports,
+            "output_ports": output_ports,
+            "failure_policy": str(step.get("failure_policy") or "stop"),
+            "timeout_sec": int(step.get("timeout_sec") or 900),
+            "idle_timeout_sec": int(step.get("idle_timeout_sec") or 120),
+            "retry_policy": {"max_attempts": 1, "backoff_seconds": 0},
+        }
+        if kind == "agent":
+            config.update({
+                "goal": str(
+                    step.get("goal")
+                    or f"完成迁移自旧工作流节点 {step_id}（{step_type}）的目标，并生成声明的交付件。"
+                ),
+                "provider": str(step.get("provider") or "builtin-llm"),
+                "mcp_profiles": _string_list(step.get("mcp_profiles") or step.get("mcp_profile")),
+                "skill_ids": _string_list(step.get("skills") or step.get("skill_ids")),
+                "skill_instructions": [
+                    dict(item) for item in step.get("skill_instructions") or []
+                    if isinstance(item, dict)
+                ],
+                "required_artifacts": sorted({
+                    str(item.get("artifact") or "") for item in step_outputs
+                    if str(item.get("artifact") or "")
+                }),
+                **({"legacy_step_type": step_type} if step_type != "agent_task" else {}),
+            })
+        else:
+            for key, value in step.items():
+                if key not in {"id", "type", "input_ports", "output_ports"}:
+                    config.setdefault(str(key), value)
+        nodes.append({
+            "id": node_id,
+            "kind": kind,
+            "label": str(step.get("label") or step.get("name") or step_id),
+            "position": {"x": 380 + index * 300, "y": 260},
+            "config": config,
+        })
+        for input_index, item in enumerate(inputs):
+            contract_id = str(item.get("id") or "")
+            if not contract_id:
+                continue
+            edges.append({
+                "id": f"edge_input_{input_index + 1}_{index + 1}",
+                "kind": "data",
+                "source": {"node_id": input_node_by_contract[contract_id], "port_id": "value"},
+                "target": {"node_id": node_id, "port_id": contract_id},
+            })
+        if index:
+            previous_id = str(steps[index - 1].get("id") or f"step_{index}")
+            edges.append({
+                "id": f"edge_step_{index}_{index + 1}",
+                "kind": "dependency",
+                "source": {"node_id": step_node_by_id[previous_id], "port_id": "done"},
+                "target": {"node_id": node_id, "port_id": "start"},
+            })
+
+    for index, output in enumerate(outputs):
+        output_id = str(output.get("id") or f"output_{index + 1}")
+        source_step_id = str(output.get("from") or output.get("source") or "")
+        if source_step_id not in step_node_by_id and steps:
+            source_step_id = str(steps[-1].get("id") or f"step_{len(steps)}")
+        if source_step_id not in step_node_by_id:
+            continue
+        node_id = f"output_{output_id}"
+        nodes.append({
+            "id": node_id,
+            "kind": "output",
+            "label": str(output.get("label") or output_id),
+            "position": {"x": 420 + len(steps) * 300, "y": 100 + index * 140},
+            "config": {
+                "output_id": output_id,
+                "label": str(output.get("label") or output_id),
+                "type": str(output.get("type") or "text"),
+                "artifact": str(output.get("artifact") or ""),
+                "required": bool(output.get("required")),
+                "source_node_id": step_node_by_id[source_step_id],
+                "source_port_id": output_id,
+                **({"schema": output["schema"]} if isinstance(output.get("schema"), dict) else {}),
+            },
+        })
+        edges.append({
+            "id": f"edge_output_{index + 1}",
+            "kind": "data",
+            "source": {"node_id": step_node_by_id[source_step_id], "port_id": output_id},
+            "target": {"node_id": node_id, "port_id": "value"},
+        })
+
+    return {
+        "schema_version": 2,
+        "workflow_id": header.workflow_id,
+        "name": header.name,
+        "description": header.description,
+        "nodes": nodes,
+        "edges": edges,
+        "settings": {"stop_on_error": True, "max_parallelism": 1},
+        "migration": {"source": "legacy_definition"},
+    }
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    return sorted({str(item) for item in value or [] if str(item).strip()})
 
 
 _SCHEMA = """

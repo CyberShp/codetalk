@@ -2,13 +2,13 @@
 
 import { Archive, Copy, Download, FileUp, RotateCcw, Search, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { api } from "@/lib/api";
+import { semanticLibraryApi } from "@/lib/api/semantic-library";
 import type {
   SemanticCase,
   SemanticCaseFacets,
   SemanticImportCommitResult,
   SemanticImportPreview,
-} from "@/lib/types";
+} from "@/lib/types/semantic";
 
 type Filters = {
   q: string;
@@ -22,12 +22,14 @@ type Filters = {
 };
 
 const EMPTY_FILTERS: Filters = { q: "", feature: "", module: "", test_level: "", interface: "", tag: "", status: "active", source: "" };
+const PAGE_SIZE = 25;
 
 export function SemanticLibraryPage() {
   const [filters, setFilters] = useState<Filters>(EMPTY_FILTERS);
   const [items, setItems] = useState<SemanticCase[]>([]);
   const [facets, setFacets] = useState<SemanticCaseFacets | null>(null);
   const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<SemanticCase | null>(null);
   const [editing, setEditing] = useState(false);
   const [loading, setLoading] = useState(true);
@@ -37,26 +39,26 @@ export function SemanticLibraryPage() {
   const load = useCallback(async () => {
     setLoading(true); setError("");
     try {
-      const result = await api.workbench.semanticCases.list({ ...filters, page_size: 100 });
+      const result = await semanticLibraryApi.list({ ...filters, page, page_size: PAGE_SIZE });
       setItems(result.items); setTotal(result.total);
     } catch (cause) { setError(message(cause, "语义用例加载失败")); }
     finally { setLoading(false); }
-  }, [filters]);
+  }, [filters, page]);
 
-  useEffect(() => { const timer = window.setTimeout(() => void load(), 180); return () => window.clearTimeout(timer); }, [load]);
-  useEffect(() => { void api.workbench.semanticCases.facets().then(setFacets).catch(() => undefined); }, []);
+  useEffect(() => { const timer = window.setTimeout(() => void load(), 300); return () => window.clearTimeout(timer); }, [load]);
+  useEffect(() => { void semanticLibraryApi.facets().then(setFacets).catch(() => undefined); }, []);
 
-  const updateFilter = (key: keyof Filters, value: string) => setFilters((current) => ({ ...current, [key]: value }));
+  const updateFilter = (key: keyof Filters, value: string) => { setPage(1); setFilters((current) => ({ ...current, [key]: value })); };
   const openCase = async (semanticId: string) => {
-    try { setSelected(await api.workbench.semanticCases.getAsset(semanticId)); setEditing(false); }
+    try { setSelected(await semanticLibraryApi.get(semanticId)); setEditing(false); }
     catch (cause) { setError(message(cause, "用例详情加载失败")); }
   };
   const lifecycle = async (action: "deprecate" | "restore") => {
     if (!selected) return;
     try {
       const next = action === "deprecate"
-        ? await api.workbench.semanticCases.deprecate(selected.semantic_id)
-        : await api.workbench.semanticCases.restore(selected.semantic_id);
+        ? await semanticLibraryApi.deprecate(selected.semantic_id)
+        : await semanticLibraryApi.restore(selected.semantic_id);
       setSelected(next); await load();
     } catch (cause) { setError(message(cause, "状态更新失败")); }
   };
@@ -64,7 +66,7 @@ export function SemanticLibraryPage() {
     if (!selected) return;
     const caseId = `${selected.case_id}_COPY_${Date.now().toString().slice(-6)}`;
     try {
-      const created = await api.workbench.semanticCases.create({ ...selected, semantic_id: undefined, case_id: caseId, status: "active", source_ref: `copy:${selected.case_id}` });
+      const created = await semanticLibraryApi.create({ ...selected, semantic_id: undefined, case_id: caseId, status: "active", source_ref: `copy:${selected.case_id}` });
       await load(); await openCase(created.semantic_id);
     } catch (cause) { setError(message(cause, "复制失败")); }
   };
@@ -82,7 +84,7 @@ export function SemanticLibraryPage() {
       <Facet label="来源" value={filters.source} items={facets?.sources} onChange={(value) => updateFilter("source", value)} />
     </section>
     {error && <div className="ct-v2-notice is-error" role="alert"><span>{error}</span><button type="button" onClick={() => setError("")}><X size={14} /></button></div>}
-    <div className="ct-v2-table-summary"><span>{loading ? "正在刷新" : `${total} 条用例`}</span><button type="button" onClick={() => setFilters(EMPTY_FILTERS)}>清除筛选</button></div>
+    <div className="ct-v2-table-summary"><span>{loading ? "正在刷新" : `${total} 条用例`}</span><button type="button" onClick={() => { setPage(1); setFilters(EMPTY_FILTERS); }}>清除筛选</button></div>
     <section className={`ct-asset-workspace ${selected ? "has-detail" : ""}`}>
       <div className="ct-v2-table-shell"><table className="ct-v2-table"><thead><tr><th>Case ID / 场景</th><th>Feature</th><th>Module</th><th>测试级别</th><th>接口</th><th>标签</th><th>状态</th><th>来源</th><th>更新时间</th></tr></thead><tbody>
         {items.map((item) => <tr key={item.semantic_id} className={selected?.semantic_id === item.semantic_id ? "is-selected" : ""} onClick={() => void openCase(item.semantic_id)}><td><button type="button" className="ct-asset-row-open"><strong>{item.case_id}</strong><span>{item.scenario}</span><small>{item.matched_fields?.length ? `命中：${item.matched_fields.join("、")}` : `${item.counts?.preconditions ?? item.preconditions.length} 前置 · ${item.counts?.actions ?? item.actions.length} 步骤 · ${item.counts?.expected ?? item.expected.length} 预期`}</small></button></td><td>{item.feature || "—"}</td><td>{item.module || "—"}</td><td>{testLevelLabel(item.test_level)}</td><td>{item.interface || "—"}</td><td><TagList items={item.tags} /></td><td><span className={`ct-v2-status is-${item.status}`}>{item.status === "deprecated" ? "已废弃" : "使用中"}</span></td><td>{item.source_ref || "—"}</td><td>{formatTime(item.updated_at)}</td></tr>)}
@@ -90,7 +92,8 @@ export function SemanticLibraryPage() {
       </tbody></table></div>
       {selected && <SemanticDetail item={selected} editing={editing} onEdit={() => setEditing(true)} onClose={() => setSelected(null)} onSaved={async (item) => { setSelected(item); setEditing(false); await load(); }} onLifecycle={lifecycle} onCopy={copyCase} />}
     </section>
-    {importing && <SemanticImportWizard onClose={() => setImporting(false)} onCommitted={async () => { await load(); setFacets(await api.workbench.semanticCases.facets()); }} />}
+    <AssetPagination label="语义用例分页" page={page} total={total} onPage={setPage} />
+    {importing && <SemanticImportWizard onClose={() => setImporting(false)} onCommitted={async () => { await load(); setFacets(await semanticLibraryApi.facets()); }} />}
   </main>;
 }
 
@@ -98,7 +101,7 @@ function SemanticDetail({ item, editing, onEdit, onClose, onSaved, onLifecycle, 
   const [draft, setDraft] = useState(item);
   const [saving, setSaving] = useState(false);
   useEffect(() => setDraft(item), [item]);
-  const save = async () => { setSaving(true); try { await onSaved(await api.workbench.semanticCases.updateAsset(item.semantic_id, editablePayload(draft))); } finally { setSaving(false); } };
+  const save = async () => { setSaving(true); try { await onSaved(await semanticLibraryApi.update(item.semantic_id, editablePayload(draft))); } finally { setSaving(false); } };
   return <aside className="ct-asset-detail" aria-label="语义用例详情"><header><div><span>{item.case_id}</span><h2>{item.scenario || "未命名场景"}</h2></div><button type="button" onClick={onClose} title="关闭详情"><X size={17} /></button></header>
     {editing ? <div className="ct-asset-editor"><TextField label="Case ID" value={draft.case_id} onChange={(case_id) => setDraft({ ...draft, case_id })} /><TextField label="场景" value={draft.scenario} onChange={(scenario) => setDraft({ ...draft, scenario })} multiline /><div className="ct-asset-editor-grid"><TextField label="Feature" value={draft.feature} onChange={(feature) => setDraft({ ...draft, feature })} /><TextField label="Module" value={draft.module} onChange={(module) => setDraft({ ...draft, module })} /><TextField label="测试级别" value={draft.test_level} onChange={(test_level) => setDraft({ ...draft, test_level })} /><TextField label="接口" value={draft.interface} onChange={(interfaceValue) => setDraft({ ...draft, interface: interfaceValue })} /></div><ListField label="前置条件" values={draft.preconditions} onChange={(preconditions) => setDraft({ ...draft, preconditions })} /><ListField label="操作步骤" values={draft.actions} onChange={(actions) => setDraft({ ...draft, actions })} /><ListField label="预期结果" values={draft.expected} onChange={(expected) => setDraft({ ...draft, expected })} /><ListField label="标签" values={draft.tags} onChange={(tags) => setDraft({ ...draft, tags })} /><div className="ct-asset-detail-actions"><button type="button" onClick={() => setDraft(item)}>撤销</button><button className="ct-v2-primary-button" disabled={saving} type="button" onClick={() => void save()}>{saving ? "保存中" : "保存修改"}</button></div></div> : <div className="ct-asset-detail-body"><DetailList label="前置条件" items={item.preconditions} /><DetailList label="操作步骤" items={item.actions} ordered /><DetailList label="预期结果" items={item.expected} /><dl><div><dt>Feature</dt><dd>{item.feature || "—"}</dd></div><div><dt>Module</dt><dd>{item.module || "—"}</dd></div><div><dt>接口</dt><dd>{item.interface || "—"}</dd></div><div><dt>来源</dt><dd>{item.source_ref || "—"}</dd></div></dl><section><h3>引用关系</h3><p>{item.references?.length ? `${item.references.length} 个新运行引用` : "历史引用为空；后续运行会在这里记录来源。"}</p></section><div className="ct-asset-detail-actions"><button type="button" onClick={onEdit}>编辑</button><button type="button" onClick={() => void onCopy()}><Copy size={14} />复制</button>{item.status === "deprecated" ? <button type="button" onClick={() => void onLifecycle("restore")}><RotateCcw size={14} />恢复</button> : <button className="is-danger" type="button" onClick={() => void onLifecycle("deprecate")}><Archive size={14} />废弃</button>}</div></div>}
   </aside>;
@@ -107,8 +110,8 @@ function SemanticDetail({ item, editing, onEdit, onClose, onSaved, onLifecycle, 
 function SemanticImportWizard({ onClose, onCommitted }: { onClose: () => void; onCommitted: () => Promise<void> }) {
   const [step, setStep] = useState(1); const [file, setFile] = useState<File | null>(null); const [headers, setHeaders] = useState<string[]>([]); const [mapping, setMapping] = useState<Record<string, string>>({}); const [separator, setSeparator] = useState(""); const [defaults, setDefaults] = useState({ feature: "", module: "", test_level: "black_box" }); const [preview, setPreview] = useState<SemanticImportPreview | null>(null); const [strategy, setStrategy] = useState<"skip" | "overwrite" | "create_new">("skip"); const [result, setResult] = useState<SemanticImportCommitResult | null>(null); const [busy, setBusy] = useState(false); const [error, setError] = useState("");
   const choose = async (next: File | null) => { setFile(next); setPreview(null); setResult(null); if (!next) { setHeaders([]); return; } const first = (await next.slice(0, 8192).text()).split(/\r?\n/, 1)[0] || ""; const nextHeaders = next.name.toLowerCase().endsWith(".csv") ? first.split(",").map((value) => value.trim()).filter(Boolean) : []; setHeaders(nextHeaders); setMapping(Object.fromEntries(nextHeaders.map((header) => [header, ["case_id", "feature", "module", "scenario", "preconditions", "actions", "expected", "test_level", "interface", "terms", "assertion_style", "tags", "source_ref", "status"].includes(header) ? header : ""]))); };
-  const runPreview = async () => { if (!file) return; setBusy(true); setError(""); try { setPreview(await api.workbench.semanticCases.previewImport(file, { mapping, text_separator: separator, defaults })); setStep(3); } catch (cause) { setError(message(cause, "预览失败")); } finally { setBusy(false); } };
-  const commit = async () => { if (!preview) return; setBusy(true); setError(""); try { const next = await api.workbench.semanticCases.commitImport(preview.preview_id, strategy); setResult(next); setStep(5); await onCommitted(); } catch (cause) { setError(message(cause, "导入失败")); } finally { setBusy(false); } };
+  const runPreview = async () => { if (!file) return; setBusy(true); setError(""); try { setPreview(await semanticLibraryApi.previewImport(file, { mapping, text_separator: separator, defaults })); setStep(3); } catch (cause) { setError(message(cause, "预览失败")); } finally { setBusy(false); } };
+  const commit = async () => { if (!preview) return; setBusy(true); setError(""); try { const next = await semanticLibraryApi.commitImport(preview.preview_id, strategy); setResult(next); setStep(5); await onCommitted(); } catch (cause) { setError(message(cause, "导入失败")); } finally { setBusy(false); } };
   const textFile = Boolean(file && /\.(txt|md|markdown)$/i.test(file.name));
   return <div className="ct-asset-modal" role="dialog" aria-modal="true" aria-label="导入语义用例"><section><header><div><span>导入向导 · 第 {step}/5 步</span><h2>{["上传文件", "字段映射", "预览与验证", "冲突策略", "导入结果"][step - 1]}</h2></div><button type="button" onClick={onClose}><X size={18} /></button></header><ol className="ct-asset-steps">{["上传", "映射", "预览", "冲突", "完成"].map((label, index) => <li key={label} className={step >= index + 1 ? "is-active" : ""}>{index + 1}<span>{label}</span></li>)}</ol>
     <div className="ct-asset-modal-body">{step === 1 && <div className="ct-asset-upload"><FileUp size={26} /><strong>{file?.name || "选择 JSON、JSONL、CSV、TXT 或 Markdown"}</strong><p>文件只在预览阶段解析，不会直接写入语义库。</p><label><input type="file" accept=".json,.jsonl,.ndjson,.csv,.txt,.md,.markdown" onChange={(event) => void choose(event.target.files?.[0] ?? null)} />选择文件</label></div>}
@@ -128,4 +131,5 @@ function editablePayload(item: SemanticCase): Partial<SemanticCase> { return { c
 function downloadFailures(result: SemanticImportCommitResult) { const blob = new Blob(result.failed.map((item) => `${JSON.stringify(item)}\n`), { type: "application/x-ndjson" }); const url = URL.createObjectURL(blob); const anchor = document.createElement("a"); anchor.href = url; anchor.download = `${result.import_id}-failures.ndjson`; anchor.click(); URL.revokeObjectURL(url); }
 function testLevelLabel(value: string) { return ({ black_box: "黑盒", gray_box: "灰盒", white_box: "白盒" } as Record<string, string>)[value] || value || "—"; }
 function formatTime(value: string) { if (!value) return "—"; return new Intl.DateTimeFormat("zh-CN", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" }).format(new Date(value)); }
+function AssetPagination({ label, page, total, onPage }: { label: string; page: number; total: number; onPage: (page: number) => void }) { const pages = Math.max(1, Math.ceil(total / PAGE_SIZE)); return <nav className="ct-v2-pagination" aria-label={label}><button type="button" disabled={page <= 1} onClick={() => onPage(page - 1)}>上一页</button><span>第 {page} / {pages} 页</span><button type="button" disabled={page >= pages} onClick={() => onPage(page + 1)}>下一页</button></nav>; }
 function message(cause: unknown, fallback: string) { return cause instanceof Error ? cause.message : fallback; }

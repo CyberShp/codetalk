@@ -36,6 +36,8 @@ import {
 
 const tabs = ["摘要", "实时输出", "工具调用", "全部事件"] as const;
 const terminalStatuses = new Set(["completed", "success", "failed", "error", "cancelled", "interrupted"]);
+const MAX_LOADED_EVENTS = 2000;
+const EVENT_PAGE_SIZE = 1000;
 
 export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: string }) {
   const [task, setTask] = useState<WorkbenchTask | null>(null);
@@ -47,11 +49,15 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
   const [nodeFilter, setNodeFilter] = useState("");
   const [kindFilter, setKindFilter] = useState("");
   const [paused, setPaused] = useState(false);
+  const [pauseBoundary, setPauseBoundary] = useState<number | null>(null);
+  const [frozenEvents, setFrozenEvents] = useState<WorkbenchTaskRunEvent[]>([]);
   const [autoScroll, setAutoScroll] = useState(true);
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false);
   const [preview, setPreview] = useState<{ path: string; content: string; truncated: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
   const [actionBusy, setActionBusy] = useState(false);
+  const [hasOlderEvents, setHasOlderEvents] = useState(false);
+  const [loadingOlderEvents, setLoadingOlderEvents] = useState(false);
   const [error, setError] = useState("");
   const eventViewport = useRef<HTMLDivElement>(null);
   const lastEventId = useRef(0);
@@ -62,13 +68,14 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
       const [nextTask, nextRun, eventResult, artifactResult] = await Promise.all([
         workbenchTasksApi.get(taskId),
         api.workbench.taskRuns.get(runId),
-        api.workbench.taskRuns.events(runId, { limit: 1000 }),
+        api.workbench.taskRuns.events(runId, { tail: true, limit: EVENT_PAGE_SIZE }),
         api.workbench.taskRuns.artifacts(runId),
       ]);
       if (nextRun.task_id && nextRun.task_id !== taskId) throw new Error("该运行不属于当前任务");
       setTask(nextTask);
       setRun(nextRun);
-      setEvents(eventResult.items);
+      setEvents((current) => mergeEvents(current, eventResult.items));
+      setHasOlderEvents(Boolean(eventResult.has_older));
       setArtifacts(artifactResult.artifacts);
       lastEventId.current = eventResult.latest_event_id;
       setError("");
@@ -94,13 +101,14 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
     const onDone = () => { stream.close(); void refresh(true); };
     stream.addEventListener("task_run_event", onEvent as EventListener);
     stream.addEventListener("task_run_done", onDone);
-    stream.onerror = () => stream.close();
+    stream.onerror = () => { void refresh(true); };
     return () => stream.close();
   }, [refresh, run, runId]);
 
   const visibleEvents = useMemo(() => {
-    if (paused) return [];
-    return events.filter((item) => {
+    const eventSource = paused ? frozenEvents : events;
+    return eventSource.filter((item) => {
+      if (pauseBoundary !== null && item.event_id > pauseBoundary) return false;
       const text = `${eventMessage(item)} ${eventDetail(item)}`.toLowerCase();
       const node = eventNode(item);
       if (query && !text.includes(query.toLowerCase())) return false;
@@ -110,10 +118,22 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
       if (tab === "工具调用" && !["tool_use", "tool_result"].includes(item.event_kind)) return false;
       return true;
     });
-  }, [events, kindFilter, nodeFilter, paused, query, tab]);
+  }, [events, frozenEvents, kindFilter, nodeFilter, pauseBoundary, paused, query, tab]);
   useEffect(() => {
-    if (autoScroll && eventViewport.current) eventViewport.current.scrollTop = eventViewport.current.scrollHeight;
-  }, [autoScroll, visibleEvents]);
+    if (!paused && autoScroll && eventViewport.current) eventViewport.current.scrollTop = eventViewport.current.scrollHeight;
+  }, [autoScroll, paused, visibleEvents]);
+
+  const togglePaused = () => {
+    if (paused) {
+      setPaused(false);
+      setPauseBoundary(null);
+      setFrozenEvents([]);
+      return;
+    }
+    setPauseBoundary(events.at(-1)?.event_id ?? lastEventId.current);
+    setFrozenEvents(events);
+    setPaused(true);
+  };
 
   if (loading && !run) return <div className="ct-v2-page-loading"><Loader2 className="animate-spin" />正在打开运行驾驶舱…</div>;
   if (!run || !task) return <div className="ct-v2-empty-state is-error"><AlertTriangle /><h1>无法打开运行</h1><p>{error || "运行不存在"}</p><Link href={`/tasks/${taskId}`}>返回任务</Link></div>;
@@ -149,6 +169,23 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
       setPreview({ path, content: content.content, truncated: content.truncated });
     } catch (cause) { setError(cause instanceof Error ? cause.message : "产物预览失败"); }
   };
+  const loadOlderEvents = async () => {
+    const firstEventId = events[0]?.event_id;
+    if (!firstEventId || !hasOlderEvents || loadingOlderEvents) return;
+    setLoadingOlderEvents(true);
+    try {
+      const result = await api.workbench.taskRuns.events(runId, {
+        before_id: firstEventId,
+        limit: EVENT_PAGE_SIZE,
+      });
+      setEvents((current) => mergeEvents(current, result.items, "older"));
+      setHasOlderEvents(Boolean(result.has_older));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "更早事件加载失败");
+    } finally {
+      setLoadingOlderEvents(false);
+    }
+  };
 
   return <main className="ct-v2-run-cockpit">
     <header className="ct-v2-run-header">
@@ -166,9 +203,11 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
       <div className="ct-v2-run-main">
         <nav className="ct-v2-run-tabs" role="tablist">{tabs.map((item) => <button role="tab" aria-selected={tab === item} className={tab === item ? "is-active" : ""} key={item} onClick={() => setTab(item)}>{item}</button>)}</nav>
         {tab === "摘要" ? <RunSummary summary={summary} events={events} failed={failed} /> : <>
-          <div className="ct-v2-event-toolbar"><label><Search size={13} /><input aria-label="搜索运行事件" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索输出" /></label><select aria-label="按节点筛选" value={nodeFilter} onChange={(event) => setNodeFilter(event.target.value)}><option value="">全部节点</option>{nodeNames.map((item) => <option key={item}>{item}</option>)}</select><select aria-label="按类型筛选" value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}><option value="">全部类型</option>{kinds.map((item) => <option key={item}>{item}</option>)}</select><button title="暂停或继续显示" onClick={() => setPaused((value) => !value)}>{paused ? <Play size={14} /> : <Pause size={14} />}{paused ? "继续" : "暂停"}</button><button title="自动跟随最新输出" className={autoScroll ? "is-active" : ""} onClick={() => setAutoScroll((value) => !value)}>自动滚动</button><button title="复制当前事件" onClick={() => void navigator.clipboard.writeText(visibleEvents.map(eventClipboardLine).join("\n"))}><Clipboard size={14} /></button></div>
+          <div className="ct-v2-event-toolbar"><label><Search size={13} /><input aria-label="搜索运行事件" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索输出" /></label><select aria-label="按节点筛选" value={nodeFilter} onChange={(event) => setNodeFilter(event.target.value)}><option value="">全部节点</option>{nodeNames.map((item) => <option key={item}>{item}</option>)}</select><select aria-label="按类型筛选" value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}><option value="">全部类型</option>{kinds.map((item) => <option key={item}>{item}</option>)}</select><button title="暂停或继续显示" onClick={togglePaused}>{paused ? <Play size={14} /> : <Pause size={14} />}{paused ? "继续" : "暂停"}</button><button title="自动跟随最新输出" className={autoScroll ? "is-active" : ""} onClick={() => setAutoScroll((value) => !value)}>自动滚动</button><button title="复制当前事件" onClick={() => void navigator.clipboard.writeText(visibleEvents.map(eventClipboardLine).join("\n"))}><Clipboard size={14} /></button></div>
           <div className="ct-v2-event-viewport" ref={eventViewport} onScroll={(event) => { const target = event.currentTarget; if (target.scrollHeight - target.scrollTop - target.clientHeight > 36) setAutoScroll(false); }}>
-            {paused ? <div className="ct-v2-event-empty">显示已暂停，后台运行不受影响。</div> : visibleEvents.length ? visibleEvents.map((item) => <EventRow key={item.event_id} item={item} />) : <div className="ct-v2-event-empty">暂无符合条件的公开事件。</div>}
+            {hasOlderEvents && <button className="ct-v2-event-load-older" type="button" disabled={loadingOlderEvents} onClick={() => void loadOlderEvents()}>{loadingOlderEvents ? "正在加载…" : "加载更早事件"}</button>}
+            {paused && <div className="ct-v2-event-empty">显示已冻结在当前时刻，后台运行不受影响。</div>}
+            {visibleEvents.length ? visibleEvents.map((item) => <EventRow key={item.event_id} item={item} />) : <div className="ct-v2-event-empty">暂无符合条件的公开事件。</div>}
           </div>
         </>}
       </div>
@@ -195,7 +234,7 @@ function InspectorGroup({ label, values }: { label: string; values: string[] }) 
 function FailurePanel({ summary, onRetry, busy }: { summary: PreparedWorkbenchTaskRun["run_ui_summary"]; onRetry: () => void; busy: boolean }) { const failure = summary?.failure; const node = summary?.nodes.find((item) => item.id === failure?.failed_node_id); return <section className="ct-v2-run-failure"><AlertTriangle size={18} /><div><h2>{node?.label || "运行节点"}执行失败</h2><p>{failure?.reasons?.[0] || "执行器未完成当前节点，请查看公开事件或技术诊断。"}</p><dl><div><dt>失败类型</dt><dd>{node?.type || "执行错误"}</dd></div><div><dt>是否可重试</dt><dd>{failure?.can_retry ? "可以" : "需要修改配置"}</dd></div><div><dt>重试范围</dt><dd>新建 Attempt，复用冻结输入和成功上游产物，从失败节点继续</dd></div></dl></div>{failure?.can_retry && <button disabled={busy} onClick={onRetry}><RefreshCw size={14} />从失败节点重试</button>}</section>; }
 function ArtifactRow({ item, runId, onOpen }: { item: WorkbenchTaskArtifact; runId: string; onOpen: (path: string) => void }) { const path = item.relative_path || item.path; const encoded = path.split("/").map(encodeURIComponent).join("/"); return <article className="ct-v2-artifact-row"><FileText size={15} /><button onClick={() => void onOpen(path)}><strong>{path.split("/").pop()}</strong><small>{formatBytes(item.size_bytes)} · {item.kind}</small></button><a title="下载文件" href={`${currentApiBase()}/api/workbench/task-runs/${encodeURIComponent(runId)}/artifacts/download/${encoded}`}><Download size={15} /></a></article>; }
 function EventRow({ item, compact = false }: { item: WorkbenchTaskRunEvent; compact?: boolean }) { return <article className={`ct-v2-event-row is-${item.event_kind} ${compact ? "is-compact" : ""}`}><time>{new Date(item.created_at).toLocaleTimeString("zh-CN", { hour12: false })}</time><span>{eventNode(item) || "系统"}</span><em>{eventKindLabel(item.event_kind)}</em><div><strong>{eventMessage(item)}</strong>{!compact && eventDetail(item) && <pre>{eventDetail(item)}</pre>}</div></article>; }
-function mergeEvents(current: WorkbenchTaskRunEvent[], incoming: WorkbenchTaskRunEvent[]) { const map = new Map(current.map((item) => [item.event_id, item])); incoming.forEach((item) => map.set(item.event_id, item)); return [...map.values()].sort((a, b) => a.event_id - b.event_id).slice(-1000); }
+function mergeEvents(current: WorkbenchTaskRunEvent[], incoming: WorkbenchTaskRunEvent[], direction: "live" | "older" = "live") { const map = new Map(current.map((item) => [item.event_id, item])); incoming.forEach((item) => map.set(item.event_id, item)); const ordered = [...map.values()].sort((a, b) => a.event_id - b.event_id); return direction === "older" ? ordered.slice(0, MAX_LOADED_EVENTS) : ordered.slice(-MAX_LOADED_EVENTS); }
 function statusOf(run: PreparedWorkbenchTaskRun) { return String(run.execution_status || run.runtime?.status || run.status || "prepared").toLowerCase(); }
 function eventNode(item: WorkbenchTaskRunEvent) { return String(item.payload.step_id || item.payload.node_id || item.payload.node_label || ""); }
 function eventMessage(item: WorkbenchTaskRunEvent) { return String(item.payload.user_message || item.payload.message || eventTypeLabel(item.event_type)); }

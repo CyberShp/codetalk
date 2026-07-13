@@ -218,6 +218,119 @@ def test_run_outcomes_keep_quality_and_delivery_independent():
     assert delivery_status == "partial"
 
 
+def test_task_configuration_rejects_agent_resource_overrides_for_builtin_nodes():
+    from app.services.workbench_task_compile import TaskConfigurationError, compile_task_configuration
+
+    with pytest.raises(TaskConfigurationError, match="仅 Agent 节点"):
+        compile_task_configuration(
+            compiled_definition={
+                "id": "builtin-flow",
+                "inputs": [],
+                "steps": [{"id": "scope", "type": "local_scope_discover"}],
+                "outputs": [],
+            },
+            compiled_plan={"nodes": [{"node_id": "scope", "type": "local_scope_discover"}]},
+            execution_overrides={
+                "nodes": {
+                    "scope": {"provider": {"mode": "replace", "value": "codex"}}
+                }
+            },
+            output_overrides={},
+        )
+
+
+@pytest.mark.asyncio
+async def test_task_api_paginates_all_rows_beyond_the_old_500_item_cap(tmp_path, monkeypatch):
+    from app.api import workbench_v2_tasks
+    from app.config import settings
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+    monkeypatch.setattr(settings, "workbench_v2_enabled", True)
+    store = workbench_v2_tasks.task_store()
+    store.initialize_and_migrate()
+    with store._connect() as db:
+        rows = [
+            (
+                f"task-{index:04d}", f"Task {index:04d}", "", "ws", "flow", "wfv",
+                "draft", "{}", "{}", "{}", "[]", None,
+                f"2026-07-13T00:{index // 60:02d}:{index % 60:02d}+00:00",
+                f"2026-07-13T00:{index // 60:02d}:{index % 60:02d}+00:00", None,
+            )
+            for index in range(505)
+        ]
+        db.executemany(
+            """
+            INSERT INTO workbench_tasks(
+                task_id, name, description, workspace_id, workflow_id,
+                workflow_version_id, lifecycle_status, input_values_json,
+                execution_overrides_json, output_overrides_json, tags_json,
+                last_run_id, created_at, updated_at, archived_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            rows,
+        )
+
+    result = await workbench_v2_tasks.list_tasks(page=21, page_size=25)
+
+    assert result["total"] == 505
+    assert len(result["items"]) == 5
+
+
+@pytest.mark.asyncio
+async def test_quality_review_result_persists_completed_execution_status(tmp_path, monkeypatch):
+    from app.api import agent_workbench
+    from app.config import settings
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer, WorkbenchTaskRunStore
+    from app.services.workflow_dsl import WorkflowStore
+
+    data_dir = tmp_path / "data"
+    run_root = data_dir / "workbench" / "task_runs"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+    workflow_store = WorkflowStore(data_dir / "workbench" / "task_workflows.db")
+    workflow_store.save_workflow(_workflow())
+    prepared = WorkbenchTaskRunPreparer(
+        artifact_root=run_root,
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="source-review",
+        workspace_id="ws-1",
+        repo_path=str(repo),
+        inputs={"target": "lib/nvmf"},
+    )
+
+    def execute_with_quality_outcome(**_kwargs):
+        from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
+
+        WorkbenchTaskRunEventStore(run_root).mark_outcomes(
+            prepared.task_run_id,
+            quality_status="blocked",
+            delivery_status="none",
+        )
+        return {
+            "status": "needs_rework",
+            "execution_status": "completed",
+            "test_activity_quality": {"status": "needs_rework", "deliverable": False},
+        }
+
+    monkeypatch.setattr(
+        agent_workbench,
+        "_execute_task_run_with_closure",
+        execute_with_quality_outcome,
+    )
+    await agent_workbench._execute_task_run_background(
+        task_run_id=prepared.task_run_id,
+        payload=agent_workbench.TaskRunExecuteRequest(),
+    )
+
+    stored = WorkbenchTaskRunStore(run_root).load(prepared.task_run_id)
+    assert stored.execution_status == "completed"
+    assert stored.quality_status == "blocked"
+
+
 def test_retry_seed_results_reuse_only_successful_nodes_before_failure(tmp_path):
     from app.api.workbench_v2_tasks import _retry_seed_results_from_parent
 
@@ -417,6 +530,13 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
     app.include_router(agent_workbench.router)
     app.include_router(workbench_v2_tasks.router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        empty_page = await client.get("/api/workbench/tasks")
+        assert empty_page.status_code == 200
+        assert empty_page.json()["page_size"] == 25
+        assert (await client.get(
+            "/api/workbench/tasks", params={"page_size": 101}
+        )).status_code == 422
+
         created = await client.post(
             "/api/workbench/tasks",
             json={

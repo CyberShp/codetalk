@@ -6,6 +6,61 @@ from pathlib import Path
 import pytest
 
 
+def test_prepare_scopes_each_agent_bundle_to_its_declared_input_bindings(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "scoped-agent-inputs",
+        "name": "Scoped Agent inputs",
+        "version": 1,
+        "inputs": [
+            {"id": "analysis_target", "type": "free_text"},
+            {"id": "unbound_notes", "type": "long_text"},
+        ],
+        "steps": [{
+            "id": "analyze",
+            "type": "agent_task",
+            "provider": "builtin-llm",
+            "goal": "analyze the selected target",
+            "input_bindings": {
+                "target": {
+                    "source_node_id": "analysis_target",
+                    "source_port_id": "value",
+                }
+            },
+        }],
+        "outputs": [],
+    })
+
+    prepared = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="scoped-agent-inputs",
+        workspace_id="ws1",
+        repo_path=str(tmp_path),
+        inputs={
+            "analysis_target": "NVMe/TCP TLS handshake",
+            "unbound_notes": "THIS MUST NOT REACH THE AGENT",
+        },
+    )
+
+    agent_bundle = json.loads(
+        Path(
+            prepared.artifact_dir,
+            "agent_runs",
+            "analyze",
+            "task_bundle.json",
+        ).read_text(encoding="utf-8")
+    )
+    assert agent_bundle["inputs"] == {
+        "analysis_target": "NVMe/TCP TLS handshake"
+    }
+    assert "THIS MUST NOT REACH THE AGENT" not in json.dumps(agent_bundle)
+
+
 def test_prepare_workbench_task_run_freezes_workflow_and_creates_agent_run(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer
@@ -3604,10 +3659,11 @@ def test_quality_retry_restores_protected_artifacts_when_agent_step_raises(tmp_p
                 "step_id": "analyze",
                 "provider": "agent-runtime:codex",
                 "artifact_dir": str(artifact_dir),
-            },
-            prior_step_results=[],
-            timeout_sec=0,
-        )
+                },
+                prior_step_results=[],
+                resolved_inputs={},
+                timeout_sec=0,
+            )
 
     assert json.loads(protected.read_text(encoding="utf-8"))[0]["evidence_id"] == "accepted"
 

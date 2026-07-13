@@ -3219,6 +3219,20 @@ async def test_task_run_events_exposes_global_latest_id_beyond_page_limit(
     assert response.json()["last_event_id"] == 2
     assert response.json()["latest_event_id"] == 205
 
+    tail = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/events",
+        params={"tail": "true", "limit": 2},
+    )
+    assert [item["event_id"] for item in tail.json()["items"]] == [204, 205]
+    assert tail.json()["first_event_id"] == 204
+    assert tail.json()["has_older"] is True
+
+    older = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}/events",
+        params={"before_id": 204, "limit": 2},
+    )
+    assert [item["event_id"] for item in older.json()["items"]] == [202, 203]
+
 
 async def test_workbench_task_run_cancel_running_execution_keeps_cancelled_status(
     workbench_client,

@@ -46,6 +46,7 @@ class WorkbenchWorkflowExecutionResult:
     status: str
     started_at: str
     completed_at: str
+    execution_status: str
     context_discovery_decision: dict[str, Any] = field(default_factory=dict)
     audit_summary: dict[str, Any] = field(default_factory=dict)
     rerun_plan: dict[str, Any] = field(default_factory=dict)
@@ -92,7 +93,6 @@ class WorkbenchWorkflowRunner:
                 compiled_plan=compiled_plan,
                 agent_runs_by_step=agent_runs_by_step,
                 timeout_sec=timeout_sec,
-                stop_on_error=stop_on_error,
             )
             return self._finalize_execution(
                 task_run=task_run,
@@ -148,6 +148,7 @@ class WorkbenchWorkflowRunner:
                 step=step,
                 agent_run=agent_run,
                 prior_step_results=step_results,
+                resolved_inputs={},
                 timeout_sec=timeout_sec,
             )
             step_results.append(step_result)
@@ -170,7 +171,6 @@ class WorkbenchWorkflowRunner:
         compiled_plan: dict[str, Any],
         agent_runs_by_step: dict[str, dict[str, Any]],
         timeout_sec: int,
-        stop_on_error: bool,
     ) -> list[dict[str, Any]]:
         from app.services.workflow_scheduler import WorkflowDagScheduler
 
@@ -180,10 +180,6 @@ class WorkbenchWorkflowRunner:
             if isinstance(step, dict) and str(step.get("id") or "")
         }
         effective_plan = json.loads(json.dumps(compiled_plan))
-        if not stop_on_error:
-            for node in effective_plan.get("nodes") or []:
-                if isinstance(node, dict):
-                    node["failure_policy"] = "continue_independent"
 
         def execute_node(
             plan_node: dict[str, Any],
@@ -221,6 +217,11 @@ class WorkbenchWorkflowRunner:
                 }
                 for dependency_id in sorted(direct_dependency_outputs)
             ]
+            resolved_inputs = _resolve_plan_node_inputs(
+                plan_node=plan_node,
+                input_snapshot=task_run.input_snapshot,
+                direct_dependency_outputs=direct_dependency_outputs,
+            )
             if str(step.get("type") or "") == "agent_task":
                 if not agent_run:
                     result = {
@@ -230,11 +231,17 @@ class WorkbenchWorkflowRunner:
                         "error": "missing_agent_run",
                     }
                 else:
+                    _inject_prior_step_context(
+                        artifact_dir=Path(str(agent_run.get("artifact_dir") or "")),
+                        prior_step_results=prior_step_results,
+                        resolved_inputs=resolved_inputs,
+                    )
                     result = self._execute_agent_step(
                         task_run_id=task_run.task_run_id,
                         step=step,
                         agent_run=agent_run,
                         prior_step_results=prior_step_results,
+                        resolved_inputs=resolved_inputs,
                         timeout_sec=timeout_sec,
                     )
             else:
@@ -242,8 +249,9 @@ class WorkbenchWorkflowRunner:
                     task_run=task_run,
                     step=step,
                     prior_step_results=prior_step_results,
+                    resolved_inputs=resolved_inputs,
                 )
-            result["validated_outputs"] = _validated_step_outputs(result)
+            result["validated_outputs"] = _validated_step_outputs(result, plan_node=plan_node)
             self._emit_step_finished(result)
             return result
 
@@ -281,6 +289,7 @@ class WorkbenchWorkflowRunner:
             step_results=step_results,
         )
         status = _overall_status(step_results)
+        execution_status = _execution_status(step_results)
         if status == "completed" and any(
             item.get("status") in {"missing", "invalid"} for item in outputs
         ):
@@ -299,6 +308,7 @@ class WorkbenchWorkflowRunner:
             status=status,
             started_at=started_at,
             completed_at=_now(),
+            execution_status=execution_status,
             context_discovery_decision=dict(
                 task_run.task_bundle.get("context_discovery_decision") or {}
             ),
@@ -380,12 +390,14 @@ class WorkbenchWorkflowRunner:
         step: dict[str, Any],
         agent_run: dict[str, Any],
         prior_step_results: list[dict[str, Any]],
+        resolved_inputs: dict[str, Any],
         timeout_sec: int,
     ) -> dict[str, Any]:
         artifact_dir = Path(str(agent_run.get("artifact_dir") or ""))
         _inject_prior_step_context(
             artifact_dir=artifact_dir,
             prior_step_results=prior_step_results,
+            resolved_inputs=resolved_inputs,
         )
         quality_retry_bundle = _read_json(artifact_dir / "task_bundle.json")
         quality_retry_feedback = (
@@ -407,6 +419,7 @@ class WorkbenchWorkflowRunner:
                 step=step,
                 agent_run=agent_run,
                 prior_step_results=prior_step_results,
+                resolved_inputs=resolved_inputs,
                 timeout_sec=timeout_sec,
             )
         finally:
@@ -419,6 +432,7 @@ class WorkbenchWorkflowRunner:
         step: dict[str, Any],
         agent_run: dict[str, Any],
         prior_step_results: list[dict[str, Any]],
+        resolved_inputs: dict[str, Any],
         timeout_sec: int,
     ) -> dict[str, Any]:
         step_id = str(step.get("id") or agent_run.get("step_id") or "")
@@ -436,6 +450,7 @@ class WorkbenchWorkflowRunner:
         _inject_prior_step_context(
             artifact_dir=artifact_dir,
             prior_step_results=prior_step_results,
+            resolved_inputs=resolved_inputs,
         )
         if provider == BUILTIN_LLM_PROVIDER_ID:
             return self._execute_builtin_llm_step(
@@ -790,6 +805,7 @@ class WorkbenchWorkflowRunner:
         task_run: Any,
         step: dict[str, Any],
         prior_step_results: list[dict[str, Any]],
+        resolved_inputs: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         step_id = str(step.get("id") or "")
         step_type = str(step.get("type") or "")
@@ -4186,12 +4202,14 @@ def _inject_prior_step_context(
     *,
     artifact_dir: Path,
     prior_step_results: list[dict[str, Any]],
+    resolved_inputs: dict[str, Any] | None = None,
 ) -> None:
     bundle_path = artifact_dir / "task_bundle.json"
     bundle = _read_json(bundle_path)
     if not isinstance(bundle, dict):
         return
     bundle["prior_step_results"] = prior_step_results
+    bundle["resolved_inputs"] = dict(resolved_inputs or {})
     bundle["workflow_step_artifacts"] = _workflow_step_artifact_map(prior_step_results)
     test_activity_contract = bundle.get("test_activity_contract")
     if isinstance(test_activity_contract, dict):
@@ -4416,7 +4434,45 @@ def _overall_status(step_results: list[dict[str, Any]]) -> str:
     return "invalid"
 
 
-def _validated_step_outputs(step_result: dict[str, Any]) -> dict[str, Any]:
+def _execution_status(step_results: list[dict[str, Any]]) -> str:
+    statuses = {str(item.get("status") or "") for item in step_results}
+    if "cancelled" in statuses:
+        return "cancelled"
+    if statuses.intersection({"error", "failed", "blocked", "invalid"}):
+        return "failed"
+    return "completed"
+
+
+def _resolve_plan_node_inputs(
+    *,
+    plan_node: dict[str, Any],
+    input_snapshot: dict[str, Any],
+    direct_dependency_outputs: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    bindings = plan_node.get("resolved_input_bindings")
+    if not isinstance(bindings, dict):
+        return {}
+    resolved: dict[str, Any] = {}
+    for target_port, raw_binding in sorted(bindings.items()):
+        if not isinstance(raw_binding, dict):
+            raise ValueError(f"compiled binding is invalid for {target_port}")
+        source_id = str(raw_binding.get("source_node_id") or "")
+        source_port = str(raw_binding.get("source_port_id") or "")
+        if source_id in input_snapshot:
+            if source_port != "value":
+                raise ValueError(f"task input binding uses an invalid port: {source_id}.{source_port}")
+            resolved[str(target_port)] = input_snapshot[source_id]
+            continue
+        source_outputs = direct_dependency_outputs.get(source_id)
+        if not isinstance(source_outputs, dict) or source_port not in source_outputs:
+            raise ValueError(f"compiled binding source output is missing: {source_id}.{source_port}")
+        resolved[str(target_port)] = source_outputs[source_port]
+    return resolved
+
+
+def _validated_step_outputs(
+    step_result: dict[str, Any], *, plan_node: dict[str, Any] | None = None
+) -> dict[str, Any]:
     if str(step_result.get("status") or "") not in {
         "completed",
         "completed_empty",
@@ -4435,6 +4491,16 @@ def _validated_step_outputs(step_result: dict[str, Any]) -> dict[str, Any]:
         value = step_result.get(key)
         if value not in (None, "", [], {}):
             outputs[key] = value
+    ports = [
+        item for item in (plan_node or {}).get("output_ports") or []
+        if isinstance(item, dict) and str(item.get("id") or "")
+    ]
+    for port in ports:
+        port_id = str(port["id"])
+        if port_id in step_result:
+            outputs[port_id] = step_result[port_id]
+        elif len(ports) == 1:
+            outputs[port_id] = dict(outputs)
     return outputs
 
 

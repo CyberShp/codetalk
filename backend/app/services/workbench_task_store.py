@@ -11,6 +11,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from app.services.workbench_sqlite_backup import ensure_workbench_migration_backup
+
 
 _LOCK = threading.RLock()
 _SCHEMA_VERSION = 1
@@ -47,6 +49,7 @@ class WorkbenchTaskStore:
         self.db_path = Path(db_path)
 
     def initialize_and_migrate(self) -> dict[str, int]:
+        ensure_workbench_migration_backup(self.db_path)
         with _LOCK, self._connect() as db:
             db.executescript(
                 """
@@ -175,10 +178,67 @@ class WorkbenchTaskStore:
         offset: int = 0,
     ) -> list[WorkbenchTask]:
         self.initialize_and_migrate()
+        where, params = self._task_filters(
+            q=q,
+            lifecycle_status=lifecycle_status,
+            workflow_id=workflow_id,
+            workspace_id=workspace_id,
+            updated_from=updated_from,
+            updated_to=updated_to,
+            include_archived=include_archived,
+        )
+        params.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
+        with self._connect() as db:
+            rows = db.execute(
+                f"SELECT * FROM workbench_tasks{where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                params,
+            ).fetchall()
+        return [_task_from_row(row) for row in rows]
+
+    def count_tasks(
+        self,
+        *,
+        q: str = "",
+        lifecycle_status: str = "",
+        workflow_id: str = "",
+        workspace_id: str = "",
+        updated_from: str = "",
+        updated_to: str = "",
+        include_archived: bool = False,
+    ) -> int:
+        self.initialize_and_migrate()
+        where, params = self._task_filters(
+            q=q,
+            lifecycle_status=lifecycle_status,
+            workflow_id=workflow_id,
+            workspace_id=workspace_id,
+            updated_from=updated_from,
+            updated_to=updated_to,
+            include_archived=include_archived,
+        )
+        with self._connect() as db:
+            row = db.execute(
+                f"SELECT COUNT(*) AS total FROM workbench_tasks{where}", params
+            ).fetchone()
+        return int(row["total"] if row else 0)
+
+    def _task_filters(
+        self,
+        *,
+        q: str,
+        lifecycle_status: str,
+        workflow_id: str,
+        workspace_id: str,
+        updated_from: str,
+        updated_to: str,
+        include_archived: bool,
+    ) -> tuple[str, list[Any]]:
         clauses: list[str] = []
         params: list[Any] = []
         if q.strip():
-            clauses.append("(lower(name) LIKE ? OR lower(description) LIKE ? OR lower(tags_json) LIKE ?)")
+            clauses.append(
+                "(lower(name) LIKE ? OR lower(description) LIKE ? OR lower(tags_json) LIKE ?)"
+            )
             needle = f"%{q.strip().lower()}%"
             params.extend([needle, needle, needle])
         if lifecycle_status:
@@ -198,14 +258,7 @@ class WorkbenchTaskStore:
         if updated_to:
             clauses.append("updated_at <= ?")
             params.append(updated_to)
-        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
-        params.extend([max(1, min(int(limit), 500)), max(0, int(offset))])
-        with self._connect() as db:
-            rows = db.execute(
-                f"SELECT * FROM workbench_tasks{where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
-                params,
-            ).fetchall()
-        return [_task_from_row(row) for row in rows]
+        return (f" WHERE {' AND '.join(clauses)}" if clauses else "", params)
 
     def update_task(self, task_id: str, **changes: Any) -> WorkbenchTask:
         self.initialize_and_migrate()

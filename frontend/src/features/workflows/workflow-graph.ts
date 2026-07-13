@@ -15,6 +15,14 @@ export function safeWorkflowId(value: string): string {
   return normalized || `workflow-${Date.now().toString(36)}`;
 }
 
+export function sanitizeWorkflowIdDraft(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9_.-]+/g, "-")
+    .replace(/^[._-]+/g, "")
+    .slice(0, 96);
+}
+
 export function createStarterGraph(
   workflowId: string,
   name: string,

@@ -97,10 +97,11 @@ async def list_tasks(
     updated_from: str = "",
     updated_to: str = "",
     page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
+    page_size: int = Query(25, ge=1, le=100),
 ) -> dict[str, Any]:
     _require_v2()
-    candidates = task_store().list_tasks(
+    store = task_store()
+    filters = dict(
         q=q,
         lifecycle_status=lifecycle_status,
         workflow_id=workflow_id,
@@ -108,9 +109,27 @@ async def list_tasks(
         updated_from=updated_from,
         updated_to=updated_to,
         include_archived=lifecycle_status == "archived",
-        limit=500,
     )
-    enriched = [_task_payload(task) for task in candidates]
+    start = (page - 1) * page_size
+    if not execution_status and not quality_status:
+        candidates = store.list_tasks(**filters, limit=page_size, offset=start)
+        return {
+            "items": [_task_payload(task) for task in candidates],
+            "total": store.count_tasks(**filters),
+            "page": page,
+            "page_size": page_size,
+        }
+
+    enriched: list[dict[str, Any]] = []
+    offset = 0
+    while True:
+        candidates = store.list_tasks(**filters, limit=500, offset=offset)
+        if not candidates:
+            break
+        enriched.extend(_task_payload(task) for task in candidates)
+        offset += len(candidates)
+        if len(candidates) < 500:
+            break
     if execution_status:
         enriched = [
             item for item in enriched
@@ -124,7 +143,6 @@ async def list_tasks(
             == quality_status
         ]
     total = len(enriched)
-    start = (page - 1) * page_size
     return {"items": enriched[start:start + page_size], "total": total, "page": page, "page_size": page_size}
 
 

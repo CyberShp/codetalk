@@ -363,6 +363,7 @@ function WorkflowNodeCard({
       style={{ left: node.position.x, top: node.position.y, width: NODE_WIDTH }}
       tabIndex={0}
       aria-label={`${node.label} ${nodeKindLabel(node.kind)}节点`}
+      onFocus={() => selectNode(node.id)}
       onClick={(event) => {
         event.stopPropagation();
         selectNode(node.id);

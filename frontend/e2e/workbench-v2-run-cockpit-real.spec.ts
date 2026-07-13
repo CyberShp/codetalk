@@ -68,8 +68,10 @@ test("starts a real Attempt and opens the bounded live run cockpit", async ({ pa
   await expect(page.locator(".ct-v2-run-cockpit")).toHaveCSS("height", /\d+px/);
   await page.getByRole("tab", { name: "全部事件" }).click();
   await expect(page.locator(".ct-v2-event-row").first()).toBeVisible({ timeout: 30_000 });
+  const visibleEventCount = await page.locator(".ct-v2-event-row").count();
   await page.getByRole("button", { name: "暂停" }).click();
-  await expect(page.getByText("显示已暂停，后台运行不受影响。")).toBeVisible();
+  await expect(page.getByText("显示已冻结在当前时刻，后台运行不受影响。")).toBeVisible();
+  await expect(page.locator(".ct-v2-event-row")).toHaveCount(visibleEventCount);
   await page.getByRole("button", { name: "继续" }).click();
   await expect(page.getByRole("button", { name: "技术诊断" })).toBeVisible();
   await expect(page.locator(".ct-v2-diagnostic-drawer")).toBeHidden();

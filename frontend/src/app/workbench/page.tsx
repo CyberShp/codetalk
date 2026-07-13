@@ -1,5 +1,5 @@
-import { AgentWorkbenchExperience } from "./agent-workbench-experience";
+import { WorkbenchEntryGate } from "@/features/release/workbench-entry-gate";
 
 export default function AgentWorkbenchPage() {
-  return <AgentWorkbenchExperience initialView="run" />;
+  return <WorkbenchEntryGate destination="/tasks" legacyView="run" />;
 }

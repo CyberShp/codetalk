@@ -230,6 +230,8 @@ def compile_workflow_graph(
             "type": step["type"],
             "depends_on": depends_on,
             "resolved_input_bindings": bindings,
+            "input_ports": _compiled_ports(config.get("input_ports")),
+            "output_ports": _compiled_ports(config.get("output_ports")),
             "provider": str(config.get("provider") or "") if node.get("kind") == "agent" else "",
             "mcp_profiles": sorted(_strings(config.get("mcp_profiles"))),
             "skill_ids": sorted(_strings(config.get("skill_ids"))),
@@ -625,6 +627,19 @@ def _port_map(value: Any) -> dict[str, str]:
         if isinstance(item, dict) and str(item.get("id") or "").strip():
             ports[str(item["id"])] = str(item.get("type") or "any")
     return ports
+
+
+def _compiled_ports(value: Any) -> list[dict[str, Any]]:
+    ports = [
+        {
+            "id": str(item.get("id") or ""),
+            "type": str(item.get("type") or "any"),
+            **({"required": bool(item.get("required"))} if "required" in item else {}),
+        }
+        for item in value or []
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    ]
+    return sorted(ports, key=lambda item: item["id"])
 
 
 def _types_compatible(source: str, target: str) -> bool:
