@@ -1530,7 +1530,7 @@ def _resolve_local_process_command(command: list[str]) -> list[str]:
         return []
     resolved = [str(part) for part in command]
     executable = resolved[0]
-    if os.name == "nt" and not Path(executable).is_absolute():
+    if os.name == "nt" and not PureWindowsPath(executable).is_absolute():
         located = shutil.which(executable)
         if located:
             resolved[0] = located

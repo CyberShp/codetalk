@@ -8,3 +8,7 @@ def test_default_cors_origins_exclude_retired_frontend_ports():
     assert "http://127.0.0.1:3003" in origins
     assert "http://localhost:3205" not in origins
     assert "http://127.0.0.1:3205" not in origins
+
+
+def test_workbench_v2_is_disabled_by_default():
+    assert Settings(_env_file=None).workbench_v2_enabled is False

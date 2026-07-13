@@ -1,0 +1,54 @@
+{
+  "captured_at": "2026-07-13",
+  "purpose": "Phase 0 compatibility baseline; values marked <dynamic> vary per run.",
+  "workflows_create": {
+    "method": "POST",
+    "path": "/api/workbench/workflows",
+    "status": 201,
+    "shape": ["id", "name", "version", "inputs", "steps", "outputs"]
+  },
+  "workflows_list": {
+    "method": "GET",
+    "path": "/api/workbench/workflows",
+    "status": 200,
+    "body": "array<legacy_workflow_definition>"
+  },
+  "task_runs_prepare": {
+    "method": "POST",
+    "path": "/api/workbench/task-runs/prepare",
+    "status": 201,
+    "shape": [
+      "task_run_id",
+      "workflow_id",
+      "workspace_id",
+      "artifact_dir",
+      "workflow_snapshot",
+      "input_snapshot",
+      "task_bundle",
+      "agent_runs",
+      "created_at"
+    ],
+    "redaction": {
+      "artifact_dir": ".",
+      "repo_path": "<repo>"
+    }
+  },
+  "task_runs_list": {
+    "method": "GET",
+    "path": "/api/workbench/task-runs",
+    "status": 200,
+    "shape": ["items"]
+  },
+  "task_run_events": {
+    "method": "GET",
+    "path": "/api/workbench/task-runs/<dynamic>/events",
+    "status": 200,
+    "shape": ["task_run_id", "items", "latest_event_id"]
+  },
+  "semantic_search": {
+    "method": "GET",
+    "path": "/api/workbench/semantic-cases/search",
+    "status": 200,
+    "shape": ["items"]
+  }
+}
