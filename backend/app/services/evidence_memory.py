@@ -367,6 +367,76 @@ class EvidenceMemoryStore:
             ).fetchall()
         return [_row_to_evidence(row) for row in rows]
 
+    def list_evidence_assets(
+        self,
+        *,
+        q: str = "",
+        workspace_id: str = "",
+        kind: str = "",
+        status: str = "",
+        source: str = "",
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, Any]:
+        self.initialize()
+        clauses: list[str] = []
+        params: list[Any] = []
+        join = ""
+        if q.strip():
+            join = "JOIN evidence_fts f ON f.evidence_id = e.evidence_id"
+            clauses.append("evidence_fts MATCH ?")
+            params.append(_fts_query(q))
+        for column, value in (
+            ("workspace_id", workspace_id),
+            ("kind", kind),
+            ("status", status),
+            ("source", source),
+        ):
+            if value:
+                clauses.append(f"e.{column} = ?")
+                params.append(value)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        ordering = "bm25(evidence_fts), e.updated_at DESC" if q.strip() else "e.updated_at DESC"
+        safe_page = max(1, int(page))
+        safe_page_size = max(1, min(200, int(page_size)))
+        with self._connect() as db:
+            total = int(db.execute(
+                f"SELECT COUNT(*) FROM evidence_items e {join} {where}", params
+            ).fetchone()[0])
+            rows = db.execute(
+                f"""
+                SELECT e.* FROM evidence_items e {join} {where}
+                ORDER BY {ordering}
+                LIMIT ? OFFSET ?
+                """,
+                [*params, safe_page_size, (safe_page - 1) * safe_page_size],
+            ).fetchall()
+        return {
+            "items": [_row_to_evidence(row) for row in rows],
+            "total": total,
+            "page": safe_page,
+            "page_size": safe_page_size,
+        }
+
+    def facets(self) -> dict[str, list[dict[str, Any]]]:
+        self.initialize()
+        with self._connect() as db:
+            return {
+                key: [
+                    {"value": str(row["value"]), "count": int(row["count"])}
+                    for row in db.execute(
+                        f"SELECT {column} AS value, COUNT(*) AS count FROM evidence_items "
+                        f"WHERE {column} != '' GROUP BY {column} ORDER BY count DESC, value"
+                    ).fetchall()
+                ]
+                for key, column in (
+                    ("workspaces", "workspace_id"),
+                    ("kinds", "kind"),
+                    ("statuses", "status"),
+                    ("sources", "source"),
+                )
+            }
+
     def list_evidence_items_by_ids(
         self,
         evidence_ids: list[str] | tuple[str, ...],

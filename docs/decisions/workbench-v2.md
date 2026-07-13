@@ -131,3 +131,26 @@ created: 2026-07-13
   successful parent results and their validated artifact references, starts at failed nodes, and
   reruns affected downstream nodes. Old runs without an execution snapshot fall back to full-DAG
   execution without pretending that node-level resume occurred.
+
+## D013 - Semantic Import Is Preview Then Commit
+
+- Status: accepted
+- Context: legacy file import writes immediately and text import can invent a generic expected
+  result, which is acceptable only as a preserved compatibility contract and not as an asset-quality
+  workflow.
+- Decision: V2 import persists a non-mutating preview, requires explicit CSV mapping or text
+  separator selection, validates Case ID/scenario/expected, and accepts only skip/overwrite/create-new
+  conflict policies before commit. Failed rows remain downloadable with their validation reasons.
+- Consequence: users see exactly what will enter the library and low-quality rows cannot be silently
+  normalized into apparently valid test assets. Legacy callers remain operational for one release.
+
+## D014 - Asset Pages Reuse Existing Stores
+
+- Status: accepted
+- Context: the old Knowledge page mixed forms while semantic cases, Evidence Memory, FTS indexes,
+  source slices, and task-run provenance already have durable stores and consumers.
+- Decision: build separate Semantic and Evidence asset APIs/pages directly over those stores. FTS5
+  remains the declared search engine. Run references are derived only from verifiable task-run source
+  provenance; missing historical relations stay empty.
+- Consequence: workflow output materialization, AI retrieval, asset management, and source-slice
+  inspection observe the same records without synchronization jobs or a deceptive second database.

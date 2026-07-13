@@ -39,11 +39,12 @@ const orchestrationChildren: OrchestrationChild[] = [
   { label: "任务中心", href: "/tasks" },
   { label: "运行驾驶舱", href: "/workbench" },
   { label: "工作流", href: "/workflows" },
-  { label: "语义库", href: "/workbench/semantic" },
+  { label: "语义库", href: "/semantic-library" },
+  { label: "证据库", href: "/evidence-library" },
 ];
 
 function isOrchestrationPath(pathname: string): boolean {
-  return pathname.startsWith("/workbench") || pathname.startsWith("/workflows") || pathname.startsWith("/tasks");
+  return pathname.startsWith("/workbench") || pathname.startsWith("/workflows") || pathname.startsWith("/tasks") || pathname.startsWith("/semantic-library") || pathname.startsWith("/evidence-library");
 }
 
 function isActive(pathname: string, href: string): boolean {
@@ -132,7 +133,7 @@ export default function Sidebar() {
       {!collapsed && isOrchestrationPath(pathname) && (
         <div className="ct-app-sidebar__children" aria-label="智能体编排子导航">
           {orchestrationChildren.map((child) => {
-            const active = child.href === "/workflows" || child.href === "/tasks" ? pathname.startsWith(child.href) : pathname === child.href;
+            const active = child.href === "/workbench" ? pathname === child.href : pathname.startsWith(child.href);
             return (
               <Link
                 key={child.href}

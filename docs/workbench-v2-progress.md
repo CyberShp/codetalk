@@ -367,3 +367,69 @@ created: 2026-07-13
   node-level retry with successful upstream outputs reused from immutable parent artifacts.
 - Next dependency: Phase 7 can link completed run assets into first-class Semantic and Evidence
   libraries while preserving the public/diagnostic audience boundary introduced here.
+
+## Phase 7 - Semantic And Evidence Asset Libraries
+
+### Before implementation
+
+- Goal: replace the legacy import/search form with separate Semantic Case and Evidence asset
+  libraries. Users can browse, filter, inspect, edit, deprecate, restore, and trace assets, while
+  imports must pass an explicit upload, mapping, preview, conflict, and confirmation flow.
+- Expected files: semantic asset management and import-preview services, V2 semantic/evidence API
+  routes and tests, complete frontend types/client methods, `/semantic-library` and
+  `/evidence-library` pages, a bounded detail drawer, import wizard, navigation, styles, and real
+  browser coverage.
+- Migration impact: no destructive migration. Existing `semantic_cases`, FTS5, evidence items,
+  source slices, and run artifacts remain authoritative. New management metadata is derived from
+  existing columns; new-run references may be empty for historical records.
+- Compatibility strategy: existing create/import/import-file/search and memory APIs remain unchanged
+  for one release. V2 list/detail/update/lifecycle/import-preview/import-commit/facet routes share
+  the same stores so old and new clients observe the same assets. This phase continues to label
+  search as FTS keyword search, never vector semantic search.
+- Test plan: list/facets/filter/detail/update/FTS reindex/deprecate/restore; import preview without
+  writes; CSV mapping; explicit text separator; required-field, duplicate-ID, possible-duplicate,
+  and unknown-field diagnostics; skip/overwrite/create-new conflict behavior; failed-record export;
+  evidence list/detail/source slices; desktop/mobile bounded layout; real mouse/upload/edit/lifecycle
+  browser flow; frontend lint/build and expanded backend regression.
+
+### Result
+
+- Added V2 semantic asset APIs for paginated list/filter/facets, detail, safe partial edit, FTS5
+  reindex, deprecate, restore, import preview, explicit conflict commit, and NDJSON failure export.
+  Existing create/import/import-file/search routes and their permissive compatibility behavior remain
+  unchanged.
+- Import is now a persisted two-stage operation. JSON, JSONL/NDJSON, CSV, TXT, and Markdown are
+  parsed into a non-mutating preview; CSV supports explicit field mapping; text formats require an
+  explicit pipe/tab/arrow separator. Missing Case ID, scenario, or expected result never receives a
+  generic replacement in the V2 path and cannot be committed.
+- Preview reports invalid rows, existing/within-file Case ID conflicts, possible duplicate scenarios,
+  and unknown fields. Commit requires exactly `skip`, `overwrite`, or `create_new`; failed records
+  retain their original mapped fields and Chinese reasons in a downloadable NDJSON artifact.
+- Added `/semantic-library` as a bounded asset table with all specified filters, hit-field/count
+  summaries, a contextual detail/editor, copy, deprecate, restore, source, and run-reference views.
+  Generated cases with `task_run:<run>:<output>` provenance expose the verifiable Task/Workflow/Run
+  relation; unsupported historical relations remain visibly empty.
+- Added `/evidence-library` over the existing Evidence Memory store, with keyword/workspace/kind/
+  status/source filters, facets, detail, provenance, confidence, and real source slices. No second
+  evidence store or synthetic display data was introduced.
+- Navigation now exposes separate Semantic and Evidence libraries. Desktop pages keep tables and
+  details within the viewport; long fields truncate instead of colliding. Mobile asset routes use a
+  compact one-line navigation, full-height detail, and hide the AI dock where it could block import
+  controls.
+- Verification:
+  - Semantic store and V2 asset API tests: `11 passed`, including preview non-mutation, required
+    fields, all conflict strategies, FTS reindex, lifecycle, facets, references, and source slices.
+  - Expanded semantic/evidence and legacy Workbench API regression: `166 passed`.
+  - Real no-mock browser E2E: `2 passed`. The browser uploaded a CSV, mapped fields, previewed an
+    invalid row, chose a conflict policy, committed, downloaded failures, edited, deprecated,
+    restored, copied, searched Evidence Memory, opened a source slice, and used real mouse hover/
+    click and input events.
+  - Frontend ESLint passed with zero warnings. TypeScript and production build passed with both new
+    routes in the Next.js route manifest.
+  - Screenshots: `output/playwright/phase7/semantic-library-desktop.png`,
+    `evidence-library-desktop.png`, and `evidence-library-mobile.png` (ignored runtime evidence).
+- Known boundary: retrieval remains FTS5 keyword search and is labeled as such. Embeddings, hybrid
+  ranking, automatic clustering, and LLM duplicate merging remain outside this release by design.
+- Next dependency: Phase 8 can switch V2 on by default, redirect the three legacy Workbench pages,
+  remove confirmed dead UI code, complete compatibility/manual documentation, and run the final
+  migration, accessibility, performance, and end-to-end release gate.

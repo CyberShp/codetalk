@@ -8,7 +8,7 @@ import json
 import re
 import sqlite3
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -282,6 +282,290 @@ class TestSemanticLibraryStore:
             ).fetchall()
         return [_row_to_case(row) for row in rows]
 
+    def list_cases(
+        self,
+        *,
+        q: str = "",
+        feature: str = "",
+        module: str = "",
+        test_level: str = "",
+        interface: str = "",
+        tag: str = "",
+        status: str = "",
+        source: str = "",
+        page: int = 1,
+        page_size: int = 50,
+    ) -> dict[str, Any]:
+        self.initialize()
+        clauses: list[str] = []
+        params: list[Any] = []
+        join = ""
+        if q.strip():
+            join = "JOIN semantic_case_fts f ON f.semantic_id = c.semantic_id"
+            clauses.append("semantic_case_fts MATCH ?")
+            params.append(_fts_query(q))
+        for column, value in (
+            ("feature", feature),
+            ("module", module),
+            ("test_level", test_level),
+            ("interface", interface),
+            ("status", status),
+            ("source_ref", source),
+        ):
+            if value:
+                clauses.append(f"c.{column} = ?")
+                params.append(value)
+        if tag:
+            clauses.append("EXISTS (SELECT 1 FROM json_each(c.tags_json) WHERE value = ?)")
+            params.append(tag)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        ordering = "bm25(semantic_case_fts), c.updated_at DESC" if q.strip() else "c.updated_at DESC"
+        safe_page = max(1, int(page))
+        safe_page_size = max(1, min(200, int(page_size)))
+        with self._connect() as db:
+            total = int(db.execute(
+                f"SELECT COUNT(*) FROM semantic_cases c {join} {where}", params
+            ).fetchone()[0])
+            rows = db.execute(
+                f"""
+                SELECT c.* FROM semantic_cases c {join} {where}
+                ORDER BY {ordering}
+                LIMIT ? OFFSET ?
+                """,
+                [*params, safe_page_size, (safe_page - 1) * safe_page_size],
+            ).fetchall()
+        items = [_row_to_case(row) for row in rows]
+        matched_fields = _matched_case_fields(items, q)
+        return {
+            "items": items,
+            "total": total,
+            "page": safe_page,
+            "page_size": safe_page_size,
+            "matched_fields": matched_fields,
+        }
+
+    def get_case(self, semantic_id: str) -> SemanticCase:
+        self.initialize()
+        with self._connect() as db:
+            row = db.execute(
+                "SELECT * FROM semantic_cases WHERE semantic_id = ?", (semantic_id,)
+            ).fetchone()
+        if row is None:
+            raise KeyError(semantic_id)
+        return _row_to_case(row)
+
+    def update_case(self, semantic_id: str, changes: dict[str, Any]) -> SemanticCase:
+        current = self.get_case(semantic_id)
+        allowed = {
+            "case_id", "feature", "module", "scenario", "preconditions", "actions",
+            "expected", "test_level", "interface", "terms", "assertion_style", "tags",
+            "source_ref", "status",
+        }
+        unknown = sorted(set(changes) - allowed)
+        if unknown:
+            raise SemanticCaseValidationError(f"unknown semantic case fields: {', '.join(unknown)}")
+        payload = asdict(current)
+        payload.update(changes)
+        case_id = str(payload.get("case_id") or "").strip()
+        if not case_id:
+            raise SemanticCaseValidationError("case_id is required")
+        fields = _normalize_case_payload(payload)
+        now = _now()
+        with self._connect() as db:
+            conflict = db.execute(
+                "SELECT semantic_id FROM semantic_cases WHERE case_id = ? AND semantic_id != ?",
+                (case_id, semantic_id),
+            ).fetchone()
+            if conflict:
+                raise SemanticCaseValidationError(f"case_id already exists: {case_id}")
+            db.execute(
+                """
+                UPDATE semantic_cases SET
+                    case_id = ?, feature = ?, module = ?, scenario = ?,
+                    preconditions_json = ?, actions_json = ?, expected_json = ?,
+                    test_level = ?, interface = ?, terms_json = ?, assertion_style = ?,
+                    tags_json = ?, source_ref = ?, status = ?, updated_at = ?
+                WHERE semantic_id = ?
+                """,
+                (
+                    case_id, fields["feature"], fields["module"], fields["scenario"],
+                    json.dumps(fields["preconditions"], ensure_ascii=False),
+                    json.dumps(fields["actions"], ensure_ascii=False),
+                    json.dumps(fields["expected"], ensure_ascii=False),
+                    fields["test_level"], fields["interface"],
+                    json.dumps(fields["terms"], ensure_ascii=False), fields["assertion_style"],
+                    json.dumps(fields["tags"], ensure_ascii=False), fields["source_ref"],
+                    fields["status"], now, semantic_id,
+                ),
+            )
+            _replace_fts_row(db, semantic_id=semantic_id, case_id=case_id, fields=fields)
+        return self.get_case(semantic_id)
+
+    def deprecate_case(self, semantic_id: str) -> SemanticCase:
+        return self.update_case(semantic_id, {"status": "deprecated"})
+
+    def restore_case(self, semantic_id: str) -> SemanticCase:
+        return self.update_case(semantic_id, {"status": "active"})
+
+    def facets(self) -> dict[str, list[dict[str, Any]]]:
+        self.initialize()
+        with self._connect() as db:
+            result = {
+                key: _facet_rows(db, column)
+                for key, column in (
+                    ("features", "feature"),
+                    ("modules", "module"),
+                    ("test_levels", "test_level"),
+                    ("interfaces", "interface"),
+                    ("statuses", "status"),
+                    ("sources", "source_ref"),
+                )
+            }
+            result["tags"] = [
+                {"value": str(row["value"]), "count": int(row["count"])}
+                for row in db.execute(
+                    """
+                    SELECT value, COUNT(*) AS count
+                    FROM semantic_cases, json_each(semantic_cases.tags_json)
+                    WHERE value != '' GROUP BY value ORDER BY count DESC, value
+                    """
+                ).fetchall()
+            ]
+        return result
+
+    def preview_case_file(
+        self,
+        data: bytes,
+        *,
+        filename: str,
+        options: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        self.initialize()
+        options = dict(options or {})
+        defaults = options.get("defaults") or {}
+        mapping = options.get("mapping") or {}
+        if not isinstance(defaults, dict) or not isinstance(mapping, dict):
+            raise SemanticCaseValidationError("defaults and mapping must be objects")
+        source_ref = Path(filename or "semantic_cases").name
+        suffix = Path(source_ref).suffix.lower()
+        text = data.decode("utf-8-sig")
+        raw_rows, source_fields = _preview_rows_from_file(
+            text, suffix=suffix, text_separator=str(options.get("text_separator") or "")
+        )
+        known_fields = {
+            "case_id", "feature", "module", "scenario", "preconditions", "actions",
+            "expected", "test_level", "interface", "terms", "assertion_style", "tags",
+            "source_ref", "status",
+        }
+        unknown_fields = sorted(
+            field for field in source_fields
+            if str(mapping.get(field) or field) not in known_fields
+        )
+        existing_by_id = self._existing_case_ids()
+        existing_scenarios = self._existing_scenarios()
+        seen_ids: set[str] = set()
+        seen_scenarios: set[str] = set()
+        rows: list[dict[str, Any]] = []
+        duplicate_ids: set[str] = set()
+        possible_duplicates: set[str] = set()
+        for index, raw in enumerate(raw_rows):
+            mapped = _map_preview_row(raw, mapping=mapping, known_fields=known_fields)
+            payload = _merge_case_defaults(mapped, defaults)
+            payload["source_ref"] = str(payload.get("source_ref") or source_ref)
+            case_id = str(payload.get("case_id") or "").strip()
+            scenario = str(payload.get("scenario") or "").strip()
+            expected = _string_list(payload.get("expected"))
+            errors: list[str] = []
+            if not case_id:
+                errors.append("缺少 case_id")
+            if not scenario:
+                errors.append("缺少 scenario")
+            if not expected:
+                errors.append("缺少 expected")
+            if case_id and (case_id in existing_by_id or case_id in seen_ids):
+                duplicate_ids.add(case_id)
+            normalized_scenario = _normalize_scenario(scenario)
+            if normalized_scenario and (
+                normalized_scenario in existing_scenarios or normalized_scenario in seen_scenarios
+            ):
+                possible_duplicates.add(scenario)
+            if case_id:
+                seen_ids.add(case_id)
+            if normalized_scenario:
+                seen_scenarios.add(normalized_scenario)
+            rows.append({
+                "index": index,
+                "case": payload,
+                "errors": errors,
+                "warnings": (["case_id 已存在"] if case_id in existing_by_id else [])
+                    + (["场景可能重复"] if scenario in possible_duplicates else []),
+            })
+        valid_count = sum(not row["errors"] for row in rows)
+        return {
+            "source_ref": source_ref,
+            "total_count": len(rows),
+            "valid_count": valid_count,
+            "invalid_count": len(rows) - valid_count,
+            "missing_case_id": sum("缺少 case_id" in row["errors"] for row in rows),
+            "missing_scenario": sum("缺少 scenario" in row["errors"] for row in rows),
+            "missing_expected": sum("缺少 expected" in row["errors"] for row in rows),
+            "duplicate_case_ids": sorted(duplicate_ids),
+            "possible_duplicate_scenarios": sorted(possible_duplicates),
+            "unknown_fields": unknown_fields,
+            "mapping": mapping,
+            "rows": rows,
+        }
+
+    def commit_preview(self, preview: dict[str, Any], *, conflict_strategy: str) -> dict[str, Any]:
+        if conflict_strategy not in {"skip", "overwrite", "create_new"}:
+            raise SemanticCaseValidationError("conflict_strategy must be skip, overwrite, or create_new")
+        imported: list[dict[str, Any]] = []
+        failed: list[dict[str, Any]] = []
+        skipped_count = 0
+        for row in preview.get("rows") or []:
+            if not isinstance(row, dict):
+                continue
+            payload = dict(row.get("case") or {})
+            errors = list(row.get("errors") or [])
+            if errors:
+                failed.append({"index": row.get("index"), "case": payload, "reasons": errors})
+                continue
+            case_id = str(payload.get("case_id") or "")
+            exists = self._case_id_exists(case_id)
+            if exists and conflict_strategy == "skip":
+                skipped_count += 1
+                continue
+            if exists and conflict_strategy == "create_new":
+                payload["case_id"] = self._next_case_id(case_id)
+            semantic_id = self.upsert_case(payload)
+            imported.append({"index": row.get("index"), "semantic_id": semantic_id, "case_id": payload["case_id"]})
+        return {
+            "imported_count": len(imported),
+            "skipped_count": skipped_count,
+            "failed_count": len(failed),
+            "imported": imported,
+            "failed": failed,
+        }
+
+    def _case_id_exists(self, case_id: str) -> bool:
+        self.initialize()
+        with self._connect() as db:
+            return db.execute("SELECT 1 FROM semantic_cases WHERE case_id = ?", (case_id,)).fetchone() is not None
+
+    def _existing_case_ids(self) -> set[str]:
+        with self._connect() as db:
+            return {str(row[0]) for row in db.execute("SELECT case_id FROM semantic_cases")}
+
+    def _existing_scenarios(self) -> set[str]:
+        with self._connect() as db:
+            return {_normalize_scenario(str(row[0])) for row in db.execute("SELECT scenario FROM semantic_cases") if str(row[0]).strip()}
+
+    def _next_case_id(self, base: str) -> str:
+        index = 2
+        while self._case_id_exists(f"{base}__{index}"):
+            index += 1
+        return f"{base}__{index}"
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path))
         conn.row_factory = sqlite3.Row
@@ -443,3 +727,105 @@ def _json_list(value: str) -> list[str]:
 def _fts_query(query: str) -> str:
     terms = [part.replace('"', '""') for part in str(query or "").split() if part.strip()]
     return " ".join(f'"{term}"' for term in terms) or '""'
+
+
+def _replace_fts_row(
+    db: sqlite3.Connection,
+    *,
+    semantic_id: str,
+    case_id: str,
+    fields: dict[str, Any],
+) -> None:
+    db.execute("DELETE FROM semantic_case_fts WHERE semantic_id = ?", (semantic_id,))
+    db.execute(
+        """
+        INSERT INTO semantic_case_fts
+            (semantic_id, case_id, feature, module, scenario, terms, tags, assertion_style)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            semantic_id, case_id, fields["feature"], fields["module"], fields["scenario"],
+            " ".join(fields["terms"]), " ".join(fields["tags"]), fields["assertion_style"],
+        ),
+    )
+
+
+def _facet_rows(db: sqlite3.Connection, column: str) -> list[dict[str, Any]]:
+    return [
+        {"value": str(row["value"]), "count": int(row["count"])}
+        for row in db.execute(
+            f"SELECT {column} AS value, COUNT(*) AS count FROM semantic_cases "
+            f"WHERE {column} != '' GROUP BY {column} ORDER BY count DESC, value"
+        ).fetchall()
+    ]
+
+
+def _matched_case_fields(items: list[SemanticCase], query: str) -> list[str]:
+    terms = [term.casefold() for term in query.split() if term.strip()]
+    if not terms:
+        return []
+    matched: set[str] = set()
+    for item in items:
+        values = {
+            "case_id": item.case_id,
+            "feature": item.feature,
+            "module": item.module,
+            "scenario": item.scenario,
+            "terms": " ".join(item.terms),
+            "tags": " ".join(item.tags),
+            "assertion_style": item.assertion_style,
+        }
+        for key, value in values.items():
+            lowered = value.casefold()
+            if any(term in lowered for term in terms):
+                matched.add(key)
+    return sorted(matched)
+
+
+def _preview_rows_from_file(text: str, *, suffix: str, text_separator: str) -> tuple[list[dict[str, Any]], set[str]]:
+    if suffix == ".json":
+        parsed = json.loads(text)
+        rows = parsed.get("cases", parsed.get("items", [])) if isinstance(parsed, dict) else parsed
+        if not isinstance(rows, list):
+            raise SemanticCaseValidationError("JSON import must contain a list of cases")
+    elif suffix in {".jsonl", ".ndjson"}:
+        rows = [json.loads(line) for line in text.splitlines() if line.strip()]
+    elif suffix == ".csv":
+        rows = [dict(row) for row in csv.DictReader(io.StringIO(text))]
+    elif suffix in {".txt", ".md", ".markdown"}:
+        delimiters = {"pipe": "|", "tab": "\t", "arrow": "->"}
+        delimiter = delimiters.get(text_separator)
+        if delimiter is None:
+            raise SemanticCaseValidationError("text_separator must be explicitly set to pipe, tab, or arrow")
+        rows = []
+        for line in text.splitlines():
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            parts = [part.strip() for part in line.split(delimiter)]
+            rows.append({
+                "case_id": parts[0] if len(parts) > 0 else "",
+                "scenario": parts[1] if len(parts) > 1 else "",
+                "expected": parts[2] if len(parts) > 2 else "",
+            })
+    else:
+        raise SemanticCaseValidationError("unsupported semantic import format")
+    normalized_rows = [row for row in rows if isinstance(row, dict)]
+    fields = {str(key) for row in normalized_rows for key in row}
+    return normalized_rows, fields
+
+
+def _map_preview_row(
+    raw: dict[str, Any], *, mapping: dict[str, Any], known_fields: set[str]
+) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    list_fields = {"preconditions", "actions", "expected", "terms", "tags"}
+    for source, value in raw.items():
+        target = str(mapping.get(source) or source)
+        if target not in known_fields:
+            continue
+        result[target] = _split_cell_list(str(value or "")) if target in list_fields else str(value or "").strip()
+    return result
+
+
+def _normalize_scenario(value: str) -> str:
+    return " ".join(re.sub(r"[^\w]+", " ", value.casefold()).split())

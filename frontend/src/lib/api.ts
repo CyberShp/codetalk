@@ -30,7 +30,13 @@ import type {
   WorkflowPreset,
   WorkflowRestoreBuiltinsResult,
   SemanticCase,
+  SemanticCaseFacets,
+  SemanticCaseListResult,
   SemanticCaseImportResult,
+  SemanticImportCommitResult,
+  SemanticImportPreview,
+  EvidenceAssetListResult,
+  EvidenceFacets,
   EvidenceMemoryItem,
   EvidenceSourceSlice,
   AgentRunRecord,
@@ -958,6 +964,55 @@ export const api = {
     },
 
     semanticCases: {
+      list: (params?: {
+        q?: string;
+        feature?: string;
+        module?: string;
+        test_level?: string;
+        interface?: string;
+        tag?: string;
+        status?: string;
+        source?: string;
+        page?: number;
+        page_size?: number;
+      }) => {
+        const query = new URLSearchParams();
+        Object.entries(params ?? {}).forEach(([key, value]) => {
+          if (value !== undefined && value !== "") query.set(key, String(value));
+        });
+        return request<SemanticCaseListResult>(`/api/workbench/semantic-cases${query.size ? `?${query}` : ""}`);
+      },
+
+      getAsset: (semanticId: string) =>
+        request<SemanticCase>(`/api/workbench/semantic-cases/${encodeURIComponent(semanticId)}`),
+
+      updateAsset: (semanticId: string, data: Partial<SemanticCase>) =>
+        request<SemanticCase>(`/api/workbench/semantic-cases/${encodeURIComponent(semanticId)}`, {
+          method: "PATCH",
+          body: JSON.stringify(data),
+        }),
+
+      deprecate: (semanticId: string) =>
+        request<SemanticCase>(`/api/workbench/semantic-cases/${encodeURIComponent(semanticId)}/deprecate`, { method: "POST" }),
+
+      restore: (semanticId: string) =>
+        request<SemanticCase>(`/api/workbench/semantic-cases/${encodeURIComponent(semanticId)}/restore`, { method: "POST" }),
+
+      facets: () => request<SemanticCaseFacets>("/api/workbench/semantic-cases/facets"),
+
+      previewImport: (file: File, options: Record<string, unknown>) => {
+        const body = new FormData();
+        body.append("file", file);
+        body.append("options_json", JSON.stringify(options));
+        return requestForm<SemanticImportPreview>("/api/workbench/semantic-cases/import/preview", body);
+      },
+
+      commitImport: (previewId: string, conflictStrategy: "skip" | "overwrite" | "create_new") =>
+        request<SemanticImportCommitResult>("/api/workbench/semantic-cases/import/commit", {
+          method: "POST",
+          body: JSON.stringify({ preview_id: previewId, conflict_strategy: conflictStrategy }),
+        }),
+
       create: (data: Record<string, unknown>) =>
         request<{ semantic_id: string; case_id: string }>(
           "/api/workbench/semantic-cases",
@@ -1005,6 +1060,27 @@ export const api = {
     },
 
     memory: {
+      listAssets: (params?: {
+        q?: string;
+        workspace_id?: string;
+        kind?: string;
+        status?: string;
+        source?: string;
+        page?: number;
+        page_size?: number;
+      }) => {
+        const query = new URLSearchParams();
+        Object.entries(params ?? {}).forEach(([key, value]) => {
+          if (value !== undefined && value !== "") query.set(key, String(value));
+        });
+        return request<EvidenceAssetListResult>(`/api/workbench/evidence${query.size ? `?${query}` : ""}`);
+      },
+
+      getAsset: (evidenceId: string) =>
+        request<EvidenceMemoryItem & { source_slices: EvidenceSourceSlice[] }>(`/api/workbench/evidence/${encodeURIComponent(evidenceId)}`),
+
+      facets: () => request<EvidenceFacets>("/api/workbench/evidence/facets"),
+
       createRun: (data: {
         workspace_id: string;
         repo_path: string;
