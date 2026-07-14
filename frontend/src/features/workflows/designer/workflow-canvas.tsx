@@ -146,24 +146,23 @@ export function WorkflowCanvas({ state, dispatch, onSelectionChange }: Props) {
   };
 
   const startPan = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || event.target !== event.currentTarget) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (
+      event.button !== 0 ||
+      !event.isPrimary ||
+      target?.closest(".ct-v2-workflow-node, .ct-v2-edge-hit")
+    ) return;
+    event.preventDefault();
     selectNode(null);
     dispatch({ type: "select-edge", edgeId: null });
     const start = { x: event.clientX, y: event.clientY, viewX: view.x, viewY: view.y };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const move = (next: ReactPointerEvent<HTMLDivElement>) => {
+    capturePointerMovement(event.currentTarget, event.pointerId, (next) => {
       setView((current) => ({
         ...current,
         x: start.viewX + next.clientX - start.x,
         y: start.viewY + next.clientY - start.y,
       }));
-    };
-    const stop = (next: ReactPointerEvent<HTMLDivElement>) => {
-      next.currentTarget.releasePointerCapture(next.pointerId);
-      next.currentTarget.removeEventListener("pointermove", move as never);
-    };
-    event.currentTarget.addEventListener("pointermove", move as never);
-    event.currentTarget.addEventListener("pointerup", stop as never, { once: true });
+    });
   };
 
   const finishConnection = (targetNodeId: string, targetPortId: string) => {
@@ -337,25 +336,19 @@ function WorkflowNodeCard({
   const inputs = inputPortIds(node);
   const outputs = outputPortIds(node);
   const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) return;
+    if (event.button !== 0 || !event.isPrimary) return;
+    event.preventDefault();
     event.stopPropagation();
     selectNode(node.id);
     const start = { clientX: event.clientX, clientY: event.clientY, x: node.position.x, y: node.position.y };
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const move = (next: ReactPointerEvent<HTMLDivElement>) => {
+    capturePointerMovement(event.currentTarget, event.pointerId, (next) => {
       dispatch({
         type: "move-node",
         nodeId: node.id,
         x: Math.max(0, start.x + next.clientX - start.clientX),
         y: Math.max(0, start.y + next.clientY - start.clientY),
       });
-    };
-    const stop = (next: ReactPointerEvent<HTMLDivElement>) => {
-      next.currentTarget.releasePointerCapture(next.pointerId);
-      next.currentTarget.removeEventListener("pointermove", move as never);
-    };
-    event.currentTarget.addEventListener("pointermove", move as never);
-    event.currentTarget.addEventListener("pointerup", stop as never, { once: true });
+    });
   };
   return (
     <article
@@ -465,4 +458,31 @@ function clientToCanvas(
     x: (clientX - rect.left - view.x) / view.zoom,
     y: (clientY - rect.top - view.y) / view.zoom,
   };
+}
+
+function capturePointerMovement(
+  element: HTMLElement,
+  pointerId: number,
+  onMove: (event: PointerEvent) => void,
+) {
+  const move = (event: PointerEvent) => {
+    if (event.pointerId === pointerId) onMove(event);
+  };
+  const cleanup = () => {
+    element.removeEventListener("pointermove", move);
+    element.removeEventListener("pointerup", stop);
+    element.removeEventListener("pointercancel", stop);
+    element.removeEventListener("lostpointercapture", stop);
+  };
+  const stop = (event: PointerEvent) => {
+    if (event.pointerId !== pointerId) return;
+    cleanup();
+    if (element.hasPointerCapture(pointerId)) element.releasePointerCapture(pointerId);
+  };
+
+  element.setPointerCapture(pointerId);
+  element.addEventListener("pointermove", move);
+  element.addEventListener("pointerup", stop);
+  element.addEventListener("pointercancel", stop);
+  element.addEventListener("lostpointercapture", stop);
 }

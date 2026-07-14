@@ -269,7 +269,7 @@
 .ct-v2-canvas-toolbar button:disabled { opacity: .35; }
 .ct-v2-canvas-toolbar > span { width: 1px; height: 18px; margin: 0 2px; background: #d8e2eb; }
 .ct-v2-canvas-toolbar output { width: 38px; color: #64748b; font-size: 11px; text-align: center; }
-.ct-v2-canvas-board { position: absolute; inset: 0; overflow: hidden; cursor: grab; outline: none; background-color: #f5f8fa; background-image: radial-gradient(#cbd5df 1px, transparent 1px); background-size: 20px 20px; }
+.ct-v2-canvas-board { position: absolute; inset: 0; overflow: hidden; cursor: grab; outline: none; background-color: #f5f8fa; background-image: radial-gradient(#cbd5df 1px, transparent 1px); background-size: 20px 20px; touch-action: none; user-select: none; }
 .ct-v2-canvas-board:active { cursor: grabbing; }
 .ct-v2-canvas-board:focus-visible { box-shadow: inset 0 0 0 2px #0e7490; }
 .ct-v2-canvas-world { position: absolute; inset: 0 auto auto 0; transform-origin: 0 0; }
