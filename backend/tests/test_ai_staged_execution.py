@@ -38,7 +38,12 @@ class _StageLLM:
         self.max_tokens_by_stage.setdefault(stage, []).append(max_tokens)
         self.calls_by_stage[stage] = self.calls_by_stage.get(stage, 0) + 1
         if stage == "source_analysis":
-            content = "# 代码证据\n\n- `lib/iscsi/iscsi.c:100` login version check\n"
+            content = json.dumps(
+                {
+                    "ranked_evidence_ids": ["SRC-01", "SRC-02"],
+                    "gap_evidence_ids": ["SRC-06"],
+                }
+            )
         elif stage == "business_flow":
             content = "# 业务流程\n\n## 外部触发\nlogin PDU\n## 流程步骤\n1. negotiate\n## 异常分支\ntimeout\n## 观测点\nlog\n"
         elif stage == "sfmea":
@@ -619,7 +624,7 @@ async def test_source_analysis_is_bounded_and_truncated_attempts_are_diagnosable
     assert llm.max_tokens[0] == 1600
     assert llm.max_tokens.count(1600) == 1
     assert "最多 12 个证据锚点" in llm.prompts[0]
-    assert "1200 个中文字符" in llm.prompts[0]
+    assert "JSON 总长度不得超过 1200 字符" in llm.prompts[0]
     assert "x" * 5000 not in llm.prompts[0]
     stage_dir = tmp_path / "stages" / "source_analysis"
     assert (stage_dir / "raw_output_attempt_1.txt").read_text(encoding="utf-8").startswith(
@@ -637,16 +642,18 @@ async def test_source_analysis_is_bounded_and_truncated_attempts_are_diagnosable
 
 
 @pytest.mark.asyncio
-async def test_source_analysis_enhancement_is_trimmed_at_markdown_boundary(tmp_path):
-    class LongLLM:
+async def test_source_analysis_enhancement_renders_only_verified_ranking(tmp_path):
+    class RankingLLM:
         async def complete_once(self, messages, max_tokens=4096, temperature=0.2):
             return LLMResponse(
-                content="\n\n".join(
-                    f"### 排序 {index}\n\n- `SRC-01` 完整的证据归纳段落。"
-                    for index in range(1, 80)
+                content=json.dumps(
+                    {
+                        "ranked_evidence_ids": ["SRC-02", "SRC-01"],
+                        "gap_evidence_ids": ["SRC-06"],
+                    }
                 ),
-                model="long-test",
-                usage={"completion_tokens": 1500},
+                model="ranking-test",
+                usage={"completion_tokens": 40},
                 finish_reason="stop",
             )
 
@@ -659,19 +666,19 @@ async def test_source_analysis_enhancement_is_trimmed_at_markdown_boundary(tmp_p
     plan = build_staged_execution_plan(contract=contract, original_user_request="bounded")
 
     await execute_staged_builtin_plan(
-        llm=LongLLM(),
+        llm=RankingLLM(),
         plan=plan,
         artifact_dir=tmp_path,
         context_prompt="legacy",
         source_analysis_context=_verified_source_context(),
-        source_analysis_limits={"max_chinese_characters": 300},
     )
 
     report = (tmp_path / "source_analysis.md").read_text(encoding="utf-8")
     enhancement = report.split("## 模型排序、归纳与缺口标记", 1)[1]
-    assert "模型增强内容已按阶段预算截断" in enhancement
-    assert enhancement.rstrip().endswith("确定性证据不受影响。")
-    assert len(enhancement) < 500
+    assert enhancement.index("SRC-02") < enhancement.index("SRC-01")
+    assert "SRC-06" in enhancement
+    assert "需要补充证据" in enhancement
+    assert "ranked_evidence_ids" not in enhancement
 
 
 @pytest.mark.asyncio
@@ -687,13 +694,18 @@ async def test_source_analysis_uses_small_repair_only_for_format_error(tmp_path)
             self.max_tokens.append(max_tokens)
             if len(self.prompts) == 1:
                 return LLMResponse(
-                    content="```markdown\n- `SRC-01` 未闭合",
+                    content='{"ranked_evidence_ids": ["SRC-01"',
                     model="repair-test",
                     usage={"completion_tokens": 20},
                     finish_reason="stop",
                 )
             return LLMResponse(
-                content="- `SRC-01` 与目标直接相关；未验证内容列为缺口。",
+                content=json.dumps(
+                    {
+                        "ranked_evidence_ids": ["SRC-01"],
+                        "gap_evidence_ids": ["SRC-02"],
+                    }
+                ),
                 model="repair-test",
                 usage={"completion_tokens": 30},
                 finish_reason="stop",
@@ -720,7 +732,7 @@ async def test_source_analysis_uses_small_repair_only_for_format_error(tmp_path)
     assert llm.max_tokens == [1600, 500]
     assert "SOURCE_ANALYSIS_CONTEXT" in llm.prompts[0]
     assert "SOURCE_ANALYSIS_CONTEXT" not in llm.prompts[1]
-    assert "未闭合 Markdown 代码围栏" in llm.prompts[1]
+    assert "JSON 未闭合或格式错误" in llm.prompts[1]
     stage_result = json.loads(
         (tmp_path / "stages" / "source_analysis" / "stage_result.json").read_text()
     )
@@ -730,12 +742,76 @@ async def test_source_analysis_uses_small_repair_only_for_format_error(tmp_path)
     assert stage_result["degraded"] is False
     assert stage_result["output_tokens"] == 50
     report = (tmp_path / "source_analysis.md").read_text(encoding="utf-8")
-    assert "未验证内容列为缺口" in report
-    assert "```markdown" not in report
+    assert "SRC-01" in report
+    assert "SRC-02" in report
+    assert "ranked_evidence_ids" not in report
 
 
 @pytest.mark.asyncio
-async def test_source_analysis_rejects_unverified_model_paths_without_repair(tmp_path):
+@pytest.mark.parametrize(
+    "invalid_partial_json",
+    [
+        '{"ranked_evidence_ids":["SRC-01"],"gap_evidence_ids":[],"note":"hello"',
+        '{"ranked_evidence_ids":["SRC-01"],"gap_evidence_ids":[] trailing prose',
+    ],
+)
+async def test_source_analysis_does_not_repair_semantic_contract_violations(
+    tmp_path,
+    invalid_partial_json,
+):
+    class SemanticViolationLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete_once(self, messages, max_tokens=4096, temperature=0.2):
+            self.calls += 1
+            return LLMResponse(
+                content=invalid_partial_json,
+                model="semantic-violation-test",
+                usage={"completion_tokens": 30},
+                finish_reason="stop",
+            )
+
+    llm = SemanticViolationLLM()
+    contract = _contract()
+    contract["required_outputs"] = ["source_scope.json", "evidence_cards.json"]
+    plan = build_staged_execution_plan(
+        contract=contract,
+        original_user_request="reject semantic repair",
+    )
+
+    await execute_staged_builtin_plan(
+        llm=llm,
+        plan=plan,
+        artifact_dir=tmp_path,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+    )
+
+    result = json.loads(
+        (tmp_path / "stages" / "source_analysis" / "stage_result.json").read_text()
+    )
+    assert llm.calls == 1
+    assert result["repair_attempt_count"] == 0
+    assert result["degraded"] is True
+    assert result["finish_reason"] == "grounding_rejected"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "unverified_output",
+    [
+        "- `lib/invented.c:99` 中 `fake_login()` 负责恢复。",
+        "lib/iscsi/iscsi.c line 999 调用 fake_login(conn)",
+        "认证失败后系统必然重启控制器",
+        '{"ranked_evidence_ids":["SRC-99"],"gap_evidence_ids":[]}',
+        '{"ranked_evidence_ids":["SRC-01"],"note":"lib/invented.c"}',
+    ],
+)
+async def test_source_analysis_rejects_unverified_model_paths_without_repair(
+    tmp_path,
+    unverified_output,
+):
     class HallucinatingLLM:
         def __init__(self) -> None:
             self.calls = 0
@@ -743,10 +819,7 @@ async def test_source_analysis_rejects_unverified_model_paths_without_repair(tmp
         async def complete_once(self, messages, max_tokens=4096, temperature=0.2):
             self.calls += 1
             return LLMResponse(
-                content=(
-                    "- `lib/invented.c:99` 中 `fake_login()` 负责恢复。\n"
-                    "- `SRC-99` 支持该结论。"
-                ),
+                content=unverified_output,
                 model="hallucination-test",
                 usage={"completion_tokens": 30},
                 finish_reason="stop",
@@ -777,8 +850,7 @@ async def test_source_analysis_rejects_unverified_model_paths_without_repair(tmp
     assert result["degraded"] is True
     assert result["finish_reason"] == "grounding_rejected"
     report = (tmp_path / "source_analysis.md").read_text(encoding="utf-8")
-    assert "invented.c" not in report
-    assert "fake_login" not in report
+    assert unverified_output not in report
 
 
 @pytest.mark.asyncio
@@ -791,7 +863,7 @@ async def test_source_analysis_skips_provider_after_total_budget_is_spent(
     original = staged_module.build_source_analysis_context
 
     def slow_context(**kwargs):
-        time.sleep(0.06)
+        time.sleep(0.5)
         return original(**kwargs)
 
     class CountingLLM(_StageLLM):
@@ -827,7 +899,57 @@ async def test_source_analysis_skips_provider_after_total_budget_is_spent(
     assert result["degraded"] is True
     assert result["degradation_reason"] == "total_budget_exceeded_during_context"
     assert result["finish_reason"] == "budget_exceeded"
+    assert result["duration_ms"] < 150
     assert (tmp_path / "source_analysis.md").is_file()
+
+
+@pytest.mark.asyncio
+async def test_source_analysis_context_timeout_uses_io_free_memory_fallback(
+    tmp_path,
+    monkeypatch,
+):
+    from app.services import ai_staged_execution as staged_module
+
+    original = staged_module._project_source_analysis_context
+
+    def blocked_projector(**kwargs):
+        time.sleep(0.5)
+        return original(**kwargs)
+
+    monkeypatch.setattr(
+        staged_module,
+        "_project_source_analysis_context",
+        blocked_projector,
+    )
+    llm = _StageLLM()
+    contract = _contract()
+    contract["required_outputs"] = ["source_scope.json", "evidence_cards.json"]
+    plan = build_staged_execution_plan(
+        contract=contract,
+        original_user_request="hard context timeout",
+    )
+
+    started = time.monotonic()
+    await execute_staged_builtin_plan(
+        llm=llm,
+        plan=plan,
+        artifact_dir=tmp_path,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+        source_analysis_limits={
+            "context_timeout_seconds": 1,
+            "total_timeout_seconds": 0.05,
+        },
+    )
+    elapsed_ms = (time.monotonic() - started) * 1000
+
+    result = json.loads(
+        (tmp_path / "stages" / "source_analysis" / "stage_result.json").read_text()
+    )
+    assert elapsed_ms < 150
+    assert llm.calls_by_stage.get("source_analysis", 0) == 0
+    assert result["degradation_reason"] == "total_budget_exceeded_during_context"
+    assert result["quality_gate"]["sha256_validated_count"] > 0
 
 
 @pytest.mark.asyncio
@@ -931,6 +1053,58 @@ async def test_source_analysis_cache_reuses_validated_pack_without_provider_call
 
 
 @pytest.mark.asyncio
+async def test_source_analysis_cache_rejects_legacy_free_text_contract(tmp_path):
+    from app.services.ai_staged_execution import _sha256_path
+
+    contract = _contract()
+    contract["required_outputs"] = ["source_scope.json", "evidence_cards.json"]
+    plan = build_staged_execution_plan(contract=contract, original_user_request="cache-v3")
+    plan["workflow_version"] = "workflow-cache-v3"
+    cache_dir = tmp_path / "cache"
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+
+    await execute_staged_builtin_plan(
+        llm=_StageLLM(),
+        plan=plan,
+        artifact_dir=first_dir,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+        source_analysis_cache_dir=cache_dir,
+    )
+    first_result = json.loads(
+        (first_dir / "stages" / "source_analysis" / "stage_result.json").read_text()
+    )
+    entry = cache_dir / first_result["cache_key"]
+    legacy_report = "# old cache\n\nlib/invented.c:999 fake_login()\n"
+    (entry / "source_analysis.md").write_text(legacy_report, encoding="utf-8")
+    metadata_path = entry / "cache_metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["version"] = "source-analysis-cache-v2"
+    metadata["artifact_sha256"]["source_analysis.md"] = _sha256_path(
+        entry / "source_analysis.md"
+    )
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+    second_llm = _StageLLM()
+
+    await execute_staged_builtin_plan(
+        llm=second_llm,
+        plan=plan,
+        artifact_dir=second_dir,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+        source_analysis_cache_dir=cache_dir,
+    )
+
+    result = json.loads(
+        (second_dir / "stages" / "source_analysis" / "stage_result.json").read_text()
+    )
+    assert result["cache_status"] == "miss"
+    assert second_llm.calls_by_stage["source_analysis"] == 1
+    assert legacy_report not in (second_dir / "source_analysis.md").read_text()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("tampered_artifact", ["source_analysis.md", "source_scope.json"])
 async def test_source_analysis_cache_rejects_tampered_artifacts(
     tmp_path,
@@ -947,8 +1121,10 @@ async def test_source_analysis_cache_rejects_tampered_artifacts(
     cache_dir = tmp_path / "cache"
     first_dir = tmp_path / "first"
     second_dir = tmp_path / "second"
+    third_dir = tmp_path / "third"
     first_llm = _StageLLM()
     second_llm = _StageLLM()
+    third_llm = _StageLLM()
 
     await execute_staged_builtin_plan(
         llm=first_llm,
@@ -984,6 +1160,20 @@ async def test_source_analysis_cache_rejects_tampered_artifacts(
     assert second_llm.calls_by_stage["source_analysis"] == 1
     assert second_result["cache_status"] == "miss"
     assert "tampered report" not in (second_dir / "source_analysis.md").read_text()
+
+    await execute_staged_builtin_plan(
+        llm=third_llm,
+        plan=plan,
+        artifact_dir=third_dir,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+        source_analysis_cache_dir=cache_dir,
+    )
+    third_result = json.loads(
+        (third_dir / "stages" / "source_analysis" / "stage_result.json").read_text()
+    )
+    assert third_llm.calls_by_stage.get("source_analysis", 0) == 0
+    assert third_result["cache_status"] == "hit"
 
 
 @pytest.mark.asyncio

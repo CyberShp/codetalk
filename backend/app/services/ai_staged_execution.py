@@ -21,7 +21,7 @@ ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 CancellationCallback = Callable[[], Awaitable[bool] | bool]
 _CANCELLATION_POLL_INTERVAL = 0.1
 _SOURCE_EVIDENCE_PACK_VERSION = "source-evidence-pack-v1"
-_SOURCE_ANALYSIS_CACHE_VERSION = "source-analysis-cache-v2"
+_SOURCE_ANALYSIS_CACHE_VERSION = "source-analysis-cache-v3"
 
 
 def build_source_analysis_context(
@@ -33,6 +33,72 @@ def build_source_analysis_context(
     max_evidence_anchors: int | None = None,
 ) -> dict[str, Any]:
     """Project the full execution context into the source-analysis contract."""
+    return _project_source_analysis_context(
+        plan=plan,
+        staged_context=staged_context,
+        max_files=max_files,
+        excerpt_chars=excerpt_chars,
+        max_evidence_anchors=max_evidence_anchors,
+    )
+
+
+def _project_source_analysis_context(
+    *,
+    plan: dict[str, Any],
+    staged_context: dict[str, Any],
+    max_files: int | None = None,
+    excerpt_chars: int | None = None,
+    max_evidence_anchors: int | None = None,
+) -> dict[str, Any]:
+    materials = _source_input_material_summaries(staged_context)
+    gitnexus_summary, cgc_summary = _source_tool_summaries(staged_context)
+    return _assemble_source_analysis_context(
+        plan=plan,
+        staged_context=staged_context,
+        max_files=max_files,
+        excerpt_chars=excerpt_chars,
+        max_evidence_anchors=max_evidence_anchors,
+        materials=materials,
+        gitnexus_summary=gitnexus_summary,
+        cgc_summary=cgc_summary,
+    )
+
+
+def _project_source_analysis_context_from_memory(
+    *,
+    plan: dict[str, Any],
+    staged_context: dict[str, Any],
+    max_files: int | None = None,
+    excerpt_chars: int | None = None,
+    max_evidence_anchors: int | None = None,
+) -> dict[str, Any]:
+    """Budget fallback that performs no filesystem reads or full MCP serialization."""
+    return _assemble_source_analysis_context(
+        plan=plan,
+        staged_context=staged_context,
+        max_files=max_files,
+        excerpt_chars=excerpt_chars,
+        max_evidence_anchors=max_evidence_anchors,
+        materials=_source_input_material_summaries(
+            staged_context,
+            read_parsed_text=False,
+        ),
+        gitnexus_summary="",
+        cgc_summary="",
+    )
+
+
+def _assemble_source_analysis_context(
+    *,
+    plan: dict[str, Any],
+    staged_context: dict[str, Any],
+    max_files: int | None,
+    excerpt_chars: int | None,
+    max_evidence_anchors: int | None,
+    materials: list[dict[str, str]],
+    gitnexus_summary: str,
+    cgc_summary: str,
+) -> dict[str, Any]:
     file_limit = max(1, int(max_files or settings.source_analysis_max_files))
     excerpt_limit = max(200, int(excerpt_chars or settings.source_analysis_excerpt_chars))
     anchor_limit = max(
@@ -44,16 +110,18 @@ def build_source_analysis_context(
         if isinstance(staged_context.get("source_context"), dict)
         else staged_context
     )
-    candidates = [
-        item for item in source_context.get("files") or [] if isinstance(item, dict)
-    ]
     files: list[dict[str, Any]] = []
-    for item in candidates[: min(file_limit, anchor_limit)]:
+    evidence_limit = min(file_limit, anchor_limit)
+    for item in source_context.get("files") or []:
+        if not isinstance(item, dict):
+            continue
         path = str(item.get("file_path") or "").strip()
         if not path:
             continue
+        evidence_id = f"SRC-{len(files) + 1:02d}"
         files.append(
             {
+                "evidence_id": evidence_id,
                 "file_path": path,
                 "classification": str(
                     item.get("classification") or _source_file_classification(path)
@@ -77,8 +145,8 @@ def build_source_analysis_context(
                 ),
             }
         )
-    materials = _source_input_material_summaries(staged_context)
-    gitnexus_summary, cgc_summary = _source_tool_summaries(staged_context)
+        if len(files) >= evidence_limit:
+            break
     gaps: list[str] = []
     if not files:
         gaps.append("没有可用的 SHA256 校验源码片段")
@@ -121,7 +189,7 @@ def build_source_evidence_pack(context: dict[str, Any]) -> dict[str, Any]:
             continue
         cards.append(
             {
-                "evidence_id": f"SRC-{index:02d}",
+                "evidence_id": str(item.get("evidence_id") or f"SRC-{index:02d}"),
                 "file_path": str(item.get("file_path") or ""),
                 "classification": str(item.get("classification") or "source"),
                 "kind": str(item.get("classification") or "source"),
@@ -290,7 +358,11 @@ def _source_file_classification(path: str) -> str:
     return "test" if normalized.startswith(("test/", "tests/", "spec/")) else "source"
 
 
-def _source_input_material_summaries(staged_context: dict[str, Any]) -> list[dict[str, str]]:
+def _source_input_material_summaries(
+    staged_context: dict[str, Any],
+    *,
+    read_parsed_text: bool = True,
+) -> list[dict[str, str]]:
     container = staged_context.get("input_materials")
     materials = container.get("materials") if isinstance(container, dict) else []
     summaries: list[dict[str, str]] = []
@@ -312,7 +384,11 @@ def _source_input_material_summaries(staged_context: dict[str, Any]) -> list[dic
             "",
         )
         parsed_text_path = str(item.get("parsed_text_path") or "")
-        if parsed_text_path and (not summary or summary == item.get("material_role")):
+        if (
+            read_parsed_text
+            and parsed_text_path
+            and (not summary or summary == item.get("material_role"))
+        ):
             try:
                 summary = Path(parsed_text_path).read_text(
                     encoding="utf-8", errors="replace"
@@ -1006,13 +1082,32 @@ async def _execute_source_analysis_stage(
         completed={},
     )
     context_started = time.monotonic()
-    compact = build_source_analysis_context(
-        plan=plan,
-        staged_context=staged_context,
-        max_files=effective["max_files"],
-        excerpt_chars=effective["excerpt_chars"],
-        max_evidence_anchors=effective["max_evidence_anchors"],
+    context_projection_timed_out = False
+    context_timeout = min(
+        float(effective["context_timeout_seconds"]),
+        float(effective["total_timeout_seconds"]),
     )
+    try:
+        compact = await asyncio.wait_for(
+            asyncio.to_thread(
+                build_source_analysis_context,
+                plan=plan,
+                staged_context=staged_context,
+                max_files=effective["max_files"],
+                excerpt_chars=effective["excerpt_chars"],
+                max_evidence_anchors=effective["max_evidence_anchors"],
+            ),
+            timeout=max(0.001, context_timeout),
+        )
+    except asyncio.TimeoutError:
+        context_projection_timed_out = True
+        compact = _project_source_analysis_context_from_memory(
+            plan=plan,
+            staged_context=staged_context,
+            max_files=effective["max_files"],
+            excerpt_chars=effective["excerpt_chars"],
+            max_evidence_anchors=effective["max_evidence_anchors"],
+        )
     context_prepare_ms = round((time.monotonic() - context_started) * 1000, 1)
     _write_json(stage_dir / "source_analysis_context.json", compact)
     pack = build_source_evidence_pack(compact)
@@ -1023,9 +1118,14 @@ async def _execute_source_analysis_stage(
     cache_key = _source_analysis_cache_key(plan=plan, context=compact)
     elapsed_after_context = time.monotonic() - started
     budget_degradation_reason = ""
-    if elapsed_after_context >= float(effective["total_timeout_seconds"]):
+    if (
+        context_projection_timed_out
+        and context_timeout >= float(effective["total_timeout_seconds"])
+    ) or elapsed_after_context >= float(effective["total_timeout_seconds"]):
         budget_degradation_reason = "total_budget_exceeded_during_context"
-    elif context_prepare_ms >= float(effective["context_timeout_seconds"]) * 1000:
+    elif context_projection_timed_out or context_prepare_ms >= float(
+        effective["context_timeout_seconds"]
+    ) * 1000:
         budget_degradation_reason = "context_budget_exceeded"
     if (
         not budget_degradation_reason
@@ -1138,8 +1238,20 @@ async def _execute_source_analysis_stage(
                 raise ValueError("provider_output_truncated")
             if not raw_content:
                 raise ValueError("provider_output_empty")
-            format_errors = _source_analysis_format_errors(raw_content)
-            if format_errors:
+            grounding_errors = _source_analysis_raw_grounding_errors(
+                raw_content,
+                pack=pack,
+            )
+            if grounding_errors:
+                degraded = True
+                degradation_reason = (
+                    "model_output_unverified: " + "; ".join(grounding_errors[:5])
+                )
+                finish_reason = "grounding_rejected"
+            format_errors = (
+                [] if degraded else _source_analysis_json_format_errors(raw_content)
+            )
+            if not degraded and format_errors:
                 provider_phase = "repair"
                 repair_attempt_count = 1
                 repair_prompt = _source_analysis_repair_prompt(
@@ -1203,34 +1315,53 @@ async def _execute_source_analysis_stage(
                     or not repaired_content
                 ):
                     raise ValueError("repair_output_invalid")
-                remaining_errors = _source_analysis_format_errors(repaired_content)
+                repair_grounding_errors = _source_analysis_raw_grounding_errors(
+                    repaired_content,
+                    pack=pack,
+                )
+                if repair_grounding_errors:
+                    degraded = True
+                    degradation_reason = (
+                        "model_output_unverified: "
+                        + "; ".join(repair_grounding_errors[:5])
+                    )
+                    finish_reason = "grounding_rejected"
+                remaining_errors = _source_analysis_json_format_errors(
+                    repaired_content
+                )
                 if remaining_errors:
                     raise ValueError(
                         "repair_output_invalid: " + "; ".join(remaining_errors[:3])
                     )
                 raw_content = repaired_content
-                finish_reason = f"repair_{repair_finish_reason}"
-            grounding_errors = _source_analysis_grounding_errors(
-                raw_content,
-                pack=pack,
-            )
-            if grounding_errors:
-                degraded = True
-                degradation_reason = (
-                    "model_output_unverified: " + "; ".join(grounding_errors[:5])
-                )
-                finish_reason = "grounding_rejected"
-            else:
-                summary = _truncate_model_enhancement(
+                if not degraded:
+                    finish_reason = f"repair_{repair_finish_reason}"
+            if not degraded:
+                ranking, ranking_errors = _parse_source_analysis_ranking(
                     raw_content,
-                    int(effective["max_chinese_characters"]),
+                    pack=pack,
+                    max_evidence_anchors=int(effective["max_evidence_anchors"]),
+                    max_characters=int(effective["max_chinese_characters"]),
                 )
+                if ranking_errors:
+                    degraded = True
+                    degradation_reason = (
+                        "model_output_unverified: "
+                        + "; ".join(ranking_errors[:5])
+                    )
+                    finish_reason = "grounding_rejected"
+                else:
+                    enhancement = _render_source_analysis_ranking(
+                        ranking,
+                        pack=pack,
+                    )
+            if not degraded:
                 deterministic = output_path.read_text(encoding="utf-8")
                 _write_text(
                     output_path,
                     deterministic.rstrip()
                     + "\n\n## 模型排序、归纳与缺口标记\n\n"
-                    + summary.rstrip()
+                    + enhancement.rstrip()
                     + "\n",
                 )
         except asyncio.TimeoutError:
@@ -1313,39 +1444,7 @@ async def _execute_source_analysis_stage(
     return {**result, "output_path": str(output_path)}
 
 
-def _truncate_model_enhancement(content: str, limit: int) -> str:
-    stripped = content.strip()
-    if len(stripped) <= limit:
-        return stripped
-    cutoff = max(1, int(limit))
-    prefix = stripped[:cutoff]
-    minimum_boundary = max(1, int(cutoff * 0.6))
-    boundary = prefix.rfind("\n\n", minimum_boundary)
-    if boundary < 0:
-        boundary = prefix.rfind("\n", minimum_boundary)
-    if boundary < 0:
-        boundary = prefix.rfind("。", minimum_boundary)
-        if boundary >= 0:
-            boundary += 1
-    if boundary < 0:
-        boundary = cutoff
-    return (
-        prefix[:boundary].rstrip()
-        + "\n\n> 模型增强内容已按阶段预算截断；确定性证据不受影响。"
-    )
-
-
-def _source_analysis_format_errors(content: str) -> list[str]:
-    errors: list[str] = []
-    stripped = content.strip()
-    if stripped.count("```") % 2:
-        errors.append("未闭合 Markdown 代码围栏")
-    if stripped.startswith(("{", "[")):
-        errors.append("返回了 JSON，而不是 Markdown 正文")
-    return errors
-
-
-def _source_analysis_grounding_errors(
+def _source_analysis_raw_grounding_errors(
     content: str,
     *,
     pack: dict[str, Any],
@@ -1365,39 +1464,144 @@ def _source_analysis_grounding_errors(
     unknown_ids = sorted(referenced_ids - allowed_ids)
     if unknown_ids:
         errors.append("引用了未知证据 ID：" + ", ".join(unknown_ids[:5]))
-    allowed_paths = {str(card.get("file_path") or ""): card for card in cards}
-    path_pattern = re.compile(
-        r"(?P<path>(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+)"
-        r"(?::(?P<start>\d+)(?:-(?P<end>\d+))?)?"
+    referenced_paths = sorted(
+        set(
+            re.findall(
+                r"(?<![A-Za-z0-9_.-])(?:[A-Za-z0-9_.-]+/)+"
+                r"[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+",
+                stripped,
+            )
+        )
     )
-    for match in path_pattern.finditer(stripped):
-        path = match.group("path")
-        card = allowed_paths.get(path)
-        if card is None:
-            errors.append(f"引用了未验证文件：{path}")
-            continue
-        if match.group("start"):
-            cited_start = int(match.group("start"))
-            cited_end = int(match.group("end") or cited_start)
-            verified_start = int(card.get("start_line") or 0)
-            verified_end = int(card.get("end_line") or 0)
-            if cited_start < verified_start or cited_end > verified_end:
-                errors.append(
-                    f"引用行号超出证据范围：{path}:{cited_start}-{cited_end}"
-                )
-    allowed_symbols = {
-        str(symbol)
-        for card in cards
-        for symbol in card.get("symbols") or []
-        if str(symbol)
-    }
-    referenced_calls = set(
-        re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)", stripped)
+    if referenced_paths:
+        errors.append("模型排序契约不得包含文件路径：" + ", ".join(referenced_paths[:5]))
+    referenced_calls = sorted(
+        set(
+            re.findall(
+                r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^()\n]*\)",
+                stripped,
+            )
+        )
     )
-    unknown_symbols = sorted(referenced_calls - allowed_symbols)
-    if unknown_symbols:
-        errors.append("引用了未验证函数：" + ", ".join(unknown_symbols[:5]))
+    if referenced_calls:
+        errors.append("模型排序契约不得包含函数调用：" + ", ".join(referenced_calls[:5]))
+    contract_candidate = stripped
+    if contract_candidate.startswith("```json"):
+        contract_candidate = contract_candidate[len("```json") :].lstrip()
+        if contract_candidate.endswith("```"):
+            contract_candidate = contract_candidate[:-3].rstrip()
+    if not contract_candidate.startswith("{"):
+        errors.append("未返回 source analysis 排序 JSON 契约")
+        return errors
+    expected_keys = {"ranked_evidence_ids", "gap_evidence_ids"}
+    candidate_keys = set(re.findall(r'"([^"\\]+)"\s*:', contract_candidate))
+    extra_keys = sorted(candidate_keys - expected_keys)
+    if extra_keys:
+        errors.append("排序契约包含未允许字段：" + ", ".join(extra_keys))
+    scrubbed = re.sub(
+        r'"(?:ranked_evidence_ids|gap_evidence_ids)"',
+        "",
+        contract_candidate,
+    )
+    scrubbed = re.sub(r'"SRC-\d+"', "", scrubbed)
+    scrubbed = re.sub(r'[\s{}\[\],:\"]+', "", scrubbed)
+    if scrubbed:
+        errors.append("排序契约包含不可修复的自由文本或值")
     return errors
+
+
+def _source_analysis_json_format_errors(content: str) -> list[str]:
+    stripped = content.strip()
+    if stripped.startswith("```json") and stripped.endswith("```"):
+        return ["JSON 被 Markdown 围栏包裹"]
+    try:
+        json.loads(stripped)
+    except json.JSONDecodeError:
+        return ["JSON 未闭合或格式错误"]
+    return []
+
+
+def _parse_source_analysis_ranking(
+    content: str,
+    *,
+    pack: dict[str, Any],
+    max_evidence_anchors: int,
+    max_characters: int,
+) -> tuple[dict[str, list[str]], list[str]]:
+    try:
+        payload = json.loads(content.strip())
+    except json.JSONDecodeError:
+        return {}, ["JSON 未闭合或格式错误"]
+    if not isinstance(payload, dict):
+        return {}, ["排序契约顶层必须是对象"]
+    expected_keys = {"ranked_evidence_ids", "gap_evidence_ids"}
+    extra_keys = sorted(set(payload) - expected_keys)
+    missing_keys = sorted(expected_keys - set(payload))
+    errors: list[str] = []
+    if len(content) > max_characters:
+        errors.append(f"排序 JSON 超过 {max_characters} 字符上限")
+    if extra_keys:
+        errors.append("排序契约包含未允许字段：" + ", ".join(extra_keys))
+    if missing_keys:
+        errors.append("排序契约缺少字段：" + ", ".join(missing_keys))
+    ranked = payload.get("ranked_evidence_ids")
+    gaps = payload.get("gap_evidence_ids")
+    if not isinstance(ranked, list) or not all(isinstance(item, str) for item in ranked):
+        errors.append("ranked_evidence_ids 必须是字符串数组")
+        ranked = []
+    if not isinstance(gaps, list) or not all(isinstance(item, str) for item in gaps):
+        errors.append("gap_evidence_ids 必须是字符串数组")
+        gaps = []
+    if not ranked:
+        errors.append("ranked_evidence_ids 至少包含一个已验证证据 ID")
+    if len(ranked) > max_evidence_anchors:
+        errors.append(f"排序证据超过 {max_evidence_anchors} 个上限")
+    if len(set(ranked)) != len(ranked) or len(set(gaps)) != len(gaps):
+        errors.append("排序契约不得包含重复证据 ID")
+    allowed_ids = {
+        str(card.get("evidence_id") or "")
+        for card in pack.get("evidence_cards") or []
+        if isinstance(card, dict)
+    }
+    unknown_ids = sorted((set(ranked) | set(gaps)) - allowed_ids)
+    if unknown_ids:
+        errors.append("排序契约包含未知证据 ID：" + ", ".join(unknown_ids[:5]))
+    return {
+        "ranked_evidence_ids": list(ranked),
+        "gap_evidence_ids": list(gaps),
+    }, errors
+
+
+def _render_source_analysis_ranking(
+    ranking: dict[str, list[str]],
+    *,
+    pack: dict[str, Any],
+) -> str:
+    card_by_id = {
+        str(card.get("evidence_id") or ""): card
+        for card in pack.get("evidence_cards") or []
+        if isinstance(card, dict)
+    }
+    lines = ["### 已验证证据排序"]
+    for index, evidence_id in enumerate(ranking["ranked_evidence_ids"], 1):
+        card = card_by_id[evidence_id]
+        symbols = ", ".join(str(value) for value in card.get("symbols") or [])
+        lines.append(
+            f"{index}. **{evidence_id}** — `{card.get('file_path')}:"
+            f"{card.get('start_line')}-{card.get('end_line')}`"
+            + (f"；symbols: {symbols}" if symbols else "")
+        )
+    lines.extend(["", "### 待补证据"])
+    if ranking["gap_evidence_ids"]:
+        for evidence_id in ranking["gap_evidence_ids"]:
+            card = card_by_id[evidence_id]
+            lines.append(
+                f"- **{evidence_id}** — `{card.get('file_path')}:"
+                f"{card.get('start_line')}-{card.get('end_line')}` 需要补充证据。"
+            )
+    else:
+        lines.append("- 模型未标记额外证据缺口；后续阶段仍需执行质量门禁。")
+    return "\n".join(lines)
 
 
 def _source_analysis_repair_prompt(
@@ -1407,21 +1611,16 @@ def _source_analysis_repair_prompt(
     pack: dict[str, Any],
 ) -> str:
     required_evidence = [
-        {
-            "evidence_id": str(card.get("evidence_id") or ""),
-            "file_path": str(card.get("file_path") or ""),
-            "start_line": int(card.get("start_line") or 0),
-            "end_line": int(card.get("end_line") or 0),
-            "symbols": [str(value) for value in card.get("symbols") or []][:6],
-        }
+        str(card.get("evidence_id") or "")
         for card in pack.get("evidence_cards") or []
         if isinstance(card, dict)
     ]
     return "\n".join(
         [
-            "TASK: Repair source-analysis Markdown formatting only.",
-            "Do not discover, add, or infer source facts.",
-            "Return only complete Markdown with the same supported meaning.",
+            "TASK: Repair source-analysis ranking JSON formatting only.",
+            "Do not add prose, paths, symbols, facts, or unknown evidence IDs.",
+            "Return exactly one JSON object with two string-array fields:",
+            '{"ranked_evidence_ids":["SRC-01"],"gap_evidence_ids":[]}',
             "",
             "VALIDATION_ERRORS:",
             json.dumps(validation_errors, ensure_ascii=False),
@@ -1486,12 +1685,13 @@ def _source_analysis_prompt(
             json.dumps(evidence_context, ensure_ascii=False, indent=2, sort_keys=True),
             "",
             "RULES:",
-            "- 只允许对已提供并经过 SHA256 校验的证据做排序、事实归纳和缺口标记。",
+            "- 只允许对已提供并经过 SHA256 校验的 evidence_id 做排序和缺口标记。",
             "- 禁止重新发现文件、猜测未提供的源码、生成 SFMEA、黑盒用例或后续阶段内容。",
-            "- 每项判断必须引用 context 中的 file_path、start_line/end_line 和 symbol。",
-            f"- 正文最多 {max_characters} 个中文字符；这是支持索引，不是最终报告。",
+            "- 禁止输出路径、行号、symbol、函数名、事实摘要、解释或 Markdown。",
             f"- 最多 {max_anchors} 个证据锚点。",
-            "- 只返回 Markdown 正文，不返回 JSON、代码围栏、终端说明或 artifact 容器。",
+            "- 只返回一个 JSON 对象，且只能包含 ranked_evidence_ids 与 gap_evidence_ids 两个字符串数组。",
+            '- 示例：{"ranked_evidence_ids":["SRC-01"],"gap_evidence_ids":["SRC-02"]}',
+            f"- JSON 总长度不得超过 {max_characters} 字符。",
         ]
     )
 
@@ -1512,6 +1712,7 @@ def _source_analysis_cache_key(
     *, plan: dict[str, Any], context: dict[str, Any]
 ) -> str:
     payload = {
+        "cache_contract_version": _SOURCE_ANALYSIS_CACHE_VERSION,
         "repo_commit_sha": str(context.get("repo_revision") or ""),
         "analysis_target": str(context.get("analysis_target") or ""),
         "file_sha256": [
@@ -1610,9 +1811,8 @@ def _store_source_analysis_cache(
     pack: dict[str, Any],
 ) -> None:
     entry = cache_root / cache_key
-    if entry.is_dir():
-        return
     temporary = cache_root / f".{cache_key}.{time.time_ns()}.tmp"
+    stale: Path | None = None
     try:
         temporary.mkdir(parents=True, exist_ok=False)
         for name in ("source_analysis.md", "source_scope.json", "evidence_cards.json"):
@@ -1635,12 +1835,26 @@ def _store_source_analysis_cache(
             },
         )
         cache_root.mkdir(parents=True, exist_ok=True)
+        if entry.exists():
+            stale = cache_root / f".{cache_key}.{time.time_ns()}.stale"
+            try:
+                entry.rename(stale)
+            except OSError:
+                shutil.rmtree(temporary, ignore_errors=True)
+                return
         try:
             temporary.rename(entry)
         except FileExistsError:
             shutil.rmtree(temporary, ignore_errors=True)
     except OSError:
         shutil.rmtree(temporary, ignore_errors=True)
+    finally:
+        if stale is not None:
+            if stale.is_dir():
+                shutil.rmtree(stale, ignore_errors=True)
+            else:
+                with suppress(OSError):
+                    stale.unlink()
 
 
 def _sha256_path(path: Path) -> str:
