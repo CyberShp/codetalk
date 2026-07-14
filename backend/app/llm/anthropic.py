@@ -74,6 +74,18 @@ class AnthropicClient(BaseLLMClient):
         await self._write_debug_snapshot(messages, result, (time.monotonic() - t0) * 1000)
         return result
 
+    async def complete_once(
+        self,
+        messages: list[dict],
+        max_tokens: int = 4096,
+        temperature: float = 0.3,
+    ) -> LLMResponse:
+        t0 = time.monotonic()
+        current_finish_reason.set(None)
+        result = await self._do_complete(messages, max_tokens, temperature)
+        await self._write_debug_snapshot(messages, result, (time.monotonic() - t0) * 1000)
+        return result
+
     async def stream_complete(
         self,
         messages: list[dict],
@@ -174,6 +186,9 @@ class AnthropicClient(BaseLLMClient):
                 f"(len={len(content.strip())}, model={self._model})"
             )
 
+        stop_reason = str(data.get("stop_reason") or "unknown")
+        finish_reason = "length" if stop_reason == "max_tokens" else stop_reason
+        current_finish_reason.set(finish_reason)
         raw_usage = data.get("usage", {})
         usage = {
             "prompt_tokens": raw_usage.get("input_tokens", 0),
@@ -187,6 +202,8 @@ class AnthropicClient(BaseLLMClient):
             content=content,
             model=data.get("model", self._model),
             usage=usage,
+            truncated=finish_reason == "length",
+            finish_reason=finish_reason,
         )
 
     async def health_check(self) -> tuple[bool, str]:

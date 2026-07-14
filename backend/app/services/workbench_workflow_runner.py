@@ -10,6 +10,7 @@ import hashlib
 import re
 import shutil
 import threading
+import time
 import tokenize
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -17,7 +18,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from app.llm.factory import create_llm_client_from_active
+from app.config import settings
+from app.llm.factory import (
+    create_llm_client_from_active,
+    create_source_analysis_llm_client,
+)
 from app.services.ai_staged_execution import (
     build_staged_execution_plan,
     execute_staged_builtin_plan,
@@ -678,12 +683,16 @@ class WorkbenchWorkflowRunner:
             },
         )
         started_at = _now()
+        started_monotonic = time.monotonic()
         status = "completed"
         error = ""
         model = ""
         try:
             llm = _run_async_blocking(create_llm_client_from_active())
             if str(step.get("execution_mode") or "") == "staged":
+                source_analysis_llm = _run_async_blocking(
+                    create_source_analysis_llm_client()
+                )
                 staged_context = _staged_builtin_context(
                     execution_contract=scoped_execution_contract,
                     task_bundle=task_bundle,
@@ -707,30 +716,48 @@ class WorkbenchWorkflowRunner:
                             "step_id": step_id,
                             "provider": BUILTIN_LLM_PROVIDER_ID,
                             "status": str(payload.get("status") or ""),
+                            "kind": str(payload.get("event_type") or "staged_execution"),
                             "stage_id": str(payload.get("stage_id") or ""),
                             "artifact": str(payload.get("artifact") or ""),
+                            "degraded": bool(payload.get("degraded", False)),
+                            "reason": str(payload.get("reason") or ""),
                             "user_message": (
-                                f"内置模型阶段 {payload.get('current')}/{payload.get('total')}："
-                                f"{payload.get('stage_id')} · {payload.get('status')}"
+                                str(payload.get("user_message") or "")
+                                or (
+                                    f"内置模型阶段 {payload.get('current')}/{payload.get('total')}："
+                                    f"{payload.get('stage_id')} · {payload.get('status')}"
+                                )
                             ),
                         },
                     )
 
-                staged_result = _run_async_blocking(
-                    execute_staged_builtin_plan(
-                        llm=llm,
-                        plan=staged_plan,
-                        artifact_dir=artifact_dir,
-                        context_prompt=json.dumps(
-                            staged_context,
-                            ensure_ascii=False,
-                            indent=2,
-                        ),
-                        on_progress=emit_stage_progress,
-                        is_cancelled=self._is_cancelled,
-                        max_tokens=6000,
+                try:
+                    staged_result = _run_async_blocking(
+                        execute_staged_builtin_plan(
+                            llm=llm,
+                            plan=staged_plan,
+                            artifact_dir=artifact_dir,
+                            context_prompt=json.dumps(
+                                staged_context,
+                                ensure_ascii=False,
+                                indent=2,
+                            ),
+                            source_analysis_context=staged_context,
+                            source_analysis_llm=source_analysis_llm,
+                            source_analysis_cache_dir=(
+                                settings.data_path / "workbench" / "source_analysis_cache"
+                                if settings.source_analysis_cache_enabled
+                                else None
+                            ),
+                            on_progress=emit_stage_progress,
+                            is_cancelled=self._is_cancelled,
+                            max_tokens=6000,
+                        )
                     )
-                )
+                finally:
+                    close_source_llm = getattr(source_analysis_llm, "close", None)
+                    if callable(close_source_llm):
+                        _run_async_blocking(close_source_llm())
                 raw_output = json.dumps(staged_result, ensure_ascii=False, indent=2)
                 model = ", ".join(
                     str(item) for item in staged_result.get("models") or [] if str(item)
@@ -766,7 +793,7 @@ class WorkbenchWorkflowRunner:
             "exit_code": 0 if status == "completed" else None,
             "started_at": started_at,
             "completed_at": _now(),
-            "duration_ms": 0,
+            "duration_ms": round((time.monotonic() - started_monotonic) * 1000, 1),
             "timed_out": False,
             "error": error,
             "provider_diagnostics": {
@@ -1453,6 +1480,9 @@ def _build_workbench_staged_plan(
         original_user_request=original_request,
     )
     plan["run_id"] = run_id
+    plan["workflow_version"] = str(
+        ((execution_contract.get("workflow") or {}).get("version")) or ""
+    )
     return plan
 
 

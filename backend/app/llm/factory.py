@@ -124,3 +124,35 @@ async def create_llm_client_from_active() -> BaseLLMClient:
         raise ValueError("未配置活跃的聊天模型，请先在设置中选择 LLM 模型")
 
     return await create_llm_client(row["value"])
+
+
+async def create_source_analysis_llm_client() -> BaseLLMClient | None:
+    """Resolve the optional fast-model route for staged source analysis.
+
+    The selector may be an LLM config id or the exact configured model name.
+    Missing/invalid selectors deliberately fall back to the caller's active
+    client so context and output limits still apply.
+    """
+    selector = str(settings.source_analysis_model or "").strip()
+    if not selector:
+        return None
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """
+            SELECT id
+            FROM llm_configs
+            WHERE id = ? OR model = ?
+            ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, created_at DESC
+            LIMIT 1
+            """,
+            (selector, selector, selector),
+        ) as cur:
+            row = await cur.fetchone()
+    if not row:
+        logger.warning(
+            "source_analysis_model=%s does not match an LLM config; using active model",
+            selector,
+        )
+        return None
+    return await create_llm_client(str(row["id"]))

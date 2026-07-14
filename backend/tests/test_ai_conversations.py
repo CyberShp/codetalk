@@ -5278,12 +5278,22 @@ async def test_builtin_test_activity_rejects_truncated_provider_output(
     monkeypatch.setattr(settings, "llm_max_output_tokens", 8192)
     llm = TruncatedTestActivityLLM()
     store = AIConversationStore(sqlite_db)
+    repo = tmp_path / "spdk"
+    source = repo / "lib" / "iscsi" / "iscsi.c"
+    test_source = repo / "test" / "iscsi_tgt" / "login.sh"
+    source.parent.mkdir(parents=True)
+    test_source.parent.mkdir(parents=True)
+    source.write_text(
+        "int spdk_iscsi_login(void) { return authenticate_login(); }\n",
+        encoding="utf-8",
+    )
+    test_source.write_text("# validate iscsi login authentication\n", encoding="utf-8")
     conversation = await store.create_conversation(
         scope_type="freeform",
         scope_id="global",
         workspace_id="global",
         title="iSCSI Login 发布门禁",
-        initial_context={"repo_path": str(tmp_path / "spdk")},
+        initial_context={"repo_path": str(repo)},
     )
     created = await store.create_user_message_and_run(
         conversation_id=conversation["id"],
@@ -5387,12 +5397,22 @@ async def test_builtin_comprehensive_test_activity_automatically_runs_stages(
         },
     )
     store = AIConversationStore(sqlite_db)
+    repo = tmp_path / "spdk"
+    source = repo / "lib" / "iscsi" / "iscsi.c"
+    test_source = repo / "test" / "iscsi_tgt" / "login.sh"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    test_source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(
+        "int spdk_iscsi_login(void) { return authenticate_login(); }\n",
+        encoding="utf-8",
+    )
+    test_source.write_text("# validate iscsi login authentication\n", encoding="utf-8")
     conversation = await store.create_conversation(
         scope_type="freeform",
         scope_id="global",
         workspace_id="global",
         title="自动分阶段",
-        initial_context={"repo_path": str(tmp_path / "spdk")},
+        initial_context={"repo_path": str(repo)},
     )
     original = "第一行：详细输出 iSCSI login 完整流程、SFMEA、黑盒测试用例和测试设计文件\n第二行：必须保留"
     created = await store.create_user_message_and_run(

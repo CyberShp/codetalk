@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
+import time
 
 import pytest
 
@@ -9,8 +11,11 @@ from app.llm.base import LLMResponse
 from app.services.ai_staged_execution import (
     _stage_prompt,
     _stage_format_rules,
+    build_source_analysis_context,
+    build_source_evidence_pack,
     build_staged_execution_plan,
     execute_staged_builtin_plan,
+    materialize_source_evidence_pack,
 )
 
 
@@ -117,6 +122,68 @@ def _contract() -> dict:
     }
 
 
+def _verified_source_context(*, excerpt_chars: int = 2200) -> dict:
+    files = []
+    for index, path in enumerate(
+        [
+            "lib/iscsi/iscsi.c",
+            "test/iscsi_tgt/login.sh",
+            "lib/iscsi/conn.c",
+            "test/iscsi_tgt/common.sh",
+            "include/spdk/iscsi_spec.h",
+            "lib/iscsi/tgt_node.c",
+            "doc/iscsi.md",
+        ]
+    ):
+        excerpt = (
+            f"int spdk_iscsi_login_{index}(void) {{\n"
+            f"    return iscsi_login_step_{index};\n"
+            "}\n"
+            + ("validated evidence line\n" * 160)
+        )[:excerpt_chars]
+        files.append(
+            {
+                "file_path": path,
+                "start_line": 100 + index,
+                "end_line": 120 + index,
+                "excerpt": excerpt,
+                "symbols": [f"spdk_iscsi_login_{index}"],
+                "matched_terms": ["iscsi", "login"],
+                "sha256": hashlib.sha256(excerpt.encode()).hexdigest(),
+                "status": "validated_source_file",
+            }
+        )
+    return {
+        "contract_version": 1,
+        "repo_path": "/repo/spdk",
+        "goal": "分析 iSCSI login",
+        "analysis_targets": [{"value": "iSCSI login"}],
+        "user_inputs": [{"input_id": "analysis_target", "value": "iSCSI login"}],
+        "input_materials": {
+            "materials": [
+                {
+                    "input_id": "requirements",
+                    "sha256": "input-sha",
+                    "text_preview": "登录、认证、异常恢复与并发约束",
+                }
+            ]
+        },
+        "source_context": {
+            "status": "ready",
+            "repo_revision": "abc123",
+            "files": files,
+        },
+        "mcp": {
+            "gitnexus_summary": "login call graph",
+            "cgc_summary": "authentication branch",
+        },
+        "test_activity_guidance": {
+            "quality_gates": {"large": "must not enter source analysis"},
+            "black_box_boundary": {"large": "must not enter source analysis"},
+        },
+        "quality_retry": {"feedback": {"large": "must not enter source analysis"}},
+        "unrelated_history": "x" * 100000,
+    }
 def test_plan_compiles_dependency_order_and_declared_outputs():
     plan = build_staged_execution_plan(
         contract=_contract(),
@@ -136,8 +203,63 @@ def test_plan_compiles_dependency_order_and_declared_outputs():
     assert "第一行" in plan["original_user_request"]
     assert "第二行" in plan["original_user_request"]
     source_stage = plan["stages"][0]
-    assert source_stage["max_tokens"] == 3200
-    assert source_stage["output_limits"]["max_evidence_anchors"] == 24
+    assert source_stage["max_tokens"] == 1600
+    assert source_stage["output_limits"]["max_chinese_characters"] == 1200
+    assert source_stage["output_limits"]["max_evidence_anchors"] == 12
+
+
+def test_source_analysis_context_keeps_only_bounded_verified_inputs():
+    compact = build_source_analysis_context(
+        plan={
+            "original_user_request": "分析 iSCSI login",
+            "target": "iSCSI login",
+        },
+        staged_context=_verified_source_context(),
+        max_files=6,
+        excerpt_chars=1200,
+        max_evidence_anchors=12,
+    )
+
+    assert compact["analysis_target"] == "分析 iSCSI login"
+    assert compact["repo_revision"] == "abc123"
+    assert len(compact["files"]) == 6
+    assert all(len(item["excerpt"]) <= 1200 for item in compact["files"])
+    assert compact["files"][0]["classification"] == "source"
+    assert compact["files"][1]["classification"] == "test"
+    serialized = json.dumps(compact, ensure_ascii=False)
+    assert "quality_gates" not in serialized
+    assert "black_box_boundary" not in serialized
+    assert "quality_retry" not in serialized
+    assert "unrelated_history" not in serialized
+    assert len(serialized) < 12000
+
+
+def test_source_evidence_pack_materializes_three_verified_artifacts(tmp_path):
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "分析 iSCSI login", "target": "iSCSI login"},
+        staged_context=_verified_source_context(),
+        max_files=6,
+        excerpt_chars=1200,
+        max_evidence_anchors=12,
+    )
+    pack = build_source_evidence_pack(compact)
+
+    materialized = materialize_source_evidence_pack(pack, tmp_path)
+
+    assert pack["version"] == "source-evidence-pack-v1"
+    assert pack["quality_gate"]["status"] == "passed"
+    assert materialized == {
+        "source_analysis": tmp_path / "source_analysis.md",
+        "source_scope": tmp_path / "source_scope.json",
+        "evidence_cards": tmp_path / "evidence_cards.json",
+    }
+    cards = json.loads((tmp_path / "evidence_cards.json").read_text(encoding="utf-8"))
+    assert len(cards) == 6
+    assert all(card["sha256"] for card in cards)
+    assert any(card["classification"] == "test" for card in cards)
+    assert "spdk_iscsi_login_0" in (tmp_path / "source_analysis.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_stage_prompt_injects_only_declared_dependency_artifacts(tmp_path):
@@ -314,6 +436,7 @@ async def test_executor_writes_each_stage_and_preserves_original_request(tmp_pat
         plan=plan,
         artifact_dir=tmp_path,
         context_prompt="SOURCE_CONTEXT: lib/iscsi/iscsi.c",
+        source_analysis_context=_verified_source_context(),
         on_progress=progress.append,
         max_tokens=4096,
     )
@@ -326,6 +449,10 @@ async def test_executor_writes_each_stage_and_preserves_original_request(tmp_pat
         assert (tmp_path / artifact).is_file()
         assert (tmp_path / artifact).stat().st_size > 0
     assert all(original in prompt for prompt in llm.prompts)
+    source_prompt = next(prompt for prompt in llm.prompts if "STAGE_ID: source_analysis" in prompt)
+    assert source_prompt.count(original) == 1
+    assert "quality_gates" not in source_prompt
+    assert "black_box_boundary" not in source_prompt
     assert progress[-1]["status"] == "completed"
     sfmea_prompt = next(prompt for prompt in llm.prompts if "STAGE_ID: sfmea" in prompt)
     assert "business_flow.md" in sfmea_prompt
@@ -357,7 +484,7 @@ def test_sfmea_stage_requires_executable_verification_in_mitigation():
 
 
 @pytest.mark.asyncio
-async def test_executor_retries_transient_provider_error_and_invalid_json(tmp_path):
+async def test_source_analysis_degrades_without_full_retry_while_json_stage_repairs(tmp_path):
     class FlakyLLM(_StageLLM):
         async def complete(self, messages, max_tokens=4096, temperature=0.2):
             prompt = messages[-1]["content"]
@@ -383,11 +510,22 @@ async def test_executor_retries_transient_provider_error_and_invalid_json(tmp_pa
         plan=plan,
         artifact_dir=tmp_path,
         context_prompt="SOURCE_CONTEXT",
+        source_analysis_context=_verified_source_context(),
     )
 
     assert result["status"] == "completed"
-    assert llm.calls_by_stage["source_analysis"] == 2
+    assert llm.calls_by_stage["source_analysis"] == 1
     assert llm.calls_by_stage["sfmea"] == 2
+    source_result = json.loads(
+        (tmp_path / "stages" / "source_analysis" / "stage_result.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert source_result["attempt_count"] == 1
+    assert source_result["full_retry_performed"] is False
+    assert source_result["degraded"] is True
+    assert source_result["degradation_reason"] == "temporary provider unavailable"
+    assert source_result["finish_reason"] == "transport_error"
     sfmea_result = json.loads(
         (tmp_path / "stages" / "sfmea" / "stage_result.json").read_text(encoding="utf-8")
     )
@@ -412,29 +550,284 @@ async def test_source_analysis_is_bounded_and_truncated_attempts_are_diagnosable
             )
 
     llm = TruncatedLLM()
+    contract = _contract()
+    contract["required_outputs"] = ["source_scope.json", "evidence_cards.json"]
+    contract["artifact_contract"] = {
+        "source_scope.json": {"artifact": "source_scope.json", "schema": {"type": "object"}},
+        "evidence_cards.json": {"artifact": "evidence_cards.json", "schema": {"type": "array"}},
+    }
     plan = build_staged_execution_plan(
-        contract=_contract(),
+        contract=contract,
         original_user_request="分析 iSCSI login",
     )
 
-    with pytest.raises(RuntimeError, match="provider_output_truncated"):
-        await execute_staged_builtin_plan(
-            llm=llm,
-            plan=plan,
-            artifact_dir=tmp_path,
-            context_prompt="SOURCE_CONTEXT",
-            max_tokens=6000,
-        )
+    result = await execute_staged_builtin_plan(
+        llm=llm,
+        plan=plan,
+        artifact_dir=tmp_path,
+        context_prompt="x" * 200000,
+        source_analysis_context=_verified_source_context(),
+        max_tokens=6000,
+    )
 
-    assert llm.max_tokens == [3200, 3200]
-    assert "最多 24 个证据锚点" in llm.prompts[0]
-    assert "1800 个中文字符" in llm.prompts[0]
-    assert "压缩到原输出的一半以内" in llm.prompts[1]
+    assert result["status"] == "completed"
+    assert llm.max_tokens[0] == 1600
+    assert llm.max_tokens.count(1600) == 1
+    assert "最多 12 个证据锚点" in llm.prompts[0]
+    assert "1200 个中文字符" in llm.prompts[0]
+    assert "x" * 5000 not in llm.prompts[0]
     stage_dir = tmp_path / "stages" / "source_analysis"
     assert (stage_dir / "raw_output_attempt_1.txt").read_text(encoding="utf-8").startswith(
         "# 未完成的源码分析"
     )
-    assert (stage_dir / "raw_output_attempt_2.txt").is_file()
+    assert not (stage_dir / "raw_output_attempt_2.txt").exists()
+    stage_result = json.loads((stage_dir / "stage_result.json").read_text(encoding="utf-8"))
+    assert stage_result["attempt_count"] == 1
+    assert stage_result["prompt_characters_before_compaction"] >= 200000
+    assert stage_result["prompt_characters"] < 15000
+    assert stage_result["prompt_estimated_tokens"] < 4000
+    assert stage_result["finish_reason"] == "length"
+    assert stage_result["full_retry_performed"] is False
+    assert stage_result["degraded"] is True
+
+
+@pytest.mark.asyncio
+async def test_source_analysis_enhancement_is_trimmed_at_markdown_boundary(tmp_path):
+    class LongLLM:
+        async def complete_once(self, messages, max_tokens=4096, temperature=0.2):
+            return LLMResponse(
+                content="\n\n".join(
+                    f"### 排序 {index}\n\n- `SRC-01` 完整的证据归纳段落。"
+                    for index in range(1, 80)
+                ),
+                model="long-test",
+                usage={"completion_tokens": 1500},
+                finish_reason="stop",
+            )
+
+    contract = _contract()
+    contract["required_outputs"] = ["source_scope.json", "evidence_cards.json"]
+    contract["artifact_contract"] = {
+        "source_scope.json": {"artifact": "source_scope.json", "schema": {"type": "object"}},
+        "evidence_cards.json": {"artifact": "evidence_cards.json", "schema": {"type": "array"}},
+    }
+    plan = build_staged_execution_plan(contract=contract, original_user_request="bounded")
+
+    await execute_staged_builtin_plan(
+        llm=LongLLM(),
+        plan=plan,
+        artifact_dir=tmp_path,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+        source_analysis_limits={"max_chinese_characters": 300},
+    )
+
+    report = (tmp_path / "source_analysis.md").read_text(encoding="utf-8")
+    enhancement = report.split("## 模型排序、归纳与缺口标记", 1)[1]
+    assert "模型增强内容已按阶段预算截断" in enhancement
+    assert enhancement.rstrip().endswith("确定性证据不受影响。")
+    assert len(enhancement) < 500
+
+
+@pytest.mark.asyncio
+async def test_source_analysis_uses_small_repair_only_for_format_error(tmp_path):
+    class RepairLLM:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+            self.max_tokens: list[int] = []
+
+        async def complete_once(self, messages, max_tokens=4096, temperature=0.2):
+            prompt = messages[-1]["content"]
+            self.prompts.append(prompt)
+            self.max_tokens.append(max_tokens)
+            if len(self.prompts) == 1:
+                return LLMResponse(
+                    content="```markdown\n- `SRC-01` 未闭合",
+                    model="repair-test",
+                    usage={"completion_tokens": 20},
+                    finish_reason="stop",
+                )
+            return LLMResponse(
+                content="- `SRC-01` 与目标直接相关；未验证内容列为缺口。",
+                model="repair-test",
+                usage={"completion_tokens": 30},
+                finish_reason="stop",
+            )
+
+    llm = RepairLLM()
+    contract = _contract()
+    contract["required_outputs"] = ["source_scope.json", "evidence_cards.json"]
+    contract["artifact_contract"] = {
+        "source_scope.json": {"artifact": "source_scope.json", "schema": {"type": "object"}},
+        "evidence_cards.json": {"artifact": "evidence_cards.json", "schema": {"type": "array"}},
+    }
+    plan = build_staged_execution_plan(contract=contract, original_user_request="repair")
+
+    await execute_staged_builtin_plan(
+        llm=llm,
+        plan=plan,
+        artifact_dir=tmp_path,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+    )
+
+    assert len(llm.prompts) == 2
+    assert llm.max_tokens == [1600, 500]
+    assert "SOURCE_ANALYSIS_CONTEXT" in llm.prompts[0]
+    assert "SOURCE_ANALYSIS_CONTEXT" not in llm.prompts[1]
+    assert "未闭合 Markdown 代码围栏" in llm.prompts[1]
+    stage_result = json.loads(
+        (tmp_path / "stages" / "source_analysis" / "stage_result.json").read_text()
+    )
+    assert stage_result["attempt_count"] == 1
+    assert stage_result["repair_attempt_count"] == 1
+    assert stage_result["full_retry_performed"] is False
+    assert stage_result["degraded"] is False
+    assert stage_result["output_tokens"] == 50
+    report = (tmp_path / "source_analysis.md").read_text(encoding="utf-8")
+    assert "未验证内容列为缺口" in report
+    assert "```markdown" not in report
+
+
+@pytest.mark.asyncio
+async def test_source_analysis_timeout_cancels_provider_and_continues_with_evidence(tmp_path):
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    class BlockingLLM:
+        async def complete_once(self, messages, max_tokens=4096, temperature=0.2):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                raise
+
+    contract = _contract()
+    contract["required_outputs"] = ["source_scope.json", "evidence_cards.json"]
+    contract["artifact_contract"] = {
+        "source_scope.json": {"artifact": "source_scope.json", "schema": {"type": "object"}},
+        "evidence_cards.json": {"artifact": "evidence_cards.json", "schema": {"type": "array"}},
+    }
+    plan = build_staged_execution_plan(contract=contract, original_user_request="timeout")
+
+    result = await asyncio.wait_for(
+        execute_staged_builtin_plan(
+            llm=BlockingLLM(),
+            plan=plan,
+            artifact_dir=tmp_path,
+            context_prompt="legacy context",
+            source_analysis_context=_verified_source_context(),
+            source_analysis_limits={
+                "timeout_seconds": 0.05,
+                "total_timeout_seconds": 0.2,
+            },
+        ),
+        timeout=0.5,
+    )
+
+    assert started.is_set()
+    assert cancelled.is_set()
+    assert result["status"] == "completed"
+    assert (tmp_path / "source_scope.json").is_file()
+    assert (tmp_path / "evidence_cards.json").is_file()
+    stage_result = json.loads(
+        (tmp_path / "stages" / "source_analysis" / "stage_result.json").read_text()
+    )
+    assert stage_result["attempt_count"] == 1
+    assert stage_result["degraded"] is True
+    assert stage_result["degradation_reason"] == "provider_timeout"
+    assert stage_result["provider_wait_ms"] >= 40
+
+
+@pytest.mark.asyncio
+async def test_source_analysis_cache_reuses_validated_pack_without_provider_call(tmp_path):
+    class CountingLLM(_StageLLM):
+        pass
+
+    contract = _contract()
+    contract["required_outputs"] = ["source_scope.json", "evidence_cards.json"]
+    contract["artifact_contract"] = {
+        "source_scope.json": {"artifact": "source_scope.json", "schema": {"type": "object"}},
+        "evidence_cards.json": {"artifact": "evidence_cards.json", "schema": {"type": "array"}},
+    }
+    plan = build_staged_execution_plan(contract=contract, original_user_request="cache")
+    plan["workflow_version"] = "workflow-v7"
+    cache_dir = tmp_path / "cache"
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_llm = CountingLLM()
+    second_llm = CountingLLM()
+
+    await execute_staged_builtin_plan(
+        llm=first_llm,
+        plan=plan,
+        artifact_dir=first_dir,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+        source_analysis_cache_dir=cache_dir,
+    )
+    reused_events: list[dict] = []
+    await execute_staged_builtin_plan(
+        llm=second_llm,
+        plan=plan,
+        artifact_dir=second_dir,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+        source_analysis_cache_dir=cache_dir,
+        on_progress=reused_events.append,
+    )
+
+    assert first_llm.calls_by_stage["source_analysis"] == 1
+    assert second_llm.calls_by_stage.get("source_analysis", 0) == 0
+    assert any(event.get("event_type") == "stage_reused" for event in reused_events)
+    stage_result = json.loads(
+        (second_dir / "stages" / "source_analysis" / "stage_result.json").read_text()
+    )
+    assert stage_result["cache_status"] == "hit"
+    assert stage_result["attempt_count"] == 0
+    assert stage_result["duration_ms"] < 30000
+
+
+@pytest.mark.asyncio
+async def test_ready_downstream_stages_execute_in_parallel(tmp_path):
+    active = 0
+    max_active = 0
+    both_ready = asyncio.Event()
+
+    class ParallelLLM(_StageLLM):
+        async def complete(self, messages, max_tokens=4096, temperature=0.2):
+            nonlocal active, max_active
+            prompt = messages[-1]["content"]
+            if "STAGE_ID: source_analysis" in prompt:
+                return await super().complete(messages, max_tokens, temperature)
+            active += 1
+            max_active = max(max_active, active)
+            if active == 2:
+                both_ready.set()
+            try:
+                await asyncio.wait_for(both_ready.wait(), timeout=0.3)
+                return await super().complete(messages, max_tokens, temperature)
+            finally:
+                active -= 1
+
+    contract = _contract()
+    contract["required_outputs"] = ["project_structure.md", "module_map.md"]
+    contract["artifact_contract"] = {
+        name: {"artifact": name} for name in contract["required_outputs"]
+    }
+    plan = build_staged_execution_plan(contract=contract, original_user_request="parallel")
+
+    result = await execute_staged_builtin_plan(
+        llm=ParallelLLM(),
+        plan=plan,
+        artifact_dir=tmp_path,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+    )
+
+    assert result["status"] == "completed"
+    assert max_active == 2
 
 
 @pytest.mark.asyncio

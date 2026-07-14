@@ -105,6 +105,18 @@ class OpenAICompatClient(BaseLLMClient):
         await self._write_debug_snapshot(messages, result, (time.monotonic() - t0) * 1000)
         return result
 
+    async def complete_once(
+        self,
+        messages: list[dict],
+        max_tokens: int = 4096,
+        temperature: float = 0.3,
+    ) -> LLMResponse:
+        t0 = time.monotonic()
+        current_finish_reason.set(None)
+        result = await self._do_complete(messages, max_tokens, temperature)
+        await self._write_debug_snapshot(messages, result, (time.monotonic() - t0) * 1000)
+        return result
+
     async def stream_complete(
         self,
         messages: list[dict],
@@ -223,7 +235,9 @@ class OpenAICompatClient(BaseLLMClient):
                 f"(len={len(content.strip())}, model={self._model})"
             )
 
-        truncated = choices[0].get("finish_reason") == "length" if choices else False
+        finish_reason = str(choices[0].get("finish_reason") or "unknown") if choices else "unknown"
+        current_finish_reason.set(finish_reason)
+        truncated = finish_reason == "length"
         if truncated:
             logger.warning(
                 "LLM response truncated (finish_reason=length), output may be incomplete"
@@ -241,6 +255,7 @@ class OpenAICompatClient(BaseLLMClient):
             model=data.get("model", self._model),
             usage=usage,
             truncated=truncated,
+            finish_reason=finish_reason,
         )
 
     async def health_check(self) -> tuple[bool, str]:

@@ -130,6 +130,22 @@ class Settings(BaseSettings):
     ai_conversation_streaming_enabled: bool = True  # AI_CONVERSATION_STREAMING_ENABLED — disable for providers with broken SSE
     ai_conversation_max_output_tokens: int = 1024  # AI_CONVERSATION_MAX_OUTPUT_TOKENS — cap interactive thread turns
     ai_conversation_stream_timeout_sec: int = 120  # AI_CONVERSATION_STREAM_TIMEOUT_SEC — fallback from streaming to complete()
+    # Staged source analysis is an evidence-ranking assist, not a second source
+    # discovery pass. ``source_analysis_model`` accepts an LLM config id/model
+    # name; an empty value keeps the active model while retaining every limit.
+    source_analysis_model: str = ""
+    source_analysis_max_tokens: int = Field(default=1600, ge=256, le=4096)
+    source_analysis_max_chinese_characters: int = Field(default=1200, ge=200, le=8000)
+    source_analysis_max_evidence_anchors: int = Field(default=12, ge=1, le=48)
+    source_analysis_max_files: int = Field(default=6, ge=1, le=24)
+    source_analysis_excerpt_chars: int = Field(default=1200, ge=200, le=6000)
+    source_analysis_context_timeout_seconds: int = Field(default=30, ge=1, le=300)
+    source_analysis_timeout_seconds: int = Field(default=300, ge=1, le=480)
+    source_analysis_repair_max_tokens: int = Field(default=500, ge=128, le=800)
+    source_analysis_repair_timeout_seconds: int = Field(default=120, ge=1, le=180)
+    source_analysis_total_timeout_seconds: int = Field(default=480, ge=1, le=600)
+    source_analysis_cache_enabled: bool = True
+    source_analysis_schema_version: str = "source-evidence-pack-v1"
     gitnexus_poll_timeout: int = 600 # max seconds to wait for GitNexus indexing
     coverage_max_upload_mb: int = 100 # max single file size for coverage upload
 

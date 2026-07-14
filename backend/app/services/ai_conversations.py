@@ -24,6 +24,7 @@ import aiosqlite
 
 from app.config import settings
 from app.llm.base import current_finish_reason
+from app.llm.factory import create_source_analysis_llm_client
 from app.services.agent_cli_bridge import (
     AGENT_ANSWER_DELTA_PREFIX,
     AGENT_FINAL_ANSWER_PREFIX,
@@ -52,6 +53,7 @@ from app.services.test_activity_contract import (
 from app.services.workflow_dsl import WorkflowStore
 from app.services.workflow_presets import get_workflow_preset
 from app.services.workflow_version_store import WorkflowVersionStore
+from app.services.workbench_task_run import build_local_source_context
 
 logger = logging.getLogger(__name__)
 
@@ -2037,6 +2039,44 @@ async def run_generation(
             staged_artifact_root = ai_thread_agent_artifact_dir(
                 str(conversation["id"]), run_id
             )
+            staged_repo_path = (
+                await _conversation_repo_path(conversation, db_path=store.db_path)
+                or _conversation_initial_repo_path(conversation)
+            )
+            local_source_context = await asyncio.to_thread(
+                build_local_source_context,
+                repo_path=staged_repo_path,
+                query=test_activity_context,
+                limit=settings.source_analysis_max_files,
+            )
+            source_analysis_context = {
+                "source_context": local_source_context,
+                "input_materials": {
+                    "materials": [
+                        {
+                            "input_id": str(item.get("kind") or f"reference_{index + 1}"),
+                            "sha256": str(item.get("sha256") or ""),
+                            "text_preview": str(
+                                item.get("title") or item.get("label") or item.get("path") or ""
+                            )[:1000],
+                        }
+                        for index, item in enumerate(references[:8])
+                        if isinstance(item, dict)
+                    ]
+                },
+                "mcp": {
+                    "references": [
+                        {
+                            key: item.get(key)
+                            for key in ("kind", "title", "path", "source")
+                            if item.get(key) not in (None, "")
+                        }
+                        for item in references[:12]
+                        if isinstance(item, dict)
+                    ]
+                },
+            }
+            source_analysis_llm = await create_source_analysis_llm_client()
 
             async def staged_run_cancelled() -> bool:
                 current_run = await store.get_run(run_id)
@@ -2049,29 +2089,44 @@ async def run_generation(
                     event_type="status",
                     payload={
                         "status": "running",
-                        "kind": "staged_execution",
+                        "kind": str(payload.get("event_type") or "staged_execution"),
                         "stage_id": payload.get("stage_id"),
                         "stage_status": payload.get("status"),
                         "current": payload.get("current"),
                         "total": payload.get("total"),
                         "artifact": payload.get("artifact"),
-                        "message": _staged_execution_progress_message(payload),
+                        "degraded": bool(payload.get("degraded", False)),
+                        "reason": str(payload.get("reason") or ""),
+                        "message": str(payload.get("user_message") or "")
+                        or _staged_execution_progress_message(payload),
                     },
                 )
 
-            await execute_staged_builtin_plan(
-                llm=llm,
-                plan=staged_plan,
-                artifact_dir=staged_artifact_root,
-                context_prompt="\n".join(
-                    str(item.get("content") or "")
-                    for item in prompt
-                    if isinstance(item, dict)
-                ),
-                on_progress=append_stage_progress,
-                is_cancelled=staged_run_cancelled,
-                max_tokens=max_tokens,
-            )
+            try:
+                await execute_staged_builtin_plan(
+                    llm=llm,
+                    plan=staged_plan,
+                    artifact_dir=staged_artifact_root,
+                    context_prompt="\n".join(
+                        str(item.get("content") or "")
+                        for item in prompt
+                        if isinstance(item, dict)
+                    ),
+                    source_analysis_context=source_analysis_context,
+                    source_analysis_llm=source_analysis_llm,
+                    source_analysis_cache_dir=(
+                        settings.data_path / "workbench" / "source_analysis_cache"
+                        if settings.source_analysis_cache_enabled
+                        else None
+                    ),
+                    on_progress=append_stage_progress,
+                    is_cancelled=staged_run_cancelled,
+                    max_tokens=max_tokens,
+                )
+            finally:
+                close_source_llm = getattr(source_analysis_llm, "close", None)
+                if callable(close_source_llm):
+                    await close_source_llm()
             content = await _staged_artifact_content(
                 staged_artifact_root,
                 staged_plan,
@@ -6377,6 +6432,19 @@ def _test_activity_task_card_actions(*, conversation: dict[str, Any], user_messa
         user_requirements=user_message,
     )
     workspace_id = _conversation_workspace_id(conversation)
+    workflow_template_id = "source_flow_sfmea_blackbox"
+    href = "/workbench?" + urlencode(
+        {
+            "workflow": workflow_template_id,
+            "workspace_id": workspace_id if workspace_id != "global" else "",
+            "target": contract["target"],
+            "outputs": ",".join(
+                str(item.get("artifact") or "")
+                for item in requested_outputs
+                if str(item.get("artifact") or "")
+            ),
+        }
+    )
     return [
         {
             "id": "test_activity_task_card",
@@ -6389,8 +6457,9 @@ def _test_activity_task_card_actions(*, conversation: dict[str, Any], user_messa
             "focus_rationale": contract["focus_rationale"][:6],
             "test_activity_contract": contract,
             "artifact_contract": contract.get("artifact_contract", {}),
-            "workflow_template_id": "source_flow_sfmea_blackbox",
+            "workflow_template_id": workflow_template_id,
             "workspace_id": workspace_id if workspace_id != "global" else "",
+            "href": href,
             "primary_action": "create_task_draft",
             "notice": "创建任务草稿后进入六步配置；当前 AI 回答未执行工作流。",
         }

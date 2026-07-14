@@ -156,6 +156,7 @@ class LLMResponse:
     model: str
     usage: dict  # {"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
     truncated: bool = False
+    finish_reason: str | None = None
 
 
 class BaseLLMClient(ABC):
@@ -180,6 +181,20 @@ class BaseLLMClient(ABC):
         """Stream completion tokens. Default: fallback to complete() and yield once."""
         resp = await self.complete(messages, max_tokens, temperature)
         yield resp.content
+
+    async def complete_once(
+        self,
+        messages: list[dict],
+        max_tokens: int = 4096,
+        temperature: float = 0.3,
+    ) -> LLMResponse:
+        """Issue one logical completion.
+
+        Concrete network clients override this to bypass their general-purpose
+        transport retry loop. Bounded stages can then own retry/degradation
+        policy without accidentally multiplying full prompts.
+        """
+        return await self.complete(messages, max_tokens, temperature)
 
     async def stream_complete_collected(
         self,

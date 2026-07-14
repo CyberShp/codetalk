@@ -3927,6 +3927,128 @@ def test_local_source_excerpt_end_line_matches_character_truncation():
     assert end_line == start_line + len(excerpt.splitlines()) - 1
 
 
+def test_local_source_context_prefers_git_files_and_records_revision(tmp_path):
+    import subprocess
+
+    from app.services.workbench_task_run import build_local_source_context
+
+    repo = tmp_path / "repo"
+    tracked = repo / "lib" / "nvmf" / "ctrlr.c"
+    untracked = repo / "lib" / "nvmf" / "untracked.c"
+    tracked.parent.mkdir(parents=True)
+    tracked.write_text("int spdk_nvmf_ctrlr_connect(void) { return 0; }\n", encoding="utf-8")
+    untracked.write_text("int spdk_nvmf_untracked_connect(void) { return 0; }\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "lib/nvmf/ctrlr.c"], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=CodeTalk Test",
+            "-c",
+            "user.email=codetalk@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+    )
+    revision = subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True
+    ).strip()
+
+    context = build_local_source_context(
+        repo_path=str(repo),
+        query="lib/nvmf connect",
+        search_roots=["lib/nvmf"],
+    )
+
+    assert context["repo_revision"] == revision
+    assert context["file_discovery"] == "git_ls_files"
+    assert [item["file_path"] for item in context["files"]] == ["lib/nvmf/ctrlr.c"]
+    assert context["files"][0]["classification"] == "source"
+
+
+def test_local_source_context_reserves_a_related_test_anchor(tmp_path):
+    from app.services.workbench_task_run import build_local_source_context
+
+    source = tmp_path / "lib" / "iscsi" / "iscsi.c"
+    test_source = tmp_path / "test" / "iscsi_tgt" / "login.sh"
+    source.parent.mkdir(parents=True)
+    test_source.parent.mkdir(parents=True)
+    source.write_text(
+        "int spdk_iscsi_login(void) { return authenticate_login(); }\n",
+        encoding="utf-8",
+    )
+    for index in range(4):
+        extra = tmp_path / "lib" / "iscsi" / f"login_auth_{index}.c"
+        extra.write_text(
+            f"int iscsi_login_authentication_timeout_{index}(void) {{ return 0; }}\n",
+            encoding="utf-8",
+        )
+    test_source.write_text(
+        "# iscsi login authentication timeout recovery test\n",
+        encoding="utf-8",
+    )
+
+    context = build_local_source_context(
+        repo_path=str(tmp_path),
+        query="iSCSI login authentication timeout",
+        limit=2,
+    )
+
+    assert {item["classification"] for item in context["files"]} == {"source", "test"}
+
+
+def test_prepare_memoizes_identical_local_source_queries(tmp_path, monkeypatch):
+    import app.services.workbench_task_run as task_run_module
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_source_context(*, repo_path, query, **_kwargs):
+        calls.append((repo_path, query))
+        return {
+            "provider": "local-source-search",
+            "status": "ready",
+            "query": query,
+            "repo_path": repo_path,
+            "repo_revision": "fixture-revision",
+            "files": [],
+        }
+
+    monkeypatch.setattr(task_run_module, "build_local_source_context", fake_source_context)
+    store = WorkflowStore(tmp_path / "workflows.db")
+    store.save_workflow(
+        {
+            "id": "memo-source-context",
+            "name": "memo source context",
+            "version": 1,
+            "inputs": [{"id": "analysis_target", "type": "free_text"}],
+            "steps": [
+                {"id": "first", "type": "agent_task", "provider": "builtin-llm"},
+                {"id": "second", "type": "agent_task", "provider": "builtin-llm"},
+            ],
+            "outputs": [],
+        }
+    )
+
+    WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=store,
+    ).prepare(
+        workflow_id="memo-source-context",
+        workspace_id="ws-memo",
+        repo_path=str(tmp_path),
+        inputs={"analysis_target": "NVMe TCP TLS"},
+    )
+
+    assert len(calls) == 1
+
+
 def test_workbench_workflow_runner_injects_prior_step_artifacts_into_agent_task(
     tmp_path,
     monkeypatch,

@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import subprocess
+import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -39,6 +41,8 @@ SOURCE_SCAN_IGNORED_DIRS = frozenset({
     "out", "target", "__pycache__", ".venv", "venv", "task_runs",
     "workbench", ".codetalk", ".codehub",
 })
+_GIT_SOURCE_FILE_CACHE: dict[tuple[str, str, int, tuple[str, ...]], tuple[str, ...]] = {}
+_GIT_SOURCE_FILE_CACHE_LOCK = threading.Lock()
 
 
 def _now() -> str:
@@ -137,9 +141,19 @@ class WorkbenchTaskRunPreparer:
             evidence_memory=self.evidence_memory,
             semantic_library=self.semantic_library,
         )
-        local_source_context = build_local_source_context(
-            repo_path=repo_path,
-            query=str(context_bundle.get("query") or ""),
+        source_context_memo: dict[tuple[str, str], dict[str, Any]] = {}
+
+        def prepared_source_context(query: str) -> dict[str, Any]:
+            key = (str(repo_path or ""), str(query or ""))
+            if key not in source_context_memo:
+                source_context_memo[key] = build_local_source_context(
+                    repo_path=repo_path,
+                    query=query,
+                )
+            return json.loads(json.dumps(source_context_memo[key]))
+
+        local_source_context = prepared_source_context(
+            str(context_bundle.get("query") or "")
         )
         context_bundle["local_source_context"] = local_source_context
         agent_instructions = collect_agent_instructions(
@@ -255,9 +269,8 @@ class WorkbenchTaskRunPreparer:
                 evidence_memory=self.evidence_memory,
                 semantic_library=self.semantic_library,
             )
-            step_local_source_context = build_local_source_context(
-                repo_path=repo_path,
-                query=str(step_context_bundle.get("query") or ""),
+            step_local_source_context = prepared_source_context(
+                str(step_context_bundle.get("query") or "")
             )
             step_context_bundle["local_source_context"] = step_local_source_context
             step_agent_instructions = collect_agent_instructions(
@@ -517,6 +530,8 @@ def build_local_source_context(
     max_files_scanned: int = 5000,
     max_file_bytes: int = 768 * 1024,
     excerpt_radius: int = 4,
+    path_hints: list[str] | None = None,
+    search_roots: list[str] | None = None,
 ) -> dict[str, Any]:
     repo = Path(str(repo_path or ""))
     tokens = _source_query_tokens(query)
@@ -540,11 +555,25 @@ def build_local_source_context(
         return {**base, "status": "skipped", "reason": "repo_path_unresolved"}
     if not root.exists() or not root.is_dir():
         return {**base, "status": "skipped", "reason": "repo_path_not_directory"}
+    repo_revision = _git_repo_revision(root)
+    effective_roots = _source_search_roots(
+        root=root,
+        query=query,
+        path_hints=path_hints,
+        search_roots=search_roots,
+    )
+    git_files = _git_source_file_paths(
+        root=root,
+        repo_revision=repo_revision,
+        search_roots=effective_roots,
+    )
     candidates = _rank_source_candidates_by_path(
         root=root,
         tokens=tokens,
         max_files_scanned=max_files_scanned,
         max_file_bytes=max_file_bytes,
+        relative_paths=git_files,
+        search_roots=effective_roots,
     )
     scored: list[dict[str, Any]] = []
     for item in candidates[:max_candidates_to_read]:
@@ -585,10 +614,11 @@ def build_local_source_context(
             "size_bytes": len(data),
             "line_count": _line_count_text(text),
             "symbols": _source_symbols(text)[:12],
+            "classification": _local_source_classification(rel_path),
             "status": "validated_source_file",
         })
     scored.sort(key=lambda item: (-int(item.get("score") or 0), str(item.get("file_path") or "")))
-    files = scored[:limit]
+    files = _select_source_and_test_evidence(scored, limit=limit)
     return {
         **base,
         "status": "ready" if files else "empty",
@@ -597,7 +627,47 @@ def build_local_source_context(
         "scanned_file_count": min(len(candidates), max_files_scanned),
         "token_count": len(tokens),
         "tokens": tokens[:24],
+        "repo_revision": repo_revision,
+        "file_discovery": "git_ls_files" if git_files is not None else "bounded_recursive",
+        "search_roots": effective_roots,
     }
+
+
+def _select_source_and_test_evidence(
+    scored: list[dict[str, Any]], *, limit: int
+) -> list[dict[str, Any]]:
+    selected = list(scored[: max(0, limit)])
+    if limit < 2 or not selected:
+        return selected
+    selected_classes = {str(item.get("classification") or "source") for item in selected}
+    for required_class in ("source", "test"):
+        if required_class in selected_classes:
+            continue
+        replacement = next(
+            (
+                item
+                for item in scored[limit:]
+                if str(item.get("classification") or "source") == required_class
+            ),
+            None,
+        )
+        if replacement is None:
+            continue
+        replace_index = next(
+            (
+                index
+                for index in range(len(selected) - 1, -1, -1)
+                if str(selected[index].get("classification") or "source")
+                != required_class
+            ),
+            len(selected) - 1,
+        )
+        selected[replace_index] = replacement
+        selected_classes.add(required_class)
+    selected.sort(
+        key=lambda item: (-int(item.get("score") or 0), str(item.get("file_path") or ""))
+    )
+    return selected
 
 
 def _rank_source_candidates_by_path(
@@ -606,10 +676,17 @@ def _rank_source_candidates_by_path(
     tokens: list[str],
     max_files_scanned: int,
     max_file_bytes: int,
+    relative_paths: tuple[str, ...] | None = None,
+    search_roots: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     candidates: list[dict[str, Any]] = []
     scanned = 0
-    for source_path in _iter_source_files(root):
+    source_paths = (
+        (root / relative_path for relative_path in relative_paths)
+        if relative_paths is not None
+        else _iter_source_files(root, search_roots=search_roots)
+    )
+    for source_path in source_paths:
         if scanned >= max_files_scanned:
             break
         scanned += 1
@@ -639,8 +716,16 @@ def _rank_source_candidates_by_path(
     return candidates
 
 
-def _iter_source_files(root: Path):
-    stack = [root]
+def _iter_source_files(root: Path, *, search_roots: list[str] | None = None):
+    stack = [
+        candidate
+        for candidate in (
+            [root / value for value in search_roots]
+            if search_roots
+            else [root]
+        )
+        if candidate.exists() and candidate.is_dir()
+    ]
     while stack:
         current = stack.pop()
         try:
@@ -655,6 +740,114 @@ def _iter_source_files(root: Path):
                 continue
             if entry.suffix.lower() in SOURCE_EXTENSIONS:
                 yield entry
+
+
+def _git_repo_revision(root: Path) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip()
+
+
+def _git_source_file_paths(
+    *,
+    root: Path,
+    repo_revision: str,
+    search_roots: list[str],
+) -> tuple[str, ...] | None:
+    if not repo_revision:
+        return None
+    try:
+        index_result = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--git-path", "index"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        index_path = Path(index_result.stdout.strip())
+        if not index_path.is_absolute():
+            index_path = root / index_path
+        index_signature = index_path.stat().st_mtime_ns if index_path.exists() else 0
+    except (OSError, subprocess.SubprocessError):
+        index_signature = 0
+    cache_key = (
+        str(root),
+        repo_revision,
+        index_signature,
+        tuple(search_roots),
+    )
+    with _GIT_SOURCE_FILE_CACHE_LOCK:
+        cached = _GIT_SOURCE_FILE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    command = ["git", "-C", str(root), "ls-files", "-z"]
+    if search_roots:
+        command.extend(["--", *search_roots])
+    try:
+        result = subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    paths = tuple(
+        value.decode("utf-8", errors="replace")
+        for value in result.stdout.split(b"\0")
+        if value
+        and Path(value.decode("utf-8", errors="replace")).suffix.lower()
+        in SOURCE_EXTENSIONS
+    )
+    with _GIT_SOURCE_FILE_CACHE_LOCK:
+        if len(_GIT_SOURCE_FILE_CACHE) >= 64:
+            _GIT_SOURCE_FILE_CACHE.pop(next(iter(_GIT_SOURCE_FILE_CACHE)))
+        _GIT_SOURCE_FILE_CACHE[cache_key] = paths
+    return paths
+
+
+def _source_search_roots(
+    *,
+    root: Path,
+    query: str,
+    path_hints: list[str] | None,
+    search_roots: list[str] | None,
+) -> list[str]:
+    requested = [
+        str(value).strip().replace("\\", "/").strip("/")
+        for value in [*(search_roots or []), *(path_hints or [])]
+        if str(value).strip()
+    ]
+    requested.extend(
+        match.strip("/")
+        for match in re.findall(
+            r"(?<![A-Za-z0-9_.-])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+",
+            str(query or ""),
+        )
+    )
+    safe = []
+    for value in _unique_strings(requested):
+        candidate = (root / value).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            continue
+        if candidate.exists():
+            safe.append(value)
+    return safe[:16]
+
+
+def _local_source_classification(path: str) -> str:
+    normalized = path.replace("\\", "/").lower().lstrip("./")
+    return "test" if normalized.startswith(("test/", "tests/", "spec/")) else "source"
 
 
 def _source_query_tokens(query: str) -> list[str]:
@@ -1428,6 +1621,8 @@ def _execution_source_context(*, source_context: dict[str, Any]) -> dict[str, An
     return {
         "provider": str(source_context.get("provider") or "local-source-search"),
         "status": str(source_context.get("status") or "unknown"),
+        "repo_revision": str(source_context.get("repo_revision") or ""),
+        "file_discovery": str(source_context.get("file_discovery") or ""),
         "source_first": bool((source_context.get("rules") or {}).get("source_first", False)),
         "rule": (
             "Read and cite these current repo source excerpts before making source-based claims. "
@@ -1439,6 +1634,11 @@ def _execution_source_context(*, source_context: dict[str, Any]) -> dict[str, An
                 "start_line": item.get("start_line"),
                 "end_line": item.get("end_line"),
                 "sha256": str(item.get("sha256") or ""),
+                "classification": str(
+                    item.get("classification")
+                    or _local_source_classification(str(item.get("file_path") or ""))
+                ),
+                "status": str(item.get("status") or "validated_source_file"),
                 "matched_terms": [str(term) for term in item.get("matched_terms") or []],
                 "symbols": [str(symbol) for symbol in item.get("symbols") or []],
                 "excerpt": str(item.get("excerpt") or ""),
