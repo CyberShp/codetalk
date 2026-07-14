@@ -5435,6 +5435,10 @@ async def test_builtin_comprehensive_test_activity_automatically_runs_stages(
     delivery_dir = ai_conversations.ai_thread_delivery_dir(conversation["id"], run_id)
     assert run["status"] == "completed"
     assert (agent_dir / "staged_execution_plan.json").exists()
+    staged_plan = json.loads(
+        (agent_dir / "staged_execution_plan.json").read_text(encoding="utf-8")
+    )
+    assert staged_plan["workflow_version"] == "ai-thread-source-flow-v1"
     assert len(llm.prompts) == 5
     assert all(original in prompt for prompt in llm.prompts)
     manifest = json.loads((delivery_dir / "artifact_manifest.json").read_text(encoding="utf-8"))

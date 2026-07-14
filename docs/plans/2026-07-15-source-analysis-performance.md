@@ -28,7 +28,7 @@ The final system materializes `source_analysis.md`, `source_scope.json`, and `ev
 ## Terminal contracts
 
 - Source Evidence Pack schema version: `source-evidence-pack-v1`.
-- Source Analysis cache schema version: `source-analysis-cache-v1`.
+- Source Analysis cache schema version: `source-analysis-cache-v2`.
 - Stage metrics include `attempt_count`, prompt sizes before/after compaction, provider wait, output tokens, finish reason, repair/full retry flags, cache/degradation state, and elapsed budgets.
 - Configurable limits: stage model config, max tokens, timeout, total timeout, max files, excerpt characters, evidence anchors, context timeout, repair tokens, and repair timeout.
 

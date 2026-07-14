@@ -18,9 +18,9 @@ created: 2026-07-15
 
 | Scenario | P50 | P95 / max | Acceptance |
 | --- | ---: | ---: | --- |
-| Real DeepSeek, uncached, 5 runs | 6.296 s | 6.970 s | P50 <= 5 min; P95 <= 8 min |
-| Validated cache hit, 5 runs | 0.0048 s | 0.0086 s | <= 30 s |
-| Real-provider forced timeout | 0.0044 s | 0.0044 s | bounded fallback; default total budget is 480 s |
+| Real DeepSeek, uncached, 5 runs | 6.142 s | 6.447 s | P50 <= 5 min; P95 <= 8 min |
+| Validated cache hit, 5 runs | 0.0036 s | 0.0039 s | <= 30 s |
+| Real-provider forced timeout | 0.0049 s | 0.0049 s | bounded fallback; default total budget is 480 s |
 
 The benchmark is intentionally not a mock: it used the configured `DeepSeek Official` provider and SPDK source files read from disk.
 
@@ -45,37 +45,35 @@ The new stage result always records:
 - Search roots: `lib/iscsi`, `test/iscsi_tgt`
 - Provider/model: configured DeepSeek Official / `deepseek-v4-flash`
 - Evidence per run: 5 source files and 1 test file
-- Compact prompt: 10,576 characters / 2,644 estimated tokens
+- Compact prompt: 7,275 characters / 1,818 estimated tokens
 - Provider output budget: 1,600 tokens
 
 ## Uncached Runs
 
 | Run | Attempts | Provider wait | Output tokens | Finish | Degraded | Cache | Quality |
 | ---: | ---: | ---: | ---: | --- | --- | --- | --- |
-| 1 | 1 | 5,792.3 ms | 666 | stop | no | disabled | passed |
-| 2 | 1 | 6,770.2 ms | 664 | stop | no | disabled | passed |
-| 3 | 1 | 6,208.5 ms | 630 | stop | no | disabled | passed |
-| 4 | 1 | 6,193.7 ms | 564 | stop | no | disabled | passed |
-| 5 | 1 | 6,879.5 ms | 704 | stop | no | disabled | passed |
+| 1 | 1 | 6,130.6 ms | 594 | stop | no | disabled | passed |
+| 2 | 1 | 6,438.5 ms | 585 | stop | no | disabled | passed |
+| 3 | 1 | 6,022.3 ms | 638 | stop | no | disabled | passed |
+| 4 | 1 | 6,332.2 ms | 576 | stop | no | disabled | passed |
+| 5 | 1 | 6,008.5 ms | 651 | stop | no | disabled | passed |
 
 Every run set `full_retry_performed=false` and `repair_attempt_count=0`.
-
-A final smoke run after the bounded Markdown-repair path was added completed in 5.517 seconds with one full attempt, zero repairs, 495 output tokens, `finish_reason=stop`, and the same passed evidence gate.
 
 ## Cache Runs
 
 The cache was warmed once with a successful, non-degraded, quality-passed result. Five subsequent executions reported `attempt_count=0`, `provider_wait_ms=0`, `finish_reason=cache_hit`, and emitted `stage_reused`.
 
-Wall times were 8.6, 5.4, 4.8, 4.4, and 4.3 ms.
+Wall times were 3.9, 3.5, 3.6, 3.6, and 3.4 ms.
 
-The cache key includes repository commit, analysis target, referenced file SHA256 values, input material SHA256 values, workflow version, and Source Analysis schema version. Restore also validates the cached evidence path/SHA pairs against the freshly prepared deterministic pack.
+The cache key includes repository commit, analysis target, referenced file SHA256 values, input material SHA256 values, workflow version, and Source Analysis schema version. Restore requires cards and scope to equal the freshly prepared deterministic pack and verifies SHA256 digests for all three cached artifacts.
 
 ## Timeout And Fallback
 
-A real provider request was started with a deliberately reduced test budget. It was cancelled after 3.1 ms and completed the stage in 4.4 ms with:
+A real provider request was started with a deliberately reduced test budget. It completed the degraded stage in 4.9 ms with:
 
 - `attempt_count=1`;
-- `finish_reason=timeout`;
+- `finish_reason=provider_timeout`;
 - `degraded=true`, reason `provider_timeout`;
 - no repair or second full request;
 - `source_analysis.md`, `source_scope.json`, and `evidence_cards.json` still present;
@@ -94,7 +92,7 @@ All five uncached runs passed an independent artifact check:
 - each pack contains source and test evidence;
 - all six evidence cards pass the deterministic quality gate.
 
-The model enhancement is appended after the deterministic report. Provider failure cannot remove or rewrite the verified scope/cards, and over-budget Markdown is trimmed at a paragraph boundary rather than left malformed.
+The model enhancement is appended only after its evidence IDs, file paths, line ranges, and function references pass grounding validation. Unknown claims are discarded without a repair call. Provider failure cannot remove or rewrite the verified scope/cards, and over-budget Markdown is trimmed at a paragraph boundary rather than left malformed.
 
 ## Implementation Notes
 
@@ -104,12 +102,12 @@ The model enhancement is appended after the deterministic report. Provider failu
 - Downstream stages execute by dependency-ready level, allowing independent stages to run concurrently.
 - Stage-specific model routing and every budget are configurable through `SOURCE_ANALYSIS_*` environment variables.
 
-Raw benchmark artifacts are stored under `/private/tmp/codetalk-source-analysis-benchmark/` on the verification host.
+Raw post-review benchmark artifacts are stored under `/private/tmp/codetalk-source-analysis-review-fixed-benchmark/` on the verification host.
 
 ## Regression Gate
 
 - Python compile gate: `python3.11 -m compileall -q backend/app backend/tests` passed.
-- Focused source-analysis/workbench/AI-thread/LLM/database suite: 247 passed.
+- Focused source-analysis/workbench/AI-thread/LLM/database/workflow suite: 259 passed.
 - Full backend run reached 1,987 passed and 8 skipped before exposing a pre-existing task-card `href` contract mismatch.
 - The task-card contract was restored with its declared Workbench URL; that test passes independently.
 - The failed file and every remaining test file were rerun as a 470-test segment; all 470 passed.

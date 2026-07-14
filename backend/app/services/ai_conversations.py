@@ -2005,6 +2005,7 @@ async def run_generation(
                 original_user_request=test_activity_context,
             )
             staged_plan["run_id"] = run_id
+            staged_plan["workflow_version"] = "ai-thread-source-flow-v1"
 
     async def append_delta(content: str) -> None:
         nonlocal artifact_stream_notice_sent

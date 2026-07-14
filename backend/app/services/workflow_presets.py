@@ -56,7 +56,6 @@ EVIDENCE_CARDS_SCHEMA: dict[str, Any] = {
             "file_path": {"type": "string"},
             "symbols": {
                 "type": "array",
-                "minItems": 1,
                 "items": {"type": "string", "minLength": 1},
             },
             "reason": {"type": "string"},

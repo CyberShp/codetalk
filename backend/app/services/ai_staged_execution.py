@@ -21,7 +21,7 @@ ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
 CancellationCallback = Callable[[], Awaitable[bool] | bool]
 _CANCELLATION_POLL_INTERVAL = 0.1
 _SOURCE_EVIDENCE_PACK_VERSION = "source-evidence-pack-v1"
-_SOURCE_ANALYSIS_CACHE_VERSION = "source-analysis-cache-v1"
+_SOURCE_ANALYSIS_CACHE_VERSION = "source-analysis-cache-v2"
 
 
 def build_source_analysis_context(
@@ -55,7 +55,9 @@ def build_source_analysis_context(
         files.append(
             {
                 "file_path": path,
-                "classification": _source_file_classification(path),
+                "classification": str(
+                    item.get("classification") or _source_file_classification(path)
+                ),
                 "start_line": int(item.get("start_line") or 0),
                 "end_line": int(item.get("end_line") or 0),
                 "excerpt": str(item.get("excerpt") or "")[:excerpt_limit],
@@ -90,7 +92,9 @@ def build_source_analysis_context(
     return {
         "version": "source-analysis-context-v1",
         "analysis_target": analysis_target[:4000],
-        "repo_path": str(source_context.get("repo_path") or ""),
+        "repo_path": str(
+            source_context.get("repo_path") or staged_context.get("repo_path") or ""
+        ),
         "repo_revision": str(source_context.get("repo_revision") or ""),
         "files": files,
         "verified_symbols": sorted(
@@ -150,6 +154,10 @@ def build_source_evidence_pack(context: dict[str, Any]) -> dict[str, Any]:
         or card["start_line"] <= 0
         or card["end_line"] < card["start_line"]
     ]
+    missing_symbols = [
+        card["evidence_id"] for card in cards if not card.get("symbols")
+    ]
+    has_verified_symbol = any(card.get("symbols") for card in cards)
     source_files = [
         card["file_path"] for card in cards if card["classification"] == "source"
     ]
@@ -207,8 +215,13 @@ def build_source_evidence_pack(context: dict[str, Any]) -> dict[str, Any]:
             "cgc": str(context.get("cgc_summary") or ""),
         },
         "quality_gate": {
-            "status": "passed" if cards and not invalid else "limited",
+            "status": (
+                "passed"
+                if cards and not invalid and has_verified_symbol
+                else "limited"
+            ),
             "invalid_evidence_ids": invalid,
+            "missing_symbol_evidence_ids": missing_symbols,
             "sha256_validated_count": sum(bool(card["sha256"]) for card in cards),
             "source_file_count": len(source_files),
             "test_file_count": len(test_files),
@@ -1008,11 +1021,21 @@ async def _execute_source_analysis_stage(
     output_path = artifact_dir / "source_analysis.md"
     cache_root = _source_analysis_cache_root(cache_dir)
     cache_key = _source_analysis_cache_key(plan=plan, context=compact)
-    if cache_root is not None and _restore_source_analysis_cache(
+    elapsed_after_context = time.monotonic() - started
+    budget_degradation_reason = ""
+    if elapsed_after_context >= float(effective["total_timeout_seconds"]):
+        budget_degradation_reason = "total_budget_exceeded_during_context"
+    elif context_prepare_ms >= float(effective["context_timeout_seconds"]) * 1000:
+        budget_degradation_reason = "context_budget_exceeded"
+    if (
+        not budget_degradation_reason
+        and cache_root is not None
+        and _restore_source_analysis_cache(
         cache_root=cache_root,
         cache_key=cache_key,
         artifact_dir=artifact_dir,
         expected_pack=pack,
+        )
     ):
         duration_ms = round((time.monotonic() - started) * 1000, 1)
         result = {
@@ -1063,11 +1086,13 @@ async def _execute_source_analysis_stage(
     attempt_count = 0
     repair_attempt_count = 0
     repair_provider_wait_ms = 0.0
-    degraded = False
-    degradation_reason = ""
+    degraded = bool(budget_degradation_reason)
+    degradation_reason = budget_degradation_reason
     provider_phase = "full"
     quality_gate = pack.get("quality_gate") or {}
-    if not pack.get("evidence_cards"):
+    if budget_degradation_reason:
+        finish_reason = "budget_exceeded"
+    elif not pack.get("evidence_cards"):
         degraded = True
         degradation_reason = "no_verified_evidence"
     else:
@@ -1113,10 +1138,7 @@ async def _execute_source_analysis_stage(
                 raise ValueError("provider_output_truncated")
             if not raw_content:
                 raise ValueError("provider_output_empty")
-            format_errors = _source_analysis_enhancement_errors(
-                raw_content,
-                pack=pack,
-            )
+            format_errors = _source_analysis_format_errors(raw_content)
             if format_errors:
                 provider_phase = "repair"
                 repair_attempt_count = 1
@@ -1181,28 +1203,36 @@ async def _execute_source_analysis_stage(
                     or not repaired_content
                 ):
                     raise ValueError("repair_output_invalid")
-                remaining_errors = _source_analysis_enhancement_errors(
-                    repaired_content,
-                    pack=pack,
-                )
+                remaining_errors = _source_analysis_format_errors(repaired_content)
                 if remaining_errors:
                     raise ValueError(
                         "repair_output_invalid: " + "; ".join(remaining_errors[:3])
                     )
                 raw_content = repaired_content
                 finish_reason = f"repair_{repair_finish_reason}"
-            summary = _truncate_model_enhancement(
+            grounding_errors = _source_analysis_grounding_errors(
                 raw_content,
-                int(effective["max_chinese_characters"]),
+                pack=pack,
             )
-            deterministic = output_path.read_text(encoding="utf-8")
-            _write_text(
-                output_path,
-                deterministic.rstrip()
-                + "\n\n## 模型排序、归纳与缺口标记\n\n"
-                + summary.rstrip()
-                + "\n",
-            )
+            if grounding_errors:
+                degraded = True
+                degradation_reason = (
+                    "model_output_unverified: " + "; ".join(grounding_errors[:5])
+                )
+                finish_reason = "grounding_rejected"
+            else:
+                summary = _truncate_model_enhancement(
+                    raw_content,
+                    int(effective["max_chinese_characters"]),
+                )
+                deterministic = output_path.read_text(encoding="utf-8")
+                _write_text(
+                    output_path,
+                    deterministic.rstrip()
+                    + "\n\n## 模型排序、归纳与缺口标记\n\n"
+                    + summary.rstrip()
+                    + "\n",
+                )
         except asyncio.TimeoutError:
             elapsed_provider_ms = round(
                 (time.monotonic() - provider_started) * 1000,
@@ -1305,26 +1335,68 @@ def _truncate_model_enhancement(content: str, limit: int) -> str:
     )
 
 
-def _source_analysis_enhancement_errors(
-    content: str,
-    *,
-    pack: dict[str, Any],
-) -> list[str]:
+def _source_analysis_format_errors(content: str) -> list[str]:
     errors: list[str] = []
     stripped = content.strip()
     if stripped.count("```") % 2:
         errors.append("未闭合 Markdown 代码围栏")
     if stripped.startswith(("{", "[")):
         errors.append("返回了 JSON，而不是 Markdown 正文")
-    allowed_ids = {
-        str(card.get("evidence_id") or "")
+    return errors
+
+
+def _source_analysis_grounding_errors(
+    content: str,
+    *,
+    pack: dict[str, Any],
+) -> list[str]:
+    errors: list[str] = []
+    stripped = content.strip()
+    cards = [
+        card
         for card in pack.get("evidence_cards") or []
         if isinstance(card, dict)
+    ]
+    allowed_ids = {
+        str(card.get("evidence_id") or "")
+        for card in cards
     }
     referenced_ids = set(re.findall(r"\bSRC-\d+\b", stripped))
     unknown_ids = sorted(referenced_ids - allowed_ids)
     if unknown_ids:
         errors.append("引用了未知证据 ID：" + ", ".join(unknown_ids[:5]))
+    allowed_paths = {str(card.get("file_path") or ""): card for card in cards}
+    path_pattern = re.compile(
+        r"(?P<path>(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+)"
+        r"(?::(?P<start>\d+)(?:-(?P<end>\d+))?)?"
+    )
+    for match in path_pattern.finditer(stripped):
+        path = match.group("path")
+        card = allowed_paths.get(path)
+        if card is None:
+            errors.append(f"引用了未验证文件：{path}")
+            continue
+        if match.group("start"):
+            cited_start = int(match.group("start"))
+            cited_end = int(match.group("end") or cited_start)
+            verified_start = int(card.get("start_line") or 0)
+            verified_end = int(card.get("end_line") or 0)
+            if cited_start < verified_start or cited_end > verified_end:
+                errors.append(
+                    f"引用行号超出证据范围：{path}:{cited_start}-{cited_end}"
+                )
+    allowed_symbols = {
+        str(symbol)
+        for card in cards
+        for symbol in card.get("symbols") or []
+        if str(symbol)
+    }
+    referenced_calls = set(
+        re.findall(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)", stripped)
+    )
+    unknown_symbols = sorted(referenced_calls - allowed_symbols)
+    if unknown_symbols:
+        errors.append("引用了未验证函数：" + ", ".join(unknown_symbols[:5]))
     return errors
 
 
@@ -1498,6 +1570,8 @@ def _restore_source_analysis_cache(
         metadata.get("version") != _SOURCE_ANALYSIS_CACHE_VERSION
         or metadata.get("cache_key") != cache_key
         or metadata.get("quality_status") != "passed"
+        or cards != (expected_pack.get("evidence_cards") or [])
+        or scope != (expected_pack.get("source_scope") or {})
         or not isinstance(cards, list)
         or not isinstance(scope, dict)
         or cached_evidence != expected_evidence
@@ -1510,9 +1584,15 @@ def _restore_source_analysis_cache(
         )
     ):
         return False
+    artifact_sha256 = metadata.get("artifact_sha256")
+    if not isinstance(artifact_sha256, dict):
+        return False
     for name in ("source_analysis.md", "source_scope.json", "evidence_cards.json"):
         source = entry / name
-        if not source.is_file():
+        if (
+            not source.is_file()
+            or str(artifact_sha256.get(name) or "") != _sha256_path(source)
+        ):
             return False
         target = artifact_dir / name
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1543,6 +1623,14 @@ def _store_source_analysis_cache(
                 "version": _SOURCE_ANALYSIS_CACHE_VERSION,
                 "cache_key": cache_key,
                 "quality_status": str((pack.get("quality_gate") or {}).get("status") or ""),
+                "artifact_sha256": {
+                    name: _sha256_path(temporary / name)
+                    for name in (
+                        "source_analysis.md",
+                        "source_scope.json",
+                        "evidence_cards.json",
+                    )
+                },
                 "created_at": datetime.now(timezone.utc).isoformat(),
             },
         )
@@ -1553,6 +1641,14 @@ def _store_source_analysis_cache(
             shutil.rmtree(temporary, ignore_errors=True)
     except OSError:
         shutil.rmtree(temporary, ignore_errors=True)
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(128 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 async def _callback_true(callback: CancellationCallback | None) -> bool:

@@ -8,6 +8,7 @@ import time
 import pytest
 
 from app.llm.base import LLMResponse
+from app.services.ai_thread_artifacts import _validate_schema
 from app.services.ai_staged_execution import (
     _stage_prompt,
     _stage_format_rules,
@@ -17,6 +18,7 @@ from app.services.ai_staged_execution import (
     execute_staged_builtin_plan,
     materialize_source_evidence_pack,
 )
+from app.services.workflow_presets import EVIDENCE_CARDS_SCHEMA
 
 
 class _StageLLM:
@@ -36,7 +38,7 @@ class _StageLLM:
         self.max_tokens_by_stage.setdefault(stage, []).append(max_tokens)
         self.calls_by_stage[stage] = self.calls_by_stage.get(stage, 0) + 1
         if stage == "source_analysis":
-            content = "# 代码证据\n\n- `lib/iscsi/iscsi.c:1262` login version check\n"
+            content = "# 代码证据\n\n- `lib/iscsi/iscsi.c:100` login version check\n"
         elif stage == "business_flow":
             content = "# 业务流程\n\n## 外部触发\nlogin PDU\n## 流程步骤\n1. negotiate\n## 异常分支\ntimeout\n## 观测点\nlog\n"
         elif stage == "sfmea":
@@ -234,6 +236,19 @@ def test_source_analysis_context_keeps_only_bounded_verified_inputs():
     assert len(serialized) < 12000
 
 
+def test_source_analysis_context_preserves_validated_custom_test_classification():
+    staged_context = _verified_source_context()
+    staged_context["source_context"]["files"][0]["file_path"] = "qa/login_case.sh"
+    staged_context["source_context"]["files"][0]["classification"] = "test"
+
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "分析 login"},
+        staged_context=staged_context,
+    )
+
+    assert compact["files"][0]["classification"] == "test"
+
+
 def test_source_evidence_pack_materializes_three_verified_artifacts(tmp_path):
     compact = build_source_analysis_context(
         plan={"original_user_request": "分析 iSCSI login", "target": "iSCSI login"},
@@ -260,6 +275,36 @@ def test_source_evidence_pack_materializes_three_verified_artifacts(tmp_path):
     assert "spdk_iscsi_login_0" in (tmp_path / "source_analysis.md").read_text(
         encoding="utf-8"
     )
+
+
+def test_symbol_free_verified_evidence_remains_deliverable_but_not_cacheable():
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "分析 JSON 配置"},
+        staged_context={
+            "source_context": {
+                "repo_path": "/repo/config",
+                "repo_revision": "config123",
+                "files": [
+                    {
+                        "file_path": "config/login.json",
+                        "classification": "source",
+                        "start_line": 1,
+                        "end_line": 4,
+                        "excerpt": '{"login": true}',
+                        "symbols": [],
+                        "matched_terms": ["login"],
+                        "sha256": "a" * 64,
+                        "status": "validated_source_file",
+                    }
+                ],
+            }
+        },
+    )
+    pack = build_source_evidence_pack(compact)
+
+    assert pack["quality_gate"]["status"] == "limited"
+    assert pack["quality_gate"]["missing_symbol_evidence_ids"] == ["SRC-01"]
+    assert _validate_schema(pack["evidence_cards"], EVIDENCE_CARDS_SCHEMA) == []
 
 
 def test_stage_prompt_injects_only_declared_dependency_artifacts(tmp_path):
@@ -456,7 +501,7 @@ async def test_executor_writes_each_stage_and_preserves_original_request(tmp_pat
     assert progress[-1]["status"] == "completed"
     sfmea_prompt = next(prompt for prompt in llm.prompts if "STAGE_ID: sfmea" in prompt)
     assert "business_flow.md" in sfmea_prompt
-    assert "lib/iscsi/iscsi.c:1262" in sfmea_prompt
+    assert "lib/iscsi/iscsi.c:100" in sfmea_prompt
     assert "CURRENT_STAGE_ONLY" in sfmea_prompt
     assert "不要在当前响应中生成其他阶段" in sfmea_prompt
     flow_prompt = next(
@@ -690,6 +735,102 @@ async def test_source_analysis_uses_small_repair_only_for_format_error(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_source_analysis_rejects_unverified_model_paths_without_repair(tmp_path):
+    class HallucinatingLLM:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete_once(self, messages, max_tokens=4096, temperature=0.2):
+            self.calls += 1
+            return LLMResponse(
+                content=(
+                    "- `lib/invented.c:99` 中 `fake_login()` 负责恢复。\n"
+                    "- `SRC-99` 支持该结论。"
+                ),
+                model="hallucination-test",
+                usage={"completion_tokens": 30},
+                finish_reason="stop",
+            )
+
+    llm = HallucinatingLLM()
+    contract = _contract()
+    contract["required_outputs"] = ["source_scope.json", "evidence_cards.json"]
+    contract["artifact_contract"] = {
+        "source_scope.json": {"artifact": "source_scope.json", "schema": {"type": "object"}},
+        "evidence_cards.json": {"artifact": "evidence_cards.json", "schema": {"type": "array"}},
+    }
+    plan = build_staged_execution_plan(contract=contract, original_user_request="grounding")
+
+    await execute_staged_builtin_plan(
+        llm=llm,
+        plan=plan,
+        artifact_dir=tmp_path,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+    )
+
+    result = json.loads(
+        (tmp_path / "stages" / "source_analysis" / "stage_result.json").read_text()
+    )
+    assert llm.calls == 1
+    assert result["repair_attempt_count"] == 0
+    assert result["degraded"] is True
+    assert result["finish_reason"] == "grounding_rejected"
+    report = (tmp_path / "source_analysis.md").read_text(encoding="utf-8")
+    assert "invented.c" not in report
+    assert "fake_login" not in report
+
+
+@pytest.mark.asyncio
+async def test_source_analysis_skips_provider_after_total_budget_is_spent(
+    tmp_path,
+    monkeypatch,
+):
+    from app.services import ai_staged_execution as staged_module
+
+    original = staged_module.build_source_analysis_context
+
+    def slow_context(**kwargs):
+        time.sleep(0.06)
+        return original(**kwargs)
+
+    class CountingLLM(_StageLLM):
+        pass
+
+    monkeypatch.setattr(staged_module, "build_source_analysis_context", slow_context)
+    llm = CountingLLM()
+    contract = _contract()
+    contract["required_outputs"] = ["source_scope.json", "evidence_cards.json"]
+    contract["artifact_contract"] = {
+        "source_scope.json": {"artifact": "source_scope.json", "schema": {"type": "object"}},
+        "evidence_cards.json": {"artifact": "evidence_cards.json", "schema": {"type": "array"}},
+    }
+    plan = build_staged_execution_plan(contract=contract, original_user_request="budget")
+
+    await execute_staged_builtin_plan(
+        llm=llm,
+        plan=plan,
+        artifact_dir=tmp_path,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+        source_analysis_limits={
+            "context_timeout_seconds": 1,
+            "total_timeout_seconds": 0.05,
+        },
+    )
+
+    result = json.loads(
+        (tmp_path / "stages" / "source_analysis" / "stage_result.json").read_text()
+    )
+    assert llm.calls_by_stage.get("source_analysis", 0) == 0
+    assert result["attempt_count"] == 0
+    assert result["degraded"] is True
+    assert result["degradation_reason"] == "total_budget_exceeded_during_context"
+    assert result["finish_reason"] == "budget_exceeded"
+    assert (tmp_path / "source_analysis.md").is_file()
+
+
+@pytest.mark.asyncio
 async def test_source_analysis_timeout_cancels_provider_and_continues_with_evidence(tmp_path):
     started = asyncio.Event()
     cancelled = asyncio.Event()
@@ -787,6 +928,62 @@ async def test_source_analysis_cache_reuses_validated_pack_without_provider_call
     assert stage_result["cache_status"] == "hit"
     assert stage_result["attempt_count"] == 0
     assert stage_result["duration_ms"] < 30000
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tampered_artifact", ["source_analysis.md", "source_scope.json"])
+async def test_source_analysis_cache_rejects_tampered_artifacts(
+    tmp_path,
+    tampered_artifact,
+):
+    contract = _contract()
+    contract["required_outputs"] = ["source_scope.json", "evidence_cards.json"]
+    contract["artifact_contract"] = {
+        "source_scope.json": {"artifact": "source_scope.json", "schema": {"type": "object"}},
+        "evidence_cards.json": {"artifact": "evidence_cards.json", "schema": {"type": "array"}},
+    }
+    plan = build_staged_execution_plan(contract=contract, original_user_request="cache-tamper")
+    plan["workflow_version"] = "workflow-v8"
+    cache_dir = tmp_path / "cache"
+    first_dir = tmp_path / "first"
+    second_dir = tmp_path / "second"
+    first_llm = _StageLLM()
+    second_llm = _StageLLM()
+
+    await execute_staged_builtin_plan(
+        llm=first_llm,
+        plan=plan,
+        artifact_dir=first_dir,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+        source_analysis_cache_dir=cache_dir,
+    )
+    first_result = json.loads(
+        (first_dir / "stages" / "source_analysis" / "stage_result.json").read_text()
+    )
+    entry = cache_dir / first_result["cache_key"]
+    if tampered_artifact == "source_analysis.md":
+        (entry / "source_analysis.md").write_text("tampered report", encoding="utf-8")
+    else:
+        scope = json.loads((entry / "source_scope.json").read_text())
+        scope["repo"] = "/wrong/repo"
+        (entry / "source_scope.json").write_text(json.dumps(scope), encoding="utf-8")
+
+    await execute_staged_builtin_plan(
+        llm=second_llm,
+        plan=plan,
+        artifact_dir=second_dir,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+        source_analysis_cache_dir=cache_dir,
+    )
+
+    second_result = json.loads(
+        (second_dir / "stages" / "source_analysis" / "stage_result.json").read_text()
+    )
+    assert second_llm.calls_by_stage["source_analysis"] == 1
+    assert second_result["cache_status"] == "miss"
+    assert "tampered report" not in (second_dir / "source_analysis.md").read_text()
 
 
 @pytest.mark.asyncio

@@ -613,7 +613,7 @@ def build_local_source_context(
             "sha256": sha256,
             "size_bytes": len(data),
             "line_count": _line_count_text(text),
-            "symbols": _source_symbols(text)[:12],
+            "symbols": _source_symbols(excerpt)[:12],
             "classification": _local_source_classification(rel_path),
             "status": "validated_source_file",
         })
