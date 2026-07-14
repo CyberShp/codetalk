@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS settings (
 CREATE TABLE IF NOT EXISTS agent_runtimes (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
+    provider TEXT NOT NULL DEFAULT 'custom',
     command TEXT NOT NULL,
     args_json TEXT DEFAULT '[]',
     prompt_transport TEXT NOT NULL DEFAULT 'stdin',
@@ -214,6 +215,7 @@ CREATE TABLE IF NOT EXISTS ai_conversation_runs (
     runtime_type TEXT,
     agent_runtime_id TEXT,
     runtime_snapshot_json TEXT,
+    runtime_execution_snapshot_json TEXT,
     workflow_binding_snapshot_json TEXT,
     skills_snapshot_json TEXT,
     mcp_snapshot_json TEXT,
@@ -321,6 +323,7 @@ _MIGRATIONS = [
     "ALTER TABLE agent_runtimes ADD COLUMN session_persistence TEXT NOT NULL DEFAULT 'none'",
     "ALTER TABLE agent_runtimes ADD COLUMN resume_args_json TEXT DEFAULT '[]'",
     "ALTER TABLE agent_runtimes ADD COLUMN mcp_profile TEXT DEFAULT ''",
+    "ALTER TABLE agent_runtimes ADD COLUMN provider TEXT NOT NULL DEFAULT 'custom'",
     "UPDATE ai_conversations SET workspace_id = scope_id WHERE workspace_id = 'global' AND scope_type = 'workspace'",
     "UPDATE ai_conversations SET workspace_id = substr(scope_id, 1, instr(scope_id, ':') - 1) WHERE workspace_id = 'global' AND scope_type = 'module' AND instr(scope_id, ':') > 1",
     "UPDATE ai_conversations SET workspace_id = COALESCE(json_extract(initial_context_json, '$.workspace_id'), workspace_id) WHERE workspace_id = 'global' AND json_valid(initial_context_json)",
@@ -336,6 +339,7 @@ _MIGRATIONS = [
     "ALTER TABLE ai_conversation_runs ADD COLUMN runtime_type TEXT",
     "ALTER TABLE ai_conversation_runs ADD COLUMN agent_runtime_id TEXT",
     "ALTER TABLE ai_conversation_runs ADD COLUMN runtime_snapshot_json TEXT",
+    "ALTER TABLE ai_conversation_runs ADD COLUMN runtime_execution_snapshot_json TEXT",
     "ALTER TABLE ai_conversation_runs ADD COLUMN workflow_binding_snapshot_json TEXT",
     "ALTER TABLE ai_conversation_runs ADD COLUMN skills_snapshot_json TEXT",
     "ALTER TABLE ai_conversation_runs ADD COLUMN mcp_snapshot_json TEXT",
@@ -359,6 +363,7 @@ _DEFAULT_AGENT_RUNTIMES = [
     {
         "id": "default-claude-code",
         "name": "Claude Code",
+        "provider": "claude",
         "command": "claude",
         "args": [],
         "prompt_transport": "claude_print_arg",
@@ -378,6 +383,7 @@ _DEFAULT_AGENT_RUNTIMES = [
     {
         "id": "default-codex",
         "name": "Codex",
+        "provider": "codex",
         "command": "codex",
         "args": [],
         "prompt_transport": "codex_exec_json",
@@ -397,6 +403,7 @@ _DEFAULT_AGENT_RUNTIMES = [
     {
         "id": "default-opencode",
         "name": "OpenCode",
+        "provider": "opencode",
         "command": "opencode",
         "args": [],
         "prompt_transport": "opencode_run_arg",
@@ -465,14 +472,15 @@ async def _seed_default_agent_runtimes(db: aiosqlite.Connection) -> None:
         await db.execute(
             """
             INSERT INTO agent_runtimes
-                (id, name, command, args_json, prompt_transport, output_mode,
+                (id, name, provider, command, args_json, prompt_transport, output_mode,
                  working_dir_mode, fixed_working_dir, env_json, health_command,
                  timeout_seconds, completion_mode, idle_complete_seconds, sentinel_text,
                  session_persistence, resume_args_json, enabled, created_at, updated_at)
             VALUES
-                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             ON CONFLICT(id) DO UPDATE SET
                 name = excluded.name,
+                provider = excluded.provider,
                 command = excluded.command,
                 args_json = excluded.args_json,
                 prompt_transport = excluded.prompt_transport,
@@ -493,6 +501,7 @@ async def _seed_default_agent_runtimes(db: aiosqlite.Connection) -> None:
             (
                 runtime["id"],
                 runtime["name"],
+                runtime["provider"],
                 runtime["command"],
                 json.dumps(runtime["args"], ensure_ascii=False),
                 runtime["prompt_transport"],

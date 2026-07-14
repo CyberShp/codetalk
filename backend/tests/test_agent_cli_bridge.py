@@ -95,6 +95,45 @@ async def test_stream_runtime_enforces_real_workspace_readonly_sandbox(tmp_path)
     assert '"status": "active"' in policy
 
 
+@pytest.mark.asyncio
+async def test_stream_runtime_allows_configured_local_wrapper_script_readonly(tmp_path):
+    if sys.platform == "darwin" and not shutil.which("sandbox-exec"):
+        pytest.skip("sandbox-exec unavailable")
+    if sys.platform.startswith("linux") and not (shutil.which("bwrap") or shutil.which("bubblewrap")):
+        pytest.skip("bubblewrap unavailable")
+    if not (sys.platform == "darwin" or sys.platform.startswith("linux")):
+        pytest.skip("macOS/Linux sandbox test")
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    wrapper = runtime_dir / "wrapper.py"
+    wrapper.write_text(
+        "import sys\nprint('WRAPPER_OK ' + sys.stdin.read().strip(), flush=True)\n",
+        encoding="utf-8",
+    )
+    artifacts = tmp_path / "artifacts"
+    output: list[str] = []
+
+    async for chunk in stream_agent_runtime(
+        runtime={
+            "command": sys.executable,
+            "args": [str(wrapper)],
+            "prompt_transport": "stdin",
+            "output_mode": "plain",
+            "completion_mode": "process_exit",
+            "sandbox_mode": "required",
+            "env": {"CODETALK_AGENT_ARTIFACT_DIR": str(artifacts)},
+        },
+        prompt="source evidence",
+        cwd=str(repo),
+    ):
+        output.append(chunk)
+
+    assert "WRAPPER_OK source evidence" in "".join(output)
+
+
 def test_codex_artifact_dir_is_added_as_writable_before_exec():
     args = _codex_add_writable_artifact_dir(
         ["exec", "--json"],

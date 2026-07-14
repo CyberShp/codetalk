@@ -43,6 +43,7 @@ from app.services.workflow_presets import (
 from app.services.workflow_version_store import workflow_header_status
 from app.services.workflow_version_store import WorkflowVersionStore
 from app.services.workbench_task_run import WorkbenchTaskRunStore
+from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
 from app.services.workbench_task_store import WorkbenchTaskStore
 
 router = APIRouter(prefix="/api/ai/conversations", tags=["ai-conversations"])
@@ -51,6 +52,16 @@ _ACTIVE_BUILTIN_WORKFLOW_IDS = frozenset(
     for preset in active_builtin_workflow_presets()
 )
 _RESERVED_BUILTIN_WORKFLOW_IDS = reserved_builtin_workflow_ids()
+_TASK_DRAFT_LOCKS: dict[str, asyncio.Lock] = {}
+_TASK_RUN_THREAD_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _operation_lock(registry: dict[str, asyncio.Lock], key: str) -> asyncio.Lock:
+    lock = registry.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        registry[key] = lock
+    return lock
 
 
 class CreateConversationRequest(BaseModel):
@@ -264,14 +275,13 @@ def kick_conversation_queue(conversation_id: str) -> None:
                     or conversation.get("agent_runtime_id")
                     or ""
                 )
-                try:
-                    runtime = await AgentRuntimeStore().get_runtime(runtime_id)
-                except Exception as exc:
-                    await store.fail_run(run_id, f"Agent 执行器不可用：{exc}")
-                    return
-                if not runtime.get("enabled", True):
-                    await store.fail_run(run_id, "Agent 执行器已停用")
-                    return
+                runtime = await store.get_runtime_execution_snapshot(run_id)
+                if not runtime:
+                    try:
+                        runtime = await AgentRuntimeStore().get_runtime(runtime_id)
+                    except Exception as exc:
+                        await store.fail_run(run_id, f"Agent 执行器不可用：{exc}")
+                        return
                 runtime_snapshot = run.get("runtime_snapshot")
                 snapshot_provider = (
                     str(runtime_snapshot.get("provider") or "")
@@ -398,6 +408,14 @@ async def open_or_create_task_run_conversation(
     task_run_id: str,
     response: Response,
 ) -> dict[str, Any]:
+    async with _operation_lock(_TASK_RUN_THREAD_LOCKS, task_run_id):
+        return await _open_or_create_task_run_conversation_locked(task_run_id, response)
+
+
+async def _open_or_create_task_run_conversation_locked(
+    task_run_id: str,
+    response: Response,
+) -> dict[str, Any]:
     links = AIWorkbenchLinkStore()
     for link in await links.list_links(
         task_run_id=task_run_id,
@@ -433,13 +451,24 @@ async def open_or_create_task_run_conversation(
     execution_status = str(run.execution_status or "prepared")
     quality_status = str(run.quality_status or "not_checked")
     delivery_status = str(run.delivery_status or "none")
+    frozen_workflow_name = str(run.workflow_snapshot.get("name") or task.workflow_id)
+    run_events = WorkbenchTaskRunEventStore(
+        settings.data_path / "workbench" / "task_runs"
+    ).list_before(run.task_run_id, limit=500)
+    current_node = ""
+    for event in reversed(run_events):
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        node_id = str(payload.get("node_id") or "").strip()
+        if node_id:
+            current_node = node_id
+            break
     context = {
         "task_id": task.task_id,
         "task_run_id": run.task_run_id,
         "attempt_number": run.attempt_number,
         "workflow_id": task.workflow_id,
         "workflow_version_id": task.workflow_version_id,
-        "workflow_name": header.name,
+        "workflow_name": frozen_workflow_name,
         "workflow_version_number": version.version_number,
         "execution_status": execution_status,
         "quality_status": quality_status,
@@ -454,17 +483,17 @@ async def open_or_create_task_run_conversation(
             if execution_status in {"failed", "error", "interrupted"}
             else ""
         ),
-        "current_node": "",
+        "current_node": current_node,
         "parent_task_run_id": run.parent_task_run_id,
         "selected_workflow_id": task.workflow_id,
         "selected_workflow_version_id": task.workflow_version_id,
-        "selected_workflow_name": header.name,
+        "selected_workflow_name": frozen_workflow_name,
         "workflow_binding_snapshot": {
             "recorded": True,
             "status": "recorded",
             "workflow_id": task.workflow_id,
             "workflow_version_id": task.workflow_version_id,
-            "workflow_name": header.name,
+            "workflow_name": frozen_workflow_name,
             "version_number": version.version_number,
             "mode": "task_run_review",
             "label": "关联任务运行",
@@ -640,8 +669,28 @@ async def create_message(conversation_id: str, body: CreateMessageRequest) -> di
 async def create_task_draft(
     conversation_id: str,
     body: CreateTaskDraftRequest,
+    response: Response,
 ) -> dict[str, Any]:
     """Create a V2 Task draft pinned to one published workflow version."""
+
+    lock_key = ":".join(
+        (
+            conversation_id,
+            str(body.source_message_id or ""),
+            str(body.source_ai_run_id or ""),
+            str(body.workflow_id or ""),
+            str(body.workflow_version_id or ""),
+        )
+    )
+    async with _operation_lock(_TASK_DRAFT_LOCKS, lock_key):
+        return await _create_task_draft_locked(conversation_id, body, response)
+
+
+async def _create_task_draft_locked(
+    conversation_id: str,
+    body: CreateTaskDraftRequest,
+    response: Response,
+) -> dict[str, Any]:
 
     store = _store()
     try:
@@ -666,6 +715,14 @@ async def create_task_draft(
             raise HTTPException(status_code=404, detail="来源 AI 运行不存在")
         if source_run.get("conversation_id") != conversation_id:
             raise HTTPException(status_code=422, detail="来源 AI 运行不属于当前线程")
+    if source_message is not None and source_run is not None:
+        message_run_id = str(source_message.get("run_id") or "").strip()
+        run_message_id = str(source_run.get("input_message_id") or "").strip()
+        if (
+            message_run_id != str(source_run.get("id") or "")
+            or run_message_id != str(source_message.get("id") or "")
+        ):
+            raise HTTPException(status_code=422, detail="来源消息与来源 AI 运行不对应")
 
     initial_context = conversation.get("initial_context")
     context = initial_context if isinstance(initial_context, dict) else {}
@@ -695,18 +752,59 @@ async def create_task_draft(
         raise HTTPException(status_code=422, detail="工作流版本与工作流不匹配")
     if version.state != "published":
         raise HTTPException(status_code=409, detail="任务草稿只能绑定已发布工作流版本")
+    if (
+        workflow_id in _RESERVED_BUILTIN_WORKFLOW_IDS
+        and version_id != str(header.published_version_id or "")
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="内置工作流版本已更新，请刷新页面并选择最新发布版本",
+        )
     if not version.compiled_definition or not version.compiled_plan:
         raise HTTPException(status_code=409, detail="已发布工作流缺少服务端编译计划")
 
     workspace_id = str(conversation.get("workspace_id") or "").strip()
     workspace = _require_task_workspace(workspace_id)
+    task_store = WorkbenchTaskStore(settings.data_path / "workbench" / "workflows.db")
+    link_store = AIWorkbenchLinkStore()
+    if body.source_message_id or body.source_ai_run_id:
+        for existing_link in await link_store.list_links(
+            conversation_id=conversation_id,
+            relation_type="task_created_from_ai",
+        ):
+            metadata = (
+                existing_link.get("metadata")
+                if isinstance(existing_link.get("metadata"), dict)
+                else {}
+            )
+            if (
+                str(existing_link.get("message_id") or "") == str(body.source_message_id or "")
+                and str(existing_link.get("ai_run_id") or "") == str(body.source_ai_run_id or "")
+                and str(metadata.get("workflow_id") or "") == workflow_id
+                and str(metadata.get("workflow_version_id") or "") == version_id
+            ):
+                try:
+                    existing_task = task_store.get_task(
+                        str(existing_link.get("task_id") or "")
+                    )
+                except KeyError:
+                    continue
+                response.status_code = status.HTTP_200_OK
+                missing_inputs = _task_draft_missing_inputs(version.compiled_definition)
+                return {
+                    "task": {
+                        **asdict(existing_task),
+                        "workspace_name": workspace["name"],
+                        "workflow_name": header.name,
+                    },
+                    "next_required_step": 3 if missing_inputs else 4,
+                    "missing_inputs": missing_inputs,
+                }
     description_parts = []
     if source_message:
         description_parts.append(str(source_message.get("content") or "").strip())
     description_parts.append(f"来源 AI 线程：{conversation_id}")
-    task = WorkbenchTaskStore(
-        settings.data_path / "workbench" / "workflows.db"
-    ).create_task(
+    task = task_store.create_task(
         name=str(conversation.get("title") or header.name or "AI 任务")[:240],
         description="\n\n".join(part for part in description_parts if part),
         workspace_id=workspace["id"],
@@ -716,7 +814,7 @@ async def create_task_draft(
         tags=["ai-thread"],
     )
     missing_inputs = _task_draft_missing_inputs(version.compiled_definition)
-    await AIWorkbenchLinkStore().create_link(
+    await link_store.create_link(
         conversation_id=conversation_id,
         message_id=body.source_message_id,
         ai_run_id=body.source_ai_run_id,

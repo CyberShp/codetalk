@@ -20,6 +20,8 @@ class _Waiter:
     token: str
     provider: str
     future: asyncio.Future[None]
+    on_queued: QueueCallback | None = None
+    last_queue_status: dict[str, Any] | None = None
 
 
 class AgentRunCoordinator:
@@ -66,9 +68,11 @@ class AgentRunCoordinator:
                     token=f"agent_slot_{uuid.uuid4().hex}",
                     provider=normalized,
                     future=asyncio.get_running_loop().create_future(),
+                    on_queued=on_queued,
                 )
                 self._waiters.append(waiter)
                 queue_status = self._queue_status(waiter)
+                waiter.last_queue_status = queue_status
         if queue_status is not None and on_queued is not None:
             callback_result = on_queued(queue_status)
             if inspect.isawaitable(callback_result):
@@ -130,6 +134,8 @@ class AgentRunCoordinator:
             else:
                 self._active_by_provider[provider] = active - 1
             self._wake_eligible_waiters()
+            updates = self._queued_updates()
+        await self._notify_queue_updates(updates)
 
     async def _cancel_waiter(self, waiter: _Waiter) -> None:
         async with self._lock:
@@ -137,6 +143,29 @@ class AgentRunCoordinator:
                 self._waiters.remove(waiter)
                 waiter.future.cancel()
             self._wake_eligible_waiters()
+            updates = self._queued_updates()
+        await self._notify_queue_updates(updates)
+
+    def _queued_updates(self) -> list[tuple[QueueCallback, dict[str, Any]]]:
+        updates: list[tuple[QueueCallback, dict[str, Any]]] = []
+        for waiter in self._waiters:
+            if waiter.on_queued is None:
+                continue
+            queue_status = self._queue_status(waiter)
+            if queue_status == waiter.last_queue_status:
+                continue
+            waiter.last_queue_status = queue_status
+            updates.append((waiter.on_queued, queue_status))
+        return updates
+
+    async def _notify_queue_updates(
+        self,
+        updates: list[tuple[QueueCallback, dict[str, Any]]],
+    ) -> None:
+        for callback, queue_status in updates:
+            callback_result = callback(queue_status)
+            if inspect.isawaitable(callback_result):
+                await callback_result
 
     def _wake_eligible_waiters(self) -> None:
         for waiter in list(self._waiters):

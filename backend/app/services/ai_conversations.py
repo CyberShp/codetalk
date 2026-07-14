@@ -112,6 +112,12 @@ _SOURCE_CITATION_RE = re.compile(
     r"(?P<path>(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.(?:c|cc|cpp|cxx|h|hh|hpp|py|rs|go|java|js|jsx|ts|tsx|sh|md|rst|txt))"
     r":(?P<line>\d{1,7})(?:-(?P<end>\d{1,7}))?"
 )
+_UNIX_ABSOLUTE_PATH_RE = re.compile(
+    r"(?<![A-Za-z0-9_.:/-])/(?!/)(?:[^\s/:]+/)+[^\s]+"
+)
+_WINDOWS_ABSOLUTE_PATH_RE = re.compile(
+    r"(?i)(?<![A-Za-z0-9_.-])[A-Z]:[\\/](?:[^\s\\/]+[\\/])+[^\s]+"
+)
 _QUERY_STOPWORDS = {
     "the",
     "and",
@@ -864,10 +870,11 @@ class AIConversationStore:
                 INSERT INTO ai_conversation_runs
                     (id, conversation_id, input_message_id, status, sequence, cursor,
                      execution_mode, runtime_type, agent_runtime_id,
-                     runtime_snapshot_json, workflow_binding_snapshot_json,
+                     runtime_snapshot_json, runtime_execution_snapshot_json,
+                     workflow_binding_snapshot_json,
                      skills_snapshot_json, mcp_snapshot_json, context_summary_json,
                      artifact_contract_json, metrics_json, created_at)
-                VALUES (?, ?, ?, 'queued', ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, 'queued', ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -878,6 +885,7 @@ class AIConversationStore:
                     snapshot["runtime_type"],
                     snapshot["agent_runtime_id"],
                     _json_dumps(snapshot["runtime_snapshot"]),
+                    _json_dumps(snapshot["runtime_execution_snapshot"]),
                     _json_dumps(snapshot["workflow_binding_snapshot"]),
                     _json_dumps(snapshot["skills_snapshot"]),
                     _json_dumps(snapshot["mcp_snapshot"]),
@@ -963,10 +971,11 @@ class AIConversationStore:
                 INSERT INTO ai_conversation_runs
                     (id, conversation_id, input_message_id, status, sequence, cursor,
                      execution_mode, runtime_type, agent_runtime_id,
-                     runtime_snapshot_json, workflow_binding_snapshot_json,
+                     runtime_snapshot_json, runtime_execution_snapshot_json,
+                     workflow_binding_snapshot_json,
                      skills_snapshot_json, mcp_snapshot_json, context_summary_json,
                      artifact_contract_json, metrics_json, created_at)
-                VALUES (?, ?, ?, 'queued', ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, 'queued', ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run_id,
@@ -977,6 +986,7 @@ class AIConversationStore:
                     str(source_run["runtime_type"] or "unknown"),
                     source_run["agent_runtime_id"],
                     str(source_run["runtime_snapshot_json"] or "{}"),
+                    str(source_run["runtime_execution_snapshot_json"] or "{}"),
                     str(source_run["workflow_binding_snapshot_json"] or "{}"),
                     str(source_run["skills_snapshot_json"] or "[]"),
                     str(source_run["mcp_snapshot_json"] or "[]"),
@@ -1145,6 +1155,18 @@ class AIConversationStore:
             run = _run_from_row(row)
             run["queue_position"] = await self._queue_position_for_run_row(db, row)
         return run
+
+    async def get_runtime_execution_snapshot(self, run_id: str) -> dict[str, Any]:
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT runtime_execution_snapshot_json FROM ai_conversation_runs WHERE id = ?",
+                (run_id,),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:
+            raise KeyError(run_id)
+        payload = _json_loads(row["runtime_execution_snapshot_json"], {})
+        return dict(payload) if isinstance(payload, dict) else {}
 
     async def latest_run(self, conversation_id: str) -> dict[str, Any] | None:
         async with self._connect() as db:
@@ -1832,6 +1854,10 @@ async def build_context_references(
             refs.append(item)
             seen.add(key)
 
+    task_run_refs = await _workbench_task_refs(scope_type, scope_id)
+    if scope_type == "workbench_task_run":
+        append_refs(task_run_refs)
+
     async with aiosqlite.connect(db_file) as db:
         db.row_factory = aiosqlite.Row
         if workspace_id != "global":
@@ -1853,7 +1879,8 @@ async def build_context_references(
             append_refs(await _report_refs(db, scope_id))
         elif scope_type == "module":
             append_refs(await _module_refs(db, scope_id))
-    append_refs(await _workbench_task_refs(scope_type, scope_id))
+    if scope_type != "workbench_task_run":
+        append_refs(task_run_refs)
     if workspace_id != "global" and not source_analysis_declined:
         append_refs(await _evidence_memory_refs(workspace_id, user_message))
         append_refs(await _semantic_case_refs(scope_id, user_message))
@@ -4132,7 +4159,29 @@ def _build_agent_prompt(
     else:
         lines.append("用户问题：")
     lines.append(user_message)
-    return "\n".join(lines).strip()
+    return _redact_agent_prompt_text(
+        "\n".join(lines).strip(),
+        repo_path=repo_path or _conversation_initial_repo_path(conversation),
+    )
+
+
+def _redact_agent_prompt_text(value: str, *, repo_path: str = "") -> str:
+    """Keep external-agent prompts useful without exposing host-local paths."""
+
+    text = redact_agent_diagnostic_text(value)
+    replacements: set[str] = set()
+    raw_repo_path = str(repo_path or "").strip()
+    if raw_repo_path:
+        replacements.add(raw_repo_path)
+        try:
+            replacements.add(str(Path(raw_repo_path).expanduser().resolve()))
+        except (OSError, RuntimeError):
+            pass
+    for item in sorted(replacements, key=len, reverse=True):
+        if item:
+            text = text.replace(item, "<workspace>")
+    text = _WINDOWS_ABSOLUTE_PATH_RE.sub("<local-path>", text)
+    return _UNIX_ABSOLUTE_PATH_RE.sub("<local-path>", text)
 
 
 def _agent_public_reference_context(references: list[dict[str, Any]]) -> str:
@@ -6726,6 +6775,7 @@ def _is_compact_thread_artifact_notice(content: str) -> bool:
 
 def _run_from_row(row: aiosqlite.Row) -> dict[str, Any]:
     data = dict(row)
+    data.pop("runtime_execution_snapshot_json", None)
     data["token_usage"] = _json_loads(data.pop("token_usage_json", "{}"), {})
     data["execution_mode"] = str(data.get("execution_mode") or "legacy")
     data["runtime_type"] = str(data.get("runtime_type") or "unknown")
@@ -6755,12 +6805,14 @@ def _run_from_row(row: aiosqlite.Row) -> dict[str, Any]:
 def _normalized_run_snapshot(value: dict[str, Any] | None) -> dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     runtime_snapshot = raw.get("runtime_snapshot")
+    runtime_execution_snapshot = raw.get("runtime_execution_snapshot")
     workflow_snapshot = raw.get("workflow_binding_snapshot")
     return {
         "execution_mode": str(raw.get("execution_mode") or "free_qa"),
         "runtime_type": str(raw.get("runtime_type") or "unknown"),
         "agent_runtime_id": str(raw.get("agent_runtime_id") or "").strip() or None,
         "runtime_snapshot": dict(runtime_snapshot) if isinstance(runtime_snapshot, dict) else {},
+        "runtime_execution_snapshot": dict(runtime_execution_snapshot) if isinstance(runtime_execution_snapshot, dict) else {},
         "workflow_binding_snapshot": dict(workflow_snapshot) if isinstance(workflow_snapshot, dict) else {},
         "skills_snapshot": [str(item) for item in raw.get("skills_snapshot") or []],
         "mcp_snapshot": [str(item) for item in raw.get("mcp_snapshot") or []],

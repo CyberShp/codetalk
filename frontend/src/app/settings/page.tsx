@@ -53,6 +53,7 @@ const DEFAULT_AGENT_PROVIDER_SETTINGS: AgentProviderSettings = {
 
 const EMPTY_AGENT_RUNTIME_FORM: AgentRuntimeCreate = {
   name: "",
+  provider: "custom",
   command: "",
   args: [],
   prompt_transport: "stdin",
@@ -102,6 +103,7 @@ const AGENT_RUNTIME_PRESETS = [
     form: {
       ...EMPTY_AGENT_RUNTIME_FORM,
       name: "Claude Code",
+      provider: "claude",
       command: "claude",
       args: [],
       prompt_transport: "claude_print_arg",
@@ -119,6 +121,7 @@ const AGENT_RUNTIME_PRESETS = [
     form: {
       ...EMPTY_AGENT_RUNTIME_FORM,
       name: "Codex",
+      provider: "codex",
       command: "codex",
       args: [],
       prompt_transport: "codex_exec_json",
@@ -136,6 +139,7 @@ const AGENT_RUNTIME_PRESETS = [
     form: {
       ...EMPTY_AGENT_RUNTIME_FORM,
       name: "OpenCode",
+      provider: "opencode",
       command: "opencode",
       args: [],
       prompt_transport: "opencode_run_arg",
@@ -153,6 +157,7 @@ const AGENT_RUNTIME_PRESETS = [
     form: {
       ...EMPTY_AGENT_RUNTIME_FORM,
       name: "NGA CodeAgent",
+      provider: "nga",
       command: "nga",
       args: [],
       prompt_transport: "stdin",
@@ -170,6 +175,7 @@ const AGENT_RUNTIME_PRESETS = [
     form: {
       ...EMPTY_AGENT_RUNTIME_FORM,
       name: "自定义 Agent",
+      provider: "custom",
       command: "",
       args: [],
       prompt_transport: "stdin",
@@ -779,6 +785,22 @@ export default function SettingsPage() {
                     当前是 {agentTransportLabel(agentRuntimeForm.prompt_transport)} 协议。CodeTalk 会自动拼接结构化输出参数、保存 CLI session，并把工具调用、思考和诊断信息默认折叠；无需配置结束标记或 resume 参数。
                   </div>
                 )}
+                <div>
+                  <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                    Agent Provider
+                  </label>
+                  <select
+                    value={agentRuntimeForm.provider}
+                    onChange={(event) => updateAgentRuntimeForm("provider", event.target.value as AgentRuntimeCreate["provider"])}
+                    className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface focus:border-primary/50 focus:outline-none"
+                  >
+                    <option value="claude">Claude</option>
+                    <option value="codex">Codex</option>
+                    <option value="opencode">OpenCode</option>
+                    <option value="nga">NGA / CodeAgent</option>
+                    <option value="custom">自定义</option>
+                  </select>
+                </div>
                 <div>
                   <label className="mb-1 block text-xs font-medium text-on-surface-variant">
                     问题发送方式

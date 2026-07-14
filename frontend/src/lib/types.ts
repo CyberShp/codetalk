@@ -123,6 +123,7 @@ export type AgentRuntimeSessionPersistence = "none" | "resume_args";
 export interface AgentRuntime {
   id: string;
   name: string;
+  provider: "claude" | "codex" | "opencode" | "nga" | "custom";
   command: string;
   args: string[];
   prompt_transport: AgentRuntimePromptTransport;

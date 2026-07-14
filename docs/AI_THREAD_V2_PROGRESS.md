@@ -47,12 +47,13 @@ Existing AI queue state is `queued -> running -> completed/failed/cancelled`, bu
 
 - `python3.11 -m pytest -q tests/test_ai_thread_v2_integration.py tests/test_ai_conversations.py tests/test_database_init.py`: `150 passed` before the final concurrency additions.
 - `python3.11 -m pytest -q tests/test_ai_thread_v2_integration.py -k 'concurrent_message_posts or spawn_failure_advances or duplicate_queue_kick'`: `3 passed`.
-- Relevant AI + Workbench Task/Workflow/Scheduler/API/artifact regression command: `327 passed in 99.75s` in the final fresh gate.
+- Relevant AI + Workbench Task/Workflow/Scheduler/API/artifact regression command: `333 passed in 82.61s` in the final fresh gate.
+- Agent CLI sandbox regression command: `16 passed`; configured wrapper scripts are readable without widening workspace write access.
 - `npm run lint -- --max-warnings=0`: passed.
 - `./node_modules/.bin/tsc --noEmit --pretty false`: passed.
 - `npm run build`: passed; all production Next.js routes compiled and type-checked.
 - `frontend/e2e/ai-thread-v2-integration-real.spec.ts`: `1 passed in 20.3s` with a real two-Agent DAG and no request mocks.
-- Integration, Workbench task wizard, run cockpit, workflow designer, and bounded AI layout browser group: `7 passed in 43.6s`; retry and source-first Agent regressions are also green in focused reruns.
+- Integration, Workbench task wizard, run cockpit, workflow designer, and bounded AI layout browser group: `8 passed in 32.1s`; sandboxed source-first and strong quality-retry Agent regressions are green in focused reruns.
 - `git diff --check`: passed before the final review gate.
 - Responsive evidence: `frontend/output/playwright/ai-thread-v2/run-cockpit-desktop.png` at `1440x900` and `frontend/output/playwright/ai-thread-v2/linked-ai-thread-mobile.png` at `390x844`; no horizontal overflow.
 
@@ -75,6 +76,9 @@ Existing AI queue state is `queued -> running -> completed/failed/cancelled`, bu
 - Run-linked AI threads now turn public manifest deliverables into bounded, path-safe evidence references and include their redacted excerpts in external Agent prompts.
 - AI retry E2E follows the dedicated retry endpoint and verifies the immutable input message is reused instead of duplicating the user's message.
 - Deterministic macOS browser fixtures live inside their temporary workspace so project-scoped Agent subprocesses can execute them without escaping the workspace sandbox.
+- Frozen Agent execution uses a private Run snapshot; public Run Cards retain the redacted display snapshot and cannot expose runtime env or local command details.
+- AI Task Draft and Run-to-AI bridge operations are idempotent under concurrent requests, and exact Attempt artifacts outrank busy-workspace context.
+- Absolute wrapper/config files supplied in trusted Agent argv are admitted read-only by the OS sandbox; no new write boundary is added.
 
 ## Real Browser Acceptance Chain
 

@@ -1704,6 +1704,36 @@ class TestAIConversationsAPI:
         assert "workbench_task_deliverable · result.json" in prompt
         assert "integration-agent" in prompt
 
+    async def test_agent_prompt_redacts_reference_secrets_and_absolute_paths(self):
+        from app.services.ai_conversations import _build_agent_prompt
+
+        prompt = _build_agent_prompt(
+            {
+                "id": "conv-redacted-agent-input",
+                "title": "Redacted Agent input",
+                "scope_type": "workspace",
+                "scope_id": "ws-redacted-agent-input",
+                "workspace_id": "ws-redacted-agent-input",
+                "initial_context": {},
+            },
+            [],
+            [
+                {
+                    "source_type": "workspace_source",
+                    "source_id": "secret-source",
+                    "title": "/Users/alice/private/token.c",
+                    "excerpt": "Authorization: Bearer private-agent-token-123456",
+                    "metadata": {"path": "/Users/alice/private/token.c"},
+                }
+            ],
+            "分析源码，临时密钥 sk-private-agent-token-123456",
+            {"id": "runtime-redacted-agent-input", "name": "Runtime"},
+            repo_path="/Users/alice/private/repository",
+        )
+
+        assert "private-agent-token-123456" not in prompt
+        assert "/Users/alice/private" not in prompt
+
     async def test_agent_prompt_routes_download_artifacts_to_isolated_artifact_dir(self):
         from app.services.ai_conversations import _build_agent_prompt
 
@@ -6372,3 +6402,65 @@ async def test_bound_workflow_agent_rejects_min_length_schema_violation(
     run = await store.get_run(created["run"]["id"])
     assert run["status"] == "failed"
     assert "长度不能小于 3" in run["error"]
+
+
+async def test_task_run_context_keeps_exact_attempt_refs_when_workspace_is_busy(
+    sqlite_db,
+    monkeypatch,
+):
+    from app.services import ai_conversations as service
+    from app.services.ai_conversations import ContextReference
+
+    def refs(kind: str, count: int) -> list[ContextReference]:
+        return [
+            ContextReference(
+                source_type=kind,
+                source_id=f"{kind}-{index}",
+                title=f"{kind}-{index}",
+                excerpt=f"{kind} evidence {index}",
+                metadata={},
+            )
+            for index in range(count)
+        ]
+
+    async def materials(*args, **kwargs):
+        return refs("workspace_material", 6)
+
+    async def sources(*args, **kwargs):
+        return refs("workspace_source", 8)
+
+    async def empty(*args, **kwargs):
+        return []
+
+    async def task_refs(*args, **kwargs):
+        return [
+            ContextReference(
+                source_type="workbench_task_deliverable",
+                source_id="task_run_busy/result.json",
+                title="result.json",
+                excerpt='{"status":"exact-attempt"}',
+                metadata={"task_run_id": "task_run_busy", "path": "result.json"},
+            )
+        ]
+
+    monkeypatch.setattr(service, "_workspace_material_refs", materials)
+    monkeypatch.setattr(service, "_workspace_source_refs", sources)
+    monkeypatch.setattr(service, "_workspace_refs", empty)
+    monkeypatch.setattr(service, "_workspace_chat_refs", empty)
+    monkeypatch.setattr(service, "_workbench_task_refs", task_refs)
+    monkeypatch.setattr(service, "_evidence_memory_refs", empty)
+    monkeypatch.setattr(service, "_semantic_case_refs", empty)
+
+    result = await service.build_context_references(
+        conversation={
+            "id": "conv-busy-task-run",
+            "scope_type": "workbench_task_run",
+            "scope_id": "task_run_busy",
+            "workspace_id": "ws-busy-task-run",
+        },
+        user_message="复盘本次运行",
+        db_path=sqlite_db,
+    )
+
+    assert result[0].source_type == "workbench_task_deliverable"
+    assert any(item.source_id == "task_run_busy/result.json" for item in result)

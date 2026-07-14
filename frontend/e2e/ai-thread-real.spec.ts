@@ -9777,6 +9777,12 @@ test("retries a structured quality failure and recovers with a complete agent an
     "int nvmf_ctrlr_connect_retry_quality(void) { return 0; }\n",
     "utf8",
   );
+  fs.mkdirSync(path.join(repo, "test", "nvmf"), { recursive: true });
+  fs.writeFileSync(
+    path.join(repo, "test", "nvmf", "connect.sh"),
+    "#!/bin/sh\n# NVMe-oF connect/reconnect black-box regression\n",
+    "utf8",
+  );
   const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-quality-retry-")));
   const runtimeScript = path.join(runtimeDir, "quality_retry_agent.py");
   const counterFile = path.join(runtimeDir, "invocations.txt");
@@ -9798,15 +9804,26 @@ test("retries a structured quality failure and recovers with a complete agent an
       "    print('QUALITY_RETRY_FINAL_ANSWER: 已基于源码完成完整四件套。', flush=True)",
       "    print('\\n## 代码证据', flush=True)",
       "    print('- `lib/nvmf/ctrlr.c`: `nvmf_ctrlr_connect_retry_quality` 是本轮 connect 入口证据。', flush=True)",
-      "    print('- `test/nvmf`: 可承载 connect/reconnect 黑盒回归。', flush=True)",
+      "    print('- `test/nvmf/connect.sh`: 映射 connect/reconnect 黑盒回归脚本。', flush=True)",
       "    print('\\n## 流程梳理', flush=True)",
       "    print('1. Initiator 发起 NVMe-oF connect。', flush=True)",
       "    print('2. Target 建立 controller 并完成 queue 准备。', flush=True)",
+      "    print('3. Controller 进入可提交 I/O 状态并暴露连接状态。', flush=True)",
+      "    print('4. 异常路径返回错误；清理半开连接后允许恢复和重连。', flush=True)",
       "    print('\\n## SFMEA', flush=True)",
-      "    print('- failure mode: reconnect timeout; cause: transport delay; effect: I/O pause; severity 8; occurrence 3; detection 4; RPN 96; mitigation: observe RPC error and reconnect state.', flush=True)",
+      "    print('- failure_mode: reconnect timeout; cause: transport delay; effect: I/O pause; detection: RPC timeout and connection-state metric; severity: 8; occurrence: 3; detection_score: 4; RPN: 96; mitigation: bounded retry and stale-controller cleanup; source_evidence: lib/nvmf/ctrlr.c; test_mapping: test/nvmf/connect.sh.', flush=True)",
+      "    print('- failure_mode: half-open controller remains; cause: disconnect races with queue setup; effect: resource leak and later connect rejection; detection: controller count and error log; severity: 7; occurrence: 3; detection_score: 3; RPN: 63; mitigation: idempotent teardown and recovery audit; source_evidence: lib/nvmf/ctrlr.c; test_mapping: test/nvmf/connect.sh.', flush=True)",
       "    print('\\n## 黑盒测试用例', flush=True)",
-      "    print('1. 用例：正常连接；前置条件：target 已启动；步骤：initiator 发起 connect；预期结果：连接成功；观测点：RPC 状态、日志和连接状态。', flush=True)",
-      "    print('2. 用例：连接超时；前置条件：注入网络延迟；步骤：发起 connect 并等待超时；预期结果：返回超时错误且可重连；观测点：错误码、日志、恢复状态。', flush=True)",
+      "    print('1. 正常路径：前置条件 target 已启动；步骤 initiator 发起 connect 并提交 I/O；预期结果连接与 I/O 成功；观测点 RPC、日志、连接状态；失败诊断检查握手错误码。', flush=True)",
+      "    print('2. 非法输入：前置条件 target 可达；步骤使用非法 subsystem NQN；预期结果拒绝且无残留 controller；观测点错误码和 controller 数；失败诊断核对参数校验日志。', flush=True)",
+      "    print('3. 资源不足：前置条件限制 queue/controller 资源；步骤并发建连直至耗尽；预期结果超限请求明确失败且已有连接可用；观测点资源指标；失败诊断核对泄漏。', flush=True)",
+      "    print('4. timeout 超时：前置条件注入网络延迟；步骤发起 connect 并等待；预期结果返回超时且清理半开状态；观测点超时错误和状态；失败诊断核对 timer 日志。', flush=True)",
+      "    print('5. reconnect 重连：前置条件已有连接；步骤断网后恢复并重连；预期结果旧资源释放且新连接成功；观测点 controller 身份和 I/O；失败诊断检查重复对象。', flush=True)",
+      "    print('6. concurrency 并发：前置条件多个 initiator；步骤同时 connect/disconnect；预期结果状态隔离无串线；观测点每会话日志；失败诊断按 initiator 关联。', flush=True)",
+      "    print('7. recovery 恢复：前置条件 controller reset；步骤 reset 后重新建连并恢复 I/O；预期结果服务恢复且无旧队列；观测点恢复耗时；失败诊断检查 teardown 顺序。', flush=True)",
+      "    print('8. performance 性能：前置条件基线已记录；步骤递增连接速率和队列深度；预期结果延迟与吞吐不退化超过阈值；观测点 P95、吞吐、CPU；失败诊断关联资源压力。', flush=True)",
+      "    print('\\n## 剩余风险', flush=True)",
+      "    print('TLS、认证和跨 transport failover 未在本夹具中执行，需在真实 SPDK 环境继续验证。', flush=True)",
       "",
     ].join("\n"),
     "utf8",
@@ -9861,7 +9878,10 @@ test("retries a structured quality failure and recovers with a complete agent an
     await page.getByRole("button", { name: "发送" }).hover();
     await page.getByRole("button", { name: "发送" }).click();
     const retryButton = page.getByRole("button", { name: "重试上一条" });
-    await expect(page.locator("div[role='alert']").filter({ hasText: "Agent 返回内容不足" })).toBeVisible({
+    const qualityAlert = page.locator("div[role='alert']").filter({
+      hasText: /Agent 返回内容不足|测试活动产物未通过质量门禁/,
+    });
+    await expect(qualityAlert).toBeVisible({
       timeout: 30_000,
     });
     await expect(page.getByText("QUALITY_RETRY_INCOMPLETE_ANSWER")).toHaveCount(0);
@@ -9869,7 +9889,7 @@ test("retries a structured quality failure and recovers with a complete agent an
     await retryButton.hover();
     await retryButton.click();
     await expect(page.getByText("QUALITY_RETRY_FINAL_ANSWER")).toBeVisible({ timeout: 30_000 });
-    await expect(page.locator("div[role='alert']").filter({ hasText: "Agent 返回内容不足" })).toHaveCount(0);
+    await expect(qualityAlert).toHaveCount(0);
     await expect(page.getByRole("button", { name: "停止" })).toHaveCount(0, { timeout: 15_000 });
     await expect(page.getByRole("link", { name: "下载完整产物" })).toBeVisible({ timeout: 15_000 });
     await expect(page.locator(".ct-codex-message:not(.is-user)").filter({ hasText: "完整测试设计/SFMEA/黑盒用例已保存为下载产物" })).toBeVisible();
@@ -10462,7 +10482,9 @@ test("injects requested workspace source into a real agent-runtime AI thread", a
     await expect(page.getByText("SOURCE_CONTEXT_OK lib/nvmf/connect.c")).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText("SOURCE_CONTEXT_MISSING")).toHaveCount(0);
     await expect(page.getByText("源码位置")).toBeVisible();
-    await expect(page.getByText("lib/nvmf/connect.c:L1")).toBeVisible();
+    await expect(
+      page.locator("code:visible").filter({ hasText: "lib/nvmf/connect.c:L1" }).first(),
+    ).toBeVisible();
 
     const messagesResp = await request.get(
       `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,

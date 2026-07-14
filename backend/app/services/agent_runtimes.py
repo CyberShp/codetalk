@@ -15,6 +15,7 @@ import aiosqlite
 from app.config import settings
 
 MANAGED_PROVIDER_PROMPT_TRANSPORTS = {"claude_print_arg", "codex_exec_json", "opencode_run_arg"}
+AGENT_PROVIDERS = {"claude", "codex", "opencode", "nga", "custom"}
 PROMPT_TRANSPORTS = {"stdin", "argv_last", *MANAGED_PROVIDER_PROMPT_TRANSPORTS}
 OUTPUT_MODES = {"plain", "ndjson", "stream_json", "auto"}
 WORKING_DIR_MODES = {"project", "fixed", "none"}
@@ -51,6 +52,21 @@ def _clean_resume_args(args: list[str] | None) -> list[str]:
     return [str(item) for item in (args or []) if str(item).strip()]
 
 
+def _infer_provider(*, command: str, prompt_transport: str) -> str:
+    transport_provider = {
+        "claude_print_arg": "claude",
+        "codex_exec_json": "codex",
+        "opencode_run_arg": "opencode",
+    }.get(str(prompt_transport or ""))
+    if transport_provider:
+        return transport_provider
+    executable = Path(str(command or "")).name.lower()
+    for provider in ("codex", "claude", "opencode", "nga"):
+        if provider in executable:
+            return provider
+    return "custom"
+
+
 def validate_agent_command(command: str) -> str:
     value = str(command or "").strip()
     if not value:
@@ -81,15 +97,16 @@ class AgentRuntimeStore:
             await db.execute(
                 """
                 INSERT INTO agent_runtimes
-                    (id, name, command, args_json, prompt_transport, output_mode,
+                    (id, name, provider, command, args_json, prompt_transport, output_mode,
                      working_dir_mode, fixed_working_dir, env_json, health_command,
                      timeout_seconds, completion_mode, idle_complete_seconds, sentinel_text,
                      session_persistence, resume_args_json, mcp_profile, enabled, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rid,
                     payload["name"],
+                    payload["provider"],
                     payload["command"],
                     _json_dumps(payload["args"]),
                     payload["prompt_transport"],
@@ -184,6 +201,7 @@ class AgentRuntimeStore:
         result: dict[str, Any] = {}
         for key in (
             "name",
+            "provider",
             "command",
             "args",
             "prompt_transport",
@@ -211,6 +229,19 @@ class AgentRuntimeStore:
             result["name"] = name
         if not partial or "command" in result:
             result["command"] = validate_agent_command(str(result.get("command", "")))
+
+        if not partial or "provider" in result:
+            provider = str(result.get("provider") or "").strip().lower()
+            if not provider:
+                provider = _infer_provider(
+                    command=str(result.get("command") or data.get("command") or ""),
+                    prompt_transport=str(
+                        result.get("prompt_transport") or data.get("prompt_transport") or "stdin"
+                    ),
+                )
+            if provider not in AGENT_PROVIDERS:
+                raise ValueError(f"不支持的 Agent provider: {provider}")
+            result["provider"] = provider
 
         result["args"] = _clean_args(result.get("args")) if "args" in result else ([] if not partial else result.get("args"))
         result["resume_args"] = (
@@ -356,5 +387,16 @@ def _runtime_from_row(row: aiosqlite.Row | sqlite3.Row) -> dict[str, Any]:
     data["sentinel_text"] = data.get("sentinel_text") or ""
     data["session_persistence"] = data.get("session_persistence") or "none"
     data["mcp_profile"] = data.get("mcp_profile") or ""
+    stored_provider = str(data.get("provider") or "").strip().lower()
+    inferred_provider = _infer_provider(
+        command=str(data.get("command") or ""),
+        prompt_transport=str(data.get("prompt_transport") or "stdin"),
+    )
+    should_infer_provider = (
+        stored_provider in {"", "custom"} and inferred_provider != "custom"
+    )
+    data["provider"] = (
+        inferred_provider if should_infer_provider else (stored_provider or "custom")
+    )
     data["enabled"] = bool(data.get("enabled", 1))
     return data

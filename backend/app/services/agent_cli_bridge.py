@@ -158,6 +158,7 @@ async def stream_agent_runtime(
         "sandbox_command": command,
         "sandbox_read_paths": [
             *list(runtime.get("sandbox_read_paths") or []),
+            *_configured_runtime_read_paths(args),
             *([prompt_file_path] if prompt_file_path else []),
         ],
     }
@@ -455,6 +456,31 @@ def _runtime_args(runtime: dict[str, Any], *, resume_session_id: str | None = No
         item.replace("{session_id}", session_id).replace("{resume_session_id}", session_id)
         for item in resume_args
     ]
+
+
+def _configured_runtime_read_paths(args: list[str]) -> list[str]:
+    """Allow trusted runtime wrapper/config arguments through the read-only sandbox."""
+
+    paths: list[str] = []
+    for raw_arg in args:
+        value = str(raw_arg or "").strip()
+        candidates = [value]
+        if value.startswith("@"):
+            candidates.append(value[1:])
+        if value.startswith("-") and "=" in value:
+            candidates.append(value.split("=", 1)[1])
+        for candidate in candidates:
+            path = Path(candidate).expanduser()
+            if not path.is_absolute():
+                continue
+            try:
+                if path.exists():
+                    resolved = str(path.resolve())
+                    if resolved not in paths:
+                        paths.append(resolved)
+            except (OSError, RuntimeError):
+                continue
+    return paths
 
 
 def _prompt_argument_or_file_bootstrap(prompt: str, *, prompt_file_path: str | None) -> str:

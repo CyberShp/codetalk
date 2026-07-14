@@ -49,6 +49,7 @@ def build_ai_run_snapshot(
         "runtime_type": runtime_type,
         "agent_runtime_id": runtime_id or None,
         "runtime_snapshot": runtime_snapshot,
+        "runtime_execution_snapshot": dict(runtime or {}) if runtime_type == "agent_runtime" else {},
         "workflow_binding_snapshot": workflow_binding,
         "skills_snapshot": skills,
         "mcp_snapshot": mcp_profiles,

@@ -22,6 +22,7 @@ router = APIRouter(prefix="/api/settings/agent-runtimes", tags=["agent-runtimes"
 
 class AgentRuntimeBase(BaseModel):
     name: str = Field(min_length=1, max_length=120)
+    provider: str = Field(default="", max_length=40)
     command: str = Field(min_length=1, max_length=500)
     args: list[str] = Field(default_factory=list)
     prompt_transport: str = "stdin"
@@ -81,6 +82,7 @@ class AgentRuntimeCreate(AgentRuntimeBase):
 
 class AgentRuntimeUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=120)
+    provider: str | None = Field(default=None, max_length=40)
     command: str | None = Field(default=None, min_length=1, max_length=500)
     args: list[str] | None = None
     prompt_transport: str | None = None
