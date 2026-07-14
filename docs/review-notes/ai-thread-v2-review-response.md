@@ -36,7 +36,7 @@ and the real source-injection browser test cover the fix.
 
 ## Gate evidence
 
-- Core backend: `335 passed in 79.31s`.
+- Core backend: `336 passed in 79.52s`.
 - Agent CLI sandbox: `17 passed`.
 - Agent Runtime/CLI regression: `128 passed`; pytest printed completion but an existing non-daemon
   test thread required process shutdown after the result.
@@ -53,6 +53,11 @@ and the real source-injection browser test cover the fix.
 | P1 queue callback failure stranded capacity | Initial callback now executes inside slot cleanup; refresh callback failures are logged without interrupting release | `test_agent_run_coordinator_cleans_waiter_when_queue_callback_fails` |
 | P2 source-less draft replay duplicated Tasks | Serialize draft creation per conversation, resolve workflow/version inside the boundary, and replay empty-source links as well as sourced links | `test_ai_task_draft_accepts_assistant_card_and_source_less_replay`; real V2 browser loop |
 | P3 operation locks leaked | Reference-count lock users and evict the registry entry after success, error, or cancellation | Task Draft and concurrent Run-to-AI tests assert empty registries |
+
+The next re-review identified an adjacent P1 grant/cancel handoff race. `_Waiter` now records explicit
+grant ownership; if cancellation lands before the slot context resumes, `_cancel_waiter()` returns
+the granted provider capacity and wakes the next eligible waiter. The deterministic regression is
+`test_agent_run_coordinator_releases_a_granted_waiter_cancelled_before_resume`.
 
 The configured-wrapper sandbox exception remains read-only. Its path comes only from administrator
 runtime configuration; user prompt text, generated session identifiers, and transport-added argv do

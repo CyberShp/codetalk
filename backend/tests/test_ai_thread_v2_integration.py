@@ -1266,3 +1266,46 @@ async def test_agent_run_coordinator_cleans_waiter_when_queue_callback_fails():
     await first
     async with coordinator.slot("codex"):
         assert (await coordinator.snapshot())["active_process_count"] == 1
+
+
+async def test_agent_run_coordinator_releases_a_granted_waiter_cancelled_before_resume():
+    import asyncio
+
+    from app.services.agent_run_coordinator import AgentRunCoordinator
+
+    coordinator = AgentRunCoordinator(
+        max_global_agent_processes=1,
+        max_processes_per_provider=1,
+    )
+    queued = asyncio.Event()
+
+    async with coordinator._lock:
+        coordinator._activate("codex")
+
+    async def queued_job():
+        async with coordinator.slot(
+            "codex",
+            on_queued=lambda _status: queued.set(),
+        ):
+            raise AssertionError("cancelled waiter must not enter the slot")
+
+    job = asyncio.create_task(queued_job())
+    await asyncio.wait_for(queued.wait(), timeout=1)
+
+    # Model a release and grant without yielding back to the queued task. This
+    # is the exact ownership handoff window where cancellation used to leak.
+    async with coordinator._lock:
+        coordinator._deactivate("codex")
+        coordinator._wake_eligible_waiters()
+        assert coordinator._waiters == []
+        assert coordinator._active_by_provider == {"codex": 1}
+        job.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await job
+
+    snapshot = await coordinator.snapshot()
+    assert snapshot["active_process_count"] == 0
+    assert snapshot["queued_process_count"] == 0
+    async with coordinator.slot("codex"):
+        assert (await coordinator.snapshot())["active_process_count"] == 1

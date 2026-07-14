@@ -47,7 +47,7 @@ created: 2026-07-15
 | 18 | Desktop/mobile avoid overflow and obstruction | `1440x900` and `390x844` screenshots plus programmatic overflow assertions pass. |
 | 19 | Main text/status remains readable | Existing typography contracts and screenshot inspection satisfy the supplied size hierarchy. |
 | 20 | New real E2E passes | `ai-thread-v2-integration-real.spec.ts`: real UI chain, two-Agent DAG, no route mocks. |
-| 21 | Backend concurrency/snapshot tests pass | Relevant backend suite: `335 passed in 79.31s`; CLI Bridge sandbox suite: `17 passed`. |
+| 21 | Backend concurrency/snapshot tests pass | Relevant backend suite: `336 passed in 79.52s`; CLI Bridge sandbox suite: `17 passed`. |
 | 22 | Lint, TypeScript, build, and regressions pass | ESLint zero warnings, `tsc` exit 0, Next production build exit 0, Chromium group `7 passed`. |
 | 23 | Documentation matches behavior | Integration plan, progress log, quality gate, and E2E acceptance chain are current. |
 | 24 | Historical data is preserved | Migrations are additive/idempotent; legacy rows return `legacy`/`未记录`; no destructive migration exists. |
@@ -55,7 +55,7 @@ created: 2026-07-15
 
 ## Fresh verification evidence
 
-- Backend: `python3.11 -m pytest -q tests/test_ai_thread_v2_integration.py tests/test_ai_conversations.py tests/test_database_init.py tests/test_workbench_task_store.py tests/test_workflow_scheduler.py tests/test_workflow_version_store.py tests/test_agent_workbench_api.py tests/test_workbench_artifact_manifest.py --maxfail=1` -> `335 passed in 79.31s`.
+- Backend: `python3.11 -m pytest -q tests/test_ai_thread_v2_integration.py tests/test_ai_conversations.py tests/test_database_init.py tests/test_workbench_task_store.py tests/test_workflow_scheduler.py tests/test_workflow_version_store.py tests/test_agent_workbench_api.py tests/test_workbench_artifact_manifest.py --maxfail=1` -> `336 passed in 79.52s`.
 - Agent CLI sandbox: `python3.11 -m pytest -q tests/test_agent_cli_bridge.py --maxfail=1` -> `17 passed`.
 - Frontend: `npm run lint -- --max-warnings=0` -> exit 0.
 - Frontend: `./node_modules/.bin/tsc --noEmit --pretty false` -> exit 0.
@@ -113,6 +113,11 @@ from dynamic prompt/session argv before sandbox admission; assistant Run message
 Draft sources; source-less and explicit-equivalent draft requests share one per-thread idempotency
 boundary; queue callback failures clean their waiter; and operation-lock entries are reference-counted
 and evicted. The main AI-to-Task browser acceptance passed again after these fixes.
+
+The final re-review found one adjacent grant/cancel race: a waiter cancelled after capacity was granted
+but before its coroutine resumed could leak that slot. Waiters now retain explicit grant ownership so
+the cancellation path returns the slot and advances the queue. A deterministic handoff regression is
+included in the 336-test backend gate.
 
 ## Gate result
 

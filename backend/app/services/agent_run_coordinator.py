@@ -24,6 +24,7 @@ class _Waiter:
     future: asyncio.Future[None]
     on_queued: QueueCallback | None = None
     last_queue_status: dict[str, Any] | None = None
+    granted: bool = False
 
 
 class AgentRunCoordinator:
@@ -112,6 +113,13 @@ class AgentRunCoordinator:
     def _activate(self, provider: str) -> None:
         self._active_by_provider[provider] = self._active_by_provider.get(provider, 0) + 1
 
+    def _deactivate(self, provider: str) -> None:
+        active = self._active_by_provider.get(provider, 0)
+        if active <= 1:
+            self._active_by_provider.pop(provider, None)
+        else:
+            self._active_by_provider[provider] = active - 1
+
     def _queue_status(self, waiter: _Waiter) -> dict[str, Any]:
         global_position = self._waiters.index(waiter) + 1
         provider_position = sum(
@@ -130,11 +138,7 @@ class AgentRunCoordinator:
 
     async def _release(self, provider: str) -> None:
         async with self._lock:
-            active = self._active_by_provider.get(provider, 0)
-            if active <= 1:
-                self._active_by_provider.pop(provider, None)
-            else:
-                self._active_by_provider[provider] = active - 1
+            self._deactivate(provider)
             self._wake_eligible_waiters()
             updates = self._queued_updates()
         await self._notify_queue_updates(updates)
@@ -144,6 +148,9 @@ class AgentRunCoordinator:
             if waiter in self._waiters:
                 self._waiters.remove(waiter)
                 waiter.future.cancel()
+            elif waiter.granted:
+                waiter.granted = False
+                self._deactivate(waiter.provider)
             self._wake_eligible_waiters()
             updates = self._queued_updates()
         await self._notify_queue_updates(updates)
@@ -178,6 +185,7 @@ class AgentRunCoordinator:
                 continue
             self._waiters.remove(waiter)
             self._activate(waiter.provider)
+            waiter.granted = True
             if not waiter.future.done():
                 waiter.future.set_result(None)
 
