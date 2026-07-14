@@ -3621,8 +3621,8 @@ class TestAIConversationsAPI:
             references=[],
         )
         await store.fail_run(created["run"]["id"], "执行失败")
-        scheduled: list[str] = []
-        monkeypatch.setattr(ai_api, "schedule_conversation_run", scheduled.append)
+        kicked: list[str] = []
+        monkeypatch.setattr(ai_api, "kick_conversation_queue", kicked.append)
 
         app = _test_app(sqlite_db)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -3633,7 +3633,7 @@ class TestAIConversationsAPI:
         assert response.status_code == 202
         body = response.json()
         assert body["message"]["id"] == created["message"]["id"]
-        assert scheduled == [body["run"]["id"]]
+        assert kicked == [conversation["id"]]
         assert len(await store.list_messages(conversation["id"])) == 1
 
     async def test_cancel_while_followup_is_queued_stops_current_run_and_preserves_queue(

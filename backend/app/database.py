@@ -210,6 +210,17 @@ CREATE TABLE IF NOT EXISTS ai_conversation_runs (
     error TEXT,
     model TEXT,
     token_usage_json TEXT DEFAULT '{}',
+    execution_mode TEXT,
+    runtime_type TEXT,
+    agent_runtime_id TEXT,
+    runtime_snapshot_json TEXT,
+    workflow_binding_snapshot_json TEXT,
+    skills_snapshot_json TEXT,
+    mcp_snapshot_json TEXT,
+    context_summary_json TEXT,
+    artifact_contract_json TEXT,
+    metrics_json TEXT,
+    claimed_at TEXT,
     created_at TEXT NOT NULL,
     started_at TEXT,
     completed_at TEXT
@@ -224,6 +235,27 @@ CREATE TABLE IF NOT EXISTS ai_run_events (
     payload_json TEXT DEFAULT '{}',
     created_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS ai_workbench_links (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
+    message_id TEXT NOT NULL DEFAULT '',
+    ai_run_id TEXT NOT NULL DEFAULT '',
+    task_id TEXT NOT NULL DEFAULT '',
+    task_run_id TEXT NOT NULL DEFAULT '',
+    relation_type TEXT NOT NULL,
+    metadata_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_workbench_links_identity
+    ON ai_workbench_links(
+        conversation_id, message_id, ai_run_id, task_id, task_run_id, relation_type
+    );
+CREATE INDEX IF NOT EXISTS idx_ai_workbench_links_task
+    ON ai_workbench_links(task_id, task_run_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_workbench_links_conversation
+    ON ai_workbench_links(conversation_id, created_at);
 
 CREATE TABLE IF NOT EXISTS ai_agent_runtime_sessions (
     conversation_id TEXT NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE,
@@ -300,11 +332,26 @@ _MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS idx_ai_agent_runtime_sessions_runtime ON ai_agent_runtime_sessions(agent_runtime_id, updated_at)",
     "ALTER TABLE ai_conversation_runs ADD COLUMN sequence INTEGER DEFAULT 0",
     "ALTER TABLE ai_conversation_runs ADD COLUMN input_message_id TEXT",
+    "ALTER TABLE ai_conversation_runs ADD COLUMN execution_mode TEXT",
+    "ALTER TABLE ai_conversation_runs ADD COLUMN runtime_type TEXT",
+    "ALTER TABLE ai_conversation_runs ADD COLUMN agent_runtime_id TEXT",
+    "ALTER TABLE ai_conversation_runs ADD COLUMN runtime_snapshot_json TEXT",
+    "ALTER TABLE ai_conversation_runs ADD COLUMN workflow_binding_snapshot_json TEXT",
+    "ALTER TABLE ai_conversation_runs ADD COLUMN skills_snapshot_json TEXT",
+    "ALTER TABLE ai_conversation_runs ADD COLUMN mcp_snapshot_json TEXT",
+    "ALTER TABLE ai_conversation_runs ADD COLUMN context_summary_json TEXT",
+    "ALTER TABLE ai_conversation_runs ADD COLUMN artifact_contract_json TEXT",
+    "ALTER TABLE ai_conversation_runs ADD COLUMN metrics_json TEXT",
+    "ALTER TABLE ai_conversation_runs ADD COLUMN claimed_at TEXT",
     "UPDATE ai_conversation_runs SET input_message_id = (SELECT id FROM ai_messages WHERE ai_messages.run_id = ai_conversation_runs.id AND ai_messages.role = 'user' ORDER BY ai_messages.created_at ASC LIMIT 1) WHERE input_message_id IS NULL",
     "ALTER TABLE ai_run_events ADD COLUMN seq INTEGER DEFAULT 0",
     "CREATE INDEX IF NOT EXISTS idx_ai_runs_conversation_sequence ON ai_conversation_runs(conversation_id, sequence)",
     "CREATE INDEX IF NOT EXISTS idx_ai_runs_input_message ON ai_conversation_runs(input_message_id)",
     "CREATE INDEX IF NOT EXISTS idx_ai_run_events_run_seq ON ai_run_events(run_id, seq)",
+    "CREATE TABLE IF NOT EXISTS ai_workbench_links (id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL REFERENCES ai_conversations(id) ON DELETE CASCADE, message_id TEXT NOT NULL DEFAULT '', ai_run_id TEXT NOT NULL DEFAULT '', task_id TEXT NOT NULL DEFAULT '', task_run_id TEXT NOT NULL DEFAULT '', relation_type TEXT NOT NULL, metadata_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_workbench_links_identity ON ai_workbench_links(conversation_id, message_id, ai_run_id, task_id, task_run_id, relation_type)",
+    "CREATE INDEX IF NOT EXISTS idx_ai_workbench_links_task ON ai_workbench_links(task_id, task_run_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS idx_ai_workbench_links_conversation ON ai_workbench_links(conversation_id, created_at)",
 ]
 
 

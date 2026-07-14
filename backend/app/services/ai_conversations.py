@@ -831,11 +831,13 @@ class AIConversationStore:
         conversation_id: str,
         content: str,
         references: list[ContextReference],
+        run_snapshot: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         now = _now()
         message_id = _new_id("msg")
         run_id = _new_id("run")
         refs = [item.to_dict() for item in references]
+        snapshot = _normalized_run_snapshot(run_snapshot)
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
@@ -859,10 +861,30 @@ class AIConversationStore:
             await db.execute(
                 """
                 INSERT INTO ai_conversation_runs
-                    (id, conversation_id, input_message_id, status, sequence, cursor, created_at)
-                VALUES (?, ?, ?, 'queued', ?, 0, ?)
+                    (id, conversation_id, input_message_id, status, sequence, cursor,
+                     execution_mode, runtime_type, agent_runtime_id,
+                     runtime_snapshot_json, workflow_binding_snapshot_json,
+                     skills_snapshot_json, mcp_snapshot_json, context_summary_json,
+                     artifact_contract_json, metrics_json, created_at)
+                VALUES (?, ?, ?, 'queued', ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (run_id, conversation_id, message_id, sequence, now),
+                (
+                    run_id,
+                    conversation_id,
+                    message_id,
+                    sequence,
+                    snapshot["execution_mode"],
+                    snapshot["runtime_type"],
+                    snapshot["agent_runtime_id"],
+                    _json_dumps(snapshot["runtime_snapshot"]),
+                    _json_dumps(snapshot["workflow_binding_snapshot"]),
+                    _json_dumps(snapshot["skills_snapshot"]),
+                    _json_dumps(snapshot["mcp_snapshot"]),
+                    _json_dumps(snapshot["context_summary"]),
+                    _json_dumps(snapshot["artifact_contract"]),
+                    _json_dumps(snapshot["metrics"]),
+                    now,
+                ),
             )
             await db.execute(
                 "UPDATE ai_conversations SET status = 'running', updated_at = ? WHERE id = ?",
@@ -938,10 +960,30 @@ class AIConversationStore:
             await db.execute(
                 """
                 INSERT INTO ai_conversation_runs
-                    (id, conversation_id, input_message_id, status, sequence, cursor, created_at)
-                VALUES (?, ?, ?, 'queued', ?, 0, ?)
+                    (id, conversation_id, input_message_id, status, sequence, cursor,
+                     execution_mode, runtime_type, agent_runtime_id,
+                     runtime_snapshot_json, workflow_binding_snapshot_json,
+                     skills_snapshot_json, mcp_snapshot_json, context_summary_json,
+                     artifact_contract_json, metrics_json, created_at)
+                VALUES (?, ?, ?, 'queued', ?, 0, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (run_id, conversation_id, message_id, sequence, now),
+                (
+                    run_id,
+                    conversation_id,
+                    message_id,
+                    sequence,
+                    str(source_run["execution_mode"] or "legacy"),
+                    str(source_run["runtime_type"] or "unknown"),
+                    source_run["agent_runtime_id"],
+                    str(source_run["runtime_snapshot_json"] or "{}"),
+                    str(source_run["workflow_binding_snapshot_json"] or "{}"),
+                    str(source_run["skills_snapshot_json"] or "[]"),
+                    str(source_run["mcp_snapshot_json"] or "[]"),
+                    str(source_run["context_summary_json"] or "{}"),
+                    str(source_run["artifact_contract_json"] or "{}"),
+                    str(source_run["metrics_json"] or "{}"),
+                    now,
+                ),
             )
             await db.execute(
                 "UPDATE ai_conversations SET status = 'running', updated_at = ? WHERE id = ?",
@@ -995,6 +1037,79 @@ class AIConversationStore:
                 run["queue_position"] = await self._queue_position_for_run_row(db, row)
                 return run
         return None
+
+    async def claim_next_queued_run(self, conversation_id: str) -> dict[str, Any] | None:
+        """Atomically claim the oldest queued run for one conversation."""
+
+        now = _now()
+        claimed_id = ""
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT 1 FROM ai_conversation_runs "
+                "WHERE conversation_id = ? AND status = 'running' LIMIT 1",
+                (conversation_id,),
+            ) as cur:
+                if await cur.fetchone() is not None:
+                    await db.rollback()
+                    return None
+            async with db.execute(
+                """
+                SELECT id
+                FROM ai_conversation_runs
+                WHERE conversation_id = ? AND status = 'queued'
+                ORDER BY sequence ASC, created_at ASC, id ASC
+                LIMIT 1
+                """,
+                (conversation_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if row is None:
+                await db.rollback()
+                return None
+            claimed_id = str(row["id"])
+            updated = await db.execute(
+                """
+                UPDATE ai_conversation_runs
+                SET status = 'running', started_at = COALESCE(started_at, ?), claimed_at = ?
+                WHERE id = ? AND conversation_id = ? AND status = 'queued'
+                """,
+                (now, now, claimed_id, conversation_id),
+            )
+            if updated.rowcount != 1:
+                await db.rollback()
+                return None
+            await db.execute(
+                "UPDATE ai_conversations SET status = 'running', updated_at = ? WHERE id = ?",
+                (now, conversation_id),
+            )
+            await db.commit()
+        await self.append_event(
+            run_id=claimed_id,
+            conversation_id=conversation_id,
+            event_type="status",
+            payload={"status": "running", "message": "已领取执行槽位，正在准备运行。"},
+        )
+        return await self.get_run(claimed_id)
+
+    async def list_runs(self, conversation_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
+        async with self._connect() as db:
+            async with db.execute(
+                """
+                SELECT * FROM ai_conversation_runs
+                WHERE conversation_id = ?
+                ORDER BY sequence ASC, created_at ASC, id ASC
+                LIMIT ?
+                """,
+                (conversation_id, max(1, min(limit, 500))),
+            ) as cur:
+                rows = await cur.fetchall()
+            result = []
+            for row in rows:
+                run = _run_from_row(row)
+                run["queue_position"] = await self._queue_position_for_run_row(db, row)
+                result.append(run)
+            return result
 
     async def get_message(self, message_id: str) -> dict[str, Any]:
         async with self._connect() as db:
@@ -1082,18 +1197,21 @@ class AIConversationStore:
             return queued_before_or_equal
         return max(0, queued_before_or_equal - 1)
 
-    async def mark_run_running(self, run_id: str) -> None:
+    async def mark_run_running(self, run_id: str) -> bool:
         run = await self.get_run(run_id)
         now = _now()
         async with self._connect() as db:
-            await db.execute(
+            updated = await db.execute(
                 """
                 UPDATE ai_conversation_runs
                 SET status = 'running', started_at = COALESCE(started_at, ?)
-                WHERE id = ?
+                WHERE id = ? AND status = 'queued'
                 """,
                 (now, run_id),
             )
+            if updated.rowcount != 1:
+                await db.rollback()
+                return str(run.get("status") or "") == "running"
             await db.execute(
                 "UPDATE ai_conversations SET status = 'running', updated_at = ? WHERE id = ?",
                 (now, run["conversation_id"]),
@@ -1105,6 +1223,7 @@ class AIConversationStore:
             event_type="status",
             payload={"status": "running", "message": "已开始生成，正在读取线程上下文。"},
         )
+        return True
 
     async def append_event(
         self,
@@ -6488,7 +6607,39 @@ def _is_compact_thread_artifact_notice(content: str) -> bool:
 def _run_from_row(row: aiosqlite.Row) -> dict[str, Any]:
     data = dict(row)
     data["token_usage"] = _json_loads(data.pop("token_usage_json", "{}"), {})
+    data["execution_mode"] = str(data.get("execution_mode") or "legacy")
+    data["runtime_type"] = str(data.get("runtime_type") or "unknown")
+    data["agent_runtime_id"] = data.get("agent_runtime_id") or None
+    unrecorded = {"recorded": False, "status": "legacy", "label": "未记录"}
+    for public_key, storage_key, fallback in (
+        ("runtime_snapshot", "runtime_snapshot_json", unrecorded),
+        ("workflow_binding_snapshot", "workflow_binding_snapshot_json", unrecorded),
+        ("skills_snapshot", "skills_snapshot_json", []),
+        ("mcp_snapshot", "mcp_snapshot_json", []),
+        ("context_summary", "context_summary_json", {}),
+        ("artifact_contract", "artifact_contract_json", {}),
+        ("metrics", "metrics_json", {}),
+    ):
+        data[public_key] = _json_loads(data.pop(storage_key, None), fallback)
     return data
+
+
+def _normalized_run_snapshot(value: dict[str, Any] | None) -> dict[str, Any]:
+    raw = value if isinstance(value, dict) else {}
+    runtime_snapshot = raw.get("runtime_snapshot")
+    workflow_snapshot = raw.get("workflow_binding_snapshot")
+    return {
+        "execution_mode": str(raw.get("execution_mode") or "free_qa"),
+        "runtime_type": str(raw.get("runtime_type") or "unknown"),
+        "agent_runtime_id": str(raw.get("agent_runtime_id") or "").strip() or None,
+        "runtime_snapshot": dict(runtime_snapshot) if isinstance(runtime_snapshot, dict) else {},
+        "workflow_binding_snapshot": dict(workflow_snapshot) if isinstance(workflow_snapshot, dict) else {},
+        "skills_snapshot": [str(item) for item in raw.get("skills_snapshot") or []],
+        "mcp_snapshot": [str(item) for item in raw.get("mcp_snapshot") or []],
+        "context_summary": dict(raw.get("context_summary") or {}),
+        "artifact_contract": dict(raw.get("artifact_contract") or {}),
+        "metrics": dict(raw.get("metrics") or {}),
+    }
 
 
 def _event_from_row(row: aiosqlite.Row) -> dict[str, Any]:
