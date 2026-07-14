@@ -405,6 +405,59 @@ class WorkflowVersionStore:
             rows = db.execute(sql).fetchall()
         return [_header_from_row(row) for row in rows]
 
+    def retire_workflows(self, workflow_ids: set[str] | frozenset[str]) -> int:
+        """Archive workflow headers without deleting published history or task snapshots."""
+
+        normalized_ids = sorted(
+            {_validated_workflow_id(workflow_id) for workflow_id in workflow_ids}
+        )
+        if not normalized_ids:
+            return 0
+        self.initialize_and_migrate()
+        changed = 0
+        now = _now()
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                for workflow_id in normalized_ids:
+                    header = db.execute(
+                        "SELECT status, current_draft_version_id FROM workflow_headers WHERE workflow_id = ?",
+                        (workflow_id,),
+                    ).fetchone()
+                    if header is None:
+                        continue
+                    draft_id = (
+                        str(header["current_draft_version_id"])
+                        if header["current_draft_version_id"]
+                        else None
+                    )
+                    if str(header["status"]) == "archived" and draft_id is None:
+                        continue
+                    if draft_id:
+                        db.execute(
+                            """
+                            UPDATE workflow_versions
+                            SET state = 'archived', updated_at = ?
+                            WHERE version_id = ? AND state = 'draft'
+                            """,
+                            (now, draft_id),
+                        )
+                    db.execute(
+                        """
+                        UPDATE workflow_headers
+                        SET status = 'archived', current_draft_version_id = NULL,
+                            archived_at = COALESCE(archived_at, ?), updated_at = ?
+                        WHERE workflow_id = ?
+                        """,
+                        (now, now, workflow_id),
+                    )
+                    changed += 1
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+        return changed
+
     def update_workflow(
         self,
         workflow_id: str,
@@ -696,6 +749,15 @@ class WorkflowVersionStore:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
+
+
+def workflow_header_status(db_path: str | Path, workflow_id: str) -> str | None:
+    """Return the V2 header status without treating legacy-only IDs as failures."""
+
+    try:
+        return WorkflowVersionStore(db_path).get_workflow(workflow_id).status
+    except (KeyError, ValueError):
+        return None
 
 
 def _validated_workflow_id(value: str) -> str:

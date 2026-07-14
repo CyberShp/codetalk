@@ -57,6 +57,88 @@ def _test_app(sqlite_db: str) -> FastAPI:
     return app
 
 
+async def test_retired_builtin_workflow_cannot_start_new_ai_conversation_runs(
+    sqlite_db,
+):
+    from app.services.ai_conversations import AIConversationStore
+
+    app = _test_app(sqlite_db)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        rejected_create = await client.post(
+            "/api/ai/conversations",
+            json={
+                "scope_type": "workspace",
+                "scope_id": "ws-retired-workflow",
+                "initial_context": {"selected_workflow_id": "module_analysis"},
+            },
+        )
+
+        historical = await AIConversationStore(sqlite_db).create_conversation(
+            scope_type="workspace",
+            scope_id="ws-retired-workflow",
+            title="历史旧工作流线程",
+            initial_context={"selected_workflow_id": "module_analysis"},
+        )
+        rejected_message = await client.post(
+            f"/api/ai/conversations/{historical['id']}/messages",
+            json={"content": "请启动旧模块分析流程"},
+        )
+
+    assert rejected_create.status_code == 410
+    assert rejected_message.status_code == 410
+    assert "已下线" in str(rejected_create.json()["detail"])
+    assert "已下线" in str(rejected_message.json()["detail"])
+
+
+async def test_archived_custom_workflow_cannot_start_new_ai_conversation_runs(
+    sqlite_db,
+):
+    from app.config import settings
+    from app.services.ai_conversations import AIConversationStore
+    from app.services.workflow_version_store import WorkflowVersionStore
+
+    workflow_id = "archived-custom-ai"
+    version_store = WorkflowVersionStore(settings.data_path / "workbench" / "workflows.db")
+    version_store.create_workflow(
+        workflow_id=workflow_id,
+        name="Archived custom AI workflow",
+        description="",
+        authoring_graph={"schema_version": 2, "workflow_id": workflow_id},
+    )
+    version_store.archive_workflow(workflow_id)
+
+    app = _test_app(sqlite_db)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        rejected_create = await client.post(
+            "/api/ai/conversations",
+            json={
+                "scope_type": "workspace",
+                "scope_id": "ws-archived-custom",
+                "initial_context": {"selected_workflow_id": workflow_id},
+            },
+        )
+
+        historical = await AIConversationStore(sqlite_db).create_conversation(
+            scope_type="workspace",
+            scope_id="ws-archived-custom",
+            title="历史归档自建工作流线程",
+            initial_context={"selected_workflow_id": workflow_id},
+        )
+        rejected_message = await client.post(
+            f"/api/ai/conversations/{historical['id']}/messages",
+            json={"content": "请继续运行这个归档工作流"},
+        )
+
+    assert rejected_create.status_code == 409
+    assert rejected_message.status_code == 409
+    assert "已归档" in str(rejected_create.json()["detail"])
+    assert "已归档" in str(rejected_message.json()["detail"])
+
+
 class FakeLLM:
     async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
         joined = "\n".join(str(m.get("content", "")) for m in messages)

@@ -834,6 +834,7 @@ async def test_new_builtin_task_rejects_superseded_published_version(tmp_path, m
     assert version_store.ensure_legacy_published_workflows([definition]) == 1
     current_version_id = version_store.get_workflow("module_analysis").published_version_id
     assert current_version_id != old_version_id
+    assert version_store.retire_workflows({"module_analysis"}) == 1
 
     historical = workbench_v2_tasks.task_store().create_task(
         name="Historical built-in task",
@@ -855,7 +856,7 @@ async def test_new_builtin_task_rejects_superseded_published_version(tmp_path, m
             "/api/workbench/tasks",
             json={**request, "workflow_version_id": old_version_id},
         )
-        accepted = await client.post(
+        retired_current = await client.post(
             "/api/workbench/tasks",
             json={**request, "workflow_version_id": current_version_id},
         )
@@ -866,9 +867,85 @@ async def test_new_builtin_task_rejects_superseded_published_version(tmp_path, m
         )
 
     assert rejected.status_code == 409
-    assert "最新发布版本" in rejected.json()["detail"]
-    assert accepted.status_code == 201, accepted.text
+    assert "已下线" in rejected.json()["detail"]
+    assert retired_current.status_code == 409, retired_current.text
+    assert "已下线" in retired_current.json()["detail"]
     assert historical_detail.status_code == 200, historical_detail.text
     assert historical_detail.json()["workflow_version_id"] == old_version_id
     assert clone_rejected.status_code == 409
-    assert "最新发布版本" in clone_rejected.json()["detail"]
+    assert "已下线" in clone_rejected.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_archived_custom_workflow_rejects_new_task_and_clone(tmp_path, monkeypatch):
+    from app.api import agent_workbench, workbench_v2_tasks
+    from app.config import settings
+    from app.services.workflow_version_store import WorkflowVersionStore
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    sqlite_db = data_dir / "codetalk.db"
+    with sqlite3.connect(sqlite_db) as db:
+        db.execute("CREATE TABLE workspaces (id TEXT PRIMARY KEY, name TEXT, repo_path TEXT)")
+        db.execute("INSERT INTO workspaces VALUES (?, ?, ?)", ("ws-1", "SPDK", str(repo)))
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+    monkeypatch.setattr(settings, "sqlite_db", str(sqlite_db))
+    monkeypatch.setattr(settings, "workbench_v2_enabled", True)
+
+    definition = _workflow()
+    definition["id"] = "archived-custom"
+    definition["name"] = "Archived custom"
+    db_path = data_dir / "workbench" / "workflows.db"
+    version_store = WorkflowVersionStore(db_path)
+    _, draft = version_store.create_workflow(
+        workflow_id=definition["id"],
+        name=definition["name"],
+        description="",
+        authoring_graph={"schema_version": 2, "workflow_id": definition["id"]},
+    )
+    published = version_store.publish_version(
+        draft.version_id,
+        authoring_graph=draft.authoring_graph,
+        compiled_definition=definition,
+        compiled_plan={
+            "plan_version": 1,
+            "workflow_version_id": draft.version_id,
+            "topological_order": ["scope"],
+            "nodes": [{"node_id": "scope", "type": "local_scope_discover"}],
+        },
+        validation={"valid": True, "errors": [], "warnings": []},
+    )
+    historical = workbench_v2_tasks.task_store().create_task(
+        name="Historical archived custom task",
+        workspace_id="ws-1",
+        workflow_id=definition["id"],
+        workflow_version_id=published.version_id,
+    )
+    version_store.archive_workflow(definition["id"])
+
+    request = {
+        "name": "New archived custom task",
+        "workspace_id": "ws-1",
+        "workflow_id": definition["id"],
+        "workflow_version_id": published.version_id,
+        "lifecycle_status": "draft",
+    }
+    app = FastAPI()
+    app.include_router(agent_workbench.router)
+    app.include_router(workbench_v2_tasks.router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        rejected_create = await client.post("/api/workbench/tasks", json=request)
+        historical_detail = await client.get(f"/api/workbench/tasks/{historical.task_id}")
+        rejected_clone = await client.post(
+            f"/api/workbench/tasks/{historical.task_id}/clone",
+            json={"name": "Archived custom clone"},
+        )
+
+    assert rejected_create.status_code == 409
+    assert rejected_clone.status_code == 409
+    assert "已归档" in rejected_create.json()["detail"]
+    assert "已归档" in rejected_clone.json()["detail"]
+    assert historical_detail.status_code == 200
+    assert historical_detail.json()["workflow_version_id"] == published.version_id

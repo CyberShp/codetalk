@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
+from app.config import settings
 from app.llm.factory import create_llm_client_from_active
 from app.services.ai_conversations import (
     AI_SCOPE_TYPES,
@@ -30,8 +31,18 @@ from app.services.ai_thread_artifacts import (
 )
 from app.services.agent_runtimes import AgentRuntimeStore
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
+from app.services.workflow_presets import (
+    active_builtin_workflow_presets,
+    reserved_builtin_workflow_ids,
+)
+from app.services.workflow_version_store import workflow_header_status
 
 router = APIRouter(prefix="/api/ai/conversations", tags=["ai-conversations"])
+_ACTIVE_BUILTIN_WORKFLOW_IDS = frozenset(
+    str(preset["definition"]["id"])
+    for preset in active_builtin_workflow_presets()
+)
+_RESERVED_BUILTIN_WORKFLOW_IDS = reserved_builtin_workflow_ids()
 
 
 class CreateConversationRequest(BaseModel):
@@ -56,6 +67,35 @@ class UpdateConversationRequest(BaseModel):
 
 def _store() -> AIConversationStore:
     return AIConversationStore()
+
+
+def _selected_workflow_unavailability(initial_context: Any) -> tuple[int, str] | None:
+    if not isinstance(initial_context, dict):
+        return None
+    workflow_id = str(initial_context.get("selected_workflow_id") or "").strip()
+    if (
+        workflow_id in _RESERVED_BUILTIN_WORKFLOW_IDS
+        and workflow_id not in _ACTIVE_BUILTIN_WORKFLOW_IDS
+    ):
+        return (
+            410,
+            "该内置工作流已下线，仅保留历史线程记录；请选择当前发布工作流。",
+        )
+    if workflow_header_status(
+        settings.data_path / "workbench" / "workflows.db",
+        workflow_id,
+    ) == "archived":
+        return (
+            409,
+            "该自建工作流已归档，仅保留历史线程记录；请恢复工作流或选择其他工作流。",
+        )
+    return None
+
+
+def _require_selected_workflow_available(initial_context: Any) -> None:
+    unavailable = _selected_workflow_unavailability(initial_context)
+    if unavailable:
+        raise HTTPException(status_code=unavailable[0], detail=unavailable[1])
 
 
 def _redact_payload(value: Any) -> Any:
@@ -90,6 +130,12 @@ def schedule_conversation_run(run_id: str) -> None:
             return
         conversation = await store.get_conversation(conversation_id)
         try:
+            unavailable = _selected_workflow_unavailability(
+                conversation.get("initial_context")
+            )
+            if unavailable:
+                await store.fail_run(run_id, unavailable[1])
+                return
             if conversation.get("runtime_type") == "agent_runtime":
                 runtime_id = str(conversation.get("agent_runtime_id") or "")
                 try:
@@ -122,6 +168,7 @@ async def create_conversation(body: CreateConversationRequest) -> dict[str, Any]
         raise HTTPException(status_code=400, detail=f"Unsupported scope_type: {body.scope_type}")
     if body.runtime_type == "agent_runtime":
         await _require_enabled_agent_runtime(body.agent_runtime_id)
+    _require_selected_workflow_available(body.initial_context)
     return await _store().create_conversation(
         scope_type=body.scope_type,
         scope_id=body.scope_id,
@@ -244,6 +291,7 @@ async def create_message(conversation_id: str, body: CreateMessageRequest) -> di
         conversation = await store.get_conversation(conversation_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="AI conversation not found")
+    _require_selected_workflow_available(conversation.get("initial_context"))
     if conversation.get("runtime_type") == "agent_runtime":
         await _require_enabled_agent_runtime(conversation.get("agent_runtime_id"))
     latest = await store.latest_run(conversation_id)
@@ -275,6 +323,7 @@ async def retry_failed_run(conversation_id: str, source_run_id: str) -> dict[str
         conversation = await store.get_conversation(conversation_id)
     except KeyError:
         raise HTTPException(status_code=404, detail="AI conversation not found")
+    _require_selected_workflow_available(conversation.get("initial_context"))
     if conversation.get("runtime_type") == "agent_runtime":
         await _require_enabled_agent_runtime(conversation.get("agent_runtime_id"))
     try:

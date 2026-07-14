@@ -68,11 +68,13 @@ from app.services.workflow_dsl import (
     validate_workflow_definition,
 )
 from app.services.workflow_presets import (
-    builtin_workflow_presets,
+    active_builtin_workflow_presets,
     get_workflow_preset,
     install_workflow_preset,
+    reserved_builtin_workflow_ids,
     restore_builtin_workflow_presets,
 )
+from app.services.workflow_version_store import workflow_header_status
 
 router = APIRouter(prefix="/api/workbench", tags=["agent-workbench"])
 
@@ -219,7 +221,7 @@ class _WorkflowCatalog:
         builtin_ids = _builtin_workflow_ids()
         builtin = [
             validate_workflow_definition(deepcopy(preset["definition"]))
-            for preset in builtin_workflow_presets()
+            for preset in active_builtin_workflow_presets()
         ]
         custom = [
             item for item in self.store.list_workflows()
@@ -233,11 +235,40 @@ def _workflow_store_with_builtin_presets() -> _WorkflowCatalog:
 
 
 def _builtin_workflow_ids() -> set[str]:
-    return {str(preset["definition"]["id"]) for preset in builtin_workflow_presets()}
+    return set(reserved_builtin_workflow_ids())
+
+
+def _active_builtin_workflow_ids() -> set[str]:
+    return {
+        str(preset["definition"]["id"])
+        for preset in active_builtin_workflow_presets()
+    }
 
 
 def _is_builtin_workflow_id(workflow_id: str) -> bool:
     return str(workflow_id or "").strip() in _builtin_workflow_ids()
+
+
+def _is_active_builtin_workflow_id(workflow_id: str) -> bool:
+    return str(workflow_id or "").strip() in _active_builtin_workflow_ids()
+
+
+def _require_workflow_available_for_new_run(workflow_id: str) -> None:
+    if _is_builtin_workflow_id(workflow_id) and not _is_active_builtin_workflow_id(
+        workflow_id
+    ):
+        raise HTTPException(
+            status_code=410,
+            detail="该内置工作流已下线，仅保留历史任务与运行记录；请选择当前发布工作流。",
+        )
+    if workflow_header_status(
+        _workbench_dir() / "workflows.db",
+        workflow_id,
+    ) == "archived":
+        raise HTTPException(
+            status_code=409,
+            detail="该自建工作流已归档，仅保留历史任务与运行记录；请恢复工作流或选择其他工作流。",
+        )
 
 
 def _semantic_store() -> TestSemanticLibraryStore:
@@ -1278,25 +1309,44 @@ async def generate_workflow_draft(payload: GenerateWorkflowDraftRequest) -> dict
 async def list_workflows() -> list[dict[str, Any]]:
     store = _workflow_store_with_builtin_presets()
     legacy_items = [_workflow_response(item.raw) for item in store.list_workflows()]
-    if not settings.workbench_v2_enabled:
-        return legacy_items
     from app.services.workflow_version_store import WorkflowVersionStore
 
     version_store = WorkflowVersionStore(_workbench_dir() / "workflows.db")
+    if not settings.workbench_v2_enabled:
+        archived_v2_ids = {
+            header.workflow_id
+            for header in version_store.list_workflows(include_archived=True)
+            if header.status == "archived"
+        }
+        return [
+            item
+            for item in legacy_items
+            if str(item.get("id") or "") not in archived_v2_ids
+        ]
     version_store.ensure_legacy_published_workflows(
-        [dict(preset["definition"]) for preset in builtin_workflow_presets()]
+        [dict(preset["definition"]) for preset in active_builtin_workflow_presets()]
     )
+    version_store.retire_workflows(
+        reserved_builtin_workflow_ids().difference(_active_builtin_workflow_ids())
+    )
+    all_v2_headers = version_store.list_workflows(include_archived=True)
+    archived_v2_ids = {
+        header.workflow_id for header in all_v2_headers if header.status == "archived"
+    }
     v2_items = {
         header.workflow_id: _v2_workflow_compatibility_response(version_store, header)
-        for header in version_store.list_workflows()
+        for header in all_v2_headers
+        if header.status != "archived"
     }
     merged = []
     for item in legacy_items:
         workflow_id = str(item.get("id") or "")
+        if workflow_id in archived_v2_ids:
+            continue
         v2_item = v2_items.pop(workflow_id, None)
         if v2_item is None:
             merged.append(item)
-        elif _is_builtin_workflow_id(workflow_id):
+        elif _is_active_builtin_workflow_id(workflow_id):
             merged.append(
                 {
                     **item,
@@ -1317,7 +1367,10 @@ async def restore_builtin_workflows() -> dict[str, Any]:
     return {
         "status": "ok",
         "restored_count": len(restored),
-        "items": [_workflow_response(item.raw) for item in store.list_workflows()],
+        "items": [
+            _workflow_response(item.raw)
+            for item in _WorkflowCatalog(store).list_workflows()
+        ],
     }
 
 
@@ -1350,7 +1403,7 @@ async def get_workflow_snapshot(workflow_id: str) -> dict[str, Any]:
 
 @router.get("/workflow-presets")
 async def list_workflow_presets() -> dict[str, Any]:
-    return {"items": builtin_workflow_presets()}
+    return {"items": active_builtin_workflow_presets()}
 
 
 @router.get("/workflow-capabilities")
@@ -1483,18 +1536,10 @@ async def get_workflow_capabilities() -> dict[str, Any]:
 
 @router.get("/core-workflow-readiness")
 async def get_core_workflow_readiness() -> dict[str, Any]:
-    """Audit the four built-in workflow scenarios as executable contracts."""
-    workflows = [_core_workflow_readiness_item(item) for item in builtin_workflow_presets()]
+    """Audit the active release workflow as an executable contract."""
     required = [
-        item for item in workflows
-        if item.get("id") in {
-            "module_analysis",
-            "resource_leak_hunt",
-            "mr_blackbox_test",
-            "patch_impact_review",
-            "source_flow_sfmea_blackbox",
-            "testing_activity_orchestration",
-        }
+        _core_workflow_readiness_item(item)
+        for item in active_builtin_workflow_presets()
     ]
     missing_required = [
         item for item in required
@@ -1519,6 +1564,7 @@ async def get_core_workflow_readiness() -> dict[str, Any]:
 
 @router.post("/workflow-presets/{preset_id}/install", status_code=201)
 async def install_builtin_workflow_preset(preset_id: str) -> dict[str, Any]:
+    _require_workflow_available_for_new_run(preset_id)
     try:
         workflow = install_workflow_preset(_workflow_store(), preset_id)
     except KeyError:
@@ -3203,6 +3249,7 @@ async def download_task_run_artifact(
 
 @router.post("/task-runs/prepare", status_code=201)
 async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
+    _require_workflow_available_for_new_run(payload.workflow_id)
     await apply_persisted_agent_provider_settings()
     try:
         result = WorkbenchTaskRunPreparer(
@@ -3226,6 +3273,7 @@ async def prepare_task_run(payload: PrepareTaskRunRequest) -> dict[str, Any]:
 
 @router.post("/task-runs/run", status_code=202)
 async def prepare_and_execute_task_run(payload: RunTaskRunRequest) -> dict[str, Any]:
+    _require_workflow_available_for_new_run(payload.workflow_id)
     await apply_persisted_agent_provider_settings()
     try:
         prepared = WorkbenchTaskRunPreparer(
@@ -3542,14 +3590,10 @@ def _build_workbench_system_audit() -> dict[str, Any]:
         for provider_id, spec in external_agent_provider_specs().items()
     ]
     provider_matrix.append(_fast_context_provider_matrix_item())
-    preset_ids = {str(item.get("id") or "") for item in builtin_workflow_presets()}
-    required_preset_ids = {
-        "module_analysis",
-        "resource_leak_hunt",
-        "mr_blackbox_test",
-        "patch_impact_review",
-        "source_flow_sfmea_blackbox",
+    preset_ids = {
+        str(item.get("id") or "") for item in active_builtin_workflow_presets()
     }
+    required_preset_ids = {"source_flow_sfmea_blackbox"}
     checks = [
         _system_audit_check(
             check_id="workbench_data_dir",

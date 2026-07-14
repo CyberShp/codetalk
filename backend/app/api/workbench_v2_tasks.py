@@ -20,14 +20,19 @@ from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
 from app.services.workbench_task_store import WorkbenchTask, WorkbenchTaskStore
 from app.services.workbench_task_compile import TaskConfigurationError, compile_task_configuration
 from app.services.workflow_dsl import WorkflowStore
-from app.services.workflow_presets import builtin_workflow_presets
-from app.services.workflow_version_store import WorkflowVersionStore
+from app.services.workflow_presets import (
+    active_builtin_workflow_presets,
+    reserved_builtin_workflow_ids,
+)
+from app.services.workflow_version_store import WorkflowVersionStore, workflow_header_status
 
 
 router = APIRouter(prefix="/api/workbench/tasks", tags=["workbench-v2-tasks"])
 _ATTEMPT_LOCK = threading.RLock()
-_BUILTIN_WORKFLOW_IDS = frozenset(
-    str(preset["definition"]["id"]) for preset in builtin_workflow_presets()
+_BUILTIN_WORKFLOW_IDS = reserved_builtin_workflow_ids()
+_ACTIVE_BUILTIN_WORKFLOW_IDS = frozenset(
+    str(preset["definition"]["id"])
+    for preset in active_builtin_workflow_presets()
 )
 
 
@@ -153,6 +158,7 @@ async def list_tasks(
 @router.post("", status_code=201)
 async def create_task(payload: TaskCreateRequest) -> dict[str, Any]:
     _require_v2()
+    _require_workflow_available_for_new_task(payload.workflow_id)
     version = _published_version(
         payload.workflow_id,
         payload.workflow_version_id,
@@ -242,6 +248,7 @@ async def archive_task(task_id: str) -> dict[str, Any]:
 async def clone_task(task_id: str, payload: TaskCloneRequest) -> dict[str, Any]:
     _require_v2()
     source = _task(task_id)
+    _require_workflow_available_for_new_task(source.workflow_id)
     _published_version(
         source.workflow_id,
         source.workflow_version_id,
@@ -481,6 +488,25 @@ def _task(task_id: str) -> WorkbenchTask:
         return task_store().get_task(task_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=f"任务不存在：{task_id}") from exc
+
+
+def _require_workflow_available_for_new_task(workflow_id: str) -> None:
+    if (
+        workflow_id in _BUILTIN_WORKFLOW_IDS
+        and workflow_id not in _ACTIVE_BUILTIN_WORKFLOW_IDS
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="该内置工作流已下线，仅保留历史任务与运行记录；请选择当前发布工作流。",
+        )
+    if workflow_header_status(
+        settings.data_path / "workbench" / "workflows.db",
+        workflow_id,
+    ) == "archived":
+        raise HTTPException(
+            status_code=409,
+            detail="该自建工作流已归档，仅保留历史任务与运行记录；请恢复工作流或选择其他工作流。",
+        )
 
 
 def _published_version(

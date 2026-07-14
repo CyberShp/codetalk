@@ -103,6 +103,18 @@ async def workbench_client(tmp_path, monkeypatch):
         yield client
 
 
+def _install_historical_preset_as_custom(preset_id: str) -> str:
+    from app.api import agent_workbench as workbench_api
+    from app.services.workflow_presets import get_workflow_preset
+
+    definition = json.loads(json.dumps(get_workflow_preset(preset_id)["definition"]))
+    custom_id = f"test_{preset_id}"
+    definition["id"] = custom_id
+    definition["name"] = f"Test compatibility: {preset_id}"
+    workbench_api._workflow_store().save_workflow(definition)
+    return custom_id
+
+
 async def _wait_for_task_run_status(
     client: AsyncClient,
     task_run_id: str,
@@ -325,14 +337,8 @@ async def test_workbench_workflow_crud_api(workbench_client):
     assert listed.status_code == 200
     listed_ids = {item["id"] for item in listed.json()}
     assert "custom_mr_blackbox" in listed_ids
-    assert {
-        "module_analysis",
-        "resource_leak_hunt",
-        "mr_blackbox_test",
-        "patch_impact_review",
-        "source_flow_sfmea_blackbox",
-        "testing_activity_orchestration",
-    }.issubset(listed_ids)
+    assert "source_flow_sfmea_blackbox" in listed_ids
+    assert "module_analysis" not in listed_ids
 
     loaded = await workbench_client.get("/api/workbench/workflows/custom_mr_blackbox")
     assert loaded.status_code == 200
@@ -347,7 +353,6 @@ async def test_workbench_workflow_crud_api(workbench_client):
     frozen = await workbench_client.get("/api/workbench/workflows/custom_mr_blackbox/snapshot")
     assert frozen.status_code == 200
     assert frozen.json()["version"] == 1
-
     prepared = await workbench_client.post(
         "/api/workbench/task-runs/prepare",
         json={
@@ -423,6 +428,69 @@ async def test_workbench_workflow_crud_api(workbench_client):
         "report.md",
         "cases.md",
     ]
+
+
+async def test_archived_v2_workflow_is_not_resurrected_by_legacy_catalog(
+    workbench_client,
+    monkeypatch,
+):
+    from app.api import agent_workbench as workbench_api
+    from app.config import settings
+    from app.services.workflow_version_store import WorkflowVersionStore
+
+    workflow = {
+        "id": "archived_legacy_workflow",
+        "name": "Archived legacy workflow",
+        "version": 1,
+        "inputs": [],
+        "steps": [{"id": "render", "type": "report_render"}],
+        "outputs": [{"id": "report", "type": "markdown", "from": "render"}],
+    }
+    assert (
+        await workbench_client.post("/api/workbench/workflows", json=workflow)
+    ).status_code == 201
+    assert "archived_legacy_workflow" in {
+        item["id"]
+        for item in (await workbench_client.get("/api/workbench/workflows")).json()
+    }
+
+    version_store = WorkflowVersionStore(
+        workbench_api._workbench_dir() / "workflows.db"
+    )
+    version_store.archive_workflow("archived_legacy_workflow")
+
+    listed_ids = {
+        item["id"]
+        for item in (await workbench_client.get("/api/workbench/workflows")).json()
+    }
+    assert "archived_legacy_workflow" not in listed_ids
+
+    run_payload = {
+        "workflow_id": "archived_legacy_workflow",
+        "workspace_id": "ws-archived-custom",
+        "repo_path": "/Volumes/Media/dpdk/spdk",
+        "inputs": {},
+    }
+    rejected_prepare = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json=run_payload,
+    )
+    rejected_run = await workbench_client.post(
+        "/api/workbench/task-runs/run",
+        json=run_payload,
+    )
+
+    assert rejected_prepare.status_code == 409
+    assert rejected_run.status_code == 409
+    assert "已归档" in rejected_prepare.json()["detail"]
+    assert "已归档" in rejected_run.json()["detail"]
+
+    monkeypatch.setattr(settings, "workbench_v2_enabled", False)
+    rollback_listed_ids = {
+        item["id"]
+        for item in (await workbench_client.get("/api/workbench/workflows")).json()
+    }
+    assert "archived_legacy_workflow" not in rollback_listed_ids
 
 
 async def test_workbench_execution_contract_explains_mcp_degradation(workbench_client, tmp_path):
@@ -597,69 +665,64 @@ async def test_workbench_workflow_preset_api(workbench_client):
     assert presets.status_code == 200
     preset_items = presets.json()["items"]
     preset_ids = {item["id"] for item in preset_items}
-    assert "mr_blackbox_test" in preset_ids
-    assert "resource_leak_hunt" in preset_ids
-    assert "source_flow_sfmea_blackbox" in preset_ids
-    assert "testing_activity_orchestration" in preset_ids
-    assert {
-        "nvmf_connect_io_blackbox",
-        "iscsi_login_session_blackbox",
-        "bdev_io_reset_blackbox",
-        "rpc_config_negative_blackbox",
-        "reactor_thread_poller_blackbox",
-        "nvmf_disconnect_reconnect_blackbox",
-        "iscsi_auth_failure_blackbox",
-        "bdev_failover_resource_blackbox",
-        "blobstore_ftl_recovery_blackbox",
-        "vhost_vfio_user_lifecycle_blackbox",
-        "fault_injection_timeout_recovery_blackbox",
-        "concurrent_operations_stress_blackbox",
-        "observability_diagnostics_blackbox",
-        "config_compatibility_rollback_blackbox",
-        "target_crash_restart_blackbox",
-        "multi_client_isolation_blackbox",
-        "queue_depth_backpressure_blackbox",
-        "io_error_injection_retry_blackbox",
-        "config_reload_persistence_blackbox",
-        "long_running_resource_leak_blackbox",
-        "nvmf_subsystem_namespace_acl_blackbox",
-        "iscsi_lun_resize_hotplug_blackbox",
-        "bdev_crypto_integrity_blackbox",
-        "scheduler_qos_fairness_blackbox",
-        "backup_restore_integrity_blackbox",
-        "nvme_discovery_log_blackbox",
-        "iscsi_portal_failover_blackbox",
-        "bdev_zone_append_blackbox",
-        "jsonrpc_partial_rollback_blackbox",
-        "vfio_user_hotplug_reconnect_blackbox",
-        "lvol_thin_snapshot_blackbox",
-        "api_contract_negative_blackbox",
-        "state_persistence_restart_blackbox",
-        "concurrency_isolation_race_blackbox",
-        "performance_capacity_regression_blackbox",
-        "security_access_control_blackbox",
-    }.issubset(preset_ids)
+    assert preset_ids == {"source_flow_sfmea_blackbox"}
     by_preset_id = {item["id"]: item for item in preset_items}
-    assert by_preset_id["module_analysis"]["group"] == "core"
-    assert by_preset_id["mr_blackbox_test"]["group"] == "core"
-    assert by_preset_id["backup_restore_integrity_blackbox"]["group"] == "common_test_scenario"
-    assert by_preset_id["nvme_discovery_log_blackbox"]["group"] == "common_test_scenario"
-    assert by_preset_id["api_contract_negative_blackbox"]["group"] == "common_test_scenario"
+    assert by_preset_id["source_flow_sfmea_blackbox"]["group"] == "core"
 
     listed = await workbench_client.get("/api/workbench/workflows")
     listed_body = listed.json()
     listed_ids = {item["id"] for item in listed_body}
-    assert "mr_blackbox_test" in listed_ids
     assert preset_ids.issubset(listed_ids)
+    assert "module_analysis" not in listed_ids
     for item in listed_body:
         if item["id"] in preset_ids:
             assert item["audit"]["warnings"] == []
 
     installed = await workbench_client.post(
-        "/api/workbench/workflow-presets/mr_blackbox_test/install"
+        "/api/workbench/workflow-presets/source_flow_sfmea_blackbox/install"
     )
     assert installed.status_code == 201
-    assert installed.json()["id"] == "mr_blackbox_test"
+    assert installed.json()["id"] == "source_flow_sfmea_blackbox"
+
+
+async def test_retired_builtin_cannot_be_installed_or_used_for_new_task_runs(
+    workbench_client,
+    tmp_path,
+):
+    installed = await workbench_client.post(
+        "/api/workbench/workflow-presets/module_analysis/install"
+    )
+    prepared = await workbench_client.post(
+        "/api/workbench/task-runs/prepare",
+        json={
+            "workflow_id": "module_analysis",
+            "workspace_id": "retired-workflow",
+            "repo_path": str(tmp_path),
+            "inputs": {
+                "analysis_object": "retired workflow must not start",
+                "repo_path": str(tmp_path),
+            },
+        },
+    )
+    executed = await workbench_client.post(
+        "/api/workbench/task-runs/run",
+        json={
+            "workflow_id": "module_analysis",
+            "workspace_id": "retired-workflow",
+            "repo_path": str(tmp_path),
+            "inputs": {
+                "analysis_object": "retired workflow must not start",
+                "repo_path": str(tmp_path),
+            },
+        },
+    )
+
+    assert installed.status_code == 410
+    assert prepared.status_code == 410
+    assert executed.status_code == 410
+    assert "已下线" in str(installed.json()["detail"])
+    assert "已下线" in str(prepared.json()["detail"])
+    assert "已下线" in str(executed.json()["detail"])
 
 
 async def test_task_run_public_payload_includes_chinese_ui_summary_for_workflow_contract(
@@ -953,7 +1016,7 @@ async def test_task_run_run_response_includes_current_chinese_ui_summary(
     assert body["run_ui_summary"]["deliverables"][0]["artifact"] == "report.md"
 
 
-async def test_restore_builtin_workflows_preserves_custom_and_restores_core_plus_scenarios(
+async def test_restore_builtin_workflows_preserves_custom_and_only_restores_release_preset(
     workbench_client,
 ):
     custom = await workbench_client.post(
@@ -974,45 +1037,10 @@ async def test_restore_builtin_workflows_preserves_custom_and_restores_core_plus
     assert restored.status_code == 200
     body = restored.json()
     assert body["status"] == "ok"
-    assert body["restored_count"] >= 5
+    assert body["restored_count"] == 1
     workflow_ids = [item["id"] for item in body["items"]]
-    assert workflow_ids[:5] == [
-        "module_analysis",
-        "resource_leak_hunt",
-        "mr_blackbox_test",
-        "patch_impact_review",
-        "source_flow_sfmea_blackbox",
-    ]
-    assert {
-        "custom_keep_me",
-        "basic_lifecycle_smoke_blackbox",
-        "io_stress_performance_blackbox",
-        "failure_recovery_soak_blackbox",
-        "transport_network_partition_blackbox",
-        "data_integrity_corruption_blackbox",
-        "upgrade_compatibility_persistence_blackbox",
-        "telemetry_metrics_regression_blackbox",
-        "nvmf_subsystem_namespace_acl_blackbox",
-        "iscsi_lun_resize_hotplug_blackbox",
-        "bdev_crypto_integrity_blackbox",
-        "scheduler_qos_fairness_blackbox",
-        "backup_restore_integrity_blackbox",
-        "api_contract_negative_blackbox",
-        "state_persistence_restart_blackbox",
-        "concurrency_isolation_race_blackbox",
-        "performance_capacity_regression_blackbox",
-        "security_access_control_blackbox",
-    }.issubset(set(workflow_ids))
-    for item in body["items"]:
-        if item["id"] in {
-            "module_analysis",
-            "resource_leak_hunt",
-            "mr_blackbox_test",
-            "patch_impact_review",
-            "source_flow_sfmea_blackbox",
-            "testing_activity_orchestration",
-        }:
-            assert item["audit"]["warnings"] == []
+    assert workflow_ids == ["source_flow_sfmea_blackbox", "custom_keep_me"]
+    assert body["items"][0]["audit"]["warnings"] == []
 
 
 async def test_workbench_rejects_saving_builtin_workflow_id(workbench_client):
@@ -1057,21 +1085,7 @@ async def test_builtin_workflow_read_path_does_not_overwrite_or_trust_user_shado
         step["type"] for step in loaded.json()["steps"]
     }
     listed_builtin = [item for item in listed.json() if item["id"] == "module_analysis"]
-    assert len(listed_builtin) == 1
-    assert listed_builtin[0]["name"] != "Shadowed Module Analysis"
-    assert listed_builtin[0]["version"] != 77
-    assert listed_builtin[0]["v2"]["published_version_id"]
-    assert listed_builtin[0]["authoring_graph"]["schema_version"] == 1
-    from app.services.workflow_version_store import WorkflowVersionStore
-
-    version_store = WorkflowVersionStore(workbench_api._workbench_dir() / "workflows.db")
-    published = version_store.get_version(
-        listed_builtin[0]["v2"]["published_version_id"]
-    )
-    assert published.compiled_definition["name"] != "Shadowed Module Analysis"
-    assert "local_scope_discover" in {
-        step["type"] for step in published.compiled_definition["steps"]
-    }
+    assert listed_builtin == []
     assert store.get_workflow("module_analysis").raw["name"] == "Shadowed Module Analysis"
 
 
@@ -1108,36 +1122,17 @@ async def test_workbench_workflow_capabilities_api_documents_custom_workflows(wo
     assert body["artifact_contract"]["required_artifacts"] == "validated locally before outputs are accepted"
 
 
-async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(workbench_client):
+async def test_workbench_core_workflow_readiness_api_covers_release_workflow(workbench_client):
     resp = await workbench_client.get("/api/workbench/core-workflow-readiness")
 
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ready"
-    assert body["summary"]["workflow_count"] == 6
+    assert body["summary"]["workflow_count"] == 1
     assert body["summary"]["missing_required"] == 0
     by_id = {item["id"]: item for item in body["workflows"]}
-    assert set(by_id) == {
-        "module_analysis",
-        "resource_leak_hunt",
-        "mr_blackbox_test",
-        "patch_impact_review",
-        "source_flow_sfmea_blackbox",
-        "testing_activity_orchestration",
-    }
-    assert by_id["module_analysis"]["scenario"] == "module_analysis"
-    assert by_id["resource_leak_hunt"]["scenario"] == "risk_hunt"
+    assert set(by_id) == {"source_flow_sfmea_blackbox"}
     assert by_id["source_flow_sfmea_blackbox"]["scenario"] == "source_flow_sfmea_blackbox"
-    assert by_id["testing_activity_orchestration"]["agent_step_count"] == 1
-    assert by_id["testing_activity_orchestration"]["required_artifacts"] == [
-        "test_strategy.md",
-        "test_plan.json",
-        "execution_matrix.json",
-        "coverage_gap_report.json",
-        "defect_triage.md",
-        "release_readiness.md",
-        "black_box_cases.json",
-    ]
     assert by_id["source_flow_sfmea_blackbox"]["required_artifacts"] == [
         "source_scope.json",
         "evidence_cards.json",
@@ -1149,46 +1144,6 @@ async def test_workbench_core_workflow_readiness_api_covers_builtin_scenarios(wo
         warning["code"] == "json_output_missing_schema"
         for warning in by_id["source_flow_sfmea_blackbox"]["warnings"]
     )
-    assert by_id["mr_blackbox_test"]["agent_mcp_required"] is False
-    assert by_id["mr_blackbox_test"]["required_artifacts"] == [
-        "mr_snapshot.json",
-        "diff.patch",
-        "changed_files.json",
-        "black_box_cases.json",
-    ]
-    assert by_id["mr_blackbox_test"]["agent_step_count"] == 0
-    assert by_id["mr_blackbox_test"]["builtin_steps"] == [
-        "collect_mr",
-        "semantic_retrieve",
-        "validate_mr_evidence",
-        "render_blackbox_cases",
-    ]
-    assert by_id["module_analysis"]["agent_step_count"] == 1
-    assert by_id["module_analysis"]["execution_subject"] == "agent"
-    assert by_id["module_analysis"]["execution_label"] == "智能体源码分析"
-    assert "所选执行器" in by_id["module_analysis"]["user_message"]
-    assert by_id["module_analysis"]["builtin_steps"] == [
-        "discover_scope",
-        "validate_evidence",
-    ]
-    assert by_id["module_analysis"]["required_artifacts"] == [
-        "source_scope.json",
-        "evidence_cards.json",
-        "module_analysis.md",
-    ]
-    assert by_id["resource_leak_hunt"]["agent_step_count"] == 0
-    assert by_id["resource_leak_hunt"]["builtin_steps"] == [
-        "hunt_risks",
-        "validate_evidence",
-        "render_report",
-    ]
-    assert by_id["patch_impact_review"]["agent_step_count"] == 0
-    assert by_id["patch_impact_review"]["builtin_steps"] == [
-        "parse_patch",
-        "analyze_impact",
-        "validate_evidence",
-        "render_report",
-    ]
     assert by_id["source_flow_sfmea_blackbox"]["agent_step_count"] == 1
     assert by_id["source_flow_sfmea_blackbox"]["execution_subject"] == "builtin_llm"
     assert by_id["source_flow_sfmea_blackbox"]["execution_label"] == "内置模型分阶段分析"
@@ -1215,15 +1170,12 @@ async def test_module_analysis_prepare_summary_exposes_static_discovery_and_agen
         encoding="utf-8",
     )
 
-    installed = await workbench_client.post(
-        "/api/workbench/workflow-presets/module_analysis/install"
-    )
-    assert installed.status_code == 201
+    workflow_id = _install_historical_preset_as_custom("module_analysis")
 
     prepared = await workbench_client.post(
         "/api/workbench/task-runs/prepare",
         json={
-            "workflow_id": "module_analysis",
+            "workflow_id": workflow_id,
             "workspace_id": "ws-empty-module-analysis",
             "repo_path": str(repo),
             "inputs": {
@@ -1264,13 +1216,10 @@ async def test_task_run_endpoints_reject_provider_override_for_builtin_only_work
 ):
     repo = tmp_path / "repo"
     repo.mkdir()
-    installed = await workbench_client.post(
-        "/api/workbench/workflow-presets/resource_leak_hunt/install"
-    )
-    assert installed.status_code == 201
+    workflow_id = _install_historical_preset_as_custom("resource_leak_hunt")
 
     payload = {
-        "workflow_id": "resource_leak_hunt",
+        "workflow_id": workflow_id,
         "workspace_id": "ws-static",
         "repo_path": str(repo),
         "inputs": {
@@ -1582,12 +1531,9 @@ async def test_workbench_system_audit_api_reports_control_plane_readiness(workbe
         assert path == expected_path
         assert not Path(path).is_absolute()
     assert checks["workflow_presets"]["status"] == "ok"
-    assert {
-        "module_analysis",
-        "resource_leak_hunt",
-        "mr_blackbox_test",
-        "patch_impact_review",
-    }.issubset(set(checks["workflow_presets"]["details"]["available"]))
+    assert checks["workflow_presets"]["details"]["available"] == [
+        "source_flow_sfmea_blackbox"
+    ]
     assert checks["provider_capability_matrix"]["details"]["provider_count"] >= 4
     assert checks["codetalk_index_provider_readiness"]["severity"] == "recommended"
     assert set(checks["codetalk_index_provider_readiness"]["details"]["ready_provider_ids"]) >= {
@@ -3896,15 +3842,12 @@ async def test_builtin_mr_blackbox_run_produces_executable_black_box_case_contra
         "+int nvmf_tcp_qpair_init(void) { return -1; }\n"
     )
 
-    installed = await workbench_client.post(
-        "/api/workbench/workflow-presets/mr_blackbox_test/install"
-    )
-    assert installed.status_code == 201
+    workflow_id = _install_historical_preset_as_custom("mr_blackbox_test")
 
     response = await _run_task_run_and_wait(
         workbench_client,
         {
-            "workflow_id": "mr_blackbox_test",
+            "workflow_id": workflow_id,
             "workspace_id": "ws-mr-blackbox-contract",
             "repo_path": str(repo),
             "inputs": {
@@ -3991,15 +3934,12 @@ async def test_patch_impact_uses_hunk_nearest_symbol_for_source_evidence(
         " }\n"
     )
 
-    installed = await workbench_client.post(
-        "/api/workbench/workflow-presets/patch_impact_review/install"
-    )
-    assert installed.status_code == 201
+    workflow_id = _install_historical_preset_as_custom("patch_impact_review")
 
     response = await _run_task_run_and_wait(
         workbench_client,
         {
-            "workflow_id": "patch_impact_review",
+            "workflow_id": workflow_id,
             "workspace_id": "ws-patch-hunk-symbol",
             "repo_path": str(repo),
             "inputs": {
@@ -4224,16 +4164,14 @@ async def test_builtin_common_scenario_preset_uses_default_query_when_scope_is_e
         encoding="utf-8",
     )
 
-    installed = await workbench_client.post(
-        "/api/workbench/workflow-presets/nvmf_connect_io_blackbox/install"
+    workflow_id = _install_historical_preset_as_custom(
+        "nvmf_connect_io_blackbox"
     )
-    assert installed.status_code == 201
-    assert installed.json()["id"] == "nvmf_connect_io_blackbox"
 
     response = await _run_task_run_and_wait(
         workbench_client,
         {
-            "workflow_id": "nvmf_connect_io_blackbox",
+            "workflow_id": workflow_id,
             "workspace_id": "ws-nvmf-default-query",
             "repo_path": str(repo),
             "inputs": {
@@ -4287,15 +4225,14 @@ async def test_builtin_common_scenario_preset_merges_default_query_with_user_sco
         encoding="utf-8",
     )
 
-    installed = await workbench_client.post(
-        "/api/workbench/workflow-presets/nvmf_disconnect_reconnect_blackbox/install"
+    workflow_id = _install_historical_preset_as_custom(
+        "nvmf_disconnect_reconnect_blackbox"
     )
-    assert installed.status_code == 201
 
     response = await _run_task_run_and_wait(
         workbench_client,
         {
-            "workflow_id": "nvmf_disconnect_reconnect_blackbox",
+            "workflow_id": workflow_id,
             "workspace_id": "ws-nvmf-user-query-merge",
             "repo_path": str(repo),
             "inputs": {
@@ -4356,15 +4293,14 @@ async def test_spdk_cli_rpc_smoke_preset_discovers_test_scripts_and_config(
     smoke_config.write_text('{"subsystems":[{"subsystem":"bdev"}]}\n', encoding="utf-8")
     event_file.write_text("int spdk_app_rpc_listen_start(void) { return 0; }\n", encoding="utf-8")
 
-    installed = await workbench_client.post(
-        "/api/workbench/workflow-presets/spdk_cli_rpc_smoke_blackbox/install"
+    workflow_id = _install_historical_preset_as_custom(
+        "spdk_cli_rpc_smoke_blackbox"
     )
-    assert installed.status_code == 201
 
     response = await _run_task_run_and_wait(
         workbench_client,
         {
-            "workflow_id": "spdk_cli_rpc_smoke_blackbox",
+            "workflow_id": workflow_id,
             "workspace_id": "ws-spdk-cli-rpc-smoke",
             "repo_path": str(repo),
             "inputs": {
@@ -4422,15 +4358,14 @@ async def test_builtin_rpc_config_scenario_prioritizes_source_over_test_helpers(
         encoding="utf-8",
     )
 
-    installed = await workbench_client.post(
-        "/api/workbench/workflow-presets/rpc_config_negative_blackbox/install"
+    workflow_id = _install_historical_preset_as_custom(
+        "rpc_config_negative_blackbox"
     )
-    assert installed.status_code == 201
 
     response = await _run_task_run_and_wait(
         workbench_client,
         {
-            "workflow_id": "rpc_config_negative_blackbox",
+            "workflow_id": workflow_id,
             "workspace_id": "ws-rpc-source-priority",
             "repo_path": str(repo),
             "inputs": {"repo_path": str(repo)},
@@ -4494,15 +4429,14 @@ async def test_builtin_reactor_thread_scenario_uses_scheduler_specific_wording(
         encoding="utf-8",
     )
 
-    installed = await workbench_client.post(
-        "/api/workbench/workflow-presets/reactor_thread_poller_blackbox/install"
+    workflow_id = _install_historical_preset_as_custom(
+        "reactor_thread_poller_blackbox"
     )
-    assert installed.status_code == 201
 
     response = await _run_task_run_and_wait(
         workbench_client,
         {
-            "workflow_id": "reactor_thread_poller_blackbox",
+            "workflow_id": workflow_id,
             "workspace_id": "ws-reactor-wording",
             "repo_path": str(repo),
             "inputs": {"repo_path": str(repo)},

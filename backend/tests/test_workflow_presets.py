@@ -1,3 +1,16 @@
+def test_release_workflow_presets_only_expose_source_flow_sfmea_blackbox():
+    from app.services.workflow_presets import (
+        active_builtin_workflow_presets,
+        reserved_builtin_workflow_ids,
+    )
+
+    presets = active_builtin_workflow_presets()
+
+    assert [item["id"] for item in presets] == ["source_flow_sfmea_blackbox"]
+    assert "module_analysis" in reserved_builtin_workflow_ids()
+    assert "source_flow_sfmea_blackbox" in reserved_builtin_workflow_ids()
+
+
 def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
     from app.services.workflow_dsl import audit_workflow_definition, validate_workflow_definition
     from app.services.workflow_presets import (
@@ -238,19 +251,16 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
     assert scenario_outputs["black_box_cases"]["semantic_import"]["enabled"] is True
 
 
-def test_restore_builtin_workflow_presets_refreshes_stale_builtin_definitions(tmp_path):
+def test_restore_builtin_workflow_presets_refreshes_active_release_definition(tmp_path):
     from app.services.workflow_dsl import WorkflowStore, audit_workflow_definition
     from app.services.workflow_presets import (
-        COMMON_TEST_SCENARIO_PRESET_IDS,
-        CORE_WORKFLOW_PRESET_IDS,
-        ORIGINAL_CORE_WORKFLOW_PRESET_IDS,
         restore_builtin_workflow_presets,
     )
 
     store = WorkflowStore(tmp_path / "workflows.db")
     store.save_workflow({
-        "id": "module_analysis",
-        "name": "Stale Module Analysis",
+        "id": "source_flow_sfmea_blackbox",
+        "name": "Stale Release Workflow",
         "version": 1,
         "inputs": [],
         "steps": [{"id": "discover_scope", "type": "local_scope_discover"}],
@@ -265,7 +275,7 @@ def test_restore_builtin_workflow_presets_refreshes_stale_builtin_definitions(tm
         "outputs": [{"id": "report", "type": "markdown", "from": "render"}],
     })
 
-    stale = store.get_workflow("module_analysis")
+    stale = store.get_workflow("source_flow_sfmea_blackbox")
     assert any(
         warning["code"] == "json_output_missing_schema"
         for warning in audit_workflow_definition(stale.raw)["warnings"]
@@ -273,18 +283,12 @@ def test_restore_builtin_workflow_presets_refreshes_stale_builtin_definitions(tm
 
     restore_builtin_workflow_presets(store)
 
-    assert [item.id for item in store.list_workflows()[:4]] == list(
-        ORIGINAL_CORE_WORKFLOW_PRESET_IDS
-    )
-    assert [item.id for item in store.list_workflows()[:len(CORE_WORKFLOW_PRESET_IDS)]] == list(CORE_WORKFLOW_PRESET_IDS)
-
-    restored = store.get_workflow("module_analysis")
-    assert restored.name == "Module Analysis"
+    restored = store.get_workflow("source_flow_sfmea_blackbox")
+    assert restored.name == "Code Analysis -> Flow -> SFMEA -> Black-box Cases"
     assert audit_workflow_definition(restored.raw)["warnings"] == []
     assert store.get_workflow("custom_workflow").name == "Custom Workflow"
     ids = {item.id for item in store.list_workflows()}
-    assert set(CORE_WORKFLOW_PRESET_IDS).issubset(ids)
-    assert set(COMMON_TEST_SCENARIO_PRESET_IDS).issubset(ids)
+    assert "source_flow_sfmea_blackbox" in ids
     assert "custom_workflow" in ids
 
 

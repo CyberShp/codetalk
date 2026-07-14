@@ -325,6 +325,8 @@ COMMON_TEST_SCENARIO_PRESET_IDS = (
     "security_access_control_blackbox",
 )
 
+ACTIVE_BUILTIN_WORKFLOW_PRESET_IDS = ("source_flow_sfmea_blackbox",)
+
 
 def _source_flow_outputs(tag: str) -> list[dict[str, Any]]:
     return [
@@ -420,7 +422,7 @@ def _source_flow_scenario_preset(
 
 
 def builtin_workflow_presets() -> list[dict[str, Any]]:
-    """Return versioned workflow presets users can install and customize."""
+    """Return every historical built-in preset for compatibility and migrations."""
 
     presets = [
         {
@@ -1638,6 +1640,19 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
     return deepcopy(presets)
 
 
+def active_builtin_workflow_presets() -> list[dict[str, Any]]:
+    """Return the intentionally small preset catalog exposed by the release UI."""
+
+    by_id = {str(preset["id"]): preset for preset in builtin_workflow_presets()}
+    return [deepcopy(by_id[preset_id]) for preset_id in ACTIVE_BUILTIN_WORKFLOW_PRESET_IDS]
+
+
+def reserved_builtin_workflow_ids() -> frozenset[str]:
+    """Return active and retired official ids so custom workflows cannot shadow them."""
+
+    return frozenset(str(preset["id"]) for preset in builtin_workflow_presets())
+
+
 def get_workflow_preset(preset_id: str) -> dict[str, Any]:
     for preset in builtin_workflow_presets():
         if preset["id"] == preset_id:
@@ -1651,10 +1666,10 @@ def install_workflow_preset(store: WorkflowStore, preset_id: str) -> WorkflowDef
 
 
 def restore_builtin_workflow_presets(store: WorkflowStore) -> list[WorkflowDefinition]:
-    """Install or refresh built-in workflows while preserving custom workflow ids."""
+    """Install active release presets while preserving custom and retired definitions."""
 
     restored: list[WorkflowDefinition] = []
-    presets = builtin_workflow_presets()
+    presets = active_builtin_workflow_presets()
     for preset in reversed(presets):
         store.save_workflow(deepcopy(preset["definition"]))
     for preset in presets:

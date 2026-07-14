@@ -349,7 +349,9 @@ export function useWorkbenchController({
     )
       return;
     const preferredPreset =
-      workflowPresets.find((preset) => preset.id === "module_analysis") ??
+      workflowPresets.find(
+        (preset) => preset.id === "source_flow_sfmea_blackbox",
+      ) ??
       workflowPresets[0];
     selectedWorkflowIdRef.current = preferredPreset.definition.id;
     setSelectedWorkflowId(preferredPreset.definition.id);
@@ -3240,7 +3242,9 @@ export function useWorkbenchController({
       setWorkflows(result.items);
       const preferred =
         result.items.find((item) => item.id === selectedWorkflowId) ??
-        result.items.find((item) => item.id === "module_analysis") ??
+        result.items.find(
+          (item) => item.id === "source_flow_sfmea_blackbox",
+        ) ??
         result.items[0];
       if (preferred) {
         selectedWorkflowIdRef.current = preferred.id;

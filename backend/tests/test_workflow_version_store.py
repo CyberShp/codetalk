@@ -182,6 +182,36 @@ def test_workflow_version_migration_does_not_rewrite_native_v2_without_plan(tmp_
     assert store.get_version(published.version_id).compiled_plan is None
 
 
+def test_retire_workflows_archives_headers_but_preserves_versions_and_custom_workflows(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workflow_presets import get_workflow_preset
+    from app.services.workflow_version_store import WorkflowVersionStore
+
+    db_path = tmp_path / "workflows.db"
+    retired_definition = get_workflow_preset("module_analysis")["definition"]
+    active_definition = get_workflow_preset("source_flow_sfmea_blackbox")["definition"]
+    custom_definition = _legacy_definition()
+    legacy_store = WorkflowStore(db_path)
+    for definition in (retired_definition, active_definition, custom_definition):
+        legacy_store.save_workflow(definition)
+
+    store = WorkflowVersionStore(db_path)
+    store.initialize_and_migrate()
+    retired_version_id = store.get_workflow("module_analysis").published_version_id
+    custom_version_id = store.get_workflow("legacy_module").published_version_id
+
+    changed = store.retire_workflows({"module_analysis"})
+
+    assert changed == 1
+    assert store.get_workflow("module_analysis").status == "archived"
+    assert store.get_workflow("module_analysis").published_version_id == retired_version_id
+    assert store.get_version(retired_version_id).state == "published"
+    assert store.get_workflow("source_flow_sfmea_blackbox").status == "active"
+    assert store.get_workflow("legacy_module").status == "active"
+    assert store.get_workflow("legacy_module").published_version_id == custom_version_id
+    assert store.retire_workflows({"module_analysis"}) == 0
+
+
 def test_builtin_snapshot_replaces_same_definition_with_poisoned_graph_and_plan(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workflow_presets import get_workflow_preset
@@ -548,32 +578,33 @@ async def test_builtin_workflow_is_read_only_across_all_v2_mutation_routes(
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         listed = await client.get("/api/workbench/workflows")
-        module = next(item for item in listed.json() if item["id"] == "module_analysis")
-        version_id = module["v2"]["published_version_id"]
+        release_workflow = next(
+            item
+            for item in listed.json()
+            if item["id"] == "source_flow_sfmea_blackbox"
+        )
+        version_id = release_workflow["v2"]["published_version_id"]
+        workflow_path = "/api/workbench/workflows/source_flow_sfmea_blackbox"
         responses = [
-            await client.patch(
-                "/api/workbench/workflows/module_analysis", json={"name": "Shadow"}
-            ),
-            await client.post("/api/workbench/workflows/module_analysis/archive"),
-            await client.post(
-                "/api/workbench/workflows/module_analysis/versions", json={}
-            ),
+            await client.patch(workflow_path, json={"name": "Shadow"}),
+            await client.post(f"{workflow_path}/archive"),
+            await client.post(f"{workflow_path}/versions", json={}),
             await client.put(
-                f"/api/workbench/workflows/module_analysis/versions/{version_id}",
+                f"{workflow_path}/versions/{version_id}",
                 json={"authoring_graph": {}},
             ),
             await client.post(
-                f"/api/workbench/workflows/module_analysis/versions/{version_id}/validate"
+                f"{workflow_path}/versions/{version_id}/validate"
             ),
             await client.post(
-                f"/api/workbench/workflows/module_analysis/versions/{version_id}/compile"
+                f"{workflow_path}/versions/{version_id}/compile"
             ),
             await client.post(
-                f"/api/workbench/workflows/module_analysis/versions/{version_id}/publish",
+                f"{workflow_path}/versions/{version_id}/publish",
                 json={},
             ),
             await client.post(
-                f"/api/workbench/workflows/module_analysis/versions/{version_id}/test-run",
+                f"{workflow_path}/versions/{version_id}/test-run",
                 json={"workspace_id": "missing", "inputs": {}},
             ),
         ]

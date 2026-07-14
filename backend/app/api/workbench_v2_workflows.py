@@ -22,7 +22,7 @@ from app.services.workflow_graph import (
     compile_workflow_graph,
     validate_workflow_graph,
 )
-from app.services.workflow_presets import builtin_workflow_presets
+from app.services.workflow_presets import reserved_builtin_workflow_ids
 from app.services.workflow_dsl import WorkflowStore
 from app.services.workflow_version_store import (
     PublishedWorkflowVersionError,
@@ -33,9 +33,7 @@ from app.services.workflow_version_store import (
 
 
 router = APIRouter(prefix="/api/workbench", tags=["workbench-v2-workflows"])
-_BUILTIN_WORKFLOW_IDS = frozenset(
-    str(preset["definition"]["id"]) for preset in builtin_workflow_presets()
-)
+_BUILTIN_WORKFLOW_IDS = reserved_builtin_workflow_ids()
 
 
 class WorkflowHeaderUpdateRequest(BaseModel):
