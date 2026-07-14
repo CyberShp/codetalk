@@ -51,6 +51,25 @@ def test_artifact_manifest_marks_deliverables_and_diagnostics(tmp_path):
     assert artifacts["inputs/requirements.md"]["audience"] == "input"
 
 
+def test_artifact_manifest_marks_custom_declared_workflow_output_as_deliverable(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "result.json").write_text('{"status":"ok"}', encoding="utf-8")
+    (task_dir / "workflow_outputs.json").write_text(
+        '{"outputs":[{"id":"custom_result","artifact":"result.json",'
+        '"path":"result.json","status":"ok"}]}',
+        encoding="utf-8",
+    )
+
+    artifacts = {
+        item["relative_path"]: item
+        for item in build_task_artifact_manifest(task_dir)
+    }
+
+    assert artifacts["result.json"]["audience"] == "deliverable"
+    assert artifacts["workflow_outputs.json"]["audience"] == "diagnostic"
+
+
 def test_artifact_manifest_ignores_agent_runtime_cache_directories(tmp_path):
     task_dir = tmp_path / "task"
     agent_dir = task_dir / "agent_runs" / "analyze"

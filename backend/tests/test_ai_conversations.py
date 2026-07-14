@@ -1674,6 +1674,36 @@ class TestAIConversationsAPI:
         assert "SOURCE_FIRST_CONTRACT:" in prompt
         assert "未找到直接源码或输入材料时，必须说明未验证" in prompt
 
+    async def test_agent_prompt_includes_public_task_deliverable_excerpt(self):
+        from app.services.ai_conversations import _build_agent_prompt
+
+        prompt = _build_agent_prompt(
+            {
+                "id": "conv-task-deliverable",
+                "title": "任务产物复盘",
+                "scope_type": "workbench_task_run",
+                "scope_id": "task_run_prompt_evidence",
+                "workspace_id": "ws-task-deliverable",
+                "initial_context": {},
+            },
+            [],
+            [
+                {
+                    "source_type": "workbench_task_deliverable",
+                    "source_id": "task_run_prompt_evidence/result.json",
+                    "title": "result.json",
+                    "excerpt": '{"status":"ok","provider":"integration-agent"}',
+                    "metadata": {"path": "result.json", "audience": "deliverable"},
+                }
+            ],
+            "读取本次运行的公开产物",
+            {"id": "runtime-task-deliverable", "name": "Runtime"},
+        )
+
+        assert "CodeTalk 已检索的公开上下文" in prompt
+        assert "workbench_task_deliverable · result.json" in prompt
+        assert "integration-agent" in prompt
+
     async def test_agent_prompt_routes_download_artifacts_to_isolated_artifact_dir(self):
         from app.services.ai_conversations import _build_agent_prompt
 
@@ -2427,10 +2457,20 @@ class TestAIConversationsAPI:
                         {
                             "relative_path": "task_bundle.json",
                             "kind": "task_bundle",
+                            "audience": "diagnostic",
+                        },
+                        {
+                            "relative_path": "result.json",
+                            "kind": "json",
+                            "audience": "deliverable",
                         }
                     ],
                 }
             ),
+            encoding="utf-8",
+        )
+        (task_dir / "result.json").write_text(
+            json.dumps({"status": "ok", "provider": "integration-agent"}),
             encoding="utf-8",
         )
         (task_dir / "artifact_manifest.json").write_text(
@@ -2463,6 +2503,16 @@ class TestAIConversationsAPI:
         assert manifest_refs[0].metadata["path"] == "task_artifact_manifest.json"
         assert not Path(str(manifest_refs[0].metadata["path"])).is_absolute()
         assert "task_bundle.json" in manifest_refs[0].excerpt
+        deliverable_refs = [
+            ref
+            for ref in refs
+            if ref.source_type == "workbench_task_deliverable"
+            and ref.title == "result.json"
+        ]
+        assert deliverable_refs
+        assert deliverable_refs[0].source_id == f"{task_run_id}/result.json"
+        assert deliverable_refs[0].metadata["audience"] == "deliverable"
+        assert "integration-agent" in deliverable_refs[0].excerpt
 
     async def test_workbench_task_thread_references_test_activity_contract_and_quality_audit(
         self,

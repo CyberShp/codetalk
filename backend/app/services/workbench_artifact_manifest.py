@@ -67,6 +67,7 @@ def build_task_artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
         return []
     if not root.exists() or not root.is_dir():
         return []
+    declared_deliverables = _declared_workflow_deliverable_paths(root)
     artifacts: list[dict[str, Any]] = []
     for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
         if not path.is_file():
@@ -98,6 +99,7 @@ def build_task_artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
         item["audience"] = workbench_artifact_audience(
             relative_path,
             kind=str(item["kind"]),
+            declared_deliverables=declared_deliverables,
         )
         preview, preview_redacted = artifact_preview_with_redaction_status(
             resolved,
@@ -109,6 +111,43 @@ def build_task_artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
             item["preview_redacted"] = preview_redacted
         artifacts.append(item)
     return artifacts
+
+
+def _declared_workflow_deliverable_paths(task_dir: Path) -> set[str]:
+    declared: set[str] = set()
+    for filename in ("workflow_outputs.json", "workflow_snapshot.json", "workflow_contract.json"):
+        source = task_dir / filename
+        if not source.is_file():
+            continue
+        try:
+            payload = json.loads(source.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        outputs = payload.get("outputs")
+        if not isinstance(outputs, list):
+            continue
+        for output in outputs:
+            if not isinstance(output, dict):
+                continue
+            for key in ("path", "artifact"):
+                normalized = _safe_relative_artifact_path(output.get(key))
+                if normalized:
+                    declared.add(normalized)
+    return declared
+
+
+def _safe_relative_artifact_path(value: Any) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    if not text or text.startswith("/"):
+        return ""
+    parts = [part for part in text.split("/") if part not in {"", "."}]
+    if not parts or ".." in parts:
+        return ""
+    return "/".join(parts)
 
 
 DELIVERABLE_ARTIFACT_NAMES = {
@@ -178,7 +217,12 @@ DIAGNOSTIC_ARTIFACT_KINDS = {
 }
 
 
-def workbench_artifact_audience(relative_path: str, *, kind: str | None = None) -> str:
+def workbench_artifact_audience(
+    relative_path: str,
+    *,
+    kind: str | None = None,
+    declared_deliverables: set[str] | None = None,
+) -> str:
     name = relative_path.rsplit("/", 1)[-1]
     normalized_kind = kind or workbench_artifact_kind(relative_path)
     if relative_path.startswith("inputs/") or normalized_kind.startswith("input_"):
@@ -187,6 +231,8 @@ def workbench_artifact_audience(relative_path: str, *, kind: str | None = None) 
         return "deliverable"
     if normalized_kind in DIAGNOSTIC_ARTIFACT_KINDS:
         return "diagnostic"
+    if relative_path in (declared_deliverables or set()):
+        return "deliverable"
     return "support"
 
 

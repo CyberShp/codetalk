@@ -4094,6 +4094,7 @@ def _build_agent_prompt(
         "先检查当前工作目录中的源码和输入材料，再回答；不要只凭模型记忆。",
         _codex_style_answer_instruction(),
         _agent_artifact_delivery_contract(user_message),
+        _agent_public_reference_context(references),
         _source_first_contract(references, user_message),
         _test_activity_contract_prompt(user_message=test_activity_context, repo_path=repo_path or _conversation_initial_repo_path(conversation)),
         _bound_workflow_execution_prompt(conversation),
@@ -4132,6 +4133,27 @@ def _build_agent_prompt(
         lines.append("用户问题：")
     lines.append(user_message)
     return "\n".join(lines).strip()
+
+
+def _agent_public_reference_context(references: list[dict[str, Any]]) -> str:
+    if not references:
+        return "CodeTalk 已检索的公开上下文：暂无可用引用。"
+    lines = [
+        "CodeTalk 已检索的公开上下文（必须优先阅读这些正文，再决定是否需要继续查源码）："
+    ]
+    for index, reference in enumerate(references[:_MAX_CONTEXT_REFERENCES], start=1):
+        source_type = redact_agent_diagnostic_text(
+            str(reference.get("source_type") or "context")
+        ).strip()
+        title = redact_agent_diagnostic_text(
+            str(reference.get("title") or reference.get("source_id") or "未命名引用")
+        ).strip()
+        excerpt = redact_agent_diagnostic_text(
+            _clip(str(reference.get("excerpt") or ""))
+        ).strip()
+        lines.append(f"[{index}] {source_type} · {title}")
+        lines.append(excerpt or "（引用没有可显示正文）")
+    return "\n".join(lines)
 
 
 def _test_activity_request_context(
@@ -5755,6 +5777,7 @@ async def _workbench_task_refs(scope_type: str, scope_id: str) -> list[ContextRe
     if not safe or "/" in safe or "\\" in safe or ".." in safe:
         return []
     task_dir = settings.data_path / "workbench" / "task_runs" / safe
+    deliverable_refs = await _workbench_task_deliverable_refs(task_dir, scope_id)
     candidates = [
         "task_run.json",
         "task_bundle.json",
@@ -5764,7 +5787,7 @@ async def _workbench_task_refs(scope_type: str, scope_id: str) -> list[ContextRe
         "workflow_execution.json",
         "artifact_manifest.json",
     ]
-    refs: list[ContextReference] = []
+    refs: list[ContextReference] = list(deliverable_refs)
     for name in candidates:
         path = task_dir / name
         if not path.exists():
@@ -5782,7 +5805,58 @@ async def _workbench_task_refs(scope_type: str, scope_id: str) -> list[ContextRe
                 metadata={"task_run_id": scope_id, "path": name},
             )
         )
-    return refs[:6]
+    return refs[:10]
+
+
+async def _workbench_task_deliverable_refs(
+    task_dir: Path,
+    task_run_id: str,
+) -> list[ContextReference]:
+    manifest_path = task_dir / "task_artifact_manifest.json"
+    try:
+        manifest = json.loads(await _read_text(manifest_path))
+        task_root = task_dir.resolve()
+    except Exception:
+        return []
+    artifacts = manifest.get("artifacts") if isinstance(manifest, dict) else None
+    if not isinstance(artifacts, list):
+        return []
+    refs: list[ContextReference] = []
+    for item in artifacts:
+        if not isinstance(item, dict) or item.get("audience") != "deliverable":
+            continue
+        relative_path = str(item.get("relative_path") or "").strip().replace("\\", "/")
+        parts = [part for part in relative_path.split("/") if part not in {"", "."}]
+        if not parts or ".." in parts or relative_path.startswith("/"):
+            continue
+        candidate = task_dir.joinpath(*parts)
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            continue
+        if task_root not in resolved.parents or not resolved.is_file():
+            continue
+        try:
+            text = await _read_text(resolved)
+        except Exception:
+            continue
+        refs.append(
+            ContextReference(
+                source_type="workbench_task_deliverable",
+                source_id=f"{task_run_id}/{relative_path}",
+                title=parts[-1],
+                excerpt=_clip(text),
+                metadata={
+                    "task_run_id": task_run_id,
+                    "path": relative_path,
+                    "kind": str(item.get("kind") or "artifact"),
+                    "audience": "deliverable",
+                },
+            )
+        )
+        if len(refs) >= 4:
+            break
+    return refs
 
 
 async def _evidence_memory_refs(workspace_id: str, query: str) -> list[ContextReference]:

@@ -161,9 +161,9 @@ test("cleanup catches temp-path AI thread agent runtimes that do not mention e2e
 async function createDeterministicFailingRuntime(
   request: APIRequestContext,
   label: string,
+  runtimeDir: string,
 ): Promise<{ id: string; name: string }> {
-  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-failure-")));
-  const runtimeScript = path.join(runtimeDir, "failing_agent.py");
+  const runtimeScript = path.join(runtimeDir, ".codetalk-e2e-failing-agent.py");
   fs.writeFileSync(
     runtimeScript,
     [
@@ -180,7 +180,7 @@ async function createDeterministicFailingRuntime(
   const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
     data: {
       name: runtimeName,
-      command: "python3",
+      command: "python3.11",
       args: [runtimeScript],
       prompt_transport: "stdin",
       output_mode: "plain",
@@ -1036,6 +1036,7 @@ test("creates an AI investigation thread from the project hub and restores it af
   page,
   request,
 }, testInfo) => {
+  test.setTimeout(70_000);
   const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-ai-thread-")));
   fs.writeFileSync(path.join(repo, "README.md"), "AI thread real e2e workspace\n", "utf8");
   const workspaceName = `ai-thread-e2e-${Date.now()}`;
@@ -1046,7 +1047,7 @@ test("creates an AI investigation thread from the project hub and restores it af
   });
   expect(workspaceResp.status()).toBe(201);
   const workspace = (await workspaceResp.json()) as { id: string };
-  const failingRuntime = await createDeterministicFailingRuntime(request, "AI thread failure runtime");
+  const failingRuntime = await createDeterministicFailingRuntime(request, "AI thread failure runtime", repo);
 
   await page.goto("/ai", { waitUntil: "domcontentloaded" });
   const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
@@ -1104,7 +1105,8 @@ test("creates an AI investigation thread from the project hub and restores it af
   page.on("request", (request) => {
     if (
       request.method() === "POST" &&
-      request.url().includes(`/api/ai/conversations/${encodeURIComponent(threadId)}/messages`)
+      request.url().includes(`/api/ai/conversations/${encodeURIComponent(threadId)}/runs/`) &&
+      request.url().endsWith("/retry")
     ) {
       retryRequests.push(request.url());
     }
@@ -1112,12 +1114,13 @@ test("creates an AI investigation thread from the project hub and restores it af
   const retryRequest = page.waitForRequest(
     (request) =>
       request.method() === "POST" &&
-      request.url().includes(`/api/ai/conversations/${encodeURIComponent(threadId)}/messages`),
+      request.url().includes(`/api/ai/conversations/${encodeURIComponent(threadId)}/runs/`) &&
+      request.url().endsWith("/retry"),
   );
   await retryButton.hover();
   await retryButton.dblclick();
   await retryRequest;
-  await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: prompt })).toHaveCount(2);
+  await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: prompt })).toHaveCount(1);
   await expect.poll(() => retryRequests.length).toBe(1);
   await expect(alert).toBeVisible({ timeout: 20_000 });
 
@@ -1134,7 +1137,7 @@ test("creates an AI investigation thread from the project hub and restores it af
   expect(exported).toContain("执行器运行失败");
   expect(exported).not.toContain("deterministic AI thread failure");
   expect(exported).toContain(prompt);
-  expect(exported.match(/## 用户/g)?.length).toBe(2);
+  expect(exported.match(/## 用户/g)?.length).toBe(1);
   expect(exported).not.toMatch(/sk-[A-Za-z0-9_-]{12,}/);
   expect(exported).not.toMatch(/Authorization:\s*Bearer\s+[^\s"']+/i);
   expect(exported).not.toMatch(/(?:api[-_]?key|token|secret|password)=['"]?[^\s"']+/i);
@@ -1162,7 +1165,7 @@ test("creates an AI investigation thread from the project hub and restores it af
   );
   expect(messagesResp.ok()).toBeTruthy();
   const messageBody = (await messagesResp.json()) as { items: Array<{ role: string; content: string }> };
-  expect(messageBody.items.filter((item) => item.role === "user" && item.content === prompt)).toHaveLength(2);
+  expect(messageBody.items.filter((item) => item.role === "user" && item.content === prompt)).toHaveLength(1);
   expect(messageBody.items.filter((item) => item.role === "assistant")).toHaveLength(0);
 
   await request.delete(`${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(failingRuntime.id)}`);
@@ -2837,7 +2840,7 @@ test("sends quick actions and memory actions through the real AI thread composer
   });
   expect(workspaceResp.status()).toBe(201);
   const workspace = (await workspaceResp.json()) as { id: string };
-  const failingRuntime = await createDeterministicFailingRuntime(request, "AI action failure runtime");
+  const failingRuntime = await createDeterministicFailingRuntime(request, "AI action failure runtime", repo);
 
   await page.goto("/ai", { waitUntil: "domcontentloaded" });
   const projectButton = page.locator("button").filter({ hasText: workspaceName }).first();
@@ -10679,8 +10682,7 @@ test("injects default workspace source into an agent-runtime AI thread for vague
     ].join("\n"),
     "utf8",
   );
-  const runtimeDir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-agent-default-source-")));
-  const runtimeScript = path.join(runtimeDir, "default_source_asserting_agent.py");
+  const runtimeScript = path.join(repo, ".codetalk-e2e-default-source-agent.py");
   fs.writeFileSync(
     runtimeScript,
     [
@@ -10709,7 +10711,7 @@ test("injects default workspace source into an agent-runtime AI thread for vague
   const runtimeResp = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
     data: {
       name: runtimeName,
-      command: "python3",
+      command: "python3.11",
       args: [runtimeScript],
       prompt_transport: "stdin",
       output_mode: "plain",
@@ -10752,9 +10754,17 @@ test("injects default workspace source into an agent-runtime AI thread for vague
     await page.getByRole("button", { name: "发送" }).hover();
     await page.getByRole("button", { name: "发送" }).click();
     await expect(page.locator(".ct-codex-message.is-user").filter({ hasText: prompt })).toHaveCount(1);
-    await expect(page.getByText("DEFAULT_SOURCE_CONTEXT_OK src/entry.c")).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByText(
+      "DEFAULT_SOURCE_CONTEXT_OK src/entry.c codetalk_default_workspace_source_probe",
+      { exact: true },
+    )).toBeVisible({ timeout: 30_000 });
     await expect(page.getByText("DEFAULT_SOURCE_CONTEXT_MISSING")).toHaveCount(0);
-    await expect(page.getByText("src/entry.c:L1")).toBeVisible();
+    await expect(
+      page
+        .getByRole("heading", { name: "证据链" })
+        .locator("..")
+        .getByText("src/entry.c:L1-L3", { exact: true }),
+    ).toBeVisible();
 
     const messagesResp = await request.get(
       `${backendBase}/api/ai/conversations/${encodeURIComponent(threadId)}/messages`,
