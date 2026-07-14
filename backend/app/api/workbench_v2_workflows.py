@@ -22,6 +22,7 @@ from app.services.workflow_graph import (
     compile_workflow_graph,
     validate_workflow_graph,
 )
+from app.services.workflow_presets import builtin_workflow_presets
 from app.services.workflow_dsl import WorkflowStore
 from app.services.workflow_version_store import (
     PublishedWorkflowVersionError,
@@ -32,6 +33,9 @@ from app.services.workflow_version_store import (
 
 
 router = APIRouter(prefix="/api/workbench", tags=["workbench-v2-workflows"])
+_BUILTIN_WORKFLOW_IDS = frozenset(
+    str(preset["definition"]["id"]) for preset in builtin_workflow_presets()
+)
 
 
 class WorkflowHeaderUpdateRequest(BaseModel):
@@ -65,11 +69,17 @@ def _require_v2() -> None:
         raise HTTPException(status_code=404, detail="Workbench V2 is not enabled")
 
 
+def _require_mutable_workflow(workflow_id: str) -> None:
+    if workflow_id in _BUILTIN_WORKFLOW_IDS:
+        raise HTTPException(status_code=409, detail="内置工作流是只读的，请另存为自定义工作流")
+
+
 @router.patch("/workflows/{workflow_id}")
 async def update_workflow_header(
     workflow_id: str, payload: WorkflowHeaderUpdateRequest
 ) -> dict[str, Any]:
     _require_v2()
+    _require_mutable_workflow(workflow_id)
     try:
         header = workflow_version_store().update_workflow(
             workflow_id,
@@ -86,6 +96,7 @@ async def update_workflow_header(
 @router.post("/workflows/{workflow_id}/archive")
 async def archive_workflow_header(workflow_id: str) -> dict[str, Any]:
     _require_v2()
+    _require_mutable_workflow(workflow_id)
     try:
         return asdict(workflow_version_store().archive_workflow(workflow_id))
     except KeyError:
@@ -107,6 +118,7 @@ async def create_workflow_draft(
     workflow_id: str, payload: WorkflowDraftCreateRequest
 ) -> dict[str, Any]:
     _require_v2()
+    _require_mutable_workflow(workflow_id)
     try:
         version = workflow_version_store().create_draft(
             workflow_id,
@@ -135,6 +147,7 @@ async def update_workflow_draft(
     payload: WorkflowDraftUpdateRequest,
 ) -> dict[str, Any]:
     _require_v2()
+    _require_mutable_workflow(workflow_id)
     _version_for_workflow(workflow_id, version_id)
     try:
         version = workflow_version_store().update_draft(
@@ -151,6 +164,7 @@ async def update_workflow_draft(
 @router.post("/workflows/{workflow_id}/versions/{version_id}/validate")
 async def validate_workflow_version(workflow_id: str, version_id: str) -> dict[str, Any]:
     _require_v2()
+    _require_mutable_workflow(workflow_id)
     version = _version_for_workflow(workflow_id, version_id)
     if version.state != "draft":
         raise HTTPException(status_code=409, detail="Published workflow versions are immutable")
@@ -169,6 +183,7 @@ async def validate_workflow_version(workflow_id: str, version_id: str) -> dict[s
 @router.post("/workflows/{workflow_id}/versions/{version_id}/compile")
 async def compile_workflow_version(workflow_id: str, version_id: str) -> dict[str, Any]:
     _require_v2()
+    _require_mutable_workflow(workflow_id)
     version = _version_for_workflow(workflow_id, version_id)
     if version.state != "draft":
         raise HTTPException(status_code=409, detail="Published workflow versions are immutable")
@@ -203,6 +218,7 @@ async def publish_workflow_version(
     payload: WorkflowPublishRequest,
 ) -> dict[str, Any]:
     _require_v2()
+    _require_mutable_workflow(workflow_id)
     version = _version_for_workflow(workflow_id, version_id)
     try:
         compiled = compile_workflow_graph(
@@ -243,6 +259,7 @@ async def prepare_workflow_trial_run(
 ) -> dict[str, Any]:
     """Compile a draft server-side and prepare a real, isolated run snapshot."""
     _require_v2()
+    _require_mutable_workflow(workflow_id)
     version = _version_for_workflow(workflow_id, version_id)
     if version.state != "draft":
         raise HTTPException(status_code=409, detail="只能试运行工作流草稿")

@@ -82,3 +82,14 @@ test("cockpit reconnects after transient SSE errors and pause freezes visible hi
 test("task wizard only offers Agent resource overrides for Agent nodes", () => {
   assert.match(taskWizard, /steps\.filter\(\(item\) => item\.type === "agent_task"\)/);
 });
+
+test("task wizard offers every published workflow, including migrated built-ins", () => {
+  assert.match(taskWizard, /Boolean\(item\.v2\?\.published_version_id\)/);
+  assert.doesNotMatch(taskWizard, /item\.authoring_graph\?\.schema_version === 2/);
+});
+
+test("task wizard treats the reserved repo_path directory as workspace-managed", () => {
+  assert.match(taskWizard, /function isWorkspaceInputDefinition/);
+  assert.match(taskWizard, /String\(item\.id\) === "repo_path"/);
+  assert.match(taskWizard, /String\(item\.type\) === "directory"/);
+});

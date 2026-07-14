@@ -1283,12 +1283,29 @@ async def list_workflows() -> list[dict[str, Any]]:
     from app.services.workflow_version_store import WorkflowVersionStore
 
     version_store = WorkflowVersionStore(_workbench_dir() / "workflows.db")
+    version_store.ensure_legacy_published_workflows(
+        [dict(preset["definition"]) for preset in builtin_workflow_presets()]
+    )
     v2_items = {
         header.workflow_id: _v2_workflow_compatibility_response(version_store, header)
         for header in version_store.list_workflows()
-        if not _is_builtin_workflow_id(header.workflow_id)
     }
-    merged = [v2_items.pop(str(item.get("id") or ""), item) for item in legacy_items]
+    merged = []
+    for item in legacy_items:
+        workflow_id = str(item.get("id") or "")
+        v2_item = v2_items.pop(workflow_id, None)
+        if v2_item is None:
+            merged.append(item)
+        elif _is_builtin_workflow_id(workflow_id):
+            merged.append(
+                {
+                    **item,
+                    "authoring_graph": dict(v2_item.get("authoring_graph") or {}),
+                    "v2": dict(v2_item.get("v2") or {}),
+                }
+            )
+        else:
+            merged.append(v2_item)
     merged.extend(v2_items.values())
     return merged
 
@@ -3272,7 +3289,7 @@ def _workflow_response(payload: dict[str, Any]) -> dict[str, Any]:
 def _v2_workflow_compatibility_response(version_store: Any, header: Any) -> dict[str, Any]:
     from dataclasses import asdict
 
-    selected_version_id = header.current_draft_version_id or header.published_version_id
+    selected_version_id = header.published_version_id or header.current_draft_version_id
     version = version_store.get_version(selected_version_id) if selected_version_id else None
     definition = dict(version.compiled_definition or {}) if version else {}
     response = {

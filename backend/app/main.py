@@ -33,17 +33,23 @@ async def lifespan(app: FastAPI):
     await init_db()
     if settings.workbench_v2_enabled:
         from app.services.workbench_task_store import WorkbenchTaskStore
+        from app.services.workflow_presets import builtin_workflow_presets
         from app.services.workflow_version_store import WorkflowVersionStore
 
-        workflow_migration = WorkflowVersionStore(
+        workflow_versions = WorkflowVersionStore(
             settings.data_path / "workbench" / "workflows.db"
-        ).initialize_and_migrate()
+        )
+        workflow_migration = workflow_versions.initialize_and_migrate()
+        builtin_versions = workflow_versions.ensure_legacy_published_workflows(
+            [dict(preset["definition"]) for preset in builtin_workflow_presets()]
+        )
         task_migration = WorkbenchTaskStore(
             settings.data_path / "workbench" / "workflows.db"
         ).initialize_and_migrate()
         logger.info(
-            "Workbench V2 migrations ready: workflows=%s tasks=%s",
+            "Workbench V2 migrations ready: workflows=%s builtin_versions=%s tasks=%s",
             workflow_migration,
+            builtin_versions,
             task_migration,
         )
     ai_reconcile = await AIConversationStore().reconcile_interrupted_runs()

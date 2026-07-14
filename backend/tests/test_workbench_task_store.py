@@ -645,6 +645,92 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_task_api_accepts_a_migrated_builtin_style_workflow(tmp_path, monkeypatch):
+    from app.api import agent_workbench, workbench_v2_tasks
+    from app.config import settings
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workflow_version_store import WorkflowVersionStore
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    sqlite_db = data_dir / "codetalk.db"
+    with sqlite3.connect(sqlite_db) as db:
+        db.execute("CREATE TABLE workspaces (id TEXT PRIMARY KEY, name TEXT, repo_path TEXT)")
+        db.execute(
+            "INSERT INTO workspaces(id, name, repo_path) VALUES (?, ?, ?)",
+            ("ws-legacy", "Legacy repo", str(repo)),
+        )
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+    monkeypatch.setattr(settings, "sqlite_db", str(sqlite_db))
+    monkeypatch.setattr(settings, "workbench_v2_enabled", True)
+
+    db_path = data_dir / "workbench" / "workflows.db"
+    legacy_workflow = _workflow()
+    legacy_workflow["inputs"].insert(
+        0,
+        {
+            "id": "repo_path",
+            "type": "directory",
+            "required": True,
+            "resolver": "local",
+        },
+    )
+    WorkflowStore(db_path).save_workflow(legacy_workflow)
+    version_store = WorkflowVersionStore(db_path)
+    migration = version_store.initialize_and_migrate()
+    header = version_store.get_workflow("source-review")
+    published = version_store.get_version(header.published_version_id)
+
+    assert migration["upgraded_workflows"] == 1
+    assert published.compiled_plan is not None
+
+    app = FastAPI()
+    app.include_router(agent_workbench.router)
+    app.include_router(workbench_v2_tasks.router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        created = await client.post(
+            "/api/workbench/tasks",
+            json={
+                "name": "Migrated workflow task",
+                "workspace_id": "ws-legacy",
+                "workflow_id": "source-review",
+                "workflow_version_id": published.version_id,
+                "lifecycle_status": "ready",
+                "input_values": {
+                    "target": "lib/nvmf",
+                    "repo_path": "/tmp/forged-repository",
+                },
+            },
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["input_values"] == {"target": "lib/nvmf"}
+        compiled = await client.post(
+            f"/api/workbench/tasks/{created.json()['task_id']}/compile"
+        )
+        attempt = await client.post(
+            f"/api/workbench/tasks/{created.json()['task_id']}/runs",
+            json={},
+        )
+
+    assert compiled.status_code == 200, compiled.text
+    assert attempt.status_code == 201, attempt.text
+    assert compiled.json()["compiled_plan"]["compatibility_mode"] == "legacy_sequential"
+    assert compiled.json()["compiled_definition"]["id"] == "source-review"
+    run_payload = json.loads(
+        (
+            data_dir
+            / "workbench"
+            / "task_runs"
+            / attempt.json()["task_run_id"]
+            / "task_run.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert run_payload["input_snapshot"]["repo_path"] == str(repo)
+
+
+@pytest.mark.asyncio
 async def test_task_api_rejects_draft_workflow_and_lists_legacy_runs(tmp_path, monkeypatch):
     from app.api import agent_workbench, workbench_v2_tasks
     from app.config import settings
@@ -703,3 +789,86 @@ async def test_task_api_rejects_draft_workflow_and_lists_legacy_runs(tmp_path, m
     assert history.status_code == 200
     assert [item["task_run_id"] for item in history.json()["items"]] == [legacy.task_run_id]
     assert history.json()["items"][0]["legacy"] is True
+
+
+@pytest.mark.asyncio
+async def test_new_builtin_task_rejects_superseded_published_version(tmp_path, monkeypatch):
+    from app.api import agent_workbench, workbench_v2_tasks
+    from app.config import settings
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workflow_presets import get_workflow_preset
+    from app.services.workflow_version_store import WorkflowVersionStore
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    sqlite_db = data_dir / "codetalk.db"
+    with sqlite3.connect(sqlite_db) as db:
+        db.execute("CREATE TABLE workspaces (id TEXT PRIMARY KEY, name TEXT, repo_path TEXT)")
+        db.execute("INSERT INTO workspaces VALUES (?, ?, ?)", ("ws-1", "SPDK", str(repo)))
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+    monkeypatch.setattr(settings, "sqlite_db", str(sqlite_db))
+    monkeypatch.setattr(settings, "workbench_v2_enabled", True)
+
+    definition = get_workflow_preset("module_analysis")["definition"]
+    db_path = data_dir / "workbench" / "workflows.db"
+    WorkflowStore(db_path).save_workflow(definition)
+    version_store = WorkflowVersionStore(db_path)
+    version_store.initialize_and_migrate()
+    old_version_id = version_store.get_workflow("module_analysis").published_version_id
+    with sqlite3.connect(db_path) as db:
+        db.execute(
+            "UPDATE workflow_versions SET compiled_plan_json = ? WHERE version_id = ?",
+            (
+                json.dumps({
+                    "plan_version": 1,
+                    "workflow_version_id": old_version_id,
+                    "topological_order": ["shadow"],
+                    "nodes": [],
+                    "shadow_plan": True,
+                }),
+                old_version_id,
+            ),
+        )
+    assert version_store.ensure_legacy_published_workflows([definition]) == 1
+    current_version_id = version_store.get_workflow("module_analysis").published_version_id
+    assert current_version_id != old_version_id
+
+    historical = workbench_v2_tasks.task_store().create_task(
+        name="Historical built-in task",
+        workspace_id="ws-1",
+        workflow_id="module_analysis",
+        workflow_version_id=old_version_id,
+    )
+    request = {
+        "name": "New built-in task",
+        "workspace_id": "ws-1",
+        "workflow_id": "module_analysis",
+        "lifecycle_status": "draft",
+    }
+    app = FastAPI()
+    app.include_router(agent_workbench.router)
+    app.include_router(workbench_v2_tasks.router)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        rejected = await client.post(
+            "/api/workbench/tasks",
+            json={**request, "workflow_version_id": old_version_id},
+        )
+        accepted = await client.post(
+            "/api/workbench/tasks",
+            json={**request, "workflow_version_id": current_version_id},
+        )
+        historical_detail = await client.get(f"/api/workbench/tasks/{historical.task_id}")
+        clone_rejected = await client.post(
+            f"/api/workbench/tasks/{historical.task_id}/clone",
+            json={"name": "Superseded clone"},
+        )
+
+    assert rejected.status_code == 409
+    assert "最新发布版本" in rejected.json()["detail"]
+    assert accepted.status_code == 201, accepted.text
+    assert historical_detail.status_code == 200, historical_detail.text
+    assert historical_detail.json()["workflow_version_id"] == old_version_id
+    assert clone_rejected.status_code == 409
+    assert "最新发布版本" in clone_rejected.json()["detail"]

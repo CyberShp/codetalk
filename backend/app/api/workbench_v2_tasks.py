@@ -20,11 +20,15 @@ from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
 from app.services.workbench_task_store import WorkbenchTask, WorkbenchTaskStore
 from app.services.workbench_task_compile import TaskConfigurationError, compile_task_configuration
 from app.services.workflow_dsl import WorkflowStore
+from app.services.workflow_presets import builtin_workflow_presets
 from app.services.workflow_version_store import WorkflowVersionStore
 
 
 router = APIRouter(prefix="/api/workbench/tasks", tags=["workbench-v2-tasks"])
 _ATTEMPT_LOCK = threading.RLock()
+_BUILTIN_WORKFLOW_IDS = frozenset(
+    str(preset["definition"]["id"]) for preset in builtin_workflow_presets()
+)
 
 
 class TaskCreateRequest(BaseModel):
@@ -149,17 +153,26 @@ async def list_tasks(
 @router.post("", status_code=201)
 async def create_task(payload: TaskCreateRequest) -> dict[str, Any]:
     _require_v2()
-    version = _published_version(payload.workflow_id, payload.workflow_version_id)
+    version = _published_version(
+        payload.workflow_id,
+        payload.workflow_version_id,
+        require_current_builtin=True,
+    )
     _workspace(payload.workspace_id)
+    input_values = _without_workspace_input_values(
+        version.compiled_definition or {}, payload.input_values
+    )
     if payload.lifecycle_status == "ready":
-        _validate_ready_inputs(version.compiled_definition or {}, payload.input_values)
+        _validate_ready_inputs(version.compiled_definition or {}, input_values)
     _effective_configuration_payload(
         version=version,
         execution_overrides=payload.execution_overrides,
         output_overrides=payload.output_overrides,
     )
     try:
-        task = task_store().create_task(**payload.model_dump())
+        task_payload = payload.model_dump()
+        task_payload["input_values"] = input_values
+        task = task_store().create_task(**task_payload)
     except (sqlite3.IntegrityError, ValueError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _task_payload(task)
@@ -187,8 +200,16 @@ async def update_task(task_id: str, payload: TaskUpdateRequest) -> dict[str, Any
     _require_v2()
     current = _task(task_id)
     changes = payload.model_dump(exclude_unset=True)
-    if changes.get("lifecycle_status") == "ready":
+    version = None
+    if "input_values" in changes:
         version = _published_version(current.workflow_id, current.workflow_version_id)
+        changes["input_values"] = _without_workspace_input_values(
+            version.compiled_definition or {}, changes.get("input_values") or {}
+        )
+    if changes.get("lifecycle_status") == "ready":
+        version = version or _published_version(
+            current.workflow_id, current.workflow_version_id
+        )
         values = changes.get("input_values", current.input_values)
         _validate_ready_inputs(version.compiled_definition or {}, values)
     if any(key in changes for key in {"execution_overrides", "output_overrides"}):
@@ -220,7 +241,12 @@ async def archive_task(task_id: str) -> dict[str, Any]:
 @router.post("/{task_id}/clone", status_code=201)
 async def clone_task(task_id: str, payload: TaskCloneRequest) -> dict[str, Any]:
     _require_v2()
-    _task(task_id)
+    source = _task(task_id)
+    _published_version(
+        source.workflow_id,
+        source.workflow_version_id,
+        require_current_builtin=True,
+    )
     return _task_payload(task_store().clone_task(task_id, name=payload.name))
 
 
@@ -301,7 +327,7 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
         if not repo_path.is_dir():
             raise HTTPException(status_code=422, detail=f"工作空间源码目录不可用：{repo_path}")
         for definition in effective_definition.get("inputs") or []:
-            if str(definition.get("resolver") or "") == "workspace":
+            if _is_workspace_input_definition(definition):
                 resolved_inputs[str(definition["id"])] = str(repo_path)
         _validate_ready_inputs(effective_definition, resolved_inputs)
         workflow_store = WorkflowStore(settings.data_path / "workbench" / "task_workflows.db")
@@ -457,15 +483,31 @@ def _task(task_id: str) -> WorkbenchTask:
         raise HTTPException(status_code=404, detail=f"任务不存在：{task_id}") from exc
 
 
-def _published_version(workflow_id: str, version_id: str):
+def _published_version(
+    workflow_id: str,
+    version_id: str,
+    *,
+    require_current_builtin: bool = False,
+):
+    store = version_store()
     try:
-        version = version_store().get_version(version_id)
+        version = store.get_version(version_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="工作流版本不存在") from exc
     if version.workflow_id != workflow_id:
         raise HTTPException(status_code=422, detail="工作流版本与工作流不匹配")
     if version.state != "published":
         raise HTTPException(status_code=422, detail="普通任务只能选择已发布工作流版本")
+    if require_current_builtin and workflow_id in _BUILTIN_WORKFLOW_IDS:
+        try:
+            current_version_id = store.get_workflow(workflow_id).published_version_id
+        except KeyError as exc:
+            raise HTTPException(status_code=409, detail="内置工作流尚未准备好，请刷新后重试") from exc
+        if version_id != current_version_id:
+            raise HTTPException(
+                status_code=409,
+                detail="内置工作流版本已更新，请刷新页面并选择最新发布版本",
+            )
     return version
 
 
@@ -488,13 +530,33 @@ def _validate_ready_inputs(definition: dict[str, Any], values: dict[str, Any]) -
     for item in definition.get("inputs") or []:
         if not isinstance(item, dict) or not item.get("required"):
             continue
-        if str(item.get("resolver") or "") == "workspace":
+        if _is_workspace_input_definition(item):
             continue
         value = values.get(str(item.get("id") or ""))
         if value is None or (isinstance(value, str) and not value.strip()) or value == [] or value == {}:
             missing.append(str(item.get("label") or item.get("id") or "未命名输入"))
     if missing:
         raise HTTPException(status_code=422, detail=f"任务缺少必填输入：{'、'.join(missing)}")
+
+
+def _is_workspace_input_definition(item: dict[str, Any]) -> bool:
+    if str(item.get("resolver") or "") == "workspace":
+        return True
+    return (
+        str(item.get("id") or "") == "repo_path"
+        and str(item.get("type") or "") == "directory"
+    )
+
+
+def _without_workspace_input_values(
+    definition: dict[str, Any], values: dict[str, Any]
+) -> dict[str, Any]:
+    reserved_ids = {
+        str(item.get("id") or "")
+        for item in definition.get("inputs") or []
+        if isinstance(item, dict) and _is_workspace_input_definition(item)
+    }
+    return {key: value for key, value in values.items() if key not in reserved_ids}
 
 
 def _effective_configuration_payload(*, version: Any, execution_overrides: dict[str, Any], output_overrides: dict[str, Any]) -> dict[str, Any]:

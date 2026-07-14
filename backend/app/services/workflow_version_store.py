@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from app.services.workbench_sqlite_backup import ensure_workbench_migration_backup
+from app.services.workflow_graph import compile_legacy_workflow
 
 
-WORKFLOW_SCHEMA_VERSION = 1
+WORKFLOW_SCHEMA_VERSION = 2
 _WORKFLOW_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
@@ -77,6 +78,7 @@ class WorkflowVersionStore:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         ensure_workbench_migration_backup(self.db_path)
         migrated = 0
+        upgraded = 0
         with self._connect() as db:
             db.executescript(_SCHEMA)
             db.execute("BEGIN IMMEDIATE")
@@ -98,6 +100,37 @@ class WorkflowVersionStore:
                             continue
                         self._migrate_legacy_row(db, row)
                         migrated += 1
+                legacy_versions = db.execute(
+                    """
+                    SELECT version_id, authoring_graph_json, compiled_definition_json
+                    FROM workflow_versions
+                    WHERE state = 'published'
+                      AND compiled_plan_json IS NULL
+                      AND compiled_definition_json IS NOT NULL
+                    ORDER BY version_id
+                    """
+                ).fetchall()
+                for version in legacy_versions:
+                    graph = json.loads(str(version["authoring_graph_json"]))
+                    if (
+                        graph.get("schema_version") != 1
+                        or not isinstance(graph.get("legacy_definition"), dict)
+                    ):
+                        continue
+                    definition = json.loads(str(version["compiled_definition_json"]))
+                    plan = compile_legacy_workflow(
+                        definition,
+                        workflow_version_id=str(version["version_id"]),
+                    )
+                    db.execute(
+                        """
+                        UPDATE workflow_versions
+                        SET compiled_plan_json = ?, updated_at = ?
+                        WHERE version_id = ?
+                        """,
+                        (_dump(plan), _now(), str(version["version_id"])),
+                    )
+                    upgraded += 1
                 db.execute(
                     """
                     INSERT INTO workbench_schema_meta(component, version, updated_at)
@@ -112,7 +145,200 @@ class WorkflowVersionStore:
             except Exception:
                 db.rollback()
                 raise
-        return {"schema_version": WORKFLOW_SCHEMA_VERSION, "migrated_workflows": migrated}
+        return {
+            "schema_version": WORKFLOW_SCHEMA_VERSION,
+            "migrated_workflows": migrated,
+            "upgraded_workflows": upgraded,
+        }
+
+    def ensure_legacy_published_workflows(
+        self, definitions: list[dict[str, Any]]
+    ) -> int:
+        """Publish canonical read-only snapshots without trusting same-ID legacy rows."""
+        self.initialize_and_migrate()
+        ensured = 0
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                for raw_definition in definitions:
+                    definition = _json_object(raw_definition, "compiled_definition")
+                    workflow_id = _validated_workflow_id(str(definition.get("id") or ""))
+                    header = db.execute(
+                        "SELECT * FROM workflow_headers WHERE workflow_id = ?",
+                        (workflow_id,),
+                    ).fetchone()
+                    published_version_id = (
+                        str(header["published_version_id"])
+                        if header is not None and header["published_version_id"]
+                        else None
+                    )
+                    published_snapshot = None
+                    if published_version_id:
+                        published = db.execute(
+                            """
+                            SELECT state, authoring_graph_json, compiled_definition_json,
+                                   compiled_plan_json, validation_json
+                            FROM workflow_versions WHERE version_id = ?
+                            """,
+                            (published_version_id,),
+                        ).fetchone()
+                        if published is not None:
+                            published_snapshot = {
+                                "state": str(published["state"]),
+                                "authoring_graph": _load_optional(
+                                    published["authoring_graph_json"]
+                                ),
+                                "compiled_definition": _load_optional(
+                                    published["compiled_definition_json"]
+                                ),
+                                "compiled_plan": _load_optional(
+                                    published["compiled_plan_json"]
+                                ),
+                                "validation": _load_optional(
+                                    published["validation_json"]
+                                ),
+                            }
+                    expected_graph = _legacy_authoring_graph(definition, workflow_id)
+                    expected_validation = _legacy_validation()
+                    expected_plan = (
+                        compile_legacy_workflow(
+                            definition,
+                            workflow_version_id=published_version_id,
+                        )
+                        if published_version_id
+                        else None
+                    )
+                    snapshot_is_canonical = published_snapshot == {
+                        "state": "published",
+                        "authoring_graph": expected_graph,
+                        "compiled_definition": definition,
+                        "compiled_plan": expected_plan,
+                        "validation": expected_validation,
+                    }
+                    header_is_canonical = bool(
+                        header is not None
+                        and str(header["status"]) == "active"
+                        and not header["archived_at"]
+                        and not header["current_draft_version_id"]
+                    )
+                    if snapshot_is_canonical and header_is_canonical:
+                        continue
+
+                    now = _now()
+                    current_draft_version_id = (
+                        str(header["current_draft_version_id"])
+                        if header is not None and header["current_draft_version_id"]
+                        else None
+                    )
+                    if current_draft_version_id:
+                        db.execute(
+                            """
+                            UPDATE workflow_versions
+                            SET state = 'archived', updated_at = ?
+                            WHERE version_id = ? AND state = 'draft'
+                            """,
+                            (now, current_draft_version_id),
+                        )
+                    if snapshot_is_canonical:
+                        db.execute(
+                            """
+                            UPDATE workflow_headers
+                            SET name = ?, description = ?, status = 'active',
+                                current_draft_version_id = NULL,
+                                archived_at = NULL, updated_at = ?
+                            WHERE workflow_id = ?
+                            """,
+                            (
+                                str(definition.get("name") or workflow_id),
+                                str(definition.get("description") or ""),
+                                now,
+                                workflow_id,
+                            ),
+                        )
+                        ensured += 1
+                        continue
+
+                    version_id = _new_version_id()
+                    version_number = 1
+                    if header is not None:
+                        row = db.execute(
+                            """
+                            SELECT COALESCE(MAX(version_number), 0) AS max_version
+                            FROM workflow_versions WHERE workflow_id = ?
+                            """,
+                            (workflow_id,),
+                        ).fetchone()
+                        version_number = int(row["max_version"] or 0) + 1
+                    graph = _legacy_authoring_graph(definition, workflow_id)
+                    validation = _legacy_validation()
+                    plan = compile_legacy_workflow(
+                        definition,
+                        workflow_version_id=version_id,
+                    )
+                    if header is None:
+                        db.execute(
+                            """
+                            INSERT INTO workflow_headers(
+                                workflow_id, name, description, status,
+                                published_version_id, current_draft_version_id,
+                                created_at, updated_at, archived_at
+                            ) VALUES (?, ?, ?, 'active', ?, NULL, ?, ?, NULL)
+                            """,
+                            (
+                                workflow_id,
+                                str(definition.get("name") or workflow_id),
+                                str(definition.get("description") or ""),
+                                version_id,
+                                now,
+                                now,
+                            ),
+                        )
+                    db.execute(
+                        """
+                        INSERT INTO workflow_versions(
+                            version_id, workflow_id, version_number, state,
+                            authoring_graph_json, compiled_definition_json,
+                            compiled_plan_json, validation_json, based_on_version_id,
+                            created_at, updated_at, published_at
+                        ) VALUES (?, ?, ?, 'published', ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            version_id,
+                            workflow_id,
+                            version_number,
+                            _dump(graph),
+                            _dump(definition),
+                            _dump(plan),
+                            _dump(validation),
+                            published_version_id,
+                            now,
+                            now,
+                            now,
+                        ),
+                    )
+                    if header is not None:
+                        db.execute(
+                            """
+                            UPDATE workflow_headers
+                            SET name = ?, description = ?, status = 'active',
+                                published_version_id = ?, current_draft_version_id = NULL,
+                                archived_at = NULL, updated_at = ?
+                            WHERE workflow_id = ?
+                            """,
+                            (
+                                str(definition.get("name") or workflow_id),
+                                str(definition.get("description") or ""),
+                                version_id,
+                                now,
+                                workflow_id,
+                            ),
+                        )
+                    ensured += 1
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+        return ensured
 
     def create_workflow(
         self,
@@ -418,24 +644,8 @@ class WorkflowVersionStore:
         version_id = _new_version_id()
         created_at = str(row["created_at"] or _now())
         updated_at = str(row["updated_at"] or created_at)
-        graph = {
-            "schema_version": 1,
-            "workflow_id": workflow_id,
-            "name": str(definition.get("name") or row["name"] or workflow_id),
-            "description": str(definition.get("description") or ""),
-            "read_only": True,
-            "legacy_definition": definition,
-        }
-        validation = {
-            "valid": True,
-            "errors": [],
-            "warnings": [
-                {
-                    "code": "legacy_graph_read_only",
-                    "message": "Legacy workflow migrated without inventing typed graph dependencies.",
-                }
-            ],
-        }
+        graph = _legacy_authoring_graph(definition, workflow_id)
+        validation = _legacy_validation()
         db.execute(
             """
             INSERT INTO workflow_headers(
@@ -571,6 +781,32 @@ def _empty_graph(header: WorkflowHeader) -> dict[str, Any]:
         "nodes": [],
         "edges": [],
         "settings": {"stop_on_error": True, "max_parallelism": 1},
+    }
+
+
+def _legacy_authoring_graph(
+    definition: dict[str, Any], workflow_id: str
+) -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "workflow_id": workflow_id,
+        "name": str(definition.get("name") or workflow_id),
+        "description": str(definition.get("description") or ""),
+        "read_only": True,
+        "legacy_definition": definition,
+    }
+
+
+def _legacy_validation() -> dict[str, Any]:
+    return {
+        "valid": True,
+        "errors": [],
+        "warnings": [
+            {
+                "code": "legacy_graph_read_only",
+                "message": "Legacy workflow migrated without inventing typed graph dependencies.",
+            }
+        ],
     }
 
 

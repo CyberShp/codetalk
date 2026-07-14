@@ -1060,6 +1060,18 @@ async def test_builtin_workflow_read_path_does_not_overwrite_or_trust_user_shado
     assert len(listed_builtin) == 1
     assert listed_builtin[0]["name"] != "Shadowed Module Analysis"
     assert listed_builtin[0]["version"] != 77
+    assert listed_builtin[0]["v2"]["published_version_id"]
+    assert listed_builtin[0]["authoring_graph"]["schema_version"] == 1
+    from app.services.workflow_version_store import WorkflowVersionStore
+
+    version_store = WorkflowVersionStore(workbench_api._workbench_dir() / "workflows.db")
+    published = version_store.get_version(
+        listed_builtin[0]["v2"]["published_version_id"]
+    )
+    assert published.compiled_definition["name"] != "Shadowed Module Analysis"
+    assert "local_scope_discover" in {
+        step["type"] for step in published.compiled_definition["steps"]
+    }
     assert store.get_workflow("module_analysis").raw["name"] == "Shadowed Module Analysis"
 
 
