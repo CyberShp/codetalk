@@ -786,6 +786,7 @@ async def test_run_cockpit_bridge_reuses_ai_thread_and_keeps_context_public(sqli
     import json
     from dataclasses import asdict
 
+    from app.api import ai_conversations as ai_api
     from app.config import settings
     from app.services.ai_workbench_links import AIWorkbenchLinkStore
     from app.services.workbench_task_run import PreparedWorkbenchTaskRun
@@ -876,6 +877,7 @@ async def test_run_cockpit_bridge_reuses_ai_thread_and_keeps_context_public(sqli
     links = await AIWorkbenchLinkStore(sqlite_db).list_links(task_run_id=run.task_run_id)
     assert len(links) == 1
     assert links[0]["relation_type"] == "run_discussed_by_ai"
+    assert ai_api._TASK_RUN_THREAD_LOCKS == {}
 
 
 async def test_agent_run_coordinator_enforces_global_and_provider_capacity():
@@ -1086,6 +1088,87 @@ async def test_ai_task_draft_validates_source_pair_and_replays_idempotently(sqli
     assert replay.json()["task"]["task_id"] == first.json()["task"]["task_id"]
 
 
+async def test_ai_task_draft_accepts_assistant_card_and_source_less_replay(sqlite_db):
+    import asyncio
+
+    from app.api import ai_conversations as ai_api
+    from app.config import settings
+    from app.services.ai_conversations import AIConversationStore
+    from tests.test_ai_conversations import _test_app
+
+    workspace_id = "ws-ai-task-real-ui"
+    async with aiosqlite.connect(sqlite_db) as db:
+        await db.execute(
+            "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+            "VALUES (?, 'Real UI', '/repo/real-ui', 1, '2026-01-01', '2026-01-01')",
+            (workspace_id,),
+        )
+        await db.commit()
+    header, published = _published_workflow(
+        settings.data_path,
+        workflow_id="ai-task-real-ui-flow",
+    )
+    store = AIConversationStore(sqlite_db)
+    assistant_conversation = await store.create_conversation(
+        scope_type="workspace",
+        scope_id=workspace_id,
+        workspace_id=workspace_id,
+        title="Assistant task card",
+    )
+    source = await store.create_user_message_and_run(
+        conversation_id=assistant_conversation["id"],
+        content="analyze login",
+        references=[],
+    )
+    await store.complete_run(
+        run_id=source["run"]["id"],
+        content="assistant answer",
+        references=[],
+    )
+    messages = await store.list_messages(assistant_conversation["id"])
+    assistant_message = next(item for item in messages if item["role"] == "assistant")
+
+    source_less_conversation = await store.create_conversation(
+        scope_type="workspace",
+        scope_id=workspace_id,
+        workspace_id=workspace_id,
+        title="Thread action",
+        initial_context={
+            "selected_workflow_id": header.workflow_id,
+            "selected_workflow_version_id": published.version_id,
+        },
+    )
+    app = _test_app(sqlite_db)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        assistant_card = await client.post(
+            f"/api/ai/conversations/{assistant_conversation['id']}/task-drafts",
+            json={
+                "source_message_id": assistant_message["id"],
+                "source_ai_run_id": source["run"]["id"],
+                "workflow_id": header.workflow_id,
+                "workflow_version_id": published.version_id,
+            },
+        )
+        implicit, explicit = await asyncio.gather(
+            client.post(
+                f"/api/ai/conversations/{source_less_conversation['id']}/task-drafts",
+                json={},
+            ),
+            client.post(
+                f"/api/ai/conversations/{source_less_conversation['id']}/task-drafts",
+                json={
+                    "workflow_id": header.workflow_id,
+                    "workflow_version_id": published.version_id,
+                },
+            ),
+        )
+
+    assert assistant_card.status_code == 201, assistant_card.text
+    assert {implicit.status_code, explicit.status_code} == {200, 201}
+    assert implicit.json()["task"]["task_id"] == explicit.json()["task"]["task_id"]
+    assert ai_api._TASK_DRAFT_LOCKS == {}
+
+
 async def test_custom_agent_runtime_persists_explicit_provider(sqlite_db):
     from app.services.agent_runtimes import AgentRuntimeStore
 
@@ -1148,3 +1231,38 @@ async def test_agent_run_coordinator_refreshes_remaining_queue_positions():
     release_second.set()
     await asyncio.wait_for(third_entered.wait(), timeout=1)
     await asyncio.gather(first, second, third)
+
+
+async def test_agent_run_coordinator_cleans_waiter_when_queue_callback_fails():
+    import asyncio
+
+    from app.services.agent_run_coordinator import AgentRunCoordinator
+
+    coordinator = AgentRunCoordinator(
+        max_global_agent_processes=1,
+        max_processes_per_provider=1,
+    )
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def first_job():
+        async with coordinator.slot("codex"):
+            first_entered.set()
+            await release_first.wait()
+
+    def fail_queue_persistence(_status):
+        raise RuntimeError("queue persistence failed")
+
+    first = asyncio.create_task(first_job())
+    await asyncio.wait_for(first_entered.wait(), timeout=1)
+    with pytest.raises(RuntimeError, match="queue persistence failed"):
+        async with coordinator.slot("codex", on_queued=fail_queue_persistence):
+            raise AssertionError("failing waiter must not acquire")
+
+    snapshot = await coordinator.snapshot()
+    assert snapshot["queued_process_count"] == 0
+    assert snapshot["active_process_count"] == 1
+    release_first.set()
+    await first
+    async with coordinator.slot("codex"):
+        assert (await coordinator.snapshot())["active_process_count"] == 1

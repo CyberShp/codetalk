@@ -47,7 +47,7 @@ created: 2026-07-15
 | 18 | Desktop/mobile avoid overflow and obstruction | `1440x900` and `390x844` screenshots plus programmatic overflow assertions pass. |
 | 19 | Main text/status remains readable | Existing typography contracts and screenshot inspection satisfy the supplied size hierarchy. |
 | 20 | New real E2E passes | `ai-thread-v2-integration-real.spec.ts`: real UI chain, two-Agent DAG, no route mocks. |
-| 21 | Backend concurrency/snapshot tests pass | Relevant backend suite: `333 passed in 82.61s`; CLI Bridge sandbox suite: `16 passed`. |
+| 21 | Backend concurrency/snapshot tests pass | Relevant backend suite: `335 passed in 79.31s`; CLI Bridge sandbox suite: `17 passed`. |
 | 22 | Lint, TypeScript, build, and regressions pass | ESLint zero warnings, `tsc` exit 0, Next production build exit 0, Chromium group `7 passed`. |
 | 23 | Documentation matches behavior | Integration plan, progress log, quality gate, and E2E acceptance chain are current. |
 | 24 | Historical data is preserved | Migrations are additive/idempotent; legacy rows return `legacy`/`未记录`; no destructive migration exists. |
@@ -55,8 +55,8 @@ created: 2026-07-15
 
 ## Fresh verification evidence
 
-- Backend: `python3.11 -m pytest -q tests/test_ai_thread_v2_integration.py tests/test_ai_conversations.py tests/test_database_init.py tests/test_workbench_task_store.py tests/test_workflow_scheduler.py tests/test_workflow_version_store.py tests/test_agent_workbench_api.py tests/test_workbench_artifact_manifest.py --maxfail=1` -> `333 passed in 82.61s`.
-- Agent CLI sandbox: `python3.11 -m pytest -q tests/test_agent_cli_bridge.py --maxfail=1` -> `16 passed`.
+- Backend: `python3.11 -m pytest -q tests/test_ai_thread_v2_integration.py tests/test_ai_conversations.py tests/test_database_init.py tests/test_workbench_task_store.py tests/test_workflow_scheduler.py tests/test_workflow_version_store.py tests/test_agent_workbench_api.py tests/test_workbench_artifact_manifest.py --maxfail=1` -> `335 passed in 79.31s`.
+- Agent CLI sandbox: `python3.11 -m pytest -q tests/test_agent_cli_bridge.py --maxfail=1` -> `17 passed`.
 - Frontend: `npm run lint -- --max-warnings=0` -> exit 0.
 - Frontend: `./node_modules/.bin/tsc --noEmit --pretty false` -> exit 0.
 - Frontend: `npm run build` -> exit 0; all Next.js routes compiled and type-checked.
@@ -107,6 +107,12 @@ position updates. The detailed response is in `docs/review-notes/ai-thread-v2-re
 During browser verification, a ninth integration defect was found and fixed: macOS sandbox policy
 allowed the executable but not a trusted wrapper/config file supplied as an absolute runtime
 argument. Existing local argument paths are now admitted read-only, with a real sandbox regression.
+
+The second independent review found five more edge cases. Static configured argv is now separated
+from dynamic prompt/session argv before sandbox admission; assistant Run messages are valid Task
+Draft sources; source-less and explicit-equivalent draft requests share one per-thread idempotency
+boundary; queue callback failures clean their waiter; and operation-lock entries are reference-counted
+and evicted. The main AI-to-Task browser acceptance passed again after these fixes.
 
 ## Gate result
 

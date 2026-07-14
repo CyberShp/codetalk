@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -13,6 +14,7 @@ from app.config import settings
 
 
 QueueCallback = Callable[[dict[str, Any]], Any | Awaitable[Any]]
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -73,11 +75,11 @@ class AgentRunCoordinator:
                 self._waiters.append(waiter)
                 queue_status = self._queue_status(waiter)
                 waiter.last_queue_status = queue_status
-        if queue_status is not None and on_queued is not None:
-            callback_result = on_queued(queue_status)
-            if inspect.isawaitable(callback_result):
-                await callback_result
         try:
+            if queue_status is not None and on_queued is not None:
+                callback_result = on_queued(queue_status)
+                if inspect.isawaitable(callback_result):
+                    await callback_result
             if waiter is not None:
                 await waiter.future
                 acquired = True
@@ -163,9 +165,12 @@ class AgentRunCoordinator:
         updates: list[tuple[QueueCallback, dict[str, Any]]],
     ) -> None:
         for callback, queue_status in updates:
-            callback_result = callback(queue_status)
-            if inspect.isawaitable(callback_result):
-                await callback_result
+            try:
+                callback_result = callback(queue_status)
+                if inspect.isawaitable(callback_result):
+                    await callback_result
+            except Exception:
+                logger.exception("Failed to persist refreshed Agent queue status")
 
     def _wake_eligible_waiters(self) -> None:
         for waiter in list(self._waiters):

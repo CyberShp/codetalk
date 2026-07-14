@@ -134,6 +134,55 @@ async def test_stream_runtime_allows_configured_local_wrapper_script_readonly(tm
     assert "WRAPPER_OK source evidence" in "".join(output)
 
 
+@pytest.mark.asyncio
+async def test_stream_runtime_never_allows_an_absolute_prompt_as_a_read_path(
+    tmp_path,
+    monkeypatch,
+):
+    from app.services.agent_sandbox import AgentSandboxLaunch
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    wrapper = tmp_path / "wrapper.py"
+    wrapper.write_text("import sys\nprint(sys.argv[-1], flush=True)\n", encoding="utf-8")
+    private_prompt_path = tmp_path / "host-secret.txt"
+    private_prompt_path.write_text("must remain outside sandbox", encoding="utf-8")
+    artifacts = tmp_path / "artifacts"
+    captured: dict[str, object] = {}
+
+    def fake_prepare_agent_sandbox(*, runtime, cwd, artifact_dir):
+        captured.update(runtime)
+        return AgentSandboxLaunch(
+            status="disabled",
+            wrapper=[],
+            message="test sandbox capture",
+            audit={},
+        )
+
+    monkeypatch.setattr(
+        "app.services.agent_cli_bridge.prepare_agent_sandbox",
+        fake_prepare_agent_sandbox,
+    )
+    output: list[str] = []
+    async for chunk in stream_agent_runtime(
+        runtime={
+            "command": sys.executable,
+            "args": [str(wrapper)],
+            "prompt_transport": "argv_last",
+            "output_mode": "plain",
+            "completion_mode": "process_exit",
+            "env": {"CODETALK_AGENT_ARTIFACT_DIR": str(artifacts)},
+        },
+        prompt=str(private_prompt_path),
+        cwd=str(repo),
+    ):
+        output.append(chunk)
+
+    assert str(private_prompt_path) in "".join(output)
+    assert str(wrapper.resolve()) in captured["sandbox_read_paths"]
+    assert str(private_prompt_path.resolve()) not in captured["sandbox_read_paths"]
+
+
 def test_codex_artifact_dir_is_added_as_writable_before_exec():
     args = _codex_add_writable_artifact_dir(
         ["exec", "--json"],

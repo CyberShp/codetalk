@@ -90,6 +90,13 @@ async def stream_agent_runtime(
     except ValueError as exc:
         raise AgentRuntimeError(str(exc)) from exc
     command = _resolve_agent_command(command)
+    configured_runtime_args = [
+        str(item)
+        for item in [
+            *list(runtime.get("args") or []),
+            *list(runtime.get("resume_args") or []),
+        ]
+    ]
     args = _runtime_args(runtime, resume_session_id=resume_session_id)
     prompt_transport = str(runtime.get("prompt_transport") or "stdin")
     env = _build_env(runtime)
@@ -158,7 +165,7 @@ async def stream_agent_runtime(
         "sandbox_command": command,
         "sandbox_read_paths": [
             *list(runtime.get("sandbox_read_paths") or []),
-            *_configured_runtime_read_paths(args),
+            *_configured_runtime_read_paths(configured_runtime_args),
             *([prompt_file_path] if prompt_file_path else []),
         ],
     }

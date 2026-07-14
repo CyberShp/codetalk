@@ -36,13 +36,27 @@ and the real source-injection browser test cover the fix.
 
 ## Gate evidence
 
-- Core backend: `333 passed in 82.61s`.
-- Agent CLI sandbox: `16 passed`.
+- Core backend: `335 passed in 79.31s`.
+- Agent CLI sandbox: `17 passed`.
 - Agent Runtime/CLI regression: `128 passed`; pytest printed completion but an existing non-daemon
   test thread required process shutdown after the result.
 - ESLint, TypeScript, and Next.js production build: passed.
 - Browser: eight main AI/Workbench tests, one sandboxed source Agent test, and one quality-retry test passed.
 - `git diff --check`: clean; synthetic redaction keys are confined to tests.
+
+## Second re-review response
+
+| Finding | Resolution | Focused evidence |
+|---|---|---|
+| P1 dynamic prompt widened sandbox reads | Capture only configured `args`/`resume_args` before transports add prompt or session values; dynamic argv is never scanned for paths | `test_stream_runtime_never_allows_an_absolute_prompt_as_a_read_path` |
+| P1 assistant task card failed source pairing | Accept an assistant message when its `run_id` is the selected Run; user sources still must equal `input_message_id`; one-sided source pairs are rejected | `test_ai_task_draft_accepts_assistant_card_and_source_less_replay` |
+| P1 queue callback failure stranded capacity | Initial callback now executes inside slot cleanup; refresh callback failures are logged without interrupting release | `test_agent_run_coordinator_cleans_waiter_when_queue_callback_fails` |
+| P2 source-less draft replay duplicated Tasks | Serialize draft creation per conversation, resolve workflow/version inside the boundary, and replay empty-source links as well as sourced links | `test_ai_task_draft_accepts_assistant_card_and_source_less_replay`; real V2 browser loop |
+| P3 operation locks leaked | Reference-count lock users and evict the registry entry after success, error, or cancellation | Task Draft and concurrent Run-to-AI tests assert empty registries |
+
+The configured-wrapper sandbox exception remains read-only. Its path comes only from administrator
+runtime configuration; user prompt text, generated session identifiers, and transport-added argv do
+not participate in the read allowlist.
 
 ## Re-review request
 

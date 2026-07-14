@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
-from dataclasses import asdict
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import asdict, dataclass
 from typing import Any
 from urllib.parse import quote
 
@@ -52,16 +54,33 @@ _ACTIVE_BUILTIN_WORKFLOW_IDS = frozenset(
     for preset in active_builtin_workflow_presets()
 )
 _RESERVED_BUILTIN_WORKFLOW_IDS = reserved_builtin_workflow_ids()
-_TASK_DRAFT_LOCKS: dict[str, asyncio.Lock] = {}
-_TASK_RUN_THREAD_LOCKS: dict[str, asyncio.Lock] = {}
+@dataclass
+class _OperationLockState:
+    lock: asyncio.Lock
+    users: int = 0
 
 
-def _operation_lock(registry: dict[str, asyncio.Lock], key: str) -> asyncio.Lock:
-    lock = registry.get(key)
-    if lock is None:
-        lock = asyncio.Lock()
-        registry[key] = lock
-    return lock
+_TASK_DRAFT_LOCKS: dict[str, _OperationLockState] = {}
+_TASK_RUN_THREAD_LOCKS: dict[str, _OperationLockState] = {}
+
+
+@asynccontextmanager
+async def _operation_lock(
+    registry: dict[str, _OperationLockState],
+    key: str,
+) -> AsyncIterator[None]:
+    state = registry.get(key)
+    if state is None:
+        state = _OperationLockState(lock=asyncio.Lock())
+        registry[key] = state
+    state.users += 1
+    try:
+        async with state.lock:
+            yield
+    finally:
+        state.users -= 1
+        if state.users == 0 and registry.get(key) is state:
+            registry.pop(key, None)
 
 
 class CreateConversationRequest(BaseModel):
@@ -673,16 +692,7 @@ async def create_task_draft(
 ) -> dict[str, Any]:
     """Create a V2 Task draft pinned to one published workflow version."""
 
-    lock_key = ":".join(
-        (
-            conversation_id,
-            str(body.source_message_id or ""),
-            str(body.source_ai_run_id or ""),
-            str(body.workflow_id or ""),
-            str(body.workflow_version_id or ""),
-        )
-    )
-    async with _operation_lock(_TASK_DRAFT_LOCKS, lock_key):
+    async with _operation_lock(_TASK_DRAFT_LOCKS, conversation_id):
         return await _create_task_draft_locked(conversation_id, body, response)
 
 
@@ -715,12 +725,18 @@ async def _create_task_draft_locked(
             raise HTTPException(status_code=404, detail="来源 AI 运行不存在")
         if source_run.get("conversation_id") != conversation_id:
             raise HTTPException(status_code=422, detail="来源 AI 运行不属于当前线程")
+    if (source_message is None) != (source_run is None):
+        raise HTTPException(status_code=422, detail="来源消息与来源 AI 运行必须同时提供")
     if source_message is not None and source_run is not None:
         message_run_id = str(source_message.get("run_id") or "").strip()
         run_message_id = str(source_run.get("input_message_id") or "").strip()
+        source_role = str(source_message.get("role") or "").strip()
         if (
             message_run_id != str(source_run.get("id") or "")
-            or run_message_id != str(source_message.get("id") or "")
+            or (
+                source_role != "assistant"
+                and run_message_id != str(source_message.get("id") or "")
+            )
         ):
             raise HTTPException(status_code=422, detail="来源消息与来源 AI 运行不对应")
 
@@ -767,39 +783,38 @@ async def _create_task_draft_locked(
     workspace = _require_task_workspace(workspace_id)
     task_store = WorkbenchTaskStore(settings.data_path / "workbench" / "workflows.db")
     link_store = AIWorkbenchLinkStore()
-    if body.source_message_id or body.source_ai_run_id:
-        for existing_link in await link_store.list_links(
-            conversation_id=conversation_id,
-            relation_type="task_created_from_ai",
+    for existing_link in await link_store.list_links(
+        conversation_id=conversation_id,
+        relation_type="task_created_from_ai",
+    ):
+        metadata = (
+            existing_link.get("metadata")
+            if isinstance(existing_link.get("metadata"), dict)
+            else {}
+        )
+        if (
+            str(existing_link.get("message_id") or "") == str(body.source_message_id or "")
+            and str(existing_link.get("ai_run_id") or "") == str(body.source_ai_run_id or "")
+            and str(metadata.get("workflow_id") or "") == workflow_id
+            and str(metadata.get("workflow_version_id") or "") == version_id
         ):
-            metadata = (
-                existing_link.get("metadata")
-                if isinstance(existing_link.get("metadata"), dict)
-                else {}
-            )
-            if (
-                str(existing_link.get("message_id") or "") == str(body.source_message_id or "")
-                and str(existing_link.get("ai_run_id") or "") == str(body.source_ai_run_id or "")
-                and str(metadata.get("workflow_id") or "") == workflow_id
-                and str(metadata.get("workflow_version_id") or "") == version_id
-            ):
-                try:
-                    existing_task = task_store.get_task(
-                        str(existing_link.get("task_id") or "")
-                    )
-                except KeyError:
-                    continue
-                response.status_code = status.HTTP_200_OK
-                missing_inputs = _task_draft_missing_inputs(version.compiled_definition)
-                return {
-                    "task": {
-                        **asdict(existing_task),
-                        "workspace_name": workspace["name"],
-                        "workflow_name": header.name,
-                    },
-                    "next_required_step": 3 if missing_inputs else 4,
-                    "missing_inputs": missing_inputs,
-                }
+            try:
+                existing_task = task_store.get_task(
+                    str(existing_link.get("task_id") or "")
+                )
+            except KeyError:
+                continue
+            response.status_code = status.HTTP_200_OK
+            missing_inputs = _task_draft_missing_inputs(version.compiled_definition)
+            return {
+                "task": {
+                    **asdict(existing_task),
+                    "workspace_name": workspace["name"],
+                    "workflow_name": header.name,
+                },
+                "next_required_step": 3 if missing_inputs else 4,
+                "missing_inputs": missing_inputs,
+            }
     description_parts = []
     if source_message:
         description_parts.append(str(source_message.get("content") or "").strip())
