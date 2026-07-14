@@ -319,7 +319,8 @@ def list_agent_runtimes_sync(
                 params,
             ).fetchall()
     except sqlite3.OperationalError as exc:
-        if "no such table" in str(exc).lower():
+        message = str(exc).lower()
+        if "no such table" in message or "unable to open database file" in message:
             return []
         raise
     return [_runtime_from_row(row) for row in rows]

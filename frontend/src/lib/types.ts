@@ -1087,6 +1087,15 @@ export interface WorkbenchRunUiSummary {
     failed_node_id?: string;
     reasons?: string[];
     can_retry?: boolean;
+    user_goal_stage?: string;
+    preserved_node_ids?: string[];
+    preserved_node_labels?: string[];
+    rerun_node_ids?: string[];
+    rerun_node_labels?: string[];
+    reuse_node_ids?: string[];
+    reuse_node_labels?: string[];
+    failure_class?: "configuration" | "runtime" | string;
+    recommended_action?: string;
     actions?: string[];
   };
   deliverables?: Array<{
@@ -1113,7 +1122,18 @@ export interface WorkbenchRunUiNodeSummary {
   executor_label?: string;
   method?: string;
   user_message?: string;
+  goal?: string;
+  why?: string;
+  depends_on?: string[];
+  dependency_labels?: string[];
+  next_node_ids?: string[];
+  next_node_labels?: string[];
+  started_at?: string;
+  completed_at?: string;
+  duration_ms?: number;
+  active_tools?: string[];
   inputs?: Array<{ id: string; role?: string; type?: string }>;
+  received_inputs?: Array<{ id: string; role?: string; type?: string; value_summary?: string }>;
   mcp_profiles?: string[];
   mcp_availability?: {
     status?: string;
@@ -1304,6 +1324,27 @@ export interface AIConversationRun {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+  execution_mode?: "free_qa" | "workflow_constraint" | "task_run_review" | "legacy" | string;
+  runtime_type?: string;
+  agent_runtime_id?: string | null;
+  runtime_snapshot?: {
+    recorded?: boolean;
+    status?: string;
+    label?: string;
+    id?: string;
+    name?: string;
+    provider?: string;
+    prompt_transport?: string;
+    session_mode?: string;
+  };
+  workflow_binding_snapshot?: Record<string, unknown>;
+  skills_snapshot?: string[];
+  mcp_snapshot?: string[];
+  context_summary?: Record<string, unknown>;
+  artifact_contract?: Record<string, unknown>;
+  metrics?: Record<string, unknown>;
+  queue_position?: number;
+  timeline?: AIRunEvent[];
 }
 
 export interface AIAgentRuntimeEventPayload extends Record<string, unknown> {
@@ -1366,6 +1407,20 @@ export interface AIRunEvent {
   event_kind?: string;
   payload: AIAgentRuntimeEventPayload;
   created_at: string;
+  timeline?: {
+    id: string;
+    time: string;
+    category: "source_read" | "tool_call" | "artifact" | "quality" | "status" | "error" | string;
+    title: string;
+    summary: string;
+    status: "running" | "success" | "warning" | "failed" | string;
+    duration_ms: number;
+    node_id: string;
+    artifact_ref: string;
+    source_ref: string;
+    diagnostic_ref: string;
+    tool_pair_id?: string;
+  };
 }
 
 /* ── Analysis plan / scope preview (workspace analysis modal) ── */

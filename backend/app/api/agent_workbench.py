@@ -513,17 +513,46 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
         ): item
         for item in outputs
     }
+    steps = [
+        step for step in workflow.get("steps") or []
+        if isinstance(step, dict)
+    ]
+    compiled_plan = (
+        task_run.task_bundle.get("compiled_plan")
+        if isinstance(task_run.task_bundle, dict)
+        and isinstance(task_run.task_bundle.get("compiled_plan"), dict)
+        else {}
+    )
+    plan_nodes = {
+        str(item.get("node_id") or ""): item
+        for item in compiled_plan.get("nodes") or []
+        if isinstance(item, dict) and str(item.get("node_id") or "")
+    }
+    event_context = _task_run_ui_event_context(task_root)
+    step_labels = {
+        str(step.get("id") or ""): str(step.get("name") or step.get("label") or step.get("id") or "")
+        for step in steps
+    }
+    next_by_step: dict[str, list[str]] = {}
+    for node_id, plan_node in plan_nodes.items():
+        for dependency in plan_node.get("depends_on") or []:
+            dependency_id = str(dependency or "")
+            if dependency_id:
+                next_by_step.setdefault(dependency_id, []).append(node_id)
     nodes = [
         _task_run_ui_node_summary(
             task_run=task_run,
             task_root=task_root,
             step=step,
+            plan_node=plan_nodes.get(str(step.get("id") or ""), {}),
+            next_node_ids=next_by_step.get(str(step.get("id") or ""), []),
+            step_labels=step_labels,
+            event_context=event_context.get(str(step.get("id") or ""), {}),
             workflow_contract=contract,
             step_result=step_results.get(str(step.get("id") or "")),
             output_by_key=output_by_key,
         )
-        for step in workflow.get("steps") or []
-        if isinstance(step, dict)
+        for step in steps
     ]
     active_step_id = _task_run_ui_active_step_id(task_root)
     if active_step_id:
@@ -560,6 +589,12 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
     waiting_node = next((node for node in nodes if node.get("status_label") == "等待运行"), None)
     current_node = failed_node or running_node or waiting_node or (nodes[-1] if nodes else {})
     failure_reasons = _task_run_ui_failure_reasons(failed_node)
+    preserved_nodes = [node for node in nodes if node.get("status_label") == "已完成"]
+    rerun_nodes = [
+        node for node in nodes
+        if node.get("status_label") in {"运行失败", "等待运行", "运行中断"}
+    ]
+    failure_class = _task_run_ui_failure_class(failure_reasons)
     return {
         "status": status["status"],
         "status_label": status["label"],
@@ -580,6 +615,19 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
             "failed_node_id": str((failed_node or {}).get("id") or ""),
             "reasons": failure_reasons,
             "can_retry": bool(failed_node),
+            "user_goal_stage": str((failed_node or {}).get("label") or ""),
+            "preserved_node_ids": [str(node.get("id") or "") for node in preserved_nodes],
+            "preserved_node_labels": [str(node.get("label") or "") for node in preserved_nodes],
+            "rerun_node_ids": [str(node.get("id") or "") for node in rerun_nodes],
+            "rerun_node_labels": [str(node.get("label") or "") for node in rerun_nodes],
+            "reuse_node_ids": [str(node.get("id") or "") for node in preserved_nodes],
+            "reuse_node_labels": [str(node.get("label") or "") for node in preserved_nodes],
+            "failure_class": failure_class,
+            "recommended_action": (
+                "检查任务输入或工作流输出契约，保存后再创建新 Attempt。"
+                if failure_class == "configuration"
+                else "保留已完成上游结果，从失败节点创建新 Attempt 重试。"
+            ),
             "actions": (
                 ["从失败节点重试", "查看内部诊断", "编辑工作流输出契约"]
                 if failed_node
@@ -626,6 +674,10 @@ def _task_run_ui_node_summary(
     task_run: Any,
     task_root: Path,
     step: dict[str, Any],
+    plan_node: dict[str, Any],
+    next_node_ids: list[str],
+    step_labels: dict[str, str],
+    event_context: dict[str, Any],
     workflow_contract: dict[str, Any],
     step_result: dict[str, Any] | None,
     output_by_key: dict[tuple[str, str, str], dict[str, Any]],
@@ -643,6 +695,29 @@ def _task_run_ui_node_summary(
         step=step,
         step_result=step_result or {},
     )
+    dependencies = [
+        str(item) for item in plan_node.get("depends_on") or step.get("depends_on") or []
+        if str(item)
+    ]
+    goal = str(
+        step.get("goal")
+        or (plan_node.get("config") or {}).get("goal")
+        or step.get("description")
+        or f"完成 {step.get('name') or step_id}"
+    ).strip()
+    input_rows = _task_run_ui_step_inputs(
+        workflow_contract=workflow_contract,
+        execution_contract=execution_contract,
+    )
+    received_inputs = [
+        {
+            **input_row,
+            "value_summary": _task_run_ui_input_value_summary(
+                task_run.input_snapshot.get(input_row["id"])
+            ),
+        }
+        for input_row in input_rows
+    ]
     return {
         "id": step_id,
         "label": str(step.get("name") or step_id),
@@ -654,10 +729,22 @@ def _task_run_ui_node_summary(
         "executor_label": execution_metadata["executor_label"],
         "method": execution_metadata["method"],
         "user_message": execution_metadata["user_message"],
-        "inputs": _task_run_ui_step_inputs(
-            workflow_contract=workflow_contract,
-            execution_contract=execution_contract,
-        ),
+        "goal": goal,
+        "why": str(step.get("why") or step.get("description") or (
+            "消费上游节点结果并完成当前工作流阶段。"
+            if dependencies
+            else "这是工作流的起始阶段，用于建立后续节点所需的输入和证据。"
+        )),
+        "depends_on": dependencies,
+        "dependency_labels": [step_labels.get(item, item) for item in dependencies],
+        "next_node_ids": next_node_ids,
+        "next_node_labels": [step_labels.get(item, item) for item in next_node_ids],
+        "started_at": str(event_context.get("started_at") or ""),
+        "completed_at": str(event_context.get("completed_at") or ""),
+        "duration_ms": int(event_context.get("duration_ms") or 0),
+        "active_tools": [str(item) for item in event_context.get("tools") or []],
+        "inputs": input_rows,
+        "received_inputs": received_inputs,
         "mcp_profiles": _task_run_ui_step_mcp_profiles(
             step=step,
             execution_contract=execution_contract,
@@ -677,6 +764,94 @@ def _task_run_ui_node_summary(
         ),
         "review_reasons": _task_run_ui_step_review_reasons(step_result=step_result or {}),
     }
+
+
+def _task_run_ui_event_context(task_root: Path) -> dict[str, dict[str, Any]]:
+    path = task_root / "task_run_events.jsonl"
+    if not path.is_file():
+        return {}
+    result: dict[str, dict[str, Any]] = {}
+    try:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return {}
+    for line in lines:
+        try:
+            event = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        step_id = str(payload.get("step_id") or payload.get("node_id") or "")
+        if not step_id:
+            continue
+        context = result.setdefault(step_id, {"tools": []})
+        event_type = str(event.get("event_type") or "")
+        timestamp = str(event.get("created_at") or event.get("timestamp") or "")
+        if event_type in {"step_started", "node_started"} and timestamp:
+            context.setdefault("started_at", timestamp)
+        if event_type in {"step_completed", "step_failed", "step_cancelled", "node_completed", "node_failed"} and timestamp:
+            context["completed_at"] = timestamp
+        kind = str(event.get("event_kind") or payload.get("kind") or "")
+        if kind in {"tool_use", "tool_result"}:
+            tool = str(payload.get("tool") or payload.get("name") or "").strip()
+            if tool and tool not in context["tools"]:
+                context["tools"].append(tool)
+    for context in result.values():
+        started = _task_run_ui_parse_time(str(context.get("started_at") or ""))
+        completed = _task_run_ui_parse_time(str(context.get("completed_at") or ""))
+        if started and completed and completed >= started:
+            context["duration_ms"] = int((completed - started).total_seconds() * 1000)
+    return result
+
+
+def _task_run_ui_parse_time(value: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def _task_run_ui_input_value_summary(value: Any) -> str:
+    if value in (None, "", [], {}):
+        return "未提供"
+    if isinstance(value, dict):
+        kind = str(value.get("kind") or "")
+        if kind == "file":
+            candidate = str(value.get("filename") or value.get("name") or value.get("copied_path") or value.get("original_path") or "")
+            return Path(candidate).name if candidate else "已提供文件"
+        if kind == "file_set":
+            files = [item for item in value.get("files") or [] if isinstance(item, dict)]
+            names = [
+                Path(str(item.get("filename") or item.get("name") or item.get("copied_path") or item.get("original_path") or "")).name
+                for item in files
+            ]
+            return "、".join(item for item in names if item) or f"{len(files)} 个文件"
+        return "已提供结构化输入"
+    if isinstance(value, list):
+        return f"{len(value)} 项：" + "、".join(_task_run_ui_input_value_summary(item) for item in value[:3])
+    text = str(value).strip()
+    if not text:
+        return "未提供"
+    if Path(text).is_absolute():
+        return Path(text).name or "已选择工作空间"
+    return text if len(text) <= 160 else f"{text[:157]}..."
+
+
+def _task_run_ui_failure_class(reasons: list[str]) -> str:
+    text = " ".join(reasons).lower()
+    configuration_markers = (
+        "缺少交付文件",
+        "输出契约",
+        "missing artifact",
+        "schema",
+        "输入",
+        "配置",
+    )
+    return "configuration" if any(marker in text for marker in configuration_markers) else "runtime"
 
 
 def _task_run_ui_workflow_execution_metadata(workflow: dict[str, Any]) -> dict[str, str]:
@@ -7818,8 +7993,12 @@ def _write_task_rerun_execution_artifacts(
     task_run_id = str(result.get("execution", {}).get("task_run_id") or "")
     rerun_id = f"{task_run_id}_rerun_{sequence}"
     relative_artifact_path = f"task_reruns/{rerun_id}/task_rerun_execution.json"
+    persisted_result = {
+        key: value for key, value in result.items()
+        if key != "run_ui_summary"
+    }
     payload = {
-        **result,
+        **persisted_result,
         "rerun_id": rerun_id,
         "sequence": sequence,
         "recorded_at": datetime.now(timezone.utc).isoformat(),

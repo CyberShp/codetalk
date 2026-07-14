@@ -5608,19 +5608,18 @@ async def test_bound_workflow_contract_reaches_builtin_and_agent_prompts_without
 
     for prompt in (builtin_prompt, agent_prompt):
         assert user_text in prompt
-        assert "BOUND_WORKFLOW_EXECUTION_CONTRACT" in prompt
+        assert "WORKFLOW_CONSTRAINT_ANSWER_CONTRACT" in prompt
         assert "source_analysis" in prompt
         assert "gitnexus+cgc" in prompt
         assert "source-evidence-first" in prompt
         assert "test_design.md" in prompt
-        assert "按依赖顺序执行所有节点" in prompt
-    assert merged_runtime["mcp_profile"] == "existing+gitnexus+cgc"
-    assert merged_runtime["skills"] == [
-        "base-skill",
-        "source-evidence-first",
-        "storage-test-design",
-    ]
-    assert merged_runtime["env"]["CODETALK_BOUND_WORKFLOW_ID"] == "thread_bound_flow"
+        assert "不创建 Task、不创建 Run Attempt、不执行 DAG" in prompt
+        assert "不宣称已运行工作流" in prompt
+    assert merged_runtime == {
+        "id": "codex",
+        "mcp_profile": "existing",
+        "skills": ["base-skill"],
+    }
 
 
 async def test_bound_workflow_missing_builtin_artifact_fails_closed(

@@ -355,6 +355,34 @@ def _published_workflow(data_dir, *, workflow_id="ai-task-flow"):
     return header, published
 
 
+async def test_new_ai_workflow_binding_freezes_current_published_version(sqlite_db):
+    from app.config import settings
+    from tests.test_ai_conversations import _test_app
+
+    header, published = _published_workflow(
+        settings.data_path,
+        workflow_id="ai-binding-pin",
+    )
+    app = _test_app(sqlite_db)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/ai/conversations",
+            json={
+                "scope_type": "workspace",
+                "scope_id": "ws-binding-pin",
+                "workspace_id": "ws-binding-pin",
+                "title": "Pinned binding",
+                "initial_context": {"selected_workflow_id": header.workflow_id},
+            },
+        )
+
+    assert response.status_code == 201, response.text
+    context = response.json()["initial_context"]
+    assert context["selected_workflow_version_id"] == published.version_id
+    assert context["workflow_binding_snapshot"]["workflow_version_id"] == published.version_id
+    assert context["workflow_binding_snapshot"]["mode"] == "constraint_answer"
+
+
 async def test_ai_thread_creates_fixed_published_task_draft_and_origin_link(sqlite_db):
     from app.config import settings
     from app.services.ai_conversations import AIConversationStore
@@ -578,6 +606,124 @@ async def test_duplicate_queue_kick_spawns_once_and_then_advances(sqlite_db, mon
     ]
 
 
+async def test_two_concurrent_message_posts_spawn_only_one_agent_at_a_time(sqlite_db, monkeypatch):
+    import asyncio
+
+    from app.api import ai_conversations as ai_api
+    from app.services.ai_conversations import AIConversationStore
+    from tests.test_ai_conversations import _test_app
+
+    store = AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="workspace",
+        scope_id="ws-concurrent-post",
+        workspace_id="ws-concurrent-post",
+        title="Concurrent posts",
+        runtime_type="agent_runtime",
+        agent_runtime_id="runtime-concurrent",
+    )
+    started: list[str] = []
+    first_started = asyncio.Event()
+    release_first = asyncio.Event()
+    all_done = asyncio.Event()
+
+    async def fake_get_runtime(_self, _runtime_id):
+        return {
+            "id": "runtime-concurrent",
+            "name": "Codex Concurrent",
+            "provider": "codex",
+            "enabled": True,
+            "prompt_transport": "stdin",
+        }
+
+    async def fake_agent_run(*, store, run_id, runtime):
+        started.append(run_id)
+        if len(started) == 1:
+            first_started.set()
+            await release_first.wait()
+        await store.complete_run(run_id=run_id, content=f"answer {len(started)}", references=[])
+        if len(started) == 2:
+            all_done.set()
+
+    monkeypatch.setattr(ai_api.AgentRuntimeStore, "get_runtime", fake_get_runtime)
+    monkeypatch.setattr(ai_api, "run_agent_generation", fake_agent_run)
+
+    app = _test_app(sqlite_db)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first_response, second_response = await asyncio.gather(
+            client.post(f"/api/ai/conversations/{conversation['id']}/messages", json={"content": "first"}),
+            client.post(f"/api/ai/conversations/{conversation['id']}/messages", json={"content": "second"}),
+        )
+        assert first_response.status_code == 202, first_response.text
+        assert second_response.status_code == 202, second_response.text
+        await asyncio.wait_for(first_started.wait(), timeout=1)
+        await asyncio.sleep(0.03)
+        runs = await store.list_runs(conversation["id"])
+        assert sorted(run["status"] for run in runs) == ["queued", "running"]
+        assert len(started) == 1
+
+        release_first.set()
+        await asyncio.wait_for(all_done.wait(), timeout=1)
+
+    assert len(started) == 2
+    assert len(set(started)) == 2
+    assert [run["status"] for run in await store.list_runs(conversation["id"])] == [
+        "completed",
+        "completed",
+    ]
+
+
+async def test_agent_spawn_failure_advances_conversation_queue(sqlite_db, monkeypatch):
+    import asyncio
+
+    from app.api import ai_conversations as ai_api
+    from app.services.ai_conversations import AIConversationStore
+
+    store = AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="workspace",
+        scope_id="ws-spawn-failure",
+        workspace_id="ws-spawn-failure",
+        title="Spawn failure",
+        runtime_type="agent_runtime",
+        agent_runtime_id="runtime-spawn-failure",
+    )
+    for content in ("first", "second"):
+        await store.create_user_message_and_run(
+            conversation_id=conversation["id"],
+            content=content,
+            references=[],
+            run_snapshot={
+                "runtime_type": "agent_runtime",
+                "agent_runtime_id": "runtime-spawn-failure",
+                "runtime_snapshot": {"recorded": True, "name": "Codex", "provider": "codex"},
+            },
+        )
+
+    attempts: list[str] = []
+    completed = asyncio.Event()
+
+    async def fake_get_runtime(_self, _runtime_id):
+        return {"id": "runtime-spawn-failure", "name": "Codex", "provider": "codex", "enabled": True}
+
+    async def fake_agent_run(*, store, run_id, runtime):
+        attempts.append(run_id)
+        if len(attempts) == 1:
+            raise RuntimeError("spawn failed")
+        await store.complete_run(run_id=run_id, content="second completed", references=[])
+        completed.set()
+
+    monkeypatch.setattr(ai_api.AgentRuntimeStore, "get_runtime", fake_get_runtime)
+    monkeypatch.setattr(ai_api, "run_agent_generation", fake_agent_run)
+
+    ai_api.kick_conversation_queue(conversation["id"])
+    await asyncio.wait_for(completed.wait(), timeout=1)
+
+    runs = await store.list_runs(conversation["id"])
+    assert [run["status"] for run in runs] == ["failed", "completed"]
+    assert len(attempts) == 2
+
+
 async def test_retry_preserves_source_run_execution_snapshot(sqlite_db):
     from app.services.ai_conversations import AIConversationStore
 
@@ -627,3 +773,185 @@ async def test_retry_preserves_source_run_execution_snapshot(sqlite_db):
     assert run["workflow_binding_snapshot"]["workflow_version_id"] == "wfv-frozen"
     assert run["skills_snapshot"] == ["storage-test"]
     assert run["mcp_snapshot"] == ["gitnexus"]
+
+
+async def test_run_cockpit_bridge_reuses_ai_thread_and_keeps_context_public(sqlite_db):
+    import json
+    from dataclasses import asdict
+
+    from app.config import settings
+    from app.services.ai_workbench_links import AIWorkbenchLinkStore
+    from app.services.workbench_task_run import PreparedWorkbenchTaskRun
+    from app.services.workbench_task_store import WorkbenchTaskStore
+    from tests.test_ai_conversations import _test_app
+
+    workspace_id = "ws-run-ai-bridge"
+    async with aiosqlite.connect(sqlite_db) as db:
+        await db.execute(
+            "INSERT INTO workspaces (id, name, repo_path, indexed, created_at, updated_at) "
+            "VALUES (?, 'SPDK', '/private/repositories/spdk', 1, '2026-01-01', '2026-01-01')",
+            (workspace_id,),
+        )
+        await db.commit()
+    header, published = _published_workflow(
+        settings.data_path,
+        workflow_id="run-ai-bridge-flow",
+    )
+    task = WorkbenchTaskStore(
+        settings.data_path / "workbench" / "workflows.db"
+    ).create_task(
+        name="iSCSI Login SFMEA",
+        workspace_id=workspace_id,
+        workflow_id=header.workflow_id,
+        workflow_version_id=published.version_id,
+        lifecycle_status="ready",
+    )
+    run = PreparedWorkbenchTaskRun(
+        task_run_id="task_run_ai_bridge",
+        task_id=task.task_id,
+        attempt_number=2,
+        parent_task_run_id="task_run_parent",
+        workflow_id=header.workflow_id,
+        workspace_id=workspace_id,
+        repo_path="/private/repositories/spdk",
+        artifact_dir="/private/artifacts/task_run_ai_bridge",
+        workflow_snapshot={"id": header.workflow_id, "name": header.name, "version": 1},
+        input_snapshot={},
+        task_bundle={"workflow_version_id": published.version_id},
+        execution_status="failed",
+        quality_status="blocked",
+        delivery_status="partial",
+    )
+    run_dir = settings.data_path / "workbench" / "task_runs" / run.task_run_id
+    run_dir.mkdir(parents=True)
+    (run_dir / "task_run.json").write_text(json.dumps(asdict(run)), encoding="utf-8")
+
+    app = _test_app(sqlite_db)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post(
+            f"/api/ai/conversations/from-task-run/{run.task_run_id}"
+        )
+        second = await client.post(
+            f"/api/ai/conversations/from-task-run/{run.task_run_id}"
+        )
+
+    assert first.status_code == 201, first.text
+    assert second.status_code == 200, second.text
+    assert first.json()["conversation"]["id"] == second.json()["conversation"]["id"]
+    assert first.json()["created"] is True
+    assert second.json()["created"] is False
+    context = first.json()["conversation"]["initial_context"]
+    assert context["task_id"] == task.task_id
+    assert context["task_run_id"] == run.task_run_id
+    assert context["attempt_number"] == 2
+    assert context["workflow_version_id"] == published.version_id
+    assert context["artifact_manifest_ref"]["task_run_id"] == run.task_run_id
+    serialized = json.dumps(context, ensure_ascii=False)
+    assert "/private/repositories" not in serialized
+    assert "/private/artifacts" not in serialized
+
+    links = await AIWorkbenchLinkStore(sqlite_db).list_links(task_run_id=run.task_run_id)
+    assert len(links) == 1
+    assert links[0]["relation_type"] == "run_discussed_by_ai"
+
+
+async def test_agent_run_coordinator_enforces_global_and_provider_capacity():
+    import asyncio
+
+    from app.services.agent_run_coordinator import AgentRunCoordinator
+
+    coordinator = AgentRunCoordinator(
+        max_global_agent_processes=2,
+        max_processes_per_provider=1,
+    )
+    codex_one_entered = asyncio.Event()
+    release_codex_one = asyncio.Event()
+    codex_two_entered = asyncio.Event()
+    claude_entered = asyncio.Event()
+    queued: list[dict[str, object]] = []
+
+    async def hold_codex_one():
+        async with coordinator.slot("codex"):
+            codex_one_entered.set()
+            await release_codex_one.wait()
+
+    async def hold_codex_two():
+        async with coordinator.slot("codex", on_queued=queued.append):
+            codex_two_entered.set()
+
+    async def hold_claude():
+        async with coordinator.slot("claude"):
+            claude_entered.set()
+
+    first = asyncio.create_task(hold_codex_one())
+    await asyncio.wait_for(codex_one_entered.wait(), timeout=1)
+    second = asyncio.create_task(hold_codex_two())
+    await asyncio.sleep(0.03)
+    third = asyncio.create_task(hold_claude())
+    await asyncio.wait_for(claude_entered.wait(), timeout=1)
+
+    assert not codex_two_entered.is_set()
+    assert queued == [
+        {
+            "active_process_count": 1,
+            "global_queue_position": 1,
+            "provider_queue_position": 1,
+            "queued_reason": "等待 Codex 执行槽位，前方 0 个任务。",
+            "provider": "codex",
+        }
+    ]
+    snapshot = await coordinator.snapshot()
+    assert snapshot["active_process_count"] == 1
+    assert snapshot["active_by_provider"] == {"codex": 1}
+
+    release_codex_one.set()
+    await asyncio.wait_for(codex_two_entered.wait(), timeout=1)
+    await asyncio.gather(first, second, third)
+    assert (await coordinator.snapshot())["active_process_count"] == 0
+
+
+async def test_public_timeline_pairs_tools_and_exposes_user_facing_categories(sqlite_db):
+    from app.services.ai_conversations import AIConversationStore
+
+    store = AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="workspace",
+        scope_id="ws-public-timeline",
+        workspace_id="ws-public-timeline",
+        title="Public timeline",
+    )
+    created = await store.create_user_message_and_run(
+        conversation_id=conversation["id"],
+        content="read source",
+        references=[],
+    )
+    run_id = created["run"]["id"]
+    await store.append_event(
+        run_id=run_id,
+        conversation_id=conversation["id"],
+        event_type="delta",
+        payload={"kind": "diagnostic", "content": "读取源码 lib/nvmf/tcp.c:L320-L480"},
+    )
+    await store.append_event(
+        run_id=run_id,
+        conversation_id=conversation["id"],
+        event_type="tool_use",
+        payload={"tool": "GitNexus", "call_id": "call-1", "message": "查询 reconnect 路径"},
+    )
+    await store.append_event(
+        run_id=run_id,
+        conversation_id=conversation["id"],
+        event_type="tool_result",
+        payload={"tool": "GitNexus", "call_id": "call-1", "message": "返回 18 个符号"},
+    )
+
+    events = await store.list_events_for_run(conversation["id"], run_id)
+    source, tool_use, tool_result = events[-3:]
+    assert source["timeline"]["category"] == "source_read"
+    assert source["timeline"]["title"] == "读取源码"
+    assert source["timeline"]["source_ref"] == "lib/nvmf/tcp.c:L320-L480"
+    assert tool_use["timeline"]["category"] == "tool_call"
+    assert tool_use["timeline"]["title"] == "调用 GitNexus"
+    assert tool_result["timeline"]["title"] == "GitNexus 返回结果"
+    assert tool_use["timeline"]["tool_pair_id"] == tool_result["timeline"]["tool_pair_id"]
+    assert tool_result["timeline"]["status"] == "success"

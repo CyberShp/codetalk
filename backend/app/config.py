@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     external_agent_timeout_sec: int = 90
     external_agent_startup_probe_timeout_sec: int = 30
     external_agent_max_parallel: int = 2
+    max_global_agent_processes: int = Field(default=2, ge=1, le=64)
+    max_processes_per_provider: int = Field(default=1, ge=1, le=32)
+    agent_provider_process_limits: dict[str, int] = Field(default_factory=dict)
     external_agent_max_output_chars: int = 120000
     external_agent_enforce_readonly_cli: bool = True
     external_agent_sandbox_mode: str = "auto"  # auto | required | off

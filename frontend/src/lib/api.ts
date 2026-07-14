@@ -773,6 +773,12 @@ export const api = {
       return matchingDefaultThread ?? api.aiConversations.create(data);
     },
 
+    openForTaskRun: (taskRunId: string) =>
+      request<{ conversation: AIConversation; created: boolean; link: Record<string, unknown> }>(
+        `/api/ai/conversations/from-task-run/${encodeURIComponent(taskRunId)}`,
+        { method: "POST" },
+      ),
+
     update: (id: string, data: { runtime_type: "builtin_llm" | "agent_runtime"; agent_runtime_id?: string | null }) =>
       request<AIConversation>(`/api/ai/conversations/${encodeURIComponent(id)}`, {
         method: "PATCH",
@@ -792,6 +798,31 @@ export const api = {
         `/api/ai/conversations/${encodeURIComponent(id)}/messages`,
         { cache: "no-store" },
       ),
+
+    runs: (id: string, limit = 200) =>
+      request<{ items: AIConversationRun[] }>(
+        `/api/ai/conversations/${encodeURIComponent(id)}/runs?limit=${limit}&include_timeline=true&timeline_limit=50`,
+        { cache: "no-store" },
+      ),
+
+    createTaskDraft: (
+      id: string,
+      data: {
+        source_message_id?: string;
+        source_ai_run_id?: string;
+        workflow_id?: string;
+        workflow_version_id?: string;
+        mode?: "draft";
+      },
+    ) =>
+      request<{
+        task: { task_id: string } & Record<string, unknown>;
+        next_required_step: number;
+        missing_inputs: Array<{ id: string; label: string; type: string }>;
+      }>(`/api/ai/conversations/${encodeURIComponent(id)}/task-drafts`, {
+        method: "POST",
+        body: JSON.stringify(data),
+      }),
 
     events: (
       id: string,

@@ -51,6 +51,7 @@ from app.services.test_activity_contract import (
 )
 from app.services.workflow_dsl import WorkflowStore
 from app.services.workflow_presets import get_workflow_preset
+from app.services.workflow_version_store import WorkflowVersionStore
 
 logger = logging.getLogger(__name__)
 
@@ -1092,7 +1093,14 @@ class AIConversationStore:
         )
         return await self.get_run(claimed_id)
 
-    async def list_runs(self, conversation_id: str, *, limit: int = 200) -> list[dict[str, Any]]:
+    async def list_runs(
+        self,
+        conversation_id: str,
+        *,
+        limit: int = 200,
+        include_timeline: bool = False,
+        timeline_limit: int = 50,
+    ) -> list[dict[str, Any]]:
         async with self._connect() as db:
             async with db.execute(
                 """
@@ -1109,7 +1117,16 @@ class AIConversationStore:
                 run = _run_from_row(row)
                 run["queue_position"] = await self._queue_position_for_run_row(db, row)
                 result.append(run)
-            return result
+        if include_timeline:
+            capped_timeline_limit = max(1, min(timeline_limit, 100))
+            for run in result:
+                run["timeline"] = await self.list_events_for_run(
+                    conversation_id,
+                    str(run["id"]),
+                    limit=capped_timeline_limit,
+                    process_only=True,
+                )
+        return result
 
     async def get_message(self, message_id: str) -> dict[str, Any]:
         async with self._connect() as db:
@@ -1270,6 +1287,28 @@ class AIConversationStore:
             "created_at": now,
         }
 
+    async def update_run_metrics(self, run_id: str, **changes: Any) -> dict[str, Any]:
+        async with self._connect() as db:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute(
+                "SELECT metrics_json FROM ai_conversation_runs WHERE id = ?",
+                (run_id,),
+            ) as cur:
+                row = await cur.fetchone()
+            if row is None:
+                await db.rollback()
+                raise KeyError(run_id)
+            metrics = _json_loads(row["metrics_json"], {})
+            if not isinstance(metrics, dict):
+                metrics = {}
+            metrics.update(changes)
+            await db.execute(
+                "UPDATE ai_conversation_runs SET metrics_json = ? WHERE id = ?",
+                (_json_dumps(metrics), run_id),
+            )
+            await db.commit()
+        return metrics
+
     async def list_events_after(
         self,
         conversation_id: str,
@@ -1357,6 +1396,18 @@ class AIConversationStore:
             redact_agent_diagnostic_text(content),
             enriched_references,
         )
+        resolved_actions = actions or _default_actions()
+        run_metrics = dict(run.get("metrics") or {})
+        run_metrics.update({
+            "duration_ms": _elapsed_milliseconds(run.get("started_at") or run.get("created_at"), now),
+            "evidence_count": len(enriched_references),
+            "artifact_count": sum(
+                1 for action in resolved_actions
+                if isinstance(action, dict)
+                and (str(action.get("href") or "") or str(action.get("kind") or "") in {"artifact", "download"})
+            ),
+            "quality_status": _assistant_quality_status(resolved_actions),
+        })
         async with self._connect() as db:
             await db.execute("BEGIN IMMEDIATE")
             async with db.execute(
@@ -1379,17 +1430,17 @@ class AIConversationStore:
                     run_id,
                     safe_content,
                     _json_dumps(enriched_references),
-                    _json_dumps(actions or _default_actions()),
+                    _json_dumps(resolved_actions),
                     now,
                 ),
             )
             await db.execute(
                 """
                 UPDATE ai_conversation_runs
-                SET status = 'completed', completed_at = ?, model = ?, token_usage_json = ?
+                SET status = 'completed', completed_at = ?, model = ?, token_usage_json = ?, metrics_json = ?
                 WHERE id = ?
                 """,
-                (now, model, _json_dumps(token_usage or {}), run_id),
+                (now, model, _json_dumps(token_usage or {}), _json_dumps(run_metrics), run_id),
             )
             await db.execute(
                 "UPDATE ai_conversations SET status = 'idle', updated_at = ? WHERE id = ?",
@@ -1413,14 +1464,19 @@ class AIConversationStore:
     ) -> None:
         run = await self.get_run(run_id)
         now = _now()
+        run_metrics = dict(run.get("metrics") or {})
+        run_metrics.update({
+            "duration_ms": _elapsed_milliseconds(run.get("started_at") or run.get("created_at"), now),
+            "quality_status": "failed",
+        })
         async with self._connect() as db:
             updated = await db.execute(
                 """
                 UPDATE ai_conversation_runs
-                SET status = 'failed', error = ?, completed_at = ?
+                SET status = 'failed', error = ?, completed_at = ?, metrics_json = ?
                 WHERE id = ? AND status IN ('queued', 'running')
                 """,
-                (error, now, run_id),
+                (error, now, _json_dumps(run_metrics), run_id),
             )
             if updated.rowcount == 0:
                 await db.rollback()
@@ -1879,6 +1935,7 @@ async def run_generation(
         references,
         user_message["content"],
         quality_retry_feedback=quality_retry_feedback,
+        legacy_workflow_artifacts=_legacy_bound_workflow_artifact_mode(run),
     )
     chunks: list[str] = []
     artifact_stream_notice_sent = False
@@ -2071,23 +2128,26 @@ async def run_generation(
                 "请点击重试，或使用“代码分析 → 流程梳理 → SFMEA → 黑盒用例”工作流分步生成。",
             )
             return
-        content, bound_artifacts_materialized = await _materialize_bound_workflow_builtin_artifacts(
-            conversation=conversation,
-            run_id=run_id,
-            content=content,
-        )
+        bound_artifacts_materialized = False
+        if _legacy_bound_workflow_artifact_mode(run):
+            content, bound_artifacts_materialized = await _materialize_bound_workflow_builtin_artifacts(
+                conversation=conversation,
+                run_id=run_id,
+                content=content,
+            )
         if bound_artifacts_materialized:
             bundled_content = await _agent_thread_artifact_content(
                 ai_thread_agent_artifact_dir(str(conversation["id"]), run_id)
             )
             if bundled_content:
                 content = bundled_content
-        if not await _enforce_bound_workflow_artifacts(
-            store=store,
-            run_id=run_id,
-            conversation=conversation,
-        ):
-            return
+        if _legacy_bound_workflow_artifact_mode(run):
+            if not await _enforce_bound_workflow_artifacts(
+                store=store,
+                run_id=run_id,
+                conversation=conversation,
+            ):
+                return
         if wants_downloadable_artifact and requires_strict_quality_gate:
             repo_path = (
                 await _conversation_repo_path(conversation, db_path=store.db_path)
@@ -2534,12 +2594,13 @@ async def run_agent_generation(
         if agent_artifact_content:
             content = agent_artifact_content
             adopted_agent_artifact = True
-        if not await _enforce_bound_workflow_artifacts(
-            store=store,
-            run_id=run_id,
-            conversation=conversation,
-        ):
-            return
+        if _legacy_bound_workflow_artifact_mode(run):
+            if not await _enforce_bound_workflow_artifacts(
+                store=store,
+                run_id=run_id,
+                conversation=conversation,
+            ):
+                return
         if (
             _agent_task_requests_downloadable_artifact(test_activity_context, content)
             and _requires_strict_test_activity_quality_gate(test_activity_context)
@@ -3540,6 +3601,16 @@ def _selected_workflow_snapshot(conversation: dict[str, Any]) -> dict[str, Any] 
     workflow_id = str(context.get("selected_workflow_id") or "").strip()
     if not workflow_id:
         return None
+    version_id = str(context.get("selected_workflow_version_id") or "").strip()
+    if version_id:
+        try:
+            version = WorkflowVersionStore(
+                settings.data_path / "workbench" / "workflows.db"
+            ).get_version(version_id)
+            if version.workflow_id == workflow_id and version.state == "published":
+                return dict(version.compiled_definition or {})
+        except KeyError:
+            return None
     try:
         preset = get_workflow_preset(workflow_id)
         definition = preset.get("definition")
@@ -3587,10 +3658,12 @@ def _bound_workflow_execution_prompt(conversation: dict[str, Any]) -> str:
         "outputs": project(workflow.get("outputs"), allowed_output_keys),
     }
     return "\n".join([
-        "BOUND_WORKFLOW_EXECUTION_CONTRACT:",
-        "  rule: 本线程已绑定工作流；本轮不是自由问答。必须按依赖顺序执行所有节点，并遵守每个节点声明的 MCP、skills、目标和输出契约。",
+        "WORKFLOW_CONSTRAINT_ANSWER_CONTRACT:",
+        "  mode: 使用工作流约束回答",
+        "  boundary: 本轮不创建 Task、不创建 Run Attempt、不执行 DAG，也不宣称已运行工作流。",
+        "  rule: 仅使用工作流目标、证据策略和输出要求约束本轮回答；各节点声明的 MCP 和 Skills 不会合并进当前执行器。",
         "  input_mapping: 将本轮用户原文完整映射到适用的文本输入；MR 链接、文件路径和输出要求不得遗漏。缺少必填文件时明确指出，禁止假装已读取。",
-        "  delivery: 所有 required_artifacts 和 outputs 都是本轮交付要求；无法生成时必须说明失败节点和可行动原因。",
+        "  delivery: outputs 只定义回答应覆盖的内容；需要真实文件、节点执行和质量门禁时，必须创建任务草稿并在任务向导中运行。",
         "  workflow_json: |",
         *[f"    {line}" for line in json.dumps(contract, ensure_ascii=False, indent=2).splitlines()],
     ])
@@ -3605,9 +3678,13 @@ def _bound_workflow_action(conversation: dict[str, Any]) -> dict[str, Any] | Non
         return None
     workspace_id = _conversation_workspace_id(conversation)
     return {
-        "id": "open_bound_workflow",
-        "label": "查看绑定工作流",
-        "href": f"/workbench?{urlencode({'workflow': workflow_id, 'workspace_id': workspace_id})}",
+        "id": "create_task_draft",
+        "kind": "create_task_draft",
+        "label": "创建任务草稿",
+        "workflow_id": workflow_id,
+        "workflow_version_id": str(context.get("selected_workflow_version_id") or ""),
+        "workspace_id": workspace_id,
+        "notice": "将创建 V2 任务草稿；当前回答本身未运行工作流。",
     }
 
 
@@ -3638,6 +3715,12 @@ def _bound_workflow_required_artifacts(conversation: dict[str, Any]) -> list[dic
         if isinstance(schema, dict):
             contract["schema"] = schema
     return list(contracts.values())
+
+
+def _legacy_bound_workflow_artifact_mode(run: dict[str, Any]) -> bool:
+    """Preserve old runs without turning new constraint answers into workflow execution."""
+
+    return str(run.get("execution_mode") or "legacy") in {"legacy", "free_qa"}
 
 
 def _bound_workflow_builtin_artifact_prompt(conversation: dict[str, Any]) -> str:
@@ -3915,39 +3998,9 @@ def _runtime_with_bound_workflow(
     runtime: dict[str, Any],
     conversation: dict[str, Any],
 ) -> dict[str, Any]:
-    workflow = _selected_workflow_snapshot(conversation)
-    if not workflow:
-        return dict(runtime)
-    agent_steps = [
-        step for step in workflow.get("steps") or []
-        if isinstance(step, dict) and step.get("type") == "agent_task"
-    ]
-    mcp_profiles: list[str] = []
-    skills: list[str] = []
-    for value in [runtime.get("mcp_profile"), *[step.get("mcp_profile") for step in agent_steps]]:
-        for item in str(value or "").split("+"):
-            item = item.strip()
-            if item and item not in mcp_profiles:
-                mcp_profiles.append(item)
-    skill_values = [
-        *(runtime.get("skills") or []),
-        *[skill for step in agent_steps for skill in step.get("skills") or []],
-    ]
-    for value in skill_values:
-        item = str(value or "").strip()
-        if item and item not in skills:
-            skills.append(item)
-    merged = dict(runtime)
-    merged["mcp_profile"] = "+".join(mcp_profiles)
-    merged["skills"] = skills
-    env = dict(merged.get("env") or {})
-    env.update({
-        "CODETALK_BOUND_WORKFLOW_ID": str(workflow.get("id") or ""),
-        "CODETALK_MCP_PROFILE": merged["mcp_profile"],
-        "CODETALK_SKILLS": json.dumps(skills, ensure_ascii=False),
-    })
-    merged["env"] = env
-    return merged
+    # A conversation answer is one runtime turn, not a Workflow DAG execution.
+    # Workflow node capabilities remain owned by the V2 Task runner.
+    return dict(runtime)
 
 
 def _build_prompt(
@@ -3957,6 +4010,7 @@ def _build_prompt(
     user_message: str,
     *,
     quality_retry_feedback: str = "",
+    legacy_workflow_artifacts: bool = False,
 ) -> list[dict[str, str]]:
     test_activity_context = _test_activity_request_context(messages, user_message)
     original_task_context = _original_test_activity_context_prompt(
@@ -4001,7 +4055,7 @@ def _build_prompt(
         f"{_source_first_contract(references, user_message)}\n\n"
         f"{_test_activity_contract_prompt(user_message=test_activity_context, repo_path=_conversation_initial_repo_path(conversation))}\n\n"
         f"{_bound_workflow_execution_prompt(conversation)}\n\n"
-        f"{_bound_workflow_builtin_artifact_prompt(conversation)}\n\n"
+        f"{_bound_workflow_builtin_artifact_prompt(conversation) if legacy_workflow_artifacts else ''}\n\n"
         f"{original_task_context}\n\n"
         f"线程范围: {conversation['scope_type']} / {conversation['scope_id']}\n"
         f"上下文引用:\n{chr(10).join(context_lines) if context_lines else '（暂无可用引用）'}"
@@ -6200,14 +6254,6 @@ def _test_activity_task_card_actions(*, conversation: dict[str, Any], user_messa
         user_requirements=user_message,
     )
     workspace_id = _conversation_workspace_id(conversation)
-    workflow_query = {
-            "workflow": "source_flow_sfmea_blackbox",
-            "target": contract["target"],
-            "outputs": ",".join(str(item) for item in contract["required_outputs"]),
-    }
-    if workspace_id and workspace_id != "global":
-        workflow_query["workspace_id"] = workspace_id
-    workflow_href = "/workbench?" + urlencode(workflow_query)
     return [
         {
             "id": "test_activity_task_card",
@@ -6222,8 +6268,8 @@ def _test_activity_task_card_actions(*, conversation: dict[str, Any], user_messa
             "artifact_contract": contract.get("artifact_contract", {}),
             "workflow_template_id": "source_flow_sfmea_blackbox",
             "workspace_id": workspace_id if workspace_id != "global" else "",
-            "href": workflow_href,
-            "edit_contract_href": "/workbench/designer",
+            "primary_action": "create_task_draft",
+            "notice": "创建任务草稿后进入六步配置；当前 AI 回答未执行工作流。",
         }
     ]
 
@@ -6621,6 +6667,14 @@ def _run_from_row(row: aiosqlite.Row) -> dict[str, Any]:
         ("metrics", "metrics_json", {}),
     ):
         data[public_key] = _json_loads(data.pop(storage_key, None), fallback)
+    metrics = data["metrics"] if isinstance(data.get("metrics"), dict) else {}
+    for key, fallback in (
+        ("active_process_count", 0),
+        ("global_queue_position", 0),
+        ("provider_queue_position", 0),
+        ("queued_reason", ""),
+    ):
+        data[key] = metrics.get(key, fallback)
     return data
 
 
@@ -6667,7 +6721,8 @@ def _public_events_from_rows(rows: list[aiosqlite.Row]) -> list[dict[str, Any]]:
     segment_state = _AgentOutputSegmentState()
     for row in rows:
         events.extend(_public_events_from_event(_event_from_row(row), segment_state))
-    return [_with_public_event_metadata(event) for event in events]
+    public_events = [_with_public_event_metadata(event) for event in events]
+    return _pair_public_timeline_tools(public_events)
 
 
 def _public_events_from_event(
@@ -6729,7 +6784,104 @@ def _with_public_event_metadata(event: dict[str, Any]) -> dict[str, Any]:
     if "seq" not in next_event and isinstance(event_id, int):
         next_event.setdefault("seq", event_id)
     next_event.setdefault("event_kind", _public_event_kind(next_event))
+    next_event["timeline"] = _public_timeline_item(next_event)
     return next_event
+
+
+def _public_timeline_item(event: dict[str, Any]) -> dict[str, Any]:
+    payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+    kind = str(event.get("event_kind") or _public_event_kind(event))
+    content = str(
+        payload.get("message")
+        or payload.get("content")
+        or payload.get("summary")
+        or payload.get("error")
+        or ""
+    ).strip()
+    tool = str(payload.get("tool") or payload.get("name") or "工具").strip()
+    category = "status"
+    title = "状态更新"
+    status_value = "running"
+    if kind == "error":
+        category, title, status_value = "error", "运行失败", "failed"
+    elif kind == "artifact":
+        category, title, status_value = "artifact", "生成产物", "success"
+    elif kind == "tool_use":
+        category, title = "tool_call", f"调用 {tool}"
+    elif kind == "tool_result":
+        category, title, status_value = "tool_call", f"{tool} 返回结果", "success"
+    elif "质量" in content or kind == "quality":
+        category, title = "quality", "质量检查"
+        status_value = "failed" if any(word in content for word in ("失败", "未通过", "阻断")) else "success"
+    elif _timeline_source_ref(payload, content):
+        category, title = "source_read", "读取源码"
+    elif kind == "done":
+        title, status_value = "运行完成", "success"
+    elif kind in {"thinking", "reasoning"}:
+        title = "分析中"
+        content = "执行器正在分析上下文；内部推理默认不展示。"
+    elif kind in {"diagnostic", "trace"}:
+        title = "执行过程"
+    raw_status = str(payload.get("status") or "").lower()
+    if raw_status in {"failed", "error", "cancelled", "interrupted"}:
+        status_value = "failed" if raw_status in {"failed", "error"} else "warning"
+    elif raw_status in {"completed", "success", "passed", "accepted"}:
+        status_value = "success"
+    elif raw_status in {"warning", "partial", "degraded"}:
+        status_value = "warning"
+    event_id = event.get("event_id")
+    return {
+        "id": f"event-{event_id}" if event_id is not None else f"seq-{event.get('seq', 0)}",
+        "time": str(event.get("created_at") or ""),
+        "category": category,
+        "title": title,
+        "summary": content or title,
+        "status": status_value,
+        "duration_ms": int(payload.get("duration_ms") or 0),
+        "node_id": str(payload.get("node_id") or payload.get("step_id") or ""),
+        "artifact_ref": str(payload.get("artifact_ref") or payload.get("artifact") or ""),
+        "source_ref": _timeline_source_ref(payload, content),
+        "diagnostic_ref": f"event:{event_id}" if event_id is not None else "",
+    }
+
+
+def _timeline_source_ref(payload: dict[str, Any], content: str) -> str:
+    explicit = str(payload.get("source_ref") or payload.get("path") or "").strip()
+    if explicit:
+        return explicit
+    matched = re.search(
+        r"(?<![/A-Za-z0-9_.-])((?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+"
+        r"(?::L?\d+(?:-L?\d+)?)?)",
+        content,
+    )
+    return matched.group(1) if matched else ""
+
+
+def _pair_public_timeline_tools(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    pending: dict[str, list[dict[str, Any]]] = {}
+    for event in events:
+        if event.get("event_kind") not in {"tool_use", "tool_result"}:
+            continue
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        key = str(
+            payload.get("call_id")
+            or payload.get("tool_call_id")
+            or payload.get("id")
+            or payload.get("tool")
+            or payload.get("name")
+            or "tool"
+        )
+        timeline = event.get("timeline") if isinstance(event.get("timeline"), dict) else {}
+        if event.get("event_kind") == "tool_use":
+            pending.setdefault(key, []).append(event)
+            continue
+        candidates = pending.get(key) or []
+        source = candidates.pop(0) if candidates else None
+        pair_id = f"tool-pair-{(source or event).get('event_id', event.get('seq', 0))}"
+        timeline["tool_pair_id"] = pair_id
+        if source is not None and isinstance(source.get("timeline"), dict):
+            source["timeline"]["tool_pair_id"] = pair_id
+    return events
 
 
 def _public_event_kind(event: dict[str, Any]) -> str:
@@ -6810,7 +6962,41 @@ def _kind_event_should_be_reclassified_as_answer(
 
 def _default_actions() -> list[dict[str, Any]]:
     return [
-        {"id": "save_memory", "label": "沉淀到记忆"},
-        {"id": "add_test_design", "label": "加入测试设计"},
-        {"id": "rerun_plan", "label": "生成复跑建议"},
+        {
+            "id": "ask_memory_summary",
+            "kind": "suggested_followup",
+            "label": "插入记忆整理追问",
+            "prompt": "请把本轮结论、证据、适用范围和标签整理成可确认的项目记忆草稿，不要直接写入。",
+        },
+        {
+            "id": "ask_test_design",
+            "kind": "suggested_followup",
+            "label": "插入测试设计追问",
+            "prompt": "请基于本轮源码证据补充可执行的测试设计，并说明目标测试资产和边界。",
+        },
+        {
+            "id": "ask_rerun_plan",
+            "kind": "suggested_followup",
+            "label": "让 AI 生成复跑建议",
+            "prompt": "请根据本轮失败节点、已保留上游结果和产物，生成一份复跑建议。",
+        },
     ]
+
+
+def _elapsed_milliseconds(start: Any, end: Any) -> int:
+    try:
+        started = datetime.fromisoformat(str(start or "").replace("Z", "+00:00"))
+        completed = datetime.fromisoformat(str(end or "").replace("Z", "+00:00"))
+    except ValueError:
+        return 0
+    return max(0, int((completed - started).total_seconds() * 1000))
+
+
+def _assistant_quality_status(actions: list[dict[str, Any]]) -> str:
+    for action in actions:
+        if not isinstance(action, dict):
+            continue
+        status = str(action.get("quality_status") or action.get("validation_status") or "").lower()
+        if status in {"passed", "warning", "blocked", "failed"}:
+            return status
+    return "not_checked"

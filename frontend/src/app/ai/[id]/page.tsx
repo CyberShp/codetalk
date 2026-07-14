@@ -43,7 +43,6 @@ const AGENT_PROCESS_DIAGNOSTIC_LIMIT = 200;
 const AGENT_PROCESS_DIAGNOSTIC_HEAD_LIMIT = 32;
 const AGENT_PROCESS_FOLD_PREFIX = "已折叠中间 ";
 const AGENT_PROCESS_FOLD_SUFFIX = " 条 Agent 过程事件";
-const DEFAULT_AGENT_RUNTIME_FALLBACKS = ["default-claude-code", "default-codex", "default-opencode"];
 
 function eventContent(event: AIRunEvent): string {
   const value = event.payload.content;
@@ -208,14 +207,6 @@ function displayText(value: unknown): string {
   return "";
 }
 
-function preferredEnabledAgentRuntime(runtimes: AgentRuntime[]): AgentRuntime | null {
-  for (const id of DEFAULT_AGENT_RUNTIME_FALLBACKS) {
-    const runtime = runtimes.find((item) => item.id === id && item.enabled);
-    if (runtime) return runtime;
-  }
-  return runtimes.find((item) => item.enabled) ?? null;
-}
-
 function agentRuntimeUnavailable(conversation: AIConversation, runtimes: AgentRuntime[]): boolean {
   if (conversation.runtime_type !== "agent_runtime") return false;
   const runtime = runtimes.find((item) => item.id === conversation.agent_runtime_id);
@@ -286,6 +277,14 @@ function evidenceMinimumLabel(policy: Record<string, unknown> | null): string {
 
 function testActivityActions(actions: AIMessage["actions"] | null | undefined): AIMessage["actions"] {
   return (actions ?? []).filter((action) => actionKind(action) === "test_activity" || actionId(action) === "test_activity_task_card");
+}
+
+function taskDraftActions(actions: AIMessage["actions"] | null | undefined): AIMessage["actions"] {
+  return (actions ?? []).filter((action) => actionKind(action) === "create_task_draft");
+}
+
+function suggestedFollowupActions(actions: AIMessage["actions"] | null | undefined): AIMessage["actions"] {
+  return (actions ?? []).filter((action) => actionKind(action) === "suggested_followup");
 }
 
 function attachmentActions(actions: AIMessage["actions"] | null | undefined): AIMessage["actions"] {
@@ -483,7 +482,8 @@ function AgentProcessDisclosure({
 }) {
   const [open, setOpen] = useState(false);
   const visibleDiagnostics = capAgentProcessDiagnostics(diagnostics);
-  if (visibleDiagnostics.length === 0) return null;
+  const timelineRows = publicTimelineRows(processEvents);
+  if (visibleDiagnostics.length === 0 && timelineRows.length === 0) return null;
   const latestSummary = agentProcessLatestSummary({ diagnostics: visibleDiagnostics, processEvents, runStatus });
   const toggleOpen = () => setOpen((current) => !current);
   return (
@@ -505,154 +505,48 @@ function AgentProcessDisclosure({
       >
         <span>Agent 过程</span>
         <strong title={latestSummary}>最新：{latestSummary}</strong>
-        <em>默认折叠 · {visibleDiagnostics.length} 条</em>
+        <em>默认折叠 · {timelineRows.length || visibleDiagnostics.length} 条</em>
       </summary>
       {open && (
         <div>
-          {visibleDiagnostics.map((item, index) => (
-            <p key={`${index}-${item}`}>{item}</p>
-          ))}
+          {timelineRows.length > 0
+            ? timelineRows.map((item) => <p key={item.id}><strong>{item.title}：</strong>{redactDiagnosticText(item.summary)}</p>)
+            : visibleDiagnostics.map((item, index) => <p key={`${index}-${item}`}>{item}</p>)}
         </div>
       )}
     </details>
   );
 }
 
-function AgentStatusPanel({
-  diagnostics,
-  processEvents,
-  latestRun,
-  streamingRunId,
-  activeRuntime,
-  runtimeType,
-}: {
+function CurrentRunPanel({ diagnostics, processEvents, run, running, referenceCount, cancelling, onCancel }: {
   diagnostics: string[];
   processEvents: AIRunEvent[];
-  latestRun: AIConversationRun | null;
-  streamingRunId: string | null;
-  activeRuntime: AgentRuntime | null;
-  runtimeType: string | undefined;
+  run: AIConversationRun | null;
+  running: boolean;
+  referenceCount: number;
+  cancelling: boolean;
+  onCancel: () => void;
 }) {
   const visibleDiagnostics = capAgentProcessDiagnostics(diagnostics);
-  const latestSummary = agentProcessLatestSummary({
-    diagnostics: visibleDiagnostics,
-    processEvents,
-    runStatus: latestRun?.status,
-  });
-  const runtimeContractSummary =
-    latestAgentRuntimeContractFromEvents(processEvents) ||
-    latestAgentRuntimeContractText(visibleDiagnostics);
-  const diagnosticText = visibleDiagnostics.join("\n");
-  const status =
-    streamingRunId && latestRun?.id === streamingRunId
-      ? "生成中"
-      : latestRun?.status === "failed"
-        ? "失败"
-        : latestRun?.status === "completed"
-          ? "已完成"
-          : latestRun?.status === "cancelled"
-            ? "已取消"
-            : latestRun?.status === "queued"
-              ? "排队中"
-              : latestRun?.status ?? "空闲";
-  const runtimeLabel = activeRuntime
-    ? `${activeRuntime.name}${activeRuntime.enabled ? "" : "（已停用）"}`
-    : runtimeType === "agent_runtime"
-      ? "未找到执行器"
-      : "内置模型";
-  const sessionLabel =
-    activeRuntime?.session_persistence === "resume_args"
-      ? "自动续接"
-      : activeRuntime
-        ? "单轮会话"
-        : runtimeType === "agent_runtime"
-          ? "等待执行器"
-          : "内置上下文";
-  const runId = latestRun?.id ?? streamingRunId ?? "";
-  const lifecycleLabel = agentLifecycleLabel({
-    runStatus: latestRun?.status,
-    streaming: Boolean(streamingRunId && latestRun?.id === streamingRunId),
-    processEvents,
-    diagnostics: diagnosticText,
-  });
-  const elapsedLabel = agentRunElapsedLabel(latestRun);
-  const interruptionLabel =
-    latestRun?.status === "failed"
-      ? "失败待重试"
-      : latestRun?.status === "cancelled"
-        ? "用户已取消"
-        : "无阻塞";
+  const status = running ? "生成中" : ({ queued: "排队中", completed: "已完成", failed: "失败", cancelled: "已取消", interrupted: "已中断" } as Record<string, string>)[run?.status || ""] || "空闲";
+  const runtimeLabel = run?.runtime_snapshot?.name || run?.runtime_snapshot?.label || (run?.runtime_type === "builtin_llm" ? "内置模型" : "未记录执行器");
+  const timelineRows = publicTimelineRows([...(run?.timeline || []), ...processEvents]);
+  const latestTimeline = timelineRows.at(-1);
+  const currentAction = latestTimeline?.title || agentLifecycleLabel({ runStatus: run?.status, streaming: running, processEvents, diagnostics: visibleDiagnostics.join("\n") });
+  const evidenceCount = Number(run?.metrics?.evidence_count ?? referenceCount);
+  const artifactCount = Number(run?.metrics?.artifact_count ?? 0);
   return (
-    <section data-testid="agent-status-panel">
-      <h2>
-        <Bot size={16} />
-        Agent 状态
-      </h2>
+    <section data-testid="current-run-panel">
+      <h2><Bot size={16} />本轮运行</h2>
       <div className="ct-ai-agent-status">
-        <div>
-          <span>当前模式</span>
-          <strong>{status}</strong>
-        </div>
-        <div>
-          <span>执行器</span>
-          <strong>{runtimeLabel}</strong>
-        </div>
-        <div>
-          <span>Session</span>
-          <strong>{sessionLabel}</strong>
-        </div>
-        <div>
-          <span>Thinking</span>
-          <strong>默认折叠</strong>
-        </div>
-        <div>
-          <span>CLI 气泡</span>
-          <strong>默认折叠</strong>
-        </div>
-        <div>
-          <span>过程事件</span>
-          <strong>{visibleDiagnostics.length} 条</strong>
-        </div>
-        <div>
-          <span>生命周期</span>
-          <strong>{lifecycleLabel}</strong>
-        </div>
-        <div>
-          <span>耗时</span>
-          <strong>{elapsedLabel}</strong>
-        </div>
-        <div>
-          <span>取消/失败</span>
-          <strong>{interruptionLabel}</strong>
-        </div>
-        <div>
-          <span>Run</span>
-          <strong title={runId || "暂无 Run"}>{runId || "等待创建"}</strong>
-        </div>
-        {runtimeContractSummary && (
-          <div className="ct-ai-agent-status__wide">
-            <span>运行契约</span>
-            <strong title={runtimeContractSummary}>{runtimeContractSummary}</strong>
-          </div>
-        )}
+        <div><span>状态</span><strong>{status}</strong></div>
+        <div><span>执行器</span><strong>{runtimeLabel}</strong></div>
+        <div><span>耗时</span><strong>{agentRunElapsedLabel(run)}</strong></div>
+        <div><span>当前动作</span><strong>{currentAction}</strong></div>
+        <div><span>证据</span><strong>{evidenceCount} 条</strong></div>
+        <div><span>产物</span><strong>{artifactCount} 个</strong></div>
       </div>
-      <details className="ct-ai-disclosure ct-ai-agent-process-summary">
-        <summary>最新过程：{latestSummary}</summary>
-        <div className="ct-ai-diagnostic">
-          {visibleDiagnostics.length > 0 ? (
-            visibleDiagnostics.slice(-12).map((item, index) => (
-              <p key={`${index}-${item}`}>{redactDiagnosticText(item)}</p>
-            ))
-          ) : (
-            <p>Agent 过程会在这里默认折叠展示；最终答案只保留用户需要阅读的结论。</p>
-          )}
-          {runId && (
-            <p>
-              <strong>Run:</strong> {runId}
-            </p>
-          )}
-        </div>
-      </details>
+      {running && <button type="button" className="ct-ai-run-stop" onClick={onCancel} disabled={cancelling}><Square size={14} />{cancelling ? "正在停止" : "停止"}</button>}
     </section>
   );
 }
@@ -721,25 +615,6 @@ function latestAgentProcessSummaryText(values: string[]): string {
     return agentProcessSummaryText(cleaned);
   }
   return agentProcessSummaryText(values[values.length - 1] ?? "");
-}
-
-function latestAgentRuntimeContractText(values: string[]): string {
-  for (let index = values.length - 1; index >= 0; index -= 1) {
-    const cleaned = redactDiagnosticText(values[index] ?? "").replace(/\s+/g, " ").trim();
-    if (!cleaned || !cleaned.includes("artifact:")) continue;
-    return cleaned.replace(/^AgentInvocation 已准备\s*·\s*/, "");
-  }
-  return "";
-}
-
-function latestAgentRuntimeContractFromEvents(events: AIRunEvent[]): string {
-  for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
-    if (!event) continue;
-    const text = eventRuntimeText(event);
-    if (text) return text;
-  }
-  return "";
 }
 
 function shouldFoldAgentProcessSummary(value: string): boolean {
@@ -961,11 +836,13 @@ export default function AIThreadPage() {
   const conversationId = params.id;
   const [conversation, setConversation] = useState<AIConversation | null>(null);
   const [messages, setMessages] = useState<AIMessage[]>([]);
+  const [runs, setRuns] = useState<AIConversationRun[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [threads, setThreads] = useState<AIConversation[]>([]);
   const [railThreads, setRailThreads] = useState<AIConversation[]>([]);
   const [agentRuntimes, setAgentRuntimes] = useState<AgentRuntime[]>([]);
   const [savingRuntime, setSavingRuntime] = useState(false);
+  const [creatingTaskFromMessageId, setCreatingTaskFromMessageId] = useState<string | null>(null);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(true);
   const [sending, setSending] = useState(false);
@@ -1069,9 +946,17 @@ export default function AIThreadPage() {
     typeof conversation?.initial_context?.selected_workflow_name === "string"
       ? conversation.initial_context.selected_workflow_name.trim()
       : selectedWorkflowId;
-  const selectedWorkflowHref = selectedWorkflowId
-    ? `/workbench?workflow=${encodeURIComponent(selectedWorkflowId)}&workspace_id=${encodeURIComponent(workspaceId)}`
-    : "";
+  const selectedWorkflowVersionId =
+    typeof conversation?.initial_context?.selected_workflow_version_id === "string"
+      ? conversation.initial_context.selected_workflow_version_id.trim()
+      : "";
+  const linkedTaskId =
+    typeof conversation?.initial_context?.task_id === "string" ? conversation.initial_context.task_id : "";
+  const linkedTaskRunId =
+    typeof conversation?.initial_context?.task_run_id === "string" ? conversation.initial_context.task_run_id : "";
+  const linkedAttempt = displayText(conversation?.initial_context?.attempt_number) || "1";
+  const runsById = useMemo(() => new Map(runs.map((run) => [run.id, run])), [runs]);
+  const displayedLatestRun = latestRun?.id ? runsById.get(latestRun.id) ?? latestRun : null;
   const threadNavigationBusy =
     savingRuntime || cancelling || creatingSiblingThread || Boolean(deletingThreadId);
   const lastUserMessage = useMemo(
@@ -1082,67 +967,39 @@ export default function AIThreadPage() {
   const canExportThread = messages.length > 0 && !isActuallyRunning;
   const latestReferences = references.slice(0, 4);
   const hiddenReferenceCount = Math.max(0, references.length - latestReferences.length);
-  const runStatusLabel = isActuallyRunning
-    ? "生成中"
-    : latestRun?.status === "failed"
-      ? "失败"
-      : latestRun?.status === "completed"
-        ? "已完成"
-        : conversation?.status ?? "ready";
-  const auditSummary = [
-    `状态 ${runStatusLabel}`,
-    `证据 ${references.length}`,
-    `材料 ${materialCount}`,
-    `报告 ${reportCount}`,
-  ].join(" · ");
 
   const loadInitialPage = useCallback(async () => {
     setError(null);
     setRuntimeNotice(null);
-    const [conv, msgResult, workspaceItems, runtimeResult] = await Promise.all([
+    const [conv, msgResult, runResult, workspaceItems, runtimeResult] = await Promise.all([
       api.aiConversations.get(conversationId),
       api.aiConversations.messages(conversationId),
+      api.aiConversations.runs(conversationId),
       api.workspaces.list(),
       api.settings.listAgentRuntimes().catch(() => ({ items: [] as AgentRuntime[] })),
     ]);
-    let loadedConversation = conv;
-    if (
-      agentRuntimeUnavailable(conv, runtimeResult.items) &&
-      conv.latest_run?.status !== "queued" &&
-      conv.latest_run?.status !== "running"
-    ) {
+    if (agentRuntimeUnavailable(conv, runtimeResult.items)) {
       const staleRuntime = runtimeResult.items.find((item) => item.id === conv.agent_runtime_id);
-      const fallback = preferredEnabledAgentRuntime(runtimeResult.items);
-      const fallbackLabel = fallback?.name ?? "内置模型";
-      try {
-        loadedConversation = await api.aiConversations.update(conversationId, {
-          runtime_type: fallback ? "agent_runtime" : "builtin_llm",
-          agent_runtime_id: fallback?.id ?? null,
-        });
-        setRuntimeNotice(
-          staleRuntime
-            ? `原执行器 ${staleRuntime.name} 已停用，已自动切换到 ${fallbackLabel}。`
-            : `原执行器不存在，已自动切换到 ${fallbackLabel}。`,
-        );
-      } catch (exc) {
-        const reason = exc instanceof Error ? exc.message : "自动切换失败";
-        setRuntimeNotice(`当前执行器不可用，请在右上角切换执行器后继续。${reason}`);
-      }
+      setRuntimeNotice(
+        `${staleRuntime ? `原执行器 ${staleRuntime.name} 已停用` : "原执行器不存在"}。` +
+        "历史运行仍按原快照展示；请在右上角显式选择未来运行使用的执行器。",
+      );
     }
-    setConversation(loadedConversation);
+    setConversation(conv);
     setMessages(msgResult.items);
+    setRuns(runResult.items);
     setWorkspaces(workspaceItems);
     setAgentRuntimes(runtimeResult.items);
-    const projectId = threadWorkspaceId(loadedConversation);
+    const projectId = threadWorkspaceId(conv);
     const [threadResult, railThreadResult] = await Promise.all([
       api.aiConversations.list(projectId === "global" ? { limit: 50 } : { workspace_id: projectId, limit: 50 }),
       api.aiConversations.list({ limit: 100 }),
     ]);
     setThreads(threadResult.items);
     setRailThreads(railThreadResult.items);
-    if (loadedConversation.latest_run?.id) {
+    if (conv.latest_run?.id) {
       const eventResult = await api.aiConversations
-        .events(conversationId, { run_id: loadedConversation.latest_run.id, limit: 200, process_only: true })
+        .events(conversationId, { run_id: conv.latest_run.id, limit: 200, process_only: true })
         .catch(() => ({ items: [] as AIRunEvent[] }));
       setStreamingDiagnostics(agentProcessDiagnosticsFromEvents(eventResult.items));
       setStreamingProcessEvents(capAgentProcessEvents(eventResult.items));
@@ -1150,8 +1007,8 @@ export default function AIThreadPage() {
       setStreamingDiagnostics([]);
       setStreamingProcessEvents([]);
     }
-    if (loadedConversation.latest_run?.status === "queued" || loadedConversation.latest_run?.status === "running") {
-      setStreamingRunId(loadedConversation.latest_run.id);
+    if (conv.latest_run?.status === "queued" || conv.latest_run?.status === "running") {
+      setStreamingRunId(conv.latest_run.id);
     }
   }, [conversationId]);
 
@@ -1174,12 +1031,14 @@ export default function AIThreadPage() {
   }, [conversationId]);
 
   const refreshMessagesAfterDone = useCallback(async () => {
-    const [nextConversation, msgResult] = await Promise.all([
+    const [nextConversation, msgResult, runResult] = await Promise.all([
       api.aiConversations.get(conversationId),
       api.aiConversations.messages(conversationId),
+      api.aiConversations.runs(conversationId),
     ]);
     setConversation(nextConversation);
     setMessages(msgResult.items);
+    setRuns(runResult.items);
     return nextConversation;
   }, [conversationId]);
 
@@ -1418,6 +1277,7 @@ export default function AIThreadPage() {
     try {
       const result = await api.aiConversations.send(conversationId, text);
       setMessages((prev) => [...prev, result.message]);
+      setRuns((prev) => [...prev.filter((run) => run.id !== result.run.id), result.run]);
       setConversation((prev) =>
         prev
           ? {
@@ -1448,6 +1308,7 @@ export default function AIThreadPage() {
     setShowJumpToLatest(false);
     try {
       const result = await api.aiConversations.retry(conversationId, latestRun.id);
+      setRuns((prev) => [...prev.filter((run) => run.id !== result.run.id), result.run]);
       setConversation((prev) =>
         prev
           ? {
@@ -1463,6 +1324,32 @@ export default function AIThreadPage() {
       setError(exc instanceof Error ? exc.message : "重试失败");
     } finally {
       setSending(false);
+    }
+  };
+
+  const createTaskDraft = async (
+    sourceMessage?: AIMessage,
+    workflowId = selectedWorkflowId,
+    workflowVersionId = selectedWorkflowVersionId,
+  ) => {
+    if (!workflowId || creatingTaskFromMessageId) return;
+    const busyId = sourceMessage?.id ?? "thread";
+    setCreatingTaskFromMessageId(busyId);
+    setError(null);
+    try {
+      const result = await api.aiConversations.createTaskDraft(conversationId, {
+        ...(sourceMessage ? { source_message_id: sourceMessage.id } : {}),
+        ...(sourceMessage?.run_id ? { source_ai_run_id: sourceMessage.run_id } : {}),
+        workflow_id: workflowId,
+        ...(workflowVersionId ? { workflow_version_id: workflowVersionId } : {}),
+        mode: "draft",
+      });
+      router.push(
+        `/tasks/new?task=${encodeURIComponent(result.task.task_id)}&step=${result.next_required_step}`,
+      );
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "创建任务草稿失败");
+      setCreatingTaskFromMessageId(null);
     }
   };
 
@@ -1776,6 +1663,22 @@ export default function AIThreadPage() {
               <span>{runtimeNotice}</span>
             </div>
           )}
+          {linkedTaskRunId && (
+            <section className="ct-codex-ai__linked-run" aria-label="关联任务运行">
+              <div>
+                <span>关联任务</span>
+                <strong>{selectedWorkflowName || "工作流"} · Attempt {linkedAttempt}</strong>
+                <small>
+                  执行 {displayText(conversation?.initial_context?.execution_status) || "未记录"} ·
+                  质量 {displayText(conversation?.initial_context?.quality_status) || "未记录"} ·
+                  交付 {displayText(conversation?.initial_context?.delivery_status) || "未记录"}
+                </small>
+              </div>
+              <Link href={`/tasks/${encodeURIComponent(linkedTaskId)}/runs/${encodeURIComponent(linkedTaskRunId)}`}>
+                打开运行驾驶舱
+              </Link>
+            </section>
+          )}
         </div>
 
         <div className="ct-codex-ai__reader-shell">
@@ -1791,15 +1694,20 @@ export default function AIThreadPage() {
             {messages.length === 0 && !streamingContent ? (
               <div className="ct-codex-ai__empty">
                 <Sparkles size={32} />
-                {selectedWorkflowHref ? (
+                {selectedWorkflowId ? (
                   <>
                     <p>
-                      已绑定工作流“{selectedWorkflowName}”。直接下达任务时，完整输入会连同节点顺序、MCP、skills 和输出契约交给当前执行器；需要上传命名文件时可打开驾驶舱。
+                      已绑定“{selectedWorkflowName}”{selectedWorkflowVersionId ? "的固定发布版本" : "（旧绑定未记录版本）"}。当前线程可使用工作流约束回答，但不会创建任务、Run Attempt 或执行 DAG。
                     </p>
-                    <Link className="ct-codex-ai__workflow-launch" href={selectedWorkflowHref}>
+                    <button
+                      type="button"
+                      className="ct-codex-ai__workflow-launch"
+                      disabled={Boolean(creatingTaskFromMessageId)}
+                      onClick={() => void createTaskDraft()}
+                    >
                       <PlayCircle size={15} />
-                      配置命名输入并运行
-                    </Link>
+                      创建任务草稿并补齐配置
+                    </button>
                   </>
                 ) : (
                   <p>直接提问。这个线程会持续保存，并只围绕当前项目命名空间召回记忆。</p>
@@ -1820,6 +1728,19 @@ export default function AIThreadPage() {
                         <p className="whitespace-pre-wrap">{redactDiagnosticText(message.content)}</p>
                       )}
                     </div>
+                    {message.role === "assistant" && message.run_id && (
+                      <MessageRunCard
+                        run={runsById.get(message.run_id)}
+                        message={message}
+                        taskId={linkedTaskId}
+                        taskRunId={
+                          conversation?.scope_type === "workbench_task_run"
+                            && typeof conversation.initial_context?.task_run_id === "string"
+                            ? conversation.initial_context.task_run_id
+                            : ""
+                        }
+                      />
+                    )}
                     {message.role === "assistant" &&
                       testActivityActions(message.actions).map((action) => {
                         const profiles = actionArrayField(action, "domain_profiles").slice(0, 6);
@@ -1828,8 +1749,8 @@ export default function AIThreadPage() {
                         const evidencePolicy = actionRecordField(action, "evidence_policy");
                         const sourceFirst = evidencePolicy?.source_first === true;
                         const evidenceSources = evidencePolicySources(evidencePolicy);
-                        const workflowHref = actionHref(action) || "/workbench";
-                        const editHref = actionTextField(action, "edit_contract_href") || "/workbench/designer";
+                        const workflowId = actionTextField(action, "workflow_template_id") || selectedWorkflowId;
+                        const workflowVersionId = actionTextField(action, "workflow_version_id") || selectedWorkflowVersionId;
 
                         return (
                           <section key={`${message.id}-${actionId(action) || "test-activity"}`} className="ct-test-activity-card">
@@ -1878,15 +1799,53 @@ export default function AIThreadPage() {
                               </details>
                             )}
                             <div className="ct-test-activity-card__actions">
-                              <Link href={workflowHref}>
+                              <button
+                                type="button"
+                                disabled={!workflowId || Boolean(creatingTaskFromMessageId)}
+                                onClick={() => void createTaskDraft(message, workflowId, workflowVersionId)}
+                              >
                                 <PlayCircle size={14} />
-                                启动工作流
-                              </Link>
-                              <Link href={editHref}>编辑契约</Link>
+                                {creatingTaskFromMessageId === message.id ? "正在创建…" : "创建任务草稿"}
+                              </button>
+                              <small>进入六步配置后才会创建并运行 Attempt</small>
                             </div>
                           </section>
                         );
                       })}
+                    {message.role === "assistant" && taskDraftActions(message.actions).map((action) => {
+                      const workflowId = actionTextField(action, "workflow_id") || selectedWorkflowId;
+                      const workflowVersionId = actionTextField(action, "workflow_version_id") || selectedWorkflowVersionId;
+                      return (
+                        <div className="ct-codex-message__task-action" key={`${message.id}-${actionId(action)}`}>
+                          <div>
+                            <strong>{actionLabel(action) || "创建任务草稿"}</strong>
+                            <span>{actionTextField(action, "notice") || "进入任务向导后才会创建真实运行。"}</span>
+                          </div>
+                          <button
+                            type="button"
+                            disabled={!workflowId || Boolean(creatingTaskFromMessageId)}
+                            onClick={() => void createTaskDraft(message, workflowId, workflowVersionId)}
+                          >
+                            <FilePlus2 size={14} />
+                            {creatingTaskFromMessageId === message.id ? "正在创建…" : "创建任务草稿"}
+                          </button>
+                        </div>
+                      );
+                    })}
+                    {message.role === "assistant" && suggestedFollowupActions(message.actions).length > 0 && (
+                      <div className="ct-codex-message__followups" aria-label="建议追问">
+                        {suggestedFollowupActions(message.actions).map((action) => (
+                          <button
+                            type="button"
+                            key={`${message.id}-${actionId(action)}`}
+                            disabled={composerDisabled}
+                            onClick={() => setInput(actionTextField(action, "prompt") || actionLabel(action))}
+                          >
+                            {actionLabel(action)}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     {attachmentActions(message.actions).length > 0 && (
                       <div className="ct-codex-message__actions">
                         <span className="ct-codex-message__actions-title">
@@ -2006,29 +1965,16 @@ export default function AIThreadPage() {
               <span>记忆命名空间</span>
               <code>{conversation?.memory_namespace ?? "global"}</code>
             </div>
-            <div>
-              <span>线程状态</span>
-              <em>{streamingRunId ? "生成中" : conversation?.status ?? "ready"}</em>
-            </div>
-            <div>
-              <span>执行器</span>
-              <strong>
-                {activeRuntime
-                  ? `${activeRuntime.name}${activeRuntime.enabled ? "" : "（已停用）"}`
-                  : conversation?.runtime_type === "agent_runtime"
-                    ? "未找到执行器"
-                    : "内置模型"}
-              </strong>
-            </div>
           </div>
         </section>
-        <AgentStatusPanel
+        <CurrentRunPanel
           diagnostics={streamingDiagnostics}
           processEvents={streamingProcessEvents}
-          latestRun={latestRun}
-          streamingRunId={streamingRunId}
-          activeRuntime={activeRuntime}
-          runtimeType={conversation?.runtime_type}
+          run={displayedLatestRun}
+          running={isActuallyRunning}
+          referenceCount={references.length}
+          cancelling={cancelling}
+          onCancel={() => void cancel()}
         />
         <section>
           <h2>
@@ -2071,15 +2017,20 @@ export default function AIThreadPage() {
                 </Link>
               )
             )}
-            {threadNavigationBusy ? (
+            {threadNavigationBusy || creatingTaskFromMessageId ? (
               <span className="ct-ai-action is-disabled" role="link" aria-disabled="true">
                 <PlayCircle size={15} />
-                运行智能体任务
+                创建任务草稿
               </span>
-            ) : (
-              <Link href="/workbench" className="ct-ai-action">
+            ) : selectedWorkflowId ? (
+              <button type="button" className="ct-ai-action" onClick={() => void createTaskDraft()}>
                 <PlayCircle size={15} />
-                运行智能体任务
+                创建任务草稿
+              </button>
+            ) : (
+              <Link href="/tasks/new" className="ct-ai-action">
+                <PlayCircle size={15} />
+                新建任务
               </Link>
             )}
           </div>
@@ -2112,60 +2063,15 @@ export default function AIThreadPage() {
         <section>
           <h2>
             <Database size={16} />
-            执行轨迹
-          </h2>
-          <details className="ct-ai-disclosure">
-            <summary>{auditSummary}</summary>
-            <div className="ct-ai-audit-list">
-              <div>
-                <span>回答正文</span>
-                <strong>{messages.filter((message) => message.role === "assistant").length} 条</strong>
-              </div>
-              <div>
-                <span>当前执行器</span>
-                <strong>
-                  {activeRuntime
-                    ? `${activeRuntime.name}${activeRuntime.enabled ? "" : "（已停用）"}`
-                    : conversation?.runtime_type === "agent_runtime"
-                      ? "未找到执行器"
-                      : "内置模型"}
-                </strong>
-              </div>
-              <div>
-                <span>源码/材料优先</span>
-                <strong>{workspace ? "已绑定工作区" : "未绑定工作区"}</strong>
-              </div>
-              {latestRun?.id && (
-                <div>
-                  <span>最近运行</span>
-                  <code>{latestRun.id}</code>
-                </div>
-              )}
-            </div>
-          </details>
-          <details className="ct-ai-disclosure">
-            <summary>{visibleError ? "诊断详情：有错误，可展开查看" : "诊断详情：默认折叠"}</summary>
-            <div className="ct-ai-diagnostic">
-              {visibleError ? (
-                <p>{visibleError}</p>
-              ) : (
-                <p>没有需要展开的错误日志。原始 agent 事件仅用于诊断，不混入正文。</p>
-              )}
-            </div>
-          </details>
-        </section>
-        <section>
-          <h2>
-            <Database size={16} />
-            记忆动作
+            建议追问
           </h2>
           <div className="ct-ai-side-actions">
-            {["沉淀到当前项目记忆", "加入测试设计", "生成复跑建议"].map((action) => (
+            {["插入记忆整理追问", "插入测试设计追问", "让 AI 生成复跑建议"].map((action) => (
               <button
                 key={action}
                 type="button"
                 className="ct-ai-action"
-                onClick={() => setInput(action)}
+                onClick={() => setInput(action.replace("插入", "请"))}
                 disabled={composerDisabled}
               >
                 {action}
@@ -2176,4 +2082,163 @@ export default function AIThreadPage() {
       </aside>
     </div>
   );
+}
+
+function MessageRunCard({
+  run,
+  message,
+  taskId,
+  taskRunId,
+}: {
+  run?: AIConversationRun;
+  message: AIMessage;
+  taskId: string;
+  taskRunId: string;
+}) {
+  if (!run) {
+    return <div className="ct-ai-message-run-card is-legacy" role="status">历史运行详情未记录</div>;
+  }
+  const runtime = run.runtime_snapshot ?? {};
+  const runtimeName = runtime.name || runtime.label || (run.runtime_type === "builtin_llm" ? "内置模型" : "未记录执行器");
+  const statusLabel = ({ queued: "排队中", running: "运行中", completed: "已完成", failed: "失败", cancelled: "已取消", interrupted: "已中断" } as Record<string, string>)[run.status] || run.status;
+  const workflow = run.workflow_binding_snapshot ?? {};
+  const workflowName = displayText(workflow.workflow_name) || displayText(workflow.workflow_id);
+  const version = displayText(workflow.version_number) || displayText(workflow.workflow_version_id);
+  const artifactCount = attachmentActions(message.actions).length;
+  const evidenceCount = Number(run.metrics?.evidence_count ?? message.references?.length ?? 0);
+  const storedArtifactCount = Number(run.metrics?.artifact_count ?? artifactCount);
+  const qualityStatus = displayText(run.metrics?.quality_status) || "not_checked";
+  const duration = formatAiRunDuration(run.started_at, run.completed_at);
+  const timelineRows = publicTimelineRows(run.timeline ?? []);
+  return (
+    <details className="ct-ai-message-run-card">
+      <summary>
+        <span>{runtimeName}</span>
+        <strong>{statusLabel}</strong>
+        <span>{duration}</span>
+        <span>{evidenceCount} 条证据</span>
+        <span>{storedArtifactCount} 个产物</span>
+      </summary>
+      <div>
+        <dl>
+          <div><dt>执行模式</dt><dd>{aiExecutionModeLabel(run.execution_mode)}</dd></div>
+          <div><dt>会话</dt><dd>{runtime.session_mode === "resume" ? "延续会话" : runtime.session_mode === "fresh" ? "新会话" : "未记录"}</dd></div>
+          <div><dt>工作流</dt><dd>{workflowName ? `${workflowName}${version ? ` · ${version}` : ""}` : "未绑定"}</dd></div>
+          <div><dt>Skills</dt><dd>{run.skills_snapshot?.join("、") || "无"}</dd></div>
+          <div><dt>MCP</dt><dd>{run.mcp_snapshot?.join("、") || "无"}</dd></div>
+          <div><dt>质量</dt><dd>{({ passed: "通过", warning: "有警告", blocked: "阻断", failed: "失败", not_checked: "未检查" } as Record<string, string>)[qualityStatus] || qualityStatus}</dd></div>
+        </dl>
+        {run.error && <p role="alert">{publicAgentErrorText(run.error)}</p>}
+        {timelineRows.length > 0 && (
+          <section className="ct-ai-run-timeline" aria-label="本轮公开执行过程">
+            <h4>本轮过程</h4>
+            <ol>
+              {timelineRows.map((row) => (
+                <li key={row.id} data-category={row.category} data-status={row.status}>
+                  <span className="ct-ai-run-timeline__dot" aria-hidden="true" />
+                  <div>
+                    <strong>{row.title}</strong>
+                    <p>{redactDiagnosticText(row.summary)}</p>
+                    <small>
+                      {formatTimelineTime(row.time)}
+                      {row.durationMs > 0 ? ` · ${formatTimelineDuration(row.durationMs)}` : ""}
+                      {row.nodeId ? ` · 节点 ${row.nodeId}` : ""}
+                    </small>
+                    {row.sourceRef && <code>源码：{row.sourceRef}</code>}
+                    {row.artifactRef && <code>产物：{row.artifactRef}</code>}
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </section>
+        )}
+        {message.references?.length ? (
+          <details className="ct-ai-run-evidence">
+            <summary>查看本轮证据（{message.references.length}）</summary>
+            <ul>
+              {message.references.map((ref) => {
+                const href = sourceReferenceHref(ref) || artifactReferenceHref(ref);
+                return (
+                  <li key={`${ref.source_type}:${ref.source_id}`}>
+                    {href ? <Link href={href}>{ref.title}</Link> : <span>{ref.title}</span>}
+                    {sourceLocationLabel(ref) && <code>{sourceLocationLabel(ref)}</code>}
+                  </li>
+                );
+              })}
+            </ul>
+          </details>
+        ) : null}
+        {taskId && taskRunId && <Link href={`/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(taskRunId)}`}>打开关联 Run Cockpit</Link>}
+      </div>
+    </details>
+  );
+}
+
+type PublicTimelineRow = {
+  id: string;
+  time: string;
+  category: string;
+  title: string;
+  summary: string;
+  status: string;
+  durationMs: number;
+  nodeId: string;
+  sourceRef: string;
+  artifactRef: string;
+};
+
+function publicTimelineRows(events: AIRunEvent[]): PublicTimelineRow[] {
+  const rows: PublicTimelineRow[] = [];
+  const paired = new Map<string, PublicTimelineRow>();
+  for (const event of events) {
+    const item = event.timeline;
+    if (!item) continue;
+    const row: PublicTimelineRow = {
+      id: item.id,
+      time: item.time || event.created_at,
+      category: item.category,
+      title: item.title,
+      summary: item.summary,
+      status: item.status,
+      durationMs: item.duration_ms,
+      nodeId: item.node_id,
+      sourceRef: item.source_ref,
+      artifactRef: item.artifact_ref,
+    };
+    if (!item.tool_pair_id) {
+      rows.push(row);
+      continue;
+    }
+    const current = paired.get(item.tool_pair_id);
+    if (!current) {
+      paired.set(item.tool_pair_id, row);
+      rows.push(row);
+      continue;
+    }
+    current.status = row.status;
+    current.summary = row.summary || current.summary;
+    current.durationMs = row.durationMs || current.durationMs;
+    current.sourceRef = row.sourceRef || current.sourceRef;
+    current.artifactRef = row.artifactRef || current.artifactRef;
+  }
+  return rows.slice(-50);
+}
+
+function formatTimelineTime(value: string): string {
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "时间未记录" : date.toLocaleTimeString("zh-CN", { hour12: false });
+}
+
+function formatTimelineDuration(value: number): string {
+  return value < 1000 ? `${value} 毫秒` : `${Math.round(value / 100) / 10} 秒`;
+}
+
+function aiExecutionModeLabel(value?: string) {
+  return ({ free_qa: "自由问答", workflow_constraint: "使用工作流约束回答（未执行 DAG）", task_run_review: "任务运行复盘", legacy: "历史模式" } as Record<string, string>)[value || ""] || "未记录";
+}
+
+function formatAiRunDuration(start?: string | null, end?: string | null) {
+  if (!start) return "未记录耗时";
+  const seconds = Math.max(0, Math.floor((new Date(end || Date.now()).getTime() - new Date(start).getTime()) / 1000));
+  return seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`;
 }

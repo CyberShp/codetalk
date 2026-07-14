@@ -42,6 +42,14 @@ export interface WorkbenchTask {
     compiled_definition: Record<string, unknown>;
     compiled_plan: Record<string, unknown>;
   };
+  ai_origins?: Array<{
+    conversation_id: string;
+    message_id: string;
+    ai_run_id: string;
+    task_run_id?: string;
+    relation_type: string;
+    created_at: string;
+  }>;
 }
 
 export interface WorkbenchTaskListQuery {

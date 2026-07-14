@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import settings
 from app.services.evidence_memory import EvidenceMemoryStore
+from app.services.ai_workbench_links import AIWorkbenchLinkStore
 from app.services.test_semantic_library import TestSemanticLibraryStore
 from app.services.workbench_task_run import WorkbenchTaskRunPreparer, WorkbenchTaskRunStore
 from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
@@ -189,6 +190,7 @@ async def get_task(task_id: str) -> dict[str, Any]:
     _require_v2()
     task = _task(task_id)
     version = _published_version(task.workflow_id, task.workflow_version_id)
+    origins = await AIWorkbenchLinkStore().list_links(task_id=task_id)
     return {
         **_task_payload(task),
         "runs": [_run_summary(run) for run in _task_runs(task_id)],
@@ -198,6 +200,17 @@ async def get_task(task_id: str) -> dict[str, Any]:
             "compiled_definition": version.compiled_definition,
             "compiled_plan": version.compiled_plan,
         },
+        "ai_origins": [
+            {
+                "conversation_id": item["conversation_id"],
+                "message_id": item["message_id"],
+                "ai_run_id": item["ai_run_id"],
+                "task_run_id": item["task_run_id"],
+                "relation_type": item["relation_type"],
+                "created_at": item["created_at"],
+            }
+            for item in origins
+        ],
     }
 
 

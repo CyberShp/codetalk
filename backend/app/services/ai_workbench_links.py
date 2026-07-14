@@ -57,6 +57,7 @@ class AIWorkbenchLinkStore:
         identifier = f"aiwbl_{uuid.uuid4().hex}"
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            await _ensure_schema(db)
             await db.execute(
                 """
                 INSERT OR IGNORE INTO ai_workbench_links(
@@ -120,12 +121,40 @@ class AIWorkbenchLinkStore:
         where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
+            await _ensure_schema(db)
             async with db.execute(
                 f"SELECT * FROM ai_workbench_links{where} ORDER BY created_at, id",
                 params,
             ) as cur:
                 rows = await cur.fetchall()
         return [_link_from_row(row) for row in rows]
+
+
+async def _ensure_schema(db: aiosqlite.Connection) -> None:
+    """Keep the additive relation usable during isolated API startup and upgrades."""
+    await db.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS ai_workbench_links (
+            id TEXT PRIMARY KEY,
+            conversation_id TEXT NOT NULL,
+            message_id TEXT NOT NULL DEFAULT '',
+            ai_run_id TEXT NOT NULL DEFAULT '',
+            task_id TEXT NOT NULL DEFAULT '',
+            task_run_id TEXT NOT NULL DEFAULT '',
+            relation_type TEXT NOT NULL,
+            metadata_json TEXT NOT NULL DEFAULT '{}',
+            created_at TEXT NOT NULL
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_ai_workbench_links_identity
+            ON ai_workbench_links(
+                conversation_id, message_id, ai_run_id, task_id, task_run_id, relation_type
+            );
+        CREATE INDEX IF NOT EXISTS idx_ai_workbench_links_task
+            ON ai_workbench_links(task_id, task_run_id, created_at);
+        CREATE INDEX IF NOT EXISTS idx_ai_workbench_links_conversation
+            ON ai_workbench_links(conversation_id, created_at);
+        """
+    )
 
 
 def _link_from_row(row: aiosqlite.Row) -> dict[str, Any]:

@@ -34,6 +34,7 @@ from app.services.ai_thread_artifacts import (
 from app.services.ai_run_snapshots import build_ai_run_snapshot
 from app.services.ai_workbench_links import AIWorkbenchLinkStore
 from app.services.agent_runtimes import AgentRuntimeStore
+from app.services.agent_run_coordinator import agent_run_coordinator
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
 from app.services.workflow_presets import (
     active_builtin_workflow_presets,
@@ -41,6 +42,7 @@ from app.services.workflow_presets import (
 )
 from app.services.workflow_version_store import workflow_header_status
 from app.services.workflow_version_store import WorkflowVersionStore
+from app.services.workbench_task_run import WorkbenchTaskRunStore
 from app.services.workbench_task_store import WorkbenchTaskStore
 
 router = APIRouter(prefix="/api/ai/conversations", tags=["ai-conversations"])
@@ -114,6 +116,61 @@ def _require_selected_workflow_available(initial_context: Any) -> None:
     unavailable = _selected_workflow_unavailability(initial_context)
     if unavailable:
         raise HTTPException(status_code=unavailable[0], detail=unavailable[1])
+
+
+def _freeze_selected_workflow_binding(initial_context: Any) -> dict[str, Any] | None:
+    if not isinstance(initial_context, dict):
+        return initial_context
+    context = dict(initial_context)
+    workflow_id = str(context.get("selected_workflow_id") or "").strip()
+    if not workflow_id:
+        return context
+    store = WorkflowVersionStore(settings.data_path / "workbench" / "workflows.db")
+    try:
+        header = store.get_workflow(workflow_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="所选工作流不存在或尚未发布") from exc
+    version_id = str(
+        context.get("selected_workflow_version_id") or header.published_version_id or ""
+    ).strip()
+    if not version_id:
+        raise HTTPException(status_code=409, detail="所选工作流尚无已发布版本")
+    try:
+        version = store.get_version(version_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="所选工作流版本不存在") from exc
+    if version.workflow_id != workflow_id:
+        raise HTTPException(status_code=422, detail="工作流版本与工作流不匹配")
+    if version.state != "published":
+        raise HTTPException(status_code=409, detail="AI 线程只能绑定已发布工作流版本")
+    outputs = [
+        {
+            key: item[key]
+            for key in ("id", "label", "type", "artifact", "required")
+            if key in item
+        }
+        for item in (version.compiled_definition or {}).get("outputs") or []
+        if isinstance(item, dict)
+    ]
+    context.update(
+        {
+            "selected_workflow_id": workflow_id,
+            "selected_workflow_version_id": version_id,
+            "selected_workflow_name": header.name,
+            "workflow_binding_snapshot": {
+                "recorded": True,
+                "status": "recorded",
+                "workflow_id": workflow_id,
+                "workflow_version_id": version_id,
+                "workflow_name": header.name,
+                "version_number": version.version_number,
+                "mode": "constraint_answer",
+                "label": "已固定工作流版本",
+                "outputs": outputs,
+            },
+        }
+    )
+    return context
 
 
 def _redact_payload(value: Any) -> Any:
@@ -215,7 +272,42 @@ def kick_conversation_queue(conversation_id: str) -> None:
                 if not runtime.get("enabled", True):
                     await store.fail_run(run_id, "Agent 执行器已停用")
                     return
-                await run_agent_generation(store=store, run_id=run_id, runtime=runtime)
+                runtime_snapshot = run.get("runtime_snapshot")
+                snapshot_provider = (
+                    str(runtime_snapshot.get("provider") or "")
+                    if isinstance(runtime_snapshot, dict)
+                    else ""
+                )
+                provider = _agent_capacity_provider(
+                    snapshot_provider
+                    or str(runtime.get("provider") or runtime.get("id") or "agent")
+                )
+
+                async def on_capacity_queued(queue_status: dict[str, Any]) -> None:
+                    await store.update_run_metrics(run_id, **queue_status)
+                    await store.append_event(
+                        run_id=run_id,
+                        conversation_id=conversation_id,
+                        event_type="status",
+                        payload={"status": "capacity_queued", **queue_status},
+                    )
+
+                async with agent_run_coordinator().slot(
+                    provider,
+                    on_queued=on_capacity_queued,
+                ) as capacity:
+                    await store.update_run_metrics(
+                        run_id,
+                        active_process_count=capacity["active_process_count"],
+                        global_queue_position=0,
+                        provider_queue_position=0,
+                        queued_reason="",
+                        provider=provider,
+                    )
+                    current = await store.get_run(run_id)
+                    if current.get("status") != "running":
+                        return
+                    await run_agent_generation(store=store, run_id=run_id, runtime=runtime)
                 return
             try:
                 llm = await maybe_await(create_llm_client_from_active())
@@ -248,6 +340,14 @@ def schedule_conversation_run(run_id: str) -> None:
     asyncio.create_task(_resolve_and_kick())
 
 
+def _agent_capacity_provider(value: str) -> str:
+    normalized = str(value or "agent").strip().lower()
+    for provider in ("codex", "claude", "opencode", "nga"):
+        if provider in normalized:
+            return provider
+    return normalized.removeprefix("agent-runtime:") or "agent"
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 async def create_conversation(body: CreateConversationRequest) -> dict[str, Any]:
     if body.scope_type not in AI_SCOPE_TYPES:
@@ -255,6 +355,7 @@ async def create_conversation(body: CreateConversationRequest) -> dict[str, Any]
     if body.runtime_type == "agent_runtime":
         await _require_enabled_agent_runtime(body.agent_runtime_id)
     _require_selected_workflow_available(body.initial_context)
+    initial_context = _freeze_selected_workflow_binding(body.initial_context)
     return await _store().create_conversation(
         scope_type=body.scope_type,
         scope_id=body.scope_id,
@@ -263,7 +364,7 @@ async def create_conversation(body: CreateConversationRequest) -> dict[str, Any]
         runtime_type=body.runtime_type,
         agent_runtime_id=body.agent_runtime_id,
         title=body.title,
-        initial_context=body.initial_context,
+        initial_context=initial_context,
     )
 
 
@@ -287,6 +388,108 @@ async def list_conversations(
         limit=limit,
     )
     return {"items": items}
+
+
+@router.post(
+    "/from-task-run/{task_run_id}",
+    status_code=status.HTTP_201_CREATED,
+)
+async def open_or_create_task_run_conversation(
+    task_run_id: str,
+    response: Response,
+) -> dict[str, Any]:
+    links = AIWorkbenchLinkStore()
+    for link in await links.list_links(
+        task_run_id=task_run_id,
+        relation_type="run_discussed_by_ai",
+    ):
+        try:
+            conversation = await _store().get_conversation(str(link["conversation_id"]))
+        except KeyError:
+            continue
+        response.status_code = status.HTTP_200_OK
+        return {"conversation": conversation, "created": False, "link": link}
+
+    try:
+        run = WorkbenchTaskRunStore(
+            settings.data_path / "workbench" / "task_runs"
+        ).load(task_run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="运行记录不存在") from exc
+    if not run.task_id:
+        raise HTTPException(status_code=409, detail="该历史运行没有关联 V2 任务")
+    tasks = WorkbenchTaskStore(settings.data_path / "workbench" / "workflows.db")
+    try:
+        task = tasks.get_task(run.task_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="关联任务不存在") from exc
+    versions = WorkflowVersionStore(settings.data_path / "workbench" / "workflows.db")
+    try:
+        header = versions.get_workflow(task.workflow_id)
+        version = versions.get_version(task.workflow_version_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="关联工作流版本不存在") from exc
+
+    execution_status = str(run.execution_status or "prepared")
+    quality_status = str(run.quality_status or "not_checked")
+    delivery_status = str(run.delivery_status or "none")
+    context = {
+        "task_id": task.task_id,
+        "task_run_id": run.task_run_id,
+        "attempt_number": run.attempt_number,
+        "workflow_id": task.workflow_id,
+        "workflow_version_id": task.workflow_version_id,
+        "workflow_name": header.name,
+        "workflow_version_number": version.version_number,
+        "execution_status": execution_status,
+        "quality_status": quality_status,
+        "delivery_status": delivery_status,
+        "artifact_manifest_ref": {
+            "kind": "task_run_artifact_manifest",
+            "task_run_id": run.task_run_id,
+            "href": f"/api/workbench/task-runs/{quote(run.task_run_id, safe='')}/artifacts",
+        },
+        "failure_summary": (
+            "本次运行未完成，请结合公开事件和交付件继续分析。"
+            if execution_status in {"failed", "error", "interrupted"}
+            else ""
+        ),
+        "current_node": "",
+        "parent_task_run_id": run.parent_task_run_id,
+        "selected_workflow_id": task.workflow_id,
+        "selected_workflow_version_id": task.workflow_version_id,
+        "selected_workflow_name": header.name,
+        "workflow_binding_snapshot": {
+            "recorded": True,
+            "status": "recorded",
+            "workflow_id": task.workflow_id,
+            "workflow_version_id": task.workflow_version_id,
+            "workflow_name": header.name,
+            "version_number": version.version_number,
+            "mode": "task_run_review",
+            "label": "关联任务运行",
+        },
+    }
+    conversation = await _store().create_conversation(
+        scope_type="workbench_task_run",
+        scope_id=run.task_run_id,
+        workspace_id=task.workspace_id,
+        memory_namespace=f"workspace:{task.workspace_id}",
+        title=f"{task.name} · Attempt {run.attempt_number or 1}",
+        initial_context=context,
+    )
+    link = await links.create_link(
+        conversation_id=conversation["id"],
+        task_id=task.task_id,
+        task_run_id=run.task_run_id,
+        relation_type="run_discussed_by_ai",
+        metadata={
+            "workflow_id": task.workflow_id,
+            "workflow_version_id": task.workflow_version_id,
+            "attempt_number": run.attempt_number,
+        },
+    )
+    return {"conversation": conversation, "created": True, "link": link}
 
 
 @router.get("/{conversation_id}")
@@ -337,6 +540,29 @@ async def list_messages(conversation_id: str) -> dict[str, Any]:
     except KeyError:
         raise HTTPException(status_code=404, detail="AI conversation not found")
     return {"items": _redact_payload(await _store().list_messages(conversation_id))}
+
+
+@router.get("/{conversation_id}/runs")
+async def list_conversation_runs(
+    conversation_id: str,
+    limit: int = Query(default=200, ge=1, le=500),
+    include_timeline: bool = Query(default=False),
+    timeline_limit: int = Query(default=50, ge=1, le=100),
+) -> dict[str, Any]:
+    try:
+        await _store().get_conversation(conversation_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="AI conversation not found")
+    return {
+        "items": _redact_payload(
+            await _store().list_runs(
+                conversation_id,
+                limit=limit,
+                include_timeline=include_timeline,
+                timeline_limit=timeline_limit,
+            )
+        )
+    }
 
 
 @router.get("/{conversation_id}/events")
@@ -444,18 +670,24 @@ async def create_task_draft(
     initial_context = conversation.get("initial_context")
     context = initial_context if isinstance(initial_context, dict) else {}
     workflow_id = str(body.workflow_id or context.get("selected_workflow_id") or "").strip()
-    version_id = str(
+    requested_version_id = str(
         body.workflow_version_id
         or context.get("selected_workflow_version_id")
         or ""
     ).strip()
-    if not workflow_id or not version_id:
+    if not workflow_id:
         raise HTTPException(status_code=422, detail="请先选择已发布工作流版本")
     _require_selected_workflow_available({"selected_workflow_id": workflow_id})
 
     versions = WorkflowVersionStore(settings.data_path / "workbench" / "workflows.db")
     try:
         header = versions.get_workflow(workflow_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="工作流或版本不存在") from exc
+    version_id = requested_version_id or str(header.published_version_id or "")
+    if not version_id:
+        raise HTTPException(status_code=409, detail="所选工作流尚无已发布版本")
+    try:
         version = versions.get_version(version_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="工作流或版本不存在") from exc
