@@ -94,6 +94,13 @@ const agentTransportLabel = (transport: AgentRuntimeCreate["prompt_transport"]) 
   }
 };
 
+const agentOutputModeLabel = (mode: AgentRuntimeCreate["output_mode"]) => ({
+  plain: "普通文本",
+  auto: "自动识别输出",
+  ndjson: "逐行结构化输出",
+  stream_json: "流式结构化输出",
+})[mode] ?? mode;
+
 const AGENT_RUNTIME_PRESETS = [
   {
     id: "claude-code",
@@ -216,11 +223,11 @@ function AgentRuntimeCard({
             {agentTransportLabel(runtime.prompt_transport)}
           </span>
           <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[11px] text-on-surface-variant">
-            {runtime.output_mode}
+            {agentOutputModeLabel(runtime.output_mode)}
           </span>
           {runtime.session_persistence === "resume_args" && (
             <span className="rounded-full bg-primary-container px-2 py-0.5 text-[11px] text-on-primary-container">
-              resume
+              自动续接会话
             </span>
           )}
         </div>
@@ -680,8 +687,8 @@ export default function SettingsPage() {
                 选择你在终端里常用的启动方式。AI 线程会直接调用这些本机 Agent；只有选择“内置模型”时，才需要下面的 LLM 配置。
               </p>
               <p className="mt-2 max-w-2xl text-xs leading-5 text-on-surface-variant">
-                Command 只填可执行文件，例如 <code className="font-data">ccr</code>、<code className="font-data">nga</code>、<code className="font-data">python</code>；
-                参数放到 Args，例如 <code className="font-data">code</code>。不要把 <code className="font-data">ccr code</code> 整体填进 Command。
+                “命令”只填可执行文件，例如 <code className="font-data">ccr</code>、<code className="font-data">nga</code>、<code className="font-data">python</code>；
+                子命令放到“启动参数”，例如 <code className="font-data">code</code>。不要把 <code className="font-data">ccr code</code> 整体填进“命令”。
               </p>
             </div>
             <span className="rounded-full border border-outline-variant/20 bg-surface px-3 py-1 text-xs font-medium text-on-surface-variant">
@@ -738,7 +745,7 @@ export default function SettingsPage() {
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-on-surface-variant">
-                  Command
+                  命令
                 </label>
                 <input
                   value={agentRuntimeForm.command}
@@ -749,7 +756,7 @@ export default function SettingsPage() {
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-on-surface-variant">
-                  Args
+                  启动参数
                 </label>
                 <input
                   value={agentRuntimeArgsText}
@@ -828,8 +835,8 @@ export default function SettingsPage() {
                   >
                     <option value="plain">普通文本</option>
                     <option value="auto">自动识别</option>
-                    <option value="ndjson">NDJSON</option>
-                    <option value="stream_json">stream-json</option>
+                    <option value="ndjson">逐行结构化输出</option>
+                    <option value="stream_json">流式结构化输出</option>
                   </select>
                 </div>
                 <div>
@@ -914,14 +921,14 @@ export default function SettingsPage() {
                       className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface focus:border-primary/50 focus:outline-none"
                     >
                       <option value="none">不续接</option>
-                      <option value="resume_args">使用 resume 参数</option>
+                      <option value="resume_args">使用续接参数</option>
                     </select>
                   </div>
                 )}
                 {!managedAgentRuntime && agentRuntimeForm.session_persistence === "resume_args" && (
                   <div className="lg:col-span-3">
                     <label className="mb-1 block text-xs font-medium text-on-surface-variant">
-                      Resume 参数
+                      续接参数
                     </label>
                     <input
                       value={agentRuntimeResumeArgsText}

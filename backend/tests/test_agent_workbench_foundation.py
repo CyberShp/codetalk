@@ -700,6 +700,75 @@ def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_pa
     assert "agent_run_completed" in events
 
 
+def test_workflow_harness_projects_managed_claude_oauth_without_exposing_keychain(
+    monkeypatch,
+):
+    from app.services import agent_cli_bridge, agent_run_harness
+
+    class SecurityResult:
+        returncode = 0
+        stdout = '{"claudeAiOauth":{"accessToken":"workflow-oauth-token","refreshToken":"do-not-pass"}}'
+
+    monkeypatch.setattr(agent_cli_bridge.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        agent_cli_bridge.shutil,
+        "which",
+        lambda command: {
+            "security": "/usr/bin/security",
+            "claude": "/usr/local/bin/claude",
+        }.get(command),
+    )
+    monkeypatch.setattr(
+        agent_cli_bridge.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SecurityResult(),
+    )
+    monkeypatch.setattr(
+        agent_run_harness,
+        "_base_agent_process_env_for_harness",
+        lambda **_kwargs: {"PATH": "/usr/bin"},
+        raising=False,
+    )
+
+    env = agent_run_harness._agent_process_env_for_harness(
+        provider="agent-runtime:default-claude-code",
+        repo_path="/repo",
+        command=["/usr/local/bin/claude"],
+        prompt_transport="claude_print_arg",
+    )
+
+    assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "workflow-oauth-token"
+    assert "do-not-pass" not in json.dumps(env)
+
+
+def test_workflow_harness_does_not_project_claude_oauth_to_custom_wrapper(monkeypatch):
+    from app.services import agent_cli_bridge, agent_run_harness
+
+    monkeypatch.setattr(agent_cli_bridge.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        agent_cli_bridge.subprocess,
+        "run",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("security must not run")
+        ),
+    )
+    monkeypatch.setattr(
+        agent_run_harness,
+        "_base_agent_process_env_for_harness",
+        lambda **_kwargs: {"PATH": "/usr/bin"},
+        raising=False,
+    )
+
+    env = agent_run_harness._agent_process_env_for_harness(
+        provider="agent-runtime:custom-claude-wrapper",
+        repo_path="/repo",
+        command=["/tmp/custom-claude-wrapper"],
+        prompt_transport="claude_print_arg",
+    )
+
+    assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
+
+
 def test_agent_run_harness_refreshes_output_contract_for_rerun(tmp_path):
     from app.services.agent_run_harness import AgentRunHarness
 

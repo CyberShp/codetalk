@@ -1,4 +1,4 @@
-def test_release_workflow_presets_only_expose_source_flow_sfmea_blackbox():
+def test_release_workflow_presets_expose_full_and_two_basic_workflows():
     from app.services.workflow_presets import (
         active_builtin_workflow_presets,
         reserved_builtin_workflow_ids,
@@ -6,9 +6,139 @@ def test_release_workflow_presets_only_expose_source_flow_sfmea_blackbox():
 
     presets = active_builtin_workflow_presets()
 
-    assert [item["id"] for item in presets] == ["source_flow_sfmea_blackbox"]
+    assert [item["id"] for item in presets] == [
+        "source_flow_sfmea_blackbox",
+        "basic_source_report_claude",
+        "basic_source_design_report_builtin",
+    ]
     assert "module_analysis" in reserved_builtin_workflow_ids()
     assert "source_flow_sfmea_blackbox" in reserved_builtin_workflow_ids()
+
+
+def test_basic_report_workflow_presets_have_minimal_inputs_and_one_report_contract():
+    from app.services.workflow_presets import active_builtin_workflow_presets
+
+    by_id = {item["id"]: item for item in active_builtin_workflow_presets()}
+
+    source_only = by_id["basic_source_report_claude"]["definition"]
+    assert source_only["description"] == by_id["basic_source_report_claude"]["description"]
+    assert source_only["execution_subject"] == "agent"
+    assert source_only["execution_label"] == "Claude Code"
+    assert source_only["inputs"] == [
+        {
+            "id": "repo_path",
+            "label": "源码工作空间",
+            "type": "directory",
+            "required": True,
+            "resolver": "workspace",
+            "role": "SPDK 源码工作空间",
+        }
+    ]
+    source_step = source_only["steps"][0]
+    assert source_step["type"] == "agent_task"
+    assert source_step["provider"] == "claude-code"
+    assert "mcp_profile" not in source_step
+    assert source_step["required_artifacts"] == ["report.md"]
+    assert "SPDK iSCSI login" in source_step["goal"]
+    assert "不得声称该用例可直接执行" in source_step["goal"]
+    assert "tcpdump" in source_step["goal"] and "tshark" in source_step["goal"]
+    assert "Git revision" in source_step["goal"]
+    assert "iscsi_set_options -c" in source_step["goal"]
+    assert "Occurrence" in source_step["goal"]
+    assert {"流程", "SFMEA", "黑盒测试用例"}.issubset(set(source_step["report_sections"]))
+    assert source_step["source_context_limit"] >= 36
+    assert source_step["source_context_min_test_files"] >= 6
+    assert source_step["source_analysis_max_files"] == source_step["source_context_limit"]
+    assert source_step["source_analysis_max_evidence_anchors"] == source_step["source_context_limit"]
+    evidence_hints = source_step["source_evidence_hints"]
+    assert {item["term"] for item in evidence_hints}.issuperset(
+        {
+            "iscsi_auth_params",
+            "iscsi_conn_login_pdu_err_complete",
+            "iscsi_op_login_rsp_handle_csg_bit",
+            "iscsi_pdu_payload_op_login",
+            "ISCSI_LOGIN_AUTHENT_FAIL",
+            "ISCSI_LOGIN_TIMEOUT",
+            "configuring initiator with biderectional authentication",
+            "HeaderDigest",
+            "fuzz_iscsi_send_login_request",
+            "login_timer = SPDK_POLLER_REGISTER",
+            "_iscsi_conn_destruct",
+            "conn->state == ISCSI_CONN_STATE_EXITING",
+            "this PDU should be sent without digest",
+            "append_iscsi_sess",
+            "sess->connections >= sess->MaxConnections",
+            "TODO: need a mutex",
+            "iscsi_copy_param2var",
+            "data digest error",
+            "header digest error",
+            "LOGIN and LOGOUT opcodes are ignored here",
+            "ISCSI_LOGIN_UNSUPPORTED_VERSION",
+            "ISCSI_LOGIN_AUTHORIZATION_FAIL",
+            "Set T/CSG/NSG to reserved if login error",
+            "case ISCSI_FULL_FEATURE_PHASE",
+            "--max-connections-per-session",
+        }
+    )
+    assert all(not item["path"].startswith("test/nvmf/") for item in evidence_hints)
+    assert source_only["outputs"] == [
+        {
+            "id": "report",
+            "label": "分析报告",
+            "type": "combined_test_report",
+            "from": "analyze",
+            "artifact": "report.md",
+            "min_sfmea_rows": 12,
+            "min_black_box_cases": 12,
+            "required_evidence_terms": [
+                "iscsi_auth_params",
+                "iscsi_conn_login_pdu_err_complete",
+                "iscsi_pdu_payload_op_login",
+                "ISCSI_LOGIN_AUTHENT_FAIL",
+                "ISCSI_LOGIN_TIMEOUT",
+                "test/iscsi_tgt/chap/chap_mutual_not_set.sh",
+                "test/iscsi_tgt/multiconnection/multiconnection.sh",
+            ],
+            "forbidden_evidence_path_prefixes": ["test/nvmf/"],
+            "forbidden_claim_terms": [
+                "默认 60s",
+                "[待验证] 60s",
+                "iscsi_check_chap_params 未使用常量时间比较",
+                "AuthMethod 为 NULL 时跳过认证",
+                "switch 缺少 ISCSI_FULL_FEATURE_PHASE",
+                "MaxConnections 已达上限时返回的成功",
+                "登录错误响应中 C-bit 未置位",
+                "Digest 校验失败后未释放",
+            ],
+        }
+    ]
+
+    with_design = by_id["basic_source_design_report_builtin"]["definition"]
+    assert with_design["description"] == by_id["basic_source_design_report_builtin"]["description"]
+    assert with_design["execution_subject"] == "builtin_llm"
+    assert with_design["execution_label"] == "内置模型"
+    assert [item["id"] for item in with_design["inputs"]] == [
+        "repo_path",
+        "design_doc",
+    ]
+    assert with_design["inputs"][1] == {
+        "id": "design_doc",
+        "label": "开发设计文档",
+        "type": "file",
+        "required": True,
+        "resolver": "local",
+        "role": "iSCSI login 设计约束与外部行为",
+    }
+    builtin_step = with_design["steps"][0]
+    assert builtin_step["provider"] == "builtin-llm"
+    assert builtin_step["execution_mode"] == "staged"
+    assert "mcp_profile" not in builtin_step
+    assert builtin_step["required_artifacts"] == ["report.md"]
+    assert builtin_step["input_ports"] == [
+        {"id": "repo_path", "type": "directory", "required": True},
+        {"id": "design_doc", "type": "file", "required": True},
+    ]
+    assert with_design["outputs"][0]["artifact"] == "report.md"
 
 
 def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
@@ -93,6 +223,8 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         *ORIGINAL_CORE_WORKFLOW_PRESET_IDS,
         "source_flow_sfmea_blackbox",
         "testing_activity_orchestration",
+        "basic_source_report_claude",
+        "basic_source_design_report_builtin",
     )
     assert preset_ids[: len(ORIGINAL_CORE_WORKFLOW_PRESET_IDS)] == list(
         ORIGINAL_CORE_WORKFLOW_PRESET_IDS
@@ -374,7 +506,7 @@ def test_workflow_definition_validates_input_schema_definition():
             "outputs": [
                 {
                     "id": "report",
-                    "type": "markdown",
+                "type": "combined_test_report",
                     "from": "agent",
                     "artifact": "C:/outside/report.md",
                 }

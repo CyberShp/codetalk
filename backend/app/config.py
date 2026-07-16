@@ -124,7 +124,7 @@ class Settings(BaseSettings):
 
     # Analysis tuning
     analysis_concurrency: int = 10   # max parallel module analyses
-    llm_max_concurrency: int = 1     # admin env var LLM_MAX_CONCURRENCY; controls report-gen parallelism
+    llm_max_concurrency: int = 2     # process-wide provider capacity; keeps outline branches concurrent
     health_check_timeout: int = 5    # seconds for tool health probes
     llm_max_output_tokens: int = 8192  # LLM_MAX_OUTPUT_TOKENS — cap per-call output; set lower for intranet models
     ai_conversation_streaming_enabled: bool = True  # AI_CONVERSATION_STREAMING_ENABLED — disable for providers with broken SSE
@@ -133,7 +133,7 @@ class Settings(BaseSettings):
     # Staged source analysis is an evidence-ranking assist, not a second source
     # discovery pass. ``source_analysis_model`` accepts an LLM config id/model
     # name; an empty value keeps the active model while retaining every limit.
-    source_analysis_model: str = ""
+    source_analysis_model: str = "auto"
     source_analysis_max_tokens: int = Field(default=1600, ge=256, le=4096)
     source_analysis_max_chinese_characters: int = Field(default=1200, ge=200, le=8000)
     source_analysis_max_evidence_anchors: int = Field(default=12, ge=1, le=48)
@@ -146,6 +146,42 @@ class Settings(BaseSettings):
     source_analysis_total_timeout_seconds: int = Field(default=480, ge=1, le=600)
     source_analysis_cache_enabled: bool = True
     source_analysis_schema_version: str = "source-evidence-pack-v1"
+    staged_workflow_timeout_seconds: int = Field(default=1200, ge=60, le=1200)
+    staged_workflow_max_tokens: int = Field(default=12000, ge=1000, le=32000)
+    staged_quality_repair_enabled: bool = True
+    staged_quality_repair_max_attempts: int = Field(default=2, ge=0, le=2)
+    # Every staged LLM phase owns a bounded execution policy.  The generic
+    # ceiling is six minutes; business-flow uses a tighter default because its
+    # deterministic outline is already available before model enhancement.
+    regular_stage_provider_timeout_seconds: int = Field(default=300, ge=1, le=360)
+    regular_stage_total_timeout_seconds: int = Field(default=360, ge=1, le=360)
+    regular_stage_repair_timeout_seconds: int = Field(default=60, ge=1, le=60)
+    regular_stage_repair_max_tokens: int = Field(default=500, ge=128, le=600)
+    regular_stage_cache_enabled: bool = True
+    regular_stage_cache_version: str = "regular-stage-cache-v1"
+    regular_stage_structured_fast_model_enabled: bool = True
+    business_flow_max_tokens: int = Field(default=8000, ge=512, le=8000)
+    black_box_cases_max_tokens: int = Field(default=12000, ge=6000, le=16000)
+    business_flow_provider_timeout_seconds: int = Field(default=180, ge=1, le=360)
+    business_flow_total_timeout_seconds: int = Field(default=240, ge=1, le=360)
+    business_flow_repair_timeout_seconds: int = Field(default=30, ge=1, le=60)
+    business_flow_streaming: bool = True
+    business_flow_checkpoint_characters: int = Field(default=256, ge=64, le=4000)
+    regular_stage_heartbeat_seconds: int = Field(default=10, ge=1, le=60)
+    regular_stage_cancel_grace_seconds: float = Field(default=0.25, ge=0.01, le=2.0)
+    flow_evidence_timeout_seconds: int = Field(default=45, ge=1, le=45)
+    flow_evidence_max_files: int = Field(default=12, ge=1, le=24)
+    flow_evidence_schema_version: str = "flow-evidence-pack-v1"
+    flow_outline_schema_version: str = "flow-outline-v1"
+    behavior_claim_audit_enabled: bool = True
+    behavior_claim_audit_runtime_id: str = "default-codex"
+    behavior_claim_audit_model: str = "gpt-5.5"
+    behavior_claim_audit_reasoning_effort: str = "medium"
+    behavior_claim_audit_timeout_seconds: int = Field(default=360, ge=30, le=600)
+    behavior_claim_audit_max_claims: int = Field(default=64, ge=1, le=128)
+    behavior_claim_audit_context_chars: int = Field(default=6000, ge=1000, le=12000)
+    behavior_claim_audit_batch_size: int = Field(default=16, ge=1, le=32)
+    behavior_claim_audit_concurrency: int = Field(default=4, ge=1, le=8)
     gitnexus_poll_timeout: int = 600 # max seconds to wait for GitNexus indexing
     coverage_max_upload_mb: int = 100 # max single file size for coverage upload
 

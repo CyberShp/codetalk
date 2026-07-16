@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import shutil
 import subprocess
 import threading
 import uuid
@@ -32,6 +33,11 @@ from app.services.workflow_dsl import WorkflowStore
 
 AGENT_RUNTIME_PROVIDER_PREFIX = "agent-runtime:"
 BUILTIN_LLM_PROVIDER_ID = "builtin-llm"
+MANAGED_RUNTIME_ALIASES = {
+    "claude-code": ("default-claude-code", "claude", "claude_print_arg"),
+    "opencode": ("default-opencode", "opencode", "opencode_run_arg"),
+    "codex": ("default-codex", "codex", "codex_exec_json"),
+}
 SOURCE_EXTENSIONS = frozenset({
     ".c", ".h", ".cc", ".cpp", ".hpp", ".py", ".go", ".rs", ".java",
     ".ts", ".tsx", ".js", ".jsx", ".sh", ".json",
@@ -141,14 +147,44 @@ class WorkbenchTaskRunPreparer:
             evidence_memory=self.evidence_memory,
             semantic_library=self.semantic_library,
         )
-        source_context_memo: dict[tuple[str, str], dict[str, Any]] = {}
+        source_context_memo: dict[tuple[Any, ...], dict[str, Any]] = {}
 
-        def prepared_source_context(query: str) -> dict[str, Any]:
-            key = (str(repo_path or ""), str(query or ""))
+        def prepared_source_context(
+            query: str,
+            *,
+            limit: int = 8,
+            min_test_files: int = 2,
+            evidence_hints: list[dict[str, Any]] | None = None,
+            search_roots: list[str] | None = None,
+        ) -> dict[str, Any]:
+            normalized_hints = tuple(
+                (
+                    str(item.get("path") or "").strip(),
+                    str(item.get("term") or "").strip(),
+                    str(item.get("label") or "").strip(),
+                )
+                for item in evidence_hints or []
+                if isinstance(item, dict)
+            )
+            normalized_roots = tuple(
+                str(value).strip() for value in search_roots or [] if str(value).strip()
+            )
+            key = (
+                str(repo_path or ""),
+                str(query or ""),
+                limit,
+                min_test_files,
+                normalized_hints,
+                normalized_roots,
+            )
             if key not in source_context_memo:
                 source_context_memo[key] = build_local_source_context(
                     repo_path=repo_path,
                     query=query,
+                    limit=limit,
+                    min_test_files=min_test_files,
+                    evidence_hints=evidence_hints,
+                    search_roots=list(normalized_roots),
                 )
             return json.loads(json.dumps(source_context_memo[key]))
 
@@ -251,7 +287,9 @@ class WorkbenchTaskRunPreparer:
             if not isinstance(step, dict) or step.get("type") != "agent_task":
                 continue
             step_id = str(step.get("id") or f"step_{len(agent_runs) + 1}")
-            provider = str(provider_override or step.get("provider") or "claude-code")
+            provider = _canonical_agent_provider(
+                str(provider_override or step.get("provider") or "claude-code")
+            )
             command = _agent_task_provider_command(provider)
             runtime_limits = _agent_task_runtime_limits(provider)
             prompt_transport = _agent_task_prompt_transport(provider)
@@ -270,7 +308,21 @@ class WorkbenchTaskRunPreparer:
                 semantic_library=self.semantic_library,
             )
             step_local_source_context = prepared_source_context(
-                str(step_context_bundle.get("query") or "")
+                str(step_context_bundle.get("query") or ""),
+                limit=max(1, int(step.get("source_context_limit") or 8)),
+                min_test_files=max(
+                    0, int(step.get("source_context_min_test_files") or 2)
+                ),
+                evidence_hints=[
+                    dict(item)
+                    for item in step.get("source_evidence_hints") or []
+                    if isinstance(item, dict)
+                ],
+                search_roots=[
+                    str(value)
+                    for value in step.get("source_context_search_roots") or []
+                    if str(value).strip()
+                ],
             )
             step_context_bundle["local_source_context"] = step_local_source_context
             step_agent_instructions = collect_agent_instructions(
@@ -526,15 +578,21 @@ def build_local_source_context(
     repo_path: str,
     query: str,
     limit: int = 8,
+    min_test_files: int = 2,
     max_candidates_to_read: int = 80,
     max_files_scanned: int = 5000,
     max_file_bytes: int = 768 * 1024,
     excerpt_radius: int = 4,
     path_hints: list[str] | None = None,
     search_roots: list[str] | None = None,
+    evidence_hints: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     repo = Path(str(repo_path or ""))
-    tokens = _source_query_tokens(query)
+    tokens = [
+        token
+        for token in _source_query_tokens(query)
+        if token != repo.name.lower()
+    ]
     base = {
         "provider": "local-source-search",
         "query": query[:2000],
@@ -575,7 +633,12 @@ def build_local_source_context(
         relative_paths=git_files,
         search_roots=effective_roots,
     )
-    scored: list[dict[str, Any]] = []
+    scored = _materialize_source_evidence_hints(
+        root=root,
+        evidence_hints=evidence_hints,
+        max_file_bytes=max_file_bytes,
+        excerpt_radius=max(8, excerpt_radius),
+    )
     for item in candidates[:max_candidates_to_read]:
         rel_path = str(item["file_path"])
         source_path = root / rel_path
@@ -617,8 +680,32 @@ def build_local_source_context(
             "classification": _local_source_classification(rel_path),
             "status": "validated_source_file",
         })
-    scored.sort(key=lambda item: (-int(item.get("score") or 0), str(item.get("file_path") or "")))
-    files = _select_source_and_test_evidence(scored, limit=limit)
+    deduplicated: list[dict[str, Any]] = []
+    seen_slices: set[tuple[str, int, int]] = set()
+    for item in scored:
+        slice_key = (
+            str(item.get("file_path") or ""),
+            int(item.get("start_line") or 0),
+            int(item.get("end_line") or 0),
+        )
+        if slice_key in seen_slices:
+            continue
+        seen_slices.add(slice_key)
+        deduplicated.append(item)
+    scored = deduplicated
+    scored.sort(
+        key=lambda item: (
+            not bool(item.get("evidence_hint")),
+            not bool(item.get("symbols")),
+            -int(item.get("score") or 0),
+            str(item.get("file_path") or ""),
+        )
+    )
+    files = _select_source_and_test_evidence(
+        scored,
+        limit=limit,
+        min_test_files=min_test_files,
+    )
     return {
         **base,
         "status": "ready" if files else "empty",
@@ -633,8 +720,71 @@ def build_local_source_context(
     }
 
 
+def _materialize_source_evidence_hints(
+    *,
+    root: Path,
+    evidence_hints: list[dict[str, Any]] | None,
+    max_file_bytes: int,
+    excerpt_radius: int,
+) -> list[dict[str, Any]]:
+    cards: list[dict[str, Any]] = []
+    seen_hints: set[tuple[str, str]] = set()
+    for index, hint in enumerate(evidence_hints or []):
+        if not isinstance(hint, dict):
+            continue
+        rel_path = str(hint.get("path") or "").strip().replace("\\", "/")
+        if rel_path.startswith("./"):
+            rel_path = rel_path[2:]
+        term = str(hint.get("term") or "").strip()
+        if not rel_path or not term or (rel_path, term) in seen_hints:
+            continue
+        seen_hints.add((rel_path, term))
+        source_path = (root / rel_path).resolve()
+        try:
+            source_path.relative_to(root)
+        except ValueError:
+            continue
+        if (
+            not source_path.is_file()
+            or source_path.suffix.lower() not in SOURCE_EXTENSIONS
+        ):
+            continue
+        try:
+            data = source_path.read_bytes()
+        except OSError:
+            continue
+        if len(data) > max_file_bytes:
+            continue
+        text = data.decode("utf-8", errors="replace")
+        if term.lower() not in text.lower():
+            continue
+        excerpt, start_line, end_line = _source_excerpt(
+            text,
+            tokens=[term.lower()],
+            radius=excerpt_radius,
+            max_chars=4000,
+        )
+        cards.append({
+            "file_path": rel_path,
+            "score": 100_000 - index,
+            "matched_terms": [term],
+            "start_line": start_line,
+            "end_line": end_line,
+            "excerpt": excerpt,
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size_bytes": len(data),
+            "line_count": _line_count_text(text),
+            "symbols": _source_symbols(excerpt)[:12],
+            "classification": _local_source_classification(rel_path),
+            "status": "validated_source_file",
+            "evidence_hint": True,
+            "evidence_label": str(hint.get("label") or "").strip(),
+        })
+    return cards
+
+
 def _select_source_and_test_evidence(
-    scored: list[dict[str, Any]], *, limit: int
+    scored: list[dict[str, Any]], *, limit: int, min_test_files: int = 2
 ) -> list[dict[str, Any]]:
     selected = list(scored[: max(0, limit)])
     if limit < 2 or not selected:
@@ -664,6 +814,33 @@ def _select_source_and_test_evidence(
         )
         selected[replace_index] = replacement
         selected_classes.add(required_class)
+    desired_test_files = min(max(0, min_test_files), limit - 1)
+    selected_paths = {str(item.get("file_path") or "") for item in selected}
+    test_count = sum(
+        str(item.get("classification") or "source") == "test"
+        for item in selected
+    )
+    for candidate in scored:
+        if test_count >= desired_test_files:
+            break
+        if str(candidate.get("classification") or "source") != "test":
+            continue
+        if str(candidate.get("file_path") or "") in selected_paths:
+            continue
+        replace_index = next(
+            (
+                index
+                for index in range(len(selected) - 1, -1, -1)
+                if str(selected[index].get("classification") or "source") != "test"
+            ),
+            -1,
+        )
+        if replace_index < 0:
+            break
+        selected_paths.discard(str(selected[replace_index].get("file_path") or ""))
+        selected[replace_index] = candidate
+        selected_paths.add(str(candidate.get("file_path") or ""))
+        test_count += 1
     selected.sort(
         key=lambda item: (-int(item.get("score") or 0), str(item.get("file_path") or ""))
     )
@@ -851,13 +1028,23 @@ def _local_source_classification(path: str) -> str:
 
 
 def _source_query_tokens(query: str) -> list[str]:
-    raw_tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", str(query or "").lower())
-    if re.search(r"\bio\b", str(query or ""), flags=re.IGNORECASE):
+    query_without_paths = re.sub(
+        r"(?<![A-Za-z0-9_.-])(?:/[A-Za-z0-9_.-]+){2,}",
+        " ",
+        str(query or ""),
+    )
+    raw_tokens = re.findall(
+        r"[A-Za-z_][A-Za-z0-9_]{2,}", query_without_paths.lower()
+    )
+    if re.search(r"\bio\b", query_without_paths, flags=re.IGNORECASE):
         raw_tokens.append("io")
     stop = {
         "the", "and", "for", "with", "from", "this", "that", "shall",
         "must", "should", "when", "then", "only", "path", "file",
         "tmp", "volumes", "media",
+        "analysis", "analyze", "source", "code", "evidence", "output",
+        "report", "workflow", "markdown", "json", "sfmea", "black",
+        "box", "case", "cases",
     }
     return _unique_strings(token for token in raw_tokens if token not in stop)[:32]
 
@@ -949,6 +1136,13 @@ def _source_symbols(text: str) -> list[str]:
         if name in {"if", "for", "while", "switch", "return", "sizeof"}:
             continue
         symbols.append(name)
+    supplemental_patterns = (
+        re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE),
+        re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.MULTILINE),
+        re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*\{", re.MULTILINE),
+    )
+    for supplemental in supplemental_patterns:
+        symbols.extend(match.group(1) for match in supplemental.finditer(text[:20000]))
     return _unique_strings(symbols)
 
 
@@ -1500,6 +1694,14 @@ def build_executor_handoff_contract(
         "source_context": _execution_source_context(
             source_context=source_context,
         ),
+        "source_analysis_limits": {
+            key: max(1, int(step[field]))
+            for key, field in (
+                ("max_files", "source_analysis_max_files"),
+                ("max_evidence_anchors", "source_analysis_max_evidence_anchors"),
+            )
+            if step.get(field) is not None
+        },
         "test_activity_contract": dict(test_activity_contract or {}),
         "mcp": {
             "profile": str(step.get("mcp_profile") or ""),
@@ -1841,7 +2043,9 @@ def build_agent_provider_snapshot(
         if not isinstance(step, dict) or step.get("type") != "agent_task":
             continue
         step_id = str(step.get("id") or f"step_{len(steps) + 1}")
-        provider = str(provider_override or step.get("provider") or "claude-code")
+        provider = _canonical_agent_provider(
+            str(provider_override or step.get("provider") or "claude-code")
+        )
         steps[step_id] = {
             "provider": provider,
             "mcp_profile": str(step.get("mcp_profile") or ""),
@@ -1932,6 +2136,36 @@ def _agent_runtime_for_provider(provider: str | None) -> dict[str, Any] | None:
     if not runtime or not runtime.get("enabled", True):
         return None
     return runtime
+
+
+def _canonical_agent_provider(provider: str) -> str:
+    value = str(provider or "").strip()
+    if not value or value == BUILTIN_LLM_PROVIDER_ID or value.startswith(AGENT_RUNTIME_PROVIDER_PREFIX):
+        return value
+    alias_contract = MANAGED_RUNTIME_ALIASES.get(value)
+    if not alias_contract:
+        return value
+    runtime_id, expected_provider, expected_transport = alias_contract
+    runtime = get_agent_runtime_sync(runtime_id)
+    if not runtime or not runtime.get("enabled", True) or not str(runtime.get("command") or "").strip():
+        return value
+    if (
+        str(runtime.get("provider") or "").strip() != expected_provider
+        or str(runtime.get("prompt_transport") or "").strip() != expected_transport
+        or not _runtime_command_available(str(runtime.get("command") or ""))
+    ):
+        return value
+    return agent_runtime_provider_id(runtime_id)
+
+
+def _runtime_command_available(command: str) -> bool:
+    parts = split_agent_command(str(command or ""))
+    if not parts:
+        return False
+    executable = Path(parts[0]).expanduser()
+    if executable.is_absolute():
+        return executable.is_file()
+    return shutil.which(parts[0]) is not None
 
 
 def _agent_task_provider_command(provider: str) -> list[str]:
@@ -3296,7 +3530,7 @@ def _normalized_execution_status(value: Any) -> str:
     if status in {"invalid", "error"}:
         return "failed"
     return status if status in {
-        "prepared", "queued", "running", "completed", "failed", "cancelled", "interrupted"
+        "prepared", "queued", "running", "completed", "partial", "failed", "cancelled", "interrupted"
     } else "prepared"
 
 

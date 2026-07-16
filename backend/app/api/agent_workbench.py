@@ -86,6 +86,7 @@ _TASK_RUN_TERMINAL_STATUSES = {
     "error",
     "invalid",
     "needs_rework",
+    "partial",
     "cancelled",
     "canceled",
     "interrupted",
@@ -442,6 +443,22 @@ def _public_task_run_runtime_summary(task_root: Path) -> dict[str, Any]:
             result if isinstance(result, dict) else semantic_import
         )
 
+    quality = _read_json(task_root / "test_activity_quality_audit.json")
+    if isinstance(quality, dict):
+        summary["test_activity_quality"] = {
+            key: quality.get(key)
+            for key in (
+                "status",
+                "deliverable",
+                "score",
+                "issue_count",
+                "lint_warning_count",
+                "fact_verification",
+                "quality_axes",
+            )
+            if key in quality
+        }
+
     acceptance = _read_json(task_root / "task_acceptance_audit.json")
     if task_status not in {"cancelled", "interrupted"} and isinstance(acceptance, dict):
         summary["acceptance_audit"] = {
@@ -589,6 +606,18 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
     waiting_node = next((node for node in nodes if node.get("status_label") == "等待运行"), None)
     current_node = failed_node or running_node or waiting_node or (nodes[-1] if nodes else {})
     failure_reasons = _task_run_ui_failure_reasons(failed_node)
+    failed_step_result = step_results.get(str((failed_node or {}).get("id") or ""), {})
+    failure_recovery = (
+        failed_step_result.get("failure_recovery")
+        if isinstance(failed_step_result, dict)
+        and isinstance(failed_step_result.get("failure_recovery"), dict)
+        else {}
+    )
+    recovery_actions = [
+        str(item)
+        for item in failure_recovery.get("recommended_actions") or []
+        if str(item).strip()
+    ]
     preserved_nodes = [node for node in nodes if node.get("status_label") == "已完成"]
     rerun_nodes = [
         node for node in nodes
@@ -623,11 +652,15 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
             "reuse_node_ids": [str(node.get("id") or "") for node in preserved_nodes],
             "reuse_node_labels": [str(node.get("label") or "") for node in preserved_nodes],
             "failure_class": failure_class,
+            "failure_kind": str(failure_recovery.get("failure_kind") or ""),
             "recommended_action": (
-                "检查任务输入或工作流输出契约，保存后再创建新 Attempt。"
+                recovery_actions[0]
+                if recovery_actions
+                else "检查任务输入或工作流输出契约，保存后再创建新 Attempt。"
                 if failure_class == "configuration"
                 else "保留已完成上游结果，从失败节点创建新 Attempt 重试。"
             ),
+            "recommended_actions": recovery_actions,
             "actions": (
                 ["从失败节点重试", "查看内部诊断", "编辑工作流输出契约"]
                 if failed_node
@@ -1156,6 +1189,8 @@ def _task_run_ui_status(*, execution: dict[str, Any], nodes: list[dict[str, Any]
         return {"status": "completed", "label": "运行完成"}
     if status in {"completed_empty"}:
         return {"status": "completed_empty", "label": "完成但信息不足"}
+    if status == "partial":
+        return {"status": "partial", "label": "部分完成"}
     if status in {"needs_review", "needs_rework"}:
         return {"status": status, "label": "需要复核"}
     if status in {"interrupted"}:
@@ -1173,6 +1208,8 @@ def _task_run_ui_status_label(status: str) -> str:
         return "已完成"
     if normalized in {"completed_empty"}:
         return "完成但信息不足"
+    if normalized == "partial":
+        return "部分完成"
     if normalized in {"needs_review"}:
         return "需要复核"
     if normalized in {"running", "queued"}:
@@ -1232,6 +1269,9 @@ def _task_run_ui_step_failure_reasons(
     outputs: list[dict[str, str]],
 ) -> list[str]:
     reasons: list[str] = []
+    recovery = step_result.get("failure_recovery")
+    if isinstance(recovery, dict) and str(recovery.get("user_message") or "").strip():
+        reasons.append(str(recovery["user_message"]).strip())
     validation = step_result.get("validation")
     if isinstance(validation, dict):
         missing = [
@@ -2310,7 +2350,7 @@ async def _execute_task_run_background(
             return
         event_store.append(
             task_run_id,
-            "completed" if status == "completed" else "step_failed",
+            "completed" if status == "completed" else "partial" if status == "partial" else "step_failed",
             {"status": status},
         )
     except Exception as exc:  # pragma: no cover - defensive path is covered through API state.
@@ -2358,7 +2398,7 @@ async def _execute_task_run_background(
 
 def _terminal_execution_status(result: dict[str, Any]) -> str:
     explicit = str(result.get("execution_status") or "").strip().lower()
-    if explicit in {"completed", "failed", "cancelled", "interrupted"}:
+    if explicit in {"completed", "partial", "failed", "cancelled", "interrupted"}:
         return explicit
     legacy = str(result.get("status") or "completed").strip().lower()
     if legacy in {

@@ -1,8 +1,31 @@
+import hashlib
 import json
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 import pytest
+
+
+def test_professional_marker_findings_are_lint_but_harness_failures_are_l3():
+    from app.services.test_activity_contract import _partition_combined_professional_issues
+
+    structure, lint, executable = _partition_combined_professional_issues(
+        [
+            {"code": "missing_iscsi_professional_scenarios"},
+            {"code": "missing_extended_chap_negative_scenarios"},
+            {"code": "non_executable_raw_pdu_harness"},
+            {"code": "sfmea_not_sorted_by_rpn"},
+        ]
+    )
+
+    assert [item["code"] for item in lint] == [
+        "missing_iscsi_professional_scenarios",
+        "missing_extended_chap_negative_scenarios",
+    ]
+    assert [item["code"] for item in executable] == [
+        "non_executable_raw_pdu_harness"
+    ]
+    assert [item["code"] for item in structure] == ["sfmea_not_sorted_by_rpn"]
 
 
 def test_test_activity_contract_covers_storage_testing_profiles_and_templates():
@@ -56,6 +79,10 @@ def test_test_activity_contract_covers_storage_testing_profiles_and_templates():
     assert contract["target"] == "iSCSI login CHAP digest"
     assert "iscsi_login" in contract["domain_profiles"]
     assert "fragmented C-bit parameter assembly" in contract["domain_requirements"]["iscsi_login"]["required_scenarios"]
+    assert (
+        "mutual CHAP with valid challenge encoding but a mismatched mutual-secret oracle"
+        in contract["domain_requirements"]["iscsi_login"]["required_scenarios"]
+    )
     assert "half-open session before and after the first Login PDU" in contract["domain_requirements"]["iscsi_login"]["failure_modes"]
     assert contract["project_profile"]["project"] == "spdk"
     assert "lib/iscsi" in contract["project_profile"]["source_roots"]
@@ -134,6 +161,7 @@ def test_refresh_test_activity_contract_upgrades_declared_artifacts_without_losi
         "观测点",
     ]
     assert "mitigation" in refreshed["artifact_contract"]["sfmea.json"]["field_rules"]
+    assert refreshed["quality_gates"]["require_independent_behavior_validation"] is True
 
 
 @pytest.mark.parametrize("verb", ["add", "validate", "require", "keep", "configure", "emit"])
@@ -398,6 +426,210 @@ def test_module_analysis_quality_audit_rejects_shallow_markdown(tmp_path):
     assert "missing_markdown_sections" in codes
     assert "missing_source_evidence" in codes
     assert "missing_test_evidence" in codes
+
+
+def test_combined_report_quality_rejects_too_few_sfmea_and_black_box_cases(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    for name in ("iscsi.c", "conn.c", "tgt_node.c"):
+        (repo / "lib" / "iscsi" / name).write_text("int login(void);\n", encoding="utf-8")
+    for name in ("login.sh", "chap.sh"):
+        (repo / "test" / "iscsi_tgt" / name).write_text("#!/bin/sh\n", encoding="utf-8")
+    artifact_dir = tmp_path / "run"
+    artifact_dir.mkdir()
+    report = """# 报告
+## 分析范围与证据缺口
+范围与缺口。
+## 关键源码证据
+`lib/iscsi/iscsi.c` `lib/iscsi/conn.c` `lib/iscsi/tgt_node.c`
+`test/iscsi_tgt/login.sh` `test/iscsi_tgt/chap.sh`
+## 主流程与异常/恢复流程
+主流程、认证失败和恢复流程。
+## SFMEA
+| ID | failure mode | cause | effect | detection | S | O | D | RPN | mitigation | evidence |
+|---|---|---|---|---|---:|---:|---:|---:|---|---|
+| F1 | fail | cause | effect | log | 8 | 3 | 4 | 96 | test | lib/iscsi/iscsi.c |
+## 黑盒测试用例
+### BB01 登录失败
+前置条件、外部步骤、预期结果、观测点、失败诊断、test/iscsi_tgt/login.sh。
+"""
+    (artifact_dir / "report.md").write_text(report, encoding="utf-8")
+    contract = {
+        "artifact_contract": {
+            "report.md": {
+                "sections": [
+                    "分析范围与证据缺口",
+                    "关键源码证据",
+                    "主流程与异常/恢复流程",
+                    "SFMEA",
+                    "黑盒测试用例",
+                ],
+                "min_sfmea_rows": 12,
+                "min_black_box_cases": 12,
+                "min_source_paths": 3,
+                "min_test_paths": 2,
+            }
+        }
+    }
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    codes = {issue["code"] for issue in audit["issues"]}
+    assert "insufficient_sfmea_rows" in codes
+    assert "insufficient_black_box_cases" in codes
+
+
+def test_combined_report_output_uses_declared_filename_without_expanding_nested_artifacts():
+    from app.services.test_activity_contract import build_test_activity_contract
+
+    contract = build_test_activity_contract(
+        target="SPDK iSCSI login 流程、SFMEA、黑盒测试用例",
+        repo_path="/repo/spdk",
+        workflow_outputs=[
+            {
+                "id": "report",
+                "type": "combined_test_report",
+                "artifact": "report.md",
+            }
+        ],
+    )
+
+    assert contract["required_outputs"] == ["report.md"]
+    assert contract["artifact_contract"]["report.md"] == {
+        "artifact": "report.md",
+        "preview": "markdown",
+        "required_fields": [],
+        "sections": [
+            "分析范围与证据缺口",
+            "关键源码证据",
+            "主流程与异常/恢复流程",
+            "SFMEA",
+            "黑盒测试用例",
+        ],
+        "quality_checks": [
+            "required_fields_present",
+            "source_or_test_evidence_present",
+            "black_box_boundary_respected",
+        ],
+        "download_filename": "report.md",
+        "min_sfmea_rows": 12,
+        "min_black_box_cases": 12,
+        "min_source_paths": 6,
+        "min_test_paths": 4,
+    }
+
+
+def test_combined_report_quality_counts_numeric_sfmea_row_ids(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login;\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt" / "login.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    content = """# 报告
+## SFMEA
+| # | Failure Mode | S | O | D | RPN |
+|---|---|---:|---:|---:|---:|
+| 1 | login fail | 8 | 3 | 4 | 96 |
+`lib/iscsi/iscsi.c` `test/iscsi_tgt/login.sh`
+"""
+    issues = _audit_markdown_artifact(
+        artifact="report.md",
+        content=content,
+        spec={"sections": ["SFMEA"], "min_sfmea_rows": 1},
+        repo=repo,
+    )
+    assert "insufficient_sfmea_rows" not in {item["code"] for item in issues}
+
+
+def test_combined_report_quality_counts_fmea_prefixed_row_ids(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login;\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt" / "login.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    content = """# 报告
+## SFMEA
+| 编号 | 故障模式 | S | O | D | RPN |
+|---|---|---:|---:|---:|---:|
+| FMEA-01 | login fail | 8 | 3 | 4 | 96 |
+`lib/iscsi/iscsi.c` `test/iscsi_tgt/login.sh`
+"""
+    issues = _audit_markdown_artifact(
+        artifact="report.md",
+        content=content,
+        spec={"sections": ["SFMEA"], "min_sfmea_rows": 1},
+        repo=repo,
+    )
+    assert "insufficient_sfmea_rows" not in {item["code"] for item in issues}
+
+
+def test_combined_report_quality_counts_numbered_subsections_only_inside_black_box_section(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login;\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt" / "login.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    content = """# 报告
+## 4. SFMEA
+### 4.1 这不是黑盒用例
+风险说明。
+## 5. 黑盒测试用例
+### 5.1 正常登录
+前置条件、外部步骤、预期结果、观测点与失败诊断。
+### 5.2 认证失败
+前置条件、外部步骤、预期结果、观测点与失败诊断。
+`lib/iscsi/iscsi.c` `test/iscsi_tgt/login.sh`
+"""
+    issues = _audit_markdown_artifact(
+        artifact="report.md",
+        content=content,
+        spec={"sections": ["黑盒测试用例"], "min_black_box_cases": 2},
+        repo=repo,
+    )
+    assert "insufficient_black_box_cases" not in {item["code"] for item in issues}
+
+
+def test_combined_report_quality_counts_bbc_table_case_ids(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login;\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt" / "login.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    rows = "\n".join(
+        f"| BBC-{index:03d} | 场景 {index} | 前置 | 外部步骤 | 预期 | 观测 | 诊断 | test/iscsi_tgt/login.sh |"
+        for index in range(1, 13)
+    )
+    content = f"""# 报告
+## 5. 黑盒测试用例
+| ID | 场景 | 前置条件 | 外部步骤 | 预期结果 | 观测点 | 失败诊断 | 真实测试目录映射 |
+|---|---|---|---|---|---|---|---|
+{rows}
+`lib/iscsi/iscsi.c` `test/iscsi_tgt/login.sh`
+"""
+
+    issues = _audit_markdown_artifact(
+        artifact="report.md",
+        content=content,
+        spec={"sections": ["黑盒测试用例"], "min_black_box_cases": 12},
+        repo=repo,
+    )
+
+    assert "insufficient_black_box_cases" not in {item["code"] for item in issues}
 
 
 def test_markdown_section_normalization_accepts_descriptive_parenthetical_suffix():
@@ -1087,6 +1319,298 @@ def test_iscsi_professional_constraints_reject_known_protocol_contradictions(tmp
     assert all(issue["evidence"] for issue in conflicts)
 
 
+def test_iscsi_professional_constraints_reject_run41_source_fact_errors(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="完整 iSCSI Login 源码分析、SFMEA 和黑盒测试设计",
+        repo_path=str(repo),
+        workflow_outputs=[
+            {
+                "id": "report",
+                "type": "combined_test_report",
+                "artifact": "report.md",
+            }
+        ],
+    )
+
+    audit = audit_test_activity_response(
+        content=(
+            "T+C 同时置位或 NSG=2 时返回 status-class 0x02、status-detail 0x0b。\n"
+            "Unsupported Version 通过修改 Login BHS bytes 40-41 构造。\n"
+            "Initiator 先通过 CHAP，再由 target 检查 ACL；失败日志为 auth failed。\n"
+            "完整 key/value 跨 C=1 PDU 分片并以 C=0 收尾时，SPDK 无法重组并返回 MISSING_PARMS。\n"
+            "同一 Login PDU 中重复 key 时使用最后一次出现的值并继续成功登录。\n"
+            "CHAP_N、CHAP_I 和 CHAP_R 都必须使用 base64 编码；非法 CHAP_R 记录 base64 decode failed。\n"
+            "CHAP_R 长度由 ISCSI_CHAP_MAX_SECRET_LEN 限制。\n"
+            "抓取 Login Response：tshark -r login.pcap -Y 'iscsi.opcode==0x03' -T fields。\n"
+            "iscsi_get_connections 的 login_phase 为 security_negotiation 或 operational_negotiation。\n"
+            "test/app/fuzz/iscsi_fuzz/iscsi_fuzz.c 可覆盖随机 Login opcode。\n"
+            "首个 Login PDU 处理后 timer 注销，因此 target 不会发送 Login Response。\n"
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    constraint_ids = {
+        issue["constraint_id"]
+        for issue in audit["issues"]
+        if issue["code"] == "professional_fact_conflict"
+    }
+    assert {
+        "iscsi_invalid_login_request_detail",
+        "iscsi_login_version_offsets",
+        "iscsi_acl_precedes_chap_configuration",
+        "iscsi_c_bit_parameter_reassembly",
+        "iscsi_duplicate_key_rejected",
+        "iscsi_chap_wire_encoding",
+        "iscsi_chap_response_validation",
+        "iscsi_login_response_opcode",
+        "iscsi_rpc_login_phase_values",
+        "iscsi_fuzzer_skips_login_opcode",
+        "iscsi_first_payload_still_gets_response",
+    }.issubset(constraint_ids), audit
+
+
+def test_iscsi_professional_constraints_do_not_exempt_sfmea_fact_fields(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="完整 iSCSI Login 源码分析、SFMEA 和黑盒测试设计",
+        repo_path=str(repo),
+        workflow_outputs=[
+            {"id": "report", "type": "combined_test_report", "artifact": "report.md"}
+        ],
+    )
+    audit = audit_test_activity_response(
+        content=(
+            '{"failure_mode":"Login Response 过滤使用 '
+            'iscsi.opcode==0x03 并读取 iscsi.login_status"}'
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert any(
+        issue.get("constraint_id") == "iscsi_login_response_opcode"
+        for issue in audit["issues"]
+    ), audit
+
+
+def test_iscsi_response_opcode_claim_accepts_request_capture_and_response_display_filter(
+    tmp_path,
+):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="完整 iSCSI Login 源码分析、SFMEA 和黑盒测试设计",
+        repo_path=str(repo),
+    )
+    audit = audit_test_activity_response(
+        content=(
+            "SPDK returns Login Response with status Initiator Error. "
+            "tcpdump -w login.pcap -i any 'port 3260 and iscsi.opcode==0x03'; "
+            "tshark -r login.pcap -Y 'iscsi.opcode==0x23 and iscsi.login.statusclass' "
+            "-T fields -e iscsi.login.statusclass."
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_login_response_opcode"
+        for issue in audit["issues"]
+    ), audit
+
+
+def test_iscsi_claim_validator_rejects_protocol_field_in_tcpdump_capture_filter(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="完整 iSCSI Login 黑盒测试设计",
+        repo_path=str(repo),
+    )
+    audit = audit_test_activity_response(
+        content="tcpdump -w login.pcap -i any 'port 3260 and iscsi.opcode==0x03'",
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert any(
+        issue.get("code") == "invalid_capture_filter"
+        and issue.get("claim_type") == "command_executability"
+        for issue in audit["issues"]
+    ), audit
+
+
+def test_iscsi_claim_validator_keeps_tcpdump_and_tshark_inline_commands_separate(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="完整 iSCSI Login 黑盒测试设计",
+        repo_path=str(repo),
+    )
+    audit = audit_test_activity_response(
+        content=(
+            "通过 `tcpdump -w login.pcap -i any port 3260` 捕获流量，再用 "
+            "`tshark -r login.pcap -Y \"iscsi.opcode == 0x23\" "
+            "-T fields -e iscsi.status_class` 解析响应。"
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert not any(issue.get("code") == "invalid_capture_filter" for issue in audit["issues"]), audit
+
+
+def test_iscsi_typed_behavior_claims_accept_post_login_sendtargets_and_negative_target_address(
+    tmp_path,
+):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="完整 iSCSI Discovery Login 流程分析",
+        repo_path=str(repo),
+    )
+    audit = audit_test_activity_response(
+        content=(
+            "Discovery Login 成功进入 Full Feature Phase 后，initiator 才发送 Text Request "
+            "请求 SendTargets。Discovery Login 的成功响应本身不会包含 TargetAddress；"
+            "TargetAddress 只在后续 SendTargets Text Response 中返回。"
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert not any(
+        issue.get("constraint_id") in {
+            "iscsi_login_negotiation_transport",
+            "iscsi_discovery_target_address",
+        }
+        for issue in audit["issues"]
+    ), audit
+
+
+def test_iscsi_typed_behavior_claim_accepts_run46_post_login_sendtargets_wording(
+    tmp_path,
+):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="完整 iSCSI Discovery Login 流程分析",
+        repo_path=str(repo),
+    )
+    audit = audit_test_activity_response(
+        content=(
+            "根据设计期望，initiator 在发现阶段应随后发送 Text Request（opcode 0x04）"
+            "并携带 SendTargets=All 参数。这一行为属于登录完成后的标准协议交互，"
+            "不属于 Login PDU 本身。"
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_login_negotiation_transport"
+        for issue in audit["issues"]
+    ), audit
+
+
+def test_iscsi_professional_constraints_reject_real_run41_report_wording(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="完整 iSCSI Login 源码分析、SFMEA 和黑盒测试设计",
+        repo_path=str(repo),
+        workflow_outputs=[
+            {"id": "report", "type": "combined_test_report", "artifact": "report.md"}
+        ],
+    )
+    content = """
+| SFMEA-001 | T+C both set in Login Request | SPDK returns Login Response with Initiator Error (0x02) and Invalid Login Request (0x0b) |
+| SFMEA-002 | Invalid NSG in Login Request | SPDK returns status 0x02/0x0b |
+### TC-07 Unsupported Version
+- 操作步骤：Send Login PDU with version field (bytes 40-41) = 0x0001.
+### TC-08 Authorization Failure
+- 操作步骤：Complete CHAP authentication; Target will check initiator name against ACL after auth.
+- 观测点：SPDK log: 'auth failed' in iscsi_op_login_check_target.
+| SFMEA-005 | C=1 across PDU fragments ending with C=0 | SPDK fails to assemble complete parameter set and returns MISSING_PARMS |
+### TC-11 Unknown CHAP user
+- 操作步骤：Send CHAP_N with username 'nonexistent_user' (base64 encoded).
+### TC-14 Invalid CHAP_R
+- 预期结果：SPDK log 'base64 decode failed'.
+### TC-21 CHAP_R length
+- 失败诊断：check ISCSI_CHAP_MAX_SECRET_LEN enforcement for CHAP_R.
+tshark -r /tmp/iscsi-login.pcap -Y iscsi.opcode==0x03 -T fields -e iscsi.login_status
+test/app/fuzz/iscsi_fuzz/iscsi_fuzz.c may trigger random Login Request mutations.
+### TC-04 首 payload 后 timer 注销
+- 预期结果：timer 注销后无 Login Response 发出。
+"""
+
+    audit = audit_test_activity_response(
+        content=content,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    constraint_ids = {
+        issue["constraint_id"]
+        for issue in audit["issues"]
+        if issue["code"] == "professional_fact_conflict"
+    }
+    assert {
+        "iscsi_invalid_login_request_detail",
+        "iscsi_login_version_offsets",
+        "iscsi_acl_precedes_chap_configuration",
+        "iscsi_c_bit_parameter_reassembly",
+        "iscsi_chap_wire_encoding",
+        "iscsi_chap_response_validation",
+        "iscsi_login_response_opcode",
+        "iscsi_fuzzer_skips_login_opcode",
+        "iscsi_first_payload_still_gets_response",
+    }.issubset(constraint_ids), audit
+
+
 def test_iscsi_professional_constraints_accept_explicit_fact_corrections(tmp_path):
     from app.services.test_activity_contract import (
         audit_test_activity_response,
@@ -1219,6 +1743,61 @@ def test_iscsi_professional_constraints_accept_explicitly_unverified_lock_hypoth
         issue.get("constraint_id") == "iscsi_unverified_cleanup_or_lock_defect"
         for issue in audit["issues"]
     ), audit
+
+
+def test_iscsi_professional_constraints_accept_disconnected_cleanup_evidence_gap(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login SFMEA",
+        repo_path=str(repo),
+    )
+
+    audit = audit_test_activity_response(
+        content=(
+            "连接生命周期的清理由 `_iscsi_conn_destruct` 负责。\n"
+            "证据缺口：`_iscsi_conn_destruct` 未出现在已验证调用分量中，"
+            "因此不能证明登录失败到析构的完整调用路径。\n"
+            "缺口：认证失败后的连接级清理（如 `_iscsi_conn_destruct`）路径"
+            "未在当前验证范围内被直接调用。"
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_unverified_cleanup_or_lock_defect"
+        for issue in audit["issues"]
+    ), audit
+
+
+def test_iscsi_cleanup_gate_accepts_current_scope_not_directly_called_wording(tmp_path):
+    from app.services.test_activity_contract import (
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login SFMEA",
+        repo_path=str(repo),
+    )
+    issues = _audit_professional_constraints(
+        "缺口：认证失败后的连接级清理（如 `_iscsi_conn_destruct`）路径"
+        "未在当前验证范围内被直接调用。",
+        contract,
+    )
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_unverified_cleanup_or_lock_defect"
+        for issue in issues
+    ), issues
 
 
 def test_iscsi_professional_constraints_reject_state_machine_timeout_and_discovery_claims(tmp_path):
@@ -1465,6 +2044,69 @@ def test_iscsi_constraints_accept_negative_discovery_risk_and_internal_boundary(
         }
         for issue in audit["issues"]
     ), audit
+
+
+def test_iscsi_constraints_accept_discovery_response_should_not_include_target_address(
+    tmp_path,
+):
+    from app.services.test_activity_contract import (
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login Discovery 流程分析",
+        repo_path=str(repo),
+    )
+
+    issues = _audit_professional_constraints(
+        "成功的 Discovery Login Response 中不应包含 TargetAddress key。",
+        contract,
+    )
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_discovery_target_address"
+        for issue in issues
+    ), issues
+
+
+def test_complete_iscsi_audit_accepts_named_mutual_user_or_secret_missing_scenario(
+    tmp_path,
+):
+    from app.services.test_activity_contract import (
+        _audit_combined_professional_completeness,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整流程 SFMEA 黑盒测试设计",
+        repo_path=str(repo),
+        workflow_outputs=[
+            {"artifact": "report.md", "type": "combined_test_report"},
+        ],
+    )
+    content = (
+        '"failure_mode":"Mutual 用户或 secret 缺失",'
+        '"cause":"Initiator 未提供 CHAP_N 或 CHAP_R",'
+        '"detection":"检查 Login 数据段",'
+        '"mitigation":"补充 raw-PDU 用例"'
+    )
+
+    issues = _audit_combined_professional_completeness(content, contract)
+    missing = next(
+        (
+            issue
+            for issue in issues
+            if issue.get("code") == "missing_extended_chap_negative_scenarios"
+        ),
+        {},
+    )
+
+    assert "Mutual 用户或 secret 缺失" not in (missing.get("scenarios") or [])
 
 
 def test_combined_business_flow_accepts_structured_stage_bullets(tmp_path):
@@ -1755,7 +2397,36 @@ def test_iscsi_gate_accepts_explicitly_corrected_mapping_and_boundary_statements
             "iscsi_duplicate_key_scope",
             "iscsi_chap_security_stage",
             "iscsi_csg_values",
-        }.intersection(false_positive_ids), audit
+    }.intersection(false_positive_ids), audit
+
+
+def test_iscsi_gate_accepts_verbose_unknown_key_not_understood_correction(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login 灰盒测试设计",
+        repo_path=str(repo),
+    )
+    audit = audit_test_activity_response(
+        content=(
+            "参数协商中的未知合法 key：当 iscsi_negotiate_params 处理 Login Request "
+            "中的参数时，对于格式合法但 target 未定义的 key，SPDK 会在响应 PDU 的"
+            "数据段中返回该 key 并标记 NotUnderstood，而不是导致连接断开或整个 Login 失败。"
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert not any(
+        issue.get("code") == "professional_fact_conflict"
+        and issue.get("constraint_id") == "iscsi_unknown_key_not_understood"
+        for issue in audit["issues"]
+    ), audit
 
 
 def test_iscsi_full_design_requires_chap_negatives_executable_wire_checks_and_sfmea_scale(tmp_path):
@@ -1799,6 +2470,35 @@ def test_iscsi_full_design_requires_chap_negatives_executable_wire_checks_and_sf
     }.issubset(issue_codes), audit
 
 
+def test_iscsi_hazardous_mapping_accepts_isolated_test_disk_with_data_loss_notice(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整流程 SFMEA 黑盒测试设计",
+        repo_path=str(repo),
+    )
+
+    audit = audit_test_activity_response(
+        content=(
+            "Git revision 97af299e3c76368219f0cddcc710fafd57edcc1c。\n"
+            "test/iscsi_tgt/multiconnection/multiconnection.sh 仅允许在隔离测试盘运行，"
+            "该脚本会执行随机写，测试数据可销毁且不得指向宿主裸盘。"
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert not any(
+        issue["code"] == "unsafe_hazardous_test_mapping"
+        for issue in audit["issues"]
+    ), audit
+
+
 def test_iscsi_release_gate_accepts_explicit_chap_matrix_and_discrete_sfmea_scale(tmp_path):
     from app.services.test_activity_contract import (
         audit_test_activity_response,
@@ -1818,7 +2518,7 @@ def test_iscsi_release_gate_accepts_explicit_chap_matrix_and_discrete_sfmea_scal
         "Detection：1 自动化稳定断言；3 单元覆盖；5 日志与 pcap；7 raw-PDU harness；10 不可稳定复验。\n"
         "RPN = Severity * Occurrence * Detection。\n"
         "风险分层：>=160 为 SFMEA 一级风险并优先执行，100-159 为二级风险。\n"
-        "Mutual CHAP 缺少 challenge、mutual 用户或 secret 缺失均独立覆盖。\n"
+        "Mutual CHAP 缺少 challenge；Mutual CHAP 时发起方缺少 CHAP_I 或 CHAP_N，均独立覆盖。\n"
         "initiator 请求 mutual 但 target 未启用 mutual，运行 initiator-mutual-target-forbids。\n"
         "Mutual CHAP target digest oracle 不匹配，正确 secret 必须匹配且错误 secret 必须不匹配。\n"
         "不支持 CHAP_A、缺少 CHAP_R、CHAP_R hex/base64 编码错误分别执行。\n"
@@ -1843,6 +2543,112 @@ def test_iscsi_release_gate_accepts_explicit_chap_matrix_and_discrete_sfmea_scal
     assert "missing_extended_chap_negative_scenarios" not in issue_codes, audit
     assert "missing_sfmea_scoring_scale" not in issue_codes, audit
     assert "iscsi_target_removed_release_evidence" not in constraint_ids, audit
+
+
+def test_iscsi_extended_chap_gate_treats_missing_chap_n_as_missing_mutual_user(tmp_path):
+    from app.services.test_activity_contract import (
+        _audit_combined_professional_completeness,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整流程 SFMEA 黑盒测试设计",
+        repo_path=str(repo),
+    )
+    content = (
+        "不支持的 CHAP_A 算法。缺少 CHAP_R。CHAP_R hex 编码格式错误。"
+        "Initiator 请求 mutual CHAP 但 Target 未启用。"
+        "Mutual challenge 合法编码但语义错误。"
+        "Mutual CHAP 时发起方缺少 CHAP_I 或 CHAP_N。"
+    )
+
+    issues = _audit_combined_professional_completeness(content, contract)
+    extended = [
+        issue
+        for issue in issues
+        if issue.get("code") == "missing_extended_chap_negative_scenarios"
+    ]
+
+    assert not any(
+        "Mutual 用户或 secret 缺失" in (issue.get("scenarios") or [])
+        for issue in extended
+    ), extended
+
+
+def test_iscsi_completeness_accepts_report_english_chap_and_timer_equivalents(tmp_path):
+    from app.services.test_activity_contract import (
+        _audit_combined_professional_completeness,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整流程 SFMEA 黑盒测试设计",
+        repo_path=str(repo),
+    )
+    content = (
+        "iscsi_pdu_payload_op_login calls spdk_poller_unregister to cancel the login timer "
+        "when the first payload is processed. "
+        "Unsupported CHAP_A algorithm is rejected. Missing CHAP_R is rejected. "
+        "CHAP_R encoding format error (non-base64 characters in response). "
+        "Mutual CHAP user or secret is not configured on target. "
+        "Initiator requests mutual but target does not allow mutual. "
+        "Mutual challenge correctly encoded but semantic mismatch. "
+        "Target requires Mutual CHAP but Initiator does not provide any CHAP at all."
+    )
+
+    issues = _audit_combined_professional_completeness(content, contract)
+    missing = {
+        scenario
+        for issue in issues
+        if issue.get("code")
+        in {
+            "missing_iscsi_professional_scenarios",
+            "missing_chap_negative_scenarios",
+            "missing_extended_chap_negative_scenarios",
+        }
+        for scenario in issue.get("scenarios") or []
+    }
+
+    assert "首 payload 后 timer 注销" not in missing
+    assert "CHAP_R 编码格式错误" not in missing
+    assert "Mutual 用户或 secret 缺失" not in missing
+    assert "Initiator 请求 Mutual 但 Target 禁止" not in missing
+    assert "Mutual challenge 合法编码但语义错误" not in missing
+    assert "Target 要求 Mutual 但 Initiator 未提供" not in missing
+
+
+def test_iscsi_completeness_recognizes_run46_disabled_login_timer_scenario(tmp_path):
+    from app.services.test_activity_contract import (
+        _audit_combined_professional_completeness,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整流程 SFMEA 黑盒测试设计",
+        repo_path=str(repo),
+    )
+    content = """
+## 黑盒测试用例
+### BB-16 Login stall after first PDU (login_timer disabled)
+- 预期结果：Behavior unverified: login_timer disabled after first PDU, so no 30s timeout.
+- 观测点：After >30s, check /proc/net/tcp for persisted target port connection (resource leak oracle).
+"""
+
+    issues = _audit_combined_professional_completeness(content, contract)
+    missing = {
+        scenario
+        for issue in issues
+        if issue.get("code") == "missing_iscsi_professional_scenarios"
+        for scenario in issue.get("scenarios") or []
+    }
+
+    assert "首 payload 后 timer 注销" not in missing
 
 
 def test_iscsi_gate_rejects_non_executable_or_semantically_false_blackbox_mappings(tmp_path):
@@ -2367,6 +3173,143 @@ def test_professional_constraints_accept_corrected_session_and_mapping_boundarie
     }.intersection(issue_ids), issues
 
 
+def test_iscsi_login_request_gate_allows_stage_handler_to_read_request_flags(tmp_path):
+    from app.services.test_activity_contract import (
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="完整 iSCSI Login 测试设计",
+        repo_path=str(repo),
+    )
+    correct = (
+        "Login Request 的头部入口是 iscsi_pdu_hdr_op_login，负载入口是 "
+        "iscsi_pdu_payload_op_login。响应构建阶段，"
+        "iscsi_op_login_rsp_handle_csg_bit 根据收到的 Login Request 中的 CSG 位处理阶段分支。\n"
+        "| FMEA-14 | Full Feature Phase 的 Login Request 不被拒绝 | "
+        "iscsi_op_login_rsp_handle_csg_bit 返回错误，但需检查实际返回处理 | 6 | "
+        "确保处理正确，发送 Login Request | "
+        "lib/iscsi/iscsi.c::iscsi_op_login_rsp_handle_csg_bit |\n"
+    )
+    incorrect = "iscsi_op_login_rsp_handle_csg_bit 直接接收 Login Request 并作为入口。"
+
+    correct_issues = _audit_professional_constraints(correct, contract)
+    incorrect_issues = _audit_professional_constraints(incorrect, contract)
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_login_request_entry"
+        for issue in correct_issues
+    ), correct_issues
+    assert any(
+        issue.get("constraint_id") == "iscsi_login_request_entry"
+        for issue in incorrect_issues
+    ), incorrect_issues
+
+
+def test_iscsi_c_flag_gate_accepts_explicit_preserved_flag_wording(tmp_path):
+    from app.services.test_activity_contract import (
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="完整 iSCSI Login 测试设计",
+        repo_path=str(repo),
+    )
+
+    issues = _audit_professional_constraints(
+        "Login request with T=1 and C=1 is rejected. Error response path clears "
+        "T/CSG/NSG flags but C flag may remain set.",
+        contract,
+    )
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_login_error_c_flag_preserved"
+        for issue in issues
+    ), issues
+
+
+def test_iscsi_gate_accepts_adjacent_stage_alternatives_and_equivalent_unsupported_chap_wording(
+    tmp_path,
+):
+    from app.services.test_activity_contract import (
+        _audit_combined_professional_completeness,
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="完整 iSCSI Login 测试设计",
+        repo_path=str(repo),
+    )
+    content = (
+        "Security Negotiation Phase（CSG=0）与 Operational Negotiation Phase（CSG=1）的参数协商。\n"
+        "成功响应显示 CSG=0、NSG=1 或 NSG=3、T=1（若为最终阶段）。\n"
+        "若请求中 T=1 且 NSG=3，则响应 T=1、NSG=3，进入 Full Feature Phase。\n"
+        "两阶段登录：Security Negotiation（CSG=0）到 Operational Negotiation（CSG=1）。"
+        "最终成功响应为 CSG=1、NSG=3、T=1。\n"
+        "单阶段登录：Security Negotiation 直接完成所有协商。"
+        "最终成功响应为 CSG=0、NSG=3、T=1。\n"
+        "Session Reinstatement（会话重建）：使用与已有 session 相同的 ISID 但 TSIH=0 发起新 Login。\n"
+        "携带已有 session 的非零 TSIH 以及新的 CID，是向现有 session 追加连接。\n"
+        "Discovery Login Response 中不会收到 TargetAddress，因为 discovery session 没有 target。\n"
+        "未知 CHAP_N 用户需新增 raw-PDU 用例；chap_discovery.sh 未覆盖该场景。\n"
+        '[{"failure_mode":"CHAP算法不匹配",'
+        '"cause":"Initiator 在 CHAP_A 中选择 SHA，但 SPDK 仅支持 MD5",'
+        '"mitigation":"发送 CHAP_A=5 并断言认证失败"}]\n'
+    )
+
+    constraints = _audit_professional_constraints(content, contract)
+    constraint_ids = {issue.get("constraint_id") for issue in constraints}
+    assert not {
+        "iscsi_chap_request_response_flags",
+        "iscsi_csg_values",
+        "iscsi_final_login_stage_alternatives",
+        "iscsi_tsih_reinstatement_scope",
+        "iscsi_discovery_target_address",
+        "iscsi_unknown_user_test_mapping_scope",
+    }.intersection(constraint_ids), constraints
+
+    completeness = _audit_combined_professional_completeness(content, contract)
+    assert not any(
+        issue.get("code") == "missing_extended_chap_negative_scenarios"
+        and "不支持的 CHAP_A 算法" in (issue.get("scenarios") or [])
+        for issue in completeness
+    ), completeness
+
+
+def test_iscsi_gate_accepts_run49_operational_then_security_stage_wording(tmp_path):
+    from app.services.test_activity_contract import (
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="完整 iSCSI Login 测试设计",
+        repo_path=str(repo),
+    )
+    content = (
+        "在操作协商阶段（CSG=1）或安全协商阶段（CSG=0），"
+        "Initiator 可以携带格式合法但未实现的 key。"
+    )
+
+    issues = _audit_professional_constraints(content, contract)
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_csg_values"
+        for issue in issues
+    ), issues
+
+
 def test_combined_sfmea_requires_descending_rpn_order():
     from app.services.test_activity_contract import _audit_combined_sfmea_order
 
@@ -2468,6 +3411,35 @@ def test_complete_delivery_rejects_broken_profile_markdown_separator():
     issues = _audit_combined_execution_contract(content)
 
     assert any(issue["code"] == "invalid_profile_table" for issue in issues), issues
+
+
+def test_markdown_audit_rejects_truncated_table_row(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    content = '''
+## 主流程与异常/恢复流程
+
+| 步骤 | 外部行为 | 源码证据 | 证据 ID |
+|:---:|---|---|---|
+| 7.1 | 首连接登录成功 | `lib/iscsi/iscsi.c` | SRC-01 |
+| 7.2 | Initiator 使用相同 TSIH 发起第二连接 | `lib/iscsi/iscsi.c` | SRC-02 |
+| 7.3 | `append_iscsi_sess` 检查容量 | `lib/iscsi
+
+## SFMEA
+
+| ID | Failure mode |
+|---|---|
+| FMEA-01 | capacity |
+'''
+
+    issues = _audit_markdown_artifact(
+        artifact="report.md",
+        content=content,
+        spec={"sections": ["主流程与异常/恢复流程", "SFMEA"]},
+        repo=tmp_path,
+    )
+
+    assert any(issue["code"] == "malformed_markdown_table" for issue in issues), issues
 
 
 def test_raw_pdu_static_analysis_rejects_reinstatement_that_closes_old_session_first():
@@ -3127,3 +4099,1792 @@ async def test_ai_thread_delivery_adds_test_activity_task_card_action(tmp_path, 
     assert query["workspace_id"] == ["ws-spdk"]
     assert query["target"] == ["针对 iSCSI login 输出 SFMEA 和黑盒测试用例"]
     assert query["outputs"] == ["sfmea.json,black_box_cases.json"]
+
+
+def test_markdown_audit_blocks_missing_required_evidence_terms_and_forbidden_paths(
+    tmp_path,
+):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+
+    repo = tmp_path / "repo"
+    artifact_dir = tmp_path / "artifacts"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "nvmf").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("login\n", encoding="utf-8")
+    (repo / "test" / "nvmf" / "digest.sh").write_text("digest\n", encoding="utf-8")
+    artifact_dir.mkdir()
+    (artifact_dir / "report.md").write_text(
+        "# Report\n\nlib/iscsi/iscsi.c\n\ntest/nvmf/digest.sh\n\n默认 60s 后超时。\n",
+        encoding="utf-8",
+    )
+    contract = {
+        "quality_gates": {"min_score": 80},
+        "artifact_contract": {
+            "report.md": {
+                "required_evidence_terms": ["iscsi_auth_params", "ISCSI_LOGIN_TIMEOUT"],
+                "forbidden_evidence_path_prefixes": ["test/nvmf/"],
+                "forbidden_claim_terms": ["默认 60s"],
+            }
+        },
+    }
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert audit["deliverable"] is False
+    assert {item["code"] for item in audit["issues"]}.issuperset(
+        {
+            "missing_required_evidence_terms",
+            "forbidden_evidence_path",
+            "forbidden_claim_term",
+        }
+    )
+
+
+def test_combined_markdown_artifact_audit_surfaces_legacy_professional_fact_lint(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_artifacts,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    artifact_dir = tmp_path / "artifacts"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("login_timer\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt" / "login.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    artifact_dir.mkdir()
+    (artifact_dir / "report.md").write_text(
+        "# iSCSI Login 测试分析报告\n\n"
+        "## 分析范围与证据缺口\nlib/iscsi/iscsi.c 与 test/iscsi_tgt/login.sh。\n\n"
+        "## 关键源码证据\n多阶段 CHAP 停滞会在 30 秒后由 login_timer 断开连接。\n\n"
+        "## 主流程与异常/恢复流程\n1. 接收 Login PDU。\n\n"
+        "## SFMEA\n| ID | 失效模式 | 原因 | 影响 | 检测 | S | O | D | RPN | 缓解 | 证据 | 测试映射 |\n"
+        "|---|---|---|---|---|---:|---:|---:|---:|---|---|---|\n"
+        + "\n".join(
+            f"| SFMEA-{index:02d} | 登录停滞 | 丢包 | 连接占用 | 监控 | 8 | 4 | 4 | 128 | 补充测试 | lib/iscsi/iscsi.c | test/iscsi_tgt/login.sh |"
+            for index in range(1, 13)
+        )
+        + "\n\n## 黑盒测试用例\n"
+        + "\n".join(
+            f"### BB-{index:02d}\n前置条件：目标端运行。步骤：发送请求。预期结果：返回响应。观测点：抓包。失败诊断：检查日志。"
+            for index in range(1, 13)
+        ),
+        encoding="utf-8",
+    )
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整流程 SFMEA 黑盒测试设计",
+        repo_path=str(repo),
+        workflow_outputs=[
+            {"artifact": "report.md", "type": "combined_test_report"},
+        ],
+    )
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert any(
+        issue.get("code") == "professional_fact_conflict"
+        and issue.get("constraint_id") == "iscsi_login_timer_after_first_pdu"
+        for issue in audit["lint_warnings"]
+    ), audit
+    assert not any(
+        issue.get("code") == "missing_iscsi_professional_scenarios"
+        for issue in audit["issues"]
+    ), audit
+    assert any(
+        issue.get("code") == "missing_iscsi_professional_scenarios"
+        for issue in audit["lint_warnings"]
+    ), audit
+
+
+def test_combined_report_routes_nested_black_box_conflict_to_structured_artifact(tmp_path):
+    from app.services.test_activity_contract import (
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整流程 SFMEA 黑盒测试设计",
+        repo_path=str(repo),
+    )
+    content = """
+# iSCSI Login 测试分析报告
+
+## 黑盒测试用例
+
+### BB-NEW01 未知合法 key=NotUnderstood
+
+- 预期结果：target 应返回 NotUnderstood，不拒绝登录；最终登录成功进入 Operational Negotiation（CSG=1）。
+"""
+
+    issues = _audit_professional_constraints(
+        content,
+        contract,
+        source_artifact="report.md",
+        infer_structured_section=True,
+    )
+
+    issue = next(
+        item
+        for item in issues
+        if item.get("constraint_id") == "iscsi_final_login_stage_alternatives"
+    )
+    assert issue["artifact"] == "black_box_cases.json"
+    assert issue["section_heading"] == "BB-NEW01 未知合法 key=NotUnderstood"
+    assert "最终登录成功进入 Operational Negotiation（CSG=1）" in issue["conflicting_excerpt"]
+
+
+def test_combined_iscsi_report_rejects_normal_login_with_auth_failure_expected_result():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### TC-01 Normal login without authentication
+- 前置条件：Target 未启用认证。
+- 操作步骤：使用合法 initiator 登录。
+- 预期结果：Target fails to decode and returns Authentication Failure (0x0201).
+- 观测点：tcpdump 与 target 日志。
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert any(issue["code"] == "black_box_expected_result_contradiction" for issue in issues)
+
+
+def test_combined_iscsi_report_rejects_first_pdu_timer_claim_even_with_global_correction():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 主流程与异常/恢复流程
+源码证据表明首个 payload 处理时 login_timer 已注销，当前实现未重新注册。
+
+## 黑盒测试用例
+### TC-17 Login timeout after first PDU
+- 前置条件：Target running；Initiator sends initial Login Request but then stops communication
+- 操作步骤：Send Login Request with C=0 (no continuation) but do not send any more data；Wait 30 seconds (ISCSI_LOGIN_TIMEOUT)
+- 预期结果：Target closes the connection after 30 seconds; login_timer fires.
+- 观测点：tcpdump FIN/RST。
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert any(issue["code"] == "black_box_evidence_contradiction" for issue in issues)
+
+
+def test_combined_iscsi_report_rejects_chinese_first_pdu_timer_oracle_from_real_output():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 主流程与异常/恢复流程
+源码证据表明 iscsi_pdu_payload_op_login 在首个 payload 处理时注销 login_timer，当前实现未重新注册。
+
+## 黑盒测试用例
+### BB-13 登录过程中 initiator 停滞，超时 30 秒后连接关闭
+- 前置条件：自定义脚本发送第一个 Login PDU 后不继续发送。
+- 操作步骤：发送一个 Login PDU；等待 35 秒（超过 30 秒定时器）。
+- 预期结果：35 秒后，target 主动关闭 TCP 连接（收到 FIN 或 RST）。
+- 证据：lib/iscsi/iscsi.c:2218（spdk_poller_unregister 在首 PDU 后取消定时器）。
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert any(
+        issue["code"] == "black_box_evidence_contradiction"
+        and issue.get("constraint_id") == "iscsi_login_timer_after_first_pdu"
+        for issue in issues
+    ), issues
+
+
+def test_combined_iscsi_report_rejects_non_executable_mcs_client_and_wrong_test_mapping():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### BB-18 MCS 容量超限
+- 前置条件：scripts/rpc.py iscsi_set_options -c 1；首连接保持在线并记录非零 TSIH。
+- 操作步骤：使用同一 initiator 不同 CID 建立第二个连接：iscsiadm -m node --login -T TARGET_IQN --cid 1。
+- 预期结果：返回 Too Many Connections (0x06)。
+- 测试映射：test/iscsi_tgt/multiconnection/multiconnection.sh（危险；仅使用隔离测试盘并提示数据销毁风险）。
+"""
+
+    issues = _audit_combined_report_consistency(content)
+    codes = {issue["code"] for issue in issues}
+
+    assert "non_executable_mcs_client" in codes, issues
+    assert "black_box_test_mapping_contradiction" in codes, issues
+
+
+def test_combined_iscsi_report_rejects_natural_language_iscsiadm_cid_from_real_output():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### TC-22 超过 MaxConnections 时拒绝额外连接
+- 前置条件：启动 target 前执行 scripts/rpc.py iscsi_set_options -c 1；建立一个正常登录会话；然后尝试使用相同 TSIH 但不同 CID 登录
+- 操作步骤：第一个连接使用 iscsiadm 正常登录（CID=0）；第二个连接使用 iscsiadm 指定 CID=1 同一 Target；观察第二个连接是否被拒绝
+- 预期结果：第二个连接应被返回 Too Many Connections (status-detail=0x06)
+- 测试映射：test/iscsi_tgt/multiconnection/multiconnection.sh（仅限隔离测试盘，数据销毁风险）
+"""
+
+    issues = _audit_combined_report_consistency(content)
+    codes = {issue["code"] for issue in issues}
+
+    assert "non_executable_mcs_client" in codes, issues
+    assert "black_box_test_mapping_contradiction" in codes, issues
+
+
+def test_combined_iscsi_report_rejects_mcs_case_without_capable_client_from_run33():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### TC-16 MCS 超限 (MaxConnectionsPerSession=1)
+- 前置条件：在 target 启动前执行 scripts/rpc.py iscsi_set_options -c 1；已有一条连接进入 Full Feature Phase（TSIH 已知）
+- 操作步骤：使用相同 ISID、不同 CID 发起第二条登录；等待 Login Response
+- 预期结果：第二条登录被拒绝，status=0x06 (Too Many Connections)
+- 测试映射：test/iscsi_tgt/multiconnection/multiconnection.sh（仅限隔离盘，提示数据销毁风险）
+"""
+
+    issues = _audit_combined_report_consistency(content)
+    codes = {issue["code"] for issue in issues}
+
+    assert "missing_mcs_capable_client" in codes, issues
+    assert "black_box_test_mapping_contradiction" in codes, issues
+
+
+def test_combined_iscsi_report_accepts_capable_mcs_raw_pdu_client():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### TC-16 MCS 超限 (MaxConnectionsPerSession=1)
+- 前置条件：首连接保持在线，记录服务端返回的非零 TSIH 与 CID=0。
+- 操作步骤：运行可执行 Python raw-PDU harness，在保持旧 socket 在线的同时复用相同 ISID/非零 TSIH，以 CID=1 发送第二个 Login Request；harness 通过 socket.sendall/recv 解析 Login Response。
+- 预期结果：第二条登录被拒绝，status=0x06；旧 socket 继续可用。
+- 观测点：iscsi_get_connections 仅保留旧 CID；pcap 显示同一 TSIH 的新 CID 被拒绝。
+- 测试映射：需要新增 mcs_raw_pdu.py；multiconnection.sh 不覆盖同一 session 的 MCS，仅作环境搭建参考。
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert not any(
+        issue.get("constraint_id") in {
+            "iscsi_multiconnection_client_capability",
+            "iscsi_multiconnection_mapping_scope",
+        }
+        for issue in issues
+    ), issues
+
+
+def test_combined_iscsi_report_accepts_run48_recorded_tsih_mcs_harness():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### BB-017 MCS 容量超限触发 Too Many Connections
+- 测试维度：resource_pressure
+- 前置条件：target 启动前执行：scripts/rpc.py iscsi_set_options -c 1 (MaxConnections=1)；提供 raw_iscsi_harness.py（见附录），支持设置 ISID/CID/TSIH 和 socket sendall/recv；仅限隔离测试盘，有数据销毁风险
+- 操作步骤：使用 harness 发送首 Login PDU：ISID=0x0001, CID=0x0001, TSIH=0x0000，接收成功响应，记录 TSIH；保持首连接 socket 在线，创建新 socket，发送第二 Login PDU：ISID=0x0001, CID=0x0002, TSIH=<记录值>；接收第二 Login Response，检查 opcode=0x23, status_class=0x02, status_detail=0x06
+- 预期结果：第二 Login Response opcode=0x23, status_class=0x02 (Initiator Error), status_detail=0x06 (Too Many Connections)
+- 观测点：抓包：sudo tcpdump -i any -w mcs_exceed.pcap port 3260；tshark -r mcs_exceed.pcap -Y 'iscsi.opcode==0x23 and iscsi.status_class==2 and iscsi.status_detail==6'
+- 失败诊断：若第二连接成功，检查 iscsi_set_options 是否生效；若首连接被关闭，检查 TSIH 传递是否正确
+- 测试映射：lib/iscsi/iscsi.c
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_multiconnection_client_capability"
+        for issue in issues
+    ), issues
+
+
+def test_combined_iscsi_report_accepts_run49_explicit_nonzero_tsih_mcs_harness():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### TC-01 Exceed MaxConnectionsPerSession (limit=1)
+- 前置条件：SPDK target 启动前执行 scripts/rpc.py iscsi_set_options -c 1；raw-PDU harness 可用（见报告附录）；首连接已建立: 使用 ISID_A, CID=1, TSIH=100（通过 harness 登录成功）
+- 操作步骤：使用 raw-PDU harness 创建第二个 TCP socket；构造 Login Request PDU，ISID=ISID_A, CID=2, TSIH=100；通过 harness 发送该 PDU并保持第一个 socket 在线；接收 Login Response 并断言 Status-Detail=0x06
+- 预期结果：响应 opcode=0x23，Status-Class=0x02，Status-Detail=0x06（Too Many Connections）
+- 测试映射：待新增: raw-PDU harness（参见报告附录）
+
+### TC-02 Multiple connections per session (same TSIH, different CID)
+- 前置条件：首连接已建立: 使用 ISID_A, CID=1, TSIH=100；raw-PDU harness 可用，保持首 socket 在线
+- 操作步骤：使用 raw-PDU harness 创建第二个 TCP socket；构造 Login Request PDU，ISID=ISID_A, CID=2, TSIH=100；通过 harness 发送，接收响应
+- 预期结果：响应 opcode=0x23，Status-Class=0x00，Status-Detail=0x00
+- 测试映射：待新增: raw-PDU harness（参见报告附录）
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_multiconnection_client_capability"
+        for issue in issues
+    ), issues
+
+
+def test_combined_iscsi_report_rejects_run49_generic_harness_for_mcs_claim():
+    from app.services.test_activity_contract import _audit_combined_professional_completeness
+
+    content = r'''
+## 黑盒测试用例
+### TC-02 Multiple connections per session (same TSIH, different CID)
+- 前置条件：首连接已建立，记录服务端返回的非零 TSIH，保持首 socket 在线。
+- 操作步骤：复用相同 ISID 和 TSIH，以不同 CID 创建第二个连接并发送 Login Request。
+- 预期结果：接收 Login Response，断言 Status-Class=0x00、Status-Detail=0x00。
+- 测试映射：待新增 raw-PDU harness。
+
+```python
+import socket
+
+def build_login_pdu(data: bytes, *, isid: bytes, cid: int, itt: int, cmdsn: int) -> bytes:
+    bhs = bytearray(48)
+    bhs[0] = 0x03
+    bhs[1] = 0x87
+    bhs[5:8] = len(data).to_bytes(3, "big")
+    bhs[8:14] = isid
+    bhs[14:16] = (0).to_bytes(2, "big")
+    bhs[20:24] = itt.to_bytes(4, "big")
+    bhs[24:26] = cid.to_bytes(2, "big")
+    bhs[28:32] = cmdsn.to_bytes(4, "big")
+    return bytes(bhs) + data
+
+def recv_pdu(sock):
+    bhs = sock.recv(48)
+    data_segment_length = int.from_bytes(bhs[5:8], "big")
+    return bhs, sock.recv(data_segment_length)
+
+def run(host, port):
+    request = build_login_pdu(b"AuthMethod=None\x00", isid=b"ABCDEF", cid=1, itt=2, cmdsn=3)
+    with socket.create_connection((host, port)) as sock:
+        sock.sendall(request)
+        return recv_pdu(sock)
+```
+'''
+    contract = {
+        "domain_profiles": ["iscsi_login"],
+        "target": "完整 iSCSI Login 流程、SFMEA 与黑盒测试设计",
+        "required_outputs": ["business_flow.md", "sfmea.json", "black_box_cases.json"],
+        "artifact_contract": {},
+    }
+
+    issues = _audit_combined_professional_completeness(content, contract)
+
+    capability_issue = next(
+        issue
+        for issue in issues
+        if issue["code"] == "raw_pdu_harness_missing_scenario_capability"
+    )
+    assert "MCS" in capability_issue["message"]
+    assert set(capability_issue["missing_capabilities"]) >= {
+        "nonzero_tsih_input",
+        "dual_socket_lifecycle",
+        "login_response_status_oracle",
+    }
+
+
+def test_combined_iscsi_report_rejects_fixed_flags_and_version_harness_for_claimed_cases():
+    from app.services.test_activity_contract import _audit_raw_pdu_scenario_capabilities
+
+    content = r'''
+## 黑盒测试用例
+### TC-10 T+C 非法组合与 C-bit 分片
+- 操作步骤：先发送 C=1 的 Login Request，再发送结束分片；另发 T=1,C=1 非法组合。
+- 预期结果：解析 Login Response 并断言拒绝状态。
+
+### TC-11 Unsupported Version
+- 操作步骤：设置 version_max=0xff、version_min=0xfe 发送 Login Request。
+- 预期结果：解析 Login Response 并断言 Unsupported Version。
+
+```python
+import socket
+
+def build_login_pdu(data: bytes) -> bytes:
+    bhs = bytearray(48)
+    bhs[0] = 0x03
+    bhs[1] = 0x87
+    bhs[2] = 0
+    bhs[3] = 0
+    bhs[5:8] = len(data).to_bytes(3, "big")
+    return bytes(bhs) + data
+
+def run(host, port):
+    request = build_login_pdu(b"AuthMethod=None\x00")
+    with socket.create_connection((host, port)) as sock:
+        sock.sendall(request)
+        return sock.recv(48)
+```
+'''
+
+    issues = _audit_raw_pdu_scenario_capabilities(content)
+
+    capability_issue = next(
+        issue
+        for issue in issues
+        if issue["code"] == "raw_pdu_harness_missing_scenario_capability"
+    )
+    assert set(capability_issue["missing_capabilities"]) >= {
+        "mutable_login_flags",
+        "multi_pdu_login",
+        "version_range_input",
+        "login_response_status_oracle",
+    }
+
+
+def test_fact_ledger_contradicts_supported_iscsi_version_reported_as_unsupported(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+    from app.services.workflow_presets import SFMEA_SCHEMA
+
+    repo = tmp_path / "repo"
+    header = repo / "include" / "spdk" / "iscsi_spec.h"
+    header.parent.mkdir(parents=True)
+    header.write_text("#define ISCSI_VERSION 0x00\n", encoding="utf-8")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "evidence_cards.json").write_text(
+        json.dumps(
+            [
+                {
+                    "evidence_id": "SRC-001",
+                    "file_path": "include/spdk/iscsi_spec.h",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "excerpt": "#define ISCSI_VERSION 0x00",
+                    "sha256": hashlib.sha256(header.read_bytes()).hexdigest(),
+                    "symbols": ["ISCSI_VERSION"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (artifacts / "sfmea.json").write_text(
+        json.dumps(
+            [
+                {
+                    "sfmea_id": "SFMEA-003",
+                    "failure_mode": "Unsupported version: version_max=0, version_min=0",
+                    "cause": "Initiator sends both version fields as zero.",
+                    "effect": "Target rejects the login as unsupported version.",
+                    "detection": "Login Response Status-Detail=0x05.",
+                    "severity": 6,
+                    "occurrence": 2,
+                    "detection_score": 2,
+                    "rpn": 24,
+                    "mitigation": "Send a supported version range.",
+                    "source_evidence": [
+                        "include/spdk/iscsi_spec.h::ISCSI_VERSION"
+                    ],
+                    "test_mapping": "待新增 raw-PDU harness",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    contract = {
+        "artifact_contract": {"sfmea.json": {"schema": SFMEA_SCHEMA}},
+        "quality_gates": {
+            "min_score": 80,
+            "require_independent_behavior_validation": True,
+        },
+    }
+
+    result = audit_test_activity_artifacts(
+        artifact_dir=artifacts,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    contradiction = next(
+        issue for issue in result["issues"] if issue["code"] == "source_claim_contradicted"
+    )
+    assert contradiction["claim_id"] == "SFMEA-003:protocol_version_range"
+    assert contradiction["source_truth"] == "ISCSI_VERSION=0x00"
+    assert result["fact_verification"] == {
+        "total": 2,
+        "verified": 0,
+        "contradicted": 1,
+        "insufficient": 1,
+        "pass_rate": 0,
+    }
+
+
+def test_fact_ledger_rejects_exact_log_literal_missing_from_verified_source(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+    from app.services.workflow_presets import SFMEA_SCHEMA
+
+    repo = tmp_path / "repo"
+    source = repo / "lib" / "iscsi" / "conn.c"
+    source.parent.mkdir(parents=True)
+    source.write_text('SPDK_ERRLOG("auth failed\\n");\n', encoding="utf-8")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "evidence_cards.json").write_text(
+        json.dumps(
+            [
+                {
+                    "evidence_id": "SRC-001",
+                    "file_path": "lib/iscsi/conn.c",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "excerpt": 'SPDK_ERRLOG("auth failed\\n");',
+                    "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "symbols": ["login_timeout"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    row = {
+        "sfmea_id": "SFMEA-005",
+        "failure_mode": "Login timeout",
+        "cause": "Initiator stops responding.",
+        "effect": "Connection closes.",
+        "detection": "SPDK log contains 'login timed out'.",
+        "severity": 6,
+        "occurrence": 2,
+        "detection_score": 2,
+        "rpn": 24,
+        "mitigation": "Observe timeout handling.",
+        "source_evidence": ["lib/iscsi/conn.c::login_timeout"],
+        "test_mapping": "待新增 timeout test",
+    }
+    (artifacts / "sfmea.json").write_text(json.dumps([row]), encoding="utf-8")
+    contract = {
+        "artifact_contract": {"sfmea.json": {"schema": SFMEA_SCHEMA}},
+        "quality_gates": {
+            "min_score": 80,
+            "require_independent_behavior_validation": True,
+        },
+    }
+
+    result = audit_test_activity_artifacts(
+        artifact_dir=artifacts,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    issue = next(
+        issue for issue in result["issues"] if issue["code"] == "source_claim_contradicted"
+    )
+    assert issue["claim_id"] == "SFMEA-005:log_literal:1"
+    assert issue["claimed_literal"] == "login timed out"
+
+
+def test_fact_ledger_only_extracts_explicit_local_log_claims(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+    from app.services.workflow_presets import SFMEA_SCHEMA
+
+    repo = tmp_path / "repo"
+    source = repo / "lib" / "iscsi" / "iscsi.c"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        'SPDK_ERRLOG("auth failed (name %.64s)\\n", name);\n',
+        encoding="utf-8",
+    )
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "evidence_cards.json").write_text(
+        json.dumps(
+            [
+                {
+                    "evidence_id": "SRC-001",
+                    "file_path": "lib/iscsi/iscsi.c",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "excerpt": 'SPDK_ERRLOG("auth failed (name %.64s)\\n", name);',
+                    "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "symbols": ["iscsi_auth_params"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    row = {
+        "sfmea_id": "SFMEA-006",
+        "failure_mode": "Authentication failure",
+        "cause": "Unknown account",
+        "effect": "Login rejected",
+        "detection": (
+            "SPDK log shows 'auth failed (name ...)' (exact format string "
+            "'auth failed (name %.64s)' at iscsi.c); 'unknown user' is not logged. "
+            "No explicit SPDK log for 'login timeout' (待验证). "
+            "Capture with tshark filter 'iscsi.status_class==0x02'."
+        ),
+        "severity": 6,
+        "occurrence": 2,
+        "detection_score": 2,
+        "rpn": 24,
+        "mitigation": "Verify the response and source-backed log.",
+        "source_evidence": ["lib/iscsi/iscsi.c::iscsi_auth_params"],
+        "test_mapping": "待新增 authentication test",
+    }
+    (artifacts / "sfmea.json").write_text(json.dumps([row]), encoding="utf-8")
+    contract = {
+        "artifact_contract": {"sfmea.json": {"schema": SFMEA_SCHEMA}},
+        "quality_gates": {"min_score": 80},
+    }
+
+    result = audit_test_activity_artifacts(
+        artifact_dir=artifacts,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert result["fact_verification"] == {
+        "total": 1,
+        "verified": 1,
+        "contradicted": 0,
+        "insufficient": 0,
+        "pass_rate": 100,
+    }
+    log_claim = next(
+        claim for claim in result["fact_claims"]
+        if claim.get("type") == "log_literal"
+    )
+    assert log_claim["statement"].endswith("auth failed (name %.64s)")
+
+
+def test_fact_ledger_verifies_structured_claim_quotes_against_hashed_source(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+    from app.services.workflow_presets import SFMEA_SCHEMA
+
+    repo = tmp_path / "repo"
+    source = repo / "include" / "spdk" / "iscsi_spec.h"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "#define ISCSI_OP_LOGIN_RSP 0x23\n#define ISCSI_LOGIN_AUTHENT_FAIL 0x01\n",
+        encoding="utf-8",
+    )
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "evidence_cards.json").write_text(
+        json.dumps(
+            [
+                {
+                    "evidence_id": "SRC-001",
+                    "file_path": "include/spdk/iscsi_spec.h",
+                    "start_line": 1,
+                    "end_line": 2,
+                    "excerpt": source.read_text(encoding="utf-8"),
+                    "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "symbols": ["ISCSI_OP_LOGIN_RSP", "ISCSI_LOGIN_AUTHENT_FAIL"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    base_row = {
+        "failure_mode": "Authentication failure",
+        "cause": "Bad credentials",
+        "effect": "Login rejected",
+        "detection": "Inspect Login Response",
+        "severity": 6,
+        "occurrence": 2,
+        "detection_score": 2,
+        "rpn": 24,
+        "mitigation": "Verify the response",
+        "source_evidence": ["include/spdk/iscsi_spec.h::ISCSI_OP_LOGIN_RSP"],
+        "test_mapping": "test/iscsi_tgt",
+    }
+    rows = [
+        {
+            **base_row,
+            "sfmea_id": "SFMEA-001",
+            "technical_claims": [
+                {
+                    "claim_id": "C-001",
+                    "type": "protocol_constant",
+                    "statement": "Login Response opcode is 0x23",
+                    "evidence": [
+                        {
+                            "evidence_id": "SRC-001:L1",
+                            "path": "include/spdk/iscsi_spec.h",
+                            "symbol": "ISCSI_OP_LOGIN_RSP",
+                            "lines": "L1-L1",
+                            "quote": "#define ISCSI_OP_LOGIN_RSP 0x23",
+                        }
+                    ],
+                }
+            ],
+        },
+        {
+            **base_row,
+            "sfmea_id": "SFMEA-002",
+            "technical_claims": [
+                {
+                    "claim_id": "C-002",
+                    "type": "protocol_constant",
+                    "statement": "Authentication Failure is 0x02",
+                    "evidence": [
+                        {
+                            "evidence_id": "SRC-001:L2",
+                            "path": "include/spdk/iscsi_spec.h",
+                            "symbol": "ISCSI_LOGIN_AUTHENT_FAIL",
+                            "lines": "L2-L2",
+                            "quote": "#define ISCSI_LOGIN_AUTHENT_FAIL 0x02",
+                        }
+                    ],
+                }
+            ],
+        },
+        {
+            **base_row,
+            "sfmea_id": "SFMEA-003",
+            "technical_claims": [
+                {
+                    "claim_id": "C-003",
+                    "type": "protocol_constant",
+                    "statement": "Login Response opcode is 0x23",
+                    "evidence": [
+                        {
+                            "evidence_id": "UNKNOWN:L1",
+                            "path": "include/spdk/iscsi_spec.h",
+                            "symbol": "ISCSI_OP_LOGIN_RSP",
+                            "lines": "L1",
+                            "quote": "#define ISCSI_OP_LOGIN_RSP 0x23",
+                        }
+                    ],
+                }
+            ],
+        },
+        {
+            **base_row,
+            "sfmea_id": "SFMEA-004",
+            "technical_claims": [
+                {
+                    "claim_id": "C-004",
+                    "type": "protocol_constant",
+                    "statement": "Login Response opcode is 0x24",
+                    "evidence": [
+                        {
+                            "evidence_id": "SRC-001:L1",
+                            "path": "include/spdk/iscsi_spec.h",
+                            "symbol": "ISCSI_OP_LOGIN_RSP",
+                            "lines": "L1-L1",
+                            "quote": "#define ISCSI_OP_LOGIN_RSP 0x23",
+                        }
+                    ],
+                }
+            ],
+        },
+    ]
+    (artifacts / "sfmea.json").write_text(json.dumps(rows), encoding="utf-8")
+    contract = {
+        "artifact_contract": {"sfmea.json": {"schema": SFMEA_SCHEMA}},
+        "quality_gates": {"min_score": 80},
+    }
+
+    result = audit_test_activity_artifacts(
+        artifact_dir=artifacts,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    claims = {claim["claim_id"]: claim for claim in result["fact_claims"]}
+    assert claims["C-001"]["status"] == "verified"
+    assert claims["C-001"]["evidence"][0]["sha256"] == hashlib.sha256(
+        source.read_bytes()
+    ).hexdigest()
+    assert claims["C-002"]["status"] == "contradicted"
+    assert claims["C-003"]["status"] == "contradicted"
+    assert claims["C-004"]["status"] == "contradicted"
+    issue = next(
+        issue
+        for issue in result["issues"]
+        if issue.get("claim_id") == "C-002"
+    )
+    assert issue["code"] == "source_claim_contradicted"
+    assert issue["validation_layer"] == "L1_deterministic"
+
+
+def test_source_behavior_claim_requires_bound_l2_validation(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+    from app.services.workflow_presets import SFMEA_SCHEMA
+
+    repo = tmp_path / "repo"
+    source = repo / "lib" / "iscsi" / "iscsi.c"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "int iscsi_auth_params(void *params)\n{\n\tif (params == NULL) { return -1; }\n}\n",
+        encoding="utf-8",
+    )
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    (artifacts / "evidence_cards.json").write_text(
+        json.dumps(
+            [
+                {
+                    "evidence_id": "SRC-001",
+                    "file_path": "lib/iscsi/iscsi.c",
+                    "start_line": 1,
+                    "end_line": 4,
+                    "excerpt": source.read_text(encoding="utf-8"),
+                    "sha256": source_sha,
+                    "symbols": ["iscsi_auth_params"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    row = {
+        "sfmea_id": "SFMEA-001",
+        "failure_mode": "NULL input is dereferenced",
+        "cause": "iscsi_auth_params has no NULL guard",
+        "effect": "Target crashes",
+        "detection": "Observe a crash",
+        "severity": 9,
+        "occurrence": 2,
+        "detection_score": 3,
+        "rpn": 54,
+        "mitigation": "Add a NULL guard",
+        "source_evidence": ["lib/iscsi/iscsi.c::iscsi_auth_params"],
+        "test_mapping": "new negative test",
+        "technical_claims": [
+            {
+                "claim_id": "C-BEHAVIOR-001",
+                "type": "source_behavior",
+                "statement": "iscsi_auth_params has no NULL guard",
+                "evidence": [
+                    {
+                        "evidence_id": "SRC-001:L3",
+                        "path": "lib/iscsi/iscsi.c",
+                        "symbol": "iscsi_auth_params",
+                        "lines": "L3",
+                        "quote": "\tif (params == NULL) { return -1; }",
+                    }
+                ],
+            }
+        ],
+    }
+    (artifacts / "sfmea.json").write_text(json.dumps([row]), encoding="utf-8")
+    contract = {
+        "artifact_contract": {"sfmea.json": {"schema": SFMEA_SCHEMA}},
+        "quality_gates": {
+            "min_score": 80,
+            "require_independent_behavior_validation": True,
+        },
+    }
+
+    result = audit_test_activity_artifacts(
+        artifact_dir=artifacts,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    explicit = next(
+        claim for claim in result["fact_claims"]
+        if claim["claim_id"] == "C-BEHAVIOR-001"
+    )
+    assert explicit["status"] == "insufficient"
+    assert explicit["semantic_validation"] == "requires_l2"
+    row_claim = next(
+        claim for claim in result["fact_claims"]
+        if claim["claim_id"] == "ROW:sfmea.json:SFMEA-001"
+    )
+    assert row_claim["status"] == "insufficient"
+    assert row_claim["type"] == "sfmea_row_behavior"
+    assert "has no NULL guard" in row_claim["statement"]
+    assert result["quality_axes"]["facts"]["status"] == "blocked"
+    assert result["deliverable"] is False
+
+
+def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(tmp_path):
+    from app.services.test_activity_contract import (
+        _behavior_claim_binding,
+        audit_test_activity_artifacts,
+        build_behavior_claim_validation_request,
+    )
+    from app.services.workflow_presets import SFMEA_SCHEMA
+
+    repo = tmp_path / "repo"
+    source = repo / "lib" / "iscsi" / "iscsi.c"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "int iscsi_auth_params(void *params)\n{\n\tif (params == NULL) { return -1; }\n}\n",
+        encoding="utf-8",
+    )
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    evidence = {
+        "evidence_id": "SRC-001:L3",
+        "path": "lib/iscsi/iscsi.c",
+        "symbol": "iscsi_auth_params",
+        "lines": "L3",
+        "quote": "if (params == NULL) { return -1; }",
+    }
+    (artifacts / "evidence_cards.json").write_text(
+        json.dumps(
+            [
+                {
+                    "evidence_id": "SRC-001",
+                    "file_path": "lib/iscsi/iscsi.c",
+                    "start_line": 1,
+                    "end_line": 4,
+                    "excerpt": source.read_text(encoding="utf-8"),
+                    "sha256": source_sha,
+                    "symbols": ["iscsi_auth_params"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    statement = "iscsi_auth_params rejects NULL input before dereference"
+    row = {
+        "sfmea_id": "SFMEA-001",
+        "failure_mode": "NULL input",
+        "cause": "Caller passes NULL",
+        "effect": "Function rejects the request",
+        "detection": "Return code is -1",
+        "severity": 3,
+        "occurrence": 2,
+        "detection_score": 2,
+        "rpn": 12,
+        "mitigation": "Retain the guard",
+        "source_evidence": ["lib/iscsi/iscsi.c::iscsi_auth_params"],
+        "test_mapping": "new negative test",
+        "technical_claims": [
+            {
+                "claim_id": "C-BEHAVIOR-001",
+                "type": "source_behavior",
+                "statement": statement,
+                "evidence": [evidence],
+            }
+        ],
+    }
+    (artifacts / "sfmea.json").write_text(json.dumps([row]), encoding="utf-8")
+    request = build_behavior_claim_validation_request(
+        artifact_dir=artifacts,
+        repo_path=repo,
+    )
+    assert {claim["claim_id"] for claim in request["claims"]} == {
+        "C-BEHAVIOR-001",
+        "ROW:sfmea.json:SFMEA-001",
+    }
+    assert "if (params == NULL)" in request["contexts"][0]["content"]
+    checked_evidence = [{**evidence, "sha256": source_sha}]
+    binding = _behavior_claim_binding(
+        claim_id="C-BEHAVIOR-001",
+        claim_type="source_behavior",
+        statement=statement,
+        evidence=checked_evidence,
+    )
+    (artifacts / "behavior_claim_validation.json").write_text(
+        json.dumps(
+            {
+                "kind": "behavior_claim_validation",
+                "schema_version": 1,
+                "validator": {
+                    "provider": "codex",
+                    "model": "gpt-5.6-sol",
+                    "independent": True,
+                },
+                "claims": [
+                    {
+                        "claim_id": "C-BEHAVIOR-001",
+                        "binding": binding,
+                        "status": "supports",
+                        "reason": "The referenced guard returns before dereference.",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    contract = {
+        "artifact_contract": {"sfmea.json": {"schema": SFMEA_SCHEMA}},
+        "quality_gates": {
+            "min_score": 80,
+            "require_independent_behavior_validation": True,
+        },
+    }
+
+    result = audit_test_activity_artifacts(
+        artifact_dir=artifacts,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    explicit = next(
+        claim for claim in result["fact_claims"]
+        if claim["claim_id"] == "C-BEHAVIOR-001"
+    )
+    assert explicit["status"] == "verified"
+    assert explicit["validation_layer"] == "L2_independent_behavior"
+
+    validation = json.loads(
+        (artifacts / "behavior_claim_validation.json").read_text(encoding="utf-8")
+    )
+    validation["claims"][0]["binding"] = "stale-binding"
+    (artifacts / "behavior_claim_validation.json").write_text(
+        json.dumps(validation), encoding="utf-8"
+    )
+    stale = audit_test_activity_artifacts(
+        artifact_dir=artifacts,
+        contract=contract,
+        repo_path=str(repo),
+    )
+    stale_claim = next(
+        claim for claim in stale["fact_claims"]
+        if claim["claim_id"] == "C-BEHAVIOR-001"
+    )
+    assert stale_claim["status"] == "insufficient"
+
+
+def test_staged_raw_pdu_report_requires_loopback_runtime_evidence(tmp_path):
+    from app.services.test_activity_contract import _audit_raw_pdu_runtime_evidence
+
+    (tmp_path / "staged_execution_result.json").write_text(
+        json.dumps({"status": "completed"}),
+        encoding="utf-8",
+    )
+    content = "## 附录：raw-PDU harness\n```python\nimport socket\n```"
+
+    issues = _audit_raw_pdu_runtime_evidence(root=tmp_path, content=content)
+    assert [issue["code"] for issue in issues] == [
+        "raw_pdu_runtime_validation_failed"
+    ]
+
+    (tmp_path / "raw_pdu_harness_validation.json").write_text(
+        json.dumps(
+            {
+                "status": "passed",
+                "checks": [
+                    "tcp_connect",
+                    "first_pdu_sendall",
+                    "login_response_recv",
+                    "status_oracle",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert _audit_raw_pdu_runtime_evidence(root=tmp_path, content=content) == []
+
+
+def test_combined_iscsi_report_does_not_treat_independent_login_storm_as_mcs():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### TC-03 Burst login storm (100 concurrent logins)
+- 前置条件：SPDK target 运行，MaxConnectionsPerSession 设为足够大（如100）；raw-PDU harness 或并发脚本可用
+- 操作步骤：同时打开100个TCP socket；每个 socket 使用不同 ISID、CID=1、TSIH=0 发送独立 Login Request；收集所有响应
+- 预期结果：独立 session 的登录成功或按全局资源上限失败，target 不崩溃
+- 测试映射：test/iscsi_tgt/multiconnection/multiconnection.sh 仅作多 target 环境参考，不证明同一 session MCS
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert not any(
+        issue.get("constraint_id") in {
+            "iscsi_multiconnection_client_capability",
+            "iscsi_multiconnection_mapping_scope",
+        }
+        for issue in issues
+    ), issues
+
+
+def test_mcs_contract_accepts_zero_padded_decimal_identifiers_without_crashing():
+    from app.services.test_activity_contract import _is_mcs_case_contract
+
+    content = """
+### MaxConnectionsPerSession capacity
+首连接使用 TSIH=0001, CID=0001；第二连接复用 TSIH=0001, CID=0002。
+"""
+
+    assert _is_mcs_case_contract(content) is True
+
+
+def test_combined_iscsi_report_accepts_explicit_non_multiconnection_mapping_prefix():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### BB-016 MCS 容量限制（MaxConnectionsPerSession=1）
+- 前置条件：target 启动前执行 scripts/rpc.py iscsi_set_options -c 1；首连接保持在线并记录非零 TSIH。
+- 操作步骤：使用可执行 Python raw-PDU harness，复用相同 ISID/非零 TSIH，以新 CID 发送第二个 Login Request。
+- 预期结果：第二条登录被拒绝，Status-Detail=0x06；旧 socket 继续可用。
+- 测试映射：raw-PDU harness（附录 raw_pdu_harness.py）；非 multiconnection.sh。
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_multiconnection_mapping_scope"
+        for issue in issues
+    ), issues
+
+
+def test_combined_iscsi_report_rejects_mid_login_timer_claim_in_sfmea_row():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 主流程与异常/恢复流程
+源码证据表明首个 payload 处理时 login_timer 已注销，当前实现未重新注册。
+
+## SFMEA
+| ID | Failure mode | Cause | Effect | Detection | S | O | D | RPN | Mitigation | Evidence |
+|---|---|---|---|---|---:|---:|---:|---:|---|---|
+| FMEA-17 | 登录超时：在 ISCSI_LOGIN_TIMEOUT (30s) 内未完成登录 | Initiator 在中间阶段停止响应 | login_timeout 回调设置 EXITING，连接关闭 | 观察 TCP 断开 | 5 | 3 | 6 | 90 | 发送一个 Login Request 后暂停 31 秒，观察连接关闭 | lib/iscsi/conn.c:login_timeout |
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert any(
+        issue["code"] == "sfmea_evidence_contradiction"
+        and issue.get("constraint_id") == "iscsi_login_timer_after_first_pdu"
+        for issue in issues
+    )
+
+
+def test_combined_iscsi_report_keeps_network_mapping_disclaimer_but_rejects_real_timer_claim():
+    from app.services.test_activity_contract import (
+        _audit_combined_report_consistency,
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    content = """
+## SFMEA
+| ID | Failure mode | Cause | Effect | Detection | S | O | D | RPN | Mitigation | Evidence |
+|---|---|---|---|---|---:|---:|---:|---:|---|---|
+| FMEA-02 | Initiator sends first Login PDU but then stops; login timer expires after 30 seconds | Network issue or initiator crash | Connection enters ISCSI_CONN_STATE_EXITING; cleanup triggered | observe TCP RST after 30s | 4 | 5 | 2 | 40 | Ensure timer fires and cleanup completes | 待新增 network fault test; 不可用 login_redirection.sh (只测 RPC 重定向, 非网络中断) |
+"""
+    contract = build_test_activity_contract(
+        target="iSCSI Login SFMEA",
+        repo_path="/tmp/spdk",
+    )
+
+    professional_issues = _audit_professional_constraints(content, contract)
+    consistency_issues = _audit_combined_report_consistency(content)
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_redirection_mapping_scope"
+        for issue in professional_issues
+    ), professional_issues
+    assert any(
+        issue["code"] == "sfmea_evidence_contradiction"
+        and issue.get("constraint_id") == "iscsi_login_timer_after_first_pdu"
+        for issue in consistency_issues
+    ), consistency_issues
+
+
+def test_combined_iscsi_report_rejects_first_pdu_delay_close_oracle_from_run33():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 主流程与异常/恢复流程
+首个 Login PDU 的 payload 处理时，登录定时器由 spdk_poller_unregister 注销。
+
+## SFMEA
+| ID | Failure mode | Cause | Effect | Detection | S | O | D | RPN | Mitigation | Evidence |
+|---|---|---|---|---|---:|---:|---:|---:|---|---|
+| FMEA-20 | Login 超时（超过 ISCSI_LOGIN_TIMEOUT 30 秒） | 网络延迟或发起者停滞 | login_timeout 设 EXITING，连接断开 | 日志或连接状态 | 8 | 6 | 3 | 144 | 确认 timer 注销后不再重启 | 待新增 raw-PDU harness：发送首个 Login PDU 后延迟 35 秒再发第二个，预期连接被关闭 |
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert any(
+        issue["code"] == "sfmea_evidence_contradiction"
+        and issue.get("constraint_id") == "iscsi_login_timer_after_first_pdu"
+        for issue in issues
+    ), issues
+
+
+def test_combined_iscsi_report_rejects_ambiguous_tsih_zero_oracle():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### TC-02 Session Reinstatement (TSIH=0) - same ISID
+- 前置条件：已存在相同 ISID 的 Normal session。
+- 操作步骤：发送 TSIH=0 的 Login Request。
+- 预期结果：Target 应拒绝请求并返回 Initiator Error，或认为这是 reinstatement（视策略而定）。
+- 观测点：抓包检查 Status-Class 与 Status-Detail。
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert any(
+        issue["code"] == "black_box_expected_result_ambiguous"
+        and issue.get("constraint_id") == "iscsi_tsih_reinstatement_scope"
+        for issue in issues
+    )
+
+
+def test_combined_iscsi_report_accepts_explicit_first_pdu_timer_defect_oracle():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### TC-01 Login timeout after first PDU hang
+- 前置条件：login_timer deregistered after first payload, 30s timeout may not trigger - potential defect; resource oracle required.
+- 操作步骤：发送首个 Login PDU 后停滞 31 秒。
+- 预期结果：Current SPDK may leave connection half-open after 30s because login_timer is deregistered. Design expects TCP RST. This case detects the potential defect and resource leak.
+- 观测点：RPC 连接计数、TCP socket 与进程 RSS。
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert not any(issue["code"] == "black_box_evidence_contradiction" for issue in issues)
+
+
+def test_combined_iscsi_report_accepts_pending_timer_behavior_with_residue_oracle():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### TC-01 Login timeout after sending first PDU then idle 35s
+- 前置条件：发送第一个 Login PDU 后保持静默 35 秒。
+- 预期结果：根据源码证据，login_timer 在首 PDU 处理后即被注销，30 秒定时器不会触发超时关闭。实际行为待验证：连接可能残留；若连接被清理则存在其他超时机制（待确认）。
+- 观测点：pcap 中 35 秒内无 FIN/RST；RPC 连接计数可能不为零（资源残留）；记录 socket 和进程 RSS。
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert not any(
+        issue["code"] == "black_box_evidence_contradiction"
+        and issue.get("constraint_id") == "iscsi_login_timer_after_first_pdu"
+        for issue in issues
+    ), issues
+
+
+def test_combined_iscsi_report_accepts_run46_unverified_no_timeout_claim():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### BB-16 Login stall after first PDU (login_timer disabled)
+- 前置条件：Raw-PDU harness sends only first Login PDU.
+- 操作步骤：Open TCP connection, send first Login PDU, then wait 60 seconds.
+- 预期结果：Behavior unverified: login_timer disabled after first PDU, so no 30s timeout. Connection may hang (待验证). Resource leak possible (socket fd not closed).
+- 观测点：Target log does not show 'login timeout'; after >30s check /proc/net/tcp for a persisted connection (resource leak oracle).
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert not any(
+        issue.get("code") == "black_box_evidence_contradiction"
+        and issue.get("constraint_id") == "iscsi_login_timer_after_first_pdu"
+        for issue in issues
+    ), issues
+
+
+def test_combined_iscsi_report_rejects_discovery_login_target_address_oracle():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### TC-05 Discovery login returns TargetAddresses
+- 前置条件：Target running in discovery mode.
+- 操作步骤：Run iscsiadm -m discovery -t sendtargets -p 127.0.0.1:3260.
+- 预期结果：Discovery login succeeds; response contains TargetAddress= keys.
+- 观测点：Wire pcap shows Login Response with Status=0x00 and TargetAddress in data segment.
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert any(
+        issue["code"] == "black_box_evidence_contradiction"
+        and issue.get("constraint_id") == "iscsi_discovery_target_address"
+        for issue in issues
+    )
+
+
+def test_combined_iscsi_report_accepts_target_address_in_followup_sendtargets_response():
+    from app.services.test_activity_contract import (
+        _audit_combined_report_consistency,
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    content = """
+## 黑盒测试用例
+### TC-01 Discovery 登录成功（TargetAddress 在 SendTargets 期出现）
+- 操作步骤：执行 iscsiadm -m discovery -t sendtargets -p <target_ip>:3260；捕获 discovery login 和后续 SendTargets 的 tcpdump；检查 SendTargets Text Response 中的 TargetAddress
+- 预期结果：Discovery Login Response 成功（Status=0x00），SendTargets 响应包含 TargetAddress 和 TargetName
+- 观测点：tcpdump 显示 Login Response Status=0x00；SendTargets Text Response 包含 TargetAddress=... 和 TargetName=...
+"""
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整测试设计",
+        repo_path="/tmp/spdk",
+    )
+
+    professional = _audit_professional_constraints(content, contract)
+    consistency = _audit_combined_report_consistency(content)
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_discovery_target_address"
+        for issue in [*professional, *consistency]
+    ), [*professional, *consistency]
+
+
+def test_professional_gate_accepts_different_cid_rejected_by_explicit_capacity_limit():
+    from app.services.test_activity_contract import (
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    content = """
+### TC-03 超过 MaxConnectionsPerSession 容量（raw-PDU harness）
+- 前置条件：target 启动前执行 scripts/rpc.py iscsi_set_options -c 1；raw-PDU harness（附录）可用；tcpdump 捕获
+- 操作步骤：使用 harness 发送第一个 Login Request（ISID=new，CID=1）获得 TSIH；保持第一个连接的 TCP socket 在线；使用相同 TSIH、不同 CID（如 CID=2）发送第二个 Login Request；断言第二个 Login Response 的 Status=0x03 detail=0x06
+- 预期结果：第二个 Login Response 返回 Too Many Connections（Status=0x03 detail=0x06），连接被拒绝
+- 观测点：tcpdump 显示第二条 Login Response status=0x03 detail=0x06；harness recv 得到明确拒绝
+"""
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整测试设计",
+        repo_path="/tmp/spdk",
+    )
+
+    issues = _audit_professional_constraints(content, contract)
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_duplicate_cid_not_too_many_connections"
+        for issue in issues
+    ), issues
+
+
+def test_combined_iscsi_report_rejects_unmeasured_absolute_login_latency_oracle():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### TC-03 Login latency p50/p95/p99
+- 操作步骤：Repeat 10 times and compute p50/p95/p99 from pcap timestamps.
+- 预期结果：Login latency typical < 10 ms in isolation. Report a baseline for future regression.
+- 观测点：tcpdump timestamps.
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert any(issue["code"] == "ungrounded_performance_threshold" for issue in issues)
+
+
+def test_combined_iscsi_report_rejects_first_pdu_timeout_despite_unrelated_pending_marker():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### TC-23 Login timeout after first Login PDU
+- 前置条件：Target running；日志中的 timeout 原因仍待验证。
+- 操作步骤：发送第一个 Login PDU 后停止发送，等待 35 秒。
+- 预期结果：30 秒后 target 主动关闭连接，客户端收到 FIN 或 RST。
+- 观测点：tcpdump 与连接计数。
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert any(
+        issue["code"] == "black_box_evidence_contradiction"
+        and issue.get("constraint_id") == "iscsi_login_timer_after_first_pdu"
+        for issue in issues
+    ), issues
+
+
+def test_combined_iscsi_report_rejects_chap_challenge_stall_timeout_oracle():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### TC-24 CHAP challenge stall timeout
+- 前置条件：Target 已启用 CHAP。
+- 操作步骤：发起登录，收到 Target CHAP challenge 后停止发送响应，等待 35 秒。
+- 预期结果：30 秒后 target 主动关闭连接，客户端收到 FIN 或 RST。
+- 观测点：pcap 与 RPC 连接计数。
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert any(
+        issue["code"] == "black_box_evidence_contradiction"
+        and issue.get("constraint_id") == "iscsi_login_timer_after_first_pdu"
+        for issue in issues
+    ), issues
+
+
+def test_professional_gate_accepts_explicit_perf_script_non_login_disclaimer():
+    from app.services.test_activity_contract import (
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    content = """
+### TC-05 Login latency baseline
+- 测试映射：test/iscsi_tgt/perf/iscsi_target.sh 仅运行 fio I/O，not login latency；
+  登录时延使用独立 pcap 计时器并在首次运行建立基线。
+"""
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整测试设计",
+        repo_path="/tmp/spdk",
+    )
+
+    issues = _audit_professional_constraints(content, contract)
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_perf_scripts_not_login_latency"
+        for issue in issues
+    ), issues
+
+
+def test_professional_gate_accepts_chinese_io_only_perf_script_disclaimer():
+    from app.services.test_activity_contract import (
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    content = """
+### BB-024 单次登录平均延迟测量
+- 测试映射：独立登录延迟 harness + tcpdump；待补正式测试用例。
+- 证据：test/iscsi_tgt/perf/iscsi_initiator.sh（仅 I/O，不覆盖登录延迟）。
+"""
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整测试设计",
+        repo_path="/tmp/spdk",
+    )
+
+    issues = _audit_professional_constraints(content, contract)
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_perf_scripts_not_login_latency"
+        for issue in issues
+    ), issues
+
+
+def test_combined_iscsi_report_keeps_unmeasured_latency_blocked_with_disclaimer():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### TC-05 Login latency p50/p95
+- 操作步骤：连续登录 10 次并计算分位数。
+- 预期结果：全部登录时延 < 5000ms，p50 < 500ms（待验证基线）。
+- 测试映射：iscsi_target.sh 仅运行 fio I/O，not login latency。
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert any(issue["code"] == "ungrounded_performance_threshold" for issue in issues), issues
+
+
+def test_combined_iscsi_report_rejects_raw_pdu_cli_options_missing_from_parser():
+    from app.services.test_activity_contract import _audit_combined_professional_completeness
+
+    content = """
+## 黑盒测试用例
+运行 `python3 raw_pdu.py --host 127.0.0.1 --port 3260 --tsih 1 --cid 2 --login-req login.bin --target-iqn iqn.test`。
+
+```python
+import argparse
+import socket
+import struct
+import hashlib
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--host", required=True)
+parser.add_argument("--port", type=int, required=True)
+args = parser.parse_args()
+```
+"""
+    contract = {
+        "domain_profiles": ["iscsi_login"],
+        "target": "iSCSI Login 完整测试设计",
+        "required_outputs": ["business_flow.md", "sfmea.json", "black_box_cases.json"],
+        "artifact_contract": {},
+    }
+
+    issues = _audit_combined_professional_completeness(content, contract)
+
+    assert any(
+        issue["code"] == "non_executable_raw_pdu_harness"
+        and "--tsih" in str(issue.get("message") or "")
+        for issue in issues
+    ), issues
+
+
+def test_combined_iscsi_report_accepts_raw_pdu_cli_options_declared_by_parser():
+    from app.services.test_activity_contract import _raw_pdu_cli_contract_errors
+
+    content = """
+运行 `python3 raw_pdu.py --host 127.0.0.1 --port 3260 --tsih 1 --cid 2`。
+
+```python
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument("--host", required=True)
+parser.add_argument("--port", type=int, required=True)
+parser.add_argument("--tsih", type=int, required=True)
+parser.add_argument("--cid", type=int, required=True)
+args = parser.parse_args()
+```
+"""
+
+    assert _raw_pdu_cli_contract_errors(content) == []
+
+
+def test_combined_iscsi_report_rejects_quality_repair_meta_language():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 主流程与异常/恢复流程
+#### 领域事实修正：Session Reinstatement 与连接追加
+错误描述修正：之前版本混淆了两条路径。
+#### 新增专业必测场景：首 Payload 后 Timer 注销
+请在上述流程叙述的“外部触发与入口”段末尾补充以下情节：
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert any(issue["code"] == "quality_repair_meta_language" for issue in issues)
+
+
+def test_combined_iscsi_report_rejects_duplicate_sfmea_semantics():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## SFMEA
+| ID | Failure mode | Cause | Effect | Detection | S | O | D | RPN | Mitigation | Evidence |
+|---|---|---|---|---|---:|---:|---:|---:|---|---|
+| FMEA-01 | Mutual challenge 合法编码但语义错误 | wrong value | bypass | pcap | 9 | 2 | 4 | 72 | reject | lib/iscsi/iscsi.c |
+| FMEA-09 | Mutual CHAP challenge correctly encoded but uses a wrong value | replay | bypass | pcap | 9 | 2 | 4 | 72 | reject | lib/iscsi/iscsi.c |
+| FMEA-05 | Unsupported CHAP_A algorithm proposed by initiator | SHA1 | fail | pcap | 7 | 2 | 6 | 84 | reject | lib/iscsi/iscsi.c |
+| FMEA-18 | CHAP algorithm mismatch uses a non-MD5 algorithm | SHA1 | fail | pcap | 7 | 3 | 6 | 126 | reject | lib/iscsi/iscsi.c |
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    duplicates = [issue for issue in issues if issue["code"] == "duplicate_sfmea_risk"]
+    assert len(duplicates) == 2
+
+
+def test_combined_report_attributes_sfmea_fact_conflict_to_sfmea_artifact(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_artifacts,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "report.md").write_text(
+        "# iSCSI Login 报告\n\n"
+        "## 分析范围与证据缺口\n待补证据。\n\n"
+        "## 关键源码证据\n待补证据。\n\n"
+        "## 主流程与异常/恢复流程\n1. 接收请求。\n2. 协商。\n3. 返回响应。\n\n"
+        "## SFMEA\n"
+        "| ID | failure mode | cause | effect | detection | S | O | D | RPN | mitigation | evidence |\n"
+        "|---|---|---|---|---|---:|---:|---:|---:|---|---|\n"
+        "| FMEA-18 | 非法阶段迁移 | CSG=0 可直接到 NSG=3，但规范要求先进入 Operational Negotiation | 会话异常 | 抓包 | 8 | 2 | 6 | 96 | 拒绝请求 | lib/iscsi/iscsi.c |\n\n"
+        "## 黑盒测试用例\n待补。\n",
+        encoding="utf-8",
+    )
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整流程 SFMEA 黑盒测试设计",
+        repo_path=str(repo),
+        workflow_outputs=[
+            {"artifact": "report.md", "type": "combined_test_report"},
+        ],
+    )
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract=contract,
+        repo_path=str(repo),
+    )
+    conflict = next(
+        issue
+        for issue in audit["lint_warnings"]
+        if issue.get("constraint_id") == "iscsi_csg_values"
+    )
+
+    assert conflict["artifact"] == "sfmea.json"
+
+
+def test_quality_audit_separates_legacy_professional_lint_from_verified_facts(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    repo = tmp_path / "repo"
+    (repo / "lib").mkdir(parents=True)
+    (repo / "test").mkdir()
+    (repo / "lib" / "protocol.c").write_text("int protocol_value;\n", encoding="utf-8")
+    (repo / "test" / "protocol.sh").write_text("# smoke\n", encoding="utf-8")
+    (artifact_dir / "report.md").write_text(
+        "# Report\n\nThe generated report claims WRONG_PROTOCOL_VALUE.\n\n"
+        "Evidence: lib/protocol.c and test/protocol.sh.\n",
+        encoding="utf-8",
+    )
+    contract = {
+        "artifact_contract": {
+            "report.md": {
+                "min_chars": 10,
+                "sections": [],
+            }
+        },
+        "professional_constraints": [
+            {
+                "id": "legacy_regex_fact",
+                "assertion": "The protocol value must come from source evidence.",
+                "conflict_patterns": ["WRONG_PROTOCOL_VALUE"],
+                "correction_patterns": [],
+            }
+        ],
+        "quality_gates": {"min_score": 80},
+    }
+
+    result = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert not any(issue["code"] == "professional_fact_conflict" for issue in result["issues"])
+    assert any(
+        issue["code"] == "professional_fact_conflict"
+        for issue in result["lint_warnings"]
+    )
+    assert result["quality_axes"]["structure"]["status"] == "passed"
+    assert result["quality_axes"]["facts"]["status"] == "not_checked"
+    assert result["quality_axes"]["executability"]["status"] == "not_checked"
+
+
+def test_quality_audit_reports_fact_contradiction_on_fact_axis(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+    from app.services.workflow_presets import SFMEA_SCHEMA
+
+    repo = tmp_path / "repo"
+    header = repo / "include" / "spdk" / "iscsi_spec.h"
+    header.parent.mkdir(parents=True)
+    header.write_text("#define ISCSI_VERSION 0x00\n", encoding="utf-8")
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "evidence_cards.json").write_text(
+        json.dumps(
+            [
+                {
+                    "evidence_id": "SRC-001",
+                    "file_path": "include/spdk/iscsi_spec.h",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "excerpt": "#define ISCSI_VERSION 0x00",
+                    "sha256": hashlib.sha256(header.read_bytes()).hexdigest(),
+                    "symbols": ["ISCSI_VERSION"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (artifact_dir / "sfmea.json").write_text(
+        json.dumps(
+            [
+                {
+                    "sfmea_id": "SFMEA-FACT-1",
+                    "failure_mode": "Unsupported version: version_max=0, version_min=0",
+                    "cause": "Both version fields are zero.",
+                    "effect": "Target rejects the login as unsupported version.",
+                    "detection": "Observe a failed Login Response.",
+                    "severity": 6,
+                    "occurrence": 2,
+                    "detection_score": 2,
+                    "rpn": 24,
+                    "mitigation": "Use a supported version range.",
+                    "source_evidence": ["include/spdk/iscsi_spec.h::ISCSI_VERSION"],
+                    "test_mapping": "raw-PDU harness",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract={
+            "artifact_contract": {"sfmea.json": {"schema": SFMEA_SCHEMA}},
+            "quality_gates": {"min_score": 80},
+        },
+        repo_path=str(repo),
+    )
+
+    facts = result["quality_axes"]["facts"]
+    assert facts["status"] == "blocked"
+    assert facts["verified"] == 0
+    assert facts["contradicted"] == 1
+    assert facts["pass_rate"] == 0
+    assert result["deliverable"] is False
+
+
+def test_fact_ledger_reads_workflow_artifacts_from_agent_run_directory(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+    from app.services.workflow_presets import SFMEA_SCHEMA
+
+    repo = tmp_path / "repo"
+    header = repo / "include" / "spdk" / "iscsi_spec.h"
+    header.parent.mkdir(parents=True)
+    header.write_text("#define ISCSI_VERSION 0x00\n", encoding="utf-8")
+    task_root = tmp_path / "task"
+    artifact_dir = task_root / "agent_runs" / "analyze"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "evidence_cards.json").write_text(
+        json.dumps(
+            [
+                {
+                    "evidence_id": "SRC-001",
+                    "file_path": "include/spdk/iscsi_spec.h",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "excerpt": "#define ISCSI_VERSION 0x00",
+                    "sha256": hashlib.sha256(header.read_bytes()).hexdigest(),
+                    "symbols": ["ISCSI_VERSION"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (artifact_dir / "sfmea.json").write_text(
+        json.dumps(
+            [
+                {
+                    "sfmea_id": "SFMEA-NESTED-1",
+                    "failure_mode": "Unsupported version: version_max=0, version_min=0",
+                    "cause": "Both version fields are zero.",
+                    "effect": "Target rejects the login as unsupported version.",
+                    "detection": "Observe Login Response.",
+                    "severity": 6,
+                    "occurrence": 2,
+                    "detection_score": 2,
+                    "rpn": 24,
+                    "mitigation": "Use a supported version range.",
+                    "source_evidence": ["include/spdk/iscsi_spec.h::ISCSI_VERSION"],
+                    "test_mapping": "raw-PDU harness",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    result = audit_test_activity_artifacts(
+        artifact_dir=task_root,
+        contract={
+            "artifact_contract": {"sfmea.json": {"schema": SFMEA_SCHEMA}},
+            "quality_gates": {"min_score": 80},
+        },
+        repo_path=str(repo),
+    )
+
+    assert result["fact_verification"]["total"] == 1
+    assert result["fact_verification"]["contradicted"] == 1

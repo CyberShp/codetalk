@@ -17,6 +17,7 @@ export interface WorkflowEditorState {
 export type WorkflowEditorAction =
   | { type: "replace"; graph: AuthoringGraphV2; markSaved?: boolean }
   | { type: "update-node"; node: WorkflowGraphNode }
+  | { type: "update-node-with-edges"; node: WorkflowGraphNode; edges: WorkflowGraphEdge[] }
   | { type: "move-node"; nodeId: string; x: number; y: number }
   | { type: "add-node"; node: WorkflowGraphNode }
   | { type: "remove-node"; nodeId: string }
@@ -97,6 +98,12 @@ export function workflowEditorReducer(
     next = {
       ...next,
       nodes: next.nodes.map((node) => (node.id === action.node.id ? action.node : node)),
+    };
+  } else if (action.type === "update-node-with-edges") {
+    next = {
+      ...next,
+      nodes: next.nodes.map((node) => (node.id === action.node.id ? action.node : node)),
+      edges: action.edges,
     };
   } else if (action.type === "move-node") {
     next = {

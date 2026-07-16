@@ -1029,6 +1029,25 @@ export interface PreparedWorkbenchTaskRun {
     status?: string;
     summary?: Record<string, unknown>;
   };
+  test_activity_quality?: {
+    status?: string;
+    deliverable?: boolean;
+    score?: number;
+    issue_count?: number;
+    lint_warning_count?: number;
+    fact_verification?: {
+      total?: number;
+      verified?: number;
+      contradicted?: number;
+      insufficient?: number;
+      pass_rate?: number;
+    };
+    quality_axes?: {
+      structure?: WorkbenchQualityAxis;
+      facts?: WorkbenchQualityAxis;
+      executability?: WorkbenchQualityAxis;
+    };
+  };
   artifact_dir: string;
   workflow_snapshot: Record<string, unknown>;
   input_snapshot: Record<string, unknown>;
@@ -1036,6 +1055,17 @@ export interface PreparedWorkbenchTaskRun {
   agent_runs: PreparedAgentRun[];
   run_ui_summary?: WorkbenchRunUiSummary;
   created_at: string;
+}
+
+export interface WorkbenchQualityAxis {
+  status?: "passed" | "blocked" | "not_checked" | string;
+  score?: number;
+  pass_rate?: number | null;
+  issue_count?: number;
+  total?: number;
+  verified?: number;
+  contradicted?: number;
+  insufficient?: number;
 }
 
 export interface WorkbenchTaskRunEvent {
@@ -1096,7 +1126,9 @@ export interface WorkbenchRunUiSummary {
     reuse_node_ids?: string[];
     reuse_node_labels?: string[];
     failure_class?: "configuration" | "runtime" | string;
+    failure_kind?: string;
     recommended_action?: string;
+    recommended_actions?: string[];
     actions?: string[];
   };
   deliverables?: Array<{

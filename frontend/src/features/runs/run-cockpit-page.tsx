@@ -34,9 +34,13 @@ import {
   taskQualityLabels,
   taskStatusLabel,
 } from "@/features/tasks/task-status";
+import {
+  selectStageAttemptStart,
+  selectStageProgressEvent,
+} from "@/features/runs/stage-progress-event";
 
 const tabs = ["摘要", "实时输出", "工具调用", "全部事件"] as const;
-const terminalStatuses = new Set(["completed", "success", "failed", "error", "cancelled", "interrupted"]);
+const terminalStatuses = new Set(["completed", "partial", "success", "failed", "error", "cancelled", "interrupted"]);
 const MAX_LOADED_EVENTS = 2000;
 const EVENT_PAGE_SIZE = 1000;
 
@@ -146,6 +150,7 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
   const status = statusOf(run);
   const running = ["queued", "running", "prepared"].includes(status);
   const failed = ["failed", "error", "interrupted"].includes(status);
+  const partial = status === "partial";
   const duration = formatDuration(run.started_at || run.runtime?.started_at, run.completed_at || run.runtime?.completed_at);
   const nodeNames = [...new Set(events.map(eventNode).filter(Boolean))];
   const kinds = [...new Set(events.map((item) => item.event_kind).filter(Boolean))];
@@ -218,7 +223,7 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
     <section className="ct-v2-run-workspace">
       <div className="ct-v2-run-main">
         <nav className="ct-v2-run-tabs" role="tablist">{tabs.map((item) => <button role="tab" aria-selected={tab === item} className={tab === item ? "is-active" : ""} key={item} onClick={() => setTab(item)}>{item}</button>)}</nav>
-        {tab === "摘要" ? <RunSummary summary={summary} events={events} failed={failed} selectedNodeId={inspectedNode?.id || ""} onSelectNode={setSelectedNodeId} /> : <>
+        {tab === "摘要" ? <RunSummary summary={summary} events={events} failed={failed} partial={partial} selectedNodeId={inspectedNode?.id || ""} onSelectNode={setSelectedNodeId} onRetry={() => void retry()} actionBusy={actionBusy} /> : <>
           <div className="ct-v2-event-toolbar"><label><Search size={13} /><input aria-label="搜索运行事件" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索输出" /></label><select aria-label="按节点筛选" value={nodeFilter} onChange={(event) => setNodeFilter(event.target.value)}><option value="">全部节点</option>{nodeNames.map((item) => <option key={item}>{item}</option>)}</select><select aria-label="按类型筛选" value={kindFilter} onChange={(event) => setKindFilter(event.target.value)}><option value="">全部类型</option>{kinds.map((item) => <option key={item}>{item}</option>)}</select><button title="暂停或继续显示" onClick={togglePaused}>{paused ? <Play size={14} /> : <Pause size={14} />}{paused ? "继续" : "暂停"}</button><button title="自动跟随最新输出" className={autoScroll ? "is-active" : ""} onClick={() => setAutoScroll((value) => !value)}>自动滚动</button><button title="复制当前事件" onClick={() => void navigator.clipboard.writeText(visibleEvents.map(eventClipboardLine).join("\n"))}><Clipboard size={14} /></button></div>
           <div className="ct-v2-event-viewport" ref={eventViewport} onScroll={(event) => { const target = event.currentTarget; if (target.scrollHeight - target.scrollTop - target.clientHeight > 36) setAutoScroll(false); }}>
             {hasOlderEvents && <button className="ct-v2-event-load-older" type="button" disabled={loadingOlderEvents} onClick={() => void loadOlderEvents()}>{loadingOlderEvents ? "正在加载…" : "加载更早事件"}</button>}
@@ -233,7 +238,7 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
     <section className="ct-v2-run-results">
       {failed && <FailurePanel summary={summary} onRetry={() => void retry()} busy={actionBusy} />}
       <section className="ct-v2-run-deliverables"><header><div><h2>交付件</h2><span>{deliverables.length} 个可交付文件</span></div></header><div>{deliverables.length ? deliverables.map((item) => <ArtifactRow key={item.relative_path} item={item} runId={runId} onOpen={openArtifact} />) : <p>运行完成后，用户可下载的最终文件会显示在这里。</p>}</div></section>
-      <section className="ct-v2-run-quality"><h2>质量结果</h2><strong>{taskStatusLabel(taskQualityLabels, run.quality_status || "not_checked")}</strong><p>{qualityMessage(run)}</p></section>
+      <QualityPanel run={run} />
       <details className="ct-v2-run-support"><summary>支撑文件与输入快照（{publicArtifacts.length - deliverables.length}）</summary>{publicArtifacts.filter((item) => item.audience !== "deliverable").map((item) => <ArtifactRow key={item.relative_path} item={item} runId={runId} onOpen={openArtifact} />)}</details>
     </section>
 
@@ -244,11 +249,81 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
 }
 
 function StatusBlock({ label, value, tone }: { label: string; value: string; tone: string }) { return <div className="ct-v2-run-status"><span>{label}</span><strong className={`is-${tone}`}>{value}</strong></div>; }
-function RunSummary({ summary, events, failed, selectedNodeId, onSelectNode }: { summary: PreparedWorkbenchTaskRun["run_ui_summary"]; events: WorkbenchTaskRunEvent[]; failed: boolean; selectedNodeId: string; onSelectNode: (id: string) => void }) { return <div className="ct-v2-run-summary"><section><h2>{failed ? "运行在节点处停止" : "节点进度"}</h2><div className="ct-v2-node-timeline">{(summary?.nodes || []).map((node) => <button type="button" key={node.id} className={`is-${node.status || "prepared"} ${selectedNodeId === node.id ? "is-selected" : ""}`} onClick={() => onSelectNode(node.id)} aria-label={`查看节点 ${node.label}`}><span>{node.status === "completed" || node.status === "success" ? <CheckCircle2 size={15} /> : node.status === "running" ? <Loader2 className="animate-spin" size={15} /> : node.status === "failed" || node.status === "error" ? <AlertTriangle size={15} /> : <i />}</span><strong>{node.label}</strong><small>{node.status_label}</small></button>)}</div></section><section><h2>最新活动</h2>{events.slice(-8).reverse().map((item) => <EventRow key={item.event_id} item={item} compact />)}</section></div>; }
+function RunSummary({ summary, events, failed, partial, selectedNodeId, onSelectNode, onRetry, actionBusy }: { summary: PreparedWorkbenchTaskRun["run_ui_summary"]; events: WorkbenchTaskRunEvent[]; failed: boolean; partial: boolean; selectedNodeId: string; onSelectNode: (id: string) => void; onRetry: () => void; actionBusy: boolean }) { return <div className="ct-v2-run-summary"><section><h2>{failed ? "运行在节点处停止" : partial ? "运行保留了部分结果" : "节点进度"}</h2><div className="ct-v2-node-timeline">{(summary?.nodes || []).map((node) => <button type="button" key={node.id} className={`is-${node.status || "prepared"} ${selectedNodeId === node.id ? "is-selected" : ""}`} onClick={() => onSelectNode(node.id)} aria-label={`查看节点 ${node.label}`}><span>{node.status === "completed" || node.status === "success" ? <CheckCircle2 size={15} /> : node.status === "running" ? <Loader2 className="animate-spin" size={15} /> : node.status === "failed" || node.status === "error" ? <AlertTriangle size={15} /> : <i />}</span><strong>{node.label}</strong><small>{node.status_label}</small></button>)}</div></section><StageProgressPanel events={events} runPartial={partial} onRetry={onRetry} busy={actionBusy} /><section><h2>最新活动</h2>{events.slice(-8).reverse().map((item) => <EventRow key={item.event_id} item={item} compact />)}</section></div>; }
+
+function hasFlowEvidenceMetrics(payload: WorkbenchTaskRunEvent["payload"]) {
+  return ["entry_point_count", "call_edge_count", "test_reference_count"].some(
+    (key) => payload[key] !== undefined && payload[key] !== null,
+  );
+}
+
+function StageProgressPanel({ events, runPartial, onRetry, busy }: { events: WorkbenchTaskRunEvent[]; runPartial: boolean; onRetry: () => void; busy: boolean }) {
+  const stageEvents = events.filter((item) => String(item.payload.kind || "").startsWith("stage_"));
+  const latest = selectStageProgressEvent(stageEvents, runPartial);
+  const kind = String(latest?.payload.kind || "");
+  const status = String(latest?.payload.status || "");
+  const partial = kind === "stage_timed_out" || status === "partial";
+  const completed = kind === "stage_completed" || kind === "stage_reused" || status === "completed";
+  const clockMs = useStageClock(Boolean(latest) && !partial && !completed);
+  if (!stageEvents.length) return null;
+  if (!latest) return null;
+  const stageId = String(latest.payload.stage_id || "business_flow");
+  const evidencePayload = [...stageEvents].reverse().find((item) => hasFlowEvidenceMetrics(item.payload))?.payload || {};
+  const providerPayload = [...stageEvents].reverse().find((item) => item.payload.stage_id === stageId && item.payload.kind === "stage_provider_started")?.payload || {};
+  const outputPayload = [...stageEvents].reverse().find((item) => item.payload.stage_id === stageId && Number(item.payload.output_characters || 0) > 0)?.payload || {};
+  const latestDelta = [...stageEvents].reverse().find((item) => item.payload.stage_id === stageId && item.payload.kind === "stage_output_delta")?.payload;
+  const latestDeltaText = typeof latestDelta?.delta === "string" ? latestDelta.delta : "";
+  const payload = { ...evidencePayload, ...providerPayload, ...outputPayload, ...latest.payload };
+  const first = selectStageAttemptStart(stageEvents, stageId);
+  const elapsedEnd = !partial && !completed && clockMs ? clockMs : new Date(latest.created_at).getTime();
+  const elapsedSeconds = first ? Math.max(0, Math.round((elapsedEnd - new Date(first.created_at).getTime()) / 1000)) : 0;
+  const stateLabel = partial ? "部分完成" : completed ? "已完成" : "运行中";
+  const attemptCount = Number(payload.attempt_count ?? 0);
+  return <section className={`ct-v2-stage-progress ${partial ? "is-partial" : ""}`} aria-label="阶段执行进度">
+    <header><div><span>{stageDisplayName(stageId)}</span><h2>{eventMessage(latest)}</h2></div><em>{stateLabel}</em></header>
+    <dl>
+      <div><dt>调用链证据</dt><dd>{Number(payload.entry_point_count || 0)} 个入口 · {Number(payload.call_edge_count || 0)} 条调用边 · {Number(payload.test_reference_count || 0)} 个测试引用</dd></div>
+      <div><dt>当前输出</dt><dd>{Number(payload.output_characters || 0)} 字符</dd></div>
+      <div><dt>已运行</dt><dd>{elapsedSeconds} 秒</dd></div>
+      <div><dt>最后活动</dt><dd>{new Date(latest.created_at).toLocaleTimeString("zh-CN", { hour12: false })}</dd></div>
+      <div><dt>执行器</dt><dd>{String(payload.model || "当前内置模型")}</dd></div>
+      <div><dt>尝试</dt><dd>{attemptCount ? `${attemptCount} 次完整生成` : "未调用模型"}</dd></div>
+    </dl>
+    {latestDeltaText && <pre className="ct-v2-stage-live-output" aria-label="阶段实时输出">{latestDeltaText}</pre>}
+    {partial && <button type="button" disabled={busy} onClick={onRetry}><RefreshCw size={14} />继续生成 / 从本阶段重试</button>}
+  </section>;
+}
+
+function useStageClock(active: boolean) {
+  const [clockMs, setClockMs] = useState(0);
+  useEffect(() => {
+    if (!active) return;
+    const timer = window.setInterval(() => setClockMs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [active]);
+  return clockMs;
+}
+
+function stageDisplayName(value: string) { return ({ flow_evidence_pack: "调用链证据", flow_outline: "流程骨架", business_flow: "业务流程", sfmea: "SFMEA", black_box_cases: "黑盒用例", behavior_claim_validation: "独立事实核验", test_strategy: "测试策略", test_design: "测试设计" } as Record<string, string>)[value] || value; }
 function NodeInspector({ node }: { node?: WorkbenchRunUiNodeSummary }) { return <aside className="ct-v2-node-inspector"><header><span>运行上下文</span><h2>节点详情</h2></header>{node ? <div><strong>{node.label}</strong><small>{node.type} · {node.status_label}</small><InspectorText label="节点目标" value={node.goal || "完成当前工作流阶段"} /><InspectorText label="为什么执行" value={node.why || "由工作流依赖关系调度"} /><InspectorGroup label="直接依赖" values={node.dependency_labels || node.depends_on || []} /><InspectorInputGroup values={node.received_inputs || []} /><InspectorGroup label="Agent / Provider" values={[node.executor_label || node.provider || "系统内置"]} /><InspectorGroup label="Skills" values={(node.skills || []).map((item) => item.label || item.id)} /><InspectorGroup label="MCP" values={node.mcp_profiles || []} /><InspectorGroup label="正在调用的工具" values={node.active_tools || []} /><InspectorGroup label="已产生的输出" values={(node.outputs || []).filter((item) => item.status_label === "已生成").map((item) => item.artifact || item.id)} /><InspectorGroup label="下一节点" values={node.next_node_labels || node.next_node_ids || []} /><InspectorText label="开始时间" value={formatNodeTime(node.started_at)} /><InspectorText label="节点耗时" value={formatNodeDuration(node.duration_ms)} /></div> : <p>等待调度第一个节点。</p>}</aside>; }
 function InspectorGroup({ label, values }: { label: string; values: string[] }) { return <section><h3>{label}</h3>{values.length ? values.map((item) => <span key={item}>{item}</span>) : <small>无</small>}</section>; }
 function InspectorText({ label, value }: { label: string; value: string }) { return <section><h3>{label}</h3><p>{value || "无"}</p></section>; }
 function InspectorInputGroup({ values }: { values: NonNullable<WorkbenchRunUiNodeSummary["received_inputs"]> }) { return <section><h3>实际收到的输入</h3>{values.length ? values.map((item) => <div className="ct-v2-inspector-input" key={item.id}><strong>{item.role || item.id}</strong><span>{item.value_summary || "已绑定"}</span></div>) : <small>无</small>}</section>; }
+function QualityPanel({ run }: { run: PreparedWorkbenchTaskRun }) {
+  const quality = run.test_activity_quality;
+  const axes = quality?.quality_axes;
+  const factSummary = quality?.fact_verification;
+  return <section className="ct-v2-run-quality">
+    <header><div><h2>质量结果</h2><strong>{taskStatusLabel(taskQualityLabels, run.quality_status || "not_checked")}</strong></div><span>{quality?.issue_count ?? 0} 个阻断项</span></header>
+    <div className="ct-v2-quality-axes">
+      <QualityAxis label="结构合规率" status={axes?.structure?.status} value={axes?.structure?.score} detail={`${axes?.structure?.issue_count ?? 0} 个结构问题`} />
+      <QualityAxis label="事实核验通过率" status={axes?.facts?.status} value={axes?.facts?.pass_rate ?? factSummary?.pass_rate} detail={`${factSummary?.verified ?? 0}/${factSummary?.total ?? 0} 条已验证 · ${factSummary?.contradicted ?? 0} 条冲突 · ${factSummary?.insufficient ?? 0} 条证据不足`} />
+      <QualityAxis label="可执行性通过率" status={axes?.executability?.status} value={axes?.executability?.pass_rate} detail={`${axes?.executability?.issue_count ?? 0} 个执行能力问题`} />
+    </div>
+    <p>{qualityMessage(run)}{quality?.lint_warning_count ? ` 另有 ${quality.lint_warning_count} 条结构提示，不作为事实核验结论。` : ""}</p>
+  </section>;
+}
+function QualityAxis({ label, status, value, detail }: { label: string; status?: string; value?: number | null; detail: string }) { const checked = status !== "not_checked" && value !== null && value !== undefined; return <article className={`is-${status || "not_checked"}`}><span>{label}</span><strong>{checked ? `${value}%` : "未检查"}</strong><small>{detail}</small></article>; }
 function FailurePanel({ summary, onRetry, busy }: { summary: PreparedWorkbenchTaskRun["run_ui_summary"]; onRetry: () => void; busy: boolean }) { const failure = summary?.failure; const node = summary?.nodes.find((item) => item.id === failure?.failed_node_id); return <section className="ct-v2-run-failure"><AlertTriangle size={18} /><div><h2>{node?.label || "运行节点"}执行失败</h2><p>{failure?.reasons?.[0] || "执行器未完成当前节点，请查看公开事件或技术诊断。"}</p><dl><div><dt>用户目标阶段</dt><dd>{failure?.user_goal_stage || node?.label || "当前节点"}</dd></div><div><dt>失败性质</dt><dd>{failure?.failure_class === "configuration" ? "配置问题" : "运行时问题"}</dd></div><div><dt>已保留上游结果</dt><dd>{failure?.preserved_node_labels?.join("、") || "无"}</dd></div><div><dt>重试时复用</dt><dd>{failure?.reuse_node_labels?.join("、") || "无"}</dd></div><div><dt>重试时重跑</dt><dd>{failure?.rerun_node_labels?.join("、") || node?.label || "当前节点"}</dd></div><div><dt>推荐操作</dt><dd>{failure?.recommended_action || "查看公开事件后创建新 Attempt。"}</dd></div></dl></div>{failure?.can_retry && <button disabled={busy} onClick={onRetry}><RefreshCw size={14} />从失败节点重试</button>}</section>; }
 function ArtifactRow({ item, runId, onOpen }: { item: WorkbenchTaskArtifact; runId: string; onOpen: (path: string) => void }) { const path = item.relative_path || item.path; const encoded = path.split("/").map(encodeURIComponent).join("/"); return <article className="ct-v2-artifact-row"><FileText size={15} /><button onClick={() => void onOpen(path)}><strong>{path.split("/").pop()}</strong><small>{formatBytes(item.size_bytes)} · {item.kind}</small></button><a title="下载文件" href={`${currentApiBase()}/api/workbench/task-runs/${encodeURIComponent(runId)}/artifacts/download/${encoded}`}><Download size={15} /></a></article>; }
 function EventRow({ item, compact = false }: { item: WorkbenchTaskRunEvent; compact?: boolean }) { return <article className={`ct-v2-event-row is-${item.event_kind} ${compact ? "is-compact" : ""}`}><time>{new Date(item.created_at).toLocaleTimeString("zh-CN", { hour12: false })}</time><span>{eventNode(item) || "系统"}</span><em>{eventKindLabel(item.event_kind)}</em><div><strong>{eventMessage(item)}</strong>{!compact && eventDetail(item) && <pre>{eventDetail(item)}</pre>}</div></article>; }
@@ -259,10 +334,10 @@ function mergeEvents(current: WorkbenchTaskRunEvent[], incoming: WorkbenchTaskRu
 function statusOf(run: PreparedWorkbenchTaskRun) { return String(run.execution_status || run.runtime?.status || run.status || "prepared").toLowerCase(); }
 function eventNode(item: WorkbenchTaskRunEvent) { return String(item.payload.step_id || item.payload.node_id || item.payload.node_label || ""); }
 function eventMessage(item: WorkbenchTaskRunEvent) { return String(item.payload.user_message || item.payload.message || eventTypeLabel(item.event_type)); }
-function eventDetail(item: WorkbenchTaskRunEvent) { const value = item.payload.text ?? item.payload.output ?? item.payload.error ?? item.payload.detail ?? ""; return typeof value === "string" ? value : value ? JSON.stringify(value, null, 2) : ""; }
+function eventDetail(item: WorkbenchTaskRunEvent) { const value = item.payload.delta ?? item.payload.text ?? item.payload.output ?? item.payload.error ?? item.payload.detail ?? ""; return typeof value === "string" ? value : value ? JSON.stringify(value, null, 2) : ""; }
 function eventClipboardLine(item: WorkbenchTaskRunEvent) { return `[${new Date(item.created_at).toLocaleTimeString("zh-CN", { hour12: false })}] ${eventNode(item) || "系统"} ${eventMessage(item)} ${eventDetail(item)}`.trim(); }
 function eventKindLabel(kind: string) { return ({ status: "状态", done: "完成", artifact: "产物", output: "输出", error: "错误", thinking: "思考", reasoning: "推理", diagnostic: "诊断", trace: "跟踪", tool_use: "工具调用", tool_result: "工具结果" } as Record<string, string>)[kind] || kind; }
-function eventTypeLabel(type: string) { return ({ queued: "已进入运行队列", running: "运行已开始", step_started: "节点开始执行", step_completed: "节点执行完成", step_failed: "节点执行失败", node_reused: "已复用父运行的成功节点", completed: "运行已完成", cancelled: "运行已取消", artifact_created: "产物已生成", agent_output: "执行器产生新输出" } as Record<string, string>)[type] || type.replaceAll("_", " "); }
+function eventTypeLabel(type: string) { return ({ queued: "已进入运行队列", running: "运行已开始", step_started: "节点开始执行", step_completed: "节点执行完成", step_failed: "节点执行失败", node_reused: "已复用父运行的成功节点", completed: "运行已完成", partial: "运行保留了部分结果", cancelled: "运行已取消", artifact_created: "产物已生成", agent_output: "执行器产生新输出" } as Record<string, string>)[type] || type.replaceAll("_", " "); }
 function qualityMessage(run: PreparedWorkbenchTaskRun) { const status = run.quality_status || "not_checked"; if (status === "passed") return "结构化质量检查已通过。"; if (status === "warning") return "产物已生成，但仍有质量警告需要复核。"; if (status === "blocked") return "质量门禁未通过，请先修复阻断项。"; if (status === "pending") return "正在检查产物完整性和质量。"; return "本次运行尚未执行质量检查。"; }
 function formatNodeTime(value?: string) { return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "尚未开始"; }
 function formatNodeDuration(value?: number) { if (!value) return "尚未完成"; const seconds = Math.floor(value / 1000); return seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`; }

@@ -3,13 +3,14 @@
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, ArrowRight, Check, Loader2, MessageSquareText, Plus, RotateCcw, Trash2 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { workbenchTasksApi } from "@/lib/api/workbench-tasks";
 import { workflowsApi } from "@/lib/api/workflows";
 import type { WorkbenchTask } from "@/lib/types/task";
 import type { WorkflowListItem, WorkflowProviderCapability, WorkflowSkillCapability, WorkflowVersion } from "@/lib/types/workflow";
 import type { Workspace } from "@/lib/types";
+import { workflowStepMcpProfiles } from "./task-wizard-contract.mjs";
 
 const labels = ["选择工作流", "任务信息", "填写输入", "执行配置", "确认输出", "检查运行"];
 type Definition = { inputs?: Array<Record<string, unknown>>; steps?: Array<Record<string, unknown>>; outputs?: Array<Record<string, unknown>> };
@@ -36,11 +37,44 @@ export function TaskWizard() {
   const [outputOverrides, setOutputOverrides] = useState<Record<string, unknown>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const hydratedTaskId = useRef("");
+  const hydrationRequestId = useRef(0);
   const definition = (version?.compiled_definition || task?.workflow_version?.compiled_definition || {}) as Definition;
 
   useEffect(() => { void Promise.all([workflowsApi.list(), api.workspaces.list(), workflowsApi.providers(), workflowsApi.capabilities()]).then(([workflowItems, workspaceItems, providerItems, capabilities]) => { setWorkflows(workflowItems.filter((item) => Boolean(item.v2?.published_version_id))); setWorkspaces(workspaceItems); setProviders(providerItems.providers); setSkills(capabilities.skill_catalog || []); }).catch((cause) => setError(cause instanceof Error ? cause.message : "向导数据加载失败")); }, []);
-  useEffect(() => { if (!taskParam) return; setBusy(true); void workbenchTasksApi.get(taskParam).then((item) => { setTask(item); setWorkflowId(item.workflow_id); setVersionId(item.workflow_version_id); setName(item.name); setDescription(item.description); setWorkspaceId(item.workspace_id); setTags(item.tags.join(", ")); setInputs(item.input_values); setExecutionOverrides(item.execution_overrides); setOutputOverrides(item.output_overrides); }).catch((cause) => setError(cause instanceof Error ? cause.message : "任务草稿恢复失败")).finally(() => setBusy(false)); }, [taskParam]);
-  useEffect(() => { if (!workflowId || !versionId) return; void workflowsApi.version(workflowId, versionId).then(setVersion).catch((cause) => setError(cause instanceof Error ? cause.message : "工作流版本加载失败")); }, [versionId, workflowId]);
+  useEffect(() => {
+    if (!taskParam) {
+      hydrationRequestId.current += 1;
+      hydratedTaskId.current = "";
+      setBusy(false);
+      return;
+    }
+    if (hydratedTaskId.current === taskParam) return;
+    const requestId = ++hydrationRequestId.current;
+    let active = true;
+    setBusy(true);
+    void workbenchTasksApi.get(taskParam).then((item) => {
+      if (!active || hydrationRequestId.current !== requestId) return;
+      hydratedTaskId.current = taskParam;
+      setTask(item); setWorkflowId(item.workflow_id); setVersionId(item.workflow_version_id); setName(item.name); setDescription(item.description); setWorkspaceId(item.workspace_id); setTags(item.tags.join(", ")); setInputs(item.input_values); setExecutionOverrides(item.execution_overrides); setOutputOverrides(item.output_overrides);
+    }).catch((cause) => {
+      if (!active || hydrationRequestId.current !== requestId) return;
+      setError(cause instanceof Error ? cause.message : "任务草稿恢复失败");
+    }).finally(() => {
+      if (active && hydrationRequestId.current === requestId) setBusy(false);
+    });
+    return () => { active = false; };
+  }, [taskParam]);
+  useEffect(() => {
+    if (!workflowId || !versionId) return;
+    let active = true;
+    void workflowsApi.version(workflowId, versionId).then((item) => {
+      if (active) setVersion(item);
+    }).catch((cause) => {
+      if (active) setError(cause instanceof Error ? cause.message : "工作流版本加载失败");
+    });
+    return () => { active = false; };
+  }, [versionId, workflowId]);
 
   const selectWorkflow = (id: string) => { const item = workflows.find((candidate) => candidate.id === id); const published = item?.v2?.published_version_id || ""; setWorkflowId(id); setVersionId(published); setVersion(null); if (item) setName(`${item.name} · ${new Date().toLocaleDateString("zh-CN")}`); };
   const save = async (lifecycleStatus?: "draft" | "ready") => {
@@ -49,6 +83,7 @@ export function TaskWizard() {
     const saved = task
       ? await workbenchTasksApi.update(task.task_id, mutable)
       : await workbenchTasksApi.create({ ...mutable, workspace_id: workspaceId, workflow_id: workflowId, workflow_version_id: versionId });
+    hydratedTaskId.current = saved.task_id;
     setTask(saved); return saved;
   };
   const go = async (next: number) => { setError(""); setBusy(true); try { validateStep(step, { workflowId, workspaceId, name, definition, inputs }); if (step >= 2) { const saved = await save("draft"); router.replace(`/tasks/new?task=${saved.task_id}&step=${next}`); } else router.replace(`/tasks/new?step=${next}`); setStep(next); } catch (cause) { setError(cause instanceof Error ? cause.message : "保存失败"); } finally { setBusy(false); } };
@@ -85,8 +120,8 @@ function ExecutionConfig({ steps, providers, skills, overrides, onChange }: { st
   const executors = providers.filter((provider) => provider.capabilities?.supports_artifact_export);
   const setNode = (id:string,value:Record<string,unknown>|null) => { const next = {...nodes}; if (value) next[id] = value; else delete next[id]; onChange(Object.keys(next).length ? {nodes:next} : {}); };
   return <div className="ct-v2-task-step"><h2>确认执行配置</h2><p>默认完整继承工作流；只有 Agent 节点可覆盖执行器、MCP 和 Skills。</p><div className="ct-v2-execution-list">{agentSteps.map((item) => {
-    const id = String(item.id); const current = nodes[id]; const selectedProvider = String((current?.provider as Record<string,unknown>)?.value || item.provider || ""); const provider = providers.find((candidate) => candidate.provider === selectedProvider); const mcpOptions = provider?.capabilities?.mcp_profiles || [];
-    return <article key={id}><div><strong>{String(item.label || id)}</strong><span>{providers.find((candidate) => candidate.provider === String(item.provider || ""))?.display_name || String(item.provider || item.type)}</span><small>Skills: {String((item.skills as string[] || []).join("、") || "无")} · MCP: {String((item.mcp_profiles as string[] || []).join("、") || "无")}</small></div><label><input type="checkbox" checked={Boolean(current)} onChange={(event) => setNode(id, event.target.checked ? {provider:{mode:"replace",value:String(item.provider || "")},mcp_profiles:{mode:"replace",value:item.mcp_profiles || []},skill_ids:{mode:"replace",value:item.skills || []}} : null)} />覆盖本任务</label>{current && <div className="ct-v2-override-fields"><label><span>执行器</span><select value={selectedProvider} onChange={(event) => setNode(id,{...current,provider:{mode:"replace",value:event.target.value},mcp_profiles:{mode:"replace",value:[]}})}>{executors.map((candidate) => <option key={candidate.provider} value={candidate.provider}>{candidate.display_name} · {providerStatus(candidate.status)}</option>)}</select></label><SearchMultiSelect label="MCP" options={mcpOptions.map((value) => ({id:value,label:value}))} selected={((current.mcp_profiles as Record<string,unknown>)?.value as string[] || [])} emptyText={provider?.capabilities?.supports_mcp ? "该执行器尚未配置 MCP" : "该执行器不支持 MCP"} onChange={(value) => setNode(id,{...current,mcp_profiles:{mode:"replace",value}})} /><SearchMultiSelect label="Skills" options={skills} selected={((current.skill_ids as Record<string,unknown>)?.value as string[] || [])} emptyText="没有可用 Skills" onChange={(value) => setNode(id,{...current,skill_ids:{mode:"replace",value}})} /><button type="button" onClick={() => setNode(id,null)}><RotateCcw size={13}/>恢复默认</button></div>}</article>;
+    const id = String(item.id); const current = nodes[id]; const selectedProvider = String((current?.provider as Record<string,unknown>)?.value || item.provider || ""); const provider = providers.find((candidate) => candidate.provider === selectedProvider); const mcpOptions = provider?.capabilities?.mcp_profiles || []; const inheritedMcpProfiles = workflowStepMcpProfiles(item);
+    return <article key={id}><div><strong>{String(item.label || id)}</strong><span>{providers.find((candidate) => candidate.provider === String(item.provider || ""))?.display_name || String(item.provider || item.type)}</span><small>Skills: {String((item.skills as string[] || []).join("、") || "无")} · MCP: {String(inheritedMcpProfiles.join("、") || "无")}</small></div><label><input type="checkbox" checked={Boolean(current)} onChange={(event) => setNode(id, event.target.checked ? {provider:{mode:"replace",value:String(item.provider || "")},mcp_profiles:{mode:"replace",value:inheritedMcpProfiles},skill_ids:{mode:"replace",value:item.skills || []}} : null)} />覆盖本任务</label>{current && <div className="ct-v2-override-fields"><label><span>执行器</span><select value={selectedProvider} onChange={(event) => setNode(id,{...current,provider:{mode:"replace",value:event.target.value},mcp_profiles:{mode:"replace",value:[]}})}>{executors.map((candidate) => <option key={candidate.provider} value={candidate.provider}>{candidate.display_name} · {providerStatus(candidate.status)}</option>)}</select></label><SearchMultiSelect label="MCP" options={mcpOptions.map((value) => ({id:value,label:value}))} selected={((current.mcp_profiles as Record<string,unknown>)?.value as string[] || [])} emptyText={provider?.capabilities?.supports_mcp ? "该执行器尚未配置 MCP" : "该执行器不支持 MCP"} onChange={(value) => setNode(id,{...current,mcp_profiles:{mode:"replace",value}})} /><SearchMultiSelect label="Skills" options={skills} selected={((current.skill_ids as Record<string,unknown>)?.value as string[] || [])} emptyText="没有可用 Skills" onChange={(value) => setNode(id,{...current,skill_ids:{mode:"replace",value}})} /><button type="button" onClick={() => setNode(id,null)}><RotateCcw size={13}/>恢复默认</button></div>}</article>;
   })}{!agentSteps.length && <p>这个工作流没有需要用户覆盖的 Agent 节点。</p>}</div></div>;
 }
 

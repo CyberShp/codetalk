@@ -873,6 +873,8 @@ class AgentRunHarness:
         env = _agent_process_env_for_harness(
             provider=str(run_payload.get("provider") or ""),
             repo_path=cwd,
+            command=configured_command,
+            prompt_transport=str(run_payload.get("prompt_transport") or ""),
         )
         env.update(env_hints)
         env = _prefer_native_macos_git_path(env)
@@ -1807,7 +1809,7 @@ def _prefer_native_macos_git_path(
     return result
 
 
-def _agent_process_env_for_harness(*, provider: str, repo_path: str) -> dict[str, str]:
+def _base_agent_process_env_for_harness(*, provider: str, repo_path: str) -> dict[str, str]:
     """Use the same environment hints as source discovery, including CCR config."""
     try:
         from app.services.external_agent_discovery import _agent_process_env
@@ -1815,6 +1817,39 @@ def _agent_process_env_for_harness(*, provider: str, repo_path: str) -> dict[str
         return _agent_process_env(provider, repo_path)
     except Exception:
         return filtered_agent_environment()
+
+
+def _agent_process_env_for_harness(
+    *,
+    provider: str,
+    repo_path: str,
+    command: list[str] | None = None,
+    prompt_transport: str = "",
+) -> dict[str, str]:
+    env = _base_agent_process_env_for_harness(
+        provider=provider,
+        repo_path=repo_path,
+    )
+    if provider != "agent-runtime:default-claude-code" or not command:
+        return env
+    try:
+        from app.services.agent_cli_bridge import _build_env
+
+        credential_env = _build_env({
+            "id": "default-claude-code",
+            "provider": "claude",
+            "command": str(command[0]),
+            "args": [str(item) for item in command[1:]],
+            "prompt_transport": str(prompt_transport or ""),
+        })
+        token = str(credential_env.get("CLAUDE_CODE_OAUTH_TOKEN") or "").strip()
+        if token:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    except Exception:
+        # Authentication readiness is reported by the actual CLI invocation.
+        # Never weaken the sandbox or expose the user's Keychain as a fallback.
+        pass
+    return env
 
 
 def _launch_command_from_provider_health(

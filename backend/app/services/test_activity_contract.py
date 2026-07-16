@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import builtins
+import hashlib
 import json
 import re
 from pathlib import Path
@@ -53,6 +54,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
             "login negotiation",
             "CHAP success/failure in Security Negotiation",
             "CHAP request/response rounds with T, CSG, and NSG assertions",
+            "mutual CHAP with valid challenge encoding but a mismatched mutual-secret oracle",
             "CSG 0/1/3, invalid NSG, T+C, and error-response flag clearing",
             "fragmented C-bit parameter assembly",
             "unknown, duplicate, and oversized keys",
@@ -139,8 +141,8 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     "lib/iscsi/iscsi.c::iscsi_op_login_rsp_handle_csg_bit",
                 ],
                 "conflict_patterns": [
-                    r"(?:接收|入口|处理).{0,60}login request.{0,100}iscsi_op_login_rsp_handle_csg_bit",
-                    r"iscsi_op_login_rsp_handle_csg_bit.{0,100}(?:接收|入口|处理).{0,60}login request",
+                    r"(?:接收|入口|处理)[^\n|]{0,60}login request[^\n|]{0,100}iscsi_op_login_rsp_handle_csg_bit",
+                    r"iscsi_op_login_rsp_handle_csg_bit[^\n|]{0,100}(?:接收|入口|处理)[^\n|]{0,60}login request",
                 ],
             },
             {
@@ -284,6 +286,9 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 "correction_patterns": [
                     r"(?:假设|若|如果|可能|潜在|待验证|需核验|尚未确认|hypothes).{0,200}(?:未.{0,40}(?:调用|执行)|未加锁|没有锁|无锁保护)",
                     r"(?:未.{0,40}(?:调用|执行)|未加锁|没有锁|无锁保护).{0,220}(?:假设|可能|潜在|待验证|需核验|尚未确认|不能断言|hypothes)",
+                    r"(?:证据缺口|未连通|不能证明|无法证明).{0,220}_iscsi_conn_destruct.{0,160}未出现在已验证(?:调用)?(?:分量|调用链|证据)",
+                    r"_iscsi_conn_destruct.{0,160}未出现在已验证(?:调用)?(?:分量|调用链|证据).{0,220}(?:证据缺口|未连通|不能证明|无法证明)",
+                    r"(?:缺口|证据缺口).{0,180}_iscsi_conn_destruct.{0,120}未在.{0,50}(?:验证|证据)范围.{0,40}(?:直接)?(?:调用|执行)",
                 ],
             },
             {
@@ -325,6 +330,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 ],
                 "correction_patterns": [
                     r"(?:请求|request).{0,80}\bt\s*[:=]\s*0.{0,160}(?:响应|response).{0,80}(?:继承|保持|remains?|inherits?).{0,40}\bt\s*[:=]\s*0",
+                    r"(?:响应|response).{0,100}\bt\s*[:=]\s*1.{0,40}(?:若|仅当|if|only when).{0,40}(?:最终|final)",
                 ],
             },
             {
@@ -355,6 +361,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 ],
                 "correction_patterns": [
                     r"(?:清除|清零|clear).{0,80}(?:t|csg|nsg).{0,120}(?:不清除|保留|preserve|does not clear).{0,20}\bc\b",
+                    r"(?:清除|清零|clear).{0,80}(?:t|csg|nsg).{0,120}\bc\b.{0,30}(?:may\s+remain|remains?|可能保留|仍保留)",
                 ],
             },
             {
@@ -370,6 +377,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"csg\s*[:=]?\s*0.{0,50}(?:跳过|绕过|skip|bypass).{0,30}(?:operational\s*negotiation|操作协商)",
                     r"csg\s*[:=]?\s*0.{0,100}nsg\s*[:=]?\s*1.{0,100}(?:迁移|进入|transition).{0,50}(?:operational\s*negotiation|操作协商)",
                     r"csg\s*[:=]?\s*0.{0,40}(?:security\s*negotiation|安全协商).{0,120}csg\s*[:=]?\s*1.{0,40}(?:operational\s*negotiation|操作协商)",
+                    r"(?:security\s*negotiation|安全协商).{0,40}csg\s*[:=]?\s*0.{0,120}(?:operational\s*negotiation|操作协商).{0,40}csg\s*[:=]?\s*1",
                     r"csg\s*[:=]?\s*0/1/3.{0,60}(?:语义|meaning).{0,120}(?:避免|防止|不得|不能).{0,100}(?:operational\s*negotiation|操作协商)",
                 ],
             },
@@ -399,7 +407,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"(?:无法识别|未识别|unrecognized).{0,60}(?:合法)?(?:参数|key).{0,140}(?:0x0?200|登录失败|login fail|拒绝)",
                     r"(?:无法识别|未识别|unrecognized).{0,80}(?:参数|key).{0,100}(?:重复|duplicate).{0,120}(?:都会|均|all).{0,80}(?:失败|fail|0x0?200)",
                 ],
-                "correction_patterns": [r"(?:未知|unknown).{0,100}(?:notunderstood|not understood)"],
+                "correction_patterns": [r"(?:未知|unknown).{0,240}(?:notunderstood|not understood)"],
             },
             {
                 "id": "iscsi_login_timer_after_first_pdu",
@@ -421,6 +429,205 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 ],
             },
             {
+                "id": "iscsi_invalid_login_request_detail",
+                "assertion": (
+                    "SPDK 当前实现对 T 与 C 同时置位、以及保留 NSG 值等非法 Login Request "
+                    "返回 Initiator Error class，并把 detail 设置为 ISCSI_LOGIN_INITIATOR_ERROR (0x00)；"
+                    "不能把 RFC/规范中的 0x0b 直接写成当前实现的观测结果。"
+                ),
+                "evidence": [
+                    "lib/iscsi/iscsi.c::iscsi_pdu_hdr_op_login",
+                    "lib/iscsi/iscsi.c::iscsi_op_login_rsp_handle_csg_bit",
+                    "include/spdk/iscsi_spec.h::ISCSI_LOGIN_INITIATOR_ERROR",
+                ],
+                "conflict_patterns": [
+                    r"(?:t\s*\+\s*c|invalid\s+nsg|非法\s*nsg)[^\n]{0,260}`?0x0?b`?",
+                    r"(?:t\s*\+\s*c|t\s*=\s*1.{0,30}c\s*=\s*1|invalid\s+nsg|非法\s*nsg|nsg\s*=\s*2).{0,220}(?:status[- _]?detail|detail|状态细节).{0,40}`?0x0?b`?",
+                    r"`?0x0?b`?.{0,80}(?:status[- _]?detail|detail|状态细节).{0,220}(?:t\s*\+\s*c|invalid\s+nsg|非法\s*nsg|nsg\s*=\s*2)",
+                ],
+                "correction_patterns": [
+                    r"(?:当前实现|spdk).{0,160}(?:detail|状态细节).{0,40}`?0x0?0`?.{0,120}(?:规范|rfc).{0,80}`?0x0?b`?",
+                ],
+            },
+            {
+                "id": "iscsi_login_version_offsets",
+                "assertion": (
+                    "Login Request 的 version_max/version_min 位于 BHS 字节 2 和 3；"
+                    "字节 40 起是数据段，不能用 bytes 40-41 修改登录版本。"
+                ),
+                "evidence": ["include/spdk/iscsi_spec.h::spdk_iscsi_login_req"],
+                "conflict_patterns": [
+                    r"(?:unsupported version|version(?:_max|_min)?|版本)[^\n]{0,180}(?:bytes?|字节|offset)\s*40\s*[-~～至到]\s*41",
+                    r"(?:version_max|version_min|unsupported version|版本).{0,160}(?:bytes?|字节|offset).{0,30}40\s*[-~～至到]\s*41",
+                    r"(?:bytes?|字节|offset).{0,30}40\s*[-~～至到]\s*41.{0,160}(?:version_max|version_min|unsupported version|版本)",
+                ],
+                "correction_patterns": [
+                    r"(?:version_max|version_min|版本).{0,100}(?:bytes?|字节|offset).{0,20}2\s*[-~～至到]\s*3",
+                ],
+            },
+            {
+                "id": "iscsi_acl_precedes_chap_configuration",
+                "assertion": (
+                    "SPDK 在 iscsi_op_login_check_target 检查 initiator/portal ACL 后，才进入 session "
+                    "与 CHAP 配置路径；ACL 拒绝日志是 access denied，不能写成先 CHAP 后 ACL 或 auth failed。"
+                ),
+                "evidence": [
+                    "lib/iscsi/iscsi.c::iscsi_op_login_check_target",
+                    "lib/iscsi/iscsi.c::iscsi_pdu_hdr_op_login",
+                ],
+                "conflict_patterns": [
+                    r"(?:chap|认证)[^\n]{0,180}(?:acl|access|授权)[^\n]{0,80}(?:after auth|认证后|之后)",
+                    r"(?:acl|access|授权)[^\n]{0,80}(?:after auth|认证后|之后)",
+                    r"(?:iscsi_op_login_check_target|acl)[^\n]{0,180}[`\"']auth failed",
+                    r"(?:先|first).{0,60}(?:chap|认证).{0,100}(?:再|then|after).{0,80}(?:acl|access|授权)",
+                    r"(?:chap|认证).{0,80}(?:之后|after).{0,80}(?:acl|access|授权)",
+                    r"(?:acl|access denied|授权).{0,140}(?:日志|log).{0,40}[`\"']?auth failed",
+                ],
+                "correction_patterns": [
+                    r"(?:acl|access).{0,80}(?:先于|before|在前).{0,80}(?:chap|认证)",
+                    r"(?:acl|授权).{0,100}(?:拒绝|失败).{0,60}[`\"']?access denied",
+                ],
+            },
+            {
+                "id": "iscsi_c_bit_parameter_reassembly",
+                "assertion": (
+                    "参数解析器会保留 C=1 Login PDU 的不完整数据，并在后续 C=0 PDU 到达后重组；"
+                    "只有最终仍缺少必需 key 等真实错误才会失败。"
+                ),
+                "evidence": [
+                    "lib/iscsi/param.c::iscsi_parse_params",
+                    "test/unit/lib/iscsi/param.c/param_ut.c",
+                ],
+                "conflict_patterns": [
+                    r"c\s*=\s*1[^\n]{0,180}c\s*=\s*0[^\n]{0,220}(?:fails? to assemble|无法重组|不能重组|missing_parms)",
+                    r"(?:完整|合法|complete|valid).{0,100}(?:key/value|参数).{0,120}(?:c\s*=\s*1).{0,180}(?:c\s*=\s*0).{0,160}(?:无法|不能|失败|missing_parms|fail).{0,60}(?:重组|reassembl|登录)?",
+                    r"(?:c\s*=\s*1).{0,160}(?:c\s*=\s*0).{0,160}(?:spdk).{0,80}(?:无法|不能|不支持|fails?).{0,80}(?:重组|reassembl)",
+                ],
+                "correction_patterns": [
+                    r"(?:支持|能够|can|will).{0,60}(?:重组|reassembl).{0,120}(?:c\s*=\s*1).{0,120}(?:c\s*=\s*0)",
+                ],
+            },
+            {
+                "id": "iscsi_duplicate_key_rejected",
+                "assertion": (
+                    "同一登录参数列表中的重复 key 会被 iscsi_parse_param 拒绝；"
+                    "当前实现不是采用最后一次出现的值继续登录。"
+                ),
+                "evidence": [
+                    "lib/iscsi/param.c::iscsi_parse_param",
+                    "test/unit/lib/iscsi/param.c/param_ut.c",
+                ],
+                "conflict_patterns": [
+                    r"(?:重复|duplicate).{0,80}(?:key|参数).{0,140}(?:最后一次|last(?: occurrence| value)?|后者).{0,80}(?:生效|wins?|使用|采用|继续|成功)",
+                    r"(?:最后一次|last(?: occurrence| value)?|后者).{0,80}(?:生效|wins?|使用|采用).{0,140}(?:重复|duplicate).{0,60}(?:key|参数)",
+                ],
+                "correction_patterns": [
+                    r"(?:重复|duplicate).{0,80}(?:key|参数).{0,80}(?:拒绝|reject|失败|error)",
+                ],
+            },
+            {
+                "id": "iscsi_chap_wire_encoding",
+                "assertion": (
+                    "CHAP_N 是普通用户名字符串，CHAP_I 是十进制标识符；"
+                    "只有 CHAP_R/CHAP_C 支持带 0x/0b 前缀的编码，不能把 CHAP_N、CHAP_I、CHAP_R 全写成 base64。"
+                ),
+                "evidence": ["lib/iscsi/iscsi.c::iscsi_auth_params"],
+                "conflict_patterns": [
+                    r"chap_n[^\n]{0,180}(?:base64 encoded|base64\s*编码)",
+                    r"chap_n.{0,40}chap_i.{0,40}chap_r.{0,80}(?:都|均|all|must).{0,40}base64",
+                    r"(?:都|均|all|must).{0,40}(?:使用|编码|be).{0,30}base64.{0,100}chap_(?:n|i)",
+                    r"chap_(?:n|i).{0,80}(?:必须|must|应).{0,30}(?:base64|hex|0x|0b)",
+                ],
+                "correction_patterns": [
+                    r"chap_n.{0,60}(?:普通|plain).{0,40}(?:字符串|username).{0,120}chap_i.{0,60}(?:十进制|decimal)",
+                ],
+            },
+            {
+                "id": "iscsi_chap_response_validation",
+                "assertion": (
+                    "解码后的 CHAP_R 必须恰好为 16 字节；ISCSI_CHAP_MAX_SECRET_LEN 限制配置 secret，"
+                    "不是 wire response 长度。格式错误日志是 response format error。"
+                ),
+                "evidence": ["lib/iscsi/iscsi.c::iscsi_auth_params"],
+                "conflict_patterns": [
+                    r"chap_r[^\n]{0,220}base64 decode failed",
+                    r"base64 decode failed[^\n]{0,220}chap_r",
+                    r"iscsi_chap_max_secret_len[^\n]{0,180}chap_r",
+                    r"chap_r[^\n]{0,180}iscsi_chap_max_secret_len",
+                    r"chap_r.{0,120}(?:长度|length|size).{0,100}iscsi_chap_max_secret_len",
+                    r"iscsi_chap_max_secret_len.{0,100}(?:限制|limit).{0,100}chap_r",
+                    r"(?:非法|malformed|invalid).{0,80}chap_r.{0,120}(?:日志|log|记录).{0,40}[`\"']?base64 decode failed",
+                ],
+                "correction_patterns": [
+                    r"chap_r.{0,120}(?:恰好|exactly|必须).{0,20}16\s*(?:字节|bytes?)",
+                    r"(?:response format error).{0,80}(?:chap_r|响应)",
+                ],
+            },
+            {
+                "id": "iscsi_login_response_opcode",
+                "assertion": "Login Request opcode 是 0x03，Login Response opcode 是 0x23；抓包过滤响应必须使用 0x23。",
+                "evidence": ["include/spdk/iscsi_spec.h::ISCSI_OP_LOGIN_RSP"],
+                "conflict_patterns": [
+                    r"iscsi\.opcode\s*==\s*0x0?3(?![0-9a-f])[^\n]{0,200}iscsi\.login_status",
+                    r"(?:login response|登录响应|抓取.{0,30}响应).{0,160}iscsi\.opcode\s*==\s*0x0?3(?![0-9a-f])",
+                    r"iscsi\.opcode\s*==\s*0x0?3(?![0-9a-f]).{0,160}(?:login response|登录响应)",
+                ],
+                "correction_patterns": [
+                    r"(?:login response|登录响应).{0,100}(?:0x23|iscsi\.opcode\s*==\s*0x23)",
+                ],
+            },
+            {
+                "id": "iscsi_rpc_login_phase_values",
+                "assertion": (
+                    "iscsi_get_connections 的 login_phase 枚举字符串包含 _phase 后缀："
+                    "security_negotiation_phase、operational_negotiation_phase、full_feature_phase。"
+                ),
+                "evidence": ["lib/iscsi/conn.c::iscsi_conn_info_json"],
+                "conflict_patterns": [
+                    r"login_phase.{0,120}(?:security_negotiation(?!_phase)|operational_negotiation(?!_phase))(?:[\s`\"',/]|$)",
+                ],
+                "correction_patterns": [
+                    r"login_phase.{0,160}(?:security_negotiation_phase|operational_negotiation_phase)",
+                ],
+            },
+            {
+                "id": "iscsi_fuzzer_skips_login_opcode",
+                "assertion": (
+                    "test/app/fuzz/iscsi_fuzz/iscsi_fuzz.c 当前明确跳过 LOGIN opcode；"
+                    "不能把该 fuzzer 映射为随机 Login Request 覆盖。"
+                ),
+                "evidence": ["test/app/fuzz/iscsi_fuzz/iscsi_fuzz.c"],
+                "conflict_patterns": [
+                    r"(?:iscsi_fuzz(?:\.c)?|现有\s*fuzz)[^\n]{0,180}(?:可能|may|might)[^\n]{0,40}(?:覆盖|触发|cover|trigger)",
+                    r"iscsi_fuzz(?:\.c)?[^\n]{0,220}(?:may|might|可能|可)[^\n]{0,80}(?:trigger|cover|mutat|触发|覆盖)[^\n]{0,80}(?:login|登录)",
+                    r"iscsi_fuzz(?:\.c)?.{0,180}(?:覆盖|cover|随机|mutat).{0,80}(?:login opcode|login request|登录)",
+                    r"(?:login opcode|login request|登录).{0,100}(?:随机|mutat|覆盖|cover).{0,180}iscsi_fuzz(?:\.c)?",
+                ],
+                "correction_patterns": [
+                    r"iscsi_fuzz(?:\.c)?.{0,160}(?:跳过|忽略|不处理|skip|ignore).{0,60}(?:login|登录)",
+                    r"iscsi_fuzz(?:\.c)?[^\n]{0,140}(?:不针对|无此断言|不能证明|待补证据)",
+                ],
+            },
+            {
+                "id": "iscsi_first_payload_still_gets_response",
+                "assertion": (
+                    "注销 login_timer 不会阻止当前 Login PDU 的响应路径；首个 payload 仍会进入 "
+                    "iscsi_op_login_response 并发送 Login Response。"
+                ),
+                "evidence": [
+                    "lib/iscsi/iscsi.c::iscsi_pdu_payload_op_login",
+                    "lib/iscsi/iscsi.c::iscsi_op_login_response",
+                ],
+                "conflict_patterns": [
+                    r"(?:timer|定时器)[^\n]{0,100}(?:注销|unregister)[^\n]{0,160}(?:无|no|不会)[^\n]{0,60}(?:login )?response",
+                    r"(?:首个|first).{0,80}(?:login )?(?:pdu|payload).{0,160}(?:timer|定时器).{0,100}(?:注销|unregister).{0,160}(?:不|不会|no).{0,40}(?:发送|send).{0,50}(?:login )?response",
+                    r"(?:timer|定时器).{0,100}(?:注销|unregister).{0,180}(?:首个|first).{0,80}(?:pdu|payload).{0,120}(?:无响应|no response|不会发送)",
+                ],
+                "correction_patterns": [
+                    r"(?:timer|定时器).{0,100}(?:注销|unregister).{0,180}(?:仍|still).{0,80}(?:发送|send).{0,60}(?:login )?response",
+                ],
+            },
+            {
                 "id": "iscsi_discovery_target_address",
                 "assertion": (
                     "iscsi_op_login_set_target_info 仅在 target != NULL 时向响应追加 TargetAddress；"
@@ -433,10 +640,11 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"discovery login[\s\S]{0,700}(?:login response|登录响应)[\s\S]{0,320}targetaddress\s*=",
                 ],
                 "correction_patterns": [
-                    r"discovery.{0,220}(?:不返回|不会返回|不追加|不包含|does not (?:return|append|include)).{0,30}targetaddress",
+                    r"discovery.{0,220}(?:不返回|不会返回|不会收到|不追加|不包含|不应包含|不该包含|does not (?:return|append|include)|does not receive|should not include).{0,30}targetaddress",
                     r"discovery.{0,180}(?:不应声称|不能声称|不得声称|not claim).{0,80}targetaddress",
                     r"(?:检查|验证|检测|check).{0,120}discovery.{0,120}(?:是否|有无|whether).{0,30}(?:包含|返回|include|return)?.{0,20}targetaddress",
                     r"discovery login.{0,100}(?:不强制|不要求|非必需|not require).{0,40}targetaddress",
+                    r"discovery login response.{0,100}(?:成功|success|status\s*=\s*0x?0+).{0,120}sendtargets.{0,60}(?:响应|response).{0,60}(?:包含|contains?|includes?).{0,40}targetaddress",
                 ],
             },
             {
@@ -538,6 +746,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"(?:允许|合法|either).{0,100}csg\s*[:=]\s*[01].{0,160}csg\s*[:=]\s*[01]",
                     r"(?:不能|不得|不可|not).{0,60}(?:把|treat)?\s*[`\"']?csg[`\"']?\s*[:=]\s*1.{0,100}(?:唯一|only|固定)",
                     r"(?:最终|final).{0,80}(?:不能固定|不得固定|not fixed).{0,40}[`\"']?csg\s*[:=]\s*1[`\"']?",
+                    r"(?:两阶段|two[- ]stage).{0,220}(?:最终|final).{0,80}csg\s*[:=]\s*1.{0,220}(?:单阶段|single[- ]stage).{0,220}(?:最终|final).{0,80}csg\s*[:=]\s*0",
                 ],
             },
             {
@@ -574,6 +783,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 "correction_patterns": [
                     r"(?:cid.{0,40}(?:冲突|重复|相同|duplicate|same)).{0,100}(?:不能|不得|不应|不会|not).{0,80}(?:too many connections|0x0?6)",
                     r"(?:too many connections|0x0?6).{0,120}(?:maxconnections|容量|连接上限|connection limit)",
+                    r"(?:maxconnections|iscsi_set_options\s+-c\s+1|连接上限).{0,500}(?:不同|新|different|new).{0,30}cid.{0,220}(?:too many connections|0x0?6|detail\s*=\s*0x0?6)",
                 ],
             },
             {
@@ -589,6 +799,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 ],
                 "correction_patterns": [
                     r"(?:session reinstatement|会话恢复|会话重建).{0,120}(?:tsih\s*[:=]?\s*0).{0,120}(?:同一|same).{0,30}isid",
+                    r"(?:session reinstatement|会话恢复|会话重建).{0,120}(?:同一|same).{0,60}isid.{0,80}tsih\s*[:=]?\s*0",
                     r"(?:非零|已有|返回).{0,30}tsih.{0,120}(?:追加连接|append|mcs|不是.{0,30}(?:reinstatement|会话恢复|会话重建))",
                 ],
             },
@@ -627,6 +838,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"(?:未知|unknown).{0,80}(?:ai_suggested_unverified|需要新增|待新增|正文.*harness).{0,200}chap_discovery\.sh.{0,80}(?:不覆盖|不作为)",
                     r"(?:未知|unknown|unknown-user).{0,100}(?:仅|只).{0,40}(?:映射|使用).{0,60}harness.{0,100}(?:不|未|不得|不能).{0,30}映射.{0,60}chap_discovery\.sh",
                     r"(?:未知|unknown).{0,120}(?:不得|不能|不再|不).{0,30}映射.{0,80}chap_discovery\.sh",
+                    r"(?:未知|unknown).{0,100}(?:用户|user|chap_n).{0,160}chap_discovery\.sh.{0,100}(?:未覆盖|不覆盖|需新增|需要新增|not cover)",
                     r"ai_suggested_unverified.{0,100}(?:unknown|chap-user).{0,220}chap_discovery\.sh",
                 ],
             },
@@ -679,6 +891,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 ],
                 "correction_patterns": [
                     r"login_redirection\.sh.{0,180}(?:不覆盖|不能证明|不映射|不作为|仅供参考|需要新增|不是(?:网络故障|自动重连)|not cover|does not prove|not a network)",
+                    r"(?:不可用|不用|不使用|不得使用|不能使用|do not use).{0,80}login_redirection\.sh.{0,180}(?:只测|仅测|不测|非|不是|not).{0,80}(?:网络中断|网络故障|自动重连|network fault|network outage)",
                     r"login_redirection\.sh.{0,500}(?:不得解释|不能解释|不可解释|不应解释).{0,80}(?:网络故障|自动重连)",
                     r"redirect.{0,100}(?:受控\s*rpc|controlled rpc).{0,80}(?:不是|不覆盖|not).{0,50}(?:网络故障|自动重连|network fault|automatic reconnect)",
                     r"login_redirection\.sh.{0,160}(?:不代表|不能代表|不等于).{0,80}(?:网络故障|自动重连)",
@@ -726,7 +939,8 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"(?:login|登录).{0,100}(?:p50|p95|p99|latency|延迟).{0,220}iscsi_(?:target|initiator)\.sh",
                 ],
                 "correction_patterns": [
-                    r"iscsi_(?:target|initiator)\.sh.{0,180}(?:不采集|不测|不能测|fio\s*i/o|does not measure|not a login)",
+                    r"iscsi_(?:target|initiator)\.sh.{0,180}(?:不采集|不测|不能测|fio\s*i/o|does not measure|not a login|not login latency)",
+                    r"iscsi_(?:target|initiator)\.sh.{0,80}(?:仅|只)\s*(?:fio\s*)?i/o.{0,80}(?:不覆盖|不采集|不测|不能测).{0,60}(?:login|登录).{0,60}(?:latency|延迟|p50|p95|p99)",
                     r"iscsi_(?:target|initiator)\.sh.{0,260}(?:均)?(?:不得|不能|不可|not).{0,40}(?:作为|用作|be used).{0,80}(?:login|登录).{0,60}(?:latency|延迟|test_mapping)",
                     r"(?:不用|不使用|不得使用|不能使用|do not use).{0,220}iscsi_(?:target|initiator)\.sh.{0,100}(?:作为|用作|性能映射|latency|benchmark)?",
                     r"(?:login|登录).{0,80}(?:latency|延迟|p50|p95|p99).{0,80}(?:不用|不使用|不得使用|不能使用|do not use).{0,220}iscsi_(?:target|initiator)\.sh",
@@ -1133,6 +1347,14 @@ ARTIFACT_TEMPLATES: dict[str, dict[str, Any]] = {
     "coverage_gap_report.md": {"preview": "markdown", "sections": ["覆盖缺口", "入口", "补充建议"], "required_fields": ["gaps", "recommendations"]},
     "risk_review.md": {"preview": "markdown", "sections": ["高风险项", "证据", "建议"], "required_fields": ["risks", "evidence"]},
     "execution_checklist.md": {"preview": "markdown", "sections": ["前置检查", "执行步骤", "验收"], "required_fields": ["preflight", "steps", "acceptance"]},
+    "combined_test_report.md": {
+        "preview": "markdown",
+        "sections": ["分析范围与证据缺口", "关键源码证据", "主流程与异常/恢复流程", "SFMEA", "黑盒测试用例"],
+        "min_sfmea_rows": 12,
+        "min_black_box_cases": 12,
+        "min_source_paths": 6,
+        "min_test_paths": 4,
+    },
 }
 
 
@@ -1148,10 +1370,14 @@ def build_test_activity_contract(
     domain_profiles = _matched_profiles(combined_text)
     project_profile = _spdk_project_profile(repo_path=repo_path, target=combined_text, domain_profiles=domain_profiles)
     required_outputs = _requested_outputs(workflow_outputs or [], combined_text)
+    declared_templates = _declared_output_templates(workflow_outputs or [])
     artifact_contract = {
-        artifact: _artifact_contract_payload(artifact, template)
-        for artifact, template in ARTIFACT_TEMPLATES.items()
-        if artifact in required_outputs
+        artifact: _artifact_contract_payload(
+            artifact,
+            declared_templates.get(artifact) or ARTIFACT_TEMPLATES[artifact],
+        )
+        for artifact in required_outputs
+        if artifact in declared_templates or artifact in ARTIFACT_TEMPLATES
     }
     focus_rationale = _focus_rationale(
         domain_profiles=domain_profiles,
@@ -1196,6 +1422,7 @@ def build_test_activity_contract(
         },
         "quality_gates": {
             "min_score": 80,
+            "require_independent_behavior_validation": True,
             "high_risk_requires_source_or_test_evidence": True,
             "black_box_cases_must_not_call_internal_functions": True,
             "missing_required_artifacts_block_delivery": True,
@@ -1238,12 +1465,48 @@ def refresh_test_activity_contract(
     )
     if not declared:
         return refreshed
+    quality_gates = dict(refreshed.get("quality_gates") or {})
+    quality_gates.setdefault("require_independent_behavior_validation", True)
+    refreshed["quality_gates"] = quality_gates
     refreshed["required_outputs"] = declared
     refreshed["artifact_contract"] = {
         artifact: _artifact_contract_payload(artifact, ARTIFACT_TEMPLATES[artifact])
         for artifact in declared
     }
     return refreshed
+
+
+_PROFESSIONAL_MARKER_LINT_CODES = {
+    "missing_iscsi_professional_scenarios",
+    "missing_chap_negative_scenarios",
+    "missing_extended_chap_negative_scenarios",
+}
+_PROFESSIONAL_EXECUTABILITY_CODES = {
+    "non_executable_raw_pdu_harness",
+    "missing_protocol_wire_observer",
+    "non_executable_protocol_observer",
+    "unsafe_hazardous_test_mapping",
+    "non_executable_mcs_client",
+    "missing_mcs_capable_client",
+}
+
+
+def _partition_combined_professional_issues(
+    issues: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Keep marker heuristics out of fact/structure gates and route L3 failures."""
+    structural: list[dict[str, Any]] = []
+    lint: list[dict[str, Any]] = []
+    executable: list[dict[str, Any]] = []
+    for issue in issues:
+        code = str(issue.get("code") or "")
+        if code in _PROFESSIONAL_MARKER_LINT_CODES:
+            lint.append(issue)
+        elif code in _PROFESSIONAL_EXECUTABILITY_CODES:
+            executable.append(issue)
+        else:
+            structural.append(issue)
+    return structural, lint, executable
 
 
 def audit_test_activity_artifacts(
@@ -1254,10 +1517,13 @@ def audit_test_activity_artifacts(
 ) -> dict[str, Any]:
     root = Path(artifact_dir)
     repo = Path(str(repo_path or ""))
-    issues: list[dict[str, Any]] = []
+    structural_issues: list[dict[str, Any]] = []
+    executable_issues: list[dict[str, Any]] = []
+    lint_warnings: list[dict[str, Any]] = []
+    execution_checks_applicable = False
     artifact_contract = contract.get("artifact_contract") or {}
     if contract.get("audit_scope_required") and not artifact_contract:
-        issues.append(
+        structural_issues.append(
             _issue(
                 "empty_test_activity_audit_scope",
                 "workflow",
@@ -1267,17 +1533,23 @@ def audit_test_activity_artifacts(
     for artifact, spec in artifact_contract.items():
         path = _artifact_path(root, artifact)
         if not path.exists():
-            issues.append(_issue("missing_required_artifact", artifact, f"缺少交付件 {artifact}"))
+            structural_issues.append(
+                _issue("missing_required_artifact", artifact, f"缺少交付件 {artifact}")
+            )
             continue
         if artifact.endswith(".json"):
             payload = _read_json(path)
-            issues.extend(_audit_json_artifact(artifact=artifact, payload=payload, spec=spec, repo=repo))
+            structural_issues.extend(
+                _audit_json_artifact(artifact=artifact, payload=payload, spec=spec, repo=repo)
+            )
         else:
             content = path.read_text(encoding="utf-8", errors="ignore").strip()
             if not content:
-                issues.append(_issue("empty_artifact", artifact, f"{artifact} 内容为空"))
+                structural_issues.append(
+                    _issue("empty_artifact", artifact, f"{artifact} 内容为空")
+                )
             elif artifact.endswith(".md"):
-                issues.extend(
+                structural_issues.extend(
                     _audit_markdown_artifact(
                         artifact=artifact,
                         content=content,
@@ -1285,17 +1557,100 @@ def audit_test_activity_artifacts(
                         repo=repo,
                     )
                 )
-    score = max(0, 100 - len(issues) * 15)
-    empty_scope = any(item.get("code") == "empty_test_activity_audit_scope" for item in issues)
-    if empty_scope:
-        score = 0
-    status = (
-        "invalid"
-        if empty_scope
-        else "deliverable"
-        if score >= int((contract.get("quality_gates") or {}).get("min_score") or 80) and not issues
-        else "needs_rework"
+                combined_report = _is_combined_test_report_spec(spec)
+                lint_warnings.extend(
+                    _audit_professional_constraints(
+                        content,
+                        contract,
+                        source_artifact=artifact,
+                        infer_structured_section=combined_report,
+                    )
+                )
+                if combined_report:
+                    execution_checks_applicable = True
+                    professional_issues = _audit_combined_professional_completeness(
+                        content,
+                        contract,
+                        include_execution=False,
+                        include_consistency=False,
+                    )
+                    routed_structure, routed_lint, routed_executable = (
+                        _partition_combined_professional_issues(professional_issues)
+                    )
+                    structural_issues.extend(routed_structure)
+                    lint_warnings.extend(routed_lint)
+                    executable_issues.extend(routed_executable)
+                    executable_issues.extend(_audit_combined_execution_contract(content))
+                    executable_issues.extend(
+                        _audit_raw_pdu_runtime_evidence(root=root, content=content)
+                    )
+                    lint_warnings.extend(_audit_combined_report_consistency(content))
+    fact_claims, fact_issues = _audit_structured_fact_claims(
+        root=root,
+        repo=repo,
+        require_behavior_validation=bool(
+            (contract.get("quality_gates") or {}).get(
+                "require_independent_behavior_validation",
+                False,
+            )
+        ),
     )
+    issues = [*structural_issues, *fact_issues, *executable_issues]
+    structure_score = max(0, 100 - len(structural_issues) * 15)
+    empty_scope = any(
+        item.get("code") == "empty_test_activity_audit_scope"
+        for item in structural_issues
+    )
+    if empty_scope:
+        structure_score = 0
+    fact_total = len(fact_claims)
+    fact_verified = sum(claim.get("status") == "verified" for claim in fact_claims)
+    fact_contradicted = sum(
+        claim.get("status") == "contradicted" for claim in fact_claims
+    )
+    fact_insufficient = sum(
+        claim.get("status") == "insufficient" for claim in fact_claims
+    )
+    fact_pass_rate = round(fact_verified * 100 / fact_total) if fact_total else 100
+    executable_pass_rate = 0 if executable_issues else 100
+    quality_axes = {
+        "structure": {
+            "status": "blocked" if structural_issues else "passed",
+            "score": structure_score,
+            "issue_count": len(structural_issues),
+        },
+        "facts": {
+            "status": (
+                "not_checked"
+                if not fact_total
+                else "blocked"
+                if fact_contradicted or fact_insufficient
+                else "passed"
+            ),
+            "total": fact_total,
+            "verified": fact_verified,
+            "contradicted": fact_contradicted,
+            "insufficient": fact_insufficient,
+            "pass_rate": fact_pass_rate,
+        },
+        "executability": {
+            "status": (
+                "not_checked"
+                if not execution_checks_applicable
+                else "blocked"
+                if executable_issues
+                else "passed"
+            ),
+            "issue_count": len(executable_issues),
+            "pass_rate": executable_pass_rate if execution_checks_applicable else None,
+        },
+    }
+    score = min(
+        structure_score,
+        fact_pass_rate if fact_total else 100,
+        executable_pass_rate if execution_checks_applicable else 100,
+    )
+    status = "invalid" if empty_scope else "needs_rework" if issues else "deliverable"
     return {
         "kind": "test_activity_quality_audit",
         "status": status,
@@ -1303,8 +1658,962 @@ def audit_test_activity_artifacts(
         "score": score,
         "issue_count": len(issues),
         "issues": issues,
+        "lint_warning_count": len(lint_warnings),
+        "lint_warnings": lint_warnings,
         "recommendations": _recommendations_for_issues(issues),
+        "fact_verification": {
+            "total": fact_total,
+            "verified": fact_verified,
+            "contradicted": fact_contradicted,
+            "insufficient": fact_insufficient,
+            "pass_rate": fact_pass_rate,
+        },
+        "fact_claims": fact_claims,
+        "quality_axes": quality_axes,
     }
+
+
+def _audit_structured_fact_claims(
+    *,
+    root: Path,
+    repo: Path,
+    require_behavior_validation: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Route deterministic protocol claims to source-backed validators."""
+    constants = _verified_c_constant_ledger(root=root, repo=repo)
+    verified_files = _verified_evidence_files(root=root, repo=repo)
+    behavior_validation = _read_json(
+        _artifact_path(root, "behavior_claim_validation.json")
+    )
+    claims: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    sfmea = _read_json(_artifact_path(root, "sfmea.json"))
+    structured_artifacts = {
+        "sfmea.json": sfmea if isinstance(sfmea, list) else [],
+        "black_box_cases.json": _read_json(_artifact_path(root, "black_box_cases.json")),
+    }
+    for artifact, rows in structured_artifacts.items():
+        if not isinstance(rows, list):
+            continue
+        structured_claims, structured_issues = _audit_explicit_technical_claims(
+            artifact=artifact,
+            rows=rows,
+            verified_files=verified_files,
+            behavior_validation=(
+                behavior_validation
+                if isinstance(behavior_validation, dict)
+                else {}
+            ),
+            require_behavior_validation=require_behavior_validation,
+        )
+        claims.extend(structured_claims)
+        issues.extend(structured_issues)
+        if require_behavior_validation:
+            row_claims, row_issues = _audit_row_behavior_claims(
+                artifact=artifact,
+                rows=rows,
+                verified_files=verified_files,
+                explicit_claims=structured_claims,
+                behavior_validation=(
+                    behavior_validation
+                    if isinstance(behavior_validation, dict)
+                    else {}
+                ),
+            )
+            claims.extend(row_claims)
+            issues.extend(row_issues)
+    if not isinstance(sfmea, list):
+        return claims, issues
+
+    iscsi_version = constants.get("ISCSI_VERSION")
+    for index, row in enumerate(sfmea):
+        if not isinstance(row, dict):
+            continue
+        row_id = str(
+            row.get("sfmea_id") or row.get("risk_id") or row.get("id") or f"row-{index + 1}"
+        )
+        statement = " ".join(
+            str(row.get(field) or "")
+            for field in ("failure_mode", "cause", "effect", "detection")
+        )
+        version_values = _extract_iscsi_version_range(statement)
+        describes_unsupported = bool(re.search(
+            r"unsupported\s+version|不支持.{0,12}版本",
+            statement,
+            flags=re.IGNORECASE,
+        ))
+        if version_values is not None and iscsi_version is not None and describes_unsupported:
+            version_max, version_min = version_values
+            source_value = int(iscsi_version["integer_value"])
+            supported = version_min <= source_value <= version_max
+            claim_id = f"{row_id}:protocol_version_range"
+            status = "contradicted" if supported else "verified"
+            claim = {
+                "claim_id": claim_id,
+                "type": "protocol_version_range",
+                "statement": (
+                    f"version_max={version_max}, version_min={version_min} "
+                    "会触发 Unsupported Version"
+                ),
+                "status": status,
+                "source_truth": f"ISCSI_VERSION={iscsi_version['raw_value']}",
+                "evidence": [
+                    {
+                        "path": iscsi_version["file_path"],
+                        "line": iscsi_version["line"],
+                        "symbol": "ISCSI_VERSION",
+                        "quote": iscsi_version["source_line"],
+                        "sha256": iscsi_version["sha256"],
+                    }
+                ],
+            }
+            claims.append(claim)
+            if status == "contradicted":
+                issues.append(
+                    _issue(
+                        "source_claim_contradicted",
+                        "sfmea.json",
+                        f"{row_id} 把版本范围 {version_min}..{version_max} 判为不支持，"
+                        f"但已验证源码定义 {claim['source_truth']}，该范围包含当前支持版本。",
+                        claim_id=claim_id,
+                        claim_type="protocol_version_range",
+                        source_truth=claim["source_truth"],
+                        evidence=claim["evidence"],
+                        validation_layer="L1_deterministic",
+                    )
+                )
+
+        log_fields = " ".join(
+            str(row.get(field) or "") for field in ("effect", "detection")
+        )
+        log_literals = _extract_exact_log_literals(log_fields)
+        evidence_paths = _structured_source_evidence_paths(row.get("source_evidence"))
+        candidate_files = [
+            verified_files[path]
+            for path in evidence_paths
+            if path in verified_files
+        ]
+        for literal_index, (literal, uncertain) in enumerate(log_literals, start=1):
+            matches = [
+                metadata
+                for metadata in candidate_files
+                if literal in str(metadata.get("content") or "")
+            ]
+            log_status = "verified" if matches else "insufficient" if uncertain else "contradicted"
+            log_claim_id = f"{row_id}:log_literal:{literal_index}"
+            log_claim = {
+                "claim_id": log_claim_id,
+                "type": "log_literal",
+                "statement": f"源码会输出日志原文: {literal}",
+                "status": log_status,
+                "evidence": [
+                    {
+                        "path": path,
+                        "sha256": verified_files[path]["sha256"],
+                    }
+                    for path in evidence_paths
+                    if path in verified_files
+                ],
+            }
+            claims.append(log_claim)
+            if log_status == "verified":
+                continue
+            code = (
+                "source_claim_insufficient"
+                if log_status == "insufficient"
+                else "source_claim_contradicted"
+            )
+            issues.append(
+                _issue(
+                    code,
+                    "sfmea.json",
+                    (
+                        f"{row_id} 给出日志原文“{literal}”，但该文本未出现在其已验证源码证据中；"
+                        "请改为真实日志原文或明确标为待验证。"
+                    ),
+                    claim_id=log_claim_id,
+                    claim_type="log_literal",
+                    claimed_literal=literal,
+                    evidence=log_claim["evidence"],
+                    validation_layer="L1_deterministic",
+                )
+            )
+    return claims, issues
+
+
+def _audit_explicit_technical_claims(
+    *,
+    artifact: str,
+    rows: list[Any],
+    verified_files: dict[str, dict[str, Any]],
+    behavior_validation: dict[str, Any] | None = None,
+    require_behavior_validation: bool = False,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    claims: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    for row_index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            continue
+        row_id = str(
+            row.get("sfmea_id")
+            or row.get("case_id")
+            or row.get("risk_id")
+            or row.get("id")
+            or f"row-{row_index}"
+        ).strip()
+        for claim_index, raw_claim in enumerate(row.get("technical_claims") or [], start=1):
+            if not isinstance(raw_claim, dict):
+                continue
+            claim_id = str(raw_claim.get("claim_id") or f"{row_id}:claim:{claim_index}").strip()
+            claim_type = str(raw_claim.get("type") or "technical_assertion").strip()
+            statement = str(raw_claim.get("statement") or "").strip()
+            checked_evidence: list[dict[str, Any]] = []
+            valid_evidence: list[dict[str, Any]] = []
+            has_verified_path = False
+            for raw_evidence in raw_claim.get("evidence") or []:
+                if not isinstance(raw_evidence, dict):
+                    continue
+                relative = str(raw_evidence.get("path") or "").replace("\\", "/").lstrip("/")
+                if not relative or ".." in Path(relative).parts:
+                    continue
+                metadata = verified_files.get(relative)
+                if not metadata:
+                    checked_evidence.append({"path": relative, "verified_path": False})
+                    continue
+                has_verified_path = True
+                quote = str(raw_evidence.get("quote") or "").strip()
+                symbol = str(raw_evidence.get("symbol") or "").strip()
+                evidence_id = str(raw_evidence.get("evidence_id") or "").strip()
+                content = str(metadata.get("content") or "")
+                canonical_anchor = (
+                    metadata.get("evidence_anchors", {}).get(evidence_id)
+                    if evidence_id and isinstance(metadata.get("evidence_anchors"), dict)
+                    else None
+                )
+                evidence_id_matches = bool(
+                    not evidence_id
+                    or (
+                        isinstance(canonical_anchor, dict)
+                        and quote == str(canonical_anchor.get("quote") or "")
+                    )
+                )
+                quote_matches = bool(quote and quote in content and evidence_id_matches)
+                symbol_matches = bool(not symbol or symbol in content)
+                evidence = {
+                    "evidence_id": evidence_id,
+                    "path": relative,
+                    "symbol": symbol,
+                    "lines": str(raw_evidence.get("lines") or "").strip(),
+                    "quote": quote,
+                    "sha256": str(metadata.get("sha256") or ""),
+                    "quote_matches": quote_matches,
+                    "evidence_id_matches": evidence_id_matches,
+                    "symbol_matches": symbol_matches,
+                }
+                checked_evidence.append(evidence)
+                if quote_matches and symbol_matches:
+                    valid_evidence.append(evidence)
+            semantic_status, semantic_reason = _deterministic_claim_semantics(
+                claim_type=claim_type,
+                statement=statement,
+                evidence=valid_evidence,
+            )
+            if semantic_status == "requires_l2" and not require_behavior_validation:
+                semantic_status, semantic_reason = "supported", ""
+            validation_layer = "L1_deterministic"
+            if valid_evidence and semantic_status == "requires_l2":
+                binding = _behavior_claim_binding(
+                    claim_id=claim_id,
+                    claim_type=claim_type,
+                    statement=statement,
+                    evidence=valid_evidence,
+                )
+                l2_status, semantic_reason = _bound_behavior_validation_status(
+                    validation=behavior_validation or {},
+                    claim_id=claim_id,
+                    binding=binding,
+                )
+                status = (
+                    "verified"
+                    if l2_status == "supports"
+                    else "contradicted"
+                    if l2_status == "contradicts"
+                    else "insufficient"
+                )
+                validation_layer = "L2_independent_behavior"
+            elif valid_evidence:
+                status = (
+                    "verified"
+                    if semantic_status == "supported"
+                    else "contradicted"
+                    if semantic_status == "contradicted"
+                    else "insufficient"
+                )
+            else:
+                status = "contradicted" if has_verified_path else "insufficient"
+            claim = {
+                "claim_id": claim_id,
+                "type": claim_type,
+                "statement": statement,
+                "status": status,
+                "artifact": artifact,
+                "row_id": row_id,
+                "evidence": checked_evidence,
+                "semantic_validation": semantic_status,
+                "validation_layer": validation_layer,
+            }
+            if validation_layer == "L2_independent_behavior":
+                claim["binding"] = _behavior_claim_binding(
+                    claim_id=claim_id,
+                    claim_type=claim_type,
+                    statement=statement,
+                    evidence=valid_evidence,
+                )
+            claims.append(claim)
+            if status == "verified":
+                continue
+            code = (
+                "source_claim_contradicted"
+                if status == "contradicted"
+                else "source_claim_insufficient"
+            )
+            reason = (
+                semantic_reason
+                if valid_evidence and semantic_status != "supported"
+                else "引用路径已通过 SHA256 校验，但 quote 或 symbol 与源码不一致"
+                if status == "contradicted"
+                else "没有指向已通过 SHA256 校验的源码证据"
+            )
+            issues.append(
+                _issue(
+                    code,
+                    artifact,
+                    f"{row_id} 的技术断言 {claim_id} 未通过事实核验：{reason}。",
+                    claim_id=claim_id,
+                    claim_type=claim_type,
+                    statement=statement,
+                    evidence=checked_evidence,
+                    validation_layer=validation_layer,
+                )
+            )
+    return claims, issues
+
+
+def _deterministic_claim_semantics(
+    *,
+    claim_type: str,
+    statement: str,
+    evidence: list[dict[str, Any]],
+) -> tuple[str, str]:
+    """Verify closed-world claim types against the exact source literal.
+
+    A real quote proves provenance, not entailment. Constants are deterministic:
+    when a claim states a numeric value, that value must equal the value in the
+    referenced define/enum assignment. Open-world behaviour claims require an
+    independent, digest-bound L2 verdict; provenance alone never proves them.
+    """
+    constant_evidence = next(
+        (
+            item
+            for item in evidence
+            if _source_constant_value(str(item.get("quote") or "")) is not None
+        ),
+        None,
+    )
+    normalized_type = str(claim_type or "").strip().lower()
+    if constant_evidence is None and normalized_type not in {
+        "protocol_constant",
+        "macro_value",
+        "enum_value",
+        "field_offset",
+        "log_literal",
+    }:
+        return "requires_l2", "行为断言需要独立模型结合完整源码上下文核验"
+    if constant_evidence is None:
+        return "insufficient", "protocol_constant 没有引用可解析的源码常量定义"
+
+    source_value = _source_constant_value(str(constant_evidence.get("quote") or ""))
+    claimed_values = _numeric_claim_values(statement)
+    if not claimed_values:
+        return "supported", ""
+    if source_value in claimed_values:
+        return "supported", ""
+    return (
+        "contradicted",
+        "断言中的常量值与已验证源码定义不一致"
+        f"（源码={_format_constant_value(source_value)}，断言={', '.join(_format_constant_value(value) for value in claimed_values)}）",
+    )
+
+
+def _audit_row_behavior_claims(
+    *,
+    artifact: str,
+    rows: list[Any],
+    verified_files: dict[str, dict[str, Any]],
+    explicit_claims: list[dict[str, Any]],
+    behavior_validation: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Require one L2 verdict for every complete SFMEA/test-case semantic unit."""
+    claims: list[dict[str, Any]] = []
+    issues: list[dict[str, Any]] = []
+    claims_by_row: dict[str, list[dict[str, Any]]] = {}
+    for claim in explicit_claims:
+        if not isinstance(claim, dict):
+            continue
+        claims_by_row.setdefault(str(claim.get("row_id") or ""), []).append(claim)
+    for row_index, row in enumerate(rows, start=1):
+        if not isinstance(row, dict):
+            continue
+        row_id = str(
+            row.get("sfmea_id")
+            or row.get("case_id")
+            or row.get("risk_id")
+            or row.get("id")
+            or f"row-{row_index}"
+        ).strip()
+        claim_type = (
+            "sfmea_row_behavior"
+            if artifact == "sfmea.json"
+            else "black_box_case_behavior"
+        )
+        statement = _row_behavior_statement(artifact=artifact, row=row)
+        evidence = _row_behavior_evidence(
+            row=row,
+            verified_files=verified_files,
+            explicit_claims=claims_by_row.get(row_id, []),
+        )
+        claim_id = f"ROW:{artifact}:{row_id}"
+        binding = _behavior_claim_binding(
+            claim_id=claim_id,
+            claim_type=claim_type,
+            statement=statement,
+            evidence=evidence,
+        )
+        if evidence:
+            l2_status, reason = _bound_behavior_validation_status(
+                validation=behavior_validation,
+                claim_id=claim_id,
+                binding=binding,
+            )
+        else:
+            l2_status, reason = "insufficient", "该条目没有可供行为核验的已验证源码证据"
+        status = (
+            "verified"
+            if l2_status == "supports"
+            else "contradicted"
+            if l2_status == "contradicts"
+            else "insufficient"
+        )
+        claim = {
+            "claim_id": claim_id,
+            "type": claim_type,
+            "statement": statement,
+            "status": status,
+            "artifact": artifact,
+            "row_id": row_id,
+            "binding": binding,
+            "evidence": evidence,
+            "validation_layer": "L2_independent_behavior",
+        }
+        claims.append(claim)
+        if status == "verified":
+            continue
+        issues.append(
+            _issue(
+                (
+                    "behavior_claim_contradicted"
+                    if status == "contradicted"
+                    else "behavior_claim_insufficient"
+                ),
+                artifact,
+                f"{row_id} 的完整行为语义未通过独立核验：{reason}。",
+                claim_id=claim_id,
+                claim_type=claim_type,
+                statement=statement,
+                evidence=evidence,
+                validation_layer="L2_independent_behavior",
+            )
+        )
+    return claims, issues
+
+
+def _row_behavior_statement(*, artifact: str, row: dict[str, Any]) -> str:
+    fields = (
+        (
+            "failure_mode",
+            "cause",
+            "effect",
+            "detection",
+            "mitigation",
+            "test_mapping",
+        )
+        if artifact == "sfmea.json"
+        else (
+            "test_dimension",
+            "scenario_name",
+            "preconditions",
+            "steps",
+            "expected_result",
+            "observability",
+            "failure_diagnostics",
+            "mapped_test_dir",
+        )
+    )
+    payload = {field: row.get(field) for field in fields if field in row}
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _row_behavior_evidence(
+    *,
+    row: dict[str, Any],
+    verified_files: dict[str, dict[str, Any]],
+    explicit_claims: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    evidence: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str]] = set()
+
+    def append(item: dict[str, Any]) -> None:
+        if not isinstance(item, dict):
+            return
+        path = str(item.get("path") or "")
+        quote = str(item.get("quote") or "")
+        evidence_id = str(item.get("evidence_id") or "")
+        key = (path, evidence_id, quote)
+        if not path or key in seen:
+            return
+        seen.add(key)
+        evidence.append(
+            {
+                "evidence_id": evidence_id,
+                "path": path,
+                "symbol": str(item.get("symbol") or ""),
+                "lines": str(item.get("lines") or ""),
+                "quote": quote,
+                "sha256": str(item.get("sha256") or ""),
+            }
+        )
+
+    for claim in explicit_claims:
+        for item in claim.get("evidence") or []:
+            if isinstance(item, dict) and item.get("quote_matches") is not False:
+                append(item)
+    raw_paths = [
+        *(row.get("source_evidence") or []),
+        *(row.get("source_or_test_evidence") or []),
+    ]
+    for path in _structured_source_evidence_paths(raw_paths):
+        metadata = verified_files.get(path)
+        if metadata:
+            append({"path": path, "sha256": str(metadata.get("sha256") or "")})
+    return evidence
+
+
+def build_behavior_claim_validation_request(
+    *,
+    artifact_dir: str | Path,
+    repo_path: str | Path,
+    max_claims: int = 64,
+    context_chars: int = 6000,
+) -> dict[str, Any]:
+    """Build a compact, source-backed request for the independent L2 auditor."""
+    root = Path(artifact_dir)
+    repo = Path(repo_path)
+    verified_files = _verified_evidence_files(root=root, repo=repo)
+    candidates: list[dict[str, Any]] = []
+    for artifact in ("sfmea.json", "black_box_cases.json"):
+        rows = _read_json(_artifact_path(root, artifact))
+        if not isinstance(rows, list):
+            continue
+        explicit, _ = _audit_explicit_technical_claims(
+            artifact=artifact,
+            rows=rows,
+            verified_files=verified_files,
+            behavior_validation={},
+            require_behavior_validation=True,
+        )
+        row_claims, _ = _audit_row_behavior_claims(
+            artifact=artifact,
+            rows=rows,
+            verified_files=verified_files,
+            explicit_claims=explicit,
+            behavior_validation={},
+        )
+        candidates.extend(
+            claim
+            for claim in [*explicit, *row_claims]
+            if claim.get("validation_layer") == "L2_independent_behavior"
+        )
+
+    contexts: list[dict[str, Any]] = []
+    context_index: dict[tuple[str, int, int, str], str] = {}
+    request_claims: list[dict[str, Any]] = []
+    for claim in candidates[: max(1, int(max_claims))]:
+        context_ids: list[str] = []
+        for evidence in claim.get("evidence") or []:
+            if not isinstance(evidence, dict):
+                continue
+            source_context = _expanded_behavior_source_context(
+                evidence=evidence,
+                verified_files=verified_files,
+                context_chars=max(1000, int(context_chars)),
+            )
+            if not source_context:
+                continue
+            key = (
+                str(source_context["path"]),
+                int(source_context["start_line"]),
+                int(source_context["end_line"]),
+                str(source_context["sha256"]),
+            )
+            context_id = context_index.get(key)
+            if context_id is None:
+                context_id = f"CTX-{len(contexts) + 1:03d}"
+                context_index[key] = context_id
+                contexts.append({"context_id": context_id, **source_context})
+            if context_id not in context_ids:
+                context_ids.append(context_id)
+        request_claims.append(
+            {
+                "claim_id": str(claim.get("claim_id") or ""),
+                "type": str(claim.get("type") or ""),
+                "artifact": str(claim.get("artifact") or ""),
+                "row_id": str(claim.get("row_id") or ""),
+                "statement": str(claim.get("statement") or ""),
+                "binding": str(claim.get("binding") or ""),
+                "context_ids": context_ids,
+            }
+        )
+    payload = {
+        "kind": "behavior_claim_validation_request",
+        "schema_version": 1,
+        "repo_path": str(repo.resolve()) if repo.exists() else str(repo),
+        "claims": request_claims,
+        "contexts": contexts,
+    }
+    payload["request_sha256"] = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+    return payload
+
+
+def _expanded_behavior_source_context(
+    *,
+    evidence: dict[str, Any],
+    verified_files: dict[str, dict[str, Any]],
+    context_chars: int,
+) -> dict[str, Any] | None:
+    path = str(evidence.get("path") or "")
+    metadata = verified_files.get(path)
+    if not metadata:
+        return None
+    content = str(metadata.get("content") or "")
+    lines = content.splitlines()
+    if not lines:
+        return None
+    line_match = re.search(r"L(\d+)", str(evidence.get("lines") or ""))
+    anchor = int(line_match.group(1)) if line_match else 0
+    if anchor <= 0:
+        symbol = str(evidence.get("symbol") or "").strip()
+        quote = str(evidence.get("quote") or "").strip()
+        needle = symbol or quote
+        if needle:
+            anchor = next(
+                (index for index, line in enumerate(lines, start=1) if needle in line),
+                1,
+            )
+        else:
+            anchor = 1
+    start = max(1, anchor - 45)
+    end = min(len(lines), anchor + 75)
+    numbered = "\n".join(
+        f"{line_number:06d}: {lines[line_number - 1]}"
+        for line_number in range(start, end + 1)
+    )
+    if len(numbered) > context_chars:
+        numbered = numbered[:context_chars]
+        kept_lines = numbered.count("\n") + 1
+        end = min(end, start + kept_lines - 1)
+    return {
+        "path": path,
+        "start_line": start,
+        "end_line": end,
+        "sha256": str(metadata.get("sha256") or ""),
+        "content": numbered,
+    }
+
+
+def _behavior_claim_binding(
+    *,
+    claim_id: str,
+    claim_type: str,
+    statement: str,
+    evidence: list[dict[str, Any]],
+) -> str:
+    """Bind an L2 verdict to the exact claim text and verified source bytes."""
+    normalized_evidence = [
+        {
+            "evidence_id": str(item.get("evidence_id") or ""),
+            "path": str(item.get("path") or ""),
+            "symbol": str(item.get("symbol") or ""),
+            "lines": str(item.get("lines") or ""),
+            "quote": str(item.get("quote") or ""),
+            "sha256": str(item.get("sha256") or ""),
+        }
+        for item in evidence
+        if isinstance(item, dict)
+    ]
+    payload = {
+        "claim_id": str(claim_id or "").strip(),
+        "type": str(claim_type or "").strip(),
+        "statement": str(statement or "").strip(),
+        "evidence": normalized_evidence,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def _bound_behavior_validation_status(
+    *,
+    validation: dict[str, Any],
+    claim_id: str,
+    binding: str,
+) -> tuple[str, str]:
+    validator = (
+        validation.get("validator")
+        if isinstance(validation.get("validator"), dict)
+        else {}
+    )
+    if not bool(validator.get("independent")):
+        return "insufficient", "缺少独立行为审计器的核验结果"
+    for item in validation.get("claims") or []:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("claim_id") or "").strip() != claim_id:
+            continue
+        if str(item.get("binding") or "").strip() != binding:
+            return "insufficient", "行为审计结果与当前断言或源码证据不匹配"
+        status = str(item.get("status") or "").strip().lower()
+        reason = str(item.get("reason") or "").strip()
+        if status in {"supports", "contradicts", "insufficient"}:
+            return status, reason or f"独立行为审计结果：{status}"
+        return "insufficient", "独立行为审计返回了未知状态"
+    return "insufficient", "当前行为断言尚未经过独立模型核验"
+
+
+def _source_constant_value(quote: str) -> int | None:
+    match = re.match(
+        r"^\s*(?:#\s*define\s+[A-Za-z_][A-Za-z0-9_]*|[A-Za-z_][A-Za-z0-9_]*\s*=)\s+"
+        r"(0[xX][0-9A-Fa-f]+|\d+)\b",
+        str(quote or ""),
+    )
+    if not match:
+        return None
+    return int(match.group(1), 0)
+
+
+def _numeric_claim_values(statement: str) -> list[int]:
+    values: list[int] = []
+    for match in re.finditer(r"(?<![A-Za-z0-9_])(0[xX][0-9A-Fa-f]+|\d+)(?![A-Za-z0-9_])", statement):
+        value = int(match.group(1), 0)
+        if value not in values:
+            values.append(value)
+    return values
+
+
+def _format_constant_value(value: int | None) -> str:
+    return "unknown" if value is None else f"0x{value:X}"
+
+
+def _verified_c_constant_ledger(
+    *,
+    root: Path,
+    repo: Path,
+) -> dict[str, dict[str, Any]]:
+    allowed_files = _verified_evidence_files(root=root, repo=repo)
+
+    ledger: dict[str, dict[str, Any]] = {}
+    patterns = (
+        re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)\s+([^\s/]+)"),
+        re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*([^,\s/]+)\s*,?"),
+    )
+    for relative, metadata in allowed_files.items():
+        text = str(metadata.get("content") or "")
+        for line_number, source_line in enumerate(text.splitlines(), start=1):
+            for pattern in patterns:
+                match = pattern.match(source_line)
+                if not match:
+                    continue
+                raw_value = match.group(2).rstrip(";,)uUlL")
+                integer_value = _parse_c_integer_literal(raw_value)
+                if integer_value is None:
+                    break
+                ledger[match.group(1)] = {
+                    "raw_value": raw_value,
+                    "integer_value": integer_value,
+                    "file_path": relative,
+                    "line": line_number,
+                    "source_line": source_line.strip(),
+                    "sha256": metadata["sha256"],
+                }
+                break
+    return ledger
+
+
+def _verified_evidence_files(
+    *,
+    root: Path,
+    repo: Path,
+) -> dict[str, dict[str, Any]]:
+    evidence_cards = _read_json(_artifact_path(root, "evidence_cards.json"))
+    if not isinstance(evidence_cards, list) or not repo.is_dir():
+        return {}
+    allowed_files: dict[str, dict[str, Any]] = {}
+    for card in evidence_cards:
+        if not isinstance(card, dict):
+            continue
+        relative = str(card.get("file_path") or "").replace("\\", "/").lstrip("/")
+        if not relative or ".." in Path(relative).parts:
+            continue
+        path = repo / relative
+        if not path.is_file():
+            continue
+        raw = path.read_bytes()
+        digest = hashlib.sha256(raw).hexdigest()
+        expected_digest = str(card.get("sha256") or "")
+        if expected_digest and expected_digest != digest:
+            continue
+        content = raw.decode("utf-8", errors="replace")
+        metadata = allowed_files.setdefault(
+            relative,
+            {
+                "path": path,
+                "sha256": digest,
+                "content": content,
+                "evidence_anchors": {},
+            },
+        )
+        card_id = str(card.get("evidence_id") or "").strip()
+        start_line = int(card.get("start_line") or 0)
+        end_line = int(card.get("end_line") or 0)
+        if card_id and start_line > 0 and end_line >= start_line:
+            source_lines = content.splitlines()
+            anchors = metadata["evidence_anchors"]
+            for line_number in range(start_line, min(end_line, len(source_lines)) + 1):
+                quote = source_lines[line_number - 1].strip()
+                if not quote:
+                    continue
+                anchors[f"{card_id}:L{line_number}"] = {
+                    "path": relative,
+                    "lines": f"L{line_number}",
+                    "quote": quote,
+                }
+    return allowed_files
+
+
+def _structured_source_evidence_paths(value: Any) -> list[str]:
+    paths: list[str] = []
+    for item in value if isinstance(value, list) else []:
+        text = str(item or "").strip().replace("\\", "/")
+        match = re.match(r"^([^:]+(?:/[^:]+)+?)(?:::{1}|:\d|\s|$)", text)
+        if match:
+            paths.append(match.group(1).strip())
+    return list(dict.fromkeys(paths))
+
+
+def _extract_exact_log_literals(text: str) -> list[tuple[str, bool]]:
+    """Extract only literals locally asserted to be exact source log text.
+
+    Detection fields often mix log guidance, packet filters, expected wire values,
+    and prose abbreviations. Treating every quoted token in such a field as a log
+    claim creates false contradictions and makes the repair loop optimize wording
+    instead of facts.
+    """
+    literals: list[tuple[str, bool]] = []
+    for match in re.finditer(r"(['\"])([^'\"\n]{4,160})\1", text):
+        literal = match.group(2).strip()
+        before = text[max(0, match.start() - 96) : match.start()]
+        after = text[match.end() : min(len(text), match.end() + 64)]
+        local_context = f"{before} {after}"
+        asserted_as_log = bool(
+            re.search(
+                r"(?:\b(?:spdk\s+)?log\b|日志(?:原文)?|"
+                r"(?:exact\s+)?format\s+string|格式(?:串|字符串))"
+                r"[^'\"\n]{0,48}$",
+                before,
+                flags=re.IGNORECASE,
+            )
+        )
+        negated = bool(
+            re.search(
+                r"^\s*(?:is|was|will\s+be)?\s*(?:not|never)\s+(?:logged|emitted|printed)"
+                r"|^\s*(?:不会|未|不)(?:被)?(?:记录|输出|打印)",
+                after,
+                flags=re.IGNORECASE,
+            )
+            or re.search(
+                r"(?:\bno\s+(?:explicit\s+)?(?:spdk\s+)?log\b|"
+                r"\b(?:spdk\s+)?log\b[^'\"\n]{0,32}\bno\s+explicit\b|"
+                r"(?:没有|无|未见)(?:明确|显式)?[^'\"\n]{0,20}日志)",
+                before[-80:],
+                flags=re.IGNORECASE,
+            )
+        )
+        placeholder = bool(re.search(r"\.\.\.|…", literal))
+        packet_filter = bool(
+            re.search(r"\b(?:tshark|tcpdump|filter)\b", before[-48:], flags=re.IGNORECASE)
+            or re.search(r"(?:==|&&|\|\|)", literal)
+        )
+        if (
+            not literal
+            or not asserted_as_log
+            or negated
+            or placeholder
+            or packet_filter
+            or re.fullmatch(r"0x[0-9a-fA-F]+", literal)
+        ):
+            continue
+        uncertain = bool(
+            re.search(
+                r"\bmay\b|\bmight\b|可能|或许|待验证",
+                local_context,
+                flags=re.IGNORECASE,
+            )
+        )
+        literals.append((literal, uncertain))
+    return literals
+
+
+def _parse_c_integer_literal(value: str) -> int | None:
+    normalized = str(value or "").strip().rstrip("uUlL")
+    if not re.fullmatch(r"(?:0[xX][0-9a-fA-F]+|\d+)", normalized):
+        return None
+    return int(normalized, 16 if normalized.lower().startswith("0x") else 10)
+
+
+def _extract_iscsi_version_range(statement: str) -> tuple[int, int] | None:
+    maximum = re.search(
+        r"version[_ -]?max\s*=\s*(0[xX][0-9a-fA-F]+|\d+)", statement, flags=re.IGNORECASE
+    )
+    minimum = re.search(
+        r"version[_ -]?min\s*=\s*(0[xX][0-9a-fA-F]+|\d+)", statement, flags=re.IGNORECASE
+    )
+    if not maximum or not minimum:
+        return None
+    parsed_maximum = _parse_c_integer_literal(maximum.group(1))
+    parsed_minimum = _parse_c_integer_literal(minimum.group(1))
+    if parsed_maximum is None or parsed_minimum is None:
+        return None
+    return parsed_maximum, parsed_minimum
+
+
+def _is_combined_test_report_spec(spec: dict[str, Any]) -> bool:
+    sections = {str(item).strip() for item in spec.get("sections") or []}
+    return {
+        "主流程与异常/恢复流程",
+        "SFMEA",
+        "黑盒测试用例",
+    }.issubset(sections)
 
 
 def audit_test_activity_response(
@@ -1791,7 +3100,7 @@ def _audit_combined_execution_contract(content: str) -> list[dict[str, Any]]:
             _issue(
                 "missing_max_connections_target_setup",
                 "test_design.md",
-                "MCS 容量用例必须给出 target 启动期 iscsi_set_options -c 配置；客户端 probe 参数不能替代 MaxConnections 设置",
+                "MCS 容量用例必须在 target 启动前给出可执行命令 `scripts/rpc.py iscsi_set_options -c 1`；客户端 probe 参数或 `-c MaxConnectionsPerSession=1` 不能替代该启动期设置",
             )
         )
 
@@ -1833,27 +3142,346 @@ def _audit_combined_execution_contract(content: str) -> list[dict[str, Any]]:
                 cases=missing_cases,
             )
         )
+    issues.extend(_audit_raw_pdu_scenario_capabilities(content))
     return issues
+
+
+def _audit_raw_pdu_runtime_evidence(*, root: Path, content: str) -> list[dict[str, Any]]:
+    """Require runtime proof for deterministic staged raw-PDU deliverables."""
+    if not (root / "staged_execution_result.json").is_file():
+        return []
+    if not re.search(
+        r"raw[-_ ]?pdu|原始\s*pdu|\bt\s*\+\s*c\b|c-bit|c\s*位",
+        content,
+        flags=re.IGNORECASE,
+    ):
+        return []
+    validation = _read_json(root / "raw_pdu_harness_validation.json")
+    if isinstance(validation, dict) and validation.get("status") == "passed":
+        checks = {str(item) for item in validation.get("checks") or []}
+        required = {
+            "tcp_connect",
+            "first_pdu_sendall",
+            "login_response_recv",
+            "status_oracle",
+        }
+        if required.issubset(checks):
+            return []
+    return [
+        _issue(
+            "raw_pdu_runtime_validation_failed",
+            "black_box_cases.json",
+            "raw-PDU harness 未通过本机回环 TCP 的真实 connect/sendall/recv 自检，不能标记为可执行。",
+            validation_layer="L3_executable",
+            validation=validation if isinstance(validation, dict) else {},
+        )
+    ]
+
+
+def _audit_raw_pdu_scenario_capabilities(content: str) -> list[dict[str, Any]]:
+    """Validate claimed raw-PDU scenarios against executable AST capabilities.
+
+    Text identifies which scenario a report claims. Capability is established only
+    by the embedded Python program's data flow and assertions, never by prose.
+    """
+    case_blocks = _combined_black_box_case_blocks(content)
+    mcs_claims = [
+        heading
+        for heading, body in case_blocks
+        if _is_mcs_case_contract(f"{heading}\n{body}")
+    ]
+    continuation_claims = [
+        heading
+        for heading, body in case_blocks
+        if re.search(
+            r"\bt\s*\+\s*c\b|c[- ]?bit|c\s*=\s*1|continuation|分片",
+            f"{heading}\n{body}",
+            flags=re.IGNORECASE,
+        )
+    ]
+    version_claims = [
+        heading
+        for heading, body in case_blocks
+        if re.search(
+            r"unsupported\s+version|version[_ -]?(?:max|min)|不支持.{0,12}版本",
+            f"{heading}\n{body}",
+            flags=re.IGNORECASE,
+        )
+    ]
+    if not (mcs_claims or continuation_claims or version_claims):
+        return []
+
+    trees: list[ast.Module] = []
+    for source in re.findall(r"```python\s*\n([\s\S]*?)```", content, flags=re.IGNORECASE):
+        try:
+            trees.append(ast.parse(source))
+        except SyntaxError:
+            continue
+
+    capabilities = _raw_pdu_ast_capabilities(trees)
+    capability_labels = {
+        "nonzero_tsih_input": "支持把首个响应中的非零 TSIH 写入第二个 Login Request",
+        "response_tsih_capture": "从首个 Login Response 解析并保存 TSIH",
+        "dual_socket_lifecycle": "在第二个连接完成判定前保持首个 socket 在线",
+        "distinct_cid_input": "第二个连接使用可配置且不同的 CID",
+        "login_response_status_oracle": "解析并断言 Login Response 的 Status-Class/Status-Detail",
+        "mutable_login_flags": "允许场景设置 Login flags，而不是固定写死一个 flags 字节",
+        "multi_pdu_login": "在同一连接上实际发送并接收多段 Login PDU",
+        "version_range_input": "允许场景分别设置 Version-max 与 Version-min 字节",
+    }
+    required: set[str] = {"login_response_status_oracle"}
+    if mcs_claims:
+        required.update(
+            {
+                "nonzero_tsih_input",
+                "response_tsih_capture",
+                "dual_socket_lifecycle",
+                "distinct_cid_input",
+            }
+        )
+    if continuation_claims:
+        required.update({"mutable_login_flags", "multi_pdu_login"})
+    if version_claims:
+        required.add("version_range_input")
+    missing = sorted(required - capabilities)
+    if not missing:
+        return []
+    scenarios = [*mcs_claims, *continuation_claims, *version_claims]
+    scenario_label = "MCS" if mcs_claims and not (continuation_claims or version_claims) else "raw-PDU"
+    return [
+        _issue(
+            "raw_pdu_harness_missing_scenario_capability",
+            "black_box_cases.json",
+            f"报告声明了 {scenario_label} 测试，但内嵌脚本无法执行对应场景，缺少: "
+            + "、".join(capability_labels[key] for key in missing),
+            scenarios=list(dict.fromkeys(scenarios)),
+            missing_capabilities=missing,
+            validation_layer="L3_executable",
+        )
+    ]
+
+
+def _raw_pdu_ast_capabilities(trees: list[ast.Module]) -> set[str]:
+    capabilities: set[str] = set()
+    for tree in trees:
+        functions = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        for function in functions:
+            parameters = {
+                argument.arg.lower()
+                for argument in (
+                    *function.args.posonlyargs,
+                    *function.args.args,
+                    *function.args.kwonlyargs,
+                )
+            }
+            function_name = function.name.lower()
+            assignments = [
+                node
+                for node in ast.walk(function)
+                if isinstance(node, (ast.Assign, ast.AnnAssign))
+            ]
+            for assignment in assignments:
+                value = assignment.value
+                targets = assignment.targets if isinstance(assignment, ast.Assign) else [assignment.target]
+                for target in targets:
+                    byte_range = _ast_subscript_byte_range(target)
+                    byte_index = _ast_subscript_index(target)
+                    value_names = _ast_expression_names(value)
+                    if byte_range == (14, 16) and (
+                        "tsih" in parameters
+                        or "tsih" in value_names
+                    ) and not _ast_expression_is_constant_zero(value):
+                        capabilities.add("nonzero_tsih_input")
+                    if byte_range == (24, 26) and (
+                        "cid" in parameters
+                        or "cid" in value_names
+                    ):
+                        capabilities.add("distinct_cid_input")
+
+                    assigned_names = _ast_assigned_target_names(target)
+                    if "tsih" in assigned_names and _ast_expression_reads_byte_range(value, (14, 16)):
+                        capabilities.add("response_tsih_capture")
+                    if byte_index == 1 and value_names.intersection(
+                        {"flags", "login_flags", "transit", "continue_bit", "csg", "nsg"}
+                    ):
+                        capabilities.add("mutable_login_flags")
+                    if byte_index in {2, 3} and value_names.intersection(
+                        {"version", "version_max", "version_min", "max_version", "min_version"}
+                    ):
+                        capabilities.add(f"version_byte_{byte_index}")
+
+            if _ast_function_has_status_oracle(function):
+                capabilities.add("login_response_status_oracle")
+            if _ast_function_has_dual_socket_lifecycle(function, function_name=function_name):
+                capabilities.add("dual_socket_lifecycle")
+            send_calls = [
+                node
+                for node in ast.walk(function)
+                if isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr in {"send", "sendall"}
+            ]
+            if len(send_calls) >= 2:
+                capabilities.add("multi_pdu_login")
+    if {"version_byte_2", "version_byte_3"}.issubset(capabilities):
+        capabilities.add("version_range_input")
+    return capabilities
+
+
+def _ast_subscript_byte_range(node: ast.AST) -> tuple[int, int] | None:
+    if not isinstance(node, ast.Subscript) or not isinstance(node.slice, ast.Slice):
+        return None
+    lower = node.slice.lower
+    upper = node.slice.upper
+    if not (
+        isinstance(lower, ast.Constant)
+        and isinstance(lower.value, int)
+        and isinstance(upper, ast.Constant)
+        and isinstance(upper.value, int)
+    ):
+        return None
+    return int(lower.value), int(upper.value)
+
+
+def _ast_subscript_index(node: ast.AST) -> int | None:
+    if not isinstance(node, ast.Subscript):
+        return None
+    index = node.slice
+    if isinstance(index, ast.Constant) and isinstance(index.value, int):
+        return int(index.value)
+    return None
+
+
+def _ast_expression_names(node: ast.AST) -> set[str]:
+    names = {
+        child.id.lower()
+        for child in ast.walk(node)
+        if isinstance(child, ast.Name)
+    }
+    names.update(
+        child.attr.lower()
+        for child in ast.walk(node)
+        if isinstance(child, ast.Attribute)
+    )
+    return names
+
+
+def _ast_expression_is_constant_zero(node: ast.AST) -> bool:
+    names = [child for child in ast.walk(node) if isinstance(child, ast.Name)]
+    numeric_values = [
+        child.value
+        for child in ast.walk(node)
+        if isinstance(child, ast.Constant) and isinstance(child.value, int)
+    ]
+    return not names and bool(numeric_values) and all(value == 0 for value in numeric_values)
+
+
+def _ast_assigned_target_names(node: ast.AST) -> set[str]:
+    return {
+        child.id.lower()
+        for child in ast.walk(node)
+        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Store)
+    }
+
+
+def _ast_expression_reads_byte_range(node: ast.AST, expected: tuple[int, int]) -> bool:
+    return any(
+        _ast_subscript_byte_range(child) == expected
+        for child in ast.walk(node)
+        if isinstance(child, ast.Subscript)
+    )
+
+
+def _ast_function_has_status_oracle(
+    function: ast.AST,
+) -> bool:
+    status_names = {"status_class", "status_detail", "statusclass", "statusdetail"}
+    compared_names: set[str] = set()
+    compared_indexes: set[int] = set()
+    for compare in (node for node in ast.walk(function) if isinstance(node, (ast.Compare, ast.Assert))):
+        compared_names.update(_ast_expression_names(compare))
+        for subscript in (
+            node for node in ast.walk(compare) if isinstance(node, ast.Subscript)
+        ):
+            if isinstance(subscript.slice, ast.Constant) and isinstance(subscript.slice.value, int):
+                compared_indexes.add(int(subscript.slice.value))
+    return bool(status_names & compared_names) or {36, 37}.issubset(compared_indexes)
+
+
+def _ast_function_has_dual_socket_lifecycle(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    *,
+    function_name: str,
+) -> bool:
+    if not any(marker in function_name for marker in ("mcs", "multi_connection", "append_connection")):
+        return False
+    connection_calls = 0
+    for call in (node for node in ast.walk(function) if isinstance(node, ast.Call)):
+        if isinstance(call.func, ast.Attribute) and call.func.attr in {
+            "create_connection",
+            "open_connection",
+            "related",
+        }:
+            connection_calls += 1
+        elif isinstance(call.func, ast.Name) and any(
+            marker in call.func.id.lower()
+            for marker in ("create_connection", "open_connection", "connect_login")
+        ):
+            connection_calls += 1
+    if connection_calls < 2:
+        return False
+
+    close_lines = [
+        call.lineno
+        for call in ast.walk(function)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "close"
+    ]
+    status_oracle_lines = [
+        node.lineno
+        for node in ast.walk(function)
+        if isinstance(node, (ast.Compare, ast.Assert))
+        and _ast_function_has_status_oracle(node)
+    ]
+    return not close_lines or not status_oracle_lines or min(close_lines) > min(status_oracle_lines)
 
 
 def _audit_combined_professional_completeness(
     content: str,
     contract: dict[str, Any],
+    *,
+    include_execution: bool = True,
+    include_consistency: bool = True,
 ) -> list[dict[str, Any]]:
     profiles = {str(item) for item in contract.get("domain_profiles") or []}
     required_outputs = {str(item) for item in contract.get("required_outputs") or []}
     target = str(contract.get("target") or "")
+    has_combined_report = any(
+        isinstance(spec, dict) and _is_combined_test_report_spec(spec)
+        for spec in (contract.get("artifact_contract") or {}).values()
+    )
     if (
         "iscsi_login" not in profiles
         or "完整" not in target
-        or not {"business_flow.md", "sfmea.json", "black_box_cases.json"}.issubset(required_outputs)
+        or not (
+            has_combined_report
+            or {"business_flow.md", "sfmea.json", "black_box_cases.json"}.issubset(required_outputs)
+        )
     ):
         return []
 
     lower = content.lower()
     issues: list[dict[str, Any]] = []
     issues.extend(_audit_combined_sfmea_order(content))
-    issues.extend(_audit_combined_execution_contract(content))
+    if include_execution:
+        issues.extend(_audit_combined_execution_contract(content))
+    if include_consistency:
+        issues.extend(_audit_combined_report_consistency(content))
     scenario_markers = {
         "T+C 非法组合": (r"\bt\s*\+\s*c\b", r"t\s*=\s*1.{0,80}c\s*=\s*1"),
         "非法 NSG": (r"非法\s*nsg", r"invalid\s+nsg", r"reserved\s+nsg"),
@@ -1863,12 +3491,21 @@ def _audit_combined_professional_completeness(
         "Authorization Failure": (r"authorization failure", r"授权失败"),
         "Redirect": (r"redirect", r"重定向"),
         "Discovery 后 SendTargets": (r"sendtargets",),
-        "首 payload 后 timer 注销": (r"login_timer.{0,120}(?:注销|unregister|未重新注册|not re[- ]?armed)", r"(?:注销|unregister|未重新注册|not re[- ]?armed).{0,120}login_timer"),
+        "首 payload 后 timer 注销": (
+            r"login[_ ]timer.{0,120}(?:注销|unregister|未重新注册|not re[- ]?armed|cancel)",
+            r"(?:注销|unregister|未重新注册|not re[- ]?armed|cancel).{0,120}login[_ ]timer",
+            r"spdk_poller_unregister.{0,120}(?:登录定时器|login[_ ]timer)",
+            r"(?:登录定时器|login[_ ]timer).{0,120}spdk_poller_unregister",
+        ),
     }
     missing = [
         label
         for label, patterns in scenario_markers.items()
-        if not any(re.search(pattern, content, flags=re.IGNORECASE | re.DOTALL) for pattern in patterns)
+        if not _has_combined_iscsi_scenario(
+            label=label,
+            content=content,
+            fallback_patterns=patterns,
+        )
     ]
     if missing:
         issues.append(
@@ -1886,7 +3523,7 @@ def _audit_combined_professional_completeness(
         "CHAP 参数顺序错误": (r"chap.{0,60}(?:顺序|次序|order).{0,40}(?:错误|非法|invalid|wrong)",),
         "Mutual CHAP 缺失或错误 challenge": (r"mutual\s*chap.{0,100}(?:缺失|错误|无效|missing|wrong|invalid).{0,60}(?:challenge|chap_c|响应|response)",),
         "Target 要求 Mutual 但 Initiator 未提供": (
-            r"(?:target|目标端).{0,80}(?:要求|require).{0,30}mutual(?:\s*chap)?.{0,100}(?:initiator|发起端).{0,60}(?:未提供|缺失|missing|without)",
+            r"(?:target|目标端).{0,80}(?:要求|require).{0,30}mutual(?:\s*chap)?.{0,100}(?:initiator|发起端).{0,60}(?:未提供|缺失|missing|without|does not provide|omits?)",
         ),
     }
     missing_chap = [
@@ -1905,15 +3542,28 @@ def _audit_combined_professional_completeness(
         )
 
     extended_chap_markers = {
-        "不支持的 CHAP_A 算法": (r"(?:不支持|unsupported).{0,40}chap_a", r"chap_a.{0,40}(?:不支持|unsupported)"),
+        "不支持的 CHAP_A 算法": (
+            r"(?:不支持|unsupported).{0,40}chap_a",
+            r"chap_a.{0,40}(?:不支持|unsupported)",
+            r"chap_a.{0,80}(?:sha|非\s*md5|算法不匹配|algorithm mismatch).{0,100}(?:仅支持|只支持|supports? only|md5)",
+        ),
         "缺少 CHAP_R": (r"(?:缺少|缺失|missing|absent).{0,40}chap_r", r"chap_r.{0,40}(?:缺少|缺失|missing|absent)"),
-        "CHAP_R 编码格式错误": (r"chap_r.{0,80}(?:hex|base64|编码|encoding|格式).{0,50}(?:错误|无效|invalid|malformed)",),
-        "Mutual 用户或 secret 缺失": (r"mutual\s*chap.{0,100}(?:用户|user|secret|密钥).{0,50}(?:缺少|缺失|missing|absent)",),
+        "CHAP_R 编码格式错误": (
+            r"chap_r.{0,80}(?:hex|base64|编码|encoding|格式).{0,50}(?:错误|无效|error|incorrect|wrong|invalid|malformed)",
+            r"chap_r.{0,80}(?:编码|encoding|格式|format).{0,40}(?:错误|无效|error|incorrect|wrong|invalid|malformed).{0,60}(?:hex|base64)?",
+        ),
+        "Mutual 用户或 secret 缺失": (
+            r"mutual(?:\s*chap)?.{0,100}(?:用户|user|secret|密钥).{0,50}(?:缺少|缺失|missing|absent|not configured|not found|no matching)",
+            r"mutual(?:\s*chap)?.{0,100}(?:缺少|缺失|missing|absent).{0,60}(?:用户|user|secret|密钥|chap_n|chap_r)",
+            r"mutual(?:\s*chap)?.{0,100}(?:chap_n|chap_r).{0,50}(?:缺少|缺失|missing|absent|未提供|not provided)",
+        ),
         "Initiator 请求 Mutual 但 Target 禁止": (
-            r"(?:initiator|发起端).{0,80}(?:请求|request).{0,30}mutual(?:\s*chap)?.{0,100}(?:target|目标端).{0,70}(?:禁止|未启用|disable|not enabled)",
+            r"(?:initiator|发起端).{0,80}(?:请求|request).{0,30}mutual(?:\s*chap)?.{0,100}(?:target|目标端).{0,70}(?:禁止|未启用|disable|not enabled|does not allow|not allowed|forbid)",
         ),
         "Mutual challenge 合法编码但语义错误": (
             r"mutual(?:\s*chap)?.{0,100}(?:challenge|chap_c).{0,100}(?:合法编码|valid encoding).{0,100}(?:语义错误|错误.{0,30}(?:secret|oracle)|oracle.{0,30}(?:不匹配|mismatch)|wrong value|mismatch)",
+            r"mutual(?:\s*chap)?.{0,100}(?:challenge|chap_c).{0,100}(?:correctly\s+encoded|正确编码).{0,100}(?:semantic\s*mismatch|语义错误|semantically\s*(?:wrong|invalid))",
+            r"mutual(?:\s*chap)?.{0,120}(?:chap_i|chap_c).{0,120}(?:encode|encoded).{0,40}valid.{0,100}(?:semantic\s*mismatch|semantically\s*(?:wrong|invalid))",
             r"mutual(?:\s*chap)?.{0,120}(?:target\s*)?(?:digest\s*)?oracle.{0,120}(?:误判|不匹配|mismatch|wrong)",
         ),
     }
@@ -1923,17 +3573,26 @@ def _audit_combined_professional_completeness(
         if not any(re.search(pattern, content, flags=re.IGNORECASE | re.DOTALL) for pattern in patterns)
     ]
     if missing_extended_chap:
+        remediation = ""
+        if "Mutual challenge 合法编码但语义错误" in missing_extended_chap:
+            remediation = (
+                "；其中 Mutual challenge 语义负向场景必须使用可正常解码的 CHAP_C，"
+                "再用与 target 配置不同的 mutual secret 计算期望 CHAP_R，"
+                "以 initiator 拒绝错误响应作为 oracle"
+            )
         issues.append(
             _issue(
                 "missing_extended_chap_negative_scenarios",
                 "sfmea.json",
-                "完整 iSCSI Login 交付件缺少扩展 CHAP 安全负向场景: " + "、".join(missing_extended_chap),
+                "完整 iSCSI Login 交付件缺少扩展 CHAP 安全负向场景: "
+                + "、".join(missing_extended_chap)
+                + remediation,
                 scenarios=missing_extended_chap,
             )
         )
 
     needs_raw_pdu_harness = bool(
-        re.search(r"(?:raw\s*pdu|原始\s*pdu|\bt\s*\+\s*c\b|chap_r|c-bit|c\s*位)", lower)
+        re.search(r"(?:raw[-_ ]?pdu|原始\s*pdu|\bt\s*\+\s*c\b|chap_r|c-bit|c\s*位)", lower)
     )
     if needs_raw_pdu_harness:
         raw_harness_requirements = {
@@ -1989,6 +3648,17 @@ def _audit_combined_professional_completeness(
                     "raw-PDU Python 语法无效，下载后无法直接运行: "
                     + "；".join(syntax_errors[:3]),
                     errors=syntax_errors[:10],
+                )
+            )
+        cli_contract_errors = _raw_pdu_cli_contract_errors(content)
+        if cli_contract_errors:
+            issues.append(
+                _issue(
+                    "non_executable_raw_pdu_harness",
+                    "black_box_cases.json",
+                    "raw-PDU 运行命令与 Python 参数解析器不一致: "
+                    + "；".join(cli_contract_errors[:8]),
+                    errors=cli_contract_errors[:20],
                 )
             )
 
@@ -2049,9 +3719,16 @@ def _audit_combined_professional_completeness(
             )
         )
 
-    if "multiconnection.sh" in lower and not re.search(
-        r"(?:null|malloc)\s*bdev|专用测试盘|隔离测试设备|数据销毁确认|允许列表|allowlist|disposable|isolated",
+    hazardous_mapping_isolated = bool(re.search(
+        r"(?:null|malloc)\s*bdev|专用测试盘|隔离测试(?:设备|盘)|允许列表|allowlist|disposable|isolated",
         lower,
+    ))
+    hazardous_mapping_warns_data_loss = bool(re.search(
+        r"数据(?:会|可|可能)?(?:被)?(?:销毁|覆盖)|数据销毁风险|随机写|破坏性|destructive|data loss",
+        lower,
+    ))
+    if "multiconnection.sh" in lower and not (
+        hazardous_mapping_isolated and hazardous_mapping_warns_data_loss
     ):
         issues.append(
             _issue(
@@ -2138,6 +3815,489 @@ def _audit_combined_professional_completeness(
             )
         )
     return issues
+
+
+def _is_mcs_case_contract(case_text: str) -> bool:
+    lower = str(case_text or "").lower()
+    heading = lower.splitlines()[0] if lower.splitlines() else ""
+    if re.search(r"\bmcs\b|multiple connections? per session|同一\s*session.{0,20}多连接", heading):
+        return True
+    tsih_values = re.findall(r"\btsih\s*=\s*(0x[0-9a-f]+|\d+)", lower)
+    cid_values = re.findall(r"\bcid\s*=\s*(0x[0-9a-f]+|\d+)", lower)
+    nonzero_tsih_reused = any(
+        _parse_numeric_literal(value) != 0 and tsih_values.count(value) >= 2
+        for value in set(tsih_values)
+    )
+    same_session_identity = nonzero_tsih_reused and len(set(cid_values)) >= 2
+    explicit_same_session = bool(re.search(
+        r"(?:same|相同|同一).{0,30}tsih.{0,60}(?:different|new|不同|新).{0,20}cid"
+        r"|(?:same|同一).{0,30}session.{0,60}(?:different|new|不同|新).{0,20}cid",
+        lower,
+        flags=re.IGNORECASE | re.DOTALL,
+    ))
+    return bool("maxconnections" in lower and (same_session_identity or explicit_same_session))
+
+
+def _has_mcs_capable_client_contract(case_text: str) -> bool:
+    """Validate the MCS client as a conjunction of observable capabilities."""
+    lower = str(case_text or "").lower()
+    harness_named = any(
+        marker in lower
+        for marker in (
+            "raw-pdu",
+            "raw pdu",
+            "raw_pdu",
+            "raw_iscsi_harness",
+            "libiscsi",
+        )
+    ) and any(marker in lower for marker in ("harness", "client", "客户端", "脚本"))
+    socket_io = (
+        "sendall" in lower and bool(re.search(r"\brecv\b|接收", lower))
+    ) or (
+        harness_named
+        and bool(re.search(r"发送|\bsend\b", lower))
+        and bool(re.search(r"接收|\breceive\b|\brecv\b", lower))
+    )
+    first_connection_kept = bool(re.search(
+        r"(?:保持|保留|维持|keep|retain).{0,30}(?:首|第一|旧|first|existing).{0,30}"
+        r"(?:连接|connection|socket).{0,20}(?:在线|打开|存活|online|open|alive)",
+        lower,
+        flags=re.IGNORECASE | re.DOTALL,
+    ))
+    tsih_recorded = bool(re.search(
+        r"(?:记录|保存|capture|record).{0,30}tsih|tsih.{0,30}(?:记录|保存|captur|record)",
+        lower,
+        flags=re.IGNORECASE | re.DOTALL,
+    ))
+    tsih_reused = bool(re.search(
+        r"tsih\s*=\s*<[^>]*(?:记录|record)[^>]*>"
+        r"|(?:相同|同一|same|reuse|复用|非零|non[- ]?zero).{0,30}tsih"
+        r"|tsih.{0,30}(?:相同|同一|same|reuse|复用|非零|non[- ]?zero)",
+        lower,
+        flags=re.IGNORECASE | re.DOTALL,
+    ))
+    raw_tsih_values = re.findall(r"\btsih\s*=\s*(0x[0-9a-f]+|\d+)", lower)
+    explicit_nonzero_tsih_reuse = any(
+        _parse_numeric_literal(value) != 0 and raw_tsih_values.count(value) >= 2
+        for value in set(raw_tsih_values)
+    )
+    cid_values = {
+        value.lower()
+        for value in re.findall(r"\bcid\s*=\s*(0x[0-9a-f]+|\d+)", lower)
+    }
+    distinct_cid = len(cid_values) >= 2 or bool(re.search(
+        r"(?:不同|新|different|new).{0,20}cid|cid.{0,20}(?:不同|新|different|new)",
+        lower,
+        flags=re.IGNORECASE | re.DOTALL,
+    ))
+    response_received = bool(re.search(
+        r"(?:接收|解析|recv|receive|parse).{0,50}login response"
+        r"|login response.{0,50}(?:接收|解析|recv|receive|parse)"
+        r"|(?:接收|receive|recv).{0,12}(?:响应|response)",
+        lower,
+        flags=re.IGNORECASE | re.DOTALL,
+    ))
+    response_oracle = bool(re.search(
+        r"(?:status|opcode|状态).{0,30}(?:=|0x|断言|检查|assert|拒绝|accept)"
+        r"|(?:断言|检查|assert|拒绝|accept).{0,30}(?:status|opcode|状态)",
+        lower,
+        flags=re.IGNORECASE | re.DOTALL,
+    ))
+    return all((
+        harness_named,
+        socket_io,
+        first_connection_kept,
+        (tsih_recorded and tsih_reused) or explicit_nonzero_tsih_reuse,
+        distinct_cid,
+        response_received and response_oracle,
+    ))
+
+
+def _parse_numeric_literal(value: str) -> int:
+    normalized = str(value or "").strip().lower()
+    return int(normalized, 16 if normalized.startswith("0x") else 10)
+
+
+def _audit_combined_report_consistency(content: str) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    if re.search(
+        r"(?:"
+        r"请在上述[^\n]{0,160}(?:补充|替换|修改)"
+        r"|错误描述修正\s*[:：]\s*之前版本"
+        r"|修改后的产物\s*[:：]"
+        r")",
+        content,
+        flags=re.IGNORECASE,
+    ):
+        issues.append(_issue(
+            "quality_repair_meta_language",
+            "business_flow.md",
+            "交付件包含面向模型的修复说明或版本对比话术；必须改写为直接面向用户的最终流程事实。",
+        ))
+
+    for heading, body in _combined_black_box_case_blocks(content):
+        case_text = f"{heading}\n{body}"
+        lower = case_text.lower()
+        expected = _combined_case_expected_result(body).lower()
+        normal_case = bool(re.search(
+            r"(?:normal|baseline|正常|基线).{0,80}(?:without authentication|no[- ]?chap|无认证|未启用认证)",
+            lower,
+            flags=re.IGNORECASE | re.DOTALL,
+        ))
+        auth_failure_expected = bool(re.search(
+            r"(?:authentication failure|认证失败|fails? to decode|decode error|base64.{0,30}(?:失败|error))",
+            expected,
+            flags=re.IGNORECASE,
+        ))
+        if normal_case and auth_failure_expected:
+            issues.append(_issue(
+                "black_box_expected_result_contradiction",
+                "black_box_cases.json",
+                f"{heading} 是无认证正常路径，但预期结果却要求认证/解码失败；请按标题场景重写原子化预期。",
+                scenario=heading,
+            ))
+
+        first_pdu_stall = bool(re.search(
+            r"(?:"
+            r"login.{0,80}(?:after|发送|收到).{0,30}(?:first|首个|第一个).{0,20}pdu"
+            r"|(?:after|发送|收到|首个|第一个|first).{0,100}(?:first|首个|第一个)?\s*login\s*pdu"
+            r"|(?:首个|第一个).{0,60}login\s*pdu"
+            r"|(?:收到|receive[ds]?).{0,40}(?:target\s*)?chap\s+challenge.{0,100}(?:停止|停滞|stall|不再|without|未发送|不发送)"
+            r")",
+            lower,
+            flags=re.IGNORECASE | re.DOTALL,
+        ))
+        timer_guarantee = _classify_login_timer_claim(expected) == "guaranteed"
+        defect_qualified = bool(re.search(
+            r"(?:当前(?:实现|缺陷).{0,100}(?:可能|不会|不能)|预计失败|预期失败|不能保证|不保证|"
+            r"实际行为待验证|清理行为待验证|连接状态待验证|"
+            r"current (?:implementation|defect|spdk).{0,100}(?:may|might|does not|will not)|"
+            r"potential defect|expected to fail|not guaranteed)",
+            case_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        ))
+        residue_oracle = bool(re.search(
+            r"(?:half[- ]?open|半开|资源残留|资源泄漏|resource (?:residue|leak)|"
+            r"(?:连接|connection|socket).{0,40}(?:计数|count|仍在|remains?)|(?:rpc|rss).{0,40}(?:计数|count|残留|leak))",
+            case_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        ))
+        evidence_qualifier = defect_qualified and residue_oracle
+        if first_pdu_stall and timer_guarantee and not evidence_qualifier:
+            issues.append(_issue(
+                "black_box_evidence_contradiction",
+                "black_box_cases.json",
+                f"{heading} 声称首个 Login PDU 后 30 秒定时器必然触发，但源码证据表明 login_timer 已注销且未重新注册；必须标为当前缺陷/待验证并给出资源残留 oracle。",
+                scenario=heading,
+                constraint_id="iscsi_login_timer_after_first_pdu",
+            ))
+
+        mcs_case = _is_mcs_case_contract(case_text)
+        if mcs_case and re.search(
+            r"iscsiadm[^\n]{0,240}(?:\s--cid(?:\s|=)|(?:指定|设置|set|with)\s*cid\s*=?\s*\d+)",
+            case_text,
+            flags=re.IGNORECASE,
+        ):
+            issues.append(_issue(
+                "non_executable_mcs_client",
+                "black_box_cases.json",
+                f"{heading} 使用了 open-iscsi iscsiadm 不支持的 --cid 参数；同 session 多连接必须提供可运行的 libiscsi/raw-PDU 客户端，并显式复用非零 TSIH、保持旧 socket 在线。",
+                scenario=heading,
+                constraint_id="iscsi_multiconnection_client_capability",
+            ))
+
+        has_mcs_capable_client = _has_mcs_capable_client_contract(case_text)
+        if mcs_case and not has_mcs_capable_client:
+            issues.append(_issue(
+                "missing_mcs_capable_client",
+                "black_box_cases.json",
+                f"{heading} 没有指定可控制非零 TSIH、不同 CID 并保持旧 socket 在线的可执行客户端；请提供 libiscsi/raw-PDU harness、运行命令和响应断言，iscsiadm 不能完成该场景。",
+                scenario=heading,
+                constraint_id="iscsi_multiconnection_client_capability",
+            ))
+
+        maps_multiconnection = "multiconnection.sh" in lower
+        mapping_is_qualified = bool(re.search(
+            r"(?:"
+            r"multiconnection\.sh.{0,260}(?:不覆盖|不能证明|不能映射|仅作参考|需要新增|does not cover|does not prove|not map)"
+            r"|(?:非|不是|不使用|不映射|not)\s*`?multiconnection\.sh`?"
+            r")",
+            case_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        ))
+        if mcs_case and maps_multiconnection and not mapping_is_qualified:
+            issues.append(_issue(
+                "black_box_test_mapping_contradiction",
+                "black_box_cases.json",
+                f"{heading} 把 multiconnection.sh 映射为同一 session 的 MCS 用例；该脚本实际创建多个 target 并分别登录，不能证明非零 TSIH 下追加不同 CID。",
+                scenario=heading,
+                constraint_id="iscsi_multiconnection_mapping_scope",
+            ))
+
+        tsih_zero_reinstatement = bool(
+            re.search(r"tsih\s*[:=]?\s*0", case_text, flags=re.IGNORECASE)
+            and re.search(
+                r"(?:same|相同|同一|已有).{0,80}isid|isid.{0,80}(?:same|相同|同一|已有)",
+                case_text,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            and re.search(r"reinstatement|会话恢复|会话重建", case_text, flags=re.IGNORECASE)
+        )
+        ambiguous_oracle = bool(re.search(
+            r"(?:\bor\b|或者|或认为|二选一|视策略|取决于.{0,30}策略|待确认)",
+            expected,
+            flags=re.IGNORECASE,
+        ))
+        if tsih_zero_reinstatement and ambiguous_oracle:
+            issues.append(_issue(
+                "black_box_expected_result_ambiguous",
+                "black_box_cases.json",
+                f"{heading} 对同 ISID、TSIH=0 的 session reinstatement 给出互斥预期；黑盒用例必须使用源码支持的唯一 oracle，不能写成拒绝或恢复二选一。",
+                scenario=heading,
+                constraint_id="iscsi_tsih_reinstatement_scope",
+            ))
+
+        discovery_login_case = bool(re.search(
+            r"discovery.{0,40}login|login.{0,40}discovery",
+            lower,
+            flags=re.IGNORECASE | re.DOTALL,
+        ))
+        target_address_positive_oracle = bool(re.search(
+            r"(?:contains?|includes?|returns?|包含|返回).{0,40}targetaddress"
+            r"|targetaddress.{0,40}(?:is present|存在|应有)",
+            expected,
+            flags=re.IGNORECASE | re.DOTALL,
+        ))
+        target_address_negative_oracle = bool(re.search(
+            r"(?:does not|must not|should not|不应|不会|不返回|不包含).{0,40}targetaddress",
+            expected,
+            flags=re.IGNORECASE | re.DOTALL,
+        ))
+        target_address_sendtargets_oracle = bool(re.search(
+            r"sendtargets.{0,80}(?:response|响应).{0,80}(?:contains?|includes?|returns?|包含|返回).{0,40}targetaddress"
+            r"|(?:sendtargets.{0,80})?targetaddress.{0,80}(?:sendtargets|text response|文本响应)",
+            expected,
+            flags=re.IGNORECASE | re.DOTALL,
+        ))
+        if (
+            discovery_login_case
+            and target_address_positive_oracle
+            and not target_address_negative_oracle
+            and not target_address_sendtargets_oracle
+        ):
+            issues.append(_issue(
+                "black_box_evidence_contradiction",
+                "black_box_cases.json",
+                f"{heading} 把 TargetAddress 作为 Discovery Login Response 的必然字段；当前源码仅在 target 非空时追加该字段，Discovery 应在后续 SendTargets Text Response 中核验地址。",
+                scenario=heading,
+                constraint_id="iscsi_discovery_target_address",
+            ))
+
+        login_latency_case = bool(re.search(
+            r"(?:login|登录).{0,60}(?:latency|延迟|p50|p95|p99)|(?:latency|延迟|p50|p95|p99).{0,60}(?:login|登录)",
+            case_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        ))
+        absolute_latency_oracle = bool(re.search(
+            r"(?:<|<=|≤|低于|不超过)\s*\d+(?:\.\d+)?\s*(?:ms|毫秒)",
+            expected,
+            flags=re.IGNORECASE,
+        ))
+        measured_threshold_basis = bool(re.search(
+            r"(?:历史基线|同环境基线|实测基线|基线测得|measured baseline|historical baseline|same[- ]environment baseline)"
+            r".{0,120}(?:样本量|sample size|硬件|hardware|commit|revision)",
+            case_text,
+            flags=re.IGNORECASE | re.DOTALL,
+        ))
+        if login_latency_case and absolute_latency_oracle and not measured_threshold_basis:
+            issues.append(_issue(
+                "ungrounded_performance_threshold",
+                "black_box_cases.json",
+                f"{heading} 给出绝对登录延迟阈值，但没有同环境实测基线、样本量和硬件/版本来源；首次运行只能采样建基线，不能预设通过值。",
+                scenario=heading,
+            ))
+
+    for risk_id, row_text in _combined_sfmea_full_rows(content):
+        lower = row_text.lower()
+        mid_login_stall = bool(re.search(
+            r"(?:中间阶段|中途|多阶段|mid[- ]?login|after.{0,40}first.{0,20}login.{0,20}pdu|首个.{0,30}login.{0,20}pdu.{0,20}后)"
+            r".{0,100}(?:停止响应|停滞|stall|无响应|暂停|延迟|等待|delay|wait)"
+            r"|(?:send|sends|发送).{0,30}(?:first|首个|第一个).{0,20}login.{0,20}pdu.{0,60}(?:stop|stops|停止|停滞|无响应)",
+            lower,
+            flags=re.IGNORECASE | re.DOTALL,
+        ))
+        timer_closes_connection = bool(re.search(
+            r"(?:"
+            r"login[_ ]?timer.{0,120}(?:连接关闭|断开|close|退出|exiting)"
+            r"|\d+\s*(?:秒|seconds?|s).{0,120}(?:连接关闭|断开|close|fin|rst)"
+            r")",
+            lower,
+            flags=re.IGNORECASE | re.DOTALL,
+        ))
+        row_is_qualified = bool(re.search(
+            r"(?:"
+            r"(?:不会|不应|不能保证|不保证|may not|does not|will not).{0,80}(?:关闭|断开|close|fin|rst)"
+            r"|(?:half[- ]?open|资源残留|资源泄漏|resource (?:residue|leak))"
+            r"|(?:当前缺陷|待验证缺陷|potential defect|expected to fail)"
+            r")",
+            lower,
+            flags=re.IGNORECASE | re.DOTALL,
+        ))
+        if mid_login_stall and timer_closes_connection and not row_is_qualified:
+            issues.append(_issue(
+                "sfmea_evidence_contradiction",
+                "sfmea.json",
+                f"{risk_id} 声称首个 Login payload 后的中途停滞会由 30 秒 login_timer 清理，但该 timer 已注销且未重新注册；必须改为资源残留风险和待验证 oracle。",
+                risk_id=risk_id,
+                constraint_id="iscsi_login_timer_after_first_pdu",
+            ))
+
+    sfmea_categories: dict[str, list[str]] = {}
+    for risk_id, failure_mode in _combined_sfmea_rows(content):
+        category = _sfmea_semantic_category(failure_mode)
+        if category:
+            sfmea_categories.setdefault(category, []).append(risk_id)
+    for category, risk_ids in sfmea_categories.items():
+        if len(risk_ids) < 2:
+            continue
+        issues.append(_issue(
+            "duplicate_sfmea_risk",
+            "sfmea.json",
+            "SFMEA 存在语义重复风险，不能通过换词增加数量：" + "、".join(risk_ids),
+            category=category,
+            risk_ids=risk_ids,
+        ))
+    return issues
+
+
+def _classify_login_timer_claim(expected_result: str) -> str:
+    """Classify first-PDU timer semantics without losing negation polarity."""
+    lower = str(expected_result or "").lower()
+    denied_patterns = (
+        r"\bno\s+\d+\s*(?:s|seconds?)\s+timeout\b",
+        r"(?:login[_ ]?timer|登录定时器).{0,80}(?:disabled|unregistered|deregistered|注销|未重新注册)",
+        r"(?:timeout|定时器).{0,60}(?:will not|does not|may not|might not|not guaranteed|不会|不能|不保证).{0,40}(?:trigger|fire|close|触发|关闭|断开)?",
+        r"(?:will not|does not|may not|might not|not guaranteed|不会|不能|不保证).{0,80}(?:timeout|timer|定时器|触发|关闭|断开)",
+        r"(?:half[- ]?open|may hang|might hang|可能残留|资源残留|resource leak).{0,120}(?:待验证|unverified|not closed|未关闭)?",
+    )
+    if any(
+        re.search(pattern, lower, flags=re.IGNORECASE | re.DOTALL)
+        for pattern in denied_patterns
+    ):
+        return "denied_or_uncertain"
+
+    guaranteed = bool(
+        re.search(
+            r"(?:"
+            r"login[_ ]?timer.{0,80}(?:fires?|触发)"
+            r"|(?:\d+\s*(?:秒|seconds?|s)).{0,100}(?:主动)?"
+            r"(?:关闭|断开|\bclose(?:d|s)?\b|\bfin\b|\brst\b)"
+            r")",
+            lower,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    )
+    return "guaranteed" if guaranteed else "unspecified"
+
+
+def _sfmea_semantic_category(failure_mode: str) -> str:
+    lower = str(failure_mode or "").lower()
+    if (
+        re.search(r"mutual(?:\s*chap)?", lower)
+        and re.search(r"(?:challenge|chap_c)", lower)
+        and re.search(r"(?:语义错误|错误值|wrong|mismatch|replay)", lower)
+    ):
+        return "mutual_challenge_semantic_mismatch"
+    if (
+        re.search(r"(?:chap_a|chap.{0,30}algorithm|chap.{0,20}算法)", lower)
+        and re.search(
+            r"(?:unsupported|不支持|mismatch|不匹配|non[- ]?md5|非\s*md5|sha)",
+            lower,
+        )
+    ):
+        return "unsupported_chap_algorithm"
+    return ""
+
+
+def _combined_black_box_case_blocks(content: str) -> list[tuple[str, str]]:
+    matches = list(re.finditer(
+        r"(?im)^\s*#{2,6}\s+((?:BB|TC|CASE|用例)[-_ ]?\d+\b[^\n]*)$",
+        content,
+    ))
+    blocks: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(content)
+        blocks.append((match.group(1).strip(), content[match.end():end]))
+    return blocks
+
+
+def _combined_case_expected_result(body: str) -> str:
+    match = re.search(
+        r"(?im)^\s*(?:[-*]\s*)?(?:预期结果|expected result)\s*[:：]\s*(.+)$",
+        body,
+    )
+    return str(match.group(1) if match else "").strip()
+
+
+def _combined_sfmea_rows(content: str) -> list[tuple[str, str]]:
+    return [
+        (match.group(1).strip(), match.group(2).strip())
+        for match in re.finditer(
+            r"(?im)^\s*\|\s*((?:SFMEA|FMEA|FM|F)[-_ ]?\d+)\s*\|\s*([^|]+)\|",
+            content,
+        )
+    ]
+
+
+def _combined_sfmea_full_rows(content: str) -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    for line in content.splitlines():
+        match = re.match(
+            r"^\s*\|\s*((?:SFMEA|FMEA|FM|F)[-_ ]?\d+)\s*\|",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if match:
+            rows.append((match.group(1).strip(), line.strip()))
+    return rows
+
+
+def _raw_pdu_cli_contract_errors(content: str) -> list[str]:
+    command_options: set[str] = set()
+    for match in re.finditer(
+        r"(?:python3?|uv\s+run\s+python)\s+[^\n`]*?(?:raw[-_]?pdu|pdu[-_]?raw)[^\n`]*?\.py(?P<args>[^\n`]*)",
+        content,
+        flags=re.IGNORECASE,
+    ):
+        command_options.update(
+            option.lower()
+            for option in re.findall(r"--[a-zA-Z][a-zA-Z0-9_-]*", match.group("args"))
+        )
+    if not command_options:
+        return []
+
+    declared_options: set[str] = set()
+    for harness in re.findall(r"```python\s*\n([\s\S]*?)```", content, flags=re.IGNORECASE):
+        try:
+            tree = ast.parse(harness)
+        except SyntaxError:
+            continue
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            function = node.func
+            if not isinstance(function, ast.Attribute) or function.attr != "add_argument":
+                continue
+            for argument in node.args:
+                if (
+                    isinstance(argument, ast.Constant)
+                    and isinstance(argument.value, str)
+                    and argument.value.startswith("--")
+                ):
+                    declared_options.add(argument.value.lower())
+
+    missing = sorted(command_options - declared_options)
+    return [f"命令使用 {option}，但脚本未声明该参数" for option in missing]
 
 
 def _raw_pdu_python_semantic_errors(source: str, tree: ast.Module) -> list[str]:
@@ -2472,10 +4632,20 @@ def _assigned_python_names(node: ast.AST) -> set[str]:
 def _audit_professional_constraints(
     content: str,
     contract: dict[str, Any],
+    *,
+    source_artifact: str = "assistant-output.md",
+    infer_structured_section: bool = False,
 ) -> list[dict[str, Any]]:
-    issues: list[dict[str, Any]] = []
+    issues = _audit_typed_professional_claims(
+        content,
+        contract,
+        source_artifact=source_artifact,
+        infer_structured_section=infer_structured_section,
+    )
     for constraint in contract.get("professional_constraints") or []:
         if not isinstance(constraint, dict):
+            continue
+        if str(constraint.get("id") or "") in {"iscsi_login_response_opcode"}:
             continue
         conflict_found = False
         for pattern in constraint.get("conflict_patterns") or []:
@@ -2487,23 +4657,187 @@ def _audit_professional_constraints(
                 continue
             for conflict in conflicts:
                 statement = _professional_statement_window(content, conflict.start(), conflict.end())
-                if _matches_professional_correction(statement, constraint):
+                correction_context = _professional_correction_window(
+                    content, conflict.start(), conflict.end()
+                )
+                if _matches_professional_correction(
+                    statement, constraint
+                ) or _matches_professional_correction(correction_context, constraint):
                     continue
                 conflict_found = True
                 break
             if not conflict_found:
                 continue
+            statement = _professional_statement_window(
+                content, conflict.start(), conflict.end()
+            ).strip()
+            headings = _professional_heading_context(content, conflict.start())
             issues.append(
                 _issue(
                     "professional_fact_conflict",
-                    "assistant-output.md",
+                    (
+                        _professional_section_artifact(
+                            content,
+                            conflict.start(),
+                            fallback=source_artifact,
+                        )
+                        if infer_structured_section
+                        else source_artifact
+                    ),
                     "交付件与已验证的领域事实冲突：" + str(constraint.get("assertion") or ""),
                     constraint_id=str(constraint.get("id") or ""),
                     evidence=[str(item) for item in constraint.get("evidence") or []],
+                    conflicting_excerpt=statement[:800],
+                    section_heading=(headings[-1] if headings else ""),
                 )
             )
             break
     return issues
+
+
+def _audit_typed_professional_claims(
+    content: str,
+    contract: dict[str, Any],
+    *,
+    source_artifact: str,
+    infer_structured_section: bool,
+) -> list[dict[str, Any]]:
+    """Validate claims whose meaning depends on command role or assertion polarity."""
+    constraint_by_id = {
+        str(item.get("id") or ""): item
+        for item in contract.get("professional_constraints") or []
+        if isinstance(item, dict)
+    }
+    response_constraint = constraint_by_id.get("iscsi_login_response_opcode")
+    if not isinstance(response_constraint, dict):
+        return []
+
+    issues: list[dict[str, Any]] = []
+
+    def artifact_for(position: int) -> str:
+        if not infer_structured_section:
+            return source_artifact
+        return _professional_section_artifact(
+            content,
+            position,
+            fallback=source_artifact,
+        )
+
+    tcpdump_commands = list(
+        re.finditer(
+            r"(?im)\b(tcpdump\b[^`\n；;]*)",
+            content,
+        )
+    )
+    tcpdump_protocol_field_spans: list[tuple[int, int]] = []
+    for command in tcpdump_commands:
+        command_text = command.group(1).strip()
+        if not re.search(r"\biscsi\.[a-z0-9_.]+", command_text, flags=re.IGNORECASE):
+            continue
+        tcpdump_protocol_field_spans.append((command.start(1), command.end(1)))
+        issues.append(
+            _issue(
+                "invalid_capture_filter",
+                artifact_for(command.start()),
+                "tcpdump 使用 BPF capture filter，不能直接解析 iscsi.opcode 等协议字段；请仅按 TCP/端口抓包，再用 tshark -Y 解析 iSCSI 字段。",
+                claim_type="command_executability",
+                validator_layer="L3",
+                command=command_text[:800],
+            )
+        )
+
+    incorrect_response_claims: list[re.Match[str]] = []
+    incorrect_response_claims.extend(
+        re.finditer(
+            r"(?im)tshark\b[^\n；;]*-Y\s+[^\n；;]*iscsi\.opcode\s*==\s*0x0?3(?![0-9a-f])"
+            r"[^\n；;]*(?:iscsi\.login[_a-z.]*status|statusclass|statusdetail)",
+            content,
+        )
+    )
+    incorrect_response_claims.extend(
+        re.finditer(
+            r"(?i)(?:login response|登录响应|抓取.{0,30}响应).{0,180}"
+            r"iscsi\.opcode\s*==\s*0x0?3(?![0-9a-f])",
+            content,
+        )
+    )
+    seen_positions: set[int] = set()
+    for conflict in sorted(incorrect_response_claims, key=lambda item: item.start()):
+        opcode_match = re.search(
+            r"iscsi\.opcode\s*==\s*0x0?3(?![0-9a-f])",
+            conflict.group(0),
+            flags=re.IGNORECASE,
+        )
+        opcode_position = (
+            conflict.start() + opcode_match.start()
+            if opcode_match is not None
+            else conflict.start()
+        )
+        if any(start <= opcode_position < end for start, end in tcpdump_protocol_field_spans):
+            continue
+        if conflict.start() in seen_positions:
+            continue
+        seen_positions.add(conflict.start())
+        statement = _professional_statement_window(
+            content,
+            conflict.start(),
+            conflict.end(),
+        ).strip()
+        issues.append(
+            _issue(
+                "professional_fact_conflict",
+                artifact_for(conflict.start()),
+                "交付件与已验证的领域事实冲突："
+                + str(response_constraint.get("assertion") or ""),
+                constraint_id="iscsi_login_response_opcode",
+                claim_type="protocol_constant",
+                validator_layer="L1",
+                expected_value="0x23",
+                observed_value="0x03",
+                evidence=[
+                    str(item) for item in response_constraint.get("evidence") or []
+                ],
+                conflicting_excerpt=statement[:800],
+            )
+        )
+    return issues
+
+
+def _professional_section_artifact(
+    content: str,
+    conflict_start: int,
+    *,
+    fallback: str,
+) -> str:
+    """Map a combined-report finding back to the structured stage that produced it."""
+    for heading in reversed(_professional_heading_context(content, conflict_start)):
+        lowered = heading.lower()
+        if "sfmea" in lowered or re.search(r"\bfmea\b", lowered):
+            return "sfmea.json"
+        if "黑盒" in lowered or "black-box" in lowered or "black box" in lowered:
+            return "black_box_cases.json"
+        if "流程" in lowered or "flow" in lowered:
+            return "business_flow.md"
+    return fallback
+
+
+def _professional_heading_context(content: str, conflict_start: int) -> list[str]:
+    """Return Markdown headings before a finding, from document root to leaf."""
+    headings = list(
+        re.finditer(
+            r"(?m)^\s*(#{1,6})\s+([^\n]+?)\s*$",
+            content[: max(0, conflict_start)],
+        )
+    )
+    if not headings:
+        return []
+    hierarchy: list[tuple[int, str]] = []
+    for match in headings:
+        level = len(match.group(1))
+        while hierarchy and hierarchy[-1][0] >= level:
+            hierarchy.pop()
+        hierarchy.append((level, match.group(2).strip()))
+    return [heading for _, heading in hierarchy]
 
 
 def _professional_statement_window(content: str, start: int, end: int) -> str:
@@ -2518,11 +4852,53 @@ def _professional_statement_window(content: str, start: int, end: int) -> str:
     return content[left:right]
 
 
+def _professional_correction_window(content: str, start: int, end: int) -> str:
+    """Include one neighboring line so nearby qualifiers can disambiguate a claim."""
+    line_start = content.rfind("\n", 0, start) + 1
+    previous_start = content.rfind("\n", 0, max(0, line_start - 1)) + 1
+    line_end = content.find("\n", end)
+    if line_end < 0:
+        line_end = len(content)
+    next_end = content.find("\n", min(len(content), line_end + 1))
+    if next_end < 0:
+        next_end = len(content)
+    return content[previous_start:next_end]
+
+
 def _matches_professional_correction(statement: str, constraint: dict[str, Any]) -> bool:
-    if not constraint.get("evaluate_hypothetical_mapping") and re.match(
+    constraint_id = str(constraint.get("id") or "")
+    if constraint_id == "iscsi_csg_values" and _has_correct_csg_stage_mapping(statement):
+        return True
+    if (
+        constraint_id == "iscsi_login_negotiation_transport"
+        and _is_post_login_text_request_claim(statement)
+    ):
+        return True
+    if constraint_id == "iscsi_login_negotiation_transport" and re.search(
+        r"(?:"
+        r"(?:discovery\s+)?login.{0,100}(?:成功|完成|进入).{0,80}full feature phase.{0,40}(?:后|之后|then|after).{0,120}(?:text request|sendtargets)"
+        r"|(?:text request|sendtargets).{0,160}(?:仅|只|only).{0,80}(?:登录成功后|full feature phase 后|after login|after full feature)"
+        r")",
+        statement,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        return True
+    if constraint_id == "iscsi_discovery_target_address" and re.search(
+        r"discovery\s+login.{0,160}(?:不会|不返回|不包含|不追加|does not|will not|must not)"
+        r".{0,16}`?targetaddress",
+        statement,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        return True
+    if re.match(
         r'^\s*[\[{]?\s*["\']?(?:cause|failure_mode)["\']?\s*:',
         statement,
         flags=re.IGNORECASE,
+    ) and re.search(
+        r"(?:误当|误判|错误地?认为|错误地?声称|或声称|把.{0,120}(?:写成|当成|作为)|使用.{0,120}作为|"
+        r"mistaken(?:ly)?|wrongly|incorrectly|treat.{0,80}as|use.{0,80}as)",
+        statement,
+        flags=re.IGNORECASE | re.DOTALL,
     ):
         return True
     for pattern in constraint.get("correction_patterns") or []:
@@ -2532,6 +4908,92 @@ def _matches_professional_correction(statement: str, constraint: dict[str, Any])
         except re.error:
             continue
     return False
+
+
+def _has_correct_csg_stage_mapping(statement: str) -> bool:
+    text = str(statement or "")
+
+    def mapped(stage_pattern: str, value: str) -> bool:
+        same_clause = r"[^\n。！？；;，,]"
+        return bool(
+            re.search(
+                rf"(?:{stage_pattern}){same_clause}{{0,30}}csg\s*[:=]?\s*{value}\b"
+                rf"|csg\s*[:=]?\s*{value}\b{same_clause}{{0,30}}(?:{stage_pattern})",
+                text,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+        )
+
+    return mapped(r"security\s*negotiation|安全协商", "0") and mapped(
+        r"operational\s*negotiation|操作协商", "1"
+    )
+
+
+def _is_post_login_text_request_claim(statement: str) -> bool:
+    lower = str(statement or "").lower()
+    has_followup_request = "text request" in lower or "sendtargets" in lower
+    has_post_login_scope = any(
+        marker in lower
+        for marker in (
+            "登录完成后",
+            "登录成功后",
+            "login 完成后",
+            "after login",
+            "after discovery login",
+            "post-login",
+        )
+    )
+    excludes_login_pdu = any(
+        marker in lower
+        for marker in (
+            "不属于 login pdu",
+            "不是 login pdu",
+            "并非 login pdu",
+            "outside the login pdu",
+            "not part of the login pdu",
+        )
+    )
+    return has_followup_request and has_post_login_scope and excludes_login_pdu
+
+
+def _has_combined_iscsi_scenario(
+    *,
+    label: str,
+    content: str,
+    fallback_patterns: tuple[str, ...],
+) -> bool:
+    if label != "首 payload 后 timer 注销":
+        return any(
+            re.search(pattern, content, flags=re.IGNORECASE | re.DOTALL)
+            for pattern in fallback_patterns
+        )
+
+    lower = str(content or "").lower()
+    has_first_payload_scope = bool(
+        re.search(
+            r"(?:first|首个|第一个|首).{0,40}(?:login\s*)?pdu"
+            r"|(?:first|首个|第一个|首).{0,40}(?:login\s*)?payload",
+            lower,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+    )
+    timer_is_disabled = (
+        "login_timer disabled" in lower
+        or "login timer disabled" in lower
+        or bool(
+            re.search(
+                r"(?:"
+                r"(?:login[_ ]timer|login timer|登录定时器).{0,80}"
+                r"(?:注销|未重新注册|unregister|not re[- ]?armed|cancel|disabled)"
+                r"|(?:注销|unregister|cancel|disabled).{0,80}"
+                r"(?:login[_ ]timer|login timer|登录定时器)"
+                r")",
+                lower,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+        )
+    )
+    return has_first_payload_scope and timer_is_disabled
 
 
 def _combined_response_evidence_paths(content: str) -> list[str]:
@@ -2657,12 +5119,14 @@ def _spdk_project_profile(*, repo_path: str, target: str, domain_profiles: list[
 
 
 def _requested_outputs(outputs: list[dict[str, Any]], text: str) -> list[str]:
-    requested = [
-        str(item.get("artifact") or item.get("path") or "").strip()
+    declared_templates = _declared_output_templates(outputs)
+    requested = list(declared_templates)
+    if any(
+        str(item.get("type") or "").strip().lower() == "combined_test_report"
         for item in outputs
         if isinstance(item, dict)
-        and str(item.get("artifact") or item.get("path") or "").strip() in ARTIFACT_TEMPLATES
-    ]
+    ):
+        return _unique_strings(requested)
     lower = text.lower()
     keyword_map = {
         "sfmea": "sfmea.json",
@@ -2688,6 +5152,40 @@ def _requested_outputs(outputs: list[dict[str, Any]], text: str) -> list[str]:
     return _unique_strings(requested or ["business_flow.md", "sfmea.json", "black_box_cases.json"])
 
 
+def _declared_output_templates(
+    outputs: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    declared: dict[str, dict[str, Any]] = {}
+    for item in outputs:
+        if not isinstance(item, dict):
+            continue
+        artifact = str(item.get("artifact") or item.get("path") or "").strip()
+        if not artifact:
+            continue
+        template: dict[str, Any] | None = None
+        if artifact in ARTIFACT_TEMPLATES:
+            template = dict(ARTIFACT_TEMPLATES[artifact])
+        elif str(item.get("type") or "").strip().lower() == "combined_test_report":
+            template = dict(ARTIFACT_TEMPLATES["combined_test_report.md"])
+        if template is None:
+            continue
+        for key in (
+            "min_sfmea_rows",
+            "min_black_box_cases",
+            "required_evidence_terms",
+            "forbidden_evidence_path_prefixes",
+            "forbidden_claim_terms",
+        ):
+            if key.startswith("min_") and isinstance(item.get(key), int):
+                template[key] = max(1, int(item[key]))
+            elif isinstance(item.get(key), list):
+                template[key] = [
+                    str(value) for value in item[key] if str(value).strip()
+                ]
+        declared[artifact] = template
+    return declared
+
+
 def _artifact_contract_payload(artifact: str, template: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "artifact": artifact,
@@ -2709,6 +5207,23 @@ def _artifact_contract_payload(artifact: str, template: dict[str, Any]) -> dict[
         ]
     if isinstance(template.get("field_rules"), dict):
         payload["field_rules"] = dict(template["field_rules"])
+    for key in (
+        "required_evidence_terms",
+        "forbidden_evidence_path_prefixes",
+        "forbidden_claim_terms",
+    ):
+        if isinstance(template.get(key), list):
+            payload[key] = [
+                str(value) for value in template[key] if str(value).strip()
+            ]
+    for key in (
+        "min_sfmea_rows",
+        "min_black_box_cases",
+        "min_source_paths",
+        "min_test_paths",
+    ):
+        if template.get(key) is not None:
+            payload[key] = int(template[key])
     return payload
 
 
@@ -2885,7 +5400,65 @@ def _audit_markdown_artifact(
             )
         )
 
+    malformed_table_lines = _malformed_markdown_table_lines(content)
+    if malformed_table_lines:
+        issues.append(
+            _issue(
+                "malformed_markdown_table",
+                artifact,
+                f"{artifact} 包含未闭合或列数不一致的 Markdown 表格行: "
+                + ", ".join(str(line) for line in malformed_table_lines),
+                lines=malformed_table_lines,
+            )
+        )
+
     evidence_paths = _markdown_repo_paths(content)
+    required_evidence_terms = [
+        str(value).strip()
+        for value in spec.get("required_evidence_terms") or []
+        if str(value).strip()
+    ]
+    missing_evidence_terms = [
+        term for term in required_evidence_terms if term.lower() not in content.lower()
+    ]
+    if missing_evidence_terms:
+        issues.append(
+            _issue(
+                "missing_required_evidence_terms",
+                artifact,
+                f"{artifact} 缺少关键证据锚点: {', '.join(missing_evidence_terms)}",
+                terms=missing_evidence_terms,
+            )
+        )
+    for forbidden_term in (
+        str(value).strip()
+        for value in spec.get("forbidden_claim_terms") or []
+        if str(value).strip()
+    ):
+        if forbidden_term.lower() in content.lower():
+            issues.append(
+                _issue(
+                    "forbidden_claim_term",
+                    artifact,
+                    f"{artifact} 包含与已验证证据冲突或无依据的结论: {forbidden_term}",
+                    term=forbidden_term,
+                )
+            )
+    forbidden_prefixes = [
+        str(value).strip().replace("\\", "/")
+        for value in spec.get("forbidden_evidence_path_prefixes") or []
+        if str(value).strip()
+    ]
+    for evidence_path in evidence_paths:
+        if any(evidence_path.startswith(prefix) for prefix in forbidden_prefixes):
+            issues.append(
+                _issue(
+                    "forbidden_evidence_path",
+                    artifact,
+                    f"{artifact} 包含超出分析范围的证据路径: {evidence_path}",
+                    path=evidence_path,
+                )
+            )
     existing_evidence_paths = [
         path for path in evidence_paths if _repo_path_exists(repo, path)
     ]
@@ -2910,6 +5483,65 @@ def _audit_markdown_artifact(
                 f"{artifact} 缺少可核验的测试目录或测试文件证据",
             )
         )
+    min_source_paths = int(spec.get("min_source_paths") or 0)
+    if min_source_paths and len(set(source_paths)) < min_source_paths:
+        issues.append(_issue(
+            "insufficient_source_evidence",
+            artifact,
+            f"{artifact} 可核验源码证据不足: {len(set(source_paths))}/{min_source_paths}",
+        ))
+    min_test_paths = int(spec.get("min_test_paths") or 0)
+    if min_test_paths and len(set(test_paths)) < min_test_paths:
+        issues.append(_issue(
+            "insufficient_test_evidence",
+            artifact,
+            f"{artifact} 可核验测试证据不足: {len(set(test_paths))}/{min_test_paths}",
+        ))
+    min_sfmea_rows = int(spec.get("min_sfmea_rows") or 0)
+    if min_sfmea_rows:
+        sfmea_rows = len(re.findall(
+            r"(?im)^\s*\|\s*(?:(?:F|FM|FMEA|SFMEA)[-_ ]?\d+|\d+)\s*\|",
+            content,
+        ))
+        if sfmea_rows < min_sfmea_rows:
+            issues.append(_issue(
+                "insufficient_sfmea_rows",
+                artifact,
+                f"{artifact} SFMEA 风险项不足: {sfmea_rows}/{min_sfmea_rows}",
+            ))
+    min_black_box_cases = int(spec.get("min_black_box_cases") or 0)
+    if min_black_box_cases:
+        black_box_content = ""
+        section_heading = section_headings.get("黑盒测试用例")
+        if section_heading is not None:
+            index, match = section_heading
+            current_level = len(match.group(0).lstrip()) - len(
+                match.group(0).lstrip().lstrip("#")
+            )
+            end = len(content)
+            for next_match in heading_matches[index + 1:]:
+                next_level = len(next_match.group(0).lstrip()) - len(
+                    next_match.group(0).lstrip().lstrip("#")
+                )
+                if next_level <= current_level:
+                    end = next_match.start()
+                    break
+            black_box_content = content[match.end():end]
+        heading_cases = len(re.findall(
+            r"(?im)^\s*#{2,6}\s+(?:(?:BBC?|TC|CASE|用例)[-_ ]?\d+\b|\d+(?:[.．]\d+)+\s+\S)",
+            black_box_content,
+        ))
+        table_cases = len(re.findall(
+            r"(?im)^\s*\|\s*(?:BBC?|TC|CASE|用例)[-_ ]?\d+\s*\|",
+            black_box_content,
+        ))
+        black_box_cases = max(heading_cases, table_cases)
+        if black_box_cases < min_black_box_cases:
+            issues.append(_issue(
+                "insufficient_black_box_cases",
+                artifact,
+                f"{artifact} 黑盒用例不足: {black_box_cases}/{min_black_box_cases}",
+            ))
     for evidence in evidence_paths:
         if not _repo_path_exists(repo, evidence):
             issues.append(
@@ -2920,6 +5552,89 @@ def _audit_markdown_artifact(
                 )
             )
     return issues
+
+
+def _malformed_markdown_table_lines(content: str) -> list[int]:
+    lines = str(content or "").splitlines()
+    fenced = False
+    fence_state: list[bool] = []
+    for line in lines:
+        stripped = line.lstrip()
+        fence_state.append(fenced)
+        if stripped.startswith("```") or stripped.startswith("~~~"):
+            fenced = not fenced
+
+    malformed: list[int] = []
+    for index, delimiter in enumerate(lines):
+        if fence_state[index] or not _is_markdown_table_delimiter(delimiter):
+            continue
+        header_index = index - 1
+        while header_index >= 0 and not lines[header_index].strip():
+            header_index -= 1
+        if header_index < 0 or fence_state[header_index]:
+            continue
+        header = lines[header_index].strip()
+        header_cells = _markdown_table_cells(header)
+        delimiter_cells = _markdown_table_cells(delimiter.strip())
+        if len(header_cells) < 2:
+            continue
+        if len(delimiter_cells) != len(header_cells):
+            malformed.append(index + 1)
+        requires_outer_pipes = header.startswith("|") and header.endswith("|")
+        row_index = index + 1
+        while row_index < len(lines):
+            row = lines[row_index].strip()
+            if not row or row.startswith("#") or row.startswith(("```", "~~~")):
+                break
+            if not row.startswith("|"):
+                break
+            cells = _markdown_table_cells(row)
+            if (
+                (requires_outer_pipes and not row.endswith("|"))
+                or len(cells) != len(header_cells)
+            ):
+                malformed.append(row_index + 1)
+            row_index += 1
+    return sorted(set(malformed))
+
+
+def _is_markdown_table_delimiter(line: str) -> bool:
+    cells = _markdown_table_cells(str(line or "").strip())
+    return len(cells) >= 2 and all(
+        re.fullmatch(r":?-{3,}:?", cell.strip()) is not None for cell in cells
+    )
+
+
+def _markdown_table_cells(line: str) -> list[str]:
+    text = str(line or "").strip()
+    if text.startswith("|"):
+        text = text[1:]
+    if text.endswith("|") and not text.endswith(r"\|"):
+        text = text[:-1]
+    cells: list[str] = []
+    current: list[str] = []
+    in_code = False
+    escaped = False
+    for character in text:
+        if escaped:
+            current.append(character)
+            escaped = False
+            continue
+        if character == "\\":
+            current.append(character)
+            escaped = True
+            continue
+        if character == "`":
+            in_code = not in_code
+            current.append(character)
+            continue
+        if character == "|" and not in_code:
+            cells.append("".join(current).strip())
+            current = []
+            continue
+        current.append(character)
+    cells.append("".join(current).strip())
+    return cells
 
 
 def _audit_sfmea_scores(

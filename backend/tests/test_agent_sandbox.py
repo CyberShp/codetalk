@@ -7,6 +7,24 @@ import pytest
 from app.services.agent_sandbox import AgentSandboxError, prepare_agent_sandbox
 
 
+def test_codex_sanitized_config_preserves_service_tier_for_model_routing(tmp_path):
+    from app.services.agent_sandbox import _write_sanitized_codex_config
+
+    source = tmp_path / "config.toml"
+    target = tmp_path / "runtime" / "config.toml"
+    target.parent.mkdir()
+    source.write_text(
+        'model = "gpt-5.5"\nservice_tier = "priority"\nnotify = ["private-hook"]\n',
+        encoding="utf-8",
+    )
+
+    _write_sanitized_codex_config(source, target)
+
+    sanitized = target.read_text(encoding="utf-8")
+    assert 'service_tier = "priority"' in sanitized
+    assert "notify" not in sanitized
+
+
 def test_macos_sandbox_wraps_command_and_persists_audit(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -227,3 +245,39 @@ def test_codex_sandbox_rejects_symlinked_runtime_state_directory(tmp_path):
                 "/usr/bin/sandbox-exec" if command == "sandbox-exec" else None
             ),
         )
+
+
+def test_claude_sandbox_does_not_expose_user_keychains(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / "home"
+    claude_home = home / ".claude"
+    keychains = home / "Library" / "Keychains"
+    app_support = home / "Library" / "Application Support" / "Claude"
+    cli_cache = home / "Library" / "Caches" / "claude-cli-nodejs"
+    for path in (claude_home, keychains, app_support, cli_cache):
+        path.mkdir(parents=True)
+    login_keychain = keychains / "login.keychain-db"
+    login_keychain.write_text("test", encoding="utf-8")
+    unrelated_keychain = keychains / "metadata.keychain-db"
+    unrelated_keychain.write_text("private", encoding="utf-8")
+    monkeypatch.setenv("HOME", str(home))
+
+    launch = prepare_agent_sandbox(
+        runtime={
+            "sandbox_mode": "required",
+            "sandbox_command": "/usr/local/bin/claude",
+        },
+        cwd=str(tmp_path / "repo"),
+        artifact_dir=tmp_path / "artifacts",
+        platform_name="darwin",
+        which=lambda command: "/usr/bin/sandbox-exec" if command == "sandbox-exec" else None,
+    )
+
+    assert str(login_keychain.resolve()) not in launch.audit["read_paths"]
+    assert str(keychains.resolve()) not in launch.audit["read_paths"]
+    assert str(unrelated_keychain.resolve()) not in launch.audit["read_paths"]
+    assert str(app_support.resolve()) not in launch.audit["read_paths"]
+    assert str(cli_cache.resolve()) not in launch.audit["read_paths"]
+    assert str(keychains.resolve()) not in launch.audit["write_paths"]
+    assert str((home / "Library").resolve()) not in launch.audit["write_paths"]

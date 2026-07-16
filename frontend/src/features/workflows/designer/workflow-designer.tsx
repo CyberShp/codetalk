@@ -23,7 +23,7 @@ import type {
   WorkflowValidationResult,
   WorkflowVersion,
 } from "@/lib/types/workflow";
-import { NodeInspector } from "./node-inspector";
+import { NodeInspector, type InputPortMutation } from "./node-inspector";
 import { WorkflowCanvas } from "./workflow-canvas";
 import { TrialRunPanel } from "../trial-run-panel";
 import {
@@ -165,8 +165,17 @@ function LoadedWorkflowDesigner({
   }, [state.revision, state.savedRevision]);
 
   const selectedNode = state.present.nodes.find((node) => node.id === state.selectedNodeId) ?? null;
-  const updateNode = (node: WorkflowGraphNode) => {
-    dispatch({ type: "update-node", node });
+  const updateNode = (node: WorkflowGraphNode, portMutation?: InputPortMutation) => {
+    const edges = portMutation
+      ? state.present.edges.flatMap((item) => {
+          if (item.target.node_id !== node.id || item.target.port_id !== portMutation.oldId) return [item];
+          if (portMutation.kind === "delete") return [];
+          return [{ ...item, target: { ...item.target, port_id: portMutation.newId } }];
+        })
+      : state.present.edges;
+    dispatch(portMutation
+      ? { type: "update-node-with-edges", node, edges }
+      : { type: "update-node", node });
     if (node.kind !== "output") return;
     const sourceId = String(node.config.source_node_id ?? "");
     const source = state.present.nodes.find((item) => item.id === sourceId && item.kind === "agent");
@@ -290,9 +299,42 @@ function ProblemList({ validation, onFocus }: { validation: WorkflowValidationRe
   if (!validation.errors.length && !validation.warnings.length) return <p className="ct-v2-bottom-empty is-success"><CheckCircle2 size={16} />没有阻断问题，可以编译并发布。</p>;
   return <div className="ct-v2-problem-list">{[...validation.errors, ...validation.warnings].map((item, index) => (
     <button key={`${item.code}-${index}`} type="button" onClick={() => item.node_id && onFocus(item.node_id)}>
-      <AlertTriangle size={14} /><span><strong>{item.code}</strong>{item.message}</span><em>{item.node_id ?? "工作流"}</em>
+      <AlertTriangle size={14} /><span><strong>{issueTitle(item.code)}</strong>{issueMessage(item.code, item.message)}</span><em>{item.node_id ?? "工作流"}</em>
     </button>
   ))}</div>;
+}
+
+function issueTitle(code: string): string {
+  return {
+    multiple_edges_to_single_input: "输入重复绑定",
+    port_type_mismatch: "端口类型不匹配",
+    required_input_unbound: "必填输入未连接",
+    required_artifacts_output_mismatch: "产物契约不一致",
+    agent_goal_missing: "缺少分析目标",
+    provider_unknown: "执行器不可用",
+    mcp_incompatible: "MCP 不兼容",
+    skill_unknown: "Skill 不可用",
+    graph_cycle: "工作流存在循环",
+    orphan_node: "节点尚未连接",
+    unsafe_artifact: "文件名不安全",
+  }[code] ?? "工作流配置问题";
+}
+
+function issueMessage(code: string, message: string): string {
+  if (/[㐀-鿿]/.test(message)) return message;
+  return {
+    multiple_edges_to_single_input: "该输入已绑定，请删除原连线后再连接。",
+    port_type_mismatch: "来源数据类型与目标端口类型不一致。",
+    required_input_unbound: "必填输入端口尚未连接来源节点。",
+    required_artifacts_output_mismatch: "Agent 必须生成的文件应与已连接输出节点的文件保持一致。",
+    agent_goal_missing: "请填写该节点需要完成的分析目标。",
+    provider_unknown: "所选执行器不存在或当前不可用。",
+    mcp_incompatible: "所选执行器不支持当前 MCP 配置。",
+    skill_unknown: "所选 Skill 当前不可用。",
+    graph_cycle: "节点连线形成循环，请删除其中一条依赖。",
+    orphan_node: "该节点未连接到工作流，请连线或删除节点。",
+    unsafe_artifact: "输出文件名包含不安全路径，请使用工作目录内的相对文件名。",
+  }[code] ?? "工作流配置未通过验证，请检查对应节点。";
 }
 
 function PlanPreview({ plan }: { plan: CompiledWorkflowPlan | null }) {

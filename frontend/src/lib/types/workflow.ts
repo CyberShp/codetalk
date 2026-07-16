@@ -21,6 +21,7 @@ export interface WorkflowPortDefinition {
   type: string;
   required?: boolean;
   label?: string;
+  collection?: boolean;
 }
 
 export interface WorkflowNodeConfig {
@@ -109,7 +110,8 @@ export interface WorkflowPlanNode {
   depends_on: string[];
   resolved_input_bindings: Record<
     string,
-    { source_node_id: string; source_port_id: string }
+    | { source_node_id: string; source_port_id: string }
+    | Array<{ source_node_id: string; source_port_id: string }>
   >;
   provider: string;
   mcp_profiles: string[];

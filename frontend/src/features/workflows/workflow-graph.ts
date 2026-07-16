@@ -3,6 +3,7 @@ import type {
   WorkflowGraphEdge,
   WorkflowGraphNode,
   WorkflowNodeKind,
+  WorkflowPortDefinition,
 } from "@/lib/types/workflow";
 
 export function safeWorkflowId(value: string): string {
@@ -47,12 +48,25 @@ export function createStarterGraph(
     mcp_profiles: [],
     skill_ids: ["source-evidence-first", "artifact-contract"],
     required_artifacts: ["report.md"],
-    input_ports: [{ id: "repo_path", type: "directory", required: true }],
+    input_ports: [
+      { id: "repo_path", type: "directory", required: true },
+      { id: "analysis_target", type: "text", required: true },
+    ],
     output_ports: [{ id: "report", type: "markdown" }],
     timeout_sec: 900,
     idle_timeout_sec: 120,
     retry_policy: { max_attempts: 1, backoff_seconds: 0 },
     failure_policy: "stop",
+  };
+  const target = createNode("input", 80, 330, "analysis_target");
+  target.label = "分析对象";
+  target.config = {
+    contract_id: "analysis_target",
+    label: "分析对象",
+    type: "text",
+    required: true,
+    resolver: "manual",
+    role: "填写要分析的模块、协议、业务流程或变更范围，例如 NVMe/TCP TLS 握手。",
   };
   const output = createNode("output", 720, 180, "report");
   output.label = "分析报告";
@@ -70,9 +84,10 @@ export function createStarterGraph(
     workflow_id: workflowId,
     name,
     description,
-    nodes: [repo, agent, output],
+    nodes: [repo, target, agent, output],
     edges: [
       edge("edge-repo-analyze", "data", "repo", "value", "analyze", "repo_path"),
+      edge("edge-target-analyze", "data", "analysis_target", "value", "analyze", "analysis_target"),
       edge("edge-analyze-report", "data", "analyze", "report", "report", "value"),
     ],
     settings: { stop_on_error: true, max_parallelism: 1 },
@@ -169,11 +184,120 @@ export function inputPortIds(node: WorkflowGraphNode): string[] {
   return ports.length ? ports.map((port) => port.id) : ["start"];
 }
 
+export function inputPortDefinitions(node: WorkflowGraphNode): Array<{ id: string; type: string; required?: boolean; collection?: boolean }> {
+  if (node.kind === "output") {
+    return [{ id: "value", type: String(node.config.type ?? "any"), required: Boolean(node.config.required) }];
+  }
+  if (node.kind === "input") return [];
+  return node.config.input_ports?.length
+    ? node.config.input_ports.map((port) => ({ ...port, type: port.type || "any" }))
+    : [{ id: "start", type: "any" }];
+}
+
 export function outputPortIds(node: WorkflowGraphNode): string[] {
   if (node.kind === "input") return ["value"];
   if (node.kind === "output") return [];
   const ports = node.config.output_ports ?? [];
   return ports.length ? ports.map((port) => port.id) : ["done"];
+}
+
+export function outputPortDefinitions(node: WorkflowGraphNode): Array<{ id: string; type: string }> {
+  if (node.kind === "input") {
+    return [{ id: "value", type: String(node.config.type ?? "any") }];
+  }
+  if (node.kind === "output") return [];
+  return node.config.output_ports?.length
+    ? node.config.output_ports.map((port) => ({ id: port.id, type: port.type || "any" }))
+    : [{ id: "done", type: "any" }];
+}
+
+export type ConnectionValidation =
+  | { ok: true }
+  | { ok: false; code: string; message: string };
+
+export function connectionEdgeKind(
+  sourceNode: WorkflowGraphNode,
+  sourcePortId: string,
+  targetNode: WorkflowGraphNode,
+  targetPortId: string,
+): WorkflowGraphEdge["kind"] {
+  const syntheticDone = !(sourceNode.config.output_ports?.length) && sourcePortId === "done";
+  const syntheticStart = !(targetNode.config.input_ports?.length) && targetPortId === "start";
+  return syntheticDone && syntheticStart ? "dependency" : "data";
+}
+
+export function validateInputPortId(
+  value: string,
+  ports: WorkflowPortDefinition[],
+  currentIndex: number,
+): string {
+  const portId = value.trim();
+  if (!portId) return "端口名称不能为空";
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/.test(portId)) {
+    return "端口名称只能包含字母、数字、点、横线和下划线";
+  }
+  if (ports.some((port, index) => index !== currentIndex && port.id === portId)) {
+    return "端口名称已存在";
+  }
+  return "";
+}
+
+export function validateConnection(
+  graph: AuthoringGraphV2,
+  sourceNodeId: string,
+  sourcePortId: string,
+  targetNodeId: string,
+  targetPortId: string,
+): ConnectionValidation {
+  if (sourceNodeId === targetNodeId) {
+    return { ok: false, code: "self_connection", message: "节点不能连接到自身" };
+  }
+  const sourceNode = graph.nodes.find((node) => node.id === sourceNodeId);
+  const targetNode = graph.nodes.find((node) => node.id === targetNodeId);
+  if (!sourceNode || !targetNode) {
+    return { ok: false, code: "node_missing", message: "连接的节点不存在" };
+  }
+  const source = outputPortDefinitions(sourceNode).find((port) => port.id === sourcePortId);
+  const target = inputPortDefinitions(targetNode).find((port) => port.id === targetPortId);
+  if (!source || !target) {
+    return { ok: false, code: "port_missing", message: "连接的端口不存在" };
+  }
+  const occupied = graph.edges.some(
+    (item) =>
+      item.kind === "data" &&
+      item.target.node_id === targetNodeId &&
+      item.target.port_id === targetPortId,
+  );
+  if (occupied && !target.collection) {
+    return { ok: false, code: "target_input_occupied", message: "该输入已绑定" };
+  }
+  if (source.type !== target.type && source.type !== "any" && target.type !== "any") {
+    return {
+      ok: false,
+      code: "port_type_mismatch",
+      message: `不能连接：${source.type} 类型不能连接到 ${target.type} 输入`,
+    };
+  }
+  return { ok: true };
+}
+
+export function connectionLabel(
+  workflowEdge: WorkflowGraphEdge,
+  nodesById: Map<string, WorkflowGraphNode>,
+): string {
+  const sourceNode = nodesById.get(workflowEdge.source.node_id);
+  const targetNode = nodesById.get(workflowEdge.target.node_id);
+  if (!sourceNode || !targetNode) return "";
+  const sourceType = outputPortDefinitions(sourceNode).find(
+    (port) => port.id === workflowEdge.source.port_id,
+  )?.type ?? "any";
+  const targetType = inputPortDefinitions(targetNode).find(
+    (port) => port.id === workflowEdge.target.port_id,
+  )?.type ?? "any";
+  const sourceLabel = sourceNode.kind === "input"
+    ? sourceNode.label
+    : workflowEdge.source.port_id;
+  return `${sourceLabel} · ${sourceType} → ${workflowEdge.target.port_id} · ${targetType}`;
 }
 
 export function graphWithHeader(

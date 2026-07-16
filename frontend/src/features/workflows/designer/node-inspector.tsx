@@ -1,21 +1,26 @@
 "use client";
 
-import { Search, X } from "lucide-react";
+import { Plus, Search, Trash2, X } from "lucide-react";
 import { useMemo, useState } from "react";
 import type {
   WorkflowCapabilities,
   WorkflowGraphNode,
+  WorkflowPortDefinition,
   WorkflowProviderCapability,
 } from "@/lib/types/workflow";
-import { nodeKindLabel } from "../workflow-graph";
+import { nodeKindLabel, validateInputPortId } from "../workflow-graph";
 
 interface Props {
   node: WorkflowGraphNode;
   capabilities: WorkflowCapabilities | null;
   providers: WorkflowProviderCapability[];
-  onChange: (node: WorkflowGraphNode) => void;
+  onChange: (node: WorkflowGraphNode, portMutation?: InputPortMutation) => void;
   onClose: () => void;
 }
+
+export type InputPortMutation =
+  | { kind: "rename"; oldId: string; newId: string }
+  | { kind: "delete"; oldId: string };
 
 export function NodeInspector({ node, capabilities, providers, onChange, onClose }: Props) {
   const config = node.config;
@@ -76,6 +81,18 @@ export function NodeInspector({ node, capabilities, providers, onChange, onClose
 
         {node.kind === "agent" && (
           <>
+            <InspectorSection title="输入端口">
+              <p className="ct-v2-inspector-note">
+                为源码、文档、链接等输入分别创建端口，再在画布上逐一连线。
+              </p>
+              <InputPortsEditor
+                ports={config.input_ports ?? []}
+                typeOptions={capabilities?.input_types ?? ["text", "file", "directory", "mr_link"]}
+                onChange={(input_ports, mutation) =>
+                  onChange({ ...node, config: { ...config, input_ports } }, mutation)
+                }
+              />
+            </InspectorSection>
             <InspectorSection title="执行配置">
               <Field label="分析目标">
                 <textarea rows={5} value={String(config.goal ?? "")} onChange={(event) => updateConfig({ goal: event.target.value })} />
@@ -159,6 +176,113 @@ export function NodeInspector({ node, capabilities, providers, onChange, onClose
         )}
       </div>
     </aside>
+  );
+}
+
+function InputPortsEditor({
+  ports,
+  typeOptions,
+  onChange,
+}: {
+  ports: WorkflowPortDefinition[];
+  typeOptions: string[];
+  onChange: (ports: WorkflowPortDefinition[], mutation?: InputPortMutation) => void;
+}) {
+  const [draftIds, setDraftIds] = useState<Record<number, string>>({});
+  const [idErrors, setIdErrors] = useState<Record<number, string>>({});
+  const update = (
+    index: number,
+    patch: Partial<WorkflowPortDefinition>,
+    mutation?: InputPortMutation,
+  ) => onChange(ports.map((port, itemIndex) => itemIndex === index ? { ...port, ...patch } : port), mutation);
+  const uniqueId = () => {
+    let index = ports.length + 1;
+    while (ports.some((port) => port.id === `input_${index}`)) index += 1;
+    return `input_${index}`;
+  };
+  const commitId = (index: number) => {
+    const current = ports[index];
+    if (!current) return;
+    const candidate = (draftIds[index] ?? current.id).trim();
+    const error = validateInputPortId(candidate, ports, index);
+    setIdErrors((items) => ({ ...items, [index]: error }));
+    if (error || candidate === current.id) return;
+    update(index, { id: candidate }, { kind: "rename", oldId: current.id, newId: candidate });
+    setDraftIds((items) => {
+      const next = { ...items };
+      delete next[index];
+      return next;
+    });
+  };
+  return (
+    <div className="ct-v2-port-editor">
+      {ports.map((port, index) => (
+        <div className="ct-v2-port-editor-row" key={index}>
+          <label>
+            <span>端口名称</span>
+            <input
+              value={draftIds[index] ?? port.id}
+              aria-label={`输入端口 ${index + 1} 名称`}
+              onChange={(event) => {
+                const value = event.target.value;
+                setDraftIds((items) => ({ ...items, [index]: value }));
+                setIdErrors((items) => ({
+                  ...items,
+                  [index]: validateInputPortId(value, ports, index),
+                }));
+              }}
+              onBlur={() => commitId(index)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+              }}
+              aria-invalid={Boolean(idErrors[index])}
+            />
+            {idErrors[index] && <small className="ct-v2-port-id-error" role="alert">{idErrors[index]}</small>}
+          </label>
+          <label>
+            <span>类型</span>
+            <select
+              value={port.type || "text"}
+              aria-label={`输入端口 ${index + 1} 类型`}
+              onChange={(event) => update(index, { type: event.target.value })}
+            >
+              {Array.from(new Set([...typeOptions, port.type || "text"])).map((type) => (
+                <option key={type} value={type}>{type}</option>
+              ))}
+            </select>
+          </label>
+          <label className="ct-v2-port-required">
+            <input
+              type="checkbox"
+              checked={Boolean(port.required)}
+              onChange={(event) => update(index, { required: event.target.checked })}
+            />
+            <span>必填</span>
+          </label>
+          <button
+            type="button"
+            className="ct-v2-icon-danger"
+            aria-label={`删除输入端口 ${port.id}`}
+            title="删除输入端口"
+            onClick={() => {
+              setDraftIds({});
+              setIdErrors({});
+              onChange(ports.filter((_, itemIndex) => itemIndex !== index), { kind: "delete", oldId: port.id });
+            }}
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        className="ct-v2-add-port"
+        onClick={() => onChange([...ports, { id: uniqueId(), type: "file", required: false }])}
+      >
+        <Plus size={14} />
+        增加输入端口
+      </button>
+    </div>
   );
 }
 

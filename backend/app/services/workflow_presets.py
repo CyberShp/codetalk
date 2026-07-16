@@ -68,6 +68,40 @@ EVIDENCE_CARDS_SCHEMA: dict[str, Any] = {
 }
 
 
+TECHNICAL_CLAIMS_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "minItems": 1,
+    "maxItems": 1,
+    "items": {
+        "type": "object",
+        "required": ["claim_id", "type", "statement", "evidence"],
+        "properties": {
+            "claim_id": {"type": "string", "minLength": 1},
+            "type": {"type": "string", "minLength": 1},
+            "statement": {"type": "string", "minLength": 1},
+            "evidence": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 1,
+                "items": {
+                    "type": "object",
+                    "required": ["evidence_id", "path", "quote"],
+                    "properties": {
+                        "evidence_id": {"type": "string", "minLength": 1},
+                        "path": {"type": "string", "minLength": 1},
+                        "symbol": {"type": "string"},
+                        "lines": {"type": "string"},
+                        "quote": {"type": "string", "minLength": 1},
+                    },
+                    "additionalProperties": True,
+                },
+            },
+        },
+        "additionalProperties": True,
+    },
+}
+
+
 SFMEA_SCHEMA: dict[str, Any] = {
     "type": "array",
     "minItems": 1,
@@ -103,6 +137,7 @@ SFMEA_SCHEMA: dict[str, Any] = {
             "source_evidence": {"type": "array", "items": {"type": "string"}},
             "test_mapping": {"type": "string"},
             "evidence": {"type": "object"},
+            "technical_claims": TECHNICAL_CLAIMS_SCHEMA,
         },
         "additionalProperties": True,
     },
@@ -137,6 +172,7 @@ BLACK_BOX_CASES_SCHEMA: dict[str, Any] = {
             "failure_diagnostics": {"type": "array", "items": {"type": "string"}},
             "mapped_test_dir": {"type": "string"},
             "source_or_test_evidence": {"type": "array", "items": {"type": "string"}},
+            "technical_claims": TECHNICAL_CLAIMS_SCHEMA,
         },
         "additionalProperties": True,
     },
@@ -260,6 +296,8 @@ CORE_WORKFLOW_PRESET_IDS = (
     *ORIGINAL_CORE_WORKFLOW_PRESET_IDS,
     "source_flow_sfmea_blackbox",
     "testing_activity_orchestration",
+    "basic_source_report_claude",
+    "basic_source_design_report_builtin",
 )
 
 COMMON_TEST_SCENARIO_PRESET_IDS = (
@@ -324,7 +362,213 @@ COMMON_TEST_SCENARIO_PRESET_IDS = (
     "security_access_control_blackbox",
 )
 
-ACTIVE_BUILTIN_WORKFLOW_PRESET_IDS = ("source_flow_sfmea_blackbox",)
+ACTIVE_BUILTIN_WORKFLOW_PRESET_IDS = (
+    "source_flow_sfmea_blackbox",
+    "basic_source_report_claude",
+    "basic_source_design_report_builtin",
+)
+
+
+_BASIC_ISCSI_REPORT_GOAL = (
+    "针对 SPDK iSCSI login 进行源码证据驱动的测试分析。必须先读取工作空间源码，"
+    "优先检查已有 GitNexus/CGC 产物，并核验真实文件、符号、行号和现有测试目录；"
+    "如果提供开发设计文档，还必须逐条吸收其中的设计约束、外部行为与未决问题。"
+    "只生成 report.md，终端输出仅用于进度。报告至少包含：分析范围与证据缺口、"
+    "关键源码证据、主流程与异常/恢复流程、SFMEA、可由测试人员直接执行的黑盒测试用例。"
+    "SFMEA 必须包含 failure mode、cause、effect、detection、severity、occurrence、"
+    "detection score、RPN、mitigation 和证据映射；黑盒用例必须包含前置条件、外部步骤、"
+    "预期结果、观测点、失败诊断和真实测试目录映射，不得把内部函数调用写成测试步骤。"
+    "现有测试文件只能证明其实际覆盖的场景；若协议位、非法 PDU、MCS 或异常时序需要新增 "
+    "raw-PDU harness，必须明确写出所需 harness、命令和断言，不得声称该用例可直接执行。"
+    "报告必须记录 Git revision/commit。完整场景矩阵必须分别覆盖 T+C 非法组合、非法 NSG、"
+    "Unsupported Version、Authorization Failure、C=1 跨 PDU 分片后以 C=0 收尾，以及 CHAP "
+    "错误 CHAP_R、未知用户、参数顺序、算法、缺失/错误编码和 mutual CHAP 双向配置负向场景。"
+    "凡声明协议位或状态码预期，必须给出可执行的 tcpdump 写 pcap 命令、tshark 字段解析命令"
+    "和断言。凡需要 raw-PDU，必须在报告附录给出可运行 Python harness，至少实现 BHS bytes "
+    "5-7 的 DataSegmentLength、ISID/CID/ITT/CmdSN、socket sendall/recv、CHAP hashlib.md5 和自检。"
+    "MCS 容量用例必须在 target 启动前使用 iscsi_set_options -c 配置 MaxConnectionsPerSession，"
+    "保留首连接并使用相同 TSIH/不同 CID；映射 multiconnection.sh 时必须声明仅限隔离测试盘并"
+    "提示数据销毁风险。SFMEA 前必须定义 Severity/Occurrence/Detection 的 1-10 评分标尺、"
+    "RPN 优先级阈值，并说明 Occurrence 来自缺陷历史、登录流量分布或测试统计；没有数据时"
+    "必须标明待采样而不是伪造发生率。"
+    "质量下限：至少引用 6 个可核验源码文件和 4 个可核验测试文件，至少输出 12 条不同的 "
+    "SFMEA 风险项与 12 条原子化黑盒用例；任一数量不足都不得宣称完成。"
+    "必须把实现事实、设计期望和证据缺口明确分开；协议状态码、超时数值、日志原文、"
+    "性能阈值和连接关闭行为只有在证据片段直接支持时才能作为事实，否则必须标为待验证。"
+    "最终报告不得把设计文档中的期望反写成已实现事实，也不得引用 iSCSI 范围外的测试路径。"
+)
+
+
+_BASIC_ISCSI_EVIDENCE_HINTS = [
+    {"path": "lib/iscsi/iscsi.c", "term": "iscsi_auth_params", "label": "CHAP negotiation"},
+    {"path": "lib/iscsi/iscsi.c", "term": "selected algorithm is 5 (MD5)", "label": "CHAP algorithm selection"},
+    {"path": "lib/iscsi/iscsi.c", "term": "compare MD5 digest", "label": "CHAP response verification"},
+    {"path": "lib/iscsi/iscsi.c", "term": "Initiator wants to use mutual CHAP", "label": "mutual CHAP rejection"},
+    {"path": "lib/iscsi/iscsi.c", "term": "required mutual CHAP", "label": "mutual CHAP requirement"},
+    {"path": "lib/iscsi/iscsi.c", "term": "iscsi_conn_login_pdu_err_complete", "label": "login error completion"},
+    {"path": "lib/iscsi/iscsi.c", "term": "iscsi_op_login_rsp_handle_csg_bit", "label": "login stage transition"},
+    {"path": "lib/iscsi/iscsi.c", "term": "iscsi_pdu_payload_op_login", "label": "login payload entry"},
+    {"path": "lib/iscsi/iscsi.c", "term": "spdk_poller_unregister(&conn->login_timer)", "label": "login timer cancellation"},
+    {"path": "lib/iscsi/iscsi.c", "term": "rsph->status_detail = ISCSI_LOGIN_AUTHENT_FAIL", "label": "authentication failure response"},
+    {"path": "lib/iscsi/iscsi.c", "term": "iscsi_op_login_response", "label": "login response"},
+    {"path": "lib/iscsi/conn.c", "term": "login_timeout", "label": "login timer callback"},
+    {"path": "lib/iscsi/iscsi.h", "term": "ISCSI_LOGIN_TIMEOUT", "label": "login timeout constant"},
+    {"path": "include/spdk/iscsi_spec.h", "term": "ISCSI_LOGIN_AUTHENT_FAIL", "label": "wire authentication failure code"},
+    {"path": "lib/iscsi/tgt_node.c", "term": "iscsi_check_chap_params", "label": "CHAP configuration validation"},
+    {"path": "lib/iscsi/iscsi_subsystem.c", "term": "iscsi_check_chap_params", "label": "CHAP option validation"},
+    {"path": "test/app/fuzz/iscsi_fuzz/iscsi_fuzz.c", "term": "fuzz_iscsi_send_login_request", "label": "login wire-format test seed"},
+    {"path": "test/iscsi_tgt/chap/chap_mutual_not_set.sh", "term": "configuring initiator with biderectional authentication", "label": "mutual CHAP negative test"},
+    {"path": "test/iscsi_tgt/chap/chap_common.sh", "term": "config_chap_credentials_for_target", "label": "CHAP test fixture"},
+    {"path": "test/iscsi_tgt/digests/digests.sh", "term": "HeaderDigest", "label": "digest negotiation tests"},
+    {"path": "test/iscsi_tgt/multiconnection/multiconnection.sh", "term": "CONNECTION_NUMBER", "label": "multi-connection test"},
+    {"path": "test/iscsi_tgt/rpc_config/rpc_config.py", "term": "mutual_chap", "label": "RPC configuration test"},
+    {"path": "test/iscsi_tgt/login_redirection/login_redirection.sh", "term": "redirect", "label": "login redirection test"},
+    {"path": "test/iscsi_tgt/common.sh", "term": "waitforiscsidevices", "label": "external login fixture"},
+    {"path": "lib/iscsi/conn.c", "term": "login_timer = SPDK_POLLER_REGISTER", "label": "login timer registration"},
+    {"path": "lib/iscsi/conn.c", "term": "_iscsi_conn_destruct", "label": "connection cleanup chain"},
+    {"path": "lib/iscsi/iscsi_subsystem.c", "term": "conn->state == ISCSI_CONN_STATE_EXITING", "label": "poll-group destruction trigger"},
+    {"path": "lib/iscsi/iscsi.c", "term": "this PDU should be sent without digest", "label": "login response digest exception"},
+    {"path": "lib/iscsi/iscsi.c", "term": "append_iscsi_sess", "label": "existing-session MCS path"},
+    {"path": "lib/iscsi/iscsi.c", "term": "sess->connections >= sess->MaxConnections", "label": "MCS capacity boundary"},
+    {"path": "lib/iscsi/iscsi.c", "term": "TODO: need a mutex", "label": "MCS synchronization gap"},
+    {"path": "lib/iscsi/param.c", "term": "iscsi_copy_param2var", "label": "post-login digest activation"},
+    {"path": "lib/iscsi/iscsi.c", "term": "data digest error", "label": "full-feature data digest failure"},
+    {"path": "lib/iscsi/iscsi.c", "term": "header digest error", "label": "full-feature header digest failure"},
+    {"path": "test/app/fuzz/iscsi_fuzz/iscsi_fuzz.c", "term": "LOGIN and LOGOUT opcodes are ignored here", "label": "fuzzer login coverage boundary"},
+    {"path": "include/spdk/iscsi_spec.h", "term": "ISCSI_LOGIN_UNSUPPORTED_VERSION", "label": "unsupported version status detail"},
+    {"path": "include/spdk/iscsi_spec.h", "term": "ISCSI_LOGIN_AUTHORIZATION_FAIL", "label": "authorization failure status detail"},
+    {"path": "lib/iscsi/iscsi.c", "term": "Set T/CSG/NSG to reserved if login error", "label": "error response flag clearing"},
+    {"path": "lib/iscsi/iscsi.c", "term": "case ISCSI_FULL_FEATURE_PHASE", "label": "full-feature login request rejection"},
+    {"path": "scripts/rpc.py", "term": "--max-connections-per-session", "label": "MCS target startup configuration"},
+]
+
+
+def _basic_report_preset(*, include_design: bool, provider: str) -> dict[str, Any]:
+    preset_id = (
+        "basic_source_design_report_builtin"
+        if include_design
+        else "basic_source_report_claude"
+    )
+    name = (
+        "基础源码 + 设计文档报告（内置模型）"
+        if include_design
+        else "基础源码报告（Claude Code）"
+    )
+    description = (
+        "以已建工作空间和一份设计文档为输入，由内置模型生成流程、SFMEA 与黑盒用例报告。"
+        if include_design
+        else "仅以已建工作空间为输入，由 Claude Code 生成流程、SFMEA 与黑盒用例报告。"
+    )
+    inputs: list[dict[str, Any]] = [
+        {
+            "id": "repo_path",
+            "label": "源码工作空间",
+            "type": "directory",
+            "required": True,
+            "resolver": "workspace",
+            "role": "SPDK 源码工作空间",
+        }
+    ]
+    input_ports: list[dict[str, Any]] = [
+        {"id": "repo_path", "type": "directory", "required": True}
+    ]
+    if include_design:
+        inputs.append(
+            {
+                "id": "design_doc",
+                "label": "开发设计文档",
+                "type": "file",
+                "required": True,
+                "resolver": "local",
+                "role": "iSCSI login 设计约束与外部行为",
+            }
+        )
+        input_ports.append(
+            {"id": "design_doc", "type": "file", "required": True}
+        )
+    execution_subject = "builtin_llm" if provider == "builtin-llm" else "agent"
+    execution_label = "内置模型" if provider == "builtin-llm" else "Claude Code"
+    return {
+        "id": preset_id,
+        "name": name,
+        "description": description,
+        "definition": {
+            "id": preset_id,
+            "name": name,
+            "description": description,
+            "version": 1,
+            "execution_subject": execution_subject,
+            "execution_label": execution_label,
+            "user_message": (
+                f"{execution_label} 将读取源码"
+                f"{'与开发设计文档' if include_design else ''}并生成一份可下载报告。"
+            ),
+            "inputs": inputs,
+            "steps": [
+                {
+                    "id": "analyze",
+                    "type": "agent_task",
+                    "provider": provider,
+                    **({"execution_mode": "staged"} if provider == "builtin-llm" else {}),
+                    "skills": [
+                        "source-evidence-first",
+                        "storage-flow-analysis",
+                        "sfmea",
+                        "black-box-test-design",
+                        "artifact-contract",
+                    ],
+                    "input_ports": input_ports,
+                    "report_sections": ["流程", "SFMEA", "黑盒测试用例"],
+                    "source_context_limit": 44,
+                    "source_context_min_test_files": 8,
+                    "source_analysis_max_files": 44,
+                    "source_analysis_max_evidence_anchors": 44,
+                    "source_context_search_roots": [
+                        "lib/iscsi",
+                        "include/spdk",
+                        "test/iscsi_tgt",
+                        "test/app/fuzz/iscsi_fuzz",
+                    ],
+                    "source_evidence_hints": _BASIC_ISCSI_EVIDENCE_HINTS,
+                    "goal": _BASIC_ISCSI_REPORT_GOAL,
+                    "required_artifacts": ["report.md"],
+                    "timeout_sec": 1200,
+                    "idle_timeout_sec": 300,
+                }
+            ],
+            "outputs": [
+                {
+                    "id": "report",
+                    "label": "分析报告",
+                    "type": "combined_test_report",
+                    "from": "analyze",
+                    "artifact": "report.md",
+                    "min_sfmea_rows": 12,
+                    "min_black_box_cases": 12,
+                    "required_evidence_terms": [
+                        "iscsi_auth_params",
+                        "iscsi_conn_login_pdu_err_complete",
+                        "iscsi_pdu_payload_op_login",
+                        "ISCSI_LOGIN_AUTHENT_FAIL",
+                        "ISCSI_LOGIN_TIMEOUT",
+                        "test/iscsi_tgt/chap/chap_mutual_not_set.sh",
+                        "test/iscsi_tgt/multiconnection/multiconnection.sh",
+                    ],
+                    "forbidden_evidence_path_prefixes": ["test/nvmf/"],
+                    "forbidden_claim_terms": [
+                        "默认 60s",
+                        "[待验证] 60s",
+                        "iscsi_check_chap_params 未使用常量时间比较",
+                        "AuthMethod 为 NULL 时跳过认证",
+                        "switch 缺少 ISCSI_FULL_FEATURE_PHASE",
+                        "MaxConnections 已达上限时返回的成功",
+                        "登录错误响应中 C-bit 未置位",
+                        "Digest 校验失败后未释放",
+                    ],
+                }
+            ],
+        },
+    }
 
 
 def _source_flow_outputs(tag: str) -> list[dict[str, Any]]:
@@ -910,6 +1154,8 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 ],
             },
         },
+        _basic_report_preset(include_design=False, provider="claude-code"),
+        _basic_report_preset(include_design=True, provider="builtin-llm"),
         _source_flow_scenario_preset(
             preset_id="nvmf_connect_io_blackbox",
             name="NVMe-oF Connect / IO Black-box Scenario",

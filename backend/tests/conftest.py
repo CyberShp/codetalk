@@ -19,6 +19,7 @@ def _disable_external_agent_sandbox_for_legacy_test_doubles(monkeypatch):
     from app.config import settings
 
     monkeypatch.setattr(settings, "external_agent_sandbox_mode", "off")
+    monkeypatch.setattr(settings, "behavior_claim_audit_enabled", False)
 
 
 @asynccontextmanager

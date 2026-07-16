@@ -16,9 +16,10 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from app.config import settings
+from app.llm.base import BaseLLMClient, current_finish_reason
 from app.llm.factory import (
     create_llm_client_from_active,
     create_source_analysis_llm_client,
@@ -31,6 +32,8 @@ from app.services.agent_run_harness import (
     AgentRunHarness,
     ArtifactValidationHarness,
 )
+from app.services.behavior_claim_validator import materialize_behavior_claim_validation
+from app.services.regular_stage_governance import promote_regular_stage_caches
 from app.services.test_activity_contract import (
     ARTIFACT_TEMPLATES,
     audit_test_activity_artifacts,
@@ -43,6 +46,157 @@ from app.services.workbench_task_run import WorkbenchTaskRunStore
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+_QUALITY_ARTIFACT_DEPENDENCIES = {
+    "source_analysis.md": {
+        "flow_evidence_pack.json",
+        "flow_outline.json",
+        "business_flow.md",
+        "sfmea.json",
+        "black_box_cases.json",
+        "test_strategy.md",
+        "test_design.md",
+        "coverage_gap.json",
+        "risk_review.md",
+        "execution_checklist.md",
+    },
+    "flow_evidence_pack.json": {
+        "flow_outline.json",
+        "business_flow.md",
+        "sfmea.json",
+        "black_box_cases.json",
+        "test_strategy.md",
+        "test_design.md",
+        "risk_review.md",
+        "execution_checklist.md",
+    },
+    "flow_outline.json": {
+        "business_flow.md",
+        "sfmea.json",
+        "black_box_cases.json",
+        "test_strategy.md",
+        "test_design.md",
+        "risk_review.md",
+        "execution_checklist.md",
+    },
+    "business_flow.md": {
+        "sfmea.json",
+        "black_box_cases.json",
+        "test_strategy.md",
+        "test_design.md",
+        "risk_review.md",
+        "execution_checklist.md",
+    },
+    "sfmea.json": {
+        "black_box_cases.json",
+        "test_design.md",
+        "risk_review.md",
+        "execution_checklist.md",
+    },
+    "black_box_cases.json": {"test_design.md", "execution_checklist.md"},
+}
+
+
+def _expand_quality_blocked_artifacts(blocked_artifacts: set[str]) -> set[str]:
+    blocked = {Path(value).name for value in blocked_artifacts if str(value).strip()}
+    while True:
+        expanded = set(blocked)
+        for artifact in blocked:
+            expanded.update(_QUALITY_ARTIFACT_DEPENDENCIES.get(artifact, set()))
+        if expanded == blocked:
+            return blocked
+        blocked = expanded
+
+
+def _quality_allows_cache_promotion(status: str) -> bool:
+    return status in {"deliverable", "passed", "warning", "needs_rework"}
+
+
+def _quality_repair_regressed(
+    *,
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> bool:
+    status_rank = {
+        "invalid": 0,
+        "needs_rework": 1,
+        "warning": 2,
+        "deliverable": 3,
+        "passed": 3,
+    }
+    before_status = str(before.get("status") or "invalid")
+    after_status = str(after.get("status") or "invalid")
+    if status_rank.get(after_status, 0) < status_rank.get(before_status, 0):
+        return True
+    before_issues = int(before.get("issue_count") or 0)
+    after_issues = int(after.get("issue_count") or 0)
+    if after_issues != before_issues:
+        return after_issues > before_issues
+    return int(after.get("score") or 0) < int(before.get("score") or 0)
+
+
+def _snapshot_quality_repair_artifacts(
+    *,
+    artifact_dir: Path,
+    artifact_names: Iterable[str],
+) -> dict[str, bytes | None]:
+    root = artifact_dir.resolve()
+    snapshot: dict[str, bytes | None] = {}
+    for raw_name in artifact_names:
+        name = str(raw_name or "").strip()
+        if not name or name in snapshot:
+            continue
+        path = (artifact_dir / name).resolve()
+        if not path.is_relative_to(root) or path.is_dir():
+            continue
+        snapshot[name] = path.read_bytes() if path.is_file() else None
+    return snapshot
+
+
+def _restore_quality_repair_artifacts(
+    *,
+    artifact_dir: Path,
+    snapshot: dict[str, bytes | None],
+) -> None:
+    root = artifact_dir.resolve()
+    for name, content in snapshot.items():
+        path = (artifact_dir / name).resolve()
+        if not path.is_relative_to(root):
+            continue
+        if content is None:
+            path.unlink(missing_ok=True)
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+
+
+def _archive_behavior_claim_audit(
+    *,
+    artifact_dir: Path,
+    repair_dir: Path,
+) -> None:
+    validation = artifact_dir / "behavior_claim_validation.json"
+    if validation.is_file():
+        repair_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(validation, repair_dir / "behavior_claim_validation_before.json")
+    diagnostics = artifact_dir / "behavior_claim_audit"
+    if diagnostics.is_dir():
+        shutil.copytree(
+            diagnostics,
+            repair_dir / "behavior_claim_audit_before",
+            dirs_exist_ok=True,
+        )
+
+
+def _staged_step_status(current_status: str, staged_result: dict[str, Any]) -> str:
+    if current_status != "completed":
+        return current_status
+    return (
+        "partial"
+        if str(staged_result.get("status") or "") == "partial"
+        else current_status
+    )
 
 
 @dataclass(frozen=True)
@@ -303,6 +457,32 @@ class WorkbenchWorkflowRunner:
             if isinstance(output, dict) and output.get("status") in {"ok", "completed", "ready", "success"}:
                 self._emit_event("artifact_created", dict(output))
         test_activity_quality = self.audit_test_activity_quality(task_run=task_run)
+        if _quality_allows_cache_promotion(
+            str(test_activity_quality.get("status") or "")
+        ):
+            blocked_artifacts = _expand_quality_blocked_artifacts(
+                {
+                    Path(str(issue.get("artifact") or "")).name
+                    for issue in test_activity_quality.get("issues") or []
+                    if isinstance(issue, dict)
+                    and str(issue.get("artifact") or "").strip()
+                }
+            )
+            promoted = promote_regular_stage_caches(
+                cache_root=(
+                    settings.data_path / "workbench" / "regular_stage_cache"
+                    if settings.regular_stage_cache_enabled
+                    else None
+                ),
+                artifact_roots=[
+                    Path(str(item.get("artifact_dir") or ""))
+                    for item in task_run.agent_runs
+                    if isinstance(item, dict) and str(item.get("artifact_dir") or "")
+                ],
+                blocked_artifacts=blocked_artifacts,
+            )
+            if promoted:
+                test_activity_quality["cache_promoted_artifacts"] = promoted
         if (
             status in {"completed", "completed_empty"}
             and test_activity_quality.get("status") in {"needs_rework", "invalid"}
@@ -338,6 +518,8 @@ class WorkbenchWorkflowRunner:
         event_type = (
             "step_completed"
             if status in {"completed", "completed_empty", "needs_review"}
+            else "step_partial"
+            if status == "partial"
             else "cancelled"
             if status == "cancelled"
             else "step_failed"
@@ -386,6 +568,19 @@ class WorkbenchWorkflowRunner:
             repo_path=str(task_run.repo_path or ""),
         )
         _write_json(artifact_dir / "test_activity_quality_audit.json", audit)
+        _write_json(
+            artifact_dir / "verified_fact_ledger.json",
+            {
+                "kind": "verified_fact_ledger",
+                "schema_version": 1,
+                "summary": dict(audit.get("fact_verification") or {}),
+                "claims": [
+                    dict(item)
+                    for item in audit.get("fact_claims") or []
+                    if isinstance(item, dict)
+                ],
+            },
+        )
         return audit
 
     def _execute_agent_step(
@@ -630,7 +825,6 @@ class WorkbenchWorkflowRunner:
         run_id: str,
         timeout_sec: int,
     ) -> dict[str, Any]:
-        del timeout_sec
         step_id = str(step.get("id") or agent_run.get("step_id") or "")
         task_bundle = _read_json(artifact_dir / "task_bundle.json")
         workflow_snapshot = _read_json(artifact_dir / "workflow_snapshot.json")
@@ -671,6 +865,15 @@ class WorkbenchWorkflowRunner:
             task_bundle=task_bundle,
             output_contract=scoped_output_contract,
         )
+        prompt_characters = sum(
+            len(str(message.get("content") or "")) for message in messages
+        )
+        prompt_metrics = {
+            "prompt_characters": prompt_characters,
+            "prompt_estimated_tokens": BaseLLMClient.estimate_tokens(
+                "\n".join(str(message.get("content") or "") for message in messages)
+            ),
+        }
         _write_json(
             artifact_dir / "builtin_llm_execution_input.json",
             {
@@ -680,6 +883,7 @@ class WorkbenchWorkflowRunner:
                 "execution_contract": scoped_execution_contract,
                 "agent_output_contract": scoped_output_contract,
                 "generation_artifacts": generation_artifacts,
+                "metrics": prompt_metrics,
             },
         )
         started_at = _now()
@@ -687,12 +891,12 @@ class WorkbenchWorkflowRunner:
         status = "completed"
         error = ""
         model = ""
+        response_usage: dict[str, Any] = {}
+        finish_reason = "not_called"
+        provider_wait_ms = 0.0
+        quality_repair_history: list[dict[str, Any]] = []
         try:
-            llm = _run_async_blocking(create_llm_client_from_active())
             if str(step.get("execution_mode") or "") == "staged":
-                source_analysis_llm = _run_async_blocking(
-                    create_source_analysis_llm_client()
-                )
                 staged_context = _staged_builtin_context(
                     execution_contract=scoped_execution_contract,
                     task_bundle=task_bundle,
@@ -710,6 +914,30 @@ class WorkbenchWorkflowRunner:
                 )
 
                 def emit_stage_progress(payload: dict[str, Any]) -> None:
+                    public_metrics = {
+                        key: payload.get(key)
+                        for key in (
+                            "attempt_count",
+                            "model",
+                            "entry_point_count",
+                            "call_edge_count",
+                            "test_reference_count",
+                            "output_characters",
+                            "remaining_seconds",
+                            "last_activity_seconds",
+                            "time_to_first_token_ms",
+                            "queue_wait_ms",
+                            "provider_wait_ms",
+                            "generation_ms",
+                            "validation_ms",
+                            "repair_ms",
+                            "total_duration_ms",
+                            "can_retry",
+                            "reuse_source",
+                            "delta",
+                        )
+                        if payload.get(key) not in (None, "")
+                    }
                     self._emit_event(
                         "thinking",
                         {
@@ -721,6 +949,7 @@ class WorkbenchWorkflowRunner:
                             "artifact": str(payload.get("artifact") or ""),
                             "degraded": bool(payload.get("degraded", False)),
                             "reason": str(payload.get("reason") or ""),
+                            **public_metrics,
                             "user_message": (
                                 str(payload.get("user_message") or "")
                                 or (
@@ -731,34 +960,302 @@ class WorkbenchWorkflowRunner:
                         },
                     )
 
-                try:
-                    staged_result = _run_async_blocking(
-                        execute_staged_builtin_plan(
-                            llm=llm,
-                            plan=staged_plan,
+                async def execute_staged_lifecycle() -> tuple[
+                    dict[str, Any], dict[str, Any], list[dict[str, Any]]
+                ]:
+                    llm = await create_llm_client_from_active()
+                    source_analysis_llm = await create_source_analysis_llm_client()
+                    repair_history: list[dict[str, Any]] = []
+
+                    async def execute_staged(plan: dict[str, Any]) -> dict[str, Any]:
+                        return await _execute_staged_with_deadline(
+                                execute_staged_builtin_plan(
+                                    llm=llm,
+                                    plan=plan,
+                                    artifact_dir=artifact_dir,
+                                    context_prompt=json.dumps(
+                                        staged_context,
+                                        ensure_ascii=False,
+                                        indent=2,
+                                    ),
+                                    source_analysis_context=staged_context,
+                                    source_analysis_llm=source_analysis_llm,
+                                    source_analysis_cache_dir=(
+                                        settings.data_path
+                                        / "workbench"
+                                        / "source_analysis_cache"
+                                        if settings.source_analysis_cache_enabled
+                                        else None
+                                    ),
+                                    source_analysis_limits=(
+                                        dict(
+                                            scoped_execution_contract.get(
+                                                "source_analysis_limits"
+                                            )
+                                            or {}
+                                        )
+                                        if isinstance(
+                                            scoped_execution_contract.get(
+                                                "source_analysis_limits"
+                                            ),
+                                            dict,
+                                        )
+                                        else None
+                                    ),
+                                    regular_stage_cache_dir=(
+                                        settings.data_path
+                                        / "workbench"
+                                        / "regular_stage_cache"
+                                        if settings.regular_stage_cache_enabled
+                                        else None
+                                    ),
+                                    on_progress=emit_stage_progress,
+                                    is_cancelled=self._is_cancelled,
+                                    max_tokens=int(settings.staged_workflow_max_tokens),
+                                ),
+                                timeout_seconds=min(
+                                    float(timeout_sec)
+                                    if float(timeout_sec or 0) > 0
+                                    else float(settings.staged_workflow_timeout_seconds),
+                                    float(settings.staged_workflow_timeout_seconds),
+                                ),
+                                plan=plan,
+                                artifact_dir=artifact_dir,
+                                on_progress=emit_stage_progress,
+                            )
+
+                    async def validate_behavior_claims() -> dict[str, Any]:
+                        if not settings.behavior_claim_audit_enabled:
+                            return {}
+                        validation = await materialize_behavior_claim_validation(
                             artifact_dir=artifact_dir,
-                            context_prompt=json.dumps(
-                                staged_context,
-                                ensure_ascii=False,
-                                indent=2,
+                            repo_path=str(scoped_execution_contract.get("repo_path") or ""),
+                            generator_identity=str(
+                                getattr(llm, "model", "")
+                                or getattr(llm, "model_name", "")
+                                or "builtin-llm"
                             ),
-                            source_analysis_context=staged_context,
-                            source_analysis_llm=source_analysis_llm,
-                            source_analysis_cache_dir=(
-                                settings.data_path / "workbench" / "source_analysis_cache"
-                                if settings.source_analysis_cache_enabled
-                                else None
+                            on_progress=lambda payload: self._emit_event(
+                                "behavior_claim_validation_progress",
+                                {"step_id": step_id, **payload},
                             ),
-                            on_progress=emit_stage_progress,
-                            is_cancelled=self._is_cancelled,
-                            max_tokens=6000,
                         )
-                    )
-                finally:
-                    close_source_llm = getattr(source_analysis_llm, "close", None)
-                    if callable(close_source_llm):
-                        _run_async_blocking(close_source_llm())
+                        validation_status = str(validation.get("status") or "")
+                        claim_count = len(validation.get("claims") or [])
+                        contradicted = sum(
+                            item.get("status") == "contradicts"
+                            for item in validation.get("claims") or []
+                            if isinstance(item, dict)
+                        )
+                        self._emit_event(
+                            "behavior_claim_validation_completed",
+                            {
+                                "step_id": step_id,
+                                "status": validation_status,
+                                "claim_count": claim_count,
+                                "contradicted_count": contradicted,
+                                "duration_ms": validation.get("duration_ms"),
+                                "reused": bool(validation.get("reused")),
+                                "user_message": (
+                                    f"独立源码事实核验完成：{claim_count} 条，"
+                                    f"{contradicted} 条与源码矛盾"
+                                    if validation_status == "completed"
+                                    else "独立源码事实核验不可用，当前产物不会被标记为可交付"
+                                ),
+                            },
+                        )
+                        return validation
+
+                    current_plan = staged_plan
+                    try:
+                        staged_result = await execute_staged(current_plan)
+                        behavior_validation = await validate_behavior_claims()
+                        if settings.staged_quality_repair_enabled:
+                            for repair_attempt in range(
+                                1,
+                                int(settings.staged_quality_repair_max_attempts) + 1,
+                            ):
+                                audit = _audit_staged_agent_artifacts(
+                                    artifact_dir=artifact_dir,
+                                    task_bundle=task_bundle,
+                                    execution_contract=scoped_execution_contract,
+                                    workflow_snapshot=workflow_snapshot,
+                                )
+                                if not audit or str(audit.get("status") or "") not in {
+                                    "needs_rework",
+                                    "invalid",
+                                }:
+                                    break
+                                if str(behavior_validation.get("status") or "") == "unavailable":
+                                    break
+                                feedback = _quality_feedback_from_audit(
+                                    audit,
+                                    required_artifacts=required_artifacts,
+                                    quality_artifact=(
+                                        f"quality_repairs/attempt_{repair_attempt}/"
+                                        "quality_audit_before.json"
+                                    ),
+                                )
+                                if not feedback.get("affected_artifacts"):
+                                    break
+                                repair_dir = (
+                                    artifact_dir
+                                    / "quality_repairs"
+                                    / f"attempt_{repair_attempt}"
+                                )
+                                repair_dir.mkdir(parents=True, exist_ok=True)
+                                _write_json(repair_dir / "quality_audit_before.json", audit)
+                                _archive_behavior_claim_audit(
+                                    artifact_dir=artifact_dir,
+                                    repair_dir=repair_dir,
+                                )
+                                _snapshot_staged_metrics(
+                                    artifact_dir=artifact_dir,
+                                    destination=repair_dir / "stage_metrics_before.json",
+                                )
+                                self._emit_event(
+                                    "quality_repair_started",
+                                    {
+                                        "step_id": step_id,
+                                        "provider": BUILTIN_LLM_PROVIDER_ID,
+                                        "attempt": repair_attempt,
+                                        "max_attempts": int(
+                                            settings.staged_quality_repair_max_attempts
+                                        ),
+                                        "issue_count": int(
+                                            feedback.get("issue_count") or 0
+                                        ),
+                                        "affected_artifacts": list(
+                                            feedback.get("affected_artifacts") or []
+                                        ),
+                                        "user_message": (
+                                            "质量门禁发现问题，正在复用已验证证据并定向修复受影响产物"
+                                        ),
+                                    },
+                                )
+                                current_plan = _apply_quality_feedback_to_staged_plan(
+                                    current_plan,
+                                    feedback,
+                                )
+                                current_plan["quality_repair_attempt"] = repair_attempt
+                                snapshot_names = {
+                                    *[str(value) for value in required_artifacts],
+                                    *[
+                                        str(value)
+                                        for value in feedback.get("affected_artifacts") or []
+                                    ],
+                                    *_expand_quality_blocked_artifacts(
+                                        {
+                                            str(value)
+                                            for value in feedback.get("affected_artifacts") or []
+                                            if str(value).strip()
+                                        }
+                                    ),
+                                    "report.md",
+                                    "business_flow.md",
+                                    "sfmea.json",
+                                    "sfmea.md",
+                                    "black_box_cases.json",
+                                    "black_box_cases.md",
+                                    "behavior_claim_validation.json",
+                                }
+                                accepted_snapshot = _snapshot_quality_repair_artifacts(
+                                    artifact_dir=artifact_dir,
+                                    artifact_names=snapshot_names,
+                                )
+                                repair_started = time.monotonic()
+                                staged_result = await execute_staged(current_plan)
+                                behavior_validation = await validate_behavior_claims()
+                                candidate_audit = _audit_staged_agent_artifacts(
+                                    artifact_dir=artifact_dir,
+                                    task_bundle=task_bundle,
+                                    execution_contract=scoped_execution_contract,
+                                    workflow_snapshot=workflow_snapshot,
+                                )
+                                regressed = _quality_repair_regressed(
+                                    before=audit,
+                                    after=candidate_audit,
+                                )
+                                if regressed:
+                                    _write_json(
+                                        repair_dir / "quality_audit_candidate.json",
+                                        candidate_audit,
+                                    )
+                                    _restore_quality_repair_artifacts(
+                                        artifact_dir=artifact_dir,
+                                        snapshot=accepted_snapshot,
+                                    )
+                                    audit_after = audit
+                                else:
+                                    audit_after = candidate_audit
+                                _write_json(
+                                    repair_dir / "quality_audit_after.json",
+                                    audit_after,
+                                )
+                                history_item = {
+                                    "attempt": repair_attempt,
+                                    "duration_ms": round(
+                                        (time.monotonic() - repair_started) * 1000,
+                                        1,
+                                    ),
+                                    "status_before": str(audit.get("status") or ""),
+                                    "issues_before": int(audit.get("issue_count") or 0),
+                                    "status_after": str(audit_after.get("status") or ""),
+                                    "issues_after": int(
+                                        audit_after.get("issue_count") or 0
+                                    ),
+                                    "accepted": not regressed,
+                                    "candidate_status": str(
+                                        candidate_audit.get("status") or ""
+                                    ),
+                                    "candidate_score": int(
+                                        candidate_audit.get("score") or 0
+                                    ),
+                                    "candidate_issues": int(
+                                        candidate_audit.get("issue_count") or 0
+                                    ),
+                                    "affected_artifacts": list(
+                                        feedback.get("affected_artifacts") or []
+                                    ),
+                                }
+                                repair_history.append(history_item)
+                                self._emit_event(
+                                    "quality_repair_completed",
+                                    {
+                                        "step_id": step_id,
+                                        "provider": BUILTIN_LLM_PROVIDER_ID,
+                                        **history_item,
+                                        "user_message": (
+                                            "候选修复质量回退，已保留修复前的较优产物"
+                                            if regressed
+                                            else "定向质量修复已完成，正在确认最终交付质量"
+                                        ),
+                                    },
+                                )
+                                if str(audit_after.get("status") or "") not in {
+                                    "needs_rework",
+                                    "invalid",
+                                }:
+                                    break
+                        _write_json(
+                            artifact_dir / "quality_repair_result.json",
+                            {
+                                "enabled": bool(settings.staged_quality_repair_enabled),
+                                "attempt_count": len(repair_history),
+                                "attempts": repair_history,
+                            },
+                        )
+                        return staged_result, current_plan, repair_history
+                    finally:
+                        await _close_llm_clients(source_analysis_llm, llm)
+
+                (
+                    staged_result,
+                    staged_plan,
+                    quality_repair_history,
+                ) = _run_async_blocking(execute_staged_lifecycle())
                 raw_output = json.dumps(staged_result, ensure_ascii=False, indent=2)
+                status = _staged_step_status(status, staged_result)
                 model = ", ".join(
                     str(item) for item in staged_result.get("models") or [] if str(item)
                 ) or "staged-active-model"
@@ -768,11 +1265,36 @@ class WorkbenchWorkflowRunner:
                     if (artifact_dir / str(artifact)).is_file()
                 ]
             else:
-                response = _run_async_blocking(
-                    llm.complete(messages, max_tokens=12000, temperature=0.2)
+                provider_started = time.monotonic()
+                current_finish_reason.set(None)
+
+                async def execute_single_response() -> Any:
+                    llm = await create_llm_client_from_active()
+                    try:
+                        return await llm.complete(
+                            messages,
+                            max_tokens=12000,
+                            temperature=0.2,
+                        )
+                    finally:
+                        await _close_llm_clients(llm)
+
+                response = _run_async_blocking(execute_single_response())
+                provider_wait_ms = round(
+                    (time.monotonic() - provider_started) * 1000, 1
                 )
                 raw_output = str(getattr(response, "content", "") or "")
                 model = str(getattr(response, "model", "") or "")
+                response_usage = (
+                    dict(getattr(response, "usage", {}) or {})
+                    if isinstance(getattr(response, "usage", {}), dict)
+                    else {}
+                )
+                finish_reason = str(
+                    getattr(response, "finish_reason", "")
+                    or current_finish_reason.get()
+                    or "unknown"
+                )
                 written_artifacts = _write_builtin_llm_artifacts(
                     artifact_dir=artifact_dir,
                     raw_output=raw_output,
@@ -799,6 +1321,25 @@ class WorkbenchWorkflowRunner:
             "provider_diagnostics": {
                 "owner": "codetalk_builtin_llm",
                 "model": model,
+            },
+            "metrics": {
+                **prompt_metrics,
+                "attempt_count": 1,
+                "prompt_tokens": int(
+                    response_usage.get("prompt_tokens")
+                    or prompt_metrics["prompt_estimated_tokens"]
+                ),
+                "output_tokens": int(
+                    response_usage.get("completion_tokens")
+                    or BaseLLMClient.estimate_tokens(raw_output)
+                ),
+                "provider_wait_ms": provider_wait_ms,
+                "finish_reason": finish_reason,
+                "quality_repair_attempt_count": (
+                    len(quality_repair_history)
+                    if str(step.get("execution_mode") or "") == "staged"
+                    else 0
+                ),
             },
         }
         _write_json(artifact_dir / "execution_result.json", execution)
@@ -1389,12 +1930,54 @@ def _workflow_scoped_test_activity_contract(
             )
             if isinstance(spec, dict):
                 scoped_artifacts[artifact] = dict(spec)
+    quality_gates = dict(contract.get("quality_gates") or {})
+    if not settings.behavior_claim_audit_enabled:
+        quality_gates["require_independent_behavior_validation"] = False
     return {
         **contract,
+        "quality_gates": quality_gates,
         "artifact_contract": scoped_artifacts,
         "required_outputs": list(scoped_artifacts),
         "audit_scope_required": True,
     }
+
+
+def _audit_staged_agent_artifacts(
+    *,
+    artifact_dir: Path,
+    task_bundle: dict[str, Any],
+    execution_contract: dict[str, Any],
+    workflow_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    contract = (
+        task_bundle.get("test_activity_contract")
+        if isinstance(task_bundle.get("test_activity_contract"), dict)
+        else execution_contract.get("test_activity_contract")
+        if isinstance(execution_contract.get("test_activity_contract"), dict)
+        else {}
+    )
+    if not contract or not _workflow_declares_test_activity_deliverables(
+        workflow_snapshot
+    ):
+        return {}
+    scoped = _workflow_scoped_test_activity_contract(
+        contract=contract,
+        workflow_snapshot=workflow_snapshot,
+    )
+    return audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract=scoped,
+        repo_path=str(execution_contract.get("repo_path") or ""),
+    )
+
+
+def _snapshot_staged_metrics(*, artifact_dir: Path, destination: Path) -> None:
+    metrics: list[dict[str, Any]] = []
+    for path in sorted((artifact_dir / "stages").glob("*/stage_result.json")):
+        payload = _read_json(path)
+        if isinstance(payload, dict):
+            metrics.append(dict(payload))
+    _write_json(destination, {"stages": metrics})
 
 
 def _test_activity_template_for_declaration(
@@ -1416,6 +1999,7 @@ def _test_activity_template_for_declaration(
         "black_box_cases": "black_box_cases.json",
         "test_design": "test_design.md",
         "test_strategy": "test_strategy.md",
+        "combined_test_report": "combined_test_report.md",
     }
     if output_type in by_type:
         return by_type[output_type]
@@ -1449,9 +2033,24 @@ def _build_workbench_staged_plan(
         for item in output_contract.get("expected_output_schemas") or []
         if isinstance(item, dict) and str(item.get("artifact") or "")
     }
+    test_activity_contract = (
+        execution_contract.get("test_activity_contract")
+        if isinstance(execution_contract.get("test_activity_contract"), dict)
+        else {}
+    )
+    test_activity_artifacts = (
+        test_activity_contract.get("artifact_contract")
+        if isinstance(test_activity_contract.get("artifact_contract"), dict)
+        else {}
+    )
     artifact_contract = {
         artifact: {
             "artifact": artifact,
+            **(
+                dict(test_activity_artifacts[artifact])
+                if isinstance(test_activity_artifacts.get(artifact), dict)
+                else {}
+            ),
             **({"schema": schemas[artifact]} if schemas.get(artifact) else {}),
         }
         for artifact in required_artifacts
@@ -1463,14 +2062,11 @@ def _build_workbench_staged_plan(
     ]
     original_request = "\n".join(analysis_targets).strip()
     if not original_request:
+        original_request = str(execution_contract.get("goal") or "").strip()
+    if not original_request:
         original_request = str(
             (task_bundle.get("context_bundle") or {}).get("query") or ""
         ).strip()
-    test_activity_contract = (
-        execution_contract.get("test_activity_contract")
-        if isinstance(execution_contract.get("test_activity_contract"), dict)
-        else {}
-    )
     plan = build_staged_execution_plan(
         contract={
             "target": str(test_activity_contract.get("target") or original_request),
@@ -1483,6 +2079,26 @@ def _build_workbench_staged_plan(
     plan["workflow_version"] = str(
         ((execution_contract.get("workflow") or {}).get("version")) or ""
     )
+    plan["execution_input_contract"] = {
+        "goal": str(execution_contract.get("goal") or ""),
+        "user_inputs": [
+            dict(item)
+            for item in execution_contract.get("user_inputs") or []
+            if isinstance(item, dict)
+        ],
+        "input_materials": dict(execution_contract.get("input_materials") or {}),
+        "mcp": dict(execution_contract.get("mcp") or {}),
+        "skills": dict(execution_contract.get("skills") or {}),
+        "test_activity_contract": dict(test_activity_contract),
+    }
+    plan["cache_bypass_artifacts"] = [
+        str(value)
+        for value in task_bundle.get("quality_retry_required_artifacts") or []
+        if str(value).strip()
+    ]
+    retry_feedback = task_bundle.get("retry_quality_feedback")
+    if isinstance(retry_feedback, dict) and retry_feedback:
+        plan["quality_retry_feedback"] = retry_feedback
     return plan
 
 
@@ -1492,6 +2108,10 @@ def _builtin_llm_messages(
     task_bundle: dict[str, Any],
     output_contract: dict[str, Any],
 ) -> list[dict[str, str]]:
+    compact_execution_contract = _compact_builtin_execution_contract(
+        execution_contract
+    )
+    compact_output_contract = _compact_builtin_output_contract(output_contract)
     return [
         {
             "role": "system",
@@ -1515,14 +2135,17 @@ def _builtin_llm_messages(
             "role": "user",
             "content": json.dumps(
                 {
-                    "execution_contract": execution_contract,
-                    "input_context": task_bundle.get("input_context") or {},
-                    "input_materials": task_bundle.get("input_materials") or {},
+                    "execution_contract": compact_execution_contract,
+                    "input_context": _compact_builtin_input_context(
+                        task_bundle.get("input_context") or {}
+                    ),
+                    "input_materials": _compact_builtin_input_materials(
+                        task_bundle.get("input_materials") or {}
+                    ),
                     "agent_mcp_requests": task_bundle.get("agent_mcp_requests") or [],
                     "prior_step_results": task_bundle.get("prior_step_results") or [],
                     "prior_step_artifacts": _builtin_prior_step_artifacts(task_bundle),
-                    "workflow_contract": task_bundle.get("workflow_contract") or {},
-                    "agent_output_contract": output_contract,
+                    "agent_output_contract": compact_output_contract,
                     "quality_retry_required_artifacts": (
                         task_bundle.get("quality_retry_required_artifacts") or []
                     ),
@@ -1536,6 +2159,165 @@ def _builtin_llm_messages(
             ),
         },
     ]
+
+
+def _compact_builtin_execution_contract(value: dict[str, Any]) -> dict[str, Any]:
+    compact = {
+        key: value.get(key)
+        for key in (
+            "contract_version",
+            "workflow",
+            "executor",
+            "repo_path",
+            "goal",
+            "analysis_targets",
+            "user_inputs",
+            "input_materials",
+            "mcp",
+            "skills",
+            "source_context",
+            "outputs",
+        )
+        if value.get(key) not in (None, {}, [])
+    }
+    source_context = compact.get("source_context")
+    if isinstance(source_context, dict):
+        compact["source_context"] = {
+            key: source_context.get(key)
+            for key in (
+                "status",
+                "provider",
+                "repo_revision",
+                "source_first",
+                "rule",
+            )
+            if source_context.get(key) not in (None, "")
+        }
+        compact["source_context"]["files"] = [
+            {
+                **{
+                    key: item.get(key)
+                    for key in (
+                        "file_path",
+                        "classification",
+                        "start_line",
+                        "end_line",
+                        "sha256",
+                        "symbols",
+                        "matched_terms",
+                        "status",
+                    )
+                    if item.get(key) not in (None, [], "")
+                },
+                "excerpt": str(item.get("excerpt") or "")[:1800],
+            }
+            for item in source_context.get("files") or []
+            if isinstance(item, dict)
+        ][:16]
+    activity = value.get("test_activity_contract")
+    if isinstance(activity, dict):
+        constraints = []
+        for item in activity.get("professional_constraints") or []:
+            if not isinstance(item, dict):
+                continue
+            constraints.append({
+                key: item.get(key)
+                for key in ("id", "assertion", "evidence")
+                if item.get(key) not in (None, [], "")
+            })
+        compact["test_activity_contract"] = {
+            key: activity.get(key)
+            for key in (
+                "contract_version",
+                "domain_profiles",
+                "domain_requirements",
+                "focus_rationale",
+                "project_profile",
+                "evidence_policy",
+                "black_box_boundary",
+                "quality_gates",
+                "required_outputs",
+                "artifact_contract",
+            )
+            if activity.get(key) not in (None, {}, [])
+        }
+        compact["test_activity_contract"].update({
+            "target": str(activity.get("target") or "")[:8000],
+            "user_requirements": str(activity.get("user_requirements") or "")[:8000],
+            "professional_constraints": constraints[:32],
+        })
+    return compact
+
+
+def _compact_builtin_output_contract(value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value.get(key)
+        for key in (
+            "artifact_dir",
+            "required_artifacts",
+            "expected_output_schemas",
+            "expected_semantic_outputs",
+            "execution_rules",
+            "evidence_rules",
+            "source_slice_protocol",
+        )
+        if value.get(key) not in (None, {}, [])
+    }
+
+
+def _compact_builtin_input_context(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    inputs: list[dict[str, Any]] = []
+    for item in value.get("inputs") or []:
+        if not isinstance(item, dict):
+            continue
+        compact = {
+            key: item.get(key)
+            for key in (
+                "input_id",
+                "kind",
+                "filename",
+                "sha256",
+                "size_bytes",
+                "parse_warnings",
+            )
+            if item.get(key) not in (None, [], "")
+        }
+        text = str(item.get("text_preview") or "")
+        parsed_path = Path(str(item.get("parsed_text_path") or ""))
+        if parsed_path.is_file():
+            text = parsed_path.read_text(encoding="utf-8", errors="replace")
+        compact["text"] = text[:24000]
+        compact["text_truncated"] = len(text) > 24000
+        inputs.append(compact)
+    return {"file_count": len(inputs), "inputs": inputs}
+
+
+def _compact_builtin_input_materials(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    return {
+        "read_order": value.get("read_order") or [],
+        "rules": value.get("rules") or {},
+        "materials": [
+            {
+                key: item.get(key)
+                for key in (
+                    "input_id",
+                    "input_type",
+                    "filename",
+                    "material_role",
+                    "sha256",
+                    "size_bytes",
+                    "evidence_boundary",
+                )
+                if item.get(key) not in (None, "")
+            }
+            for item in value.get("materials") or []
+            if isinstance(item, dict)
+        ],
+    }
 
 
 def _scope_builtin_execution_contract(
@@ -1638,6 +2420,17 @@ def _builtin_prior_step_artifacts(task_bundle: dict[str, Any]) -> dict[str, Any]
         if step_payload:
             result[str(step_id)] = step_payload
     return result
+
+
+async def _close_llm_clients(*clients: Any) -> None:
+    seen: set[int] = set()
+    for client in clients:
+        if client is None or id(client) in seen:
+            continue
+        seen.add(id(client))
+        close = getattr(client, "close", None)
+        if callable(close):
+            await close()
 
 
 def _run_async_blocking(awaitable: Any) -> Any:
@@ -3075,6 +3868,74 @@ def _dedupe_paths(paths: list[Path]) -> list[Path]:
     return result
 
 
+async def _execute_staged_with_deadline(
+    awaitable: Any,
+    *,
+    timeout_seconds: float,
+    plan: dict[str, Any],
+    artifact_dir: Path,
+    on_progress: Callable[[dict[str, Any]], None] | None = None,
+) -> dict[str, Any]:
+    try:
+        return await asyncio.wait_for(awaitable, timeout=max(0.001, timeout_seconds))
+    except asyncio.TimeoutError:
+        stage_statuses: dict[str, str] = {}
+        partial_stages: list[str] = []
+        deadline_recorded = False
+        stages = [item for item in plan.get("stages") or [] if isinstance(item, dict)]
+        for index, stage in enumerate(stages):
+            stage_id = str(stage.get("id") or f"stage_{index + 1}")
+            stage_dir = artifact_dir / "stages" / stage_id
+            result_path = stage_dir / "stage_result.json"
+            existing = _read_json(result_path)
+            if isinstance(existing, dict) and existing.get("status"):
+                stage_statuses[stage_id] = str(existing["status"])
+                continue
+            stage_dir.mkdir(parents=True, exist_ok=True)
+            if not deadline_recorded:
+                status = "partial"
+                partial_stages.append(stage_id)
+                deadline_recorded = True
+            else:
+                status = "skipped"
+            _write_json(
+                result_path,
+                {
+                    "stage_id": stage_id,
+                    "artifact": str(stage.get("artifact") or ""),
+                    "status": status,
+                    "reason": "workflow_deadline_exceeded",
+                    "total_budget_seconds": timeout_seconds,
+                },
+            )
+            stage_statuses[stage_id] = status
+        result = {
+            "version": "ai-staged-execution-result-v1",
+            "status": "partial",
+            "completed_stages": sum(
+                status == "completed" for status in stage_statuses.values()
+            ),
+            "partial_stages": partial_stages,
+            "stage_statuses": stage_statuses,
+            "total_stages": len(stages),
+            "models": [],
+            "reason": "workflow_deadline_exceeded",
+        }
+        _write_json(artifact_dir / "staged_execution_result.json", result)
+        if on_progress is not None:
+            on_progress(
+                {
+                    "event_type": "stage_workflow_deadline_exceeded",
+                    "stage_id": partial_stages[0] if partial_stages else "",
+                    "status": "partial",
+                    "reason": "workflow_deadline_exceeded",
+                    "total_budget_seconds": timeout_seconds,
+                    "user_message": "工作流已达到总时间上限，已保留现有结果并停止后续模型调用。",
+                }
+            )
+        return result
+
+
 def _source_file_score(
     path: Path,
     *,
@@ -3499,7 +4360,9 @@ def _failure_recovery_summary(
         "configuration_error",
         "error",
     }
-    if provider_unavailable:
+    if _agent_authentication_failed_likely(raw_output):
+        failure_kind = "agent_authentication_failed"
+    elif provider_unavailable:
         failure_kind = "agent_error"
     elif execution.get("timed_out"):
         failure_kind = "agent_timeout"
@@ -3542,6 +4405,7 @@ def _failure_recovery_summary(
         "failure_kind": failure_kind,
         "retryable": failure_kind in {
             "agent_error",
+            "agent_authentication_failed",
             "agent_timeout",
             "artifact_validation_failed",
             "agent_unhelpful_output",
@@ -3584,6 +4448,17 @@ def _execution_unhelpful_output_likely(raw_output: str) -> bool:
     return has_greeting and not has_artifact_signal and len(text) <= 240
 
 
+def _agent_authentication_failed_likely(raw_output: str) -> bool:
+    lower = str(raw_output or "").lower()
+    return any(marker in lower for marker in (
+        "authentication_failed",
+        "failed to authenticate",
+        "api error: 403",
+        '"api_error_status":403',
+        "http 403",
+    ))
+
+
 def _execution_stopped_after_source_search_likely(raw_output: str) -> bool:
     text = _plain_agent_output(raw_output)
     if not text:
@@ -3618,6 +4493,7 @@ def _failure_recovery_user_message(
     if provider_diagnostics.get("health_status") in {"unavailable", "configuration_error", "error"}:
         return "执行器不可用，当前节点无法启动 Agent。"
     messages = {
+        "agent_authentication_failed": "执行器已启动，但真实模型请求被拒绝（HTTP 403）。",
         "agent_timeout": "Agent 执行超时，当前节点还没有产出可交付结果。",
         "agent_error": "Agent 执行失败，当前节点没有产出可交付结果。",
         "artifact_validation_failed": "Agent 没有生成工作流要求的完整交付件。",
@@ -3637,6 +4513,11 @@ def _failure_recovery_recommended_actions(
         return [
             "请在设置页检查该执行器命令、PATH 或改成完整可执行文件路径。",
             "也可以切换到内置模型重跑，先确认工作流输入和输出契约没有问题。",
+        ]
+    if failure_kind == "agent_authentication_failed":
+        return [
+            "请在终端重新登录该执行器，并确认账号或代理允许真实模型请求；仅能显示版本号不代表模型可调用。",
+            "返回设置页重新执行探测；探测通过后再从失败节点重试。",
         ]
     if failure_kind == "agent_unhelpful_output":
         return [
@@ -4414,6 +5295,139 @@ def _previous_test_activity_quality_feedback(artifact_dir: Path) -> dict[str, An
     }
 
 
+def _quality_feedback_from_audit(
+    audit: dict[str, Any],
+    *,
+    required_artifacts: list[str],
+    quality_artifact: str,
+) -> dict[str, Any]:
+    """Translate an in-run audit into a bounded staged repair contract."""
+    report_artifact = next(
+        (
+            str(value)
+            for value in required_artifacts
+            if Path(str(value)).suffix.lower() in {".md", ".txt"}
+        ),
+        str(required_artifacts[0]) if required_artifacts else "assistant-output.md",
+    )
+    issues: list[dict[str, Any]] = []
+    affected_artifacts: list[str] = []
+    for raw_issue in audit.get("issues") or []:
+        if not isinstance(raw_issue, dict):
+            continue
+        issue = dict(raw_issue)
+        source_artifact = str(issue.get("artifact") or "").strip()
+        code = str(issue.get("code") or "").strip()
+        artifact = report_artifact if source_artifact == "assistant-output.md" else source_artifact
+        if source_artifact == "test_design.md" and code in {
+            "missing_max_connections_target_setup",
+            "incomplete_mcs_black_box_oracle",
+            "harness_case_not_registered",
+        }:
+            artifact = "black_box_cases.json"
+        if artifact:
+            issue["artifact"] = artifact
+            if source_artifact != artifact:
+                issue["source_artifact"] = source_artifact
+            if artifact not in affected_artifacts:
+                affected_artifacts.append(artifact)
+            if (
+                source_artifact == "assistant-output.md"
+                and str(issue.get("code") or "") == "professional_fact_conflict"
+            ):
+                for structured_artifact in (
+                    "business_flow.md",
+                    "sfmea.json",
+                    "black_box_cases.json",
+                ):
+                    if structured_artifact not in affected_artifacts:
+                        affected_artifacts.append(structured_artifact)
+            if (
+                source_artifact == "assistant-output.md"
+                and code == "missing_iscsi_professional_scenarios"
+            ):
+                for structured_artifact in (
+                    "business_flow.md",
+                    "black_box_cases.json",
+                ):
+                    if structured_artifact not in affected_artifacts:
+                        affected_artifacts.append(structured_artifact)
+        issues.append(issue)
+    grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for issue in issues:
+        key = (
+            str(issue.get("artifact") or ""),
+            str(issue.get("code") or ""),
+            str(issue.get("field") or issue.get("field_name") or ""),
+        )
+        group = grouped.setdefault(
+            key,
+            {
+                "artifact": key[0],
+                "code": key[1],
+                "field": key[2],
+                "count": 0,
+                "messages": [],
+            },
+        )
+        group["count"] += 1
+        message = str(issue.get("message") or issue.get("reason") or "").strip()
+        if message and message not in group["messages"] and len(group["messages"]) < 3:
+            group["messages"].append(message)
+    return {
+        "quality_artifact": quality_artifact,
+        "status": str(audit.get("status") or "needs_rework"),
+        "issue_count": len(issues),
+        "issues": issues[:50],
+        "issue_groups": list(grouped.values()),
+        "affected_artifacts": affected_artifacts,
+        "recommendations": [
+            str(item)
+            for item in audit.get("recommendations") or []
+            if str(item).strip()
+        ][:50],
+        "instruction": (
+            "这是本次运行首次生成后的产品质量门禁明细。只重新生成受影响产物，"
+            "复用已验证源码证据和已通过阶段；必须逐项修复全部问题，不能删除、"
+            "绕过或弱化门禁，也不能把设计期望改写成实现事实。"
+        ),
+    }
+
+
+def _apply_quality_feedback_to_staged_plan(
+    plan: dict[str, Any],
+    feedback: dict[str, Any],
+) -> dict[str, Any]:
+    repaired = json.loads(json.dumps(plan))
+    repaired["quality_retry_feedback"] = dict(feedback)
+    base_bypass = repaired.get("quality_repair_base_cache_bypass_artifacts")
+    if not isinstance(base_bypass, list):
+        base_bypass = list(repaired.get("cache_bypass_artifacts") or [])
+        repaired["quality_repair_base_cache_bypass_artifacts"] = list(base_bypass)
+    bypass: list[str] = []
+    for value in [
+        *base_bypass,
+        *(feedback.get("affected_artifacts") or []),
+    ]:
+        artifact = str(value).strip()
+        if artifact and artifact not in bypass:
+            bypass.append(artifact)
+    if any(
+        Path(str(value)).name in {
+            "business_flow.md",
+            "sfmea.json",
+            "black_box_cases.json",
+        }
+        for value in feedback.get("affected_artifacts") or []
+    ):
+        for output in repaired.get("required_outputs") or []:
+            artifact = str(output).strip()
+            if artifact.endswith(".md") and artifact not in bypass:
+                bypass.append(artifact)
+    repaired["cache_bypass_artifacts"] = bypass
+    return repaired
+
+
 def _workflow_step_artifact_map(
     prior_step_results: list[dict[str, Any]],
 ) -> dict[str, dict[str, str]]:
@@ -4453,6 +5467,8 @@ def _overall_status(step_results: list[dict[str, Any]]) -> str:
     statuses = {str(item.get("status") or "") for item in actionable}
     if "cancelled" in statuses:
         return "cancelled"
+    if "partial" in statuses:
+        return "partial"
     if statuses == {"completed"}:
         return "completed"
     if statuses.issubset({"completed", "completed_empty"}) and "completed_empty" in statuses:
@@ -4468,6 +5484,8 @@ def _execution_status(step_results: list[dict[str, Any]]) -> str:
     statuses = {str(item.get("status") or "") for item in step_results}
     if "cancelled" in statuses:
         return "cancelled"
+    if "partial" in statuses:
+        return "partial"
     if statuses.intersection({"error", "failed", "blocked", "invalid"}):
         return "failed"
     return "completed"
@@ -4484,20 +5502,45 @@ def _resolve_plan_node_inputs(
         return {}
     resolved: dict[str, Any] = {}
     for target_port, raw_binding in sorted(bindings.items()):
-        if not isinstance(raw_binding, dict):
-            raise ValueError(f"compiled binding is invalid for {target_port}")
-        source_id = str(raw_binding.get("source_node_id") or "")
-        source_port = str(raw_binding.get("source_port_id") or "")
-        if source_id in input_snapshot:
-            if source_port != "value":
-                raise ValueError(f"task input binding uses an invalid port: {source_id}.{source_port}")
-            resolved[str(target_port)] = input_snapshot[source_id]
+        if isinstance(raw_binding, list):
+            resolved[str(target_port)] = [
+                _resolve_single_plan_node_input(
+                    target_port=str(target_port),
+                    raw_binding=item,
+                    input_snapshot=input_snapshot,
+                    direct_dependency_outputs=direct_dependency_outputs,
+                )
+                for item in raw_binding
+            ]
             continue
-        source_outputs = direct_dependency_outputs.get(source_id)
-        if not isinstance(source_outputs, dict) or source_port not in source_outputs:
-            raise ValueError(f"compiled binding source output is missing: {source_id}.{source_port}")
-        resolved[str(target_port)] = source_outputs[source_port]
+        resolved[str(target_port)] = _resolve_single_plan_node_input(
+            target_port=str(target_port),
+            raw_binding=raw_binding,
+            input_snapshot=input_snapshot,
+            direct_dependency_outputs=direct_dependency_outputs,
+        )
     return resolved
+
+
+def _resolve_single_plan_node_input(
+    *,
+    target_port: str,
+    raw_binding: Any,
+    input_snapshot: dict[str, Any],
+    direct_dependency_outputs: dict[str, dict[str, Any]],
+) -> Any:
+    if not isinstance(raw_binding, dict):
+        raise ValueError(f"compiled binding is invalid for {target_port}")
+    source_id = str(raw_binding.get("source_node_id") or "")
+    source_port = str(raw_binding.get("source_port_id") or "")
+    if source_id in input_snapshot:
+        if source_port != "value":
+            raise ValueError(f"task input binding uses an invalid port: {source_id}.{source_port}")
+        return input_snapshot[source_id]
+    source_outputs = direct_dependency_outputs.get(source_id)
+    if not isinstance(source_outputs, dict) or source_port not in source_outputs:
+        raise ValueError(f"compiled binding source output is missing: {source_id}.{source_port}")
+    return source_outputs[source_port]
 
 
 def _validated_step_outputs(

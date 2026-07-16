@@ -5431,6 +5431,7 @@ async def test_builtin_comprehensive_test_activity_automatically_runs_stages(
     run_id = created["run"]["id"]
     run = await store.get_run(run_id)
     messages = await store.list_messages(conversation["id"])
+    events = await store.list_events_for_run(conversation["id"], run_id, limit=500)
     agent_dir = ai_conversations.ai_thread_agent_artifact_dir(conversation["id"], run_id)
     delivery_dir = ai_conversations.ai_thread_delivery_dir(conversation["id"], run_id)
     assert run["status"] == "completed"
@@ -5440,7 +5441,13 @@ async def test_builtin_comprehensive_test_activity_automatically_runs_stages(
     )
     assert staged_plan["workflow_version"] == "ai-thread-source-flow-v1"
     assert len(llm.prompts) == 5
-    assert all(original in prompt for prompt in llm.prompts)
+    assert all("第一行：详细输出 iSCSI login 完整流程、SFMEA、黑盒测试用例和测试设计文件" in prompt for prompt in llm.prompts)
+    assert all("第二行：必须保留" in prompt for prompt in llm.prompts)
+    stage_events = [event for event in events if str(event["payload"].get("kind") or "").startswith("stage_")]
+    assert any(event["payload"].get("kind") == "stage_flow_evidence_ready" for event in stage_events)
+    assert any(event["payload"].get("kind") == "stage_provider_started" for event in stage_events)
+    assert any(event["payload"].get("kind") == "stage_first_token" for event in stage_events)
+    assert any(event["payload"].get("kind") == "stage_output_delta" for event in stage_events)
     manifest = json.loads((delivery_dir / "artifact_manifest.json").read_text(encoding="utf-8"))
     assert {item["relative_path"] for item in manifest["artifacts"]} == {
         "business_flow.md",

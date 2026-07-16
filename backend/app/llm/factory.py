@@ -2,6 +2,7 @@
 
 import json
 import logging
+import sqlite3
 
 import aiosqlite
 
@@ -44,7 +45,11 @@ def _resolve_proxy(
     return None, ssl_cert, False
 
 
-async def create_llm_client(config_id: str) -> BaseLLMClient:
+async def create_llm_client(
+    config_id: str,
+    *,
+    model_override: str | None = None,
+) -> BaseLLMClient:
     """Read an llm_configs row and return the appropriate client instance.
 
     Args:
@@ -82,6 +87,8 @@ async def create_llm_client(config_id: str) -> BaseLLMClient:
             model = overrides.get("model", model)
         except json.JSONDecodeError:
             logger.warning("无法解析 config_json，使用默认配置")
+    if model_override:
+        model = model_override
 
     proxy_url, ssl_cert, force_direct = _resolve_proxy(general)
 
@@ -126,6 +133,22 @@ async def create_llm_client_from_active() -> BaseLLMClient:
     return await create_llm_client(row["value"])
 
 
+def _automatic_source_analysis_model(
+    *,
+    api_type: str,
+    base_url: str,
+    model: str,
+) -> str | None:
+    normalized_url = base_url.rstrip("/").lower()
+    if (
+        api_type == "openai_compat"
+        and normalized_url in {"https://api.deepseek.com", "https://api.deepseek.com/v1"}
+        and model.strip().lower() == "deepseek-reasoner"
+    ):
+        return "deepseek-chat"
+    return None
+
+
 async def create_source_analysis_llm_client() -> BaseLLMClient | None:
     """Resolve the optional fast-model route for staged source analysis.
 
@@ -133,26 +156,63 @@ async def create_source_analysis_llm_client() -> BaseLLMClient | None:
     Missing/invalid selectors deliberately fall back to the caller's active
     client so context and output limits still apply.
     """
-    selector = str(settings.source_analysis_model or "").strip()
+    selector = str(settings.source_analysis_model or "auto").strip()
     if not selector:
         return None
-    async with aiosqlite.connect(settings.sqlite_db) as db:
-        db.row_factory = aiosqlite.Row
-        async with db.execute(
-            """
-            SELECT id
-            FROM llm_configs
-            WHERE id = ? OR model = ?
-            ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, created_at DESC
-            LIMIT 1
-            """,
-            (selector, selector, selector),
-        ) as cur:
-            row = await cur.fetchone()
-    if not row:
+    try:
+        async with aiosqlite.connect(settings.sqlite_db) as db:
+            db.row_factory = aiosqlite.Row
+            if selector.lower() != "auto":
+                async with db.execute(
+                    """
+                    SELECT id
+                    FROM llm_configs
+                    WHERE id = ? OR model = ?
+                    ORDER BY CASE WHEN id = ? THEN 0 ELSE 1 END, created_at DESC
+                    LIMIT 1
+                    """,
+                    (selector, selector, selector),
+                ) as cur:
+                    row = await cur.fetchone()
+                if row:
+                    return await create_llm_client(str(row["id"]))
+            async with db.execute(
+                """
+                SELECT c.id, c.api_type, c.base_url, c.model
+                FROM settings s
+                JOIN llm_configs c ON c.id = s.value
+                WHERE s.key = 'active_chat_model_id'
+                LIMIT 1
+                """
+            ) as cur:
+                active = await cur.fetchone()
+    except sqlite3.OperationalError as exc:
+        logger.warning(
+            "Source analysis model route unavailable; using active model: %s",
+            exc,
+        )
+        return None
+    if selector.lower() != "auto":
         logger.warning(
             "source_analysis_model=%s does not match an LLM config; using active model",
             selector,
         )
         return None
-    return await create_llm_client(str(row["id"]))
+    if not active:
+        return None
+    automatic_model = _automatic_source_analysis_model(
+        api_type=str(active["api_type"] or ""),
+        base_url=str(active["base_url"] or ""),
+        model=str(active["model"] or ""),
+    )
+    if not automatic_model:
+        return None
+    logger.info(
+        "Source analysis auto-routed from %s to %s",
+        active["model"],
+        automatic_model,
+    )
+    return await create_llm_client(
+        str(active["id"]),
+        model_override=automatic_model,
+    )

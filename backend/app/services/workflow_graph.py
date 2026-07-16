@@ -107,6 +107,7 @@ def validate_workflow_graph(
     edge_ids: set[str] = set()
     valid_edges: list[dict[str, Any]] = []
     degree: dict[str, int] = defaultdict(int)
+    scalar_input_bindings: dict[tuple[str, str], str] = {}
     for raw_edge in raw_edges:
         if not isinstance(raw_edge, dict):
             errors.append(_issue("edge_not_object", "Each edge must be an object"))
@@ -147,7 +148,18 @@ def validate_workflow_graph(
             source_type = source_ports[source_port]
             target_type = target_ports[target_port]
             if not _types_compatible(source_type, target_type):
-                errors.append(_issue("port_type_mismatch", f"Port types are incompatible: {source_type} -> {target_type}", node_id=target_id, field=target_port))
+                errors.append(_issue("port_type_mismatch", f"端口类型不兼容：{source_type} → {target_type}", node_id=target_id, field=target_port))
+            binding_key = (target_id, target_port)
+            if not _input_port_is_collection(nodes[target_id], target_port):
+                if binding_key in scalar_input_bindings:
+                    errors.append(_issue(
+                        "multiple_edges_to_single_input",
+                        f"该输入已绑定：{target_id}.{target_port}",
+                        node_id=target_id,
+                        field=target_port,
+                    ))
+                else:
+                    scalar_input_bindings[binding_key] = edge_id
         degree[source_id] += 1
         degree[target_id] += 1
         valid_edges.append(raw_edge)
@@ -327,6 +339,8 @@ def _validate_execution_node(
     errors: list[dict[str, Any]],
     warnings: list[dict[str, Any]],
 ) -> None:
+    _validate_port_definitions(node_id, "input", config.get("input_ports"), errors)
+    _validate_port_definitions(node_id, "output", config.get("output_ports"), errors)
     if kind != "agent":
         return
     if not str(config.get("goal") or "").strip():
@@ -531,11 +545,77 @@ def _resolved_bindings(
             if source_node.get("kind") in EXECUTION_NODE_KINDS
             else str(_config(source_node).get("contract_id") or source_id)
         )
-        bindings[_endpoint(edge, "target", "port_id")] = {
+        target_port = _endpoint(edge, "target", "port_id")
+        is_collection = _input_port_is_collection(nodes[target_id], target_port)
+        if target_port in bindings and not is_collection:
+            raise WorkflowGraphValidationError(_validation_result([
+                _issue(
+                    "multiple_edges_to_single_input",
+                    f"该输入已绑定：{target_id}.{target_port}",
+                    node_id=target_id,
+                    field=target_port,
+                )
+            ], []))
+        binding = {
             "source_node_id": source_ref,
             "source_port_id": _endpoint(edge, "source", "port_id"),
         }
+        if is_collection:
+            bindings.setdefault(target_port, []).append(binding)
+        else:
+            bindings[target_port] = binding
+    for target_port, value in bindings.items():
+        if isinstance(value, list):
+            bindings[target_port] = sorted(
+                value,
+                key=lambda item: (item["source_node_id"], item["source_port_id"]),
+            )
     return {key: bindings[key] for key in sorted(bindings)}
+
+
+def _validate_port_definitions(
+    node_id: str,
+    direction: str,
+    value: Any,
+    errors: list[dict[str, Any]],
+) -> None:
+    seen: set[str] = set()
+    prefix = "input" if direction == "input" else "output"
+    label = "输入" if direction == "input" else "输出"
+    for index, item in enumerate(value or []):
+        if not isinstance(item, dict):
+            errors.append(_issue(
+                f"{prefix}_port_invalid",
+                f"{label}端口定义无效",
+                node_id=node_id,
+                field=f"{prefix}_ports.{index}",
+            ))
+            continue
+        port_id = str(item.get("id") or "").strip()
+        field = f"{prefix}_ports.{index}.id"
+        if not port_id:
+            errors.append(_issue(
+                f"{prefix}_port_id_missing",
+                f"{label}端口名称不能为空",
+                node_id=node_id,
+                field=field,
+            ))
+            continue
+        if not _SAFE_ID.fullmatch(port_id):
+            errors.append(_issue(
+                f"{prefix}_port_id_invalid",
+                f"{label}端口名称包含非法字符：{port_id}",
+                node_id=node_id,
+                field=field,
+            ))
+        if port_id in seen:
+            errors.append(_issue(
+                f"duplicate_{prefix}_port_id",
+                f"{label}端口名称重复：{port_id}",
+                node_id=node_id,
+                field=field,
+            ))
+        seen.add(port_id)
 
 
 def _execution_dependencies(
@@ -621,6 +701,15 @@ def _output_ports(node: dict[str, Any]) -> dict[str, str]:
     return {}
 
 
+def _input_port_is_collection(node: dict[str, Any], port_id: str) -> bool:
+    if node.get("kind") == "output":
+        return False
+    for item in _config(node).get("input_ports") or []:
+        if isinstance(item, dict) and str(item.get("id") or "") == port_id:
+            return bool(item.get("collection", False))
+    return False
+
+
 def _port_map(value: Any) -> dict[str, str]:
     ports: dict[str, str] = {}
     for item in value or []:
@@ -635,6 +724,7 @@ def _compiled_ports(value: Any) -> list[dict[str, Any]]:
             "id": str(item.get("id") or ""),
             "type": str(item.get("type") or "any"),
             **({"required": bool(item.get("required"))} if "required" in item else {}),
+            **({"collection": bool(item.get("collection"))} if "collection" in item else {}),
         }
         for item in value or []
         if isinstance(item, dict) and str(item.get("id") or "").strip()

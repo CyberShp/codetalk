@@ -41,6 +41,7 @@ from app.services.agent_invocation_contract import (
 )
 from app.services.ai_staged_execution import (
     StagedExecutionCancelled,
+    _provider_wait_user_message,
     build_staged_execution_plan,
     execute_staged_builtin_plan,
 )
@@ -2084,6 +2085,30 @@ async def run_generation(
                 return current_run["status"] == "cancelled"
 
             async def append_stage_progress(payload: dict[str, Any]) -> None:
+                public_metrics = {
+                    key: payload.get(key)
+                    for key in (
+                        "attempt_count",
+                        "model",
+                        "entry_point_count",
+                        "call_edge_count",
+                        "test_reference_count",
+                        "output_characters",
+                        "remaining_seconds",
+                        "last_activity_seconds",
+                        "time_to_first_token_ms",
+                        "queue_wait_ms",
+                        "provider_wait_ms",
+                        "generation_ms",
+                        "validation_ms",
+                        "repair_ms",
+                        "total_duration_ms",
+                        "can_retry",
+                        "reuse_source",
+                        "delta",
+                    )
+                    if payload.get(key) not in (None, "")
+                }
                 await store.append_event(
                     run_id=run_id,
                     conversation_id=conversation["id"],
@@ -2098,6 +2123,7 @@ async def run_generation(
                         "artifact": payload.get("artifact"),
                         "degraded": bool(payload.get("degraded", False)),
                         "reason": str(payload.get("reason") or ""),
+                        **public_metrics,
                         "message": str(payload.get("user_message") or "")
                         or _staged_execution_progress_message(payload),
                     },
@@ -2118,6 +2144,11 @@ async def run_generation(
                     source_analysis_cache_dir=(
                         settings.data_path / "workbench" / "source_analysis_cache"
                         if settings.source_analysis_cache_enabled
+                        else None
+                    ),
+                    regular_stage_cache_dir=(
+                        settings.data_path / "workbench" / "regular_stage_cache"
+                        if settings.regular_stage_cache_enabled
                         else None
                     ),
                     on_progress=append_stage_progress,
@@ -6282,8 +6313,36 @@ async def _staged_artifact_content(
 def _staged_execution_progress_message(payload: dict[str, Any]) -> str:
     stage = str(payload.get("stage_id") or "当前阶段")
     status = str(payload.get("status") or "running")
+    kind = str(payload.get("event_type") or "")
     current = int(payload.get("current") or 0)
     total = int(payload.get("total") or 0)
+    if kind == "stage_flow_evidence_started":
+        return "正在准备调用链证据"
+    if kind == "stage_flow_evidence_ready":
+        return (
+            f"已找到 {int(payload.get('entry_point_count') or 0)} 个入口、"
+            f"{int(payload.get('call_edge_count') or 0)} 条调用边、"
+            f"{int(payload.get('test_reference_count') or 0)} 个测试引用"
+        )
+    if kind == "stage_flow_outline_started":
+        return "正在生成流程骨架"
+    if kind == "stage_provider_started":
+        return f"{stage} 已提交模型，正在等待首段输出"
+    if kind == "stage_first_token":
+        return "已收到首段输出"
+    if kind in {"stage_output_delta", "stage_output_checkpoint"}:
+        return f"当前已生成 {int(payload.get('output_characters') or 0)} 个字符"
+    if kind == "stage_heartbeat":
+        return _provider_wait_user_message(
+            output_characters=int(payload.get("output_characters") or 0),
+            elapsed_seconds=float(payload.get("last_activity_seconds") or 0),
+            remaining_seconds=int(payload.get("remaining_seconds") or 0),
+            heartbeat_seconds=float(settings.regular_stage_heartbeat_seconds),
+        )
+    if kind == "stage_timed_out":
+        return f"{stage} 达到时间预算，已保留部分结果，可继续生成或从本阶段重试"
+    if kind == "stage_reused":
+        return f"已复用 {stage} 的有效阶段结果"
     if status == "completed":
         return f"阶段 {current}/{total} 已完成：{stage}"
     return f"正在执行阶段 {current}/{total}：{stage}"

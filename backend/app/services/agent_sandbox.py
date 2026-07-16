@@ -24,6 +24,7 @@ _CODEX_RUNTIME_CONFIG_KEYS = (
     "model_auto_compact_token_limit",
     "disable_response_storage",
     "network_access",
+    "service_tier",
 )
 
 
@@ -397,7 +398,7 @@ def _runtime_paths(runtime: dict[str, Any], command: str) -> tuple[list[Path], l
     read_paths = _safe_read_paths(runtime.get("sandbox_read_paths"))
     state_paths = _safe_extra_write_paths(runtime.get("sandbox_state_paths"))
     command_name = Path(command).name.lower()
-    home = Path.home().resolve()
+    home = Path(os.environ.get("HOME") or Path.home()).expanduser().resolve()
 
     def add_read(path: Path) -> None:
         path = path.expanduser().resolve()

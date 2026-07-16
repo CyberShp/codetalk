@@ -39,7 +39,6 @@ def _extract_choice_content(choice: dict) -> str:
     message = choice.get("message") or {}
     candidates = [
         message.get("content"),
-        message.get("reasoning_content"),
         choice.get("content"),
         choice.get("text"),
     ]
@@ -165,7 +164,6 @@ class OpenAICompatClient(BaseLLMClient):
                 candidates = [
                     (choice.get("delta") or {}).get("content"),
                     (choice.get("delta") or {}).get("text"),
-                    (choice.get("delta") or {}).get("reasoning_content"),
                     choice.get("text"),
                     choice.get("content"),
                     (choice.get("message") or {}).get("content"),
@@ -259,21 +257,35 @@ class OpenAICompatClient(BaseLLMClient):
         )
 
     async def health_check(self) -> tuple[bool, str]:
-        """Check endpoint reachability via /v1/models.
-
-        Returns (success, message) with diagnostic detail.
-        """
+        """Verify the configured endpoint, falling back to the actual chat API."""
         try:
-            headers: dict[str, str] = {}
+            headers: dict[str, str] = {"Content-Type": "application/json"}
             if self._api_key:
                 headers["Authorization"] = f"Bearer {self._api_key}"
             url = f"{self._base_url}/v1/models"
             resp = await self._client.get(url, headers=headers, timeout=60)
             if resp.status_code < 400:
                 return True, "连接成功"
-            if resp.status_code < 500:
-                return False, f"服务可达，但认证或接口失败 (HTTP {resp.status_code})"
-            return False, f"服务端错误 (HTTP {resp.status_code})"
+
+            # Some OpenAI-compatible providers reject model listing even when
+            # the configured model is authorized. Verify the same endpoint
+            # used by real runs before reporting a false authentication error.
+            chat_resp = await self._client.post(
+                f"{self._base_url}/v1/chat/completions",
+                headers=headers,
+                json={
+                    "model": self._model,
+                    "max_tokens": 4,
+                    "temperature": 0,
+                    "messages": [{"role": "user", "content": "Reply OK."}],
+                },
+                timeout=60,
+            )
+            if chat_resp.status_code < 400:
+                return True, "连接成功（聊天接口已验证）"
+            if chat_resp.status_code < 500:
+                return False, f"服务可达，但聊天接口认证或配置失败 (HTTP {chat_resp.status_code})"
+            return False, f"聊天接口服务端错误 (HTTP {chat_resp.status_code})"
         except Exception as exc:
             logger.warning("OpenAI-compat health check failed: %s", exc)
             return False, f"连接失败: {exc}"

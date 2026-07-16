@@ -19,11 +19,14 @@ import {
 } from "react";
 import type { WorkflowEditorAction, WorkflowEditorState } from "../state/workflow-editor-reducer";
 import {
+  connectionEdgeKind,
   createNode,
+  connectionLabel,
   edge as createEdge,
-  inputPortIds,
+  inputPortDefinitions,
   nodeKindLabel,
-  outputPortIds,
+  outputPortDefinitions,
+  validateConnection,
 } from "../workflow-graph";
 import type {
   WorkflowGraphEdge,
@@ -31,8 +34,9 @@ import type {
   WorkflowNodeKind,
 } from "@/lib/types/workflow";
 
-const NODE_WIDTH = 188;
-const NODE_HEADER_Y = 44;
+const NODE_WIDTH = 260;
+const NODE_PORT_Y = 84;
+const NODE_PORT_GAP = 30;
 const BOARD_WIDTH = 2400;
 const BOARD_HEIGHT = 1400;
 
@@ -66,6 +70,7 @@ export function WorkflowCanvas({ state, dispatch, onSelectionChange }: Props) {
   const edgeSequence = useRef(0);
   const [view, setView] = useState({ x: 36, y: 42, zoom: 1 });
   const [connection, setConnection] = useState<ConnectionDraft | null>(null);
+  const [connectionError, setConnectionError] = useState("");
   const nodesById = useMemo(
     () => new Map(state.present.nodes.map((node) => [node.id, node])),
     [state.present.nodes],
@@ -136,7 +141,7 @@ export function WorkflowCanvas({ state, dispatch, onSelectionChange }: Props) {
     const minX = Math.min(...state.present.nodes.map((node) => node.position.x));
     const maxX = Math.max(...state.present.nodes.map((node) => node.position.x + NODE_WIDTH));
     const minY = Math.min(...state.present.nodes.map((node) => node.position.y));
-    const maxY = Math.max(...state.present.nodes.map((node) => node.position.y + 104));
+    const maxY = Math.max(...state.present.nodes.map((node) => node.position.y + nodeHeight(node)));
     const zoom = Math.max(0.55, Math.min(1.2, Math.min((rect.width - 96) / (maxX - minX), (rect.height - 96) / (maxY - minY))));
     setView({
       zoom,
@@ -167,30 +172,35 @@ export function WorkflowCanvas({ state, dispatch, onSelectionChange }: Props) {
 
   const finishConnection = (targetNodeId: string, targetPortId: string) => {
     if (!connection || connection.sourceNodeId === targetNodeId) return;
-    const duplicate = state.present.edges.some(
-      (item) =>
-        item.source.node_id === connection.sourceNodeId &&
-        item.source.port_id === connection.sourcePortId &&
-        item.target.node_id === targetNodeId &&
-        item.target.port_id === targetPortId,
+    const validation = validateConnection(
+      state.present,
+      connection.sourceNodeId,
+      connection.sourcePortId,
+      targetNodeId,
+      targetPortId,
     );
-    if (!duplicate) {
-      edgeSequence.current += 1;
-      const id = `edge-${connection.sourceNodeId}-${targetNodeId}-${edgeSequence.current}`;
-      dispatch({
-        type: "add-edge",
-        edge: createEdge(
-          id,
-          connection.sourcePortId === "done" || targetPortId === "start"
-            ? "dependency"
-            : "data",
-          connection.sourceNodeId,
-          connection.sourcePortId,
-          targetNodeId,
-          targetPortId,
-        ),
-      });
+    if (!validation.ok) {
+      setConnectionError(validation.message);
+      setConnection(null);
+      return;
     }
+    setConnectionError("");
+    edgeSequence.current += 1;
+    const id = `edge-${connection.sourceNodeId}-${targetNodeId}-${edgeSequence.current}`;
+    const sourceNode = nodesById.get(connection.sourceNodeId);
+    const targetNode = nodesById.get(targetNodeId);
+    if (!sourceNode || !targetNode) return;
+    dispatch({
+      type: "add-edge",
+      edge: createEdge(
+        id,
+        connectionEdgeKind(sourceNode, connection.sourcePortId, targetNode, targetPortId),
+        connection.sourceNodeId,
+        connection.sourcePortId,
+        targetNodeId,
+        targetPortId,
+      ),
+    });
     setConnection(null);
   };
 
@@ -215,7 +225,7 @@ export function WorkflowCanvas({ state, dispatch, onSelectionChange }: Props) {
               <span className="ct-v2-kind-mark" aria-hidden="true" />
               <span>
                 <strong>{nodeKindLabel(kind)}</strong>
-                <small>{kind === "agent" ? "模型分析与文件生成" : kind}</small>
+                <small>{nodeKindDescription(kind)}</small>
               </span>
             </button>
           ))}
@@ -223,6 +233,11 @@ export function WorkflowCanvas({ state, dispatch, onSelectionChange }: Props) {
       </aside>
 
       <section className="ct-v2-canvas-stage" aria-label="工作流画布">
+        {connectionError && (
+          <div className="ct-v2-connection-error" role="alert">
+            {connectionError}
+          </div>
+        )}
         <div className="ct-v2-canvas-toolbar" aria-label="画布工具栏">
           <button type="button" onClick={() => dispatch({ type: "undo" })} disabled={!state.past.length} title="撤销">
             <Undo2 size={15} />
@@ -333,8 +348,8 @@ function WorkflowNodeCard({
   onStartConnection: (portId: string, point: { x: number; y: number }) => void;
   onFinishConnection: (portId: string) => void;
 }) {
-  const inputs = inputPortIds(node);
-  const outputs = outputPortIds(node);
+  const outputs = outputPortDefinitions(node);
+  const inputs = inputPortDefinitions(node);
   const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || !event.isPrimary) return;
     event.preventDefault();
@@ -353,7 +368,12 @@ function WorkflowNodeCard({
   return (
     <article
       className={`ct-v2-workflow-node ${selected ? "is-selected" : ""}`}
-      style={{ left: node.position.x, top: node.position.y, width: NODE_WIDTH }}
+      style={{
+        left: node.position.x,
+        top: node.position.y,
+        width: NODE_WIDTH,
+        minHeight: nodeHeight(node),
+      }}
       tabIndex={0}
       aria-label={`${node.label} ${nodeKindLabel(node.kind)}节点`}
       onFocus={() => selectNode(node.id)}
@@ -373,34 +393,44 @@ function WorkflowNodeCard({
         <span>{String(node.config.provider || node.config.type || node.kind)}</span>
         {node.config.required && <em>必需</em>}
       </div>
-      {inputs.map((portId, index) => (
-        <button
-          key={`in-${portId}`}
-          type="button"
-          className="ct-v2-port is-input"
-          style={{ top: NODE_HEADER_Y + index * 22 }}
-          aria-label={`${node.label} 输入端口 ${portId}`}
-          title={`输入：${portId}`}
-          onPointerUp={(event) => {
-            event.stopPropagation();
-            onFinishConnection(portId);
-          }}
-        />
+      {inputs.map((port, index) => (
+        <div
+          key={`in-${port.id}`}
+          className="ct-v2-port-row is-input"
+          style={{ top: NODE_PORT_Y + index * NODE_PORT_GAP }}
+        >
+          <button
+            type="button"
+            className="ct-v2-port is-input"
+            aria-label={`${node.label} 输入端口 ${port.id} 类型 ${port.type}`}
+            title={`输入：${port.id} · ${port.type}`}
+            onPointerUp={(event) => {
+              event.stopPropagation();
+              onFinishConnection(port.id);
+            }}
+          />
+          <span>{port.id}<small>{port.type}</small></span>
+        </div>
       ))}
-      {outputs.map((portId, index) => (
-        <button
-          key={`out-${portId}`}
-          type="button"
-          className="ct-v2-port is-output"
-          style={{ top: NODE_HEADER_Y + index * 22 }}
-          aria-label={`${node.label} 输出端口 ${portId}`}
-          title={`输出：${portId}`}
-          onPointerDown={(event) => {
-            event.stopPropagation();
-            const point = portPoint(node, portId, "out");
-            onStartConnection(portId, point);
-          }}
-        />
+      {outputs.map((port, index) => (
+        <div
+          key={`out-${port.id}`}
+          className="ct-v2-port-row is-output"
+          style={{ top: NODE_PORT_Y + index * NODE_PORT_GAP }}
+        >
+          <span>{port.id}<small>{port.type}</small></span>
+          <button
+            type="button"
+            className="ct-v2-port is-output"
+            aria-label={`${node.label} 输出端口 ${port.id} 类型 ${port.type}`}
+            title={`输出：${port.id} · ${port.type}`}
+            onPointerDown={(event) => {
+              event.stopPropagation();
+              const point = portPoint(node, port.id, "out");
+              onStartConnection(port.id, point);
+            }}
+          />
+        </div>
       ))}
     </article>
   );
@@ -420,10 +450,17 @@ function WorkflowEdgePath({
   const source = portPoint(nodesById.get(edge.source.node_id), edge.source.port_id, "out");
   const target = portPoint(nodesById.get(edge.target.node_id), edge.target.port_id, "in");
   const path = edgePath(source, target);
+  const label = connectionLabel(edge, nodesById);
+  const labelPoint = { x: (source.x + target.x) / 2, y: (source.y + target.y) / 2 - 7 };
   return (
     <g className={selected ? "is-selected" : ""}>
       <path className="ct-v2-edge-hit" d={path} onPointerDown={(event) => { event.stopPropagation(); onSelect(); }} />
       <path className={`ct-v2-edge ${edge.kind === "dependency" ? "is-dependency" : ""}`} d={path} />
+      {edge.kind === "data" && label && (
+        <text className="ct-v2-edge-label" x={labelPoint.x} y={labelPoint.y} textAnchor="middle">
+          {label}
+        </text>
+      )}
     </g>
   );
 }
@@ -434,12 +471,34 @@ function portPoint(
   side: "in" | "out",
 ) {
   if (!node) return { x: 0, y: 0 };
-  const ports = side === "in" ? inputPortIds(node) : outputPortIds(node);
-  const index = Math.max(0, ports.indexOf(portId));
+  const ports = side === "in" ? inputPortDefinitions(node) : outputPortDefinitions(node);
+  const index = Math.max(0, ports.findIndex((port) => port.id === portId));
   return {
     x: node.position.x + (side === "out" ? NODE_WIDTH : 0),
-    y: node.position.y + NODE_HEADER_Y + index * 22 + 7,
+    y: node.position.y + NODE_PORT_Y + index * NODE_PORT_GAP + 9,
   };
+}
+
+function nodeHeight(node: WorkflowGraphNode): number {
+  return NODE_PORT_Y + Math.max(
+    inputPortDefinitions(node).length,
+    outputPortDefinitions(node).length,
+    1,
+  ) * NODE_PORT_GAP + 12;
+}
+
+function nodeKindDescription(kind: WorkflowNodeKind): string {
+  return {
+    input: "文件、目录、链接或文字",
+    output: "报告与交付文件",
+    agent: "模型分析与文件生成",
+    semantic_retrieve: "检索历史测试知识",
+    memory_retrieve: "检索已保存证据",
+    local_scope_discover: "定位源码与测试范围",
+    evidence_validate: "校验文件、符号与行号",
+    report_render: "整理结构化报告",
+    artifact_export: "导出工作流产物",
+  }[kind];
 }
 
 function edgePath(source: { x: number; y: number }, target: { x: number; y: number }) {

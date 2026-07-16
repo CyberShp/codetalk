@@ -9,6 +9,8 @@ import os
 import re
 import signal
 import shutil
+import subprocess
+import sys
 import tempfile
 import unicodedata
 from collections.abc import AsyncIterator
@@ -54,7 +56,7 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
             *probe_args,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            env=_build_env(runtime),
+            env=_build_env(runtime, include_claude_auth=False),
         )
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=8)
@@ -69,9 +71,123 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
     stdout_text = _decode(stdout).strip() if stdout else ""
     stderr_text = _decode(stderr).strip() if stderr else ""
     if proc.returncode == 0:
+        if str(runtime.get("prompt_transport") or "") == "claude_print_arg":
+            auth_result = await _probe_claude_auth_in_runtime_sandbox(
+                runtime=runtime,
+                command=command,
+            )
+            if not auth_result["success"]:
+                return auth_result
         return {"success": True, "message": stdout_text or stderr_text or "执行器可启动"}
     message = stderr_text or stdout_text or f"命令退出码：{proc.returncode}"
     return {"success": False, "message": redact_agent_diagnostic_text(message)}
+
+
+async def _probe_claude_auth_in_runtime_sandbox(
+    *, runtime: dict[str, Any], command: str
+) -> dict[str, Any]:
+    failure = {
+        "success": False,
+        "message": "Claude Code 可启动，但隔离环境无法读取登录状态，请重新登录或检查 Agent 隔离配置。",
+    }
+    try:
+        with tempfile.TemporaryDirectory(prefix="codetalk-claude-probe-") as temp_dir:
+            artifact_dir = Path(temp_dir).resolve()
+            env = _build_env(runtime)
+            for temp_name in ("TMPDIR", "TMP", "TEMP"):
+                env[temp_name] = str(artifact_dir)
+            sandbox_runtime = {
+                **runtime,
+                "sandbox_mode": runtime.get("sandbox_mode") or settings.external_agent_sandbox_mode,
+                "sandbox_allow_network": runtime.get(
+                    "sandbox_allow_network",
+                    settings.external_agent_sandbox_allow_network,
+                ),
+                "sandbox_write_paths": runtime.get(
+                    "sandbox_write_paths",
+                    settings.external_agent_sandbox_write_paths,
+                ),
+                "sandbox_command": command,
+            }
+            sandbox = prepare_agent_sandbox(
+                runtime=sandbox_runtime,
+                cwd=str(artifact_dir),
+                artifact_dir=artifact_dir,
+            )
+            readiness_args = _claude_print_args(
+                _runtime_args(runtime, resume_session_id=None),
+                "仅回复 CODETALK_PROBE_OK",
+                resume_session_id=None,
+            )
+            readiness_args = _ensure_option_value(
+                readiness_args,
+                "--max-turns",
+                "1",
+                aliases=("--max-turns",),
+            )
+            readiness_command = [command, *readiness_args]
+            if sandbox.wrapper:
+                readiness_command = [*sandbox.wrapper, *readiness_command]
+            readiness = await asyncio.create_subprocess_exec(
+                *readiness_command,
+                cwd=str(artifact_dir),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+            )
+            try:
+                readiness_stdout, readiness_stderr = await asyncio.wait_for(
+                    readiness.communicate(), timeout=20
+                )
+            except asyncio.TimeoutError:
+                readiness.kill()
+                await readiness.wait()
+                return {
+                    "success": False,
+                    "message": "Claude Code 已登录，但真实模型请求探测超时。请检查网络或代理后重试。",
+                }
+            readiness_text = _decode(readiness_stdout or readiness_stderr).strip()
+            return _claude_readiness_result(
+                readiness_text,
+                returncode=int(readiness.returncode or 0),
+            )
+    except (AgentSandboxError, FileNotFoundError, OSError):
+        return failure
+
+
+def _claude_readiness_result(text: str, *, returncode: int) -> dict[str, Any]:
+    payloads: list[dict[str, Any]] = []
+    for line in str(text or "").splitlines() or [str(text or "")]:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    result_payload = next(
+        (payload for payload in reversed(payloads) if payload.get("type") == "result"),
+        payloads[-1] if payloads else {},
+    )
+    is_error = bool(result_payload.get("is_error")) if result_payload else True
+    status = result_payload.get("api_error_status") if result_payload else None
+    lower = str(text or "").lower()
+    if status == 403 or "api error: 403" in lower or "request not allowed" in lower:
+        return {
+            "success": False,
+            "message": "Claude Code 已登录，但真实模型请求被拒绝（HTTP 403）。请重新登录并检查账号或代理权限。",
+        }
+    if returncode != 0 or is_error:
+        return {
+            "success": False,
+            "message": "Claude Code 已登录，但真实模型请求失败。请检查账号、网络或代理配置。",
+        }
+    result_text = str(result_payload.get("result") or "")
+    if "CODETALK_PROBE_OK" not in result_text:
+        return {
+            "success": False,
+            "message": "Claude Code 已响应，但未返回预期确认标记。请检查命令参数和输出格式。",
+        }
+    return {"success": True, "message": "Claude Code 已登录，真实模型请求可用"}
 
 
 async def stream_agent_runtime(
@@ -675,19 +791,36 @@ async def _read_stdout(
             if activity_queue is not None:
                 activity_task = asyncio.create_task(activity_queue.get())
                 wait_tasks.add(activity_task)
-            done, pending = await asyncio.wait(wait_tasks, return_when=asyncio.FIRST_COMPLETED)
+            try:
+                done, pending = await asyncio.wait(
+                    wait_tasks,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            except BaseException:
+                for task in wait_tasks:
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(*wait_tasks, return_exceptions=True)
+                raise
             if read_task in done:
                 for task in pending:
                     task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
                 return read_task.result()
             if timeout_task in done:
                 read_task.cancel()
                 if activity_task is not None:
                     activity_task.cancel()
+                await asyncio.gather(
+                    read_task,
+                    *(task for task in (activity_task,) if task is not None),
+                    return_exceptions=True,
+                )
                 if complete_on_idle:
                     return None
                 raise AgentRuntimeError(f"执行器连续 {activity_timeout_seconds}s 没有输出或进度")
             timeout_task.cancel()
+            await asyncio.gather(timeout_task, return_exceptions=True)
             if activity_task is not None and activity_task in done:
                 continue
 
@@ -1616,13 +1749,76 @@ def _probe_args(runtime: dict[str, Any], args: list[str]) -> list[str]:
     return [*args, "--version"] if args else ["--version"]
 
 
-def _build_env(runtime: dict[str, Any]) -> dict[str, str]:
-    env = filtered_agent_environment(runtime.get("env") or {})
+def _build_env(
+    runtime: dict[str, Any],
+    *,
+    include_claude_auth: bool = True,
+) -> dict[str, str]:
+    credential_runtime = include_claude_auth and _is_trusted_managed_claude_runtime(runtime)
+    env = filtered_agent_environment(
+        {} if credential_runtime else runtime.get("env") or {}
+    )
+    if credential_runtime:
+        _inject_claude_oauth_token(runtime, env)
     if not env.get("CODETALK_AGENT_ARTIFACT_DIR"):
         env["CODETALK_AGENT_ARTIFACT_DIR"] = tempfile.mkdtemp(
             prefix="codetalk-agent-runtime-"
         )
     return env
+
+
+def _inject_claude_oauth_token(runtime: dict[str, Any], env: dict[str, str]) -> None:
+    if not _is_trusted_managed_claude_runtime(runtime) or env.get("CLAUDE_CODE_OAUTH_TOKEN"):
+        return
+    security = shutil.which("security")
+    if not security:
+        return
+    try:
+        result = subprocess.run(
+            [security, "find-generic-password", "-s", "Claude Code-credentials", "-w"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        if result.returncode != 0:
+            return
+        payload = json.loads(result.stdout)
+        oauth = payload.get("claudeAiOauth") if isinstance(payload, dict) else None
+        token = str((oauth or {}).get("accessToken") or "").strip()
+        if token:
+            env["CLAUDE_CODE_OAUTH_TOKEN"] = token
+    except (OSError, subprocess.SubprocessError, json.JSONDecodeError):
+        return
+
+
+def _is_trusted_managed_claude_runtime(runtime: dict[str, Any]) -> bool:
+    if (
+        sys.platform != "darwin"
+        or str(runtime.get("id") or "") != "default-claude-code"
+        or str(runtime.get("provider") or "") != "claude"
+        or str(runtime.get("prompt_transport") or "") != "claude_print_arg"
+        or list(runtime.get("args") or [])
+        or list(runtime.get("resume_args") or [])
+    ):
+        return False
+    configured_command = str(runtime.get("command") or "").strip()
+    trusted_command = shutil.which("claude")
+    if not configured_command or not trusted_command:
+        return False
+    try:
+        configured_path = Path(configured_command).expanduser()
+        resolved_configured = (
+            str(configured_path)
+            if configured_path.is_absolute()
+            else shutil.which(configured_command)
+        )
+        return bool(
+            resolved_configured
+            and Path(resolved_configured).resolve() == Path(trusted_command).resolve()
+        )
+    except (OSError, RuntimeError):
+        return False
 
 
 def _decode(value: bytes) -> str:

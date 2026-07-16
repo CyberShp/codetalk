@@ -10,6 +10,7 @@ const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "30
 assertCanMutatePublicRuntime({ env: process.env, flowName: "Workbench V2 real run cockpit" });
 
 test("starts a real Attempt and opens the bounded live run cockpit", async ({ page, request }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
   const stamp = Date.now();
   const workflowId = `run-cockpit-e2e-${stamp}`;
   const workflowName = `运行驾驶舱 E2E ${stamp}`;
@@ -81,12 +82,32 @@ test("starts a real Attempt and opens the bounded live run cockpit", async ({ pa
   await page.getByRole("button", { name: "关闭技术诊断" }).click();
   await expect(page.locator(".ct-v2-diagnostic-drawer")).toBeHidden();
 
+  await page.getByRole("tab", { name: "摘要" }).click();
+  await expect(page.getByRole("heading", { name: "运行在节点处停止" })).toBeVisible();
   const desktopEvidence = path.join(process.cwd(), "output", "playwright", "phase6", "run-cockpit-desktop.png");
   fs.mkdirSync(path.dirname(desktopEvidence), { recursive: true });
   await page.screenshot({ path: desktopEvidence, fullPage: false });
   const desktopBounds = await page.locator(".ct-v2-run-cockpit").boundingBox();
   expect(desktopBounds?.y ?? 0).toBeGreaterThanOrEqual(0);
   expect((desktopBounds?.y ?? 0) + (desktopBounds?.height ?? 0)).toBeLessThanOrEqual(900);
+
+  await expect(page.getByRole("button", { name: "从失败节点重试" })).toBeVisible({ timeout: 30_000 });
+  const workspaceBounds = await page.locator(".ct-v2-run-workspace").boundingBox();
+  const resultsBounds = await page.locator(".ct-v2-run-results").boundingBox();
+  const failureBounds = await page.locator(".ct-v2-run-failure").boundingBox();
+  expect(workspaceBounds?.height ?? 0).toBeGreaterThanOrEqual(300);
+  expect(resultsBounds?.y ?? 0).toBeGreaterThanOrEqual(
+    (workspaceBounds?.y ?? 0) + (workspaceBounds?.height ?? 0) - 1,
+  );
+  expect((failureBounds?.y ?? 0) + (failureBounds?.height ?? 0)).toBeLessThanOrEqual(
+    (resultsBounds?.y ?? 0) + (resultsBounds?.height ?? 0) + 1,
+  );
+  expect(
+    Math.abs(
+      ((desktopBounds?.y ?? 0) + (desktopBounds?.height ?? 0)) -
+      ((resultsBounds?.y ?? 0) + (resultsBounds?.height ?? 0)),
+    ),
+  ).toBeLessThanOrEqual(2);
 
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByText("执行状态", { exact: true })).toBeVisible();

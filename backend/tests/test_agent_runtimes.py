@@ -5784,6 +5784,39 @@ class TestAgentRuntimes:
 
         assert any("正在自动重试" in item for item in progress)
 
+    async def test_stdout_reader_cancellation_reaps_idle_and_activity_waiters(self, monkeypatch):
+        import app.services.agent_cli_bridge as bridge
+
+        class Process:
+            stdout = asyncio.StreamReader()
+
+        created: list[asyncio.Task] = []
+        real_create_task = asyncio.create_task
+
+        def track_task(coro):
+            task = real_create_task(coro)
+            created.append(task)
+            return task
+
+        monkeypatch.setattr(bridge.asyncio, "create_task", track_task)
+        stream = bridge._read_stdout(
+            Process(),
+            "plain",
+            runtime={"timeout_seconds": 120},
+            activity_queue=asyncio.Queue(),
+        )
+        outer = asyncio.get_running_loop().create_task(anext(stream))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        outer.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await outer
+        await asyncio.sleep(0)
+
+        assert created
+        assert all(task.done() for task in created)
+
     async def test_agent_runtime_accepts_codex_ndjson_lines_larger_than_asyncio_default(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
 
@@ -6379,6 +6412,222 @@ class TestAgentRuntimes:
         assert result == {"success": True, "message": "opencode ok"}
         assert captured["command"] == "C:/Users/me/AppData/Roaming/npm/opencode.cmd"
         assert captured["args"] == ["run", "--version"]
+
+    async def test_claude_probe_requires_login_inside_runtime_sandbox(self, monkeypatch):
+        from app.services import agent_cli_bridge
+
+        class FakeProbeProcess:
+            returncode = 0
+
+            async def communicate(self):
+                return b"2.1.196 (Claude Code)", b""
+
+        async def fake_create_subprocess_exec(*_args, **_kwargs):
+            return FakeProbeProcess()
+
+        async def fake_auth_probe(**kwargs):
+            assert kwargs["command"].endswith("claude")
+            return {
+                "success": False,
+                "message": "Claude Code 可启动，但隔离环境无法读取登录状态，请重新登录或检查 Agent 隔离配置。",
+            }
+
+        monkeypatch.setattr(
+            agent_cli_bridge.asyncio,
+            "create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+        monkeypatch.setattr(
+            agent_cli_bridge,
+            "_probe_claude_auth_in_runtime_sandbox",
+            fake_auth_probe,
+        )
+
+        result = await agent_cli_bridge.probe_agent_runtime({
+            "command": "/usr/local/bin/claude",
+            "prompt_transport": "claude_print_arg",
+        })
+
+        assert result["success"] is False
+        assert "隔离环境无法读取登录状态" in result["message"]
+
+    async def test_claude_readiness_probe_rejects_logged_in_but_forbidden_request(self):
+        from app.services.agent_cli_bridge import _claude_readiness_result
+
+        result = _claude_readiness_result(
+            '{"type":"result","is_error":true,"api_error_status":403,'
+            '"result":"Failed to authenticate. API Error: 403 Request not allowed"}',
+            returncode=1,
+        )
+
+        assert result == {
+            "success": False,
+            "message": "Claude Code 已登录，但真实模型请求被拒绝（HTTP 403）。请重新登录并检查账号或代理权限。",
+        }
+
+    async def test_claude_probe_checks_wrappers_using_the_managed_transport(self, monkeypatch):
+        from app.services import agent_cli_bridge
+
+        class FakeProbeProcess:
+            returncode = 0
+
+            async def communicate(self):
+                return b"ccr ok", b""
+
+        async def fake_create_subprocess_exec(*_args, **_kwargs):
+            return FakeProbeProcess()
+
+        captured = {}
+
+        async def fake_auth_probe(**kwargs):
+            captured.update(kwargs)
+            return {"success": False, "message": "wrapper readiness failed"}
+
+        monkeypatch.setattr(agent_cli_bridge.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+        monkeypatch.setattr(agent_cli_bridge, "_probe_claude_auth_in_runtime_sandbox", fake_auth_probe)
+
+        result = await agent_cli_bridge.probe_agent_runtime({
+            "provider": "claude",
+            "command": "ccr",
+            "args": ["code"],
+            "prompt_transport": "claude_print_arg",
+        })
+
+        assert result == {"success": False, "message": "wrapper readiness failed"}
+        assert captured["runtime"]["args"] == ["code"]
+
+    async def test_claude_readiness_probe_rejects_success_without_expected_marker(self):
+        from app.services.agent_cli_bridge import _claude_readiness_result
+
+        result = _claude_readiness_result(
+            '{"type":"result","is_error":false,"result":"hello"}',
+            returncode=0,
+        )
+
+        assert result["success"] is False
+        assert "预期确认标记" in result["message"]
+
+    async def test_claude_readiness_probe_accepts_real_stream_json_events(self):
+        from app.services.agent_cli_bridge import _claude_readiness_result
+
+        stream = "\n".join([
+            '{"type":"system","subtype":"init","session_id":"probe"}',
+            '{"type":"assistant","message":{"content":[{"type":"text","text":"CODETALK_PROBE_OK"}]}}',
+            '{"type":"result","is_error":false,"result":"CODETALK_PROBE_OK"}',
+        ])
+
+        assert _claude_readiness_result(stream, returncode=0) == {
+            "success": True,
+            "message": "Claude Code 已登录，真实模型请求可用",
+        }
+
+    async def test_claude_runtime_injects_only_its_oauth_access_token(self, monkeypatch):
+        from app.services import agent_cli_bridge
+
+        class SecurityResult:
+            returncode = 0
+            stdout = '{"claudeAiOauth":{"accessToken":"test-oauth-token","refreshToken":"do-not-pass"}}'
+
+        monkeypatch.setattr(agent_cli_bridge.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            agent_cli_bridge.shutil,
+            "which",
+            lambda command: {
+                "security": "/usr/bin/security",
+                "claude": "/usr/local/bin/claude",
+            }.get(command),
+        )
+        monkeypatch.setattr(agent_cli_bridge.subprocess, "run", lambda *_args, **_kwargs: SecurityResult())
+        env = {}
+
+        agent_cli_bridge._inject_claude_oauth_token(
+            {
+                "id": "default-claude-code",
+                "provider": "claude",
+                "command": "/usr/local/bin/claude",
+                "prompt_transport": "claude_print_arg",
+            },
+            env,
+        )
+
+        assert env == {"CLAUDE_CODE_OAUTH_TOKEN": "test-oauth-token"}
+
+    async def test_custom_runtime_cannot_receive_managed_claude_oauth_token(self, monkeypatch):
+        from app.services import agent_cli_bridge
+
+        monkeypatch.setattr(agent_cli_bridge.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            agent_cli_bridge.subprocess,
+            "run",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("security must not run")),
+        )
+        env = {}
+
+        agent_cli_bridge._inject_claude_oauth_token(
+            {
+                "id": "custom-agent",
+                "provider": "claude",
+                "command": "malicious-wrapper",
+                "prompt_transport": "claude_print_arg",
+            },
+            env,
+        )
+
+        assert env == {}
+
+    async def test_managed_claude_credential_env_ignores_runtime_env_overrides(self, monkeypatch):
+        from app.services import agent_cli_bridge
+
+        class SecurityResult:
+            returncode = 0
+            stdout = '{"claudeAiOauth":{"accessToken":"test-oauth-token"}}'
+
+        monkeypatch.setattr(agent_cli_bridge.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            agent_cli_bridge.shutil,
+            "which",
+            lambda command: {
+                "security": "/usr/bin/security",
+                "claude": "/usr/local/bin/claude",
+            }.get(command),
+        )
+        monkeypatch.setattr(agent_cli_bridge.subprocess, "run", lambda *_args, **_kwargs: SecurityResult())
+        runtime = {
+            "id": "default-claude-code",
+            "provider": "claude",
+            "command": "/usr/local/bin/claude",
+            "prompt_transport": "claude_print_arg",
+            "env": {
+                "NODE_OPTIONS": "--require=/tmp/steal-token.js",
+                "PATH": "/tmp/attacker-bin",
+            },
+        }
+
+        env = agent_cli_bridge._build_env(runtime)
+
+        assert env["CLAUDE_CODE_OAUTH_TOKEN"] == "test-oauth-token"
+        assert "NODE_OPTIONS" not in env
+        assert env.get("PATH") != "/tmp/attacker-bin"
+
+    async def test_managed_claude_with_custom_args_does_not_receive_oauth_token(self, monkeypatch):
+        from app.services import agent_cli_bridge
+
+        monkeypatch.setattr(agent_cli_bridge.sys, "platform", "darwin")
+        monkeypatch.setattr(
+            agent_cli_bridge.subprocess,
+            "run",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("security must not run")),
+        )
+
+        env = agent_cli_bridge._build_env({
+            "id": "default-claude-code",
+            "provider": "claude",
+            "command": "claude",
+            "prompt_transport": "claude_print_arg",
+            "args": ["--plugin-dir", "/tmp/untrusted"],
+        })
+
+        assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
 
     async def test_stream_agent_runtime_resolves_windows_npm_cmd_shim_before_spawn(
         self,

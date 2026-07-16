@@ -6,7 +6,7 @@ from app.llm.openai_compat import OpenAICompatClient
 pytestmark = pytest.mark.asyncio
 
 
-async def test_complete_falls_back_to_reasoning_content_when_content_is_empty():
+async def test_complete_does_not_promote_reasoning_content_to_user_answer():
     async def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v1/chat/completions"
         return httpx.Response(
@@ -37,10 +37,83 @@ async def test_complete_falls_back_to_reasoning_content_when_content_is_empty():
     client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 
     try:
-        response = await client.complete([{"role": "user", "content": "hello"}], max_tokens=32)
+        with pytest.raises(ValueError, match="empty or too-short response"):
+            await client.complete([{"role": "user", "content": "hello"}], max_tokens=32)
     finally:
         await client.close()
 
-    assert "NVMe-oF connect" in response.content
-    assert response.truncated is True
-    assert response.usage["total_tokens"] == 8
+
+async def test_stream_complete_never_mixes_reasoning_content_into_user_answer():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/chat/completions"
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            text=(
+                'data: {"choices":[{"delta":{"reasoning_content":"我们被要求先分析任务。"}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":"# iSCSI Login 报告"}}]}\n\n'
+                'data: {"choices":[{"delta":{"content":"\\n正文。"},"finish_reason":"stop"}]}\n\n'
+                "data: [DONE]\n\n"
+            ),
+        )
+
+    client = OpenAICompatClient("https://example.test", "test-key", "deepseek-reasoner")
+    await client._client.aclose()
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    try:
+        chunks = [
+            chunk
+            async for chunk in client.stream_complete(
+                [{"role": "user", "content": "analyze"}],
+                max_tokens=32,
+            )
+        ]
+    finally:
+        await client.close()
+
+    assert "".join(chunks) == "# iSCSI Login 报告\n正文。"
+
+
+async def test_health_check_falls_back_to_real_chat_when_models_probe_is_rejected():
+    requests: list[tuple[str, str]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requests.append((request.method, request.url.path))
+        if request.url.path == "/v1/models":
+            return httpx.Response(401, json={"error": "models endpoint unavailable"})
+        assert request.url.path == "/v1/chat/completions"
+        payload = __import__("json").loads(request.content)
+        assert payload["model"] == "deepseek-chat"
+        assert payload["max_tokens"] <= 8
+        return httpx.Response(
+            200,
+            json={
+                "model": "deepseek-chat",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {"role": "assistant", "content": "OK"},
+                    }
+                ],
+            },
+        )
+
+    client = OpenAICompatClient(
+        "https://api.deepseek.com", "test-key", "deepseek-chat"
+    )
+    await client._client.aclose()
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    try:
+        success, message = await client.health_check()
+    finally:
+        await client.close()
+
+    assert success is True
+    assert message == "连接成功（聊天接口已验证）"
+    assert requests == [
+        ("GET", "/v1/models"),
+        ("POST", "/v1/chat/completions"),
+    ]

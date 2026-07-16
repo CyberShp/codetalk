@@ -665,9 +665,15 @@ async def test_workbench_workflow_preset_api(workbench_client):
     assert presets.status_code == 200
     preset_items = presets.json()["items"]
     preset_ids = {item["id"] for item in preset_items}
-    assert preset_ids == {"source_flow_sfmea_blackbox"}
+    assert preset_ids == {
+        "source_flow_sfmea_blackbox",
+        "basic_source_report_claude",
+        "basic_source_design_report_builtin",
+    }
     by_preset_id = {item["id"]: item for item in preset_items}
     assert by_preset_id["source_flow_sfmea_blackbox"]["group"] == "core"
+    assert by_preset_id["basic_source_report_claude"]["group"] == "core"
+    assert by_preset_id["basic_source_design_report_builtin"]["group"] == "core"
 
     listed = await workbench_client.get("/api/workbench/workflows")
     listed_body = listed.json()
@@ -683,6 +689,17 @@ async def test_workbench_workflow_preset_api(workbench_client):
     )
     assert installed.status_code == 201
     assert installed.json()["id"] == "source_flow_sfmea_blackbox"
+
+    for preset_id in (
+        "basic_source_report_claude",
+        "basic_source_design_report_builtin",
+    ):
+        installed = await workbench_client.post(
+            f"/api/workbench/workflow-presets/{preset_id}/install"
+        )
+        assert installed.status_code == 201
+        assert installed.json()["id"] == preset_id
+        assert installed.json()["audit"]["warnings"] == []
 
 
 async def test_retired_builtin_cannot_be_installed_or_used_for_new_task_runs(
@@ -1016,7 +1033,7 @@ async def test_task_run_run_response_includes_current_chinese_ui_summary(
     assert body["run_ui_summary"]["deliverables"][0]["artifact"] == "report.md"
 
 
-async def test_restore_builtin_workflows_preserves_custom_and_only_restores_release_preset(
+async def test_restore_builtin_workflows_preserves_custom_and_restores_release_presets(
     workbench_client,
 ):
     custom = await workbench_client.post(
@@ -1037,9 +1054,14 @@ async def test_restore_builtin_workflows_preserves_custom_and_only_restores_rele
     assert restored.status_code == 200
     body = restored.json()
     assert body["status"] == "ok"
-    assert body["restored_count"] == 1
+    assert body["restored_count"] == 3
     workflow_ids = [item["id"] for item in body["items"]]
-    assert workflow_ids == ["source_flow_sfmea_blackbox", "custom_keep_me"]
+    assert workflow_ids == [
+        "source_flow_sfmea_blackbox",
+        "basic_source_report_claude",
+        "basic_source_design_report_builtin",
+        "custom_keep_me",
+    ]
     assert body["items"][0]["audit"]["warnings"] == []
 
 
@@ -1128,10 +1150,14 @@ async def test_workbench_core_workflow_readiness_api_covers_release_workflow(wor
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "ready"
-    assert body["summary"]["workflow_count"] == 1
+    assert body["summary"]["workflow_count"] == 3
     assert body["summary"]["missing_required"] == 0
     by_id = {item["id"]: item for item in body["workflows"]}
-    assert set(by_id) == {"source_flow_sfmea_blackbox"}
+    assert set(by_id) == {
+        "source_flow_sfmea_blackbox",
+        "basic_source_report_claude",
+        "basic_source_design_report_builtin",
+    }
     assert by_id["source_flow_sfmea_blackbox"]["scenario"] == "source_flow_sfmea_blackbox"
     assert by_id["source_flow_sfmea_blackbox"]["required_artifacts"] == [
         "source_scope.json",
@@ -1151,9 +1177,19 @@ async def test_workbench_core_workflow_readiness_api_covers_release_workflow(wor
         "validate_evidence",
         "render_report",
     ]
+    assert by_id["basic_source_report_claude"]["required_artifacts"] == [
+        "report.md"
+    ]
+    assert by_id["basic_source_report_claude"]["execution_subject"] == "agent"
+    assert by_id["basic_source_report_claude"]["execution_label"] == "Claude Code"
+    assert by_id["basic_source_design_report_builtin"]["required_artifacts"] == [
+        "report.md"
+    ]
+    assert by_id["basic_source_design_report_builtin"]["execution_subject"] == "builtin_llm"
+    assert by_id["basic_source_design_report_builtin"]["execution_label"] == "内置模型"
     for item in by_id.values():
         assert item["status"] == "ready"
-        assert item["output_count"] >= 2
+        assert item["output_count"] >= 1
         assert not item["missing_required"]
 
 
@@ -1532,7 +1568,9 @@ async def test_workbench_system_audit_api_reports_control_plane_readiness(workbe
         assert not Path(path).is_absolute()
     assert checks["workflow_presets"]["status"] == "ok"
     assert checks["workflow_presets"]["details"]["available"] == [
-        "source_flow_sfmea_blackbox"
+        "basic_source_design_report_builtin",
+        "basic_source_report_claude",
+        "source_flow_sfmea_blackbox",
     ]
     assert checks["provider_capability_matrix"]["details"]["provider_count"] >= 4
     assert checks["codetalk_index_provider_readiness"]["severity"] == "recommended"
@@ -3416,6 +3454,65 @@ async def test_task_run_ui_summary_prioritizes_cancelled_status_over_stale_failu
     assert summary["current_node"]["status_label"] == "已取消"
     assert summary["failure"]["reasons"] == []
     assert "acceptance_audit" not in _public_task_run_runtime_summary(task_root)
+
+
+async def test_public_task_run_summary_exposes_quality_axes_without_full_claim_payload(tmp_path):
+    from app.api.agent_workbench import _public_task_run_runtime_summary
+
+    task_root = tmp_path / "task_run_quality"
+    task_root.mkdir()
+    (task_root / "task_run.json").write_text(
+        json.dumps({"status": "needs_rework", "runtime": {"status": "completed"}}),
+        encoding="utf-8",
+    )
+    (task_root / "test_activity_quality_audit.json").write_text(
+        json.dumps(
+            {
+                "status": "needs_rework",
+                "deliverable": False,
+                "score": 39,
+                "issue_count": 15,
+                "lint_warning_count": 4,
+                "fact_verification": {
+                    "total": 23,
+                    "verified": 9,
+                    "contradicted": 9,
+                    "insufficient": 5,
+                    "pass_rate": 39,
+                },
+                "quality_axes": {
+                    "structure": {"status": "passed", "score": 100, "issue_count": 0},
+                    "facts": {"status": "blocked", "pass_rate": 39, "contradicted": 9},
+                    "executability": {"status": "blocked", "pass_rate": 0, "issue_count": 1},
+                },
+                "fact_claims": [{"claim_id": "C-001", "statement": "private detail"}],
+                "issues": [{"code": "source_claim_contradicted", "message": "private detail"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    summary = _public_task_run_runtime_summary(task_root)
+
+    assert summary["test_activity_quality"] == {
+        "status": "needs_rework",
+        "deliverable": False,
+        "score": 39,
+        "issue_count": 15,
+        "lint_warning_count": 4,
+        "fact_verification": {
+            "total": 23,
+            "verified": 9,
+            "contradicted": 9,
+            "insufficient": 5,
+            "pass_rate": 39,
+        },
+        "quality_axes": {
+            "structure": {"status": "passed", "score": 100, "issue_count": 0},
+            "facts": {"status": "blocked", "pass_rate": 39, "contradicted": 9},
+            "executability": {"status": "blocked", "pass_rate": 0, "issue_count": 1},
+        },
+    }
 
 
 async def test_workbench_task_run_reconcile_marks_queued_and_running_as_interrupted(tmp_path):
@@ -6171,12 +6268,11 @@ async def test_workbench_task_run_artifacts_api_labels_failure_recovery(
         timeout_sec=10,
     )
     assert executed.status_code == 200
-    assert executed.json()["step_results"][0]["failure_recovery"]["failure_kind"] == "agent_error"
+    recovery = executed.json()["step_results"][0]["failure_recovery"]
+    assert recovery["failure_kind"] == "agent_error"
     summary = (await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}")).json()["run_ui_summary"]
-    assert (
-        "执行器异常退出，退出码 3。请查看内部诊断确认失败节点。"
-        in summary["failure"]["reasons"]
-    )
+    assert summary["failure"]["reasons"][0] == recovery["user_message"]
+    assert summary["failure"]["recommended_action"] == recovery["recommended_actions"][0]
 
     artifacts = await workbench_client.get(f"/api/workbench/task-runs/{task_run_id}/artifacts")
 

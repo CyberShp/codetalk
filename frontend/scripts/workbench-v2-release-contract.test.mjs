@@ -93,3 +93,20 @@ test("task wizard treats the reserved repo_path directory as workspace-managed",
   assert.match(taskWizard, /String\(item\.id\) === "repo_path"/);
   assert.match(taskWizard, /String\(item\.type\) === "directory"/);
 });
+
+test("run cockpit displays flow evidence metrics from fresh and cached stage events", () => {
+  assert.match(cockpit, /function hasFlowEvidenceMetrics/);
+  assert.match(cockpit, /find\(\(item\) => hasFlowEvidenceMetrics\(item\.payload\)\)/);
+  assert.doesNotMatch(
+    cockpit,
+    /find\(\(item\) => item\.payload\.kind === "stage_flow_evidence_ready"\)/,
+  );
+});
+
+test("run cockpit presents structure, fact, and executability quality axes", () => {
+  assert.match(cockpit, /结构合规率/);
+  assert.match(cockpit, /事实核验通过率/);
+  assert.match(cockpit, /可执行性通过率/);
+  assert.match(cockpit, /quality_axes/);
+  assert.match(cockpit, /fact_verification/);
+});

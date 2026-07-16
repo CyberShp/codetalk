@@ -214,6 +214,8 @@ DIAGNOSTIC_ARTIFACT_KINDS = {
     "workflow_execution",
     "workflow_output_materialization",
     "workflow_outputs",
+    "test_activity_quality_audit",
+    "verified_fact_ledger",
 }
 
 
@@ -227,11 +229,17 @@ def workbench_artifact_audience(
     normalized_kind = kind or workbench_artifact_kind(relative_path)
     if relative_path.startswith("inputs/") or normalized_kind.startswith("input_"):
         return "input"
-    if name in DELIVERABLE_ARTIFACT_NAMES:
-        return "deliverable"
+    declared = declared_deliverables or set()
+    if declared:
+        declared_names = {path.rsplit("/", 1)[-1] for path in declared}
+        if relative_path in declared or name in declared_names:
+            return "deliverable"
+        if normalized_kind in DIAGNOSTIC_ARTIFACT_KINDS:
+            return "diagnostic"
+        return "support"
     if normalized_kind in DIAGNOSTIC_ARTIFACT_KINDS:
         return "diagnostic"
-    if relative_path in (declared_deliverables or set()):
+    if name in DELIVERABLE_ARTIFACT_NAMES:
         return "deliverable"
     return "support"
 
@@ -324,6 +332,10 @@ def workbench_artifact_kind(relative_path: str) -> str:
         return "task_artifact_manifest"
     if name == "task_acceptance_audit.json":
         return "task_acceptance_audit"
+    if name == "test_activity_quality_audit.json":
+        return "test_activity_quality_audit"
+    if name == "verified_fact_ledger.json":
+        return "verified_fact_ledger"
     if name == "task_rerun_plan.json":
         return "task_rerun_plan"
     if name == "task_rerun_execution.json":

@@ -12,14 +12,15 @@ test("AI thread hub exposes deletion through the real conversation API", () => {
   assert.match(source, /window\.confirm\(`删除线程/);
 });
 
-test("AI thread creation can bind a workflow and the empty thread opens the real cockpit", () => {
+test("AI thread creation can bind a workflow and open a real task draft", () => {
   assert.match(source, /api\.workbench\.workflows\.list/);
   assert.match(source, /aria-label="线程工作流模板"/);
   assert.match(source, /selected_workflow_id/);
   assert.match(source, /selected_workflow_name/);
-  assert.match(threadSource, /完整输入会连同节点顺序、MCP、skills 和输出契约交给当前执行器/);
-  assert.match(threadSource, /配置命名输入并运行/);
-  assert.match(threadSource, /\/workbench\?workflow=/);
+  assert.match(threadSource, /当前线程可使用工作流约束回答，但不会创建任务、Run Attempt 或执行 DAG/);
+  assert.match(threadSource, /创建任务草稿并补齐配置/);
+  assert.match(threadSource, /api\.aiConversations\.createTaskDraft/);
+  assert.match(threadSource, /\/tasks\/new\?task=/);
 });
 
 test("AI thread composer preserves multiline prompts until explicit send", () => {
