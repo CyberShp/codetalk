@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import stat
 import sys
 import tempfile
 import tomllib
@@ -27,6 +28,11 @@ _CODEX_RUNTIME_CONFIG_KEYS = (
     "service_tier",
 )
 
+_CODEX_SKILLS_MAX_FILES = 4096
+_CODEX_SKILLS_MAX_ENTRIES = 4096
+_CODEX_SKILLS_MAX_BYTES = 64 * 1024 * 1024
+_CODEX_SKILLS_MAX_DEPTH = 12
+
 
 def _write_sanitized_codex_config(source: Path, target: Path) -> None:
     try:
@@ -49,6 +55,170 @@ def _write_sanitized_codex_config(source: Path, target: Path) -> None:
         target.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+def _copy_codex_skills_tree(source: Path, target: Path) -> None:
+    source_root = source.resolve(strict=True)
+    copied_files = 0
+    copied_entries = 0
+    copied_bytes = 0
+
+    def same_identity(left: os.stat_result, right: os.stat_result) -> bool:
+        return (left.st_dev, left.st_ino) == (right.st_dev, right.st_ino)
+
+    def open_verified_entry(
+        parent_fd: int,
+        name: str,
+        expected: os.stat_result,
+        *,
+        directory: bool,
+        display_path: Path,
+    ) -> tuple[int, os.stat_result]:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        if directory:
+            flags |= getattr(os, "O_DIRECTORY", 0)
+        try:
+            descriptor = os.open(name, flags, dir_fd=parent_fd)
+        except OSError as exc:
+            raise AgentSandboxError(
+                f"Codex skills 条目在复制前发生变化：{display_path}"
+            ) from exc
+        try:
+            opened = os.fstat(descriptor)
+            current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            expected_kind = stat.S_ISDIR if directory else stat.S_ISREG
+            if (
+                not expected_kind(opened.st_mode)
+                or not same_identity(expected, opened)
+                or not same_identity(opened, current)
+            ):
+                raise AgentSandboxError(
+                    f"Codex skills 条目在复制前发生变化：{display_path}"
+                )
+            return descriptor, opened
+        except Exception:
+            os.close(descriptor)
+            raise
+
+    def copy_regular_file(
+        source_fd: int,
+        target_path: Path,
+        source_mode: int,
+    ) -> None:
+        nonlocal copied_bytes
+        try:
+            with os.fdopen(source_fd, "rb", closefd=True) as source_stream:
+                with target_path.open("xb") as target_stream:
+                    while True:
+                        chunk = source_stream.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        copied_bytes += len(chunk)
+                        if copied_bytes > _CODEX_SKILLS_MAX_BYTES:
+                            raise AgentSandboxError(
+                                "Codex skills 总大小超过安全上限 64 MiB。"
+                            )
+                        target_stream.write(chunk)
+        except Exception:
+            target_path.unlink(missing_ok=True)
+            raise
+        owner_mode = stat.S_IRUSR | stat.S_IWUSR
+        if source_mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH):
+            owner_mode |= stat.S_IXUSR
+        target_path.chmod(owner_mode)
+
+    def copy_directory(
+        current_fd: int,
+        current_target: Path,
+        depth: int,
+        relative_path: Path,
+    ) -> None:
+        nonlocal copied_entries, copied_files
+        if depth > _CODEX_SKILLS_MAX_DEPTH:
+            raise AgentSandboxError(
+                f"Codex skills 目录层级超过安全上限 {_CODEX_SKILLS_MAX_DEPTH}。"
+            )
+        current_target.mkdir(mode=0o700)
+        current_target.chmod(0o700)
+        with os.scandir(current_fd) as iterator:
+            entries = []
+            remaining_entries = _CODEX_SKILLS_MAX_ENTRIES - copied_entries
+            for entry in iterator:
+                entries.append(entry)
+                if len(entries) > remaining_entries:
+                    raise AgentSandboxError(
+                        f"Codex skills 目录项超过安全上限 {_CODEX_SKILLS_MAX_ENTRIES}。"
+                    )
+            entries.sort(key=lambda entry: entry.name)
+        for entry in entries:
+            copied_entries += 1
+            if copied_entries > _CODEX_SKILLS_MAX_ENTRIES:
+                raise AgentSandboxError(
+                    f"Codex skills 目录项超过安全上限 {_CODEX_SKILLS_MAX_ENTRIES}。"
+                )
+            entry_relative = relative_path / entry.name
+            entry_target = current_target / entry.name
+            if entry.is_symlink():
+                raise AgentSandboxError(
+                    f"Codex skills 不允许包含符号链接：{entry_relative}"
+                )
+            entry_stat = entry.stat(follow_symlinks=False)
+            if stat.S_ISDIR(entry_stat.st_mode):
+                child_fd, _ = open_verified_entry(
+                    current_fd,
+                    entry.name,
+                    entry_stat,
+                    directory=True,
+                    display_path=entry_relative,
+                )
+                try:
+                    copy_directory(child_fd, entry_target, depth + 1, entry_relative)
+                finally:
+                    os.close(child_fd)
+                continue
+            if not stat.S_ISREG(entry_stat.st_mode):
+                raise AgentSandboxError(
+                    f"Codex skills 包含不支持的文件类型：{entry_relative}"
+                )
+            copied_files += 1
+            if copied_files > _CODEX_SKILLS_MAX_FILES:
+                raise AgentSandboxError(
+                    f"Codex skills 文件数超过安全上限 {_CODEX_SKILLS_MAX_FILES}。"
+                )
+            source_fd, opened_stat = open_verified_entry(
+                current_fd,
+                entry.name,
+                entry_stat,
+                directory=False,
+                display_path=entry_relative,
+            )
+            copy_regular_file(source_fd, entry_target, opened_stat.st_mode)
+
+    try:
+        supports_descriptor_walk = (
+            os.name == "posix"
+            and os.open in os.supports_dir_fd
+            and os.stat in os.supports_dir_fd
+        )
+        if not supports_descriptor_walk:
+            target.mkdir(mode=0o700)
+            target.chmod(0o700)
+        else:
+            root_flags = (
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            root_fd = os.open(source_root, root_flags)
+            try:
+                if not stat.S_ISDIR(os.fstat(root_fd).st_mode):
+                    raise AgentSandboxError("Codex skills 根目录不是安全目录。")
+                copy_directory(root_fd, target, 0, Path("."))
+            finally:
+                os.close(root_fd)
+    except Exception:
+        shutil.rmtree(target, ignore_errors=True)
+        raise
+
+
 @dataclass(frozen=True)
 class AgentSandboxLaunch:
     status: str
@@ -62,6 +232,7 @@ _PARENT_ENV_ALLOWLIST = {
     "APPDATA",
     "CCR_CONFIG_PATH",
     "CLAUDE_CONFIG_DIR",
+    "CODETALK_TEMP_DIR",
     "CODEX_HOME",
     "COMSPEC",
     "HOME",
@@ -118,6 +289,31 @@ def prepare_isolated_runtime_tmp(artifact_dir: Path) -> Path:
     return runtime_tmp
 
 
+_ISOLATED_RUNTIME_PREFIXES = (".runtime-tmp-", ".runtime-codex-home-")
+
+
+def cleanup_isolated_runtime_directories(artifact_dir: Path) -> list[str]:
+    """Remove ephemeral Agent runtime state without crossing the artifact root."""
+    artifact_root = artifact_dir.resolve()
+    if not artifact_root.is_dir():
+        return []
+    removed: list[str] = []
+    for candidate in artifact_root.iterdir():
+        if not candidate.name.startswith(_ISOLATED_RUNTIME_PREFIXES):
+            continue
+        if candidate.parent.resolve() != artifact_root:
+            continue
+        try:
+            if candidate.is_symlink() or not candidate.is_dir():
+                candidate.unlink(missing_ok=True)
+            else:
+                shutil.rmtree(candidate)
+            removed.append(candidate.name)
+        except OSError:
+            continue
+    return sorted(removed)
+
+
 def prepare_isolated_codex_home(
     *,
     provider: str,
@@ -149,7 +345,7 @@ def prepare_isolated_codex_home(
         if state_path.resolve(strict=True).parent != runtime_home:
             raise AgentSandboxError(f"Codex 状态目录越过任务边界：{state_name}")
     read_targets: list[Path] = []
-    for name in ("auth.json", "config.toml", "models_cache.json", "skills"):
+    for name in ("auth.json", "config.toml", "skills"):
         source = source_home / name
         if not source.exists():
             continue
@@ -158,8 +354,8 @@ def prepare_isolated_codex_home(
         if name == "config.toml":
             _write_sanitized_codex_config(resolved_source, target)
             continue
-        if name == "models_cache.json":
-            shutil.copy2(resolved_source, target)
+        if name == "skills":
+            _copy_codex_skills_tree(resolved_source, target)
             continue
         try:
             target.symlink_to(

@@ -8,11 +8,21 @@ def test_release_workflow_presets_expose_full_and_two_basic_workflows():
 
     assert [item["id"] for item in presets] == [
         "source_flow_sfmea_blackbox",
-        "basic_source_report_claude",
+        "basic_source_report_codex",
         "basic_source_design_report_builtin",
     ]
     assert "module_analysis" in reserved_builtin_workflow_ids()
     assert "source_flow_sfmea_blackbox" in reserved_builtin_workflow_ids()
+    assert "basic_source_report_claude" in reserved_builtin_workflow_ids()
+
+
+def test_retired_claude_basic_preset_alias_resolves_to_codex_replacement():
+    from app.services.workflow_presets import get_workflow_preset
+
+    preset = get_workflow_preset("basic_source_report_claude")
+
+    assert preset["id"] == "basic_source_report_codex"
+    assert preset["definition"]["steps"][0]["provider"] == "codex"
 
 
 def test_basic_report_workflow_presets_have_minimal_inputs_and_one_report_contract():
@@ -20,10 +30,11 @@ def test_basic_report_workflow_presets_have_minimal_inputs_and_one_report_contra
 
     by_id = {item["id"]: item for item in active_builtin_workflow_presets()}
 
-    source_only = by_id["basic_source_report_claude"]["definition"]
-    assert source_only["description"] == by_id["basic_source_report_claude"]["description"]
+    source_only = by_id["basic_source_report_codex"]["definition"]
+    assert source_only["description"] == by_id["basic_source_report_codex"]["description"]
     assert source_only["execution_subject"] == "agent"
-    assert source_only["execution_label"] == "Claude Code"
+    assert source_only["execution_label"] == "Codex CLI"
+    assert source_only["steps"][0]["provider"] == "codex"
     assert source_only["inputs"] == [
         {
             "id": "repo_path",
@@ -36,7 +47,7 @@ def test_basic_report_workflow_presets_have_minimal_inputs_and_one_report_contra
     ]
     source_step = source_only["steps"][0]
     assert source_step["type"] == "agent_task"
-    assert source_step["provider"] == "claude-code"
+    assert source_step["provider"] == "codex"
     assert "mcp_profile" not in source_step
     assert source_step["required_artifacts"] == ["report.md"]
     assert "SPDK iSCSI login" in source_step["goal"]
@@ -227,7 +238,7 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         *ORIGINAL_CORE_WORKFLOW_PRESET_IDS,
         "source_flow_sfmea_blackbox",
         "testing_activity_orchestration",
-        "basic_source_report_claude",
+        "basic_source_report_codex",
         "basic_source_design_report_builtin",
     )
     assert preset_ids[: len(ORIGINAL_CORE_WORKFLOW_PRESET_IDS)] == list(

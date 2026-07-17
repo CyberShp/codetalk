@@ -296,7 +296,7 @@ CORE_WORKFLOW_PRESET_IDS = (
     *ORIGINAL_CORE_WORKFLOW_PRESET_IDS,
     "source_flow_sfmea_blackbox",
     "testing_activity_orchestration",
-    "basic_source_report_claude",
+    "basic_source_report_codex",
     "basic_source_design_report_builtin",
 )
 
@@ -364,9 +364,18 @@ COMMON_TEST_SCENARIO_PRESET_IDS = (
 
 ACTIVE_BUILTIN_WORKFLOW_PRESET_IDS = (
     "source_flow_sfmea_blackbox",
-    "basic_source_report_claude",
+    "basic_source_report_codex",
     "basic_source_design_report_builtin",
 )
+
+BUILTIN_WORKFLOW_PRESET_ALIASES = {
+    "basic_source_report_claude": "basic_source_report_codex",
+}
+
+
+def canonical_builtin_workflow_preset_id(preset_id: str) -> str:
+    value = str(preset_id or "")
+    return BUILTIN_WORKFLOW_PRESET_ALIASES.get(value, value)
 
 
 _BASIC_ISCSI_REPORT_GOAL = (
@@ -451,17 +460,17 @@ def _basic_report_preset(*, include_design: bool, provider: str) -> dict[str, An
     preset_id = (
         "basic_source_design_report_builtin"
         if include_design
-        else "basic_source_report_claude"
+        else "basic_source_report_codex"
     )
     name = (
         "基础源码 + 设计文档报告（内置模型）"
         if include_design
-        else "基础源码报告（Claude Code）"
+        else "基础源码报告（Codex CLI）"
     )
     description = (
         "以已建工作空间和一份设计文档为输入，由内置模型生成流程、SFMEA 与黑盒用例报告。"
         if include_design
-        else "仅以已建工作空间为输入，由 Claude Code 生成流程、SFMEA 与黑盒用例报告。"
+        else "仅以已建工作空间为输入，由 Codex CLI 生成流程、SFMEA 与黑盒用例报告。"
     )
     inputs: list[dict[str, Any]] = [
         {
@@ -491,7 +500,11 @@ def _basic_report_preset(*, include_design: bool, provider: str) -> dict[str, An
             {"id": "design_doc", "type": "file", "required": True}
         )
     execution_subject = "builtin_llm" if provider == "builtin-llm" else "agent"
-    execution_label = "内置模型" if provider == "builtin-llm" else "Claude Code"
+    execution_label = {
+        "builtin-llm": "内置模型",
+        "codex": "Codex CLI",
+        "claude-code": "Claude Code",
+    }.get(provider, provider)
     return {
         "id": preset_id,
         "name": name,
@@ -1158,7 +1171,7 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                 ],
             },
         },
-        _basic_report_preset(include_design=False, provider="claude-code"),
+        _basic_report_preset(include_design=False, provider="codex"),
         _basic_report_preset(include_design=True, provider="builtin-llm"),
         _source_flow_scenario_preset(
             preset_id="nvmf_connect_io_blackbox",
@@ -1899,10 +1912,16 @@ def active_builtin_workflow_presets() -> list[dict[str, Any]]:
 def reserved_builtin_workflow_ids() -> frozenset[str]:
     """Return active and retired official ids so custom workflows cannot shadow them."""
 
-    return frozenset(str(preset["id"]) for preset in builtin_workflow_presets())
+    return frozenset(
+        {
+            *(str(preset["id"]) for preset in builtin_workflow_presets()),
+            *BUILTIN_WORKFLOW_PRESET_ALIASES,
+        }
+    )
 
 
 def get_workflow_preset(preset_id: str) -> dict[str, Any]:
+    preset_id = canonical_builtin_workflow_preset_id(preset_id)
     for preset in builtin_workflow_presets():
         if preset["id"] == preset_id:
             return preset

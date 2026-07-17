@@ -209,13 +209,15 @@ function renderChecks(checks) {
 // ---------------------------------------------------------------------------
 
 function initConfigForm() {
-  // Workspace path auto-derives repos-path
+  // Workspace path auto-derives repository and runtime scratch paths.
   const workspaceInput = $('#workspace-path');
   const reposPathInput = $('#repos-path');
+  const tempPathInput = $('#temp-path');
   if (workspaceInput) {
     workspaceInput.addEventListener('input', () => {
       const ws = workspaceInput.value.replace(/[/\\]+$/, '');
       if (reposPathInput) reposPathInput.value = ws + '/repos';
+      if (tempPathInput) tempPathInput.value = ws + '/tmp';
     });
   }
 
@@ -245,7 +247,9 @@ function initConfigForm() {
       if (cfg.workspacePath) {
         ($('#workspace-path') || {}).value = cfg.workspacePath;
         if ($('#repos-path')) $('#repos-path').value = cfg.workspacePath.replace(/[/\\]+$/, '') + '/repos';
+        if ($('#temp-path')) $('#temp-path').value = cfg.workspacePath.replace(/[/\\]+$/, '') + '/tmp';
       }
+      if (cfg.tempPath)        ($('#temp-path')          || {}).value  = cfg.tempPath;
       if (cfg.installGitnexus === false && installGitnexusCb) installGitnexusCb.checked = false;
       if (cfg.portGitnexus)    ($('#port-gitnexus')     || {}).value  = cfg.portGitnexus;
       if (installCgcCb && cfg.installCgc !== undefined) installCgcCb.checked = !!cfg.installCgc;
@@ -288,6 +292,7 @@ function collectConfig() {
   const cfg = {
     mode:            state.selectedMode,
     workspacePath:   (($('#workspace-path') || {}).value || './workspace').trim(),
+    tempPath:        (($('#temp-path') || {}).value || './workspace/tmp').trim(),
     installGitnexus: installGitnexusCb ? installGitnexusCb.checked : true,
     installCgc:      installCgcCb ? installCgcCb.checked : true,
     portGitnexus:    (($('#port-gitnexus')     || {}).value || '7100').trim(),
@@ -335,6 +340,7 @@ function renderReview() {
   const rows = [
     { label: '部署模式',  value: MODE_LABELS[cfg.mode] || cfg.mode },
     { label: '工作目录',  value: cfg.workspacePath || './workspace', mono: true },
+    { label: '临时文件目录', value: cfg.tempPath || './workspace/tmp', mono: true },
   ];
 
   const components = [];

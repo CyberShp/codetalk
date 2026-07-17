@@ -15,6 +15,7 @@ import platform
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -726,41 +727,94 @@ def _redact_secret_csv_columns(value: str) -> str:
     in_csv_block = False
     changed = False
 
-    for raw_line in lines:
+    index = 0
+    while index < len(lines):
+        raw_line = lines[index]
+        index += 1
         line = raw_line.rstrip("\r\n")
-        newline = raw_line[len(line):]
         parsed = _parse_csv_row(line)
-        if parsed is None:
-            secret_columns = set()
-            expected_columns = 0
-            in_csv_block = False
+        if not in_csv_block and parsed is None:
             output.append(raw_line)
             continue
 
         if not in_csv_block:
-            columns = _secret_csv_columns(parsed)
-            if columns:
+            columns = _secret_csv_columns(parsed or [])
+            if columns and _looks_like_csv_header(line, parsed or []):
                 secret_columns = columns
-                expected_columns = len(parsed)
+                expected_columns = len(parsed or [])
                 in_csv_block = True
             output.append(raw_line)
             continue
 
-        if len(parsed) < expected_columns or not line.strip():
+        if not line.strip():
             secret_columns = set()
             expected_columns = 0
             in_csv_block = False
             output.append(raw_line)
             continue
 
-        row = list(parsed)
-        for index in secret_columns:
-            if index < len(row) and row[index]:
-                row[index] = "<redacted>"
+        record = raw_line
+        parsed_record, incomplete = _parse_csv_record(record)
+        while incomplete and index < len(lines):
+            record += lines[index]
+            index += 1
+            parsed_record, incomplete = _parse_csv_record(record)
+
+        if parsed_record is None:
+            # A malformed record after a secret-bearing header is unsafe to echo:
+            # its continuation lines may contain the rest of a quoted secret.
+            output.append("<redacted>" + _record_newline(record))
+            changed = True
+            secret_columns = set()
+            expected_columns = 0
+            in_csv_block = False
+            continue
+
+        row = list(parsed_record)
+        for secret_index in secret_columns:
+            if secret_index < len(row) and row[secret_index]:
+                row[secret_index] = "<redacted>"
                 changed = True
-        output.append(_format_csv_row(row) + newline)
+        if changed and any(
+            secret_index < len(parsed_record) and parsed_record[secret_index]
+            for secret_index in secret_columns
+        ):
+            output.append(_format_csv_row(row) + _record_newline(record))
+        else:
+            output.append(record)
+        if len(parsed_record) < expected_columns:
+            secret_columns = set()
+            expected_columns = 0
+            in_csv_block = False
 
     return "".join(output) if changed else value
+
+
+def _parse_csv_record(record: str) -> tuple[list[str] | None, bool]:
+    try:
+        rows = list(csv.reader(io.StringIO(record), strict=True))
+    except csv.Error as exc:
+        return None, "unexpected end of data" in str(exc).lower()
+    if len(rows) != 1:
+        return None, False
+    return rows[0], False
+
+
+def _record_newline(record: str) -> str:
+    if record.endswith("\r\n"):
+        return "\r\n"
+    if record.endswith(("\n", "\r")):
+        return record[-1]
+    return ""
+
+
+def _looks_like_csv_header(line: str, row: list[str]) -> bool:
+    if any(marker in line for marker in ("(", ")", "[", "]", "{", "}", "=", ";")):
+        return False
+    return all(
+        bool(re.fullmatch(r"[A-Za-z][A-Za-z0-9 _-]*", column.strip().strip("\"'")))
+        for column in row
+    )
 
 
 def _parse_csv_row(line: str) -> list[str] | None:
@@ -830,13 +884,24 @@ def _unavailable_health_from_attempts(
     }
 
 
-def _agent_process_env(provider: str, repo_path: str | Path) -> dict[str, str]:
+def _agent_process_env(
+    provider: str,
+    repo_path: str | Path,
+    *,
+    artifact_dir: str | Path | None = None,
+) -> dict[str, str]:
     env = filtered_agent_environment(external_agent_provider_env_hints(provider))
     env["CODETALK_AGENT_READONLY"] = "1"
     env["CODETALK_REPO_PATH"] = str(Path(repo_path).resolve())
-    if not env.get("CODETALK_AGENT_ARTIFACT_DIR"):
+    if artifact_dir is not None:
+        resolved_artifact_dir = Path(artifact_dir).expanduser().resolve()
+        resolved_artifact_dir.mkdir(parents=True, exist_ok=True)
+        env["CODETALK_AGENT_ARTIFACT_DIR"] = str(resolved_artifact_dir)
+    elif not env.get("CODETALK_AGENT_ARTIFACT_DIR"):
+        runtime_temp_dir = settings.ensure_runtime_temp_path()
         env["CODETALK_AGENT_ARTIFACT_DIR"] = tempfile.mkdtemp(
-            prefix="codetalk-agent-probe-"
+            prefix="codetalk-agent-probe-",
+            dir=runtime_temp_dir,
         )
     if provider == "claude-code":
         configured = str(getattr(settings, "claude_code_config_path", "") or "").strip()
@@ -2744,7 +2809,16 @@ async def run_external_agent_discovery(
 
     async def run_one(provider: str) -> AgentDiscoveryResult:
         async with semaphore:
-            return await _run_provider(provider, request, session=session)
+            with tempfile.TemporaryDirectory(
+                prefix="codetalk-agent-discovery-",
+                dir=settings.ensure_runtime_temp_path(),
+            ) as artifact_dir:
+                return await _run_provider(
+                    provider,
+                    request,
+                    session=session,
+                    artifact_dir=Path(artifact_dir),
+                )
 
     tasks = [run_one(provider) for provider in selected]
     gathered = await asyncio.gather(*tasks, return_exceptions=True)
@@ -2770,6 +2844,23 @@ async def run_external_agent_discovery(
 async def probe_external_agent_startup(
     provider: str,
     repo_path: str | Path | None = None,
+) -> dict:
+    with tempfile.TemporaryDirectory(
+        prefix="codetalk-agent-probe-",
+        dir=settings.ensure_runtime_temp_path(),
+    ) as artifact_dir:
+        return await _probe_external_agent_startup(
+            provider,
+            repo_path,
+            artifact_dir=Path(artifact_dir),
+        )
+
+
+async def _probe_external_agent_startup(
+    provider: str,
+    repo_path: str | Path | None = None,
+    *,
+    artifact_dir: Path,
 ) -> dict:
     """Start one provider with a minimal stdin probe and report diagnostics."""
     spec = external_agent_provider_spec(provider)
@@ -2836,7 +2927,7 @@ async def probe_external_agent_startup(
             argv,
             prompt,
         )
-        env = _agent_process_env(provider, cwd)
+        env = _agent_process_env(provider, cwd, artifact_dir=artifact_dir)
         for transport_index, (
             process_argv,
             stdin_payload,
@@ -2873,6 +2964,7 @@ async def probe_external_agent_startup(
                 }
                 break
             try:
+                isolate_process_group = os.name != "nt"
                 proc = await asyncio.create_subprocess_exec(
                     *process_argv,
                     cwd=str(cwd),
@@ -2880,6 +2972,7 @@ async def probe_external_agent_startup(
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     env=env,
+                    **({"start_new_session": True} if isolate_process_group else {}),
                 )
             except OSError as exc:
                 message = str(exc)
@@ -2903,10 +2996,8 @@ async def probe_external_agent_startup(
                 )
                 await _wait_for_process_exit(proc)
             except asyncio.CancelledError:
-                await _kill_and_wait_process(proc)
                 raise
             except asyncio.TimeoutError:
-                await _kill_and_wait_process(proc)
                 message = "startup probe timed out"
                 transport_attempt["probe_status"] = "timeout"
                 transport_attempt["probe_message"] = message
@@ -2920,6 +3011,11 @@ async def probe_external_agent_startup(
                 if has_more_transport:
                     continue
                 break
+            finally:
+                await _kill_and_wait_process(
+                    proc,
+                    process_group=isolate_process_group,
+                )
 
             raw = stdout.decode("utf-8", errors="replace")
             stderr_text = stderr.decode("utf-8", errors="replace")
@@ -3019,6 +3115,7 @@ async def _run_provider(
     request: AgentDiscoveryRequest,
     *,
     session: object | None = None,
+    artifact_dir: Path,
 ) -> AgentDiscoveryResult:
     spec = external_agent_provider_spec(provider)
     if not spec:
@@ -3085,7 +3182,11 @@ async def _run_provider(
             argv,
             prompt,
         )
-        env = _agent_process_env(provider, request.repo_path)
+        env = _agent_process_env(
+            provider,
+            request.repo_path,
+            artifact_dir=artifact_dir,
+        )
         result: AgentDiscoveryResult | None = None
         raw = ""
         should_try_next_command = False
@@ -3128,6 +3229,7 @@ async def _run_provider(
                 break
 
             try:
+                isolate_process_group = os.name != "nt"
                 proc = await asyncio.create_subprocess_exec(
                     *process_argv,
                     cwd=request.repo_path,
@@ -3135,6 +3237,7 @@ async def _run_provider(
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     env=env,
+                    **({"start_new_session": True} if isolate_process_group else {}),
                 )
             except OSError as exc:
                 summary = _format_spawn_error_summary(exc, health)
@@ -3160,10 +3263,8 @@ async def _run_provider(
                 )
                 await _wait_for_process_exit(proc)
             except asyncio.CancelledError:
-                await _kill_and_wait_process(proc)
                 raise
             except asyncio.TimeoutError:
-                await _kill_and_wait_process(proc)
                 summary = "timeout"
                 transport_attempt["run_status"] = "timeout"
                 transport_attempt["run_message"] = summary
@@ -3174,6 +3275,11 @@ async def _run_provider(
                     continue
                 should_try_next_command = True
                 break
+            finally:
+                await _kill_and_wait_process(
+                    proc,
+                    process_group=isolate_process_group,
+                )
 
             raw = stdout.decode("utf-8", errors="replace")
             stderr_text = stderr.decode("utf-8", errors="replace")
@@ -3435,15 +3541,52 @@ def _startup_probe_failure_message_with_prior_context(message: str, attempts: li
     )[:4000]
 
 
-async def _kill_and_wait_process(proc: object) -> None:
-    try:
-        kill = getattr(proc, "kill")
-        kill()
-    except ProcessLookupError:
-        pass
-    except Exception:
-        pass
+async def _kill_and_wait_process(
+    proc: object,
+    *,
+    process_group: bool = False,
+) -> None:
+    process_group_id = int(getattr(proc, "pid", 0) or 0)
+    if process_group and process_group_id > 0 and os.name != "nt":
+        try:
+            os.killpg(process_group_id, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            process_group = False
+        if process_group:
+            deadline = asyncio.get_running_loop().time() + 1.0
+            while (
+                _external_process_group_exists(process_group_id)
+                and asyncio.get_running_loop().time() < deadline
+            ):
+                await asyncio.sleep(0.02)
+            if _external_process_group_exists(process_group_id):
+                try:
+                    os.killpg(process_group_id, signal.SIGKILL)
+                except OSError:
+                    pass
+            await _wait_for_process_exit(proc)
+            return
+    if getattr(proc, "returncode", None) is None:
+        try:
+            kill = getattr(proc, "kill")
+            kill()
+        except ProcessLookupError:
+            pass
+        except Exception:
+            pass
     await _wait_for_process_exit(proc)
+
+
+def _external_process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 async def _wait_for_process_exit(proc: object, timeout: float = 5) -> None:

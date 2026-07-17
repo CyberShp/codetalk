@@ -667,12 +667,12 @@ async def test_workbench_workflow_preset_api(workbench_client):
     preset_ids = {item["id"] for item in preset_items}
     assert preset_ids == {
         "source_flow_sfmea_blackbox",
-        "basic_source_report_claude",
+        "basic_source_report_codex",
         "basic_source_design_report_builtin",
     }
     by_preset_id = {item["id"]: item for item in preset_items}
     assert by_preset_id["source_flow_sfmea_blackbox"]["group"] == "core"
-    assert by_preset_id["basic_source_report_claude"]["group"] == "core"
+    assert by_preset_id["basic_source_report_codex"]["group"] == "core"
     assert by_preset_id["basic_source_design_report_builtin"]["group"] == "core"
 
     listed = await workbench_client.get("/api/workbench/workflows")
@@ -691,7 +691,7 @@ async def test_workbench_workflow_preset_api(workbench_client):
     assert installed.json()["id"] == "source_flow_sfmea_blackbox"
 
     for preset_id in (
-        "basic_source_report_claude",
+        "basic_source_report_codex",
         "basic_source_design_report_builtin",
     ):
         installed = await workbench_client.post(
@@ -700,6 +700,12 @@ async def test_workbench_workflow_preset_api(workbench_client):
         assert installed.status_code == 201
         assert installed.json()["id"] == preset_id
         assert installed.json()["audit"]["warnings"] == []
+
+    legacy_alias = await workbench_client.post(
+        "/api/workbench/workflow-presets/basic_source_report_claude/install"
+    )
+    assert legacy_alias.status_code == 201
+    assert legacy_alias.json()["id"] == "basic_source_report_codex"
 
 
 async def test_retired_builtin_cannot_be_installed_or_used_for_new_task_runs(
@@ -1058,7 +1064,7 @@ async def test_restore_builtin_workflows_preserves_custom_and_restores_release_p
     workflow_ids = [item["id"] for item in body["items"]]
     assert workflow_ids == [
         "source_flow_sfmea_blackbox",
-        "basic_source_report_claude",
+        "basic_source_report_codex",
         "basic_source_design_report_builtin",
         "custom_keep_me",
     ]
@@ -1155,7 +1161,7 @@ async def test_workbench_core_workflow_readiness_api_covers_release_workflow(wor
     by_id = {item["id"]: item for item in body["workflows"]}
     assert set(by_id) == {
         "source_flow_sfmea_blackbox",
-        "basic_source_report_claude",
+        "basic_source_report_codex",
         "basic_source_design_report_builtin",
     }
     assert by_id["source_flow_sfmea_blackbox"]["scenario"] == "source_flow_sfmea_blackbox"
@@ -1177,11 +1183,11 @@ async def test_workbench_core_workflow_readiness_api_covers_release_workflow(wor
         "validate_evidence",
         "render_report",
     ]
-    assert by_id["basic_source_report_claude"]["required_artifacts"] == [
+    assert by_id["basic_source_report_codex"]["required_artifacts"] == [
         "report.md"
     ]
-    assert by_id["basic_source_report_claude"]["execution_subject"] == "agent"
-    assert by_id["basic_source_report_claude"]["execution_label"] == "Claude Code"
+    assert by_id["basic_source_report_codex"]["execution_subject"] == "agent"
+    assert by_id["basic_source_report_codex"]["execution_label"] == "Codex CLI"
     assert by_id["basic_source_design_report_builtin"]["required_artifacts"] == [
         "report.md"
     ]
@@ -1569,7 +1575,7 @@ async def test_workbench_system_audit_api_reports_control_plane_readiness(workbe
     assert checks["workflow_presets"]["status"] == "ok"
     assert checks["workflow_presets"]["details"]["available"] == [
         "basic_source_design_report_builtin",
-        "basic_source_report_claude",
+        "basic_source_report_codex",
         "source_flow_sfmea_blackbox",
     ]
     assert checks["provider_capability_matrix"]["details"]["provider_count"] >= 4

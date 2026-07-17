@@ -85,10 +85,11 @@ async def test_service_restart_with_deployer_backend_uses_defaults(client, monke
     assert name == "backend"
     assert "uvicorn" in cmd
     assert cwd.endswith("/backend")
-    assert env_extra == {
-        "CODETALK_BACKEND_PORT": "3004",
-        "CORS_ORIGINS": "http://localhost:3003,http://127.0.0.1:3003",
-    }
+    assert env_extra is not None
+    assert env_extra["CODETALK_BACKEND_PORT"] == "3004"
+    assert env_extra["CORS_ORIGINS"] == "http://localhost:3003,http://127.0.0.1:3003"
+    for key in ("TEMP", "TMP", "TMPDIR"):
+        assert env_extra[key] == env_extra["CODETALK_TEMP_DIR"]
 
 
 async def test_service_stop_with_deployer_unknown_service_raises_404(client):
@@ -205,18 +206,15 @@ async def test_service_frontend_restart_with_deployer_uses_defaults(client, monk
     resp = await client.post("/api/services/frontend/restart")
     assert resp.status_code == 200
     assert resp.json() == {"ok": True, "service": "frontend"}
-    assert events == [
-        "install_frontend",
-        (
-            "spawn:frontend:3003",
-            {
-                "PORT": "3003",
-                "CODETALK_FRONTEND_PORT": "3003",
-                "CODETALK_BACKEND_PORT": "3004",
-                "NEXT_PUBLIC_API_URL": "http://localhost:3004",
-            },
-        ),
-    ]
+    assert events[0] == "install_frontend"
+    label, frontend_env = events[1]
+    assert label == "spawn:frontend:3003"
+    assert frontend_env["PORT"] == "3003"
+    assert frontend_env["CODETALK_FRONTEND_PORT"] == "3003"
+    assert frontend_env["CODETALK_BACKEND_PORT"] == "3004"
+    assert frontend_env["NEXT_PUBLIC_API_URL"] == "http://localhost:3004"
+    for key in ("TEMP", "TMP", "TMPDIR"):
+        assert frontend_env[key] == frontend_env["CODETALK_TEMP_DIR"]
 
 
 async def test_service_gitnexus_stop_with_deployer_raises_404(client):

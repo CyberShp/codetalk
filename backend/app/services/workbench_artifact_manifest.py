@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -40,6 +42,35 @@ def _is_runtime_cache_directory(name: str) -> bool:
     )
 
 
+def _iter_manifest_files(root: Path):
+    def handle_walk_error(error: OSError) -> None:
+        if error.errno == errno.ENOENT:
+            return None
+        raise error
+
+    for current, directory_names, file_names in os.walk(
+        root,
+        topdown=True,
+        followlinks=False,
+        onerror=handle_walk_error,
+    ):
+        current_path = Path(current)
+        directory_names[:] = sorted(
+            name
+            for name in directory_names
+            if not _is_runtime_cache_directory(name)
+            and not (current_path / name).is_symlink()
+        )
+        for name in sorted(file_names):
+            yield current_path / name
+
+
+def _ignore_disappeared_path(error: OSError) -> bool:
+    if error.errno == errno.ENOENT:
+        return True
+    raise error
+
+
 def write_task_artifact_manifest(task_dir: Path, *, task_run_id: str) -> dict[str, Any]:
     artifacts = [
         item
@@ -63,13 +94,14 @@ def write_task_artifact_manifest(task_dir: Path, *, task_run_id: str) -> dict[st
 def build_task_artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
     try:
         root = task_dir.resolve()
-    except OSError:
-        return []
+    except OSError as error:
+        if _ignore_disappeared_path(error):
+            return []
     if not root.exists() or not root.is_dir():
         return []
     declared_deliverables = _declared_workflow_deliverable_paths(root)
     artifacts: list[dict[str, Any]] = []
-    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+    for path in _iter_manifest_files(root):
         if not path.is_file():
             continue
         try:
@@ -80,14 +112,16 @@ def build_task_artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
             continue
         try:
             resolved = path.resolve()
-        except OSError:
-            continue
+        except OSError as error:
+            if _ignore_disappeared_path(error):
+                continue
         if resolved != root and root not in resolved.parents:
             continue
         try:
             data = resolved.read_bytes()
-        except OSError:
-            continue
+        except OSError as error:
+            if _ignore_disappeared_path(error):
+                continue
         relative_path = resolved.relative_to(root).as_posix()
         item: dict[str, Any] = {
             "relative_path": relative_path,
@@ -121,7 +155,10 @@ def _declared_workflow_deliverable_paths(task_dir: Path) -> set[str]:
             continue
         try:
             payload = json.loads(source.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+        except OSError as error:
+            if _ignore_disappeared_path(error):
+                continue
+        except json.JSONDecodeError:
             continue
         if not isinstance(payload, dict):
             continue

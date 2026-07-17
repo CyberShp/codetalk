@@ -20,6 +20,7 @@ from typing import Any, Callable
 from app.config import settings
 from app.services.agent_sandbox import (
     AgentSandboxError,
+    cleanup_isolated_runtime_directories,
     codex_command_for_outer_sandbox,
     filtered_agent_environment,
     prepare_isolated_codex_home,
@@ -50,37 +51,57 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
     command = _resolve_agent_command(command)
     args = list(runtime.get("args") or [])
     probe_args = _probe_args(runtime, args)
+    env, owned_artifact_dir = _build_env_with_artifact_ownership(
+        runtime,
+        include_claude_auth=False,
+    )
+    probe_temp_dir = Path(env["CODETALK_AGENT_ARTIFACT_DIR"]).resolve()
+    for temp_name in ("CODETALK_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
+        env[temp_name] = str(probe_temp_dir)
+    isolate_process_group = os.name != "nt"
+    process_kwargs: dict[str, Any] = {}
+    if isolate_process_group:
+        process_kwargs["start_new_session"] = True
+    proc: asyncio.subprocess.Process | None = None
     try:
-        proc = await asyncio.create_subprocess_exec(
-            command,
-            *probe_args,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            env=_build_env(runtime, include_claude_auth=False),
-        )
         try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=8)
-        except asyncio.TimeoutError:
-            proc.kill()
-            await proc.wait()
-            return {"success": False, "message": "探测超时"}
-    except FileNotFoundError:
-        return {"success": False, "message": await _missing_command_message(command)}
-    except Exception as exc:
-        return {"success": False, "message": f"启动失败：{redact_agent_diagnostic_text(str(exc))}"}
-    stdout_text = _decode(stdout).strip() if stdout else ""
-    stderr_text = _decode(stderr).strip() if stderr else ""
-    if proc.returncode == 0:
-        if str(runtime.get("prompt_transport") or "") == "claude_print_arg":
-            auth_result = await _probe_claude_auth_in_runtime_sandbox(
-                runtime=runtime,
-                command=command,
+            proc = await asyncio.create_subprocess_exec(
+                command,
+                *probe_args,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=env,
+                **process_kwargs,
             )
-            if not auth_result["success"]:
-                return auth_result
-        return {"success": True, "message": stdout_text or stderr_text or "执行器可启动"}
-    message = stderr_text or stdout_text or f"命令退出码：{proc.returncode}"
-    return {"success": False, "message": redact_agent_diagnostic_text(message)}
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=8)
+            except asyncio.TimeoutError:
+                return {"success": False, "message": "探测超时"}
+            except asyncio.CancelledError:
+                raise
+        except FileNotFoundError:
+            return {"success": False, "message": await _missing_command_message(command)}
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return {"success": False, "message": f"启动失败：{redact_agent_diagnostic_text(str(exc))}"}
+        stdout_text = _decode(stdout).strip() if stdout else ""
+        stderr_text = _decode(stderr).strip() if stderr else ""
+        if proc.returncode == 0:
+            if str(runtime.get("prompt_transport") or "") == "claude_print_arg":
+                auth_result = await _probe_claude_auth_in_runtime_sandbox(
+                    runtime=runtime,
+                    command=command,
+                )
+                if not auth_result["success"]:
+                    return auth_result
+            return {"success": True, "message": stdout_text or stderr_text or "执行器可启动"}
+        message = stderr_text or stdout_text or f"命令退出码：{proc.returncode}"
+        return {"success": False, "message": redact_agent_diagnostic_text(message)}
+    finally:
+        if proc is not None:
+            await _terminate_process(proc, process_group=isolate_process_group)
+        _cleanup_owned_artifact_dir(owned_artifact_dir)
 
 
 async def _probe_claude_auth_in_runtime_sandbox(
@@ -91,10 +112,13 @@ async def _probe_claude_auth_in_runtime_sandbox(
         "message": "Claude Code 可启动，但隔离环境无法读取登录状态，请重新登录或检查 Agent 隔离配置。",
     }
     try:
-        with tempfile.TemporaryDirectory(prefix="codetalk-claude-probe-") as temp_dir:
+        with tempfile.TemporaryDirectory(
+            prefix="codetalk-claude-probe-",
+            dir=settings.ensure_runtime_temp_path(),
+        ) as temp_dir:
             artifact_dir = Path(temp_dir).resolve()
-            env = _build_env(runtime)
-            for temp_name in ("TMPDIR", "TMP", "TEMP"):
+            env = _build_env(runtime, artifact_dir_override=artifact_dir)
+            for temp_name in ("CODETALK_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
                 env[temp_name] = str(artifact_dir)
             sandbox_runtime = {
                 **runtime,
@@ -128,24 +152,37 @@ async def _probe_claude_auth_in_runtime_sandbox(
             readiness_command = [command, *readiness_args]
             if sandbox.wrapper:
                 readiness_command = [*sandbox.wrapper, *readiness_command]
-            readiness = await asyncio.create_subprocess_exec(
-                *readiness_command,
-                cwd=str(artifact_dir),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-            )
+            isolate_process_group = os.name != "nt"
+            process_kwargs: dict[str, Any] = {}
+            if isolate_process_group:
+                process_kwargs["start_new_session"] = True
+            readiness: asyncio.subprocess.Process | None = None
             try:
-                readiness_stdout, readiness_stderr = await asyncio.wait_for(
-                    readiness.communicate(), timeout=20
+                readiness = await asyncio.create_subprocess_exec(
+                    *readiness_command,
+                    cwd=str(artifact_dir),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                    **process_kwargs,
                 )
-            except asyncio.TimeoutError:
-                readiness.kill()
-                await readiness.wait()
-                return {
-                    "success": False,
-                    "message": "Claude Code 已登录，但真实模型请求探测超时。请检查网络或代理后重试。",
-                }
+                try:
+                    readiness_stdout, readiness_stderr = await asyncio.wait_for(
+                        readiness.communicate(), timeout=20
+                    )
+                except asyncio.TimeoutError:
+                    return {
+                        "success": False,
+                        "message": "Claude Code 已登录，但真实模型请求探测超时。请检查网络或代理后重试。",
+                    }
+                except asyncio.CancelledError:
+                    raise
+            finally:
+                if readiness is not None:
+                    await _terminate_process(
+                        readiness,
+                        process_group=isolate_process_group,
+                    )
             readiness_text = _decode(readiness_stdout or readiness_stderr).strip()
             return _claude_readiness_result(
                 readiness_text,
@@ -215,11 +252,11 @@ async def stream_agent_runtime(
     ]
     args = _runtime_args(runtime, resume_session_id=resume_session_id)
     prompt_transport = str(runtime.get("prompt_transport") or "stdin")
-    env = _build_env(runtime)
+    env, owned_artifact_dir = _build_env_with_artifact_ownership(runtime)
     artifact_dir = Path(env["CODETALK_AGENT_ARTIFACT_DIR"]).expanduser().resolve()
     artifact_dir.mkdir(parents=True, exist_ok=True)
     runtime_tmp_dir = prepare_isolated_runtime_tmp(artifact_dir)
-    for temp_name in ("TMPDIR", "TMP", "TEMP"):
+    for temp_name in ("CODETALK_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
         env[temp_name] = str(runtime_tmp_dir)
     env["TMPPREFIX"] = str(runtime_tmp_dir / "zsh")
     prompt_file_path: str | None = None
@@ -260,6 +297,8 @@ async def stream_agent_runtime(
         args = _opencode_run_args(args, prompt_argument, resume_session_id=resume_session_id)
         stdin = asyncio.subprocess.DEVNULL
     else:
+        cleanup_isolated_runtime_directories(artifact_dir)
+        _cleanup_owned_artifact_dir(owned_artifact_dir)
         raise AgentRuntimeError(f"不支持的 prompt_transport: {prompt_transport}")
     timeout = int(runtime.get("timeout_seconds") or 120)
     hard_timeout = max(3600, timeout * 4)
@@ -307,6 +346,8 @@ async def stream_agent_runtime(
     except AgentSandboxError as exc:
         if prompt_file_path:
             Path(prompt_file_path).unlink(missing_ok=True)
+        cleanup_isolated_runtime_directories(artifact_dir)
+        _cleanup_owned_artifact_dir(owned_artifact_dir)
         raise AgentRuntimeError(str(exc)) from exc
     if stderr_update is not None:
         update_result = stderr_update(f"Agent 隔离：{sandbox.message}")
@@ -336,6 +377,8 @@ async def stream_agent_runtime(
                 Path(prompt_file_path).unlink(missing_ok=True)
             except Exception:
                 pass
+        cleanup_isolated_runtime_directories(artifact_dir)
+        _cleanup_owned_artifact_dir(owned_artifact_dir)
         raise AgentRuntimeError(await _missing_command_message(command)) from exc
     except Exception as exc:
         if prompt_file_path:
@@ -343,6 +386,8 @@ async def stream_agent_runtime(
                 Path(prompt_file_path).unlink(missing_ok=True)
             except Exception:
                 pass
+        cleanup_isolated_runtime_directories(artifact_dir)
+        _cleanup_owned_artifact_dir(owned_artifact_dir)
         raise AgentRuntimeError(f"启动执行器失败：{redact_agent_diagnostic_text(str(exc))}") from exc
 
     stderr_chunks: list[str] = []
@@ -439,8 +484,7 @@ async def stream_agent_runtime(
         stderr_task.cancel()
         raise AgentRuntimeError(f"执行器超过安全运行上限（{hard_timeout}s）") from exc
     finally:
-        if proc.returncode is None:
-            await _terminate_process(proc, process_group=isolate_process_group)
+        await _terminate_process(proc, process_group=isolate_process_group)
         if not stderr_task.done():
             stderr_task.cancel()
         if cancel_task is not None and not cancel_task.done():
@@ -450,6 +494,8 @@ async def stream_agent_runtime(
                 Path(prompt_file_path).unlink(missing_ok=True)
             except Exception:
                 pass
+        cleanup_isolated_runtime_directories(artifact_dir)
+        _cleanup_owned_artifact_dir(owned_artifact_dir)
 
     if (
         return_code == 1
@@ -738,26 +784,60 @@ async def _terminate_process(
     *,
     process_group: bool = False,
 ) -> None:
+    if process_group and os.name != "nt":
+        process_group_id = int(getattr(proc, "pid", 0) or 0)
+        if process_group_id <= 0:
+            return
+        if proc.returncode is not None and not _process_group_exists(process_group_id):
+            return
+        try:
+            os.killpg(process_group_id, signal.SIGTERM)
+        except ProcessLookupError:
+            if proc.returncode is None:
+                await proc.wait()
+            return
+
+        deadline = asyncio.get_running_loop().time() + 2
+        if proc.returncode is None:
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(proc.wait()),
+                    timeout=max(0.001, deadline - asyncio.get_running_loop().time()),
+                )
+            except TimeoutError:
+                pass
+        while (
+            _process_group_exists(process_group_id)
+            and asyncio.get_running_loop().time() < deadline
+        ):
+            await asyncio.sleep(0.02)
+        if _process_group_exists(process_group_id):
+            try:
+                os.killpg(process_group_id, signal.SIGKILL)
+            except OSError:
+                pass
+        if proc.returncode is None:
+            await proc.wait()
+        return
+
     if proc.returncode is not None:
         return
-    if process_group and os.name != "nt":
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-        except ProcessLookupError:
-            return
-    else:
-        proc.terminate()
+    proc.terminate()
     try:
         await asyncio.wait_for(proc.wait(), timeout=2)
     except TimeoutError:
-        if process_group and os.name != "nt":
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                return
-        else:
-            proc.kill()
+        proc.kill()
         await proc.wait()
+
+
+def _process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 async def _read_stdout(
@@ -1753,18 +1833,51 @@ def _build_env(
     runtime: dict[str, Any],
     *,
     include_claude_auth: bool = True,
+    artifact_dir_override: str | Path | None = None,
 ) -> dict[str, str]:
+    env, _owned_artifact_dir = _build_env_with_artifact_ownership(
+        runtime,
+        include_claude_auth=include_claude_auth,
+        artifact_dir_override=artifact_dir_override,
+        create_artifact_dir=artifact_dir_override is not None,
+    )
+    return env
+
+
+def _build_env_with_artifact_ownership(
+    runtime: dict[str, Any],
+    *,
+    include_claude_auth: bool = True,
+    artifact_dir_override: str | Path | None = None,
+    create_artifact_dir: bool = True,
+) -> tuple[dict[str, str], Path | None]:
     credential_runtime = include_claude_auth and _is_trusted_managed_claude_runtime(runtime)
     env = filtered_agent_environment(
         {} if credential_runtime else runtime.get("env") or {}
     )
     if credential_runtime:
         _inject_claude_oauth_token(runtime, env)
-    if not env.get("CODETALK_AGENT_ARTIFACT_DIR"):
-        env["CODETALK_AGENT_ARTIFACT_DIR"] = tempfile.mkdtemp(
-            prefix="codetalk-agent-runtime-"
+    owned_artifact_dir: Path | None = None
+    if artifact_dir_override is not None:
+        artifact_dir = Path(artifact_dir_override).expanduser().resolve()
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        env["CODETALK_AGENT_ARTIFACT_DIR"] = str(artifact_dir)
+    elif create_artifact_dir and not env.get("CODETALK_AGENT_ARTIFACT_DIR"):
+        runtime_temp_dir = settings.ensure_runtime_temp_path()
+        owned_artifact_dir = Path(
+            tempfile.mkdtemp(
+                prefix="codetalk-agent-runtime-",
+                dir=runtime_temp_dir,
+            )
         )
-    return env
+        env["CODETALK_AGENT_ARTIFACT_DIR"] = str(owned_artifact_dir)
+    return env, owned_artifact_dir
+
+
+def _cleanup_owned_artifact_dir(artifact_dir: Path | None) -> None:
+    if artifact_dir is None:
+        return
+    shutil.rmtree(artifact_dir, ignore_errors=True)
 
 
 def _inject_claude_oauth_token(runtime: dict[str, Any], env: dict[str, str]) -> None:

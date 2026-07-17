@@ -1,9 +1,12 @@
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { assertPortAvailable } from "./port-preflight.mjs";
+import {
+  configureRuntimeTempEnvironment,
+  sanitizePlaywrightRunId,
+} from "./playwright-runtime-policy.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const backendDir = path.resolve(__dirname, "../../backend");
@@ -15,12 +18,15 @@ const gitnexusPort = process.env.GITNEXUS_PORT ?? process.env.CODETALK_GITNEXUS_
 const gitnexusBaseUrl =
   process.env.GITNEXUS_BASE_URL ?? `http://localhost:${gitnexusPort}`;
 const configuredPython = process.env.CODETALK_BACKEND_PYTHON;
-const runId =
+const runId = sanitizePlaywrightRunId(
   process.env.CODETALK_PLAYWRIGHT_RUN_ID ??
-  `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`;
+    `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`,
+);
+process.env.CODETALK_PLAYWRIGHT_RUN_ID = runId;
+const runtimeTempRoot = configureRuntimeTempEnvironment(process.env);
 const isolatedDataDir =
   process.env.CODETALK_PLAYWRIGHT_DATA_DIR ??
-  path.join(os.tmpdir(), "codetalk-playwright", `backend-${backendPort}`, runId);
+  path.join(runtimeTempRoot, "codetalk-playwright", `backend-${backendPort}`, runId);
 const isolatedSqliteDb =
   process.env.CODETALK_PLAYWRIGHT_SQLITE_DB ?? path.join(isolatedDataDir, "codetalk.db");
 const shouldCleanupDataDir =
@@ -172,7 +178,6 @@ const child = spawn(
 function shutdown(signal) {
   if (child.exitCode !== null || child.signalCode !== null) return;
   child.kill(signal);
-  cleanupDataDir();
   const forceKill = setTimeout(() => {
     if (child.exitCode === null && child.signalCode === null) {
       child.kill("SIGKILL");

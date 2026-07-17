@@ -1,8 +1,11 @@
 import { defineConfig, devices } from "@playwright/test";
-import os from "node:os";
 import path from "node:path";
 
-import { resolveReuseExistingServer } from "./scripts/playwright-runtime-policy.mjs";
+import {
+  configureRuntimeTempEnvironment,
+  resolveReuseExistingServer,
+  sanitizePlaywrightRunId,
+} from "./scripts/playwright-runtime-policy.mjs";
 
 const frontendPort = Number(process.env.CODETALK_FRONTEND_PORT ?? "3003");
 const backendPort = Number(process.env.CODETALK_BACKEND_PORT ?? "3004");
@@ -11,14 +14,16 @@ const browserHost = process.env.CODETALK_BROWSER_HOST ?? "localhost";
 const reuseExistingServer = resolveReuseExistingServer(process.env);
 const startGitNexus = process.env.CODETALK_PLAYWRIGHT_GITNEXUS === "1";
 const chromiumExecutablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
-const runId =
+const runtimeTempRoot = configureRuntimeTempEnvironment(process.env);
+const runId = sanitizePlaywrightRunId(
   process.env.CODETALK_PLAYWRIGHT_RUN_ID ??
-  `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`;
+    `${new Date().toISOString().replace(/[:.]/g, "-")}-${process.pid}`,
+);
 process.env.CODETALK_PLAYWRIGHT_RUN_ID = runId;
 
 if (!process.env.CODETALK_PLAYWRIGHT_DATA_DIR) {
   process.env.CODETALK_PLAYWRIGHT_DATA_DIR = path.join(
-    os.tmpdir(),
+    runtimeTempRoot,
     "codetalk-playwright",
     `backend-${backendPort}`,
     runId,

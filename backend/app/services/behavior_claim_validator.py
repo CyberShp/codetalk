@@ -19,6 +19,29 @@ from app.services.agent_runtimes import get_agent_runtime_sync
 from app.services.test_activity_contract import build_behavior_claim_validation_request
 
 
+_BEHAVIOR_VALIDATION_SCHEMA_VERSION = 2
+_FIELD_PATCH_ALLOWLIST = {
+    "sfmea_row_behavior": {
+        "failure_mode",
+        "cause",
+        "effect",
+        "detection",
+        "mitigation",
+        "test_mapping",
+    },
+    "black_box_case_behavior": {
+        "scenario_name",
+        "preconditions",
+        "steps",
+        "expected_result",
+        "observability",
+        "failure_diagnostics",
+        "mapped_test_dir",
+        "test_dimension",
+    },
+}
+
+
 def build_behavior_claim_audit_prompt(request: dict[str, Any]) -> str:
     return "\n".join(
         [
@@ -34,9 +57,12 @@ def build_behavior_claim_audit_prompt(request: dict[str, Any]) -> str:
             "black_box_case_behavior：核对外部步骤是否可执行、expected_result 与 observability 中的实现事实是否有源码依据、诊断线索是否可行动；test_mapping 是候选落点，不自动等价于已有覆盖。",
             "如果一行混合了已证实事实和错误事实，判 contradicts；只有确实缺少必要上下文时才判 insufficient。",
             "必要时可在当前只读仓库中用 rg/git grep 阅读引用函数及邻近调用方；不得修改文件。",
-            "不要修复报告；你的唯一任务是逐条给出三值事实判断。",
+            "不要修改仓库或报告文件；你的任务是给出三值判断，并为错误行提供最小字段修正建议。",
+            "supports 必须返回空 field_patch。contradicts/insufficient 若 claim.type 是 sfmea_row_behavior 或 black_box_case_behavior，field_patch 只填写需要替换的字段，替换值必须与源码上下文一致；禁止修改 ID、评分、technical_claims 或 source_evidence。",
+            "证据不足时，field_patch 应删除无依据的实现结论并改写为可执行的待验证操作与 oracle，不能继续把猜测写成事实。",
+            "每条结果必须逐字回传输入中的 claim_id 和 binding；claim_id 可能在不同 artifact 中重复，禁止省略 binding。",
             "最终只输出一个 JSON 对象，不要 Markdown：",
-            '{"claims":[{"claim_id":"...","status":"supports|contradicts|insufficient","reason":"简洁、具体、可核查"}]}',
+            '{"claims":[{"claim_id":"...","binding":"...","status":"supports|contradicts|insufficient","reason":"简洁、具体、可核查","field_patch":{"字段":"与源码一致的替换值"}}]}',
             "VALIDATION_REQUEST:",
             json.dumps(request, ensure_ascii=False, separators=(",", ":")),
         ]
@@ -51,37 +77,62 @@ def normalize_behavior_claim_verdicts(
 ) -> dict[str, Any]:
     payload = _extract_json_object(raw_output)
     raw_claims = payload.get("claims") if isinstance(payload, dict) else []
-    by_id = {
-        str(item.get("claim_id") or "").strip(): item
+    raw_items = [
+        item
         for item in raw_claims or []
         if isinstance(item, dict) and str(item.get("claim_id") or "").strip()
-    }
-    if not by_id:
+    ]
+    if not raw_items:
         detail = str(payload.get("detail") or payload.get("error") or "").strip()
         raise ValueError(
             "独立行为审计器没有返回任何 claim 判断"
             + (f"：{detail}" if detail else "")
         )
+    by_bound_key: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    unbound_by_id: dict[str, list[dict[str, Any]]] = {}
+    for item in raw_items:
+        claim_id = str(item.get("claim_id") or "").strip()
+        binding = str(item.get("binding") or "").strip()
+        if binding:
+            by_bound_key.setdefault((claim_id, binding), []).append(item)
+        else:
+            unbound_by_id.setdefault(claim_id, []).append(item)
     normalized: list[dict[str, Any]] = []
     for requested in request.get("claims") or []:
         if not isinstance(requested, dict):
             continue
         claim_id = str(requested.get("claim_id") or "").strip()
-        verdict = by_id.get(claim_id, {})
+        binding = str(requested.get("binding") or "").strip()
+        bound_candidates = by_bound_key.get((claim_id, binding), [])
+        unbound_candidates = unbound_by_id.get(claim_id, [])
+        verdict = (
+            bound_candidates.pop(0)
+            if bound_candidates
+            else unbound_candidates.pop(0)
+            if unbound_candidates
+            else {}
+        )
         status = _normalize_verdict_status(verdict.get("status"))
         reason = str(verdict.get("reason") or "").strip()
+        field_patch = _normalize_behavior_field_patch(
+            claim_type=str(requested.get("type") or ""),
+            value=verdict.get("field_patch"),
+        )
         if not verdict:
             status = "insufficient"
             reason = "独立审计器未返回该 claim 的判断"
         elif not reason:
             reason = "独立审计器未给出可核查理由"
             status = "insufficient"
+        if status == "supports":
+            field_patch = {}
         normalized.append(
             {
                 "claim_id": claim_id,
-                "binding": str(requested.get("binding") or ""),
+                "binding": binding,
                 "status": status,
                 "reason": reason,
+                "field_patch": field_patch,
                 "context_ids": [
                     str(value)
                     for value in requested.get("context_ids") or []
@@ -91,11 +142,11 @@ def normalize_behavior_claim_verdicts(
         )
     return {
         "kind": "behavior_claim_validation",
-        "schema_version": 1,
+        "schema_version": _BEHAVIOR_VALIDATION_SCHEMA_VERSION,
         "status": "completed",
         "request_sha256": str(request.get("request_sha256") or ""),
         "validator": dict(validator),
-        "raw_verdict_count": len(by_id),
+        "raw_verdict_count": len(raw_items),
         "claims": normalized,
     }
 
@@ -143,6 +194,7 @@ async def materialize_behavior_claim_validation(
     runtime_loader: Callable[[str], dict[str, Any] | None] = get_agent_runtime_sync,
     streamer: Callable[..., AsyncIterator[str]] = stream_agent_runtime,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     root = Path(artifact_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -156,7 +208,7 @@ async def materialize_behavior_claim_validation(
     if not request_payload.get("claims"):
         result = {
             "kind": "behavior_claim_validation",
-            "schema_version": 1,
+            "schema_version": _BEHAVIOR_VALIDATION_SCHEMA_VERSION,
             "status": "not_applicable",
             "request_sha256": str(request_payload.get("request_sha256") or ""),
             "validator": {"independent": False},
@@ -210,6 +262,61 @@ async def materialize_behavior_claim_validation(
             reason="行为审计器与生成执行器不独立",
         )
 
+    reusable_verdicts = _reusable_bound_verdicts(
+        existing=existing,
+        validator=validator,
+    )
+    pending_claims = [
+        claim
+        for claim in request_payload.get("claims") or []
+        if isinstance(claim, dict)
+        and (
+            str(claim.get("claim_id") or ""),
+            str(claim.get("binding") or ""),
+        )
+        not in reusable_verdicts
+    ]
+    reused_claim_count = len(request_payload.get("claims") or []) - len(pending_claims)
+    if not pending_claims:
+        result = {
+            **existing,
+            "request_sha256": str(request_payload.get("request_sha256") or ""),
+            "validator": validator,
+            "raw_verdict_count": len(reusable_verdicts),
+            "claims": [
+                reusable_verdicts[
+                    (
+                        str(claim.get("claim_id") or ""),
+                        str(claim.get("binding") or ""),
+                    )
+                ]
+                for claim in request_payload.get("claims") or []
+                if isinstance(claim, dict)
+            ],
+            "reused": True,
+            "reused_claim_count": reused_claim_count,
+            "validated_claim_count": 0,
+            "duration_ms": 0.0,
+        }
+        _write_json(output_path, result)
+        _notify_progress(
+            on_progress,
+            {
+                "kind": "stage_reused",
+                "stage_id": "behavior_claim_validation",
+                "status": "completed",
+                "claim_count": reused_claim_count,
+                "model": str(settings.behavior_claim_audit_model or ""),
+                "user_message": "已复用与当前断言绑定一致的独立源码事实核验",
+            },
+        )
+        return result
+
+    incremental_request = _behavior_claim_request_subset(
+        request_payload,
+        pending_claims,
+    )
+
     runtime = _audit_runtime(runtime, artifact_dir=root)
     diagnostics_dir = root / "behavior_claim_audit"
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
@@ -217,8 +324,13 @@ async def materialize_behavior_claim_validation(
     (diagnostics_dir / "request.json").write_text(
         json.dumps(request_payload, ensure_ascii=False, indent=2), encoding="utf-8"
     )
+    if reused_claim_count:
+        (diagnostics_dir / "incremental_request.json").write_text(
+            json.dumps(incremental_request, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
     batches = partition_behavior_claim_request(
-        request_payload,
+        incremental_request,
         batch_size=int(settings.behavior_claim_audit_batch_size),
     )
     (diagnostics_dir / "prompt.txt").write_text(
@@ -234,11 +346,14 @@ async def materialize_behavior_claim_validation(
             "kind": "stage_provider_started",
             "stage_id": "behavior_claim_validation",
             "status": "running",
-            "claim_count": len(request_payload.get("claims") or []),
+            "claim_count": len(pending_claims),
             "model": str(settings.behavior_claim_audit_model or ""),
             "user_message": (
-                "正在使用独立审计器核验 "
-                f"{len(request_payload.get('claims') or [])} 条源码事实"
+                f"已复用 {reused_claim_count} 条绑定未变的判断，正在核验 "
+                f"{len(pending_claims)} 条变更事实"
+                if reused_claim_count
+                else "正在使用独立审计器核验 "
+                f"{len(pending_claims)} 条源码事实"
             ),
         },
     )
@@ -259,10 +374,23 @@ async def materialize_behavior_claim_validation(
         )
         for index, batch in enumerate(batches, start=1)
     ]
-    done, pending = await asyncio.wait(
-        tasks,
-        timeout=float(settings.behavior_claim_audit_timeout_seconds),
-    )
+    effective_timeout_seconds = float(settings.behavior_claim_audit_timeout_seconds)
+    if timeout_seconds is not None:
+        effective_timeout_seconds = min(
+            effective_timeout_seconds,
+            max(0.001, float(timeout_seconds)),
+        )
+    try:
+        done, pending = await asyncio.wait(
+            tasks,
+            timeout=effective_timeout_seconds,
+        )
+    except asyncio.CancelledError:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
     for task in pending:
         task.cancel()
     if pending:
@@ -286,20 +414,25 @@ async def materialize_behavior_claim_validation(
         )
     ordered_claims: list[dict[str, Any]] = []
     verdicts = {
-        str(item.get("claim_id") or ""): item
+        (
+            str(item.get("claim_id") or ""),
+            str(item.get("binding") or ""),
+        ): item
         for batch_result in batch_results
         for item in batch_result.get("claims") or []
         if isinstance(item, dict)
     }
+    verdicts = {**reusable_verdicts, **verdicts}
     for claim in request_payload.get("claims") or []:
         if not isinstance(claim, dict):
             continue
         claim_id = str(claim.get("claim_id") or "")
+        binding = str(claim.get("binding") or "")
         ordered_claims.append(
-            verdicts.get(claim_id)
+            verdicts.get((claim_id, binding))
             or {
                 "claim_id": claim_id,
-                "binding": str(claim.get("binding") or ""),
+                "binding": binding,
                 "status": "insufficient",
                 "reason": "独立审计器未返回该 claim 的判断",
                 "context_ids": list(claim.get("context_ids") or []),
@@ -310,16 +443,16 @@ async def materialize_behavior_claim_validation(
     )
     result = {
         "kind": "behavior_claim_validation",
-        "schema_version": 1,
+        "schema_version": _BEHAVIOR_VALIDATION_SCHEMA_VERSION,
         "status": "completed" if completed_batches else "unavailable",
         "request_sha256": str(request_payload.get("request_sha256") or ""),
         "validator": validator,
         "batch_count": len(batches),
         "completed_batch_count": completed_batches,
-        "raw_verdict_count": sum(
-            int(item.get("raw_verdict_count") or 0) for item in batch_results
-        ),
+        "raw_verdict_count": len(ordered_claims),
         "claims": ordered_claims,
+        "reused_claim_count": reused_claim_count,
+        "validated_claim_count": len(pending_claims),
         "duration_ms": round((time.monotonic() - started) * 1000, 1),
     }
     (diagnostics_dir / "raw_output.txt").write_text(
@@ -354,6 +487,60 @@ async def materialize_behavior_claim_validation(
     return result
 
 
+def _reusable_bound_verdicts(
+    *,
+    existing: Any,
+    validator: dict[str, Any],
+) -> dict[tuple[str, str], dict[str, Any]]:
+    if (
+        not isinstance(existing, dict)
+        or existing.get("status") != "completed"
+        or int(existing.get("schema_version") or 0)
+        != _BEHAVIOR_VALIDATION_SCHEMA_VERSION
+    ):
+        return {}
+    previous_validator = existing.get("validator")
+    if not isinstance(previous_validator, dict) or not previous_validator.get(
+        "independent"
+    ):
+        return {}
+    for key in ("provider", "runtime_id", "model", "reasoning_effort"):
+        if str(previous_validator.get(key) or "") != str(validator.get(key) or ""):
+            return {}
+    reusable: dict[tuple[str, str], dict[str, Any]] = {}
+    for item in existing.get("claims") or []:
+        if not isinstance(item, dict):
+            continue
+        claim_id = str(item.get("claim_id") or "")
+        binding = str(item.get("binding") or "")
+        if not claim_id or not binding:
+            continue
+        reusable[(claim_id, binding)] = dict(item)
+    return reusable
+
+
+def _behavior_claim_request_subset(
+    request: dict[str, Any],
+    claims: list[dict[str, Any]],
+) -> dict[str, Any]:
+    used_context_ids = {
+        str(context_id)
+        for claim in claims
+        for context_id in claim.get("context_ids") or []
+        if str(context_id)
+    }
+    return {
+        **request,
+        "claims": list(claims),
+        "contexts": [
+            context
+            for context in request.get("contexts") or []
+            if isinstance(context, dict)
+            and str(context.get("context_id") or "") in used_context_ids
+        ],
+    }
+
+
 async def _validate_behavior_claim_batch(
     *,
     index: int,
@@ -371,16 +558,18 @@ async def _validate_behavior_claim_batch(
     _write_json(batch_dir / "request.json", request)
     (batch_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
     batch_runtime = {**runtime, "env": dict(runtime.get("env") or {})}
-    batch_runtime["env"]["CODETALK_AGENT_ARTIFACT_DIR"] = str(
-        (batch_dir / "runtime").resolve()
-    )
-    async with semaphore:
-        raw_output = await _collect_agent_answer(
-            streamer=streamer,
-            runtime=batch_runtime,
-            prompt=prompt,
-            cwd=repo_path,
-        )
+    runtime_dir = (batch_dir / "runtime").resolve()
+    batch_runtime["env"]["CODETALK_AGENT_ARTIFACT_DIR"] = str(runtime_dir)
+    try:
+        async with semaphore:
+            raw_output = await _collect_agent_answer(
+                streamer=streamer,
+                runtime=batch_runtime,
+                prompt=prompt,
+                cwd=repo_path,
+            )
+    finally:
+        shutil.rmtree(runtime_dir, ignore_errors=True)
     (batch_dir / "raw_output.txt").write_text(raw_output, encoding="utf-8")
     return normalize_behavior_claim_verdicts(
         raw_output=raw_output,
@@ -468,6 +657,29 @@ def _normalize_verdict_status(value: Any) -> str:
     return status if status in {"supports", "contradicts", "insufficient"} else "insufficient"
 
 
+def _normalize_behavior_field_patch(*, claim_type: str, value: Any) -> dict[str, Any]:
+    allowed = _FIELD_PATCH_ALLOWLIST.get(str(claim_type or "").strip(), set())
+    if not allowed or not isinstance(value, dict):
+        return {}
+    normalized: dict[str, Any] = {}
+    for key, replacement in value.items():
+        if key not in allowed:
+            continue
+        if isinstance(replacement, str):
+            text = replacement.strip()
+            if text:
+                normalized[key] = text[:4000]
+        elif isinstance(replacement, list):
+            items = [
+                str(item).strip()[:1000]
+                for item in replacement
+                if str(item).strip()
+            ][:20]
+            if items:
+                normalized[key] = items
+    return normalized
+
+
 def _extract_json_object(raw_output: str) -> dict[str, Any]:
     text = str(raw_output or "").strip()
     if text.startswith("```"):
@@ -497,7 +709,12 @@ def _extract_json_object(raw_output: str) -> dict[str, Any]:
 
 
 def _validation_covers_request(existing: Any, request: dict[str, Any]) -> bool:
-    if not isinstance(existing, dict) or existing.get("status") != "completed":
+    if (
+        not isinstance(existing, dict)
+        or existing.get("status") != "completed"
+        or int(existing.get("schema_version") or 0)
+        != _BEHAVIOR_VALIDATION_SCHEMA_VERSION
+    ):
         return False
     if str(existing.get("request_sha256") or "") != str(request.get("request_sha256") or ""):
         return False
@@ -542,7 +759,7 @@ def _unavailable_validation(
 ) -> dict[str, Any]:
     return {
         "kind": "behavior_claim_validation",
-        "schema_version": 1,
+        "schema_version": _BEHAVIOR_VALIDATION_SCHEMA_VERSION,
         "status": "unavailable",
         "request_sha256": str(request.get("request_sha256") or ""),
         "validator": dict(validator),

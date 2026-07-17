@@ -29,6 +29,7 @@ from app.services.agent_cli_bridge import (
 )
 from app.services.agent_sandbox import (
     AgentSandboxError,
+    cleanup_isolated_runtime_directories,
     codex_command_for_outer_sandbox,
     filtered_agent_environment,
     prepare_isolated_codex_home as _prepare_isolated_codex_home,
@@ -132,24 +133,143 @@ _QUALITY_RETRY_REDUNDANT_CONTEXT_KEYS = (
     "semantic_import_outputs_by_step",
 )
 
+_AGENT_PROMPT_TASK_BUNDLE_OMITTED_KEYS = frozenset(
+    (*_QUALITY_RETRY_REDUNDANT_CONTEXT_KEYS, "test_activity_contract")
+)
+
+_AGENT_PROMPT_VERBATIM_TASK_BUNDLE_KEYS = frozenset({
+    "goal",
+    "inputs",
+    "input_context",
+    "input_materials",
+    "analysis_targets",
+    "user_inputs",
+    "user_text",
+    "original_user_request",
+    "resolved_inputs",
+})
+
+_AGENT_PROMPT_EXTENSION_BUDGET_CHARACTERS = 128_000
+_AGENT_PROMPT_MAX_OMISSION_NAMES = 64
+_AGENT_PROMPT_MAX_OMISSION_NAME_CHARACTERS = 120
+
+
+def _agent_prompt_omission_label(key: Any) -> str:
+    text = str(key)
+    if len(text) <= _AGENT_PROMPT_MAX_OMISSION_NAME_CHARACTERS:
+        return text
+    digest = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()[:12]
+    prefix_length = _AGENT_PROMPT_MAX_OMISSION_NAME_CHARACTERS - len(digest) - 2
+    return f"{text[:prefix_length]}…#{digest}"
+
+_AGENT_PROMPT_EXECUTION_CONTRACT_KEYS = (
+    "contract_version",
+    "goal",
+    "repo_path",
+    "analysis_targets",
+    "user_inputs",
+    "input_materials",
+    "outputs",
+    "mcp",
+    "skills",
+    "source_context",
+    "source_analysis_limits",
+    "workflow",
+)
+
 
 def _task_bundle_for_agent_prompt(task_bundle: dict[str, Any]) -> dict[str, Any]:
-    """Keep retry prompts small without dropping user-authored inputs or files."""
-    retry_feedback = task_bundle.get("retry_quality_feedback")
-    if not isinstance(retry_feedback, dict) or not retry_feedback:
-        return task_bundle
-    prompt_bundle = dict(task_bundle)
-    omitted = []
-    for key in _QUALITY_RETRY_REDUNDANT_CONTEXT_KEYS:
-        if key in prompt_bundle:
-            prompt_bundle.pop(key, None)
-            omitted.append(key)
-    prompt_bundle["quality_retry_context_omissions"] = omitted
-    prompt_bundle["quality_retry_context_rule"] = (
-        "Omitted discovery payloads are already represented by protected artifacts in artifact_dir. "
-        "Read those artifacts directly; preserve every character in inputs and input_materials."
+    """Keep Agent prompts bounded without dropping user-authored inputs or files."""
+    prompt_bundle: dict[str, Any] = {}
+    omitted = set(task_bundle).intersection(_AGENT_PROMPT_TASK_BUNDLE_OMITTED_KEYS)
+    extension_characters = 0
+    for key, value in task_bundle.items():
+        if key in _AGENT_PROMPT_TASK_BUNDLE_OMITTED_KEYS:
+            continue
+        if key in _AGENT_PROMPT_VERBATIM_TASK_BUNDLE_KEYS:
+            prompt_bundle[key] = value
+            continue
+        try:
+            value_characters = len(
+                json.dumps({str(key): value}, ensure_ascii=False, default=str)
+            )
+        except (TypeError, ValueError):
+            value_characters = _AGENT_PROMPT_EXTENSION_BUDGET_CHARACTERS + 1
+        if (
+            extension_characters + value_characters
+            > _AGENT_PROMPT_EXTENSION_BUDGET_CHARACTERS
+        ):
+            omitted.add(key)
+            continue
+        prompt_bundle[key] = value
+        extension_characters += value_characters
+    omission_labels = sorted(_agent_prompt_omission_label(key) for key in omitted)
+    prompt_bundle["context_omissions"] = omission_labels[
+        :_AGENT_PROMPT_MAX_OMISSION_NAMES
+    ]
+    prompt_bundle["context_omission_count"] = len(omission_labels)
+    prompt_bundle["context_omissions_truncated"] = (
+        len(omission_labels) > _AGENT_PROMPT_MAX_OMISSION_NAMES
     )
+    prompt_bundle["context_extension_characters"] = extension_characters
+    prompt_bundle["context_extension_budget_characters"] = (
+        _AGENT_PROMPT_EXTENSION_BUDGET_CHARACTERS
+    )
+    prompt_bundle["context_artifact_rule"] = (
+        "Complete discovery and audit payloads remain in task_bundle.json and sibling "
+        "artifacts under artifact_dir. Read those files when needed. Every user-authored "
+        "value remains verbatim in inputs, user_inputs, or input_materials."
+    )
+    retry_feedback = task_bundle.get("retry_quality_feedback")
+    if isinstance(retry_feedback, dict) and retry_feedback:
+        prompt_bundle["quality_retry_context_omissions"] = [
+            key for key in _QUALITY_RETRY_REDUNDANT_CONTEXT_KEYS if key in task_bundle
+        ]
+        prompt_bundle["quality_retry_context_rule"] = (
+            "Omitted discovery payloads are already represented by protected artifacts in "
+            "artifact_dir. Read those artifacts directly; preserve every character in inputs "
+            "and input_materials."
+        )
     return prompt_bundle
+
+
+def _execution_contract_for_agent_prompt(
+    execution_contract: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        key: execution_contract[key]
+        for key in _AGENT_PROMPT_EXECUTION_CONTRACT_KEYS
+        if key in execution_contract
+    }
+
+
+def _output_contract_for_agent_prompt(
+    output_contract: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in output_contract.items()
+        if key not in {"execution_contract", "test_activity_contract"}
+    }
+
+
+def _artifact_contract_reference(
+    output_contract: dict[str, Any],
+    *,
+    artifact_dir: str,
+) -> dict[str, Any]:
+    return {
+        "source": "agent_output_contract",
+        "artifact_dir": artifact_dir,
+        "required_artifacts": list(output_contract.get("required_artifacts") or []),
+        "expected_output_schemas": list(
+            output_contract.get("expected_output_schemas") or []
+        ),
+        "rule": (
+            "Write every required artifact under artifact_dir; the complete contract is also "
+            "materialized as agent_output_contract.json."
+        ),
+    }
 
 
 def _agent_output_contract_payload(
@@ -520,6 +640,26 @@ class AgentRunHarness:
         is_cancelled: Callable[[], bool] | None = None,
         event_sink: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> AgentRunExecutionResult:
+        try:
+            return self._execute_run(
+                run_id,
+                timeout_sec=timeout_sec,
+                idle_timeout_sec=idle_timeout_sec,
+                is_cancelled=is_cancelled,
+                event_sink=event_sink,
+            )
+        finally:
+            cleanup_isolated_runtime_directories(self.artifact_dir)
+
+    def _execute_run(
+        self,
+        run_id: str,
+        *,
+        timeout_sec: int = 0,
+        idle_timeout_sec: float | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
+        event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> AgentRunExecutionResult:
         run_payload = self._read_json_file("agent_run.json")
         if not isinstance(run_payload, dict) or run_payload.get("run_id") != run_id:
             raise ValueError(f"unknown agent run: {run_id}")
@@ -601,6 +741,12 @@ class AgentRunHarness:
             "repo_path": cwd,
             "mcp_profile": str(run_payload.get("mcp_profile") or ""),
         }
+        compact_execution_contract = _execution_contract_for_agent_prompt(
+            execution_contract
+        )
+        compact_output_contract = _output_contract_for_agent_prompt(
+            agent_output_contract if isinstance(agent_output_contract, dict) else {}
+        )
         stdin_payload_obj = {
             "run_id": run_id,
             "turn_id": turn_id,
@@ -614,13 +760,12 @@ class AgentRunHarness:
                 if isinstance(task_bundle, dict)
                 else {}
             ),
-            "execution_contract": execution_contract,
+            "execution_contract": compact_execution_contract,
             "test_activity_contract": test_activity_contract,
-            "agent_output_contract": (
-                agent_output_contract if isinstance(agent_output_contract, dict) else {}
-            ),
-            "artifact_contract": (
-                agent_output_contract if isinstance(agent_output_contract, dict) else {}
+            "agent_output_contract": compact_output_contract,
+            "artifact_contract": _artifact_contract_reference(
+                compact_output_contract,
+                artifact_dir=str(self.artifact_dir),
             ),
             "context_discovery_decision_summary": context_discovery_decision_summary,
             "agent_instruction_policy": agent_instruction_policy,
@@ -690,6 +835,7 @@ class AgentRunHarness:
             "CODETALK_AGENT_READONLY": "1",
             "CODETALK_REPO_PATH": cwd,
             "CODETALK_AGENT_ARTIFACT_DIR": str(self.artifact_dir),
+            "CODETALK_TEMP_DIR": str(runtime_tmp_dir),
             "GIT_CONFIG_COUNT": "1",
             "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_KEY_0": "core.excludesFile",
@@ -875,6 +1021,7 @@ class AgentRunHarness:
             repo_path=cwd,
             command=configured_command,
             prompt_transport=str(run_payload.get("prompt_transport") or ""),
+            artifact_dir=self.artifact_dir,
         )
         env.update(env_hints)
         env = _prefer_native_macos_git_path(env)
@@ -1809,12 +1956,21 @@ def _prefer_native_macos_git_path(
     return result
 
 
-def _base_agent_process_env_for_harness(*, provider: str, repo_path: str) -> dict[str, str]:
+def _base_agent_process_env_for_harness(
+    *,
+    provider: str,
+    repo_path: str,
+    artifact_dir: Path,
+) -> dict[str, str]:
     """Use the same environment hints as source discovery, including CCR config."""
     try:
         from app.services.external_agent_discovery import _agent_process_env
 
-        return _agent_process_env(provider, repo_path)
+        return _agent_process_env(
+            provider,
+            repo_path,
+            artifact_dir=artifact_dir,
+        )
     except Exception:
         return filtered_agent_environment()
 
@@ -1823,12 +1979,14 @@ def _agent_process_env_for_harness(
     *,
     provider: str,
     repo_path: str,
+    artifact_dir: Path,
     command: list[str] | None = None,
     prompt_transport: str = "",
 ) -> dict[str, str]:
     env = _base_agent_process_env_for_harness(
         provider=provider,
         repo_path=repo_path,
+        artifact_dir=artifact_dir,
     )
     if provider != "agent-runtime:default-claude-code" or not command:
         return env
@@ -2188,6 +2346,7 @@ def _run_cancellable_subprocess(
         process.wait(timeout=3)
     except subprocess.TimeoutExpired:
         _kill_process_group(process)
+    _terminate_process_group(process)
     stdin_thread.join(1)
     stdout_thread.join(3)
     stderr_thread.join(3)
@@ -2231,30 +2390,68 @@ def _safe_is_cancelled(is_cancelled: Callable[[], bool]) -> bool:
 
 
 def _terminate_process_group(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
-    try:
-        if os.name == "nt":
-            process.terminate()
-        else:
-            os.killpg(process.pid, signal.SIGTERM)
-    except (OSError, ProcessLookupError):
+    if os.name == "nt":
+        if process.poll() is not None:
+            return
         try:
             process.terminate()
+        except OSError:
+            pass
+        return
+
+    process_group_id = process.pid
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
+    except ProcessLookupError:
+        return
+    except OSError:
+        try:
+            if process.poll() is None:
+                process.terminate()
+        except OSError:
+            pass
+        return
+    if process.poll() is None:
+        try:
+            process.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            pass
+    deadline = time.monotonic() + 1.0
+    while _sync_process_group_exists(process_group_id) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    if _sync_process_group_exists(process_group_id):
+        try:
+            os.killpg(process_group_id, signal.SIGKILL)
         except OSError:
             pass
 
 
 def _kill_process_group(process: subprocess.Popen[bytes]) -> None:
-    if process.poll() is not None:
-        return
-    try:
-        if os.name == "nt":
-            process.kill()
-        else:
-            os.killpg(process.pid, signal.SIGKILL)
-    except (OSError, ProcessLookupError):
+    if os.name == "nt":
+        if process.poll() is not None:
+            return
         try:
             process.kill()
         except OSError:
             pass
+        return
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        return
+    except OSError:
+        try:
+            if process.poll() is None:
+                process.kill()
+        except OSError:
+            pass
+
+
+def _sync_process_group_exists(process_group_id: int) -> bool:
+    try:
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True

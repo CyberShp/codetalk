@@ -140,7 +140,7 @@ export const CORE_WORKFLOW_PRESET_IDS = new Set([
   "mr_blackbox_test",
   "patch_impact_review",
   "source_flow_sfmea_blackbox",
-  "basic_source_report_claude",
+  "basic_source_report_codex",
   "basic_source_design_report_builtin",
 ]);
 
@@ -160,7 +160,7 @@ export const WORKFLOW_NAME_ZH: Record<string, string> = {
   module_analysis: "模块分析工作流",
   resource_leak_hunt: "资源/异常路径排查工作流",
   source_flow_sfmea_blackbox: "代码分析-流程-SFMEA-黑盒用例工作流",
-  basic_source_report_claude: "基础源码报告（Claude Code）",
+  basic_source_report_codex: "基础源码报告（Codex CLI）",
   basic_source_design_report_builtin: "基础源码+设计文档报告（内置模型）",
   nvmf_connect_io_blackbox: "NVMe-oF 连接/IO 黑盒场景",
   iscsi_login_session_blackbox: "iSCSI 登录/会话黑盒场景",

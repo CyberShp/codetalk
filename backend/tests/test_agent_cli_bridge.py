@@ -1,5 +1,9 @@
+import asyncio
+import os
 import shutil
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -9,19 +13,141 @@ from app.services.agent_cli_bridge import (
     _looks_like_unattended_permission_request,
     _prompt_argument_or_file_bootstrap,
     _resolve_agent_command,
+    _terminate_process,
     clean_agent_output_text,
     stream_agent_runtime,
 )
 
 
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
+async def test_terminate_process_kills_a_sigterm_ignoring_descendant(tmp_path):
+    child_pid_file = tmp_path / "child.pid"
+    child_script = (
+        "import os,signal,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"open({str(child_pid_file)!r}, 'w').write(str(os.getpid())); "
+        "time.sleep(60)"
+    )
+    parent_script = (
+        "import subprocess,sys,time; "
+        f"subprocess.Popen([sys.executable, '-c', {child_script!r}], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+        "stderr=subprocess.DEVNULL, close_fds=True); "
+        "time.sleep(60)"
+    )
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        parent_script,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    child_pid = 0
+    try:
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and not child_pid_file.exists():
+            await asyncio.sleep(0.02)
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+
+        await _terminate_process(proc, process_group=True)
+
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                os.kill(child_pid, 0)
+            except ProcessLookupError:
+                break
+            state = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(child_pid)],
+                check=False,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if not state or state.startswith("Z"):
+                break
+            await asyncio.sleep(0.02)
+        else:
+            pytest.fail("SIGTERM-ignoring descendant survived process-group cleanup")
+    finally:
+        if proc.returncode is None:
+            proc.kill()
+            await proc.wait()
+        if child_pid:
+            try:
+                os.kill(child_pid, 9)
+            except ProcessLookupError:
+                pass
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
+async def test_terminate_process_cleans_descendant_after_group_leader_exits(tmp_path):
+    child_pid_file = tmp_path / "orphan.pid"
+    child_script = (
+        "import os,signal,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"open({str(child_pid_file)!r}, 'w').write(str(os.getpid())); "
+        "time.sleep(60)"
+    )
+    parent_script = (
+        "import subprocess,sys; "
+        f"subprocess.Popen([sys.executable, '-c', {child_script!r}], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+        "stderr=subprocess.DEVNULL, close_fds=True)"
+    )
+    proc = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-c",
+        parent_script,
+        stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    child_pid = 0
+    try:
+        await proc.wait()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and not child_pid_file.exists():
+            await asyncio.sleep(0.02)
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+
+        await _terminate_process(proc, process_group=True)
+
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            state = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(child_pid)],
+                check=False,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if not state or state.startswith("Z"):
+                break
+            await asyncio.sleep(0.02)
+        else:
+            pytest.fail("descendant survived cleanup after process-group leader exited")
+    finally:
+        if child_pid:
+            try:
+                os.kill(child_pid, 9)
+            except ProcessLookupError:
+                pass
+
+
 def test_build_env_does_not_leak_unrelated_parent_secrets(monkeypatch, tmp_path):
     from app.services.agent_cli_bridge import _build_env
+    from app.config import settings
 
     monkeypatch.setenv("UNRELATED_PRIVATE_SECRET", "must-not-reach-agent")
     monkeypatch.setenv("PATH", "/usr/bin")
+    runtime_temp_dir = tmp_path / "runtime-temp"
+    monkeypatch.setattr(settings, "runtime_temp_dir", str(runtime_temp_dir))
     env = _build_env({
         "env": {
-            "CODETALK_AGENT_ARTIFACT_DIR": str(tmp_path),
             "PROVIDER_API_KEY": "explicit-provider-secret",
         }
     })
@@ -29,6 +155,37 @@ def test_build_env_does_not_leak_unrelated_parent_secrets(monkeypatch, tmp_path)
     assert env["PATH"] == "/usr/bin"
     assert env["PROVIDER_API_KEY"] == "explicit-provider-secret"
     assert "UNRELATED_PRIVATE_SECRET" not in env
+    assert "CODETALK_AGENT_ARTIFACT_DIR" not in env
+    assert not list(runtime_temp_dir.glob("codetalk-agent-runtime-*"))
+
+
+@pytest.mark.asyncio
+async def test_stream_runtime_removes_internally_owned_artifact_directory(
+    monkeypatch,
+    tmp_path,
+):
+    from app.config import settings
+
+    runtime_temp_dir = tmp_path / "runtime-temp"
+    monkeypatch.setattr(settings, "runtime_temp_dir", str(runtime_temp_dir))
+    output: list[str] = []
+
+    async for chunk in stream_agent_runtime(
+        runtime={
+            "command": sys.executable,
+            "args": ["-c", "import sys; print(sys.stdin.read(), end='')"],
+            "prompt_transport": "stdin",
+            "output_mode": "plain",
+            "completion_mode": "process_exit",
+            "sandbox_mode": "off",
+        },
+        prompt="temporary artifact cleanup",
+        cwd=str(tmp_path),
+    ):
+        output.append(chunk)
+
+    assert "temporary artifact cleanup" in "".join(output)
+    assert not list(runtime_temp_dir.glob("codetalk-agent-runtime-*"))
 
 
 @pytest.mark.asyncio
@@ -87,8 +244,9 @@ async def test_stream_runtime_enforces_real_workspace_readonly_sandbox(tmp_path)
     runtime_tmp = Path((artifacts / "tmpdir.txt").read_text(encoding="utf-8"))
     assert runtime_tmp.parent == artifacts.resolve()
     assert runtime_tmp.name.startswith(".runtime-tmp-")
-    assert (runtime_tmp / "runtime-state.txt").read_text(encoding="utf-8") == "runtime"
     assert (artifacts / "tmpprefix.txt").read_text(encoding="utf-8") == str(runtime_tmp / "zsh")
+    assert not runtime_tmp.exists()
+    assert not list(artifacts.glob(".runtime-codex-home-*"))
     assert not (repo / "blocked.txt").exists()
     assert not (artifacts / "leak.txt").exists()
     policy = (artifacts / "sandbox_policy.json").read_text(encoding="utf-8")

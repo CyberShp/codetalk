@@ -18,6 +18,62 @@ def _workflow() -> dict:
     }
 
 
+def test_quality_retry_reaudits_parent_and_seeds_report(tmp_path, monkeypatch):
+    from app.api import workbench_v2_tasks
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    parent_root = tmp_path / "parent"
+    parent_agent = parent_root / "agent_runs" / "analyze"
+    child_root = tmp_path / "child"
+    child_agent = child_root / "agent_runs" / "analyze"
+    parent_agent.mkdir(parents=True)
+    child_agent.mkdir(parents=True)
+    (parent_agent / "report.md").write_text("# 旧报告\n", encoding="utf-8")
+    audit = {
+        "status": "needs_rework",
+        "issue_count": 1,
+        "issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "raw_pdu_harness_missing_scenario_capability",
+        }],
+    }
+    monkeypatch.setattr(
+        WorkbenchWorkflowRunner,
+        "audit_test_activity_quality",
+        lambda self, *, task_run: audit,
+    )
+    parent = SimpleNamespace(
+        task_run_id="task_run_parent",
+        quality_status="blocked",
+        agent_runs=[{
+            "step_id": "analyze",
+            "artifact_dir": str(parent_agent),
+            "required_artifacts": ["report.md"],
+        }],
+    )
+    prepared = SimpleNamespace(
+        artifact_dir=str(child_root),
+        task_bundle={},
+        agent_runs=[{
+            "step_id": "analyze",
+            "artifact_dir": str(child_agent),
+            "required_artifacts": ["report.md"],
+        }],
+    )
+
+    workbench_v2_tasks._seed_quality_retry_from_parent(
+        parent_run=parent,
+        prepared=prepared,
+    )
+
+    assert (child_agent / "report.md").read_text(encoding="utf-8") == "# 旧报告\n"
+    assert json.loads((child_root / "test_activity_quality_audit.json").read_text()) == audit
+    assert prepared.task_bundle["retry_source"]["mode"] == "quality_repair"
+    assert prepared.task_bundle["quality_retry_seed"]["copied_artifacts"] == [
+        "analyze:report.md"
+    ]
+
+
 def test_task_store_migration_crud_filters_archive_and_clone(tmp_path):
     from app.services.workbench_task_store import WorkbenchTaskStore
 

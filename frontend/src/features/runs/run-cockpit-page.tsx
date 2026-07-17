@@ -238,7 +238,7 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
     <section className="ct-v2-run-results">
       {failed && <FailurePanel summary={summary} onRetry={() => void retry()} busy={actionBusy} />}
       <section className="ct-v2-run-deliverables"><header><div><h2>交付件</h2><span>{deliverables.length} 个可交付文件</span></div></header><div>{deliverables.length ? deliverables.map((item) => <ArtifactRow key={item.relative_path} item={item} runId={runId} onOpen={openArtifact} />) : <p>运行完成后，用户可下载的最终文件会显示在这里。</p>}</div></section>
-      <QualityPanel run={run} />
+      <QualityPanel run={run} onRetry={() => void retry()} busy={actionBusy} />
       <details className="ct-v2-run-support"><summary>支撑文件与输入快照（{publicArtifacts.length - deliverables.length}）</summary>{publicArtifacts.filter((item) => item.audience !== "deliverable").map((item) => <ArtifactRow key={item.relative_path} item={item} runId={runId} onOpen={openArtifact} />)}</details>
     </section>
 
@@ -309,12 +309,12 @@ function NodeInspector({ node }: { node?: WorkbenchRunUiNodeSummary }) { return 
 function InspectorGroup({ label, values }: { label: string; values: string[] }) { return <section><h3>{label}</h3>{values.length ? values.map((item) => <span key={item}>{item}</span>) : <small>无</small>}</section>; }
 function InspectorText({ label, value }: { label: string; value: string }) { return <section><h3>{label}</h3><p>{value || "无"}</p></section>; }
 function InspectorInputGroup({ values }: { values: NonNullable<WorkbenchRunUiNodeSummary["received_inputs"]> }) { return <section><h3>实际收到的输入</h3>{values.length ? values.map((item) => <div className="ct-v2-inspector-input" key={item.id}><strong>{item.role || item.id}</strong><span>{item.value_summary || "已绑定"}</span></div>) : <small>无</small>}</section>; }
-function QualityPanel({ run }: { run: PreparedWorkbenchTaskRun }) {
+function QualityPanel({ run, onRetry, busy }: { run: PreparedWorkbenchTaskRun; onRetry: () => void; busy: boolean }) {
   const quality = run.test_activity_quality;
   const axes = quality?.quality_axes;
   const factSummary = quality?.fact_verification;
   return <section className="ct-v2-run-quality">
-    <header><div><h2>质量结果</h2><strong>{taskStatusLabel(taskQualityLabels, run.quality_status || "not_checked")}</strong></div><span>{quality?.issue_count ?? 0} 个阻断项</span></header>
+    <header><div><h2>质量结果</h2><strong>{taskStatusLabel(taskQualityLabels, run.quality_status || "not_checked")}</strong></div><span>{quality?.issue_count ?? 0} 个阻断项</span>{run.quality_status === "blocked" && <button type="button" disabled={busy} onClick={onRetry}><RefreshCw size={14} />{busy ? "正在启动修复" : "修复质量问题并重试"}</button>}</header>
     <div className="ct-v2-quality-axes">
       <QualityAxis label="结构合规率" status={axes?.structure?.status} value={axes?.structure?.score} detail={`${axes?.structure?.issue_count ?? 0} 个结构问题`} />
       <QualityAxis label="事实核验通过率" status={axes?.facts?.status} value={axes?.facts?.pass_rate ?? factSummary?.pass_rate} detail={`${factSummary?.verified ?? 0}/${factSummary?.total ?? 0} 条已验证 · ${factSummary?.contradicted ?? 0} 条冲突 · ${factSummary?.insufficient ?? 0} 条证据不足`} />

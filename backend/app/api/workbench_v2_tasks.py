@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import threading
 from dataclasses import asdict
@@ -381,6 +382,7 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
                 "failed_node_ids": retry_failed_node_ids,
             }
             prepared.task_bundle["retry_seed_results"] = retry_seed_results
+            _seed_quality_retry_from_parent(parent_run=parent_run, prepared=prepared)
         _write_run(prepared)
         task_store().update_task(task_id, last_run_id=prepared.task_run_id)
     return _run_summary(prepared)
@@ -494,6 +496,62 @@ def _retry_seed_results_from_parent(
         if str(item) in failed_nodes
     ]
     return seeds, ordered_failures or sorted(failed_nodes)
+
+
+def _seed_quality_retry_from_parent(*, parent_run: Any, prepared: Any) -> None:
+    if str(getattr(parent_run, "quality_status", "") or "") != "blocked":
+        return
+
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    audit = WorkbenchWorkflowRunner(settings.data_path / "workbench" / "task_runs").audit_test_activity_quality(
+        task_run=parent_run
+    )
+    if str(audit.get("status") or "") not in {"needs_rework", "invalid"}:
+        return
+
+    child_root = Path(str(prepared.artifact_dir)).resolve()
+    (child_root / "test_activity_quality_audit.json").write_text(
+        json.dumps(audit, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    parent_agents = {
+        str(item.get("step_id") or ""): item
+        for item in getattr(parent_run, "agent_runs", []) or []
+        if isinstance(item, dict) and str(item.get("step_id") or "")
+    }
+    copied: list[str] = []
+    for child_agent in getattr(prepared, "agent_runs", []) or []:
+        if not isinstance(child_agent, dict):
+            continue
+        parent_agent = parent_agents.get(str(child_agent.get("step_id") or ""))
+        if not isinstance(parent_agent, dict):
+            continue
+        source_root = Path(str(parent_agent.get("artifact_dir") or "")).resolve()
+        destination_root = Path(str(child_agent.get("artifact_dir") or "")).resolve()
+        for artifact in child_agent.get("required_artifacts") or []:
+            relative = Path(str(artifact or ""))
+            if not str(relative) or relative.is_absolute() or ".." in relative.parts:
+                continue
+            source = (source_root / relative).resolve()
+            destination = (destination_root / relative).resolve()
+            if source_root not in source.parents or destination_root not in destination.parents:
+                continue
+            if not source.is_file():
+                continue
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+            copied.append(f"{child_agent.get('step_id')}:{relative.as_posix()}")
+    prepared.task_bundle["retry_source"] = {
+        "task_run_id": str(parent_run.task_run_id),
+        "mode": "quality_repair",
+        "failed_node_ids": [],
+    }
+    prepared.task_bundle["quality_retry_seed"] = {
+        "audit_status": str(audit.get("status") or ""),
+        "issue_count": int(audit.get("issue_count") or 0),
+        "copied_artifacts": copied,
+    }
 
 
 def _task(task_id: str) -> WorkbenchTask:

@@ -1,4 +1,5 @@
 import os
+import tempfile
 from pathlib import Path
 
 from pydantic import Field, model_validator
@@ -16,6 +17,11 @@ class Settings(BaseSettings):
 
     # Data storage root — all runtime files live here
     data_dir: str = "data"
+
+    # Runtime scratch root. Keep temporary files beside persistent runtime data
+    # by default so large Agent/LLM payloads do not spill onto the system disk.
+    # Deployments can place it on a dedicated volume with CODETALK_TEMP_DIR.
+    runtime_temp_dir: str = Field(default="", validation_alias="CODETALK_TEMP_DIR")
 
     # SQLite database path
     sqlite_db: str = "data/codetalk.db"
@@ -149,7 +155,17 @@ class Settings(BaseSettings):
     staged_workflow_timeout_seconds: int = Field(default=1200, ge=60, le=1200)
     staged_workflow_max_tokens: int = Field(default=12000, ge=1000, le=32000)
     staged_quality_repair_enabled: bool = True
-    staged_quality_repair_max_attempts: int = Field(default=3, ge=0, le=3)
+    staged_quality_repair_max_attempts: int = Field(default=4, ge=0, le=4)
+    staged_quality_repair_min_remaining_seconds: int = Field(
+        default=120,
+        ge=0,
+        le=1200,
+    )
+    staged_workflow_shutdown_grace_seconds: float = Field(
+        default=2.0,
+        ge=0.1,
+        le=10.0,
+    )
     # Every staged LLM phase owns a bounded execution policy.  The generic
     # ceiling is six minutes; business-flow uses a tighter default because its
     # deterministic outline is already available before model enhancement.
@@ -160,6 +176,7 @@ class Settings(BaseSettings):
     regular_stage_cache_enabled: bool = True
     regular_stage_cache_version: str = "regular-stage-cache-v1"
     regular_stage_structured_fast_model_enabled: bool = True
+    regular_stage_quality_repair_use_primary_model: bool = True
     business_flow_max_tokens: int = Field(default=8000, ge=512, le=8000)
     black_box_cases_max_tokens: int = Field(default=12000, ge=6000, le=16000)
     business_flow_provider_timeout_seconds: int = Field(default=180, ge=1, le=360)
@@ -228,6 +245,17 @@ class Settings(BaseSettings):
         return self.data_path / "outputs"
 
     @property
+    def runtime_temp_path(self) -> Path:
+        configured = str(self.runtime_temp_dir or "").strip()
+        path = Path(configured).expanduser() if configured else self.data_path / "tmp"
+        return path.resolve()
+
+    def ensure_runtime_temp_path(self) -> Path:
+        path = self.runtime_temp_path
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
     def tiktoken_cache_path(self) -> Path:
         candidates = []
         if self.tiktoken_cache_dir:
@@ -241,3 +269,13 @@ class Settings(BaseSettings):
 
 settings = Settings()
 os.environ.setdefault("TIKTOKEN_CACHE_DIR", str(settings.tiktoken_cache_path))
+
+
+def configure_runtime_temp_environment(runtime_settings: Settings = settings) -> Path:
+    """Route Python and child-process scratch files to CodeTalk's configured root."""
+    path = runtime_settings.ensure_runtime_temp_path()
+    value = str(path)
+    for name in ("CODETALK_TEMP_DIR", "TEMP", "TMP", "TMPDIR"):
+        os.environ[name] = value
+    tempfile.tempdir = value
+    return path

@@ -19,6 +19,7 @@ from app.services.ai_staged_execution import (
     _build_verified_claim_catalog,
     _canonicalize_technical_claim_evidence,
     _apply_regular_stage_output_limits,
+    _apply_quality_feedback_field_patches,
     _business_flow_deterministic_base,
     _compact_execution_input_contract,
     _deterministic_quality_claim_repair,
@@ -27,6 +28,8 @@ from app.services.ai_staged_execution import (
     _regular_stage_prompt,
     _json_array_continuation_prompt,
     _merge_json_array_patch,
+    _missing_quality_repair_row_ids,
+    _quality_repair_row_ids,
     _quality_repair_evidence_cards,
     _ISCSI_RAW_PDU_APPENDIX,
     _extract_business_flow_narrative,
@@ -81,6 +84,83 @@ def test_structured_json_stage_routes_reasoner_to_fast_auxiliary(monkeypatch):
 
     assert _select_regular_stage_llm(reasoner, fast, "sfmea.json") is fast
     assert _select_regular_stage_llm(reasoner, fast, "business_flow.md") is reasoner
+
+
+def test_structured_quality_repair_routes_to_primary_reasoner(monkeypatch):
+    class Client:
+        def __init__(self, model: str) -> None:
+            self._model = model
+
+    reasoner = Client("deepseek-reasoner")
+    fast = Client("deepseek-chat")
+    monkeypatch.setattr(
+        "app.services.ai_staged_execution.settings.regular_stage_structured_fast_model_enabled",
+        True,
+    )
+    monkeypatch.setattr(
+        "app.services.ai_staged_execution.settings.regular_stage_quality_repair_use_primary_model",
+        True,
+    )
+
+    assert (
+        _select_regular_stage_llm(
+            reasoner,
+            fast,
+            "sfmea.json",
+            quality_repair=True,
+        )
+        is reasoner
+    )
+
+
+def test_quality_repair_patch_reports_every_omitted_requested_row():
+    patch = [
+        {"sfmea_id": "SFMEA-06", "failure_mode": "corrected"},
+        {"sfmea_id": "SFMEA-09", "failure_mode": "corrected"},
+    ]
+
+    assert _missing_quality_repair_row_ids(
+        patch,
+        {"SFMEA-06", "SFMEA-07", "SFMEA-08", "SFMEA-09"},
+    ) == {"SFMEA-07", "SFMEA-08"}
+
+
+def test_quality_feedback_field_patch_overrides_model_repair_for_bound_row():
+    rendered = [
+        {
+            "sfmea_id": "SFMEA-04",
+            "failure_mode": "empty AuthMethod mismatch",
+            "detection": "model repeated a nonexistent log",
+        },
+        {
+            "sfmea_id": "SFMEA-05",
+            "failure_mode": "accepted row",
+            "detection": "unchanged",
+        },
+    ]
+    feedback = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-04",
+                "code": "behavior_claim_contradicted",
+                "field_patch": {
+                    "detection": "通过登录响应状态观测，不声称存在日志。",
+                    "sfmea_id": "MUST-NOT-CHANGE",
+                },
+            }
+        ]
+    }
+
+    patched = _apply_quality_feedback_field_patches(
+        rendered,
+        artifact="sfmea.json",
+        quality_feedback=feedback,
+    )
+
+    assert patched[0]["sfmea_id"] == "SFMEA-04"
+    assert patched[0]["detection"] == "通过登录响应状态观测，不声称存在日志。"
+    assert patched[1] == rendered[1]
 from app.services.workbench_workflow_runner import (
     _build_workbench_staged_plan,
     _expand_quality_blocked_artifacts,
@@ -758,6 +838,7 @@ def test_quality_repair_array_prompt_requests_an_incremental_patch():
     assert "系统会按稳定 ID 合并" in prompt
     assert "每个必测场景必须是一个独立条目" in prompt
     assert "场景名称必须逐字包含门禁给出的场景名" in prompt
+    assert "严禁新增任何 ID" not in prompt
     assert "必须返回完整的修复后顶层值" not in prompt
     assert "必须输出至少 12 个" not in prompt
 
@@ -870,7 +951,120 @@ def test_behavior_quality_repair_prompt_scopes_failed_rows_and_rejects_pending_r
     assert "UNRELATED_EVIDENCE_01_" not in prompt
     assert "不能仅添加“待验证”" in prompt
     assert "场景前提本身与源码相反" in prompt
+    assert "严禁新增任何 ID" in prompt
+    assert "系统会拒绝所有越界新增行" in prompt
     assert len(prompt) < 30_000
+
+
+def test_quality_repair_prompt_stays_small_with_production_sized_source_pack():
+    failed_ids = {"SRC-03", "SRC-05", "SRC-06", "SRC-09", "SRC-12"}
+    previous = json.dumps(
+        [
+            {
+                "case_id": f"BBC-{index:02d}",
+                "scenario_name": f"failed scenario {index}",
+                "expected_result": "old contradicted conclusion " + ("x" * 900),
+                "technical_claims": [
+                    {
+                        "claim_id": f"TC-BBC-{index:02d}",
+                        "evidence": [{"evidence_id": f"SRC-{index:02d}"}],
+                    }
+                ],
+            }
+            for index in (3, 5, 6, 9, 12)
+        ],
+        ensure_ascii=False,
+        indent=2,
+    )
+    source_pack = {
+        "repo_revision": "abc123",
+        "evidence_cards": [
+            {
+                "evidence_id": f"SRC-{index:02d}",
+                "file_path": f"lib/iscsi/source_{index:02d}.c",
+                "start_line": index * 10,
+                "end_line": index * 10 + 40,
+                "excerpt": (
+                    f"RELEVANT_SOURCE_{index:02d}_" if f"SRC-{index:02d}" in failed_ids
+                    else f"UNRELATED_SOURCE_{index:02d}_"
+                )
+                + ("source " * 900),
+                "symbols": [f"symbol_{index:02d}"],
+                "sha256": f"{index:064x}",
+            }
+            for index in range(1, 45)
+        ],
+        "verified_literals": [
+            {
+                "name": f"LITERAL_{index:02d}",
+                "value": str(index),
+                "evidence_id": f"SRC-{index:02d}",
+            }
+            for index in range(1, 45)
+        ],
+    }
+    feedback = {
+        "affected_artifacts": ["black_box_cases.json"],
+        "issues": [
+            {
+                "artifact": "black_box_cases.json",
+                "code": "behavior_claim_contradicted",
+                "row_id": f"BBC-{index:02d}",
+                "claim_id": f"ROW:black_box_cases.json:BBC-{index:02d}",
+                "message": f"AUDIT_TRUTH_{index:02d}: remove the contradicted behavior",
+                "evidence": [{"evidence_id": f"SRC-{index:02d}"}],
+            }
+            for index in (3, 5, 6, 9, 12)
+        ],
+    }
+    plan = {
+        "original_user_request": "完整分析 iSCSI login",
+        "quality_retry_feedback": feedback,
+        "source_bound_domain_fact_candidates": [
+            {
+                "id": f"fact_{index:02d}",
+                "assertion": "domain fact " + ("detail " * 180),
+                "evidence": [f"lib/iscsi/source_{index:02d}.c::symbol_{index:02d}"],
+            }
+            for index in range(1, 45)
+        ],
+    }
+
+    prompt = _regular_stage_prompt(
+        plan=plan,
+        stage={
+            "id": "black_box_cases",
+            "artifact": "black_box_cases.json",
+            "purpose": "black-box cases",
+            "depends_on": [],
+            "output_contract": {
+                "schema": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": [
+                            "case_id",
+                            "scenario_name",
+                            "steps",
+                            "expected_result",
+                        ],
+                    },
+                }
+            },
+        },
+        source_pack=source_pack,
+        flow_pack={},
+        outline={},
+        completed={},
+        current_artifact_seed=previous,
+    )
+
+    assert len(prompt) < 35_000
+    assert "RELEVANT_SOURCE_03" in prompt
+    assert "RELEVANT_SOURCE_12" in prompt
+    assert "UNRELATED_SOURCE_01" not in prompt
+    assert "fact_01" not in prompt
+    assert prompt.index("AUDIT_TRUTH_03") < prompt.index("CURRENT_ARTIFACT_TO_REPAIR")
 
 
 def test_quality_repair_array_patch_preserves_previous_rows_fields_and_capacity():
@@ -913,6 +1107,51 @@ def test_quality_repair_array_patch_preserves_previous_rows_fields_and_capacity(
     assert repaired["expected_result"] == "source-backed corrected result"
     assert repaired["scenario_name"] == "accepted scenario 10"
     assert repaired["observability"] == ["metric-10"]
+
+
+def test_quality_repair_row_only_patch_rejects_unrequested_new_rows():
+    previous = [
+        {"sfmea_id": "SFMEA-01", "failure_mode": "old one"},
+        {"sfmea_id": "SFMEA-02", "failure_mode": "old two"},
+    ]
+    patch = [
+        {"sfmea_id": "SFMEA-02", "failure_mode": "corrected two"},
+        {"sfmea_id": "SFMEA-13", "failure_mode": "unrequested new row"},
+    ]
+
+    merged = _merge_json_array_patch(
+        previous,
+        patch,
+        allowed_existing_row_ids={"SFMEA-02"},
+        allow_new_items=False,
+    )
+
+    assert merged == [
+        {"sfmea_id": "SFMEA-01", "failure_mode": "old one"},
+        {"sfmea_id": "SFMEA-02", "failure_mode": "corrected two"},
+    ]
+
+
+def test_quality_repair_row_ids_extracts_row_from_derived_claim_id():
+    feedback = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "code": "source_claim_contradicted",
+                "claim_id": "SFMEA-09:log_literal:1",
+            },
+            {
+                "artifact": "sfmea.json",
+                "code": "behavior_claim_insufficient",
+                "claim_id": "ROW:sfmea.json:SFMEA-12",
+            },
+        ]
+    }
+
+    assert _quality_repair_row_ids(
+        artifact="sfmea.json",
+        quality_feedback=feedback,
+    ) == {"SFMEA-09", "SFMEA-12"}
 
 
 def test_quality_repair_evidence_cards_combine_exact_and_contextual_matches():

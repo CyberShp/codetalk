@@ -1,7 +1,10 @@
 import asyncio
 import json
 import hashlib
+import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -1001,6 +1004,7 @@ def test_staged_partial_result_is_not_reported_as_completed():
     from app.services.workbench_workflow_runner import (
         _execution_status,
         _overall_status,
+        _staged_execution_timed_out,
         _staged_step_status,
     )
     from app.services.workbench_task_run import _normalized_execution_status
@@ -1010,6 +1014,10 @@ def test_staged_partial_result_is_not_reported_as_completed():
     assert _staged_step_status("completed", {"status": "partial"}) == "partial"
     assert _staged_step_status("completed", {"status": "completed"}) == "completed"
     assert _staged_step_status("error", {"status": "partial"}) == "error"
+    assert _staged_execution_timed_out(
+        {"status": "partial", "reason": "workflow_deadline_exceeded"}
+    ) is True
+    assert _staged_execution_timed_out({"status": "partial"}) is False
     assert _overall_status([{"status": "partial"}]) == "partial"
     assert _execution_status([{"status": "partial"}]) == "partial"
     assert _normalized_execution_status("partial") == "partial"
@@ -1022,11 +1030,25 @@ def test_staged_partial_result_is_not_reported_as_completed():
 
 
 @pytest.mark.asyncio
-async def test_staged_workflow_deadline_preserves_partial_stage_result(tmp_path):
+async def test_staged_workflow_deadline_preserves_partial_stage_result(
+    tmp_path, monkeypatch
+):
+    import app.services.workbench_workflow_runner as runner_module
     from app.services.workbench_workflow_runner import _execute_staged_with_deadline
 
+    release = asyncio.Event()
+
     async def never_finishes():
-        await asyncio.Event().wait()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    monkeypatch.setattr(
+        runner_module.settings,
+        "staged_workflow_shutdown_grace_seconds",
+        0.01,
+    )
 
     plan = {
         "stages": [
@@ -1059,6 +1081,8 @@ async def test_staged_workflow_deadline_preserves_partial_stage_result(tmp_path)
             "user_message": "工作流已达到总时间上限，已保留现有结果并停止后续模型调用。",
         }
     ]
+    release.set()
+    await asyncio.sleep(0)
 
 
 def test_test_activity_audit_contract_follows_declared_workflow_artifacts():
@@ -3855,7 +3879,7 @@ def test_agent_rerun_injects_previous_test_activity_quality_feedback(tmp_path):
 
     bundle = json.loads((artifact_dir / "task_bundle.json").read_text(encoding="utf-8"))
     feedback = bundle["retry_quality_feedback"]
-    assert feedback["score"] == 42
+    assert "score" not in feedback
     assert feedback["issue_count"] == 2
     assert feedback["issues"][1]["code"] == "non_actionable_mitigation"
     assert feedback["affected_artifacts"] == ["flow_map.md", "sfmea.json"]
@@ -3872,6 +3896,41 @@ def test_agent_rerun_injects_previous_test_activity_quality_feedback(tmp_path):
     ]
     assert "仅修改受影响交付件" in feedback["instruction"]
     assert "必须逐项修正" in feedback["instruction"]
+
+
+def test_quality_retry_maps_combined_report_findings_to_declared_report(tmp_path):
+    from app.services.workbench_workflow_runner import _inject_prior_step_context
+
+    task_dir = tmp_path / "task"
+    artifact_dir = task_dir / "agent_runs" / "analyze"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "task_bundle.json").write_text(
+        json.dumps({
+            "required_artifacts": ["report.md"],
+            "test_activity_contract": {"artifact_contract": {}},
+        }),
+        encoding="utf-8",
+    )
+    (task_dir / "test_activity_quality_audit.json").write_text(
+        json.dumps({
+            "status": "needs_rework",
+            "issues": [{
+                "artifact": "black_box_cases.json",
+                "code": "raw_pdu_harness_missing_scenario_capability",
+                "message": "缺少双连接和响应 TSIH 捕获",
+            }],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    _inject_prior_step_context(artifact_dir=artifact_dir, prior_step_results=[])
+
+    bundle = json.loads((artifact_dir / "task_bundle.json").read_text(encoding="utf-8"))
+    feedback = bundle["retry_quality_feedback"]
+    assert feedback["affected_artifacts"] == ["report.md"]
+    assert feedback["issues"][0]["artifact"] == "report.md"
+    assert feedback["issues"][0]["source_artifact"] == "black_box_cases.json"
+    assert bundle["quality_retry_required_artifacts"] == ["report.md"]
 
 
 def test_quality_retry_affected_artifacts_are_computed_before_issue_detail_limit(tmp_path):
@@ -4139,9 +4198,102 @@ def test_combined_report_completeness_routes_virtual_artifacts_to_structured_sou
     assert feedback["issues"][1]["artifact"] == "black_box_cases.json"
 
 
-def test_staged_builtin_runs_one_bounded_quality_repair_in_same_attempt(
+def test_run_async_blocking_does_not_wait_forever_for_a_detached_cancelled_task():
+    from app.services.workbench_workflow_runner import _run_async_blocking
+
+    release = threading.Event()
+    result: dict[str, object] = {}
+
+    async def stubborn_provider():
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            while not release.is_set():
+                await asyncio.sleep(0.01)
+
+    async def lifecycle():
+        task = asyncio.create_task(stubborn_provider())
+        await asyncio.sleep(0)
+        task.cancel()
+        return "deadline-result"
+
+    def run() -> None:
+        result["value"] = _run_async_blocking(lifecycle())
+
+    started = time.monotonic()
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout=3.0)
+    completed_before_release = not thread.is_alive()
+    release.set()
+    thread.join(timeout=1.0)
+
+    assert completed_before_release is True
+    assert result["value"] == "deadline-result"
+    assert time.monotonic() - started < 3.0
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX audit worker termination")
+def test_sync_deadline_terminates_a_permanently_blocked_audit_worker(monkeypatch):
+    import multiprocessing
+    from app.services.workbench_workflow_runner import (
+        _run_async_blocking,
+        _run_sync_with_absolute_deadline,
+    )
+    import app.services.workbench_workflow_runner as runner_module
+
+    monkeypatch.setattr(
+        runner_module.settings,
+        "staged_workflow_shutdown_grace_seconds",
+        0.05,
+    )
+    children_before = {child.pid for child in multiprocessing.active_children()}
+
+    async def lifecycle():
+        return await _run_sync_with_absolute_deadline(
+            lambda: time.sleep(60),
+            deadline=time.monotonic() + 0.05,
+        )
+
+    started = time.monotonic()
+    with pytest.raises(asyncio.TimeoutError):
+        _run_async_blocking(lifecycle())
+
+    assert time.monotonic() - started < 1
+    children_after = {child.pid for child in multiprocessing.active_children()}
+    assert children_after == children_before
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX audit worker exit semantics")
+def test_sync_deadline_reports_a_worker_that_exits_without_a_result():
+    from app.services.workbench_workflow_runner import (
+        _run_async_blocking,
+        _run_sync_with_absolute_deadline,
+    )
+
+    async def lifecycle():
+        return await _run_sync_with_absolute_deadline(
+            lambda: os._exit(7),
+            deadline=time.monotonic() + 1,
+        )
+
+    with pytest.raises(RuntimeError, match=r"exit=7"):
+        _run_async_blocking(lifecycle())
+
+
+@pytest.mark.parametrize(
+    ("minimum_remaining_seconds", "expected_plan_count", "expected_stop_reason"),
+    [
+        (0, 2, ""),
+        (120, 1, "insufficient_remaining_time"),
+    ],
+)
+def test_staged_builtin_quality_repair_respects_the_shared_attempt_budget(
     tmp_path,
     monkeypatch,
+    minimum_remaining_seconds,
+    expected_plan_count,
+    expected_stop_reason,
 ):
     from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
     import app.services.workbench_workflow_runner as runner_module
@@ -4185,6 +4337,7 @@ def test_staged_builtin_runs_one_bounded_quality_repair_in_same_attempt(
     )
     (artifact_dir / "agent_output_contract.json").write_text("{}", encoding="utf-8")
     plans: list[dict] = []
+    deadline_timeouts: list[float] = []
 
     clients: list["DummyLLM"] = []
 
@@ -4211,6 +4364,7 @@ def test_staged_builtin_runs_one_bounded_quality_repair_in_same_attempt(
 
     async def fake_execute_staged_builtin_plan(*, llm, plan, artifact_dir, **_kwargs):
         await llm.touch()
+        await asyncio.sleep(0.01)
         plans.append(json.loads(json.dumps(plan)))
         (artifact_dir / "report.md").write_text("# report\n", encoding="utf-8")
         return {
@@ -4219,33 +4373,35 @@ def test_staged_builtin_runs_one_bounded_quality_repair_in_same_attempt(
             "required_outputs": ["report.md"],
         }
 
-    audits = iter(
-        [
-            {
-                "status": "needs_rework",
-                "score": 0,
-                "issue_count": 2,
-                "issues": [
-                    {
-                        "artifact": "assistant-output.md",
-                        "code": "professional_fact_conflict",
-                        "message": "fix report",
-                    },
-                    {
-                        "artifact": "sfmea.json",
-                        "code": "missing_sfmea_scoring_scale",
-                        "message": "fix sfmea",
-                    },
-                ],
-            },
-            {
+    async def capture_shared_deadline(awaitable, *, timeout_seconds, **_kwargs):
+        deadline_timeouts.append(float(timeout_seconds))
+        return await awaitable
+
+    def fake_audit(**_kwargs):
+        if len(plans) >= 2:
+            return {
                 "status": "deliverable",
                 "score": 100,
                 "issue_count": 0,
                 "issues": [],
-            },
-        ]
-    )
+            }
+        return {
+            "status": "needs_rework",
+            "score": 0,
+            "issue_count": 2,
+            "issues": [
+                {
+                    "artifact": "assistant-output.md",
+                    "code": "professional_fact_conflict",
+                    "message": "fix report",
+                },
+                {
+                    "artifact": "sfmea.json",
+                    "code": "missing_sfmea_scoring_scale",
+                    "message": "fix sfmea",
+                },
+            ],
+        }
     monkeypatch.setattr(runner_module, "create_llm_client_from_active", fake_factory)
     monkeypatch.setattr(runner_module, "create_source_analysis_llm_client", fake_factory)
     monkeypatch.setattr(
@@ -4255,8 +4411,18 @@ def test_staged_builtin_runs_one_bounded_quality_repair_in_same_attempt(
     )
     monkeypatch.setattr(
         runner_module,
+        "_execute_staged_with_deadline",
+        capture_shared_deadline,
+    )
+    monkeypatch.setattr(
+        runner_module,
         "_audit_staged_agent_artifacts",
-        lambda **_kwargs: next(audits),
+        fake_audit,
+    )
+    monkeypatch.setattr(
+        runner_module.settings,
+        "staged_quality_repair_min_remaining_seconds",
+        minimum_remaining_seconds,
     )
 
     result = WorkbenchWorkflowRunner(tmp_path / "task_runs")._execute_builtin_llm_step(
@@ -4273,20 +4439,131 @@ def test_staged_builtin_runs_one_bounded_quality_repair_in_same_attempt(
     )
 
     assert result["status"] == "completed"
-    assert len(plans) == 2
-    assert plans[1]["cache_bypass_artifacts"] == [
-        "report.md",
-        "business_flow.md",
-        "sfmea.json",
-        "black_box_cases.json",
-    ]
+    assert len(plans) == expected_plan_count
+    assert len(deadline_timeouts) == expected_plan_count
+    if expected_plan_count == 2:
+        assert deadline_timeouts[1] < deadline_timeouts[0]
+        assert plans[1]["cache_bypass_artifacts"] == [
+            "report.md",
+            "business_flow.md",
+            "sfmea.json",
+            "black_box_cases.json",
+        ]
     repair = json.loads(
         (artifact_dir / "quality_repair_result.json").read_text(encoding="utf-8")
     )
-    assert repair["attempt_count"] == 1
-    assert repair["attempts"][0]["status_after"] == "deliverable"
+    assert repair["attempt_count"] == expected_plan_count - 1
+    assert repair["stopped_reason"] == expected_stop_reason
+    if expected_plan_count == 2:
+        assert repair["attempts"][0]["status_after"] == "deliverable"
     assert clients
     assert all(client.closed for client in clients)
+
+
+def test_quality_audit_deadline_marks_staged_execution_partial_and_timed_out(
+    tmp_path,
+    monkeypatch,
+):
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    import app.services.workbench_workflow_runner as runner_module
+
+    artifact_dir = tmp_path / "task_runs" / "task-1" / "agent_runs" / "analyze"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "task_bundle.json").write_text(
+        json.dumps(
+            {
+                "execution_contract": {
+                    "repo_path": str(tmp_path),
+                    "analysis_targets": [{"value": "iSCSI login"}],
+                    "test_activity_contract": {
+                        "required_outputs": ["report.md"],
+                        "artifact_contract": {
+                            "report.md": {"type": "combined_test_report"}
+                        },
+                    },
+                },
+                "test_activity_contract": {
+                    "required_outputs": ["report.md"],
+                    "artifact_contract": {
+                        "report.md": {"type": "combined_test_report"}
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifact_dir / "workflow_snapshot.json").write_text(
+        json.dumps(
+            {
+                "steps": [{"id": "analyze", "execution_mode": "staged"}],
+                "outputs": [
+                    {
+                        "id": "report",
+                        "type": "combined_test_report",
+                        "from": "analyze",
+                        "artifact": "report.md",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifact_dir / "agent_output_contract.json").write_text("{}", encoding="utf-8")
+
+    class DummyLLM:
+        async def close(self):
+            return None
+
+    async def fake_factory():
+        return DummyLLM()
+
+    async def fake_execute_staged_builtin_plan(*, artifact_dir, **_kwargs):
+        (artifact_dir / "report.md").write_text("# report\n", encoding="utf-8")
+        return {
+            "status": "completed",
+            "models": ["fake-model"],
+            "required_outputs": ["report.md"],
+        }
+
+    def slow_audit(**_kwargs):
+        time.sleep(0.06)
+        return {"status": "deliverable", "score": 100, "issue_count": 0}
+
+    monkeypatch.setattr(runner_module, "create_llm_client_from_active", fake_factory)
+    monkeypatch.setattr(runner_module, "create_source_analysis_llm_client", fake_factory)
+    monkeypatch.setattr(
+        runner_module,
+        "execute_staged_builtin_plan",
+        fake_execute_staged_builtin_plan,
+    )
+    monkeypatch.setattr(runner_module, "_audit_staged_agent_artifacts", slow_audit)
+    monkeypatch.setattr(runner_module.settings, "behavior_claim_audit_enabled", False)
+    monkeypatch.setattr(runner_module.settings, "staged_workflow_timeout_seconds", 0.03)
+    monkeypatch.setattr(
+        runner_module.settings,
+        "staged_quality_repair_min_remaining_seconds",
+        0,
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs")._execute_builtin_llm_step(
+        step={
+            "id": "analyze",
+            "execution_mode": "staged",
+            "required_artifacts": ["report.md"],
+        },
+        agent_run={"step_id": "analyze"},
+        artifact_dir=artifact_dir,
+        run_payload={"run_id": "run-1"},
+        run_id="run-1",
+        timeout_sec=1,
+    )
+
+    assert result["status"] == "partial"
+    assert result["execution"]["timed_out"] is True
+    repair = json.loads(
+        (artifact_dir / "quality_repair_result.json").read_text(encoding="utf-8")
+    )
+    assert repair["stopped_reason"] == "workflow_deadline_exceeded"
 
 
 def test_regressed_quality_repair_restores_the_previous_deliverables(tmp_path):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 import builtins
 import hashlib
 import json
@@ -304,6 +305,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 ],
                 "correction_patterns": [
                     r"(?:不在|不能|并非|not).{0,40}(?:operational negotiation|操作协商)",
+                    r"csg\s*[:=]?\s*1.{0,80}(?:不应|不该|不得|不能).{0,40}(?:operational negotiation|操作协商).{0,60}(?:chap|challenge|response)",
                     r"csg\s*[:=]?\s*1.{0,50}(?:不再|不|不能|不得|不可).{0,30}(?:承载|执行|处理).{0,30}chap",
                     r"(?:security negotiation|安全协商).{0,80}(?:chap|iscsi_auth_params)",
                     r"(?:operational negotiation|操作协商).{0,120}(?:chap\s*=\s*none|已配置可通过认证|认证已完成|authentication already complete)",
@@ -447,6 +449,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 ],
                 "correction_patterns": [
                     r"(?:当前实现|spdk).{0,160}(?:detail|状态细节).{0,40}`?0x0?0`?.{0,120}(?:规范|rfc).{0,80}`?0x0?b`?",
+                    r"(?:detail|状态细节).{0,30}`?0x0?0`?.{0,180}(?:若|if).{0,30}(?:detail|状态细节).{0,30}`?0x0?b`?.{0,120}(?:误用|规范|rfc|错误期望)",
                 ],
             },
             {
@@ -463,6 +466,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 ],
                 "correction_patterns": [
                     r"(?:version_max|version_min|版本).{0,100}(?:bytes?|字节|offset).{0,20}2\s*[-~～至到]\s*3",
+                    r"(?:byte|字节)\s*3.{0,40}version_min.{0,80}(?:byte|字节)\s*2.{0,40}version_max.{0,180}(?:bytes?|字节)\s*40\s*[-~～至到]\s*41.{0,100}(?:错误|非版本|not version)",
                 ],
             },
             {
@@ -833,6 +837,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"chap_discovery\.sh.{0,220}(?:未知|不存在|unknown).{0,50}(?:chap.{0,20})?(?:用户|user|chap_n)",
                 ],
                 "correction_patterns": [
+                    r"(?:不要|不得|不能|不可).{0,20}(?:把|将).{0,20}chap_discovery\.sh.{0,30}(?:当成|作为|视为).{0,50}(?:未知|unknown|chap_n)",
                     r"chap_discovery\.sh.{0,160}(?:不覆盖|不发送|不能证明|不作为|not cover).{0,80}(?:未知|unknown|chap_n)",
                     r"chap_discovery\.sh.{0,120}(?:不|未|不得|不能).{0,30}(?:映射|发送|发|覆盖).{0,80}(?:未知|unknown|chap_n)",
                     r"(?:未知|unknown).{0,80}(?:ai_suggested_unverified|需要新增|待新增|正文.*harness).{0,200}chap_discovery\.sh.{0,80}(?:不覆盖|不作为)",
@@ -858,6 +863,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"rpc_config\.py.{0,160}(?:只|仅).{0,40}映射.{0,120}(?:不作为|不能作为|不代表).{0,120}(?:wire|state|login_phase|full_feature|t/?.{0,10}nsg)",
                     r"(?:state|login_phase|full_feature|t/?.{0,10}nsg).{0,100}(?:需要|新增|独立).{0,100}(?:pcap|rpc|断言).{0,200}rpc_config\.py.{0,80}(?:不|未)",
                     r"(?:不把|不将|不得把|不能把).{0,30}rpc_config\.py.{0,80}(?:当作|作为).{0,80}(?:断言|证据|映射)",
+                    r"rpc_config\.py.{0,100}(?:部分|仅|只).{0,60}(?:覆盖|映射).{0,80}(?:连接字段|公开连接字段|连接信息)",
                 ],
             },
             {
@@ -890,6 +896,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"login_redirection\.sh.{0,260}(?:网络故障|网络中断|关闭端口|断网|network (?:fault|outage)|自动重连)",
                 ],
                 "correction_patterns": [
+                    r"redirect.{0,80}(?:被|遭)?(?:误当|误判|错误地?认为|错误地?视为).{0,80}(?:网络故障|网络中断|自动重连|自动恢复).{0,240}login_redirection\.sh.{0,100}(?:仅|只).{0,40}(?:验证|覆盖).{0,80}(?:受控\s*rpc|redirect)",
                     r"login_redirection\.sh.{0,180}(?:不覆盖|不能证明|不映射|不作为|仅供参考|需要新增|不是(?:网络故障|自动重连)|not cover|does not prove|not a network)",
                     r"(?:不可用|不用|不使用|不得使用|不能使用|do not use).{0,80}login_redirection\.sh.{0,180}(?:只测|仅测|不测|非|不是|not).{0,80}(?:网络中断|网络故障|自动重连|network fault|network outage)",
                     r"login_redirection\.sh.{0,500}(?:不得解释|不能解释|不可解释|不应解释).{0,80}(?:网络故障|自动重连)",
@@ -910,6 +917,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     r"(?:login|登录).{0,80}(?:latency|延迟|p99|性能).{0,180}calsoft\.py",
                 ],
                 "correction_patterns": [
+                    r"(?:不要|不得|不能|不可).{0,20}(?:使用|用).{0,40}calsoft\.py.{0,100}(?:推导|推出|证明|作为).{0,60}(?:login|登录).{0,40}(?:latency|延迟)",
                     r"calsoft\.py.{0,180}(?:不测|不覆盖|不作为|不是|仅.*一致性|does not measure|not a benchmark)",
                     r"(?:不能|不得|不可|not).{0,60}(?:从|use)?\s*`?calsoft\.py`?.{0,140}(?:推出|作为|derive|benchmark)",
                     r"calsoft\.py.{0,160}(?:不采集|不产生|does not collect).{0,80}(?:login|登录).{0,80}(?:延迟|latency|分位数)",
@@ -1833,6 +1841,7 @@ def _audit_structured_fact_claims(
                     ),
                     claim_id=log_claim_id,
                     claim_type="log_literal",
+                    row_id=row_id,
                     claimed_literal=literal,
                     evidence=log_claim["evidence"],
                     validation_layer="L1_deterministic",
@@ -1993,6 +2002,7 @@ def _audit_explicit_technical_claims(
                     claim_type=claim_type,
                     statement=statement,
                     evidence=checked_evidence,
+                    row_id=row_id,
                     validation_layer=validation_layer,
                 )
             )
@@ -2090,13 +2100,17 @@ def _audit_row_behavior_claims(
             evidence=evidence,
         )
         if evidence:
-            l2_status, reason = _bound_behavior_validation_status(
+            l2_status, reason, field_patch = _bound_behavior_validation_details(
                 validation=behavior_validation,
                 claim_id=claim_id,
                 binding=binding,
             )
         else:
-            l2_status, reason = "insufficient", "该条目没有可供行为核验的已验证源码证据"
+            l2_status, reason, field_patch = (
+                "insufficient",
+                "该条目没有可供行为核验的已验证源码证据",
+                {},
+            )
         status = (
             "verified"
             if l2_status == "supports"
@@ -2129,8 +2143,10 @@ def _audit_row_behavior_claims(
                 f"{row_id} 的完整行为语义未通过独立核验：{reason}。",
                 claim_id=claim_id,
                 claim_type=claim_type,
+                row_id=row_id,
                 statement=statement,
                 evidence=evidence,
+                field_patch=field_patch,
                 validation_layer="L2_independent_behavior",
             )
         )
@@ -2285,7 +2301,7 @@ def build_behavior_claim_validation_request(
         )
     payload = {
         "kind": "behavior_claim_validation_request",
-        "schema_version": 1,
+        "schema_version": 2,
         "repo_path": str(repo.resolve()) if repo.exists() else str(repo),
         "claims": request_claims,
         "contexts": contexts,
@@ -2379,26 +2395,49 @@ def _bound_behavior_validation_status(
     claim_id: str,
     binding: str,
 ) -> tuple[str, str]:
+    status, reason, _ = _bound_behavior_validation_details(
+        validation=validation,
+        claim_id=claim_id,
+        binding=binding,
+    )
+    return status, reason
+
+
+def _bound_behavior_validation_details(
+    *,
+    validation: dict[str, Any],
+    claim_id: str,
+    binding: str,
+) -> tuple[str, str, dict[str, Any]]:
     validator = (
         validation.get("validator")
         if isinstance(validation.get("validator"), dict)
         else {}
     )
     if not bool(validator.get("independent")):
-        return "insufficient", "缺少独立行为审计器的核验结果"
+        return "insufficient", "缺少独立行为审计器的核验结果", {}
+    matched_claim_id = False
     for item in validation.get("claims") or []:
         if not isinstance(item, dict):
             continue
         if str(item.get("claim_id") or "").strip() != claim_id:
             continue
+        matched_claim_id = True
         if str(item.get("binding") or "").strip() != binding:
-            return "insufficient", "行为审计结果与当前断言或源码证据不匹配"
+            continue
         status = str(item.get("status") or "").strip().lower()
         reason = str(item.get("reason") or "").strip()
         if status in {"supports", "contradicts", "insufficient"}:
-            return status, reason or f"独立行为审计结果：{status}"
-        return "insufficient", "独立行为审计返回了未知状态"
-    return "insufficient", "当前行为断言尚未经过独立模型核验"
+            field_patch = (
+                dict(item.get("field_patch") or {})
+                if isinstance(item.get("field_patch"), dict)
+                else {}
+            )
+            return status, reason or f"独立行为审计结果：{status}", field_patch
+        return "insufficient", "独立行为审计返回了未知状态", {}
+    if matched_claim_id:
+        return "insufficient", "行为审计结果与当前断言或源码证据不匹配", {}
+    return "insufficient", "当前行为断言尚未经过独立模型核验", {}
 
 
 def _source_constant_value(quote: str) -> int | None:
@@ -3211,14 +3250,7 @@ def _audit_raw_pdu_scenario_capabilities(content: str) -> list[dict[str, Any]]:
     if not (mcs_claims or continuation_claims or version_claims):
         return []
 
-    trees: list[ast.Module] = []
-    for source in re.findall(r"```python\s*\n([\s\S]*?)```", content, flags=re.IGNORECASE):
-        try:
-            trees.append(ast.parse(source))
-        except SyntaxError:
-            continue
-
-    capabilities = _raw_pdu_ast_capabilities(trees)
+    trees = _embedded_python_trees(content)
     capability_labels = {
         "nonzero_tsih_input": "支持把首个响应中的非零 TSIH 写入第二个 Login Request",
         "response_tsih_capture": "从首个 Login Response 解析并保存 TSIH",
@@ -3243,6 +3275,12 @@ def _audit_raw_pdu_scenario_capabilities(content: str) -> list[dict[str, Any]]:
         required.update({"mutable_login_flags", "multi_pdu_login"})
     if version_claims:
         required.add("version_range_input")
+    executable_capability_sets = _raw_pdu_executable_capability_sets(trees)
+    capabilities = max(
+        executable_capability_sets,
+        key=lambda item: len(required & item),
+        default=set(),
+    )
     missing = sorted(required - capabilities)
     if not missing:
         return []
@@ -3261,8 +3299,473 @@ def _audit_raw_pdu_scenario_capabilities(content: str) -> list[dict[str, Any]]:
     ]
 
 
+def _embedded_python_trees(content: str) -> list[ast.Module]:
+    trees: list[ast.Module] = []
+    for source in re.findall(r"```python\s*\n([\s\S]*?)```", content, flags=re.IGNORECASE):
+        try:
+            trees.append(ast.parse(source))
+        except SyntaxError:
+            continue
+    return trees
+
+
+def _raw_pdu_executable_capability_sets(trees: list[ast.Module]) -> list[set[str]]:
+    capability_sets: list[set[str]] = []
+    for tree in trees:
+        functions = {
+            node.name.lower(): node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        if not functions:
+            continue
+        top_level_names = set(functions)
+        calls = {
+            name: _ast_direct_function_calls(
+                function,
+                top_level_names - _ast_local_bound_names(function),
+            )
+            for name, function in functions.items()
+        }
+        roots = _ast_module_entrypoint_calls(tree, set(functions))
+        if "main" in functions:
+            roots.add("main")
+        if not roots:
+            continue
+        reachable = set(roots)
+        pending = list(roots)
+        while pending:
+            current = pending.pop()
+            for called in calls.get(current, set()):
+                if called not in reachable:
+                    reachable.add(called)
+                    pending.append(called)
+        executable_tree = ast.Module(
+            body=[
+                _ast_without_nested_dead_scopes(functions[name])
+                for name in functions
+                if name in reachable
+            ],
+            type_ignores=[],
+        )
+        capability_sets.append(_raw_pdu_ast_capabilities([executable_tree]))
+    return capability_sets
+
+
+def _ast_module_entrypoint_calls(tree: ast.Module, function_names: set[str]) -> set[str]:
+    roots: set[str] = set()
+
+    class EntrypointVisitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            return
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+        def visit_Call(self, node: ast.Call) -> None:
+            called = _ast_call_name(node)
+            if called in function_names:
+                roots.add(called)
+            self.generic_visit(node)
+
+    for statement in tree.body:
+        EntrypointVisitor().visit(statement)
+    return roots
+
+
+def _ast_direct_function_calls(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    function_names: set[str],
+) -> set[str]:
+    calls: set[str] = set()
+
+    class DirectCallVisitor(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            return
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            return
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+        def visit_Call(self, node: ast.Call) -> None:
+            called = _ast_call_name(node)
+            if called in function_names:
+                calls.add(called)
+            self.generic_visit(node)
+
+    visitor = DirectCallVisitor()
+    for statement in function.body:
+        visitor.visit(statement)
+    return calls
+
+
+def _ast_without_nested_dead_scopes(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> ast.FunctionDef | ast.AsyncFunctionDef:
+    cloned = copy.deepcopy(function)
+
+    nested_functions = _ast_immediate_nested_functions(cloned)
+    nested_names = set(nested_functions)
+    reachable = _ast_unshadowed_direct_nested_calls(cloned, nested_functions)
+    pending = list(reachable)
+    while pending:
+        current = pending.pop()
+        sibling_names = nested_names - _ast_local_bound_names(
+            nested_functions[current]
+        )
+        for called in _ast_direct_function_calls(
+            nested_functions[current], sibling_names
+        ):
+            if called not in reachable:
+                reachable.add(called)
+                pending.append(called)
+
+    class DeadScopePruner(ast.NodeTransformer):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> ast.FunctionDef | None:
+            if node.name.lower() not in reachable:
+                return None
+            return _ast_without_nested_dead_scopes(node)
+
+        def visit_AsyncFunctionDef(
+            self, node: ast.AsyncFunctionDef
+        ) -> ast.AsyncFunctionDef | None:
+            if node.name.lower() not in reachable:
+                return None
+            return _ast_without_nested_dead_scopes(node)
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return None
+
+        def visit_Lambda(self, node: ast.Lambda) -> ast.Constant:
+            return ast.copy_location(ast.Constant(value=None), node)
+
+    pruner = DeadScopePruner()
+    cloned.body = [
+        transformed
+        for statement in cloned.body
+        if (transformed := pruner.visit(statement)) is not None
+    ]
+    return cloned
+
+
+def _ast_immediate_nested_functions(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> dict[str, ast.FunctionDef | ast.AsyncFunctionDef]:
+    nested: dict[str, ast.FunctionDef | ast.AsyncFunctionDef] = {}
+
+    class NestedFunctionCollector(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            nested[node.name.lower()] = node
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            nested[node.name.lower()] = node
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            return
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+    collector = NestedFunctionCollector()
+    for statement in function.body:
+        collector.visit(statement)
+    return nested
+
+
+def _ast_unshadowed_direct_nested_calls(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+    nested_functions: dict[str, ast.FunctionDef | ast.AsyncFunctionDef],
+) -> set[str]:
+    nested_names = set(nested_functions)
+    bindings: dict[str, list[tuple[int, int, str]]] = {
+        name: [] for name in nested_names
+    }
+    calls: dict[str, list[tuple[int, int]]] = {name: [] for name in nested_names}
+
+    class ScopeEventCollector(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            name = node.name.lower()
+            if name in nested_names:
+                bindings[name].append((node.lineno, node.col_offset, "function"))
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            name = node.name.lower()
+            if name in nested_names:
+                bindings[name].append((node.lineno, node.col_offset, "function"))
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            name = node.name.lower()
+            if name in nested_names:
+                bindings[name].append((node.lineno, node.col_offset, "other"))
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+        def visit_Name(self, node: ast.Name) -> None:
+            name = node.id.lower()
+            if name in nested_names and isinstance(node.ctx, (ast.Store, ast.Del)):
+                bindings[name].append((node.lineno, node.col_offset, "other"))
+
+        def visit_Import(self, node: ast.Import) -> None:
+            for alias in node.names:
+                name = (alias.asname or alias.name.split(".", 1)[0]).lower()
+                if name in nested_names:
+                    bindings[name].append((node.lineno, node.col_offset, "other"))
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            for alias in node.names:
+                name = (alias.asname or alias.name).lower()
+                if name in nested_names:
+                    bindings[name].append((node.lineno, node.col_offset, "other"))
+
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+            if node.name and str(node.name).lower() in nested_names:
+                bindings[str(node.name).lower()].append(
+                    (node.lineno, node.col_offset, "other")
+                )
+            self.generic_visit(node)
+
+        def visit_MatchAs(self, node: ast.MatchAs) -> None:
+            if node.name and node.name.lower() in nested_names:
+                bindings[node.name.lower()].append(
+                    (node.lineno, node.col_offset, "other")
+                )
+            if node.pattern is not None:
+                self.visit(node.pattern)
+
+        def visit_MatchStar(self, node: ast.MatchStar) -> None:
+            if node.name and node.name.lower() in nested_names:
+                bindings[node.name.lower()].append(
+                    (node.lineno, node.col_offset, "other")
+                )
+
+        def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
+            if node.rest and node.rest.lower() in nested_names:
+                bindings[node.rest.lower()].append(
+                    (node.lineno, node.col_offset, "other")
+                )
+            for key in node.keys:
+                self.visit(key)
+            for pattern in node.patterns:
+                self.visit(pattern)
+
+        def visit_ListComp(self, node: ast.ListComp) -> None:
+            self._visit_comprehension(node.generators, node.elt)
+
+        def visit_SetComp(self, node: ast.SetComp) -> None:
+            self._visit_comprehension(node.generators, node.elt)
+
+        def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+            self._visit_comprehension(node.generators, node.elt)
+
+        def visit_DictComp(self, node: ast.DictComp) -> None:
+            self._visit_comprehension(node.generators, node.key, node.value)
+
+        def _visit_comprehension(
+            self,
+            generators: list[ast.comprehension],
+            *values: ast.AST,
+        ) -> None:
+            for generator in generators:
+                self.visit(generator.iter)
+                for condition in generator.ifs:
+                    self.visit(condition)
+            for value in values:
+                self.visit(value)
+
+        def visit_Call(self, node: ast.Call) -> None:
+            name = _ast_call_name(node)
+            if name in nested_names:
+                calls[name].append((node.lineno, node.col_offset))
+            self.generic_visit(node)
+
+    collector = ScopeEventCollector()
+    for statement in function.body:
+        collector.visit(statement)
+
+    reachable: set[str] = set()
+    for name, call_positions in calls.items():
+        events = sorted(bindings[name])
+        expected_definition = nested_functions[name]
+        expected_position = (
+            expected_definition.lineno,
+            expected_definition.col_offset,
+        )
+        for call_position in call_positions:
+            preceding = [event for event in events if event[:2] < call_position]
+            if not preceding:
+                continue
+            latest = preceding[-1]
+            if latest[2] == "function" and latest[:2] == expected_position:
+                reachable.add(name)
+                break
+    return reachable
+
+
+def _ast_local_bound_names(
+    function: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> set[str]:
+    bound = {
+        argument.arg.lower()
+        for argument in (
+            *function.args.posonlyargs,
+            *function.args.args,
+            *function.args.kwonlyargs,
+        )
+    }
+    declared_external: set[str] = set()
+
+    class LocalBindingCollector(ast.NodeVisitor):
+        def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+            bound.add(node.name.lower())
+
+        def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+            bound.add(node.name.lower())
+
+        def visit_ClassDef(self, node: ast.ClassDef) -> None:
+            bound.add(node.name.lower())
+
+        def visit_Lambda(self, node: ast.Lambda) -> None:
+            return
+
+        def visit_Name(self, node: ast.Name) -> None:
+            if isinstance(node.ctx, ast.Store):
+                bound.add(node.id.lower())
+
+        def visit_Import(self, node: ast.Import) -> None:
+            for alias in node.names:
+                bound.add((alias.asname or alias.name.split(".", 1)[0]).lower())
+
+        def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
+            for alias in node.names:
+                bound.add((alias.asname or alias.name).lower())
+
+        def visit_ExceptHandler(self, node: ast.ExceptHandler) -> None:
+            if node.name:
+                bound.add(str(node.name).lower())
+            self.generic_visit(node)
+
+        def visit_MatchAs(self, node: ast.MatchAs) -> None:
+            if node.name:
+                bound.add(node.name.lower())
+            if node.pattern is not None:
+                self.visit(node.pattern)
+
+        def visit_MatchStar(self, node: ast.MatchStar) -> None:
+            if node.name:
+                bound.add(node.name.lower())
+
+        def visit_MatchMapping(self, node: ast.MatchMapping) -> None:
+            if node.rest:
+                bound.add(node.rest.lower())
+            for key in node.keys:
+                self.visit(key)
+            for pattern in node.patterns:
+                self.visit(pattern)
+
+        def visit_ListComp(self, node: ast.ListComp) -> None:
+            self._visit_comprehension(node.generators, node.elt)
+
+        def visit_SetComp(self, node: ast.SetComp) -> None:
+            self._visit_comprehension(node.generators, node.elt)
+
+        def visit_GeneratorExp(self, node: ast.GeneratorExp) -> None:
+            self._visit_comprehension(node.generators, node.elt)
+
+        def visit_DictComp(self, node: ast.DictComp) -> None:
+            self._visit_comprehension(node.generators, node.key, node.value)
+
+        def _visit_comprehension(
+            self,
+            generators: list[ast.comprehension],
+            *values: ast.AST,
+        ) -> None:
+            for generator in generators:
+                self.visit(generator.iter)
+                for condition in generator.ifs:
+                    self.visit(condition)
+            for value in values:
+                self.visit(value)
+
+        def visit_Global(self, node: ast.Global) -> None:
+            declared_external.update(name.lower() for name in node.names)
+
+        def visit_Nonlocal(self, node: ast.Nonlocal) -> None:
+            declared_external.update(name.lower() for name in node.names)
+
+    collector = LocalBindingCollector()
+    for statement in function.body:
+        collector.visit(statement)
+    return bound - declared_external
+
+
 def _raw_pdu_ast_capabilities(trees: list[ast.Module]) -> set[str]:
     capabilities: set[str] = set()
+    all_functions = [
+        node
+        for tree in trees
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    ]
+    function_names = {function.name.lower() for function in all_functions}
+    function_calls = {
+        function.name.lower(): {
+            called
+            for call in ast.walk(function)
+            if isinstance(call, ast.Call)
+            and (called := _ast_call_name(call))
+            and called in function_names
+        }
+        for function in all_functions
+    }
+    send_capable = {
+        function.name.lower()
+        for function in all_functions
+        if any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr in {"send", "sendall"}
+            for call in ast.walk(function)
+        )
+    }
+    receive_capable = {
+        function.name.lower()
+        for function in all_functions
+        if any(
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr in {"recv", "recv_into", "read", "readexactly"}
+            for call in ast.walk(function)
+        )
+    }
+    connection_factories = {
+        function.name.lower()
+        for function in all_functions
+        if any(
+            isinstance(call, ast.Call)
+            and _ast_call_name(call) in {"create_connection", "open_connection"}
+            for call in ast.walk(function)
+        )
+    }
+    for reachable in (send_capable, receive_capable, connection_factories):
+        changed = True
+        while changed:
+            changed = False
+            for function_name, called_names in function_calls.items():
+                if function_name not in reachable and called_names & reachable:
+                    reachable.add(function_name)
+                    changed = True
     for tree in trees:
         functions = [
             node
@@ -3291,14 +3794,19 @@ def _raw_pdu_ast_capabilities(trees: list[ast.Module]) -> set[str]:
                     byte_range = _ast_subscript_byte_range(target)
                     byte_index = _ast_subscript_index(target)
                     value_names = _ast_expression_names(value)
+                    semantic_names = parameters | value_names
                     if byte_range == (14, 16) and (
-                        "tsih" in parameters
-                        or "tsih" in value_names
+                        any(
+                            name == "tsih" or name.endswith("_tsih")
+                            for name in semantic_names
+                        )
                     ) and not _ast_expression_is_constant_zero(value):
                         capabilities.add("nonzero_tsih_input")
-                    if byte_range == (24, 26) and (
-                        "cid" in parameters
-                        or "cid" in value_names
+                    if byte_range == (20, 22) and (
+                        any(
+                            name == "cid" or name.endswith("_cid")
+                            for name in semantic_names
+                        )
                     ):
                         capabilities.add("distinct_cid_input")
 
@@ -3314,9 +3822,57 @@ def _raw_pdu_ast_capabilities(trees: list[ast.Module]) -> set[str]:
                     ):
                         capabilities.add(f"version_byte_{byte_index}")
 
+            for dictionary in (node for node in ast.walk(function) if isinstance(node, ast.Dict)):
+                for key, value in zip(dictionary.keys, dictionary.values):
+                    if (
+                        isinstance(key, ast.Constant)
+                        and str(key.value).lower() == "tsih"
+                        and _ast_expression_reads_byte_range(value, (14, 16))
+                    ):
+                        capabilities.add("response_tsih_capture")
+
+            for call in (node for node in ast.walk(function) if isinstance(node, ast.Call)):
+                if not (
+                    isinstance(call.func, ast.Attribute)
+                    and call.func.attr in {"pack_into", "unpack_from"}
+                    and len(call.args) >= 3
+                ):
+                    continue
+                offset = call.args[2]
+                if not isinstance(offset, ast.Constant) or not isinstance(offset.value, int):
+                    continue
+                call_names = _ast_expression_names(call)
+                if call.func.attr == "pack_into" and int(offset.value) == 14 and "tsih" in call_names:
+                    capabilities.add("nonzero_tsih_input")
+                if call.func.attr == "pack_into" and int(offset.value) == 20 and "cid" in call_names:
+                    capabilities.add("distinct_cid_input")
+                for assignment in assignments:
+                    if assignment.value is None or call not in ast.walk(assignment.value):
+                        continue
+                    targets = (
+                        assignment.targets
+                        if isinstance(assignment, ast.Assign)
+                        else [assignment.target]
+                    )
+                    assigned_names = {
+                        name
+                        for target in targets
+                        for name in _ast_assigned_target_names(target)
+                    }
+                    if (
+                        call.func.attr == "unpack_from"
+                        and int(offset.value) == 14
+                        and "tsih" in assigned_names
+                    ):
+                        capabilities.add("response_tsih_capture")
+
             if _ast_function_has_status_oracle(function):
                 capabilities.add("login_response_status_oracle")
-            if _ast_function_has_dual_socket_lifecycle(function, function_name=function_name):
+            if _ast_function_has_dual_socket_lifecycle(
+                function,
+                function_name=function_name,
+                connection_factories=connection_factories,
+            ):
                 capabilities.add("dual_socket_lifecycle")
             send_calls = [
                 node
@@ -3327,6 +3883,17 @@ def _raw_pdu_ast_capabilities(trees: list[ast.Module]) -> set[str]:
             ]
             if len(send_calls) >= 2:
                 capabilities.add("multi_pdu_login")
+            for loop in (
+                node for node in ast.walk(function) if isinstance(node, (ast.For, ast.AsyncFor, ast.While))
+            ):
+                loop_calls = {
+                    called
+                    for call in ast.walk(loop)
+                    if isinstance(call, ast.Call)
+                    and (called := _ast_call_name(call))
+                }
+                if loop_calls & send_capable & receive_capable:
+                    capabilities.add("multi_pdu_login")
     if {"version_byte_2", "version_byte_3"}.issubset(capabilities):
         capabilities.add("version_range_input")
     return capabilities
@@ -3370,6 +3937,14 @@ def _ast_expression_names(node: ast.AST) -> set[str]:
     return names
 
 
+def _ast_call_name(call: ast.Call) -> str:
+    if isinstance(call.func, ast.Name):
+        return call.func.id.lower()
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr.lower()
+    return ""
+
+
 def _ast_expression_is_constant_zero(node: ast.AST) -> bool:
     names = [child for child in ast.walk(node) if isinstance(child, ast.Name)]
     numeric_values = [
@@ -3409,6 +3984,8 @@ def _ast_function_has_status_oracle(
         ):
             if isinstance(subscript.slice, ast.Constant) and isinstance(subscript.slice.value, int):
                 compared_indexes.add(int(subscript.slice.value))
+            elif isinstance(subscript.slice, ast.Constant) and isinstance(subscript.slice.value, str):
+                compared_names.add(subscript.slice.value.lower())
     return bool(status_names & compared_names) or {36, 37}.issubset(compared_indexes)
 
 
@@ -3416,10 +3993,12 @@ def _ast_function_has_dual_socket_lifecycle(
     function: ast.FunctionDef | ast.AsyncFunctionDef,
     *,
     function_name: str,
+    connection_factories: set[str] | None = None,
 ) -> bool:
     if not any(marker in function_name for marker in ("mcs", "multi_connection", "append_connection")):
         return False
     connection_calls = 0
+    known_factories = set(connection_factories or set())
     for call in (node for node in ast.walk(function) if isinstance(node, ast.Call)):
         if isinstance(call.func, ast.Attribute) and call.func.attr in {
             "create_connection",
@@ -3431,6 +4010,8 @@ def _ast_function_has_dual_socket_lifecycle(
             marker in call.func.id.lower()
             for marker in ("create_connection", "open_connection", "connect_login")
         ):
+            connection_calls += 1
+        elif _ast_call_name(call) in known_factories:
             connection_calls += 1
     if connection_calls < 2:
         return False
@@ -3920,6 +4501,19 @@ def _parse_numeric_literal(value: str) -> int:
 
 def _audit_combined_report_consistency(content: str) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
+    mcs_harness_capabilities = {
+        "nonzero_tsih_input",
+        "response_tsih_capture",
+        "dual_socket_lifecycle",
+        "distinct_cid_input",
+        "login_response_status_oracle",
+    }
+    has_embedded_mcs_harness = any(
+        mcs_harness_capabilities.issubset(capabilities)
+        for capabilities in _raw_pdu_executable_capability_sets(
+            _embedded_python_trees(content)
+        )
+    )
     if re.search(
         r"(?:"
         r"请在上述[^\n]{0,160}(?:补充|替换|修改)"
@@ -4006,7 +4600,18 @@ def _audit_combined_report_consistency(content: str) -> list[dict[str, Any]]:
                 constraint_id="iscsi_multiconnection_client_capability",
             ))
 
-        has_mcs_capable_client = _has_mcs_capable_client_contract(case_text)
+        case_invokes_mcs_harness = bool(
+            re.search(r"raw[-_ ]?pdu|raw_iscsi_harness|--mcs\b", case_text, re.IGNORECASE)
+            and re.search(
+                r"(?:expect[-_ ]?status|status[-_ ]?(?:class|detail)|"
+                r"status-(?:class|detail)|状态(?:类|明细))",
+                case_text,
+                re.IGNORECASE,
+            )
+        )
+        has_mcs_capable_client = _has_mcs_capable_client_contract(case_text) or (
+            has_embedded_mcs_harness and case_invokes_mcs_harness
+        )
         if mcs_case and not has_mcs_capable_client:
             issues.append(_issue(
                 "missing_mcs_capable_client",
@@ -4019,7 +4624,7 @@ def _audit_combined_report_consistency(content: str) -> list[dict[str, Any]]:
         maps_multiconnection = "multiconnection.sh" in lower
         mapping_is_qualified = bool(re.search(
             r"(?:"
-            r"multiconnection\.sh.{0,260}(?:不覆盖|不能证明|不能映射|仅作参考|需要新增|does not cover|does not prove|not map)"
+            r"multiconnection\.sh.{0,260}(?:不覆盖|不能证明|不能映射|仅作.{0,40}参考|需要新增|does not cover|does not prove|not map)"
             r"|(?:非|不是|不使用|不映射|not)\s*`?multiconnection\.sh`?"
             r")",
             case_text,
@@ -4221,7 +4826,7 @@ def _sfmea_semantic_category(failure_mode: str) -> str:
 
 def _combined_black_box_case_blocks(content: str) -> list[tuple[str, str]]:
     matches = list(re.finditer(
-        r"(?im)^\s*#{2,6}\s+((?:BB|TC|CASE|用例)[-_ ]?\d+\b[^\n]*)$",
+        r"(?im)^\s*#{2,6}\s+((?:B|BB|BBC|TC|CASE|用例)[-_ ]?\d+\b[^\n]*)$",
         content,
     ))
     blocks: list[tuple[str, str]] = []
@@ -4867,6 +5472,87 @@ def _professional_correction_window(content: str, start: int, end: int) -> str:
 
 def _matches_professional_correction(statement: str, constraint: dict[str, Any]) -> bool:
     constraint_id = str(constraint.get("id") or "")
+    stable_correction_patterns = {
+        "iscsi_chap_security_stage": (
+            r"csg\s*[:=]?\s*1.{0,80}(?:不应|不该|不得|不能).{0,40}"
+            r"(?:operational negotiation|操作协商).{0,60}(?:chap|challenge|response)"
+        ),
+        "iscsi_unknown_user_test_mapping_scope": (
+            r"(?:"
+            r"(?:不要|不得|不能|不可).{0,20}(?:把|将).{0,20}"
+            r"`?chap_discovery\.sh`?.{0,30}(?:当成|作为|视为).{0,50}(?:未知|unknown|chap_n)"
+            r"|(?:未知|unknown).{0,40}(?:chap_n|用户|user).{0,80}(?:误认为|误当).{0,40}覆盖"
+            r".{0,320}(?:禁止|不得|不能|不).{0,20}映射.{0,40}(?:`?chap_discovery\.sh`?|到.{0,20}chap_discovery\.sh)"
+            r")"
+        ),
+        "iscsi_redirection_mapping_scope": (
+            r"(?:"
+            r"redirect.{0,80}(?:被|遭)?(?:误当|误判|错误地?认为|错误地?视为)"
+            r".{0,80}(?:网络故障|网络中断|自动重连|自动恢复)"
+            r"(?=.{0,400}login_redirection\.sh)"
+            r"(?=.{0,400}(?:仅|只).{0,40}(?:验证|覆盖|证明).{0,80}(?:受控\s*rpc|redirect))"
+            r"|login_redirection\.sh.{0,100}(?:不证明|不能证明).{0,80}"
+            r"(?:网络故障|网络中断|自动重连|自动恢复)"
+            r"|(?:redirect|重定向).{0,120}(?:网络断开|网络故障).{0,80}"
+            r"(?:分为|区分|分成).{0,80}(?:不复用|不能复用|不得复用).{0,60}"
+            r"(?:redirect|重定向).{0,30}(?:结果|覆盖).{0,40}(?:证明|代替).{0,40}"
+            r"(?:网络故障|网络断开|恢复)"
+            r")"
+        ),
+        "iscsi_calsoft_mapping_scope": (
+            r"(?:不要|不得|不能|不可).{0,20}(?:使用|用).{0,40}"
+            r"`?calsoft\.py`?.{0,100}(?:推导|推出|证明|作为).{0,60}"
+            r"(?:login|登录).{0,40}(?:latency|延迟)"
+        ),
+        "iscsi_login_error_c_flag_preserved": (
+            r"(?:源码)?(?:未|不会|没有).{0,40}(?:清除|clear).{0,10}c(?:\s*bit)?"
+            r".{0,100}(?:不能|不得|不可).{0,30}(?:写成|声称).{0,30}清除.{0,20}t/c/csg/nsg"
+        ),
+        "iscsi_csg_values": (
+            r"csg\s*0/1/3.{0,20}分别为.{0,40}security negotiation"
+            r".{0,40}operational negotiation.{0,40}full feature phase"
+        ),
+        "iscsi_unknown_key_not_understood": (
+            r"未知.{0,20}格式合法.{0,80}(?:不能|不得|不可).{0,30}(?:当成|写成).{0,30}parse failure"
+        ),
+        "iscsi_invalid_login_request_detail": (
+            r"(?:"
+            r"(?:误报|误写|不能写成).{0,30}0x0b.{0,100}(?:断言|实际|实现).{0,30}(?:detail\s*)?0x00"
+            r"|(?:断言|预期|expect).{0,30}(?:detail\s*)?0x00.{0,120}"
+            r"(?:若|如果|if).{0,30}0x0b.{0,80}(?:测试期望错误|不是实现事实|非实现事实)"
+            r")"
+        ),
+        "iscsi_full_feature_request_rejected": (
+            r"csg\s*[:=]?\s*3.{0,80}(?:非法|拒绝|invalid|reject).{0,100}"
+            r"(?:不把|不能|不得|不可|not).{0,60}(?:进入|当作|视为|作为).{0,80}"
+            r"(?:full feature|合法迁移|阶段迁移)"
+        ),
+        "iscsi_login_version_offsets": (
+            r"(?:"
+            r"(?:bhs\s*)?byte(?:s)?\s*2/3.{0,40}(?:版本|version).{0,320}"
+            r"(?:避免|不能|不得|不可).{0,30}(?:payload\s*)?bytes?\s*40[-–]41"
+            r"|(?:不要|避免|不能|不得|不可).{0,30}(?:payload\s*)?bytes?\s*40[-–]41"
+            r".{0,100}(?:版本|version).{0,40}(?:bhs\s*)?byte(?:s)?\s*2/3"
+            r")"
+        ),
+        "iscsi_fuzzer_skips_login_opcode": (
+            r"iscsi_fuzz\.c.{0,80}(?:不是|不作为|不能作为).{0,80}(?:随机|非法).{0,40}login request.{0,40}(?:覆盖|证明)"
+        ),
+        "iscsi_perf_scripts_not_login_latency": (
+            r"不从.{0,30}(?:fio|perf).{0,30}(?:外推|推导).{0,30}(?:login|登录).{0,20}(?:latency|延迟)"
+        ),
+        "iscsi_multiconnection_mapping_scope": (
+            r"multiconnection\.sh.{0,80}(?:仅|只).{0,30}(?:作|作为).{0,60}参考"
+            r".{0,80}(?:不证明|不能证明).{0,100}(?:非零\s*tsih|不同\s*cid|同一\s*session)"
+        ),
+    }
+    stable_pattern = stable_correction_patterns.get(constraint_id)
+    if stable_pattern and re.search(
+        stable_pattern,
+        statement,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        return True
     if constraint_id == "iscsi_csg_values" and _has_correct_csg_stage_mapping(statement):
         return True
     if (
@@ -5339,6 +6025,167 @@ def _audit_json_artifact(
     return issues
 
 
+def _markdown_visible_line_mask(lines: list[str]) -> list[bool]:
+    visible: list[bool] = []
+    fence_character = ""
+    fence_length = 0
+    opening_pattern = re.compile(r"^\s{0,3}(?P<fence>`{3,}|~{3,})")
+    for line in lines:
+        text = line.rstrip("\r\n")
+        if not fence_character:
+            opening = opening_pattern.match(text)
+            if opening is None:
+                visible.append(True)
+                continue
+            fence = opening.group("fence")
+            fence_character = fence[0]
+            fence_length = len(fence)
+            visible.append(False)
+            continue
+        visible.append(False)
+        if re.fullmatch(
+            rf"\s{{0,3}}{re.escape(fence_character)}{{{fence_length},}}\s*",
+            text,
+        ):
+            fence_character = ""
+            fence_length = 0
+    return visible
+
+
+def _markdown_heading_matches(content: str) -> list[re.Match[str]]:
+    pattern = re.compile(
+        r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$",
+        flags=re.MULTILINE,
+    )
+    matches: list[re.Match[str]] = []
+    lines = content.splitlines(keepends=True)
+    visible = _markdown_visible_line_mask(lines)
+    offset = 0
+    for line, line_visible in zip(lines, visible):
+        if line_visible:
+            match = pattern.match(content, offset, offset + len(line))
+            if match is not None:
+                matches.append(match)
+        offset += len(line)
+    return matches
+
+
+def _markdown_without_fenced_blocks(content: str) -> str:
+    lines = content.splitlines(keepends=True)
+    visible = _markdown_visible_line_mask(lines)
+    visible_lines: list[str] = []
+    for line, line_visible in zip(lines, visible):
+        visible_lines.append(line if line_visible else ("\n" if line.endswith("\n") else ""))
+    return "".join(visible_lines)
+
+
+def _markdown_indentation_columns(line: str) -> int:
+    columns = 0
+    for character in str(line or ""):
+        if character == " ":
+            columns += 1
+        elif character == "\t":
+            columns += 4 - (columns % 4)
+        else:
+            break
+    return columns
+
+
+def _markdown_without_code_blocks(content: str) -> str:
+    lines = content.splitlines(keepends=True)
+    visible = _markdown_visible_line_mask(lines)
+    visible_lines: list[str] = []
+    for line, line_visible in zip(lines, visible):
+        is_indented_code = _markdown_indentation_columns(line) >= 4
+        visible_lines.append(
+            line
+            if line_visible and not is_indented_code
+            else ("\n" if line.endswith("\n") else "")
+        )
+    return "".join(visible_lines)
+
+
+def _markdown_table_cells(line: str) -> list[str]:
+    text = line.rstrip("\r\n")
+    if _markdown_indentation_columns(text) >= 4:
+        return []
+    text = text.lstrip(" \t")
+    if not text.startswith("|"):
+        return []
+    cells: list[str] = []
+    current: list[str] = []
+    code_delimiter_length = 0
+    escaped = False
+    index = 0
+    while index < len(text):
+        character = text[index]
+        if escaped:
+            current.append(character)
+            escaped = False
+            index += 1
+        elif character == "\\":
+            escaped = True
+            index += 1
+        elif character == "`":
+            run_end = index + 1
+            while run_end < len(text) and text[run_end] == "`":
+                run_end += 1
+            run_length = run_end - index
+            current.append(text[index:run_end])
+            if code_delimiter_length == 0:
+                if _has_unescaped_backtick_delimiter(
+                    text,
+                    start=run_end,
+                    delimiter_length=run_length,
+                ):
+                    code_delimiter_length = run_length
+            elif run_length == code_delimiter_length:
+                code_delimiter_length = 0
+            index = run_end
+        elif character == "|" and code_delimiter_length == 0:
+            cells.append("".join(current).strip())
+            current = []
+            index += 1
+        else:
+            current.append(character)
+            index += 1
+    if escaped:
+        current.append("\\")
+    cells.append("".join(current).strip())
+    if cells and not cells[0]:
+        cells.pop(0)
+    if cells and not cells[-1]:
+        cells.pop()
+    return cells
+
+
+def _has_unescaped_backtick_delimiter(
+    text: str,
+    *,
+    start: int,
+    delimiter_length: int,
+) -> bool:
+    index = start
+    while index < len(text):
+        if text[index] == "\\":
+            index += 2
+            continue
+        if text[index] != "`":
+            index += 1
+            continue
+        run_end = index + 1
+        while run_end < len(text) and text[run_end] == "`":
+            run_end += 1
+        if run_end - index == delimiter_length:
+            return True
+        index = run_end
+    return False
+
+
+def _canonical_black_box_case_id(value: str) -> str:
+    return re.sub(r"[-_ ]", "", str(value or "").upper())
+
+
 def _audit_markdown_artifact(
     *,
     artifact: str,
@@ -5347,9 +6194,7 @@ def _audit_markdown_artifact(
     repo: Path,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
-    heading_matches = list(
-        re.finditer(r"^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$", content, flags=re.MULTILINE)
-    )
+    heading_matches = _markdown_heading_matches(content)
     required_sections = [str(item) for item in spec.get("sections") or []]
     section_headings: dict[str, tuple[int, re.Match[str]]] = {}
     for index, match in enumerate(heading_matches):
@@ -5527,15 +6372,31 @@ def _audit_markdown_artifact(
                     end = next_match.start()
                     break
             black_box_content = content[match.end():end]
-        heading_cases = len(re.findall(
-            r"(?im)^\s*#{2,6}\s+(?:(?:BBC?|TC|CASE|用例)[-_ ]?\d+\b|\d+(?:[.．]\d+)+\s+\S)",
-            black_box_content,
-        ))
-        table_cases = len(re.findall(
-            r"(?im)^\s*\|\s*(?:BBC?|TC|CASE|用例)[-_ ]?\d+\s*\|",
-            black_box_content,
-        ))
-        black_box_cases = max(heading_cases, table_cases)
+        visible_black_box_content = _markdown_without_code_blocks(black_box_content)
+        case_ids: set[str] = set()
+        heading_pattern = re.compile(
+            r"(?im)^\s*#{2,6}\s+(?:(?P<prefix>B|BB|BBC|TC|CASE|用例)"
+            r"[-_ ]?(?P<number>\d+)\b|(?P<section>\d+(?:[.．]\d+)+)\s+\S)"
+        )
+        for case_match in heading_pattern.finditer(visible_black_box_content):
+            if case_match.group("section"):
+                case_ids.add(case_match.group("section").replace("．", "."))
+            else:
+                case_ids.add(_canonical_black_box_case_id(
+                    f"{case_match.group('prefix')}{case_match.group('number')}"
+                ))
+        case_id_pattern = re.compile(
+            r"^(?:B|BB|BBC|TC|CASE|用例)[-_ ]?\d+$",
+            flags=re.IGNORECASE,
+        )
+        for line in visible_black_box_content.splitlines():
+            cells = _markdown_table_cells(line)
+            if len(cells) < 8 or not all(cells[:7]):
+                continue
+            if not case_id_pattern.fullmatch(cells[0]):
+                continue
+            case_ids.add(_canonical_black_box_case_id(cells[0]))
+        black_box_cases = len(case_ids)
         if black_box_cases < min_black_box_cases:
             issues.append(_issue(
                 "insufficient_black_box_cases",
@@ -5556,22 +6417,16 @@ def _audit_markdown_artifact(
 
 def _malformed_markdown_table_lines(content: str) -> list[int]:
     lines = str(content or "").splitlines()
-    fenced = False
-    fence_state: list[bool] = []
-    for line in lines:
-        stripped = line.lstrip()
-        fence_state.append(fenced)
-        if stripped.startswith("```") or stripped.startswith("~~~"):
-            fenced = not fenced
+    visible = _markdown_visible_line_mask(lines)
 
     malformed: list[int] = []
     for index, delimiter in enumerate(lines):
-        if fence_state[index] or not _is_markdown_table_delimiter(delimiter):
+        if not visible[index] or not _is_markdown_table_delimiter(delimiter):
             continue
         header_index = index - 1
         while header_index >= 0 and not lines[header_index].strip():
             header_index -= 1
-        if header_index < 0 or fence_state[header_index]:
+        if header_index < 0 or not visible[header_index]:
             continue
         header = lines[header_index].strip()
         header_cells = _markdown_table_cells(header)
@@ -5584,6 +6439,8 @@ def _malformed_markdown_table_lines(content: str) -> list[int]:
         row_index = index + 1
         while row_index < len(lines):
             row = lines[row_index].strip()
+            if not visible[row_index]:
+                break
             if not row or row.startswith("#") or row.startswith(("```", "~~~")):
                 break
             if not row.startswith("|"):
@@ -5603,38 +6460,6 @@ def _is_markdown_table_delimiter(line: str) -> bool:
     return len(cells) >= 2 and all(
         re.fullmatch(r":?-{3,}:?", cell.strip()) is not None for cell in cells
     )
-
-
-def _markdown_table_cells(line: str) -> list[str]:
-    text = str(line or "").strip()
-    if text.startswith("|"):
-        text = text[1:]
-    if text.endswith("|") and not text.endswith(r"\|"):
-        text = text[:-1]
-    cells: list[str] = []
-    current: list[str] = []
-    in_code = False
-    escaped = False
-    for character in text:
-        if escaped:
-            current.append(character)
-            escaped = False
-            continue
-        if character == "\\":
-            current.append(character)
-            escaped = True
-            continue
-        if character == "`":
-            in_code = not in_code
-            current.append(character)
-            continue
-        if character == "|" and not in_code:
-            cells.append("".join(current).strip())
-            current = []
-            continue
-        current.append(character)
-    cells.append("".join(current).strip())
-    return cells
 
 
 def _audit_sfmea_scores(
@@ -5846,6 +6671,7 @@ def _normalized_markdown_heading(value: str) -> str:
         text,
     )
     text = re.sub(r"\s*[（(][^）)]*[）)]\s*$", "", text)
+    text = re.sub(r"^(黑盒测试用例)(?:矩阵|清单|列表)$", r"\1", text)
     return text.strip().rstrip(":：")
 
 

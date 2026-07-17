@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import settings
+from app.config import configure_runtime_temp_environment, settings
 from app.database import init_db
 from app.services.ai_conversations import AIConversationStore
 from app.services.process_manager import ProcessManager
@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Ensure data directories and SQLite tables exist on startup
+    configure_runtime_temp_environment(settings)
     settings.data_path.mkdir(parents=True, exist_ok=True)
     settings.outputs_path.mkdir(parents=True, exist_ok=True)
     settings.tiktoken_cache_path.mkdir(parents=True, exist_ok=True)

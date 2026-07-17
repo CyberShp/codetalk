@@ -1,4 +1,7 @@
 from pathlib import Path
+import errno
+
+import pytest
 
 from app.services.workbench_artifact_manifest import artifact_preview_with_redaction_status
 from app.services.workbench_artifact_manifest import build_task_artifact_manifest
@@ -113,3 +116,81 @@ def test_artifact_manifest_ignores_agent_runtime_cache_directories(tmp_path):
         "agent_runs/analyze/module_analysis.md",
         "agent_runs/analyze/.tmp-report/result.md",
     }
+
+
+def test_artifact_manifest_does_not_depend_on_recursive_rglob_during_runtime_cleanup(
+    tmp_path, monkeypatch
+):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "report.md").write_text("# report\n", encoding="utf-8")
+
+    def disappearing_rglob(_self, _pattern):
+        raise FileNotFoundError("runtime directory was removed during scan")
+
+    monkeypatch.setattr(Path, "rglob", disappearing_rglob)
+
+    artifacts = build_task_artifact_manifest(task_dir)
+
+    assert [item["relative_path"] for item in artifacts] == ["report.md"]
+
+
+def test_artifact_manifest_only_ignores_disappeared_directories(tmp_path, monkeypatch):
+    import app.services.workbench_artifact_manifest as manifest_module
+
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+
+    def denied_walk(*_args, onerror=None, **_kwargs):
+        assert onerror is not None
+        onerror(PermissionError(errno.EACCES, "permission denied", str(task_dir / "locked")))
+        return iter(())
+
+    monkeypatch.setattr(manifest_module.os, "walk", denied_walk)
+
+    with pytest.raises(PermissionError):
+        build_task_artifact_manifest(task_dir)
+
+
+def test_artifact_manifest_does_not_hide_file_permission_errors(tmp_path, monkeypatch):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    artifact = task_dir / "report.md"
+    artifact.write_text("# report\n", encoding="utf-8")
+    original_read_bytes = Path.read_bytes
+
+    def denied_read(path):
+        if path == artifact:
+            raise PermissionError(errno.EACCES, "permission denied", str(path))
+        return original_read_bytes(path)
+
+    monkeypatch.setattr(Path, "read_bytes", denied_read)
+
+    with pytest.raises(PermissionError):
+        build_task_artifact_manifest(task_dir)
+
+
+@pytest.mark.parametrize(
+    "declaration_name",
+    ["workflow_outputs.json", "workflow_snapshot.json", "workflow_contract.json"],
+)
+def test_artifact_manifest_does_not_hide_declaration_permission_errors(
+    tmp_path,
+    monkeypatch,
+    declaration_name,
+):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    declaration = task_dir / declaration_name
+    declaration.write_text('{"outputs":[]}', encoding="utf-8")
+    original_read_text = Path.read_text
+
+    def denied_read_text(path, *args, **kwargs):
+        if path == declaration:
+            raise PermissionError(errno.EACCES, "permission denied", str(path))
+        return original_read_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", denied_read_text)
+
+    with pytest.raises(PermissionError):
+        build_task_artifact_manifest(task_dir)

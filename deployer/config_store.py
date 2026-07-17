@@ -32,6 +32,7 @@ _KEY_MAP = {
     "cgcVenvPath": "cgc_venv_path",
     "corsOrigins": "cors_origins",
     "workspacePath": "workspace_path",
+    "tempPath": "temp_path",
     "forceTakeover": "force_takeover",
     "devMode": "dev_mode",
 }
@@ -227,6 +228,7 @@ def get_default_config(mode: str) -> dict:
     base = {
         "mode": mode,
         "workspace_path": "./workspace",
+        "temp_path": "./workspace/tmp",
         "llm_provider": "openai",
         "openai_api_key": "",
         "anthropic_api_key": "",

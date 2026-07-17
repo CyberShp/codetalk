@@ -1,6 +1,8 @@
 import asyncio
 import json
+import os
 import pathlib
+import signal
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -4834,7 +4836,7 @@ class TestAgentRuntimes:
 
         assert "".join(chunks) == "源码证据：连接失败"
 
-    async def test_agent_runtime_stream_uses_isolated_artifact_dir_by_default(self, tmp_path):
+    async def test_agent_runtime_stream_cleans_isolated_fallback_artifact_dir(self, tmp_path):
         from app.services.agent_cli_bridge import stream_agent_runtime
 
         cwd = tmp_path / "agent-cwd"
@@ -4864,7 +4866,8 @@ class TestAgentRuntimes:
         artifact_dir = "".join(chunks).strip()
         assert artifact_dir
         assert (tmp_path / "agent-cwd" / "result.json").exists() is False
-        assert pathlib.Path(artifact_dir, "result.json").exists()
+        assert pathlib.Path(artifact_dir).name.startswith("codetalk-agent-runtime-")
+        assert pathlib.Path(artifact_dir).exists() is False
 
     async def test_agent_runtime_exposes_full_multiline_prompt_file(self):
         from app.services.agent_cli_bridge import stream_agent_runtime
@@ -6450,6 +6453,170 @@ class TestAgentRuntimes:
 
         assert result["success"] is False
         assert "隔离环境无法读取登录状态" in result["message"]
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group assertion")
+    async def test_cancelled_runtime_probe_terminates_its_process_group(self, monkeypatch):
+        from app.services import agent_cli_bridge
+
+        communicate_started = asyncio.Event()
+        wait_released = asyncio.Event()
+        captured: dict[str, object] = {}
+
+        class FakeProbeProcess:
+            pid = 424242
+            returncode = None
+
+            async def communicate(self):
+                communicate_started.set()
+                await asyncio.Event().wait()
+
+            async def wait(self):
+                await wait_released.wait()
+                return self.returncode
+
+        process = FakeProbeProcess()
+
+        async def fake_create_subprocess_exec(*_args, **kwargs):
+            captured["kwargs"] = kwargs
+            return process
+
+        def fake_killpg(pid, sig):
+            if sig == 0 and process.returncode is not None:
+                raise ProcessLookupError
+            captured.setdefault("signals", []).append((pid, sig))
+            process.returncode = -int(sig)
+            wait_released.set()
+
+        monkeypatch.setattr(
+            agent_cli_bridge.asyncio,
+            "create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+        monkeypatch.setattr(
+            agent_cli_bridge,
+            "prepare_agent_sandbox",
+            lambda **_kwargs: type("Sandbox", (), {"wrapper": []})(),
+        )
+        monkeypatch.setattr(agent_cli_bridge.os, "killpg", fake_killpg)
+
+        task = asyncio.create_task(
+            agent_cli_bridge.probe_agent_runtime(
+                {"command": "fake-agent", "prompt_transport": "stdin"}
+            )
+        )
+        await communicate_started.wait()
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert captured["kwargs"]["start_new_session"] is True
+        assert captured["signals"] == [(process.pid, signal.SIGTERM)]
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group assertion")
+    async def test_cancelled_claude_readiness_probe_terminates_its_process_group(
+        self, monkeypatch
+    ):
+        from app.services import agent_cli_bridge
+
+        communicate_started = asyncio.Event()
+        wait_released = asyncio.Event()
+        captured: dict[str, object] = {}
+
+        class FakeProbeProcess:
+            pid = 434343
+            returncode = None
+
+            async def communicate(self):
+                communicate_started.set()
+                await asyncio.Event().wait()
+
+            async def wait(self):
+                await wait_released.wait()
+                return self.returncode
+
+        process = FakeProbeProcess()
+
+        async def fake_create_subprocess_exec(*_args, **kwargs):
+            captured["kwargs"] = kwargs
+            return process
+
+        def fake_killpg(pid, sig):
+            if sig == 0 and process.returncode is not None:
+                raise ProcessLookupError
+            captured.setdefault("signals", []).append((pid, sig))
+            process.returncode = -int(sig)
+            wait_released.set()
+
+        monkeypatch.setattr(
+            agent_cli_bridge.asyncio,
+            "create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+        monkeypatch.setattr(
+            agent_cli_bridge,
+            "prepare_agent_sandbox",
+            lambda **_kwargs: type("Sandbox", (), {"wrapper": []})(),
+        )
+        monkeypatch.setattr(agent_cli_bridge.os, "killpg", fake_killpg)
+
+        task = asyncio.create_task(
+            agent_cli_bridge._probe_claude_auth_in_runtime_sandbox(
+                runtime={
+                    "prompt_transport": "claude_print_arg",
+                    "sandbox_mode": "disabled",
+                },
+                command="claude",
+            )
+        )
+        await communicate_started.wait()
+        task.cancel()
+
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert captured["kwargs"]["start_new_session"] is True
+        assert captured["signals"] == [(process.pid, signal.SIGTERM)]
+
+    async def test_claude_auth_probe_uses_configured_runtime_temp_dir(
+        self, monkeypatch, tmp_path
+    ):
+        from app.services import agent_cli_bridge
+
+        captured: dict[str, object] = {}
+
+        class RecordingTemporaryDirectory:
+            def __init__(self, *args, **kwargs):
+                captured["args"] = args
+                captured["kwargs"] = kwargs
+
+            def __enter__(self):
+                raise RuntimeError("stop after capturing the temp root")
+
+            def __exit__(self, *_args):
+                return False
+
+        monkeypatch.setattr(
+            agent_cli_bridge.settings,
+            "runtime_temp_dir",
+            str(tmp_path),
+        )
+        monkeypatch.setattr(
+            agent_cli_bridge.tempfile,
+            "TemporaryDirectory",
+            RecordingTemporaryDirectory,
+        )
+
+        with pytest.raises(RuntimeError, match="stop after capturing"):
+            await agent_cli_bridge._probe_claude_auth_in_runtime_sandbox(
+                runtime={"prompt_transport": "claude_print_arg"},
+                command="claude",
+            )
+
+        assert captured["kwargs"] == {
+            "prefix": "codetalk-claude-probe-",
+            "dir": tmp_path.resolve(),
+        }
 
     async def test_claude_readiness_probe_rejects_logged_in_but_forbidden_request(self):
         from app.services.agent_cli_bridge import _claude_readiness_result

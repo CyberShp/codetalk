@@ -52,9 +52,16 @@ def test_normalize_unknown_keys_pass_through():
 
 
 def test_normalize_frontend_key_map():
-    result = config_store.normalize_to_snake({"portFrontend": 3003, "portBackend": 3004})
+    result = config_store.normalize_to_snake(
+        {
+            "portFrontend": 3003,
+            "portBackend": 3004,
+            "tempPath": "/Volumes/Media/codetalk-runtime/tmp",
+        }
+    )
     assert result["frontend_port"] == 3003
     assert result["backend_port"] == 3004
+    assert result["temp_path"] == "/Volumes/Media/codetalk-runtime/tmp"
 
 
 def test_normalize_drops_removed_deepwiki_keys():
@@ -81,6 +88,7 @@ def test_load_config_returns_native_default_when_no_file(isolated_config):
     assert cfg["mode"] == "native"
     assert "backend_port" in cfg
     assert "frontend_port" in cfg
+    assert cfg["temp_path"] == "./workspace/tmp"
 
 
 def test_load_config_uses_deployer_environment_defaults(monkeypatch, isolated_config):

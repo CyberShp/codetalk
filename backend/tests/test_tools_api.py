@@ -810,7 +810,11 @@ async def test_external_agent_process_env_includes_custom_provider_env_hints(tmp
         }
     ])
 
-    env = _agent_process_env("corp-agent", tmp_path)
+    env = _agent_process_env(
+        "corp-agent",
+        tmp_path,
+        artifact_dir=tmp_path / "artifacts",
+    )
 
     assert env["CODETALK_AGENT_READONLY"] == "1"
     assert env["CODETALK_REPO_PATH"] == str(tmp_path.resolve())

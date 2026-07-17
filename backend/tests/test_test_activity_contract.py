@@ -632,11 +632,828 @@ def test_combined_report_quality_counts_bbc_table_case_ids(tmp_path):
     assert "insufficient_black_box_cases" not in {item["code"] for item in issues}
 
 
+def test_combined_report_quality_counts_short_b_table_case_ids(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login;\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt" / "login.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    rows = "\n".join(
+        f"| B{index} | 场景 {index} | 前置 | 外部步骤 | 预期 | 观测 | 诊断 | test/iscsi_tgt/login.sh |"
+        for index in range(1, 13)
+    )
+    content = f"""# 报告
+## 6. 黑盒测试用例
+| ID | 场景 | 前置条件 | 外部步骤 | 预期结果 | 观测点 | 失败诊断 | 真实测试目录映射 |
+|---|---|---|---|---|---|---|---|
+{rows}
+`lib/iscsi/iscsi.c` `test/iscsi_tgt/login.sh`
+"""
+
+    issues = _audit_markdown_artifact(
+        artifact="report.md",
+        content=content,
+        spec={"sections": ["黑盒测试用例"], "min_black_box_cases": 12},
+        repo=repo,
+    )
+
+    assert "insufficient_black_box_cases" not in {item["code"] for item in issues}
+
+
+def test_combined_report_quality_ignores_shell_comments_inside_fenced_blocks(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login;\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt" / "login.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    rows = "\n".join(
+        f"| B{index} | 场景 {index} | 前置 | 外部步骤 | 预期 | 观测 | 诊断 | test/iscsi_tgt/login.sh |"
+        for index in range(1, 13)
+    )
+    content = f"""# 报告
+## 6. 黑盒测试用例
+```bash
+sudo tcpdump -w /tmp/login.pcap &
+# run the case here
+```
+| ID | 场景 | 前置条件 | 外部步骤 | 预期结果 | 观测点 | 失败诊断 | 真实测试目录映射 |
+|---|---|---|---|---|---|---|---|
+{rows}
+`lib/iscsi/iscsi.c` `test/iscsi_tgt/login.sh`
+## 7. 附录
+后续内容。
+"""
+
+    issues = _audit_markdown_artifact(
+        artifact="report.md",
+        content=content,
+        spec={"sections": ["黑盒测试用例"], "min_black_box_cases": 12},
+        repo=repo,
+    )
+
+    assert "insufficient_black_box_cases" not in {item["code"] for item in issues}
+
+
+@pytest.mark.parametrize("fenced", [False, True])
+def test_combined_report_quality_requires_unique_unfenced_black_box_case_ids(
+    tmp_path, fenced
+):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login;\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt" / "login.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    if fenced:
+        rows = "\n".join(
+            f"| B{index} | 场景 | 前置 | 外部步骤 | 预期 | 观测 | 诊断 | test/iscsi_tgt/login.sh |"
+            for index in range(1, 13)
+        )
+        rows = f"```markdown\n{rows}\n```"
+    else:
+        rows = "\n".join(
+            "| B1 | 重复场景 | 前置 | 外部步骤 | 预期 | 观测 | 诊断 | test/iscsi_tgt/login.sh |"
+            for _ in range(12)
+        )
+    content = f"""# 报告
+## 黑盒测试用例
+| ID | 场景 | 前置条件 | 外部步骤 | 预期结果 | 观测点 | 失败诊断 | 真实测试目录映射 |
+|---|---|---|---|---|---|---|---|
+{rows}
+`lib/iscsi/iscsi.c` `test/iscsi_tgt/login.sh`
+"""
+
+    issues = _audit_markdown_artifact(
+        artifact="report.md",
+        content=content,
+        spec={"sections": ["黑盒测试用例"], "min_black_box_cases": 12},
+        repo=repo,
+    )
+
+    assert "insufficient_black_box_cases" in {item["code"] for item in issues}
+
+
+def test_combined_report_quality_deduplicates_heading_and_table_case_ids(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login;\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt" / "login.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    repeated = "\n".join(
+        f"### B-{index} 场景 {index}\n"
+        f"| B{index} | 场景 {index} | 前置 | 外部步骤 | 预期 | 观测 | 诊断 | test/iscsi_tgt/login.sh |"
+        for index in range(1, 7)
+    )
+    content = f"""# 报告
+## 黑盒测试用例
+{repeated}
+`lib/iscsi/iscsi.c` `test/iscsi_tgt/login.sh`
+"""
+
+    issues = _audit_markdown_artifact(
+        artifact="report.md",
+        content=content,
+        spec={"sections": ["黑盒测试用例"], "min_black_box_cases": 12},
+        repo=repo,
+    )
+
+    assert "insufficient_black_box_cases" in {item["code"] for item in issues}
+
+
+def test_combined_report_quality_respects_four_backtick_fences(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    repo = tmp_path / "spdk"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    (repo / "lib" / "iscsi" / "iscsi.c").write_text("int login;\n", encoding="utf-8")
+    (repo / "test" / "iscsi_tgt" / "login.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+    fenced_rows = "\n".join(
+        f"| B{index} | 示例 | 前置 | 外部步骤 | 预期 | 观测 | 诊断 | test/iscsi_tgt/login.sh |"
+        for index in range(1, 13)
+    )
+    content = f"""# 报告
+## 黑盒测试用例
+````markdown
+```text
+嵌套的三反引号示例
+{fenced_rows}
+```
+````
+`lib/iscsi/iscsi.c` `test/iscsi_tgt/login.sh`
+"""
+
+    issues = _audit_markdown_artifact(
+        artifact="report.md",
+        content=content,
+        spec={"sections": ["黑盒测试用例"], "min_black_box_cases": 12},
+        repo=repo,
+    )
+
+    assert "insufficient_black_box_cases" in {item["code"] for item in issues}
+
+
+def test_combined_report_quality_ignores_indented_code_block_tables(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    rows = "\n".join(
+        f"    | B{index} | 示例 | 前置 | 外部步骤 | 预期 | 观测 | 诊断 | test/iscsi_tgt/login.sh |"
+        for index in range(1, 13)
+    )
+    content = f"""# 报告
+## 黑盒测试用例
+{rows}
+"""
+
+    issues = _audit_markdown_artifact(
+        artifact="report.md",
+        content=content,
+        spec={"sections": ["黑盒测试用例"], "min_black_box_cases": 12},
+        repo=repo,
+    )
+
+    assert "insufficient_black_box_cases" in {item["code"] for item in issues}
+
+
+def test_combined_report_quality_ignores_space_tab_indented_code_block_tables(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    rows = "\n".join(
+        f" \t| B{index} | 示例 | 前置 | 外部步骤 | 预期 | 观测 | 诊断 | test/iscsi_tgt/login.sh |"
+        for index in range(1, 13)
+    )
+    content = f"""# 报告
+## 黑盒测试用例
+{rows}
+"""
+
+    issues = _audit_markdown_artifact(
+        artifact="report.md",
+        content=content,
+        spec={"sections": ["黑盒测试用例"], "min_black_box_cases": 12},
+        repo=repo,
+    )
+
+    assert "insufficient_black_box_cases" in {item["code"] for item in issues}
+
+
+def test_combined_report_quality_does_not_treat_escaped_pipes_as_table_cells(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    rows = "\n".join(
+        f"| B{index} | 场景 \\| 前置 \\| 外部步骤 \\| 预期 \\| 观测 \\| 诊断 |"
+        for index in range(1, 13)
+    )
+    content = f"""# 报告
+## 黑盒测试用例
+{rows}
+"""
+
+    issues = _audit_markdown_artifact(
+        artifact="report.md",
+        content=content,
+        spec={"sections": ["黑盒测试用例"], "min_black_box_cases": 12},
+        repo=repo,
+    )
+
+    assert "insufficient_black_box_cases" in {item["code"] for item in issues}
+
+
+def test_markdown_table_cells_preserves_pipe_inside_multi_backtick_code_span():
+    from app.services.test_activity_contract import _markdown_table_cells
+
+    cells = _markdown_table_cells("| B1 | `` `x|y` `` | expected |")
+
+    assert cells == ["B1", "`` `x|y` ``", "expected"]
+
+
+def test_markdown_table_cells_treats_unclosed_backticks_as_plain_text():
+    from app.services.test_activity_contract import _markdown_table_cells
+
+    cells = _markdown_table_cells("| B1 | `unfinished | expected | evidence |")
+
+    assert cells == ["B1", "`unfinished", "expected", "evidence"]
+
+
+def test_markdown_table_cells_ignores_escaped_backtick_as_closing_delimiter():
+    from app.services.test_activity_contract import _markdown_table_cells
+
+    cells = _markdown_table_cells(r"| B1 | `unfinished \` | expected | evidence |")
+
+    assert cells == ["B1", "`unfinished `", "expected", "evidence"]
+
+
 def test_markdown_section_normalization_accepts_descriptive_parenthetical_suffix():
     from app.services.test_activity_contract import _normalized_markdown_heading
 
     assert _normalized_markdown_heading("主流程 (Connect 到首个 I/O)") == "主流程"
     assert _normalized_markdown_heading("异常与恢复路径（网络与控制器）") == "异常与恢复路径"
+    assert _normalized_markdown_heading("7. 黑盒测试用例矩阵") == "黑盒测试用例"
+
+
+def test_combined_black_box_case_blocks_accepts_short_b_headings():
+    from app.services.test_activity_contract import _combined_black_box_case_blocks
+
+    blocks = _combined_black_box_case_blocks(
+        "## 黑盒测试用例\n#### B15. MCS 容量边界\n- 预期结果：拒绝第二连接。\n"
+    )
+
+    assert blocks == [("B15. MCS 容量边界", "\n- 预期结果：拒绝第二连接。\n")]
+
+
+def test_raw_pdu_capabilities_read_cid_from_login_bhs_bytes_20_to_21():
+    import ast
+
+    from app.services.test_activity_contract import _raw_pdu_ast_capabilities
+
+    tree = ast.parse(
+        "def build_login(cid):\n"
+        "    bhs = bytearray(48)\n"
+        "    bhs[20:22] = cid.to_bytes(2, 'big')\n"
+        "    return bhs\n"
+        "def build_login_with_struct(cid, tsih):\n"
+        "    bhs = bytearray(48)\n"
+        "    struct.pack_into('!H', bhs, 14, tsih)\n"
+        "    struct.pack_into('!H', bhs, 20, cid)\n"
+        "    return bhs\n"
+        "def capture_tsih(response):\n"
+        "    tsih = struct.unpack_from('!H', response, 14)[0]\n"
+        "    return tsih\n"
+    )
+
+    capabilities = _raw_pdu_ast_capabilities([tree])
+    assert "distinct_cid_input" in capabilities
+    assert "nonzero_tsih_input" in capabilities
+    assert "response_tsih_capture" in capabilities
+
+
+def test_raw_pdu_capabilities_follow_wrapped_roundtrip_and_response_dictionary():
+    import ast
+
+    from app.services.test_activity_contract import _raw_pdu_ast_capabilities
+
+    tree = ast.parse(
+        "def recv_exact(sock, n):\n"
+        "    return sock.recv(n)\n"
+        "def recv_pdu(sock):\n"
+        "    return recv_exact(sock, 48), b''\n"
+        "def send_login(sock, request):\n"
+        "    sock.sendall(request)\n"
+        "    return recv_pdu(sock)\n"
+        "def describe_rsp(bhs):\n"
+        "    return {'tsih': int.from_bytes(bhs[14:16], 'big'), "
+        "'status_class': bhs[36], 'status_detail': bhs[37]}\n"
+        "def assert_status(rsp, expected_class, expected_detail):\n"
+        "    assert rsp['status_class'] == expected_class\n"
+        "    assert rsp['status_detail'] == expected_detail\n"
+        "def connect(args):\n"
+        "    return socket.create_connection((args.host, args.port))\n"
+        "def run_steps(sock, steps):\n"
+        "    for request in steps:\n"
+        "        send_login(sock, request)\n"
+        "def run_mcs(args, request):\n"
+        "    with connect(args) as first:\n"
+        "        rsp1 = describe_rsp(send_login(first, request)[0])\n"
+        "        first_tsih = rsp1['tsih']\n"
+        "        with connect(args) as second:\n"
+        "            rsp2 = describe_rsp(send_login(second, request)[0])\n"
+        "            assert_status(rsp2, 2, 6)\n"
+    )
+
+    capabilities = _raw_pdu_ast_capabilities([tree])
+
+    assert {
+        "response_tsih_capture",
+        "login_response_status_oracle",
+        "dual_socket_lifecycle",
+        "multi_pdu_login",
+    }.issubset(capabilities)
+
+
+def test_combined_consistency_accepts_mcs_case_backed_by_capable_embedded_harness():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = r'''
+## 黑盒测试用例
+### TC17 MCS MaxConnections 容量边界
+- 前置条件：首连接保持登录成功并记录返回 TSIH。
+- 外部步骤：执行 `python3 /tmp/raw.py --mcs --mcs-second-cid 1 --expect-status-class 2 --expect-status-detail 6`。
+- 预期结果：Status-Class=2，Status-Detail=6。
+
+```python
+import socket
+def recv_exact(sock, n): return sock.recv(n)
+def recv_pdu(sock): return recv_exact(sock, 48), b''
+def send_login(sock, request):
+    sock.sendall(request)
+    return recv_pdu(sock)
+def describe_rsp(bhs):
+    return {'tsih': int.from_bytes(bhs[14:16], 'big'), 'status_class': bhs[36], 'status_detail': bhs[37]}
+def assert_status(rsp, expected_class, expected_detail):
+    assert rsp['status_class'] == expected_class
+    assert rsp['status_detail'] == expected_detail
+def connect(args): return socket.create_connection((args.host, args.port))
+def run_mcs(args, request):
+    with connect(args) as first:
+        rsp1 = describe_rsp(send_login(first, request)[0])
+        first_tsih = rsp1['tsih']
+        second_request = bytearray(request)
+        second_request[14:16] = first_tsih.to_bytes(2, 'big')
+        second_request[20:22] = args.mcs_second_cid.to_bytes(2, 'big')
+        with connect(args) as second:
+            rsp2 = describe_rsp(send_login(second, second_request)[0])
+            assert_status(rsp2, 2, 6)
+def main():
+    run_mcs(args, request)
+```
+'''
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert not any(issue["code"] == "missing_mcs_capable_client" for issue in issues), issues
+
+
+def test_raw_pdu_audit_rejects_capabilities_split_across_unreachable_dead_code():
+    from app.services.test_activity_contract import _audit_raw_pdu_scenario_capabilities
+
+    content = r'''
+### TC17 MCS MaxConnections 容量边界
+- 外部步骤：执行 `python3 raw.py --mcs`，使用相同 TSIH 和不同 CID。
+
+```python
+import socket
+def dead_capture(bhs):
+    return {'tsih': int.from_bytes(bhs[14:16], 'big')}
+def dead_build(request, first_tsih, second_cid):
+    request[14:16] = first_tsih.to_bytes(2, 'big')
+    request[20:22] = second_cid.to_bytes(2, 'big')
+def dead_status(rsp):
+    assert rsp['status_class'] == 2
+    assert rsp['status_detail'] == 6
+def dead_mcs(args):
+    with socket.create_connection((args.host, args.port)) as first:
+        with socket.create_connection((args.host, args.port)) as second:
+            pass
+def main():
+    print('does not execute the MCS helpers')
+```
+'''
+
+    issues = _audit_raw_pdu_scenario_capabilities(content)
+
+    assert any(
+        issue["code"] == "raw_pdu_harness_missing_scenario_capability"
+        for issue in issues
+    ), issues
+
+
+def test_raw_pdu_audit_does_not_treat_lambda_body_as_module_entrypoint():
+    from app.services.test_activity_contract import _audit_raw_pdu_scenario_capabilities
+
+    content = r'''
+### TC17 MCS MaxConnections 容量边界
+- 外部步骤：执行 `python3 raw.py --mcs`，使用相同 TSIH 和不同 CID。
+
+```python
+import socket
+def dead_mcs(args, request, first_tsih, second_cid, rsp):
+    request[14:16] = first_tsih.to_bytes(2, 'big')
+    request[20:22] = second_cid.to_bytes(2, 'big')
+    captured = {'tsih': int.from_bytes(rsp[14:16], 'big')}
+    assert rsp['status_class'] == 2
+    assert rsp['status_detail'] == 6
+    with socket.create_connection((args.host, args.port)) as first:
+        with socket.create_connection((args.host, args.port)) as second:
+            return captured
+unused = lambda: dead_mcs(args, request, first_tsih, second_cid, rsp)
+```
+'''
+
+    issues = _audit_raw_pdu_scenario_capabilities(content)
+
+    assert any(
+        issue["code"] == "raw_pdu_harness_missing_scenario_capability"
+        for issue in issues
+    ), issues
+
+
+def test_raw_pdu_audit_does_not_follow_lambda_inside_main_call_graph():
+    from app.services.test_activity_contract import _audit_raw_pdu_scenario_capabilities
+
+    content = r'''
+### TC17 MCS MaxConnections 容量边界
+- 外部步骤：执行 `python3 raw.py --mcs`，使用相同 TSIH 和不同 CID。
+
+```python
+import socket
+def dead_mcs(args, request, first_tsih, second_cid, rsp):
+    request[14:16] = first_tsih.to_bytes(2, 'big')
+    request[20:22] = second_cid.to_bytes(2, 'big')
+    captured = {'tsih': int.from_bytes(rsp[14:16], 'big')}
+    assert rsp['status_class'] == 2
+    assert rsp['status_detail'] == 6
+    with socket.create_connection((args.host, args.port)) as first:
+        with socket.create_connection((args.host, args.port)) as second:
+            return captured
+def main():
+    unused = lambda: dead_mcs(args, request, first_tsih, second_cid, rsp)
+main()
+```
+'''
+
+    issues = _audit_raw_pdu_scenario_capabilities(content)
+
+    assert any(
+        issue["code"] == "raw_pdu_harness_missing_scenario_capability"
+        for issue in issues
+    ), issues
+
+
+def test_raw_pdu_audit_follows_called_nested_function_inside_main():
+    from app.services.test_activity_contract import _audit_raw_pdu_scenario_capabilities
+
+    content = r'''
+### TC17 MCS MaxConnections 容量边界
+- 外部步骤：执行 `python3 raw.py --mcs`，使用相同 TSIH 和不同 CID。
+
+```python
+import socket
+def main():
+    def run_mcs(args, request, rsp):
+        tsih = int.from_bytes(rsp[14:16], 'big')
+        request[14:16] = tsih.to_bytes(2, 'big')
+        request[20:22] = args.mcs_second_cid.to_bytes(2, 'big')
+        assert rsp['status_class'] == 2
+        assert rsp['status_detail'] == 6
+        with socket.create_connection((args.host, args.port)) as first:
+            first.sendall(request)
+            first.recv(48)
+            with socket.create_connection((args.host, args.port)) as second:
+                second.sendall(request)
+                second.recv(48)
+    run_mcs(args, request, rsp)
+main()
+```
+'''
+
+    issues = _audit_raw_pdu_scenario_capabilities(content)
+
+    assert not any(
+        issue["code"] == "raw_pdu_harness_missing_scenario_capability"
+        for issue in issues
+    ), issues
+
+
+def test_raw_pdu_audit_does_not_resolve_shadowed_local_call_to_dead_global():
+    from app.services.test_activity_contract import _audit_raw_pdu_scenario_capabilities
+
+    content = r'''
+### TC17 MCS MaxConnections 容量边界
+- 外部步骤：执行 `python3 raw.py --mcs`，使用相同 TSIH 和不同 CID。
+
+```python
+import socket
+def run_mcs(args, request, rsp):
+    tsih = int.from_bytes(rsp[14:16], 'big')
+    request[14:16] = tsih.to_bytes(2, 'big')
+    request[20:22] = args.mcs_second_cid.to_bytes(2, 'big')
+    assert rsp['status_class'] == 2
+    assert rsp['status_detail'] == 6
+    with socket.create_connection((args.host, args.port)) as first:
+        first.sendall(request)
+        first.recv(48)
+        with socket.create_connection((args.host, args.port)) as second:
+            second.sendall(request)
+            second.recv(48)
+def main():
+    def run_mcs(args, request, rsp):
+        print('local implementation has no MCS behavior')
+    run_mcs(args, request, rsp)
+main()
+```
+'''
+
+    issues = _audit_raw_pdu_scenario_capabilities(content)
+
+    assert any(
+        issue["code"] == "raw_pdu_harness_missing_scenario_capability"
+        for issue in issues
+    ), issues
+
+
+def test_raw_pdu_audit_respects_shadowing_inside_reachable_nested_wrapper():
+    from app.services.test_activity_contract import _audit_raw_pdu_scenario_capabilities
+
+    content = r'''
+### TC17 MCS MaxConnections 容量边界
+- 外部步骤：执行 `python3 raw.py --mcs`，使用相同 TSIH 和不同 CID。
+
+```python
+import socket
+def main():
+    def run_mcs(args, request, rsp):
+        tsih = int.from_bytes(rsp[14:16], 'big')
+        request[14:16] = tsih.to_bytes(2, 'big')
+        request[20:22] = args.mcs_second_cid.to_bytes(2, 'big')
+        assert rsp['status_class'] == 2
+        assert rsp['status_detail'] == 6
+        with socket.create_connection((args.host, args.port)) as first:
+            first.sendall(request)
+            first.recv(48)
+            with socket.create_connection((args.host, args.port)) as second:
+                second.sendall(request)
+                second.recv(48)
+    def wrapper():
+        def run_mcs(args, request, rsp):
+            print('shadowing local implementation has no MCS behavior')
+        run_mcs(args, request, rsp)
+    wrapper()
+main()
+```
+'''
+
+    issues = _audit_raw_pdu_scenario_capabilities(content)
+
+    assert any(
+        issue["code"] == "raw_pdu_harness_missing_scenario_capability"
+        for issue in issues
+    ), issues
+
+
+def test_raw_pdu_audit_respects_rebinding_of_nested_function_before_call():
+    from app.services.test_activity_contract import _audit_raw_pdu_scenario_capabilities
+
+    content = r'''
+### TC17 MCS MaxConnections 容量边界
+- 外部步骤：执行 `python3 raw.py --mcs`，使用相同 TSIH 和不同 CID。
+
+```python
+import socket
+def main():
+    def run_mcs(args, request, rsp):
+        tsih = int.from_bytes(rsp[14:16], 'big')
+        request[14:16] = tsih.to_bytes(2, 'big')
+        request[20:22] = args.mcs_second_cid.to_bytes(2, 'big')
+        assert rsp['status_class'] == 2
+        assert rsp['status_detail'] == 6
+        with socket.create_connection((args.host, args.port)) as first:
+            first.sendall(request)
+            first.recv(48)
+            with socket.create_connection((args.host, args.port)) as second:
+                second.sendall(request)
+                second.recv(48)
+    run_mcs = lambda args, request, rsp: print('replacement has no MCS behavior')
+    run_mcs(args, request, rsp)
+main()
+```
+'''
+
+    issues = _audit_raw_pdu_scenario_capabilities(content)
+
+    assert any(
+        issue["code"] == "raw_pdu_harness_missing_scenario_capability"
+        for issue in issues
+    ), issues
+
+
+def test_raw_pdu_audit_keeps_nested_function_called_before_later_rebinding():
+    from app.services.test_activity_contract import _audit_raw_pdu_scenario_capabilities
+
+    content = r'''
+### TC17 MCS MaxConnections 容量边界
+- 外部步骤：执行 `python3 raw.py --mcs`，使用相同 TSIH 和不同 CID。
+
+```python
+import socket
+def main():
+    def run_mcs(args, request, rsp):
+        tsih = int.from_bytes(rsp[14:16], 'big')
+        request[14:16] = tsih.to_bytes(2, 'big')
+        request[20:22] = args.mcs_second_cid.to_bytes(2, 'big')
+        assert rsp['status_class'] == 2
+        assert rsp['status_detail'] == 6
+        with socket.create_connection((args.host, args.port)) as first:
+            first.sendall(request)
+            first.recv(48)
+            with socket.create_connection((args.host, args.port)) as second:
+                second.sendall(request)
+                second.recv(48)
+    run_mcs(args, request, rsp)
+    run_mcs = lambda args, request, rsp: print('later replacement')
+main()
+```
+'''
+
+    issues = _audit_raw_pdu_scenario_capabilities(content)
+
+    assert not any(
+        issue["code"] == "raw_pdu_harness_missing_scenario_capability"
+        for issue in issues
+    ), issues
+
+
+def test_raw_pdu_audit_respects_import_rebinding_of_nested_function():
+    from app.services.test_activity_contract import _audit_raw_pdu_scenario_capabilities
+
+    content = r'''
+### TC17 MCS MaxConnections 容量边界
+- 外部步骤：执行 `python3 raw.py --mcs`，使用相同 TSIH 和不同 CID。
+
+```python
+import socket
+def main():
+    def run_mcs(args, request, rsp):
+        tsih = int.from_bytes(rsp[14:16], 'big')
+        request[14:16] = tsih.to_bytes(2, 'big')
+        request[20:22] = args.mcs_second_cid.to_bytes(2, 'big')
+        assert rsp['status_class'] == 2
+        assert rsp['status_detail'] == 6
+        with socket.create_connection((args.host, args.port)) as first:
+            first.sendall(request)
+            first.recv(48)
+            with socket.create_connection((args.host, args.port)) as second:
+                second.sendall(request)
+                second.recv(48)
+    from builtins import print as run_mcs
+    run_mcs(args, request, rsp)
+main()
+```
+'''
+
+    issues = _audit_raw_pdu_scenario_capabilities(content)
+
+    assert any(
+        issue["code"] == "raw_pdu_harness_missing_scenario_capability"
+        for issue in issues
+    ), issues
+
+
+def test_raw_pdu_audit_respects_match_capture_rebinding_of_nested_function():
+    from app.services.test_activity_contract import _audit_raw_pdu_scenario_capabilities
+
+    content = r'''
+### TC17 MCS MaxConnections 容量边界
+- 外部步骤：执行 `python3 raw.py --mcs`，使用相同 TSIH 和不同 CID。
+
+```python
+import socket
+def main():
+    def run_mcs(args, request, rsp):
+        tsih = int.from_bytes(rsp[14:16], 'big')
+        request[14:16] = tsih.to_bytes(2, 'big')
+        request[20:22] = args.mcs_second_cid.to_bytes(2, 'big')
+        assert rsp['status_class'] == 2
+        assert rsp['status_detail'] == 6
+        with socket.create_connection((args.host, args.port)) as first:
+            first.sendall(request)
+            first.recv(48)
+            with socket.create_connection((args.host, args.port)) as second:
+                second.sendall(request)
+                second.recv(48)
+    match replacement:
+        case run_mcs:
+            run_mcs(args, request, rsp)
+main()
+```
+'''
+
+    issues = _audit_raw_pdu_scenario_capabilities(content)
+
+    assert any(
+        issue["code"] == "raw_pdu_harness_missing_scenario_capability"
+        for issue in issues
+    ), issues
+
+
+def test_raw_pdu_audit_respects_match_capture_in_nested_wrapper():
+    from app.services.test_activity_contract import _audit_raw_pdu_scenario_capabilities
+
+    content = r'''
+### TC17 MCS MaxConnections 容量边界
+- 外部步骤：执行 `python3 raw.py --mcs`，使用相同 TSIH 和不同 CID。
+
+```python
+import socket
+def main():
+    def run_mcs(args, request, rsp):
+        tsih = int.from_bytes(rsp[14:16], 'big')
+        request[14:16] = tsih.to_bytes(2, 'big')
+        request[20:22] = args.mcs_second_cid.to_bytes(2, 'big')
+        assert rsp['status_class'] == 2
+        assert rsp['status_detail'] == 6
+        with socket.create_connection((args.host, args.port)) as first:
+            first.sendall(request)
+            first.recv(48)
+            with socket.create_connection((args.host, args.port)) as second:
+                second.sendall(request)
+                second.recv(48)
+    def wrapper():
+        match replacement:
+            case run_mcs:
+                run_mcs(args, request, rsp)
+    wrapper()
+main()
+```
+'''
+
+    issues = _audit_raw_pdu_scenario_capabilities(content)
+
+    assert any(
+        issue["code"] == "raw_pdu_harness_missing_scenario_capability"
+        for issue in issues
+    ), issues
+
+
+def test_raw_pdu_audit_does_not_treat_comprehension_target_as_wrapper_binding():
+    from app.services.test_activity_contract import _audit_raw_pdu_scenario_capabilities
+
+    content = r'''
+### TC17 MCS MaxConnections 容量边界
+- 外部步骤：执行 `python3 raw.py --mcs`，使用相同 TSIH 和不同 CID。
+
+```python
+import socket
+def main():
+    def run_mcs(args, request, rsp):
+        tsih = int.from_bytes(rsp[14:16], 'big')
+        request[14:16] = tsih.to_bytes(2, 'big')
+        request[20:22] = args.mcs_second_cid.to_bytes(2, 'big')
+        assert rsp['status_class'] == 2
+        assert rsp['status_detail'] == 6
+        with socket.create_connection((args.host, args.port)) as first:
+            first.sendall(request)
+            first.recv(48)
+            with socket.create_connection((args.host, args.port)) as second:
+                second.sendall(request)
+                second.recv(48)
+    def wrapper():
+        names = [run_mcs for run_mcs in ('local-only',)]
+        run_mcs(args, request, rsp)
+        return names
+    wrapper()
+main()
+```
+'''
+
+    issues = _audit_raw_pdu_scenario_capabilities(content)
+
+    assert not any(
+        issue["code"] == "raw_pdu_harness_missing_scenario_capability"
+        for issue in issues
+    ), issues
 
 
 def test_module_analysis_quality_audit_rejects_combined_heading_and_path_traversal(
@@ -3173,6 +3990,40 @@ def test_professional_constraints_accept_corrected_session_and_mapping_boundarie
     }.intersection(issue_ids), issues
 
 
+def test_professional_constraints_accept_inline_diagnostic_corrections(tmp_path):
+    from app.services.test_activity_contract import (
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整灰盒测试设计",
+        repo_path=str(repo),
+    )
+    content = (
+        "| B03 | 非法 NSG | 发送 T=1、CSG=0、NSG=2 | "
+        "status_class 0x02、detail 0x00；T/CSG/NSG 清除 | "
+        "若 detail 0x0b，说明测试期望误用规范值，需按当前实现核验 |\n"
+        "| B04 | Unsupported Version | 设置 BHS byte 3 version_min=1，"
+        "byte 2 version_max=0 | detail 0x05 | "
+        "若改了 bytes 40-41，则是 harness 错误，非版本字段 |\n"
+        "| B01 | 正常登录 | RPC 观察 state=running 和 login_phase | "
+        "test/iscsi_tgt/rpc_config/rpc_config.py 部分覆盖公开连接字段，"
+        "不直接断言 state/login_phase 或 wire 状态 |\n"
+    )
+
+    issues = _audit_professional_constraints(content, contract)
+    issue_ids = {issue.get("constraint_id") for issue in issues}
+
+    assert not {
+        "iscsi_invalid_login_request_detail",
+        "iscsi_login_version_offsets",
+        "iscsi_rpc_config_mapping_scope",
+    }.intersection(issue_ids), issues
+
+
 def test_iscsi_login_request_gate_allows_stage_handler_to_read_request_flags(tmp_path):
     from app.services.test_activity_contract import (
         _audit_professional_constraints,
@@ -4679,6 +5530,7 @@ def test_fact_ledger_rejects_exact_log_literal_missing_from_verified_source(tmp_
     )
     assert issue["claim_id"] == "SFMEA-005:log_literal:1"
     assert issue["claimed_literal"] == "login timed out"
+    assert issue["row_id"] == "SFMEA-005"
 
 
 def test_fact_ledger_only_extracts_explicit_local_log_claims(tmp_path):
@@ -4989,6 +5841,11 @@ def test_source_behavior_claim_requires_bound_l2_validation(tmp_path):
     )
     assert explicit["status"] == "insufficient"
     assert explicit["semantic_validation"] == "requires_l2"
+    explicit_issue = next(
+        issue for issue in result["issues"]
+        if issue.get("claim_id") == "C-BEHAVIOR-001"
+    )
+    assert explicit_issue["row_id"] == "SFMEA-001"
     row_claim = next(
         claim for claim in result["fact_claims"]
         if claim["claim_id"] == "ROW:sfmea.json:SFMEA-001"
@@ -4996,6 +5853,11 @@ def test_source_behavior_claim_requires_bound_l2_validation(tmp_path):
     assert row_claim["status"] == "insufficient"
     assert row_claim["type"] == "sfmea_row_behavior"
     assert "has no NULL guard" in row_claim["statement"]
+    row_issue = next(
+        issue for issue in result["issues"]
+        if issue.get("claim_id") == "ROW:sfmea.json:SFMEA-001"
+    )
+    assert row_issue["row_id"] == "SFMEA-001"
     assert result["quality_axes"]["facts"]["status"] == "blocked"
     assert result["deliverable"] is False
 
@@ -5081,6 +5943,11 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
         statement=statement,
         evidence=checked_evidence,
     )
+    row_request = next(
+        claim
+        for claim in request["claims"]
+        if claim["claim_id"] == "ROW:sfmea.json:SFMEA-001"
+    )
     (artifacts / "behavior_claim_validation.json").write_text(
         json.dumps(
             {
@@ -5097,7 +5964,16 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
                         "binding": binding,
                         "status": "supports",
                         "reason": "The referenced guard returns before dereference.",
-                    }
+                    },
+                    {
+                        "claim_id": row_request["claim_id"],
+                        "binding": row_request["binding"],
+                        "status": "contradicts",
+                        "reason": "The row says NULL is accepted, but the guard rejects it.",
+                        "field_patch": {
+                            "effect": "Function rejects the request before dereference."
+                        },
+                    },
                 ],
             }
         ),
@@ -5123,6 +5999,14 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
     )
     assert explicit["status"] == "verified"
     assert explicit["validation_layer"] == "L2_independent_behavior"
+    row_issue = next(
+        issue
+        for issue in result["issues"]
+        if issue.get("claim_id") == row_request["claim_id"]
+    )
+    assert row_issue["field_patch"] == {
+        "effect": "Function rejects the request before dereference."
+    }
 
     validation = json.loads(
         (artifacts / "behavior_claim_validation.json").read_text(encoding="utf-8")
@@ -5141,6 +6025,62 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
         if claim["claim_id"] == "C-BEHAVIOR-001"
     )
     assert stale_claim["status"] == "insufficient"
+
+
+def test_bound_behavior_validation_skips_same_id_with_stale_binding():
+    from app.services.test_activity_contract import _bound_behavior_validation_status
+
+    status, reason = _bound_behavior_validation_status(
+        validation={
+            "validator": {"independent": True},
+            "claims": [
+                {
+                    "claim_id": "TC-04",
+                    "binding": "blackbox-binding",
+                    "status": "supports",
+                    "reason": "different artifact",
+                },
+                {
+                    "claim_id": "TC-04",
+                    "binding": "sfmea-binding",
+                    "status": "supports",
+                    "reason": "matching SFMEA claim",
+                },
+            ],
+        },
+        claim_id="TC-04",
+        binding="sfmea-binding",
+    )
+
+    assert status == "supports"
+    assert reason == "matching SFMEA claim"
+
+
+def test_bound_behavior_validation_details_exposes_a_scoped_field_patch():
+    from app.services.test_activity_contract import _bound_behavior_validation_details
+
+    status, reason, field_patch = _bound_behavior_validation_details(
+        validation={
+            "validator": {"independent": True},
+            "claims": [
+                {
+                    "claim_id": "ROW:sfmea.json:SFMEA-04",
+                    "binding": "binding-04",
+                    "status": "contradicts",
+                    "reason": "detection log is absent",
+                    "field_patch": {
+                        "detection": "仅观测状态响应。",
+                    },
+                }
+            ],
+        },
+        claim_id="ROW:sfmea.json:SFMEA-04",
+        binding="binding-04",
+    )
+
+    assert status == "contradicts"
+    assert reason == "detection log is absent"
+    assert field_patch == {"detection": "仅观测状态响应。"}
 
 
 def test_staged_raw_pdu_report_requires_loopback_runtime_evidence(tmp_path):
@@ -5761,6 +6701,121 @@ def test_quality_audit_separates_legacy_professional_lint_from_verified_facts(tm
     assert result["quality_axes"]["structure"]["status"] == "passed"
     assert result["quality_axes"]["facts"]["status"] == "not_checked"
     assert result["quality_axes"]["executability"]["status"] == "not_checked"
+
+
+@pytest.mark.parametrize(
+    ("constraint_id", "statement"),
+    [
+        (
+            "iscsi_chap_security_stage",
+            "CSG=1 仅检查认证状态，不应在 Operational Negotiation 中发送 CHAP challenge/response。",
+        ),
+        (
+            "iscsi_unknown_user_test_mapping_scope",
+            "不要把 chap_discovery.sh 当成未知用户覆盖；它覆盖缺少或配置正确凭据路径。",
+        ),
+        (
+            "iscsi_redirection_mapping_scope",
+            "Redirect 流程被误当作网络中断自动恢复；test/iscsi_tgt/login_redirection/login_redirection.sh 仅验证受控 RPC redirect。",
+        ),
+        (
+            "iscsi_redirection_mapping_scope",
+            "Redirect 流程被误当作网络中断自动恢复；现有脚本仅验证受控 RPC redirect 与连接计数；test/iscsi_tgt/login_redirection/login_redirection.sh。",
+        ),
+        (
+            "iscsi_calsoft_mapping_scope",
+            "不要使用 calsoft.py 或 perf FIO 脚本推导 login latency。",
+        ),
+        (
+            "iscsi_login_error_c_flag_preserved",
+            "非 success Login Response 清除 T、CSG、NSG；源码未在该分支清除 C bit，因此不能写成清除 T/C/CSG/NSG。",
+        ),
+        (
+            "iscsi_csg_values",
+            "CSG 0/1/3 分别为 Security Negotiation、Operational Negotiation、Full Feature Phase。",
+        ),
+        (
+            "iscsi_unknown_key_not_understood",
+            "未知但格式合法参数通常由协商层处理，不能笼统当成 parse failure。",
+        ),
+        (
+            "iscsi_invalid_login_request_detail",
+            "非法 NSG=2 被误报 0x0b；raw-PDU 必须断言 detail 0x00。",
+        ),
+        (
+            "iscsi_login_version_offsets",
+            "BHS byte 2/3 是版本字段；修改 byte 3，避免修改 payload bytes 40-41。",
+        ),
+        (
+            "iscsi_fuzzer_skips_login_opcode",
+            "iscsi_fuzz.c 的 seed 不是随机非法 Login Request 覆盖证明。",
+        ),
+        (
+            "iscsi_unknown_user_test_mapping_scope",
+            "Unknown CHAP_N 被现有测试误认为覆盖；禁止映射到 chap_discovery.sh 通过项。",
+        ),
+        (
+            "iscsi_redirection_mapping_scope",
+            "Redirect 被误当网络故障恢复；使用 login_redirection.sh 仅证明受控 RPC redirect。",
+        ),
+        (
+            "iscsi_perf_scripts_not_login_latency",
+            "不从 fio/perf 脚本外推 login latency；iscsi_target.sh 仅为 I/O 性能范围。",
+        ),
+        (
+            "iscsi_multiconnection_mapping_scope",
+            "multiconnection.sh 仅作危险隔离环境参考，不证明同一 session 非零 TSIH 下追加不同 CID。",
+        ),
+        (
+            "iscsi_login_version_offsets",
+            "BHS byte 2/3 版本字段解析回归；raw-PDU 修改 byte 3；新增负向黑盒并避免修改 payload bytes 40-41。",
+        ),
+        (
+            "iscsi_unknown_user_test_mapping_scope",
+            "Unknown CHAP_N 被现有测试误认为覆盖；chap_discovery.sh 只测正确凭据；新增用例，禁止映射到 chap_discovery.sh 通过项。",
+        ),
+        (
+            "iscsi_redirection_mapping_scope",
+            "login_redirection.sh 验证受控 RPC redirect，但不证明网络故障自动重连。",
+        ),
+        (
+            "iscsi_login_version_offsets",
+            "不要修改 payload bytes 40-41 来模拟版本；版本字段在 BHS byte 2/3。",
+        ),
+        (
+            "iscsi_full_feature_request_rejected",
+            "保持 CSG 白名单：收到 CSG=3 的 Login Request 作为非法请求处理，不把它当作进入 full feature 的合法迁移。",
+        ),
+        (
+            "iscsi_invalid_login_request_detail",
+            "T=1 时 NSG=2 不进入阶段迁移。执行 TC05，断言 detail 0x00；若出现 0x0b，标记为测试期望错误而非实现事实。",
+        ),
+        (
+            "iscsi_redirection_mapping_scope",
+            "运行手册把受控 redirect、logout/relogin、网络断开恢复分为三类，不复用 redirect 结果证明网络故障恢复。login_redirection.sh 仅记录 redirect 覆盖。",
+        ),
+    ],
+)
+def test_professional_lint_accepts_explicit_mapping_corrections(
+    constraint_id, statement
+):
+    from app.services.test_activity_contract import (
+        _matches_professional_correction,
+        build_test_activity_contract,
+    )
+
+    contract = build_test_activity_contract(
+        target="SPDK iSCSI Login 测试设计",
+        repo_path="/tmp/spdk",
+    )
+    constraint = next(
+        item
+        for item in contract["professional_constraints"]
+        if item["id"] == constraint_id
+    )
+    constraint = {**constraint, "correction_patterns": []}
+
+    assert _matches_professional_correction(statement, constraint)
 
 
 def test_quality_audit_reports_fact_contradiction_on_fact_axis(tmp_path):

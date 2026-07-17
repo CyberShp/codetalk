@@ -10,6 +10,7 @@ import re
 import signal
 import shutil
 import sys
+import tempfile
 from contextlib import suppress
 from pathlib import Path
 from typing import Optional
@@ -103,6 +104,7 @@ class NativeDeployer:
 
     async def deploy(self) -> None:
         self._stopped = False
+        self._configure_runtime_temp_environment()
         try:
             await self._step_check_env()
             if self._stopped:
@@ -394,6 +396,30 @@ class NativeDeployer:
             p = (PROJECT_ROOT / p).resolve()
         return p
 
+    def _runtime_temp_path(self) -> Path:
+        configured = str(self._config.get("temp_path") or "").strip()
+        path = Path(configured).expanduser() if configured else self._workspace_path() / "tmp"
+        if not path.is_absolute():
+            path = (PROJECT_ROOT / path).resolve()
+        path.mkdir(parents=True, exist_ok=True)
+        return path.resolve()
+
+    def _runtime_temp_env(self) -> dict[str, str]:
+        value = str(self._runtime_temp_path())
+        return {
+            "CODETALK_TEMP_DIR": value,
+            "TEMP": value,
+            "TMP": value,
+            "TMPDIR": value,
+        }
+
+    def _configure_runtime_temp_environment(self) -> Path:
+        path = self._runtime_temp_path()
+        env = self._runtime_temp_env()
+        os.environ.update(env)
+        tempfile.tempdir = str(path)
+        return path
+
     async def _step_install_gitnexus(self) -> None:
         step = 4
         await self._emit("install_gitnexus", "running", "配置 GitNexus...", step)
@@ -465,6 +491,8 @@ class NativeDeployer:
         cfg = self._config
         workspace = self._workspace_path()
         workspace.mkdir(parents=True, exist_ok=True)
+        temp_path = self._runtime_temp_path()
+        cfg["temp_path"] = str(temp_path)
 
         repos_dir = workspace / "repos"
         repos_dir.mkdir(parents=True, exist_ok=True)
@@ -478,6 +506,7 @@ class NativeDeployer:
         env_lines = [
             "DATA_DIR=data",
             "SQLITE_DB=data/codetalk.db",
+            f"CODETALK_TEMP_DIR={temp_path}",
             f"CODETALK_BACKEND_PORT={backend_port}",
             f"REPOS_BASE_PATH={repos_dir}",
             f"GITNEXUS_BASE_URL=http://localhost:{gitnexus_port}",
@@ -516,6 +545,7 @@ class NativeDeployer:
         backend_port = str(self._config.get("backend_port", 3004))
         frontend_port = str(self._config.get("frontend_port", 3003))
         return {
+            **self._runtime_temp_env(),
             "CODETALK_BACKEND_PORT": backend_port,
             "CORS_ORIGINS": f"http://localhost:{frontend_port},http://127.0.0.1:{frontend_port}",
         }
@@ -524,6 +554,7 @@ class NativeDeployer:
         frontend_port = str(self._config.get("frontend_port", 3003))
         backend_port = str(self._config.get("backend_port", 3004))
         return {
+            **self._runtime_temp_env(),
             "PORT": frontend_port,
             "CODETALK_FRONTEND_PORT": frontend_port,
             "CODETALK_BACKEND_PORT": backend_port,
@@ -777,6 +808,7 @@ class NativeDeployer:
                 cwd=str(PROJECT_ROOT),
                 step_name="start_services",
                 step_index=step,
+                env_extra=self._runtime_temp_env(),
             )
 
         if cfg.get("install_cgc", True):
@@ -798,7 +830,10 @@ class NativeDeployer:
                         cwd=self._cgc_cwd(),
                         step_name="start_services",
                         step_index=step,
-                        env_extra={"CGC_ALLOWED_ROOTS": _cgc_allowed_roots},
+                        env_extra={
+                            **self._runtime_temp_env(),
+                            "CGC_ALLOWED_ROOTS": _cgc_allowed_roots,
+                        },
                     )
                 else:
                     await self._emit(
@@ -865,6 +900,7 @@ class NativeDeployer:
         env_extra: Optional[dict] = None,
     ) -> None:
         env = os.environ.copy()
+        env.update(self._runtime_temp_env())
         if env_extra:
             env.update(env_extra)
         try:
@@ -995,7 +1031,7 @@ class NativeDeployer:
             return {
                 "cmd": [*gn_cmd, "serve", "--port", str(cfg.get("gitnexus_port", 7100)), "--host", "0.0.0.0"],
                 "cwd": str(PROJECT_ROOT),
-                "env_extra": None,
+                "env_extra": self._runtime_temp_env(),
             }
         if name == "cgc":
             cgc_cmd = self._resolve_cgc_cmd()
@@ -1008,7 +1044,10 @@ class NativeDeployer:
                 return {
                     "cmd": [*cgc_cmd, "api", "start", "--host", "127.0.0.1", "--port", str(self._config_port("cgc_port", _CGC_DEFAULT_PORT))],
                     "cwd": self._cgc_cwd(),
-                    "env_extra": {"CGC_ALLOWED_ROOTS": _cgc_allowed_roots},
+                    "env_extra": {
+                        **self._runtime_temp_env(),
+                        "CGC_ALLOWED_ROOTS": _cgc_allowed_roots,
+                    },
                 }
 
         return None
@@ -1189,9 +1228,9 @@ class NativeDeployer:
     ) -> int:
         import time
 
-        env = None
+        env = os.environ.copy()
+        env.update(self._runtime_temp_env())
         if env_extra:
-            env = os.environ.copy()
             env.update(env_extra)
 
         try:
@@ -1240,10 +1279,13 @@ class NativeDeployer:
 
     async def _run_capture(self, *cmd: str) -> tuple[int, str, str]:
         try:
+            env = os.environ.copy()
+            env.update(self._runtime_temp_env())
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=env,
             )
             stdout, stderr = await _communicate_with_timeout(proc, timeout=15)
             return proc.returncode or 0, stdout.decode(errors="replace"), stderr.decode(errors="replace")

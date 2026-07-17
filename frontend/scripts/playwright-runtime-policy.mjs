@@ -6,6 +6,23 @@ const PUBLIC_FRONTEND_PORT = "3003";
 const PUBLIC_BACKEND_PORT = "3004";
 const heldPublicRuntimeLocks = new Set();
 
+export function configureRuntimeTempEnvironment(env = process.env) {
+  const runtimeTempRoot = path.resolve(env.CODETALK_TEMP_DIR ?? os.tmpdir());
+  if (env.CODETALK_TEMP_DIR) {
+    for (const name of ["TEMP", "TMP", "TMPDIR"]) env[name] = runtimeTempRoot;
+  }
+  return runtimeTempRoot;
+}
+
+export function sanitizePlaywrightRunId(value, fallback = `run-${process.pid}`) {
+  const sanitized = String(value ?? "")
+    .trim()
+    .replace(/[^A-Za-z0-9_-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 96);
+  return sanitized || fallback;
+}
+
 export function resolveReuseExistingServer(env = process.env) {
   return env.CODETALK_REUSE_EXISTING_SERVER === "1";
 }
@@ -45,7 +62,8 @@ export function acquirePublicRuntimeMutationLock({
   if (!isPublicLocalRuntime({ frontendPort, backendPort })) return null;
   if (env.CODETALK_E2E_ALLOW_PUBLIC_DATA_MUTATION !== "1") return null;
 
-  const lockRoot = env.CODETALK_E2E_PUBLIC_RUNTIME_LOCK_DIR ?? path.join(os.tmpdir(), "codetalk-e2e-public-runtime-locks");
+  const runtimeTempRoot = env.CODETALK_TEMP_DIR ?? os.tmpdir();
+  const lockRoot = env.CODETALK_E2E_PUBLIC_RUNTIME_LOCK_DIR ?? path.join(runtimeTempRoot, "codetalk-e2e-public-runtime-locks");
   const lockPath = path.join(lockRoot, `${frontendPort}-${backendPort}.lock`);
   if (heldPublicRuntimeLocks.has(lockPath)) return lockPath;
 

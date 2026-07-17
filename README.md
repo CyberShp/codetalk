@@ -183,6 +183,8 @@ http://127.0.0.1:9000
 http://127.0.0.1:3003
 ```
 
+大仓库或长时间 Agent 任务建议在部署向导的“临时文件目录”中选择空间充足的数据盘。例如工作目录使用 `/Volumes/Media/codetalk-runtime` 时，向导会自动填写 `/Volumes/Media/codetalk-runtime/tmp`。该设置会同时作用于后端、前端、Agent 子进程、GitNexus、CGC 和 Playwright；任务结束后，Agent 的隔离运行目录会自动清理。
+
 ### 3. 验证后端
 
 ```bash
@@ -206,6 +208,7 @@ cd backend
 python3.11 -m venv .venv311
 source .venv311/bin/activate
 pip install -r requirements.txt
+export CODETALK_TEMP_DIR=/Volumes/Media/codetalk-runtime/tmp
 uvicorn app.main:app --host 0.0.0.0 --port 3004 --reload
 ```
 
@@ -214,6 +217,7 @@ uvicorn app.main:app --host 0.0.0.0 --port 3004 --reload
 ```bash
 cd frontend
 npm install
+CODETALK_TEMP_DIR=/Volumes/Media/codetalk-runtime/tmp \
 NEXT_PUBLIC_API_URL=http://localhost:3004 npm run dev
 ```
 
@@ -407,7 +411,7 @@ Agent 节点的 Provider 来自设置页能力发现，Skills 和 MCP 以可搜�
 | `mr_blackbox_test` | 面向 MR 生成黑盒测试用例 |
 | `source_flow_sfmea_blackbox` | 代码分析 -> 流程梳理 -> SFMEA -> 黑盒测试用例 |
 | `testing_activity_orchestration` | 覆盖完整测试活动：策略、范围、环境、设计、执行、缺陷、回归、报告 |
-| `basic_source_report_claude` | 仅输入源码工作空间，由 Claude Code 生成流程、SFMEA 与黑盒测试报告 |
+| `basic_source_report_codex` | 仅输入源码工作空间，由 Codex CLI 生成流程、SFMEA 与黑盒测试报告 |
 | `basic_source_design_report_builtin` | 输入源码工作空间和设计文档，由内置模型生成同结构报告 |
 
 正式版默认展示 `source_flow_sfmea_blackbox` 以及上述两个基础验证预设。它们由源码注册，

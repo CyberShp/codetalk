@@ -69,6 +69,7 @@ from app.services.workflow_dsl import (
 )
 from app.services.workflow_presets import (
     active_builtin_workflow_presets,
+    canonical_builtin_workflow_preset_id,
     get_workflow_preset,
     install_workflow_preset,
     reserved_builtin_workflow_ids,
@@ -251,7 +252,8 @@ def _is_builtin_workflow_id(workflow_id: str) -> bool:
 
 
 def _is_active_builtin_workflow_id(workflow_id: str) -> bool:
-    return str(workflow_id or "").strip() in _active_builtin_workflow_ids()
+    canonical = canonical_builtin_workflow_preset_id(str(workflow_id or "").strip())
+    return canonical in _active_builtin_workflow_ids()
 
 
 def _require_workflow_available_for_new_run(workflow_id: str) -> None:

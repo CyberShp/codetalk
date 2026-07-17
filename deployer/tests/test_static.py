@@ -17,6 +17,18 @@ async def test_deploy_page_loads(client):
     assert 'data-service="joern"' not in resp.text
 
 
+async def test_deploy_page_exposes_runtime_temp_directory_setting(client):
+    response = await client.get("/deploy.html")
+    script = await client.get("/app.js")
+
+    assert response.status_code == 200
+    assert 'id="temp-path"' in response.text
+    assert 'name="tempPath"' in response.text
+    assert "临时文件目录" in response.text
+    assert script.status_code == 200
+    assert "tempPath:" in script.text
+
+
 async def test_start_page_loads(client):
     resp = await client.get("/start.html")
     assert resp.status_code == 200

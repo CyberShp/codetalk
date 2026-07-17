@@ -2297,8 +2297,16 @@ async def _execute_flow_deterministic_stage(
     return {**result, "output_path": str(output_path)}
 
 
-def _select_regular_stage_llm(llm: Any, auxiliary_llm: Any, artifact: str) -> Any:
+def _select_regular_stage_llm(
+    llm: Any,
+    auxiliary_llm: Any,
+    artifact: str,
+    *,
+    quality_repair: bool = False,
+) -> Any:
     """Route bounded structured output away from reasoning-token starvation."""
+    if quality_repair and settings.regular_stage_quality_repair_use_primary_model:
+        return llm
     if (
         not settings.regular_stage_structured_fast_model_enabled
         or not artifact.endswith(".json")
@@ -2334,7 +2342,6 @@ async def _execute_regular_stage(
     stage_id = str(stage.get("id") or "stage")
     base_stage_id = stage_id.split("__", 1)[0]
     artifact = str(stage.get("artifact") or f"{stage_id}.md")
-    stage_llm = _select_regular_stage_llm(llm, auxiliary_llm, artifact)
     output_path = artifact_dir / artifact
     output_path.parent.mkdir(parents=True, exist_ok=True)
     source_pack = _read_json_file(
@@ -2361,6 +2368,12 @@ async def _execute_regular_stage(
         if artifact in quality_affected and output_path.is_file()
         else ""
     )
+    stage_llm = _select_regular_stage_llm(
+        llm,
+        auxiliary_llm,
+        artifact,
+        quality_repair=bool(current_artifact_seed.strip()),
+    )
     allowed_existing_repair_row_ids = (
         _quality_repair_row_ids(
             artifact=artifact,
@@ -2368,6 +2381,14 @@ async def _execute_regular_stage(
         )
         if current_artifact_seed.strip() and isinstance(quality_feedback, dict)
         else None
+    )
+    allow_new_repair_items = (
+        _quality_repair_allows_new_items(
+            artifact=artifact,
+            quality_feedback=quality_feedback,
+        )
+        if current_artifact_seed.strip() and isinstance(quality_feedback, dict)
+        else True
     )
     deterministic_base = ""
     if base_stage_id == "business_flow":
@@ -2585,7 +2606,8 @@ async def _execute_regular_stage(
             "stage_id": stage_id,
             "status": "running",
             "artifact": artifact,
-            "model": policy.model or str(getattr(llm, "_model", "") or "active-model"),
+            "model": policy.model
+            or str(getattr(stage_llm, "_model", "") or "active-model"),
             "attempt_count": 1,
             "total_budget_seconds": policy.total_timeout_seconds,
             "user_message": f"{stage_id} 已提交模型，正在等待首段输出",
@@ -2616,7 +2638,7 @@ async def _execute_regular_stage(
     time_to_first_token_ms = 0.0
     raw_content = ""
     rendered: Any = None
-    model = policy.model or str(getattr(llm, "_model", "") or "")
+    model = policy.model or str(getattr(stage_llm, "_model", "") or "")
     finish_reason = "not_started"
     last_error = ""
     timed_out = False
@@ -3004,6 +3026,22 @@ async def _execute_regular_stage(
                 if current_artifact_seed.strip() and isinstance(rendered, list):
                     previous_items = _json_array_items(current_artifact_seed)
                     if previous_items:
+                        rendered = _apply_quality_feedback_field_patches(
+                            rendered,
+                            artifact=artifact,
+                            quality_feedback=quality_feedback or {},
+                            base_items=previous_items,
+                        )
+                        if not allow_new_repair_items:
+                            missing_repair_rows = _missing_quality_repair_row_ids(
+                                rendered,
+                                allowed_existing_repair_row_ids or set(),
+                            )
+                            if missing_repair_rows:
+                                raise ValueError(
+                                    "quality_repair_missing_rows: "
+                                    + ", ".join(sorted(missing_repair_rows))
+                                )
                         # A quality repair is a field patch over the accepted array.
                         # Preserve its order and untouched fields so a partial model
                         # response cannot evict rows at the output item limit.
@@ -3011,6 +3049,7 @@ async def _execute_regular_stage(
                             previous_items,
                             rendered,
                             allowed_existing_row_ids=allowed_existing_repair_row_ids,
+                            allow_new_items=allow_new_repair_items,
                         )
                         if base_stage_id == "sfmea":
                             before_count = len(rendered)
@@ -3103,10 +3142,27 @@ async def _execute_regular_stage(
                 if current_artifact_seed.strip() and isinstance(rendered, list):
                     previous_items = _json_array_items(current_artifact_seed)
                     if previous_items:
+                        rendered = _apply_quality_feedback_field_patches(
+                            rendered,
+                            artifact=artifact,
+                            quality_feedback=quality_feedback or {},
+                            base_items=previous_items,
+                        )
+                        if not allow_new_repair_items:
+                            missing_repair_rows = _missing_quality_repair_row_ids(
+                                rendered,
+                                allowed_existing_repair_row_ids or set(),
+                            )
+                            if missing_repair_rows:
+                                raise ValueError(
+                                    "quality_repair_missing_rows: "
+                                    + ", ".join(sorted(missing_repair_rows))
+                                )
                         rendered = _merge_json_array_patch(
                             previous_items,
                             rendered,
                             allowed_existing_row_ids=allowed_existing_repair_row_ids,
+                            allow_new_items=allow_new_repair_items,
                         )
                         if base_stage_id == "sfmea":
                             before_count = len(rendered)
@@ -4194,6 +4250,7 @@ def _regular_stage_prompt(
     scoped_quality_feedback: dict[str, Any] | None = None
     repair_prompt_seed = current_artifact_seed[:60_000]
     repair_evidence_ids: set[str] = set()
+    repair_relevant_cards: list[dict[str, Any]] = []
     if isinstance(quality_feedback, dict) and artifact in affected_artifacts:
         scoped_quality_feedback = _quality_feedback_for_artifact(
             quality_feedback, artifact
@@ -4221,26 +4278,20 @@ def _regular_stage_prompt(
             feedback_text=feedback_text,
         )
         if not relevant_cards:
-            relevant_ids = {id(card) for card in relevant_cards}
-            relevant_cards.extend(
-                card for card in evidence_cards
-                if id(card) not in relevant_ids
-            )
+            relevant_cards = evidence_cards[:4]
+        repair_relevant_cards = relevant_cards[:8]
         context = {
             "version": "regular-stage-quality-repair-context-v1",
             "analysis_target": str(
                 plan.get("original_user_request") or plan.get("target") or ""
             )[:1200],
             "repo_revision": str(source_pack.get("repo_revision") or ""),
-            "verified_evidence_cards": _compact_stage_value(relevant_cards[:12]),
-            "input_materials": _compact_stage_value(
+            "verified_evidence_cards": [
+                _compact_quality_repair_evidence_card(card)
+                for card in repair_relevant_cards
+            ],
+            "input_materials": _compact_quality_repair_input_materials(
                 compact_flow.get("input_materials") or []
-            ),
-            "execution_inputs": _compact_execution_input_contract(
-                plan.get("execution_input_contract")
-            ),
-            "quality_retry_feedback": _compact_stage_value(
-                scoped_quality_feedback
             ),
         }
     output_contract = (
@@ -4248,11 +4299,30 @@ def _regular_stage_prompt(
         if isinstance(stage.get("output_contract"), dict)
         else {}
     )
+    prompt_evidence_cards = (
+        repair_relevant_cards
+        if scoped_quality_feedback is not None
+        else [
+            card
+            for card in source_pack.get("evidence_cards") or []
+            if isinstance(card, dict)
+        ]
+    )
     verified_repo_paths = [
         str(card.get("file_path") or "").strip()
-        for card in source_pack.get("evidence_cards") or []
+        for card in prompt_evidence_cards
         if isinstance(card, dict) and str(card.get("file_path") or "").strip()
     ]
+    if scoped_quality_feedback is not None:
+        verified_literal_facts = [
+            dict(item)
+            for item in source_pack.get("verified_literals") or []
+            if isinstance(item, dict)
+            and _evidence_id_matches(
+                str(item.get("evidence_id") or ""),
+                repair_evidence_ids,
+            )
+        ][:8]
     output_limits = (
         stage.get("output_limits")
         if isinstance(stage.get("output_limits"), dict)
@@ -4277,6 +4347,25 @@ def _regular_stage_prompt(
         plan=plan,
         source_pack=source_pack,
     )
+    if scoped_quality_feedback is not None:
+        relevant_card_ids = {
+            str(card.get("evidence_id") or "").strip()
+            for card in repair_relevant_cards
+            if str(card.get("evidence_id") or "").strip()
+        }
+        source_bound_domain_facts = [
+            fact
+            for fact in source_bound_domain_facts
+            if any(
+                _evidence_id_matches(
+                    str(evidence_id or ""),
+                    relevant_card_ids,
+                )
+                for reference in fact.get("evidence") or []
+                if isinstance(reference, dict)
+                for evidence_id in reference.get("evidence_ids") or []
+            )
+        ][:8]
     rules = [
         "- 只使用当前紧凑上下文中的已验证源码、测试与上游产物，不重新发现源码。",
         "- 任何源码或测试路径都必须逐字来自该白名单 VERIFIED_REPO_PATH_ALLOWLIST；白名单外路径只能写成待补证据，不得输出为路径。",
@@ -4303,6 +4392,10 @@ def _regular_stage_prompt(
         and isinstance(schema, dict)
         and schema.get("type") == "array"
     )
+    allow_new_repair_items = _quality_repair_allows_new_items(
+        artifact=artifact,
+        quality_feedback=scoped_quality_feedback or {},
+    )
     quality_issue_codes = {
         str(issue.get("code") or "")
         for issue in (scoped_quality_feedback or {}).get("issues") or []
@@ -4317,6 +4410,13 @@ def _regular_stage_prompt(
                 "- 场景名称必须逐字包含门禁给出的场景名，不能只在其他字段中顺带提及关键词。",
             ]
         )
+        if not allow_new_repair_items:
+            rules.extend(
+                [
+                    "- 本轮只有既有行的事实或语义问题；严禁新增任何 ID，只能返回门禁点名的既有 ID。",
+                    "- 未被门禁点名的既有行不得返回、改写或复制；系统会拒绝所有越界新增行。",
+                ]
+            )
     elif current_artifact_seed.strip():
         rules.extend(
             [
@@ -4370,24 +4470,40 @@ def _regular_stage_prompt(
             f"- 每个叙述字段最多 {int(output_limits['max_field_characters'])} 个字符。"
         )
     parts = [
-            f"STAGE_ID: {stage.get('id')}",
-            f"OUTPUT_ARTIFACT: {artifact}",
-            f"PURPOSE: {stage.get('purpose')}",
-            "ORIGINAL_USER_REQUEST:",
-            str(plan.get("original_user_request") or ""),
-            "",
-            "COMPACT_VERIFIED_CONTEXT:",
-            json.dumps(context, ensure_ascii=False, indent=2),
-            "",
+        f"STAGE_ID: {stage.get('id')}",
+        f"OUTPUT_ARTIFACT: {artifact}",
+        f"PURPOSE: {stage.get('purpose')}",
+        "ORIGINAL_USER_REQUEST:",
+        str(plan.get("original_user_request") or ""),
+        "",
     ]
-    if scoped_quality_feedback and current_artifact_seed.strip():
+    if scoped_quality_feedback:
         parts.extend(
             [
-                "CURRENT_ARTIFACT_TO_REPAIR:",
-                repair_prompt_seed,
+                "QUALITY_REPAIR_ISSUES:",
+                json.dumps(scoped_quality_feedback, ensure_ascii=False, indent=2),
                 "",
             ]
         )
+        if current_artifact_seed.strip():
+            parts.extend(
+                [
+                    "CURRENT_ARTIFACT_TO_REPAIR:",
+                    repair_prompt_seed,
+                    "",
+                ]
+            )
+    parts.extend(
+        [
+            (
+                "RELEVANT_VERIFIED_CONTEXT:"
+                if scoped_quality_feedback
+                else "COMPACT_VERIFIED_CONTEXT:"
+            ),
+            json.dumps(context, ensure_ascii=False, indent=2),
+            "",
+        ]
+    )
     parts.extend(
         [
             "OUTPUT_CONTRACT:",
@@ -4521,11 +4637,52 @@ def _quality_repair_row_ids(
             row_id = claim_id[len(prefix) :].strip()
             if row_id:
                 row_ids.add(row_id)
+        elif re.match(r"^(?:SFMEA|BBC)-[A-Za-z0-9_-]+:", claim_id):
+            row_ids.add(claim_id.split(":", 1)[0])
         for key in ("row_id", "case_id", "sfmea_id", "risk_id"):
             row_id = str(issue.get(key) or "").strip()
             if row_id:
                 row_ids.add(row_id)
     return row_ids
+
+
+def _quality_repair_allows_new_items(
+    *,
+    artifact: str,
+    quality_feedback: dict[str, Any],
+) -> bool:
+    """Allow additions only when the gate explicitly asks for missing coverage."""
+    additive_codes = {
+        "harness_case_not_registered",
+        "incomplete_mcs_black_box_oracle",
+        "insufficient_black_box_cases",
+        "insufficient_sfmea_rows",
+        "missing_black_box_dimensions",
+        "missing_c_bit_fragmentation_case",
+        "missing_chap_negative_scenarios",
+        "missing_extended_chap_negative_scenarios",
+        "missing_iscsi_professional_scenarios",
+        "missing_max_connections_target_setup",
+        "missing_mcs_capable_client",
+    }
+    artifact_name = Path(artifact).name
+    for issue in quality_feedback.get("issues") or []:
+        if not isinstance(issue, dict):
+            continue
+        if Path(str(issue.get("artifact") or "")).name != artifact_name:
+            continue
+        if any(str(value).strip() for value in issue.get("scenarios") or []):
+            return True
+        code = str(issue.get("code") or "").strip()
+        if code in additive_codes or (
+            code.startswith("missing_")
+            and any(
+                marker in code
+                for marker in ("case", "scenario", "dimension", "coverage")
+            )
+        ):
+            return True
+    return False
 
 
 def _quality_repair_evidence_ids(
@@ -4601,9 +4758,60 @@ def _quality_repair_evidence_cards(
             continue
         selected_ids.add(card_identity)
         selected.append(card)
-        if len(selected) >= 12:
+        if len(selected) >= 8:
             break
     return selected
+
+
+def _compact_quality_repair_evidence_card(card: dict[str, Any]) -> dict[str, Any]:
+    """Keep exact source identity while bounding excerpts for a repair call."""
+    return {
+        "evidence_id": str(card.get("evidence_id") or ""),
+        "file_path": str(card.get("file_path") or ""),
+        "classification": str(card.get("classification") or ""),
+        "start_line": int(card.get("start_line") or 0),
+        "end_line": int(card.get("end_line") or 0),
+        "excerpt": str(card.get("excerpt") or "")[:1800],
+        "symbols": [
+            str(value)
+            for value in card.get("symbols") or []
+            if str(value).strip()
+        ][:12],
+        "matched_terms": [
+            str(value)
+            for value in card.get("matched_terms") or []
+            if str(value).strip()
+        ][:12],
+        "sha256": str(card.get("sha256") or ""),
+    }
+
+
+def _compact_quality_repair_input_materials(materials: Any) -> list[dict[str, Any]]:
+    compact: list[dict[str, Any]] = []
+    for raw in materials or []:
+        if not isinstance(raw, dict):
+            continue
+        item = {
+            key: raw.get(key)
+            for key in (
+                "input_id",
+                "id",
+                "name",
+                "label",
+                "path",
+                "source_ref",
+                "sha256",
+                "summary",
+            )
+            if raw.get(key) not in (None, "")
+        }
+        content = str(raw.get("content") or raw.get("text") or "")
+        if content:
+            item["content_excerpt"] = content[:1200]
+        compact.append(item)
+        if len(compact) >= 4:
+            break
+    return compact
 
 
 def _source_bound_domain_facts(
@@ -5282,11 +5490,124 @@ def _merge_json_array_items(existing: list[Any], additional: list[Any]) -> list[
     return merged
 
 
+def _missing_quality_repair_row_ids(
+    patch: list[Any],
+    requested_row_ids: set[str],
+) -> set[str]:
+    """Return requested row IDs omitted by a non-additive quality patch."""
+    present = {
+        str(
+            item.get("case_id")
+            or item.get("sfmea_id")
+            or item.get("risk_id")
+            or item.get("id")
+            or ""
+        ).strip()
+        for item in patch
+        if isinstance(item, dict)
+    }
+    return {row_id for row_id in requested_row_ids if row_id not in present}
+
+
+def _apply_quality_feedback_field_patches(
+    rendered: list[Any],
+    *,
+    artifact: str,
+    quality_feedback: dict[str, Any],
+    base_items: list[Any] | None = None,
+) -> list[Any]:
+    """Apply independently audited semantic field fixes before row merging."""
+    artifact_name = Path(artifact).name
+    if artifact_name == "sfmea.json":
+        allowed_fields = {
+            "failure_mode",
+            "cause",
+            "effect",
+            "detection",
+            "mitigation",
+            "test_mapping",
+        }
+    elif artifact_name == "black_box_cases.json":
+        allowed_fields = {
+            "scenario_name",
+            "preconditions",
+            "steps",
+            "expected_result",
+            "observability",
+            "failure_diagnostics",
+            "mapped_test_dir",
+            "test_dimension",
+        }
+    else:
+        return list(rendered)
+
+    patches: dict[str, dict[str, Any]] = {}
+    for issue in quality_feedback.get("issues") or []:
+        if not isinstance(issue, dict):
+            continue
+        if Path(str(issue.get("artifact") or "")).name != artifact_name:
+            continue
+        row_id = str(
+            issue.get("row_id")
+            or issue.get("case_id")
+            or issue.get("sfmea_id")
+            or issue.get("risk_id")
+            or ""
+        ).strip()
+        field_patch = issue.get("field_patch")
+        if not row_id or not isinstance(field_patch, dict):
+            continue
+        scoped = {
+            key: value
+            for key, value in field_patch.items()
+            if key in allowed_fields and isinstance(value, (str, list))
+        }
+        if scoped:
+            patches.setdefault(row_id, {}).update(scoped)
+    if not patches:
+        return list(rendered)
+
+    base_by_id = {
+        _json_array_row_id(item): item
+        for item in (base_items or [])
+        if isinstance(item, dict) and _json_array_row_id(item)
+    }
+    result: list[Any] = []
+    seen: set[str] = set()
+    for item in rendered:
+        if not isinstance(item, dict):
+            result.append(item)
+            continue
+        row_id = _json_array_row_id(item)
+        replacement = patches.get(row_id)
+        result.append({**item, **replacement} if replacement else item)
+        if row_id:
+            seen.add(row_id)
+    for row_id, field_patch in patches.items():
+        if row_id in seen or row_id not in base_by_id:
+            continue
+        result.append({**base_by_id[row_id], **field_patch})
+    return result
+
+
+def _json_array_row_id(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    return str(
+        item.get("case_id")
+        or item.get("sfmea_id")
+        or item.get("risk_id")
+        or item.get("id")
+        or ""
+    ).strip()
+
+
 def _merge_json_array_patch(
     previous: list[Any],
     patch: list[Any],
     *,
     allowed_existing_row_ids: set[str] | None = None,
+    allow_new_items: bool = True,
 ) -> list[Any]:
     """Apply array row patches without reordering or dropping accepted rows."""
     patches_by_identity: dict[str, Any] = {}
@@ -5314,7 +5635,7 @@ def _merge_json_array_patch(
             ):
                 continue
             patches_by_identity[identity] = item
-        elif identity not in new_identities:
+        elif allow_new_items and identity not in new_identities:
             new_identities.add(identity)
             new_items.append(item)
 

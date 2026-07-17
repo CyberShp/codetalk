@@ -60,7 +60,10 @@ start.bat
 部署向导支持自定义：
 - **端口配置**：前端、后端、GitNexus 端口
 - **工作目录**：代码仓库存储路径
+- **临时文件目录**：统一承载 Agent、模型、构建和测试临时文件；默认跟随工作目录的 `tmp` 子目录
 - **组件选择**：是否安装 GitNexus / CGC 等增强组件
+
+例如工作目录填写 `/Volumes/Media/codetalk-runtime` 后，临时文件目录会自动填写 `/Volumes/Media/codetalk-runtime/tmp`。部署器会把该路径以 `CODETALK_TEMP_DIR`、`TEMP`、`TMP` 和 `TMPDIR` 传给 backend、frontend、GitNexus、CGC 以及安装子进程，避免大体积 Agent 运行数据写入系统盘。
 
 当前产品不再部署或管理旧 Wiki 组件；如果历史配置文件里仍有旧 Wiki 路径、端口或环境变量，部署器会在生成配置时清理。
 
@@ -141,6 +144,9 @@ npm run dev
 # 数据存储
 DATA_DIR=data
 SQLITE_DB=data/codetalk.db
+
+# 运行时临时目录；未设置时默认使用 <DATA_DIR>/tmp
+CODETALK_TEMP_DIR=/Volumes/Media/codetalk-runtime/tmp
 
 # Workbench V2 默认开启；仅在一个发布周期内用于旧入口回滚
 WORKBENCH_V2_ENABLED=true

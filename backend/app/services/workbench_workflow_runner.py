@@ -7,6 +7,8 @@ import ast
 import io
 import json
 import hashlib
+import multiprocessing
+import os
 import re
 import shutil
 import threading
@@ -197,6 +199,23 @@ def _staged_step_status(current_status: str, staged_result: dict[str, Any]) -> s
         if str(staged_result.get("status") or "") == "partial"
         else current_status
     )
+
+
+def _staged_execution_timed_out(staged_result: dict[str, Any]) -> bool:
+    return (
+        str(staged_result.get("reason") or "")
+        == "workflow_deadline_exceeded"
+    )
+
+
+def _mark_staged_workflow_deadline_exceeded(
+    staged_result: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        **staged_result,
+        "status": "partial",
+        "reason": "workflow_deadline_exceeded",
+    }
 
 
 @dataclass(frozen=True)
@@ -894,6 +913,7 @@ class WorkbenchWorkflowRunner:
         response_usage: dict[str, Any] = {}
         finish_reason = "not_called"
         provider_wait_ms = 0.0
+        execution_timed_out = False
         quality_repair_history: list[dict[str, Any]] = []
         try:
             if str(step.get("execution_mode") or "") == "staged":
@@ -911,6 +931,16 @@ class WorkbenchWorkflowRunner:
                     task_bundle=task_bundle,
                     output_contract=scoped_output_contract,
                     required_artifacts=generation_artifacts,
+                )
+                requested_staged_timeout = float(timeout_sec or 0)
+                staged_lifecycle_budget_seconds = min(
+                    requested_staged_timeout
+                    if requested_staged_timeout > 0
+                    else float(settings.staged_workflow_timeout_seconds),
+                    float(settings.staged_workflow_timeout_seconds),
+                )
+                staged_lifecycle_deadline = (
+                    started_monotonic + max(0.001, staged_lifecycle_budget_seconds)
                 )
 
                 def emit_stage_progress(payload: dict[str, Any]) -> None:
@@ -963,83 +993,134 @@ class WorkbenchWorkflowRunner:
                 async def execute_staged_lifecycle() -> tuple[
                     dict[str, Any], dict[str, Any], list[dict[str, Any]]
                 ]:
-                    llm = await create_llm_client_from_active()
-                    source_analysis_llm = await create_source_analysis_llm_client()
+                    llm = await _await_with_absolute_deadline(
+                        create_llm_client_from_active(),
+                        deadline=staged_lifecycle_deadline,
+                    )
+                    try:
+                        source_analysis_llm = await _await_with_absolute_deadline(
+                            create_source_analysis_llm_client(),
+                            deadline=staged_lifecycle_deadline,
+                        )
+                    except BaseException:
+                        await _close_llm_clients(
+                            llm,
+                        )
+                        raise
                     repair_history: list[dict[str, Any]] = []
+                    quality_repair_stop_reason = ""
+
+                    def remaining_lifecycle_seconds() -> float:
+                        return max(0.0, staged_lifecycle_deadline - time.monotonic())
 
                     async def execute_staged(plan: dict[str, Any]) -> dict[str, Any]:
+                        remaining_seconds = remaining_lifecycle_seconds()
                         return await _execute_staged_with_deadline(
-                                execute_staged_builtin_plan(
-                                    llm=llm,
-                                    plan=plan,
-                                    artifact_dir=artifact_dir,
-                                    context_prompt=json.dumps(
-                                        staged_context,
-                                        ensure_ascii=False,
-                                        indent=2,
-                                    ),
-                                    source_analysis_context=staged_context,
-                                    source_analysis_llm=source_analysis_llm,
-                                    source_analysis_cache_dir=(
-                                        settings.data_path
-                                        / "workbench"
-                                        / "source_analysis_cache"
-                                        if settings.source_analysis_cache_enabled
-                                        else None
-                                    ),
-                                    source_analysis_limits=(
-                                        dict(
-                                            scoped_execution_contract.get(
-                                                "source_analysis_limits"
-                                            )
-                                            or {}
-                                        )
-                                        if isinstance(
-                                            scoped_execution_contract.get(
-                                                "source_analysis_limits"
-                                            ),
-                                            dict,
-                                        )
-                                        else None
-                                    ),
-                                    regular_stage_cache_dir=(
-                                        settings.data_path
-                                        / "workbench"
-                                        / "regular_stage_cache"
-                                        if settings.regular_stage_cache_enabled
-                                        else None
-                                    ),
-                                    on_progress=emit_stage_progress,
-                                    is_cancelled=self._is_cancelled,
-                                    max_tokens=int(settings.staged_workflow_max_tokens),
-                                ),
-                                timeout_seconds=min(
-                                    float(timeout_sec)
-                                    if float(timeout_sec or 0) > 0
-                                    else float(settings.staged_workflow_timeout_seconds),
-                                    float(settings.staged_workflow_timeout_seconds),
-                                ),
+                            execute_staged_builtin_plan(
+                                llm=llm,
                                 plan=plan,
                                 artifact_dir=artifact_dir,
+                                context_prompt=json.dumps(
+                                    staged_context,
+                                    ensure_ascii=False,
+                                    indent=2,
+                                ),
+                                source_analysis_context=staged_context,
+                                source_analysis_llm=source_analysis_llm,
+                                source_analysis_cache_dir=(
+                                    settings.data_path
+                                    / "workbench"
+                                    / "source_analysis_cache"
+                                    if settings.source_analysis_cache_enabled
+                                    else None
+                                ),
+                                source_analysis_limits=(
+                                    dict(
+                                        scoped_execution_contract.get(
+                                            "source_analysis_limits"
+                                        )
+                                        or {}
+                                    )
+                                    if isinstance(
+                                        scoped_execution_contract.get(
+                                            "source_analysis_limits"
+                                        ),
+                                        dict,
+                                    )
+                                    else None
+                                ),
+                                regular_stage_cache_dir=(
+                                    settings.data_path
+                                    / "workbench"
+                                    / "regular_stage_cache"
+                                    if settings.regular_stage_cache_enabled
+                                    else None
+                                ),
                                 on_progress=emit_stage_progress,
-                            )
+                                is_cancelled=self._is_cancelled,
+                                max_tokens=int(settings.staged_workflow_max_tokens),
+                            ),
+                            timeout_seconds=max(0.001, remaining_seconds),
+                            plan=plan,
+                            artifact_dir=artifact_dir,
+                            on_progress=emit_stage_progress,
+                        )
 
                     async def validate_behavior_claims() -> dict[str, Any]:
                         if not settings.behavior_claim_audit_enabled:
                             return {}
-                        validation = await materialize_behavior_claim_validation(
-                            artifact_dir=artifact_dir,
-                            repo_path=str(scoped_execution_contract.get("repo_path") or ""),
-                            generator_identity=str(
-                                getattr(llm, "model", "")
-                                or getattr(llm, "model_name", "")
-                                or "builtin-llm"
-                            ),
-                            on_progress=lambda payload: self._emit_event(
-                                "behavior_claim_validation_progress",
-                                {"step_id": step_id, **payload},
-                            ),
-                        )
+                        remaining_seconds = remaining_lifecycle_seconds()
+                        if remaining_seconds <= 0:
+                            self._emit_event(
+                                "behavior_claim_validation_skipped",
+                                {
+                                    "step_id": step_id,
+                                    "reason": "workflow_deadline_exceeded",
+                                    "user_message": (
+                                        "工作流已达到总时间上限，未再启动独立源码事实核验。"
+                                    ),
+                                },
+                            )
+                            return {
+                                "status": "unavailable",
+                                "reason": "workflow_deadline_exceeded",
+                            }
+                        try:
+                            validation = await _await_with_absolute_deadline(
+                                materialize_behavior_claim_validation(
+                                    artifact_dir=artifact_dir,
+                                    repo_path=str(
+                                        scoped_execution_contract.get("repo_path") or ""
+                                    ),
+                                    generator_identity=str(
+                                        getattr(llm, "model", "")
+                                        or getattr(llm, "model_name", "")
+                                        or "builtin-llm"
+                                    ),
+                                    on_progress=lambda payload: self._emit_event(
+                                        "behavior_claim_validation_progress",
+                                        {"step_id": step_id, **payload},
+                                    ),
+                                    timeout_seconds=remaining_seconds,
+                                ),
+                                deadline=staged_lifecycle_deadline,
+                            )
+                        except asyncio.TimeoutError:
+                            self._emit_event(
+                                "behavior_claim_validation_skipped",
+                                {
+                                    "step_id": step_id,
+                                    "reason": "workflow_deadline_exceeded",
+                                    "user_message": (
+                                        "独立源码事实核验已达到工作流总时间上限，"
+                                        "当前产物不会被标记为可交付。"
+                                    ),
+                                },
+                            )
+                            return {
+                                "status": "unavailable",
+                                "reason": "workflow_deadline_exceeded",
+                            }
                         validation_status = str(validation.get("status") or "")
                         claim_count = len(validation.get("claims") or [])
                         contradicted = sum(
@@ -1066,27 +1147,102 @@ class WorkbenchWorkflowRunner:
                         )
                         return validation
 
+                    async def audit_staged_artifacts() -> dict[str, Any]:
+                        return await _run_sync_with_absolute_deadline(
+                            lambda: _audit_staged_agent_artifacts(
+                                artifact_dir=artifact_dir,
+                                task_bundle=task_bundle,
+                                execution_contract=scoped_execution_contract,
+                                workflow_snapshot=workflow_snapshot,
+                            ),
+                            deadline=staged_lifecycle_deadline,
+                        )
+
                     current_plan = staged_plan
                     try:
                         staged_result = await execute_staged(current_plan)
                         behavior_validation = await validate_behavior_claims()
+                        if (
+                            behavior_validation.get("reason")
+                            == "workflow_deadline_exceeded"
+                        ):
+                            staged_result = _mark_staged_workflow_deadline_exceeded(
+                                staged_result
+                            )
+                            quality_repair_stop_reason = (
+                                "workflow_deadline_exceeded"
+                            )
                         if settings.staged_quality_repair_enabled:
                             for repair_attempt in range(
                                 1,
                                 int(settings.staged_quality_repair_max_attempts) + 1,
                             ):
-                                audit = _audit_staged_agent_artifacts(
-                                    artifact_dir=artifact_dir,
-                                    task_bundle=task_bundle,
-                                    execution_contract=scoped_execution_contract,
-                                    workflow_snapshot=workflow_snapshot,
-                                )
+                                try:
+                                    audit = await audit_staged_artifacts()
+                                except asyncio.TimeoutError:
+                                    staged_result = (
+                                        _mark_staged_workflow_deadline_exceeded(
+                                            staged_result
+                                        )
+                                    )
+                                    quality_repair_stop_reason = (
+                                        "workflow_deadline_exceeded"
+                                    )
+                                    self._emit_event(
+                                        "quality_repair_skipped",
+                                        {
+                                            "step_id": step_id,
+                                            "provider": BUILTIN_LLM_PROVIDER_ID,
+                                            "attempt": repair_attempt,
+                                            "reason": quality_repair_stop_reason,
+                                            "user_message": (
+                                                "工作流已达到总时间上限，"
+                                                "已停止质量审计和后续模型调用。"
+                                            ),
+                                        },
+                                    )
+                                    break
                                 if not audit or str(audit.get("status") or "") not in {
                                     "needs_rework",
                                     "invalid",
                                 }:
                                     break
                                 if str(behavior_validation.get("status") or "") == "unavailable":
+                                    if (
+                                        behavior_validation.get("reason")
+                                        == "workflow_deadline_exceeded"
+                                    ):
+                                        quality_repair_stop_reason = (
+                                            "workflow_deadline_exceeded"
+                                        )
+                                    break
+                                remaining_seconds = remaining_lifecycle_seconds()
+                                minimum_remaining_seconds = float(
+                                    settings.staged_quality_repair_min_remaining_seconds
+                                )
+                                if remaining_seconds < minimum_remaining_seconds:
+                                    quality_repair_stop_reason = (
+                                        "insufficient_remaining_time"
+                                    )
+                                    self._emit_event(
+                                        "quality_repair_skipped",
+                                        {
+                                            "step_id": step_id,
+                                            "provider": BUILTIN_LLM_PROVIDER_ID,
+                                            "attempt": repair_attempt,
+                                            "remaining_seconds": round(
+                                                remaining_seconds, 1
+                                            ),
+                                            "minimum_remaining_seconds": (
+                                                minimum_remaining_seconds
+                                            ),
+                                            "reason": quality_repair_stop_reason,
+                                            "user_message": (
+                                                "剩余时间不足以安全完成下一轮质量修复，"
+                                                "已停止追加模型调用并保留当前最佳产物。"
+                                            ),
+                                        },
+                                    )
                                     break
                                 feedback = _quality_feedback_from_audit(
                                     audit,
@@ -1166,12 +1322,47 @@ class WorkbenchWorkflowRunner:
                                 repair_started = time.monotonic()
                                 staged_result = await execute_staged(current_plan)
                                 behavior_validation = await validate_behavior_claims()
-                                candidate_audit = _audit_staged_agent_artifacts(
-                                    artifact_dir=artifact_dir,
-                                    task_bundle=task_bundle,
-                                    execution_contract=scoped_execution_contract,
-                                    workflow_snapshot=workflow_snapshot,
-                                )
+                                if (
+                                    behavior_validation.get("reason")
+                                    == "workflow_deadline_exceeded"
+                                ):
+                                    staged_result = (
+                                        _mark_staged_workflow_deadline_exceeded(
+                                            staged_result
+                                        )
+                                    )
+                                    quality_repair_stop_reason = (
+                                        "workflow_deadline_exceeded"
+                                    )
+                                try:
+                                    candidate_audit = await audit_staged_artifacts()
+                                except asyncio.TimeoutError:
+                                    _restore_quality_repair_artifacts(
+                                        artifact_dir=artifact_dir,
+                                        snapshot=accepted_snapshot,
+                                    )
+                                    staged_result = (
+                                        _mark_staged_workflow_deadline_exceeded(
+                                            staged_result
+                                        )
+                                    )
+                                    quality_repair_stop_reason = (
+                                        "workflow_deadline_exceeded"
+                                    )
+                                    self._emit_event(
+                                        "quality_repair_skipped",
+                                        {
+                                            "step_id": step_id,
+                                            "provider": BUILTIN_LLM_PROVIDER_ID,
+                                            "attempt": repair_attempt,
+                                            "reason": quality_repair_stop_reason,
+                                            "user_message": (
+                                                "质量复核达到工作流总时间上限，"
+                                                "已恢复修复前的最佳产物。"
+                                            ),
+                                        },
+                                    )
+                                    break
                                 regressed = _quality_repair_regressed(
                                     before=audit,
                                     after=candidate_audit,
@@ -1243,11 +1434,21 @@ class WorkbenchWorkflowRunner:
                                 "enabled": bool(settings.staged_quality_repair_enabled),
                                 "attempt_count": len(repair_history),
                                 "attempts": repair_history,
+                                "total_budget_seconds": round(
+                                    staged_lifecycle_budget_seconds, 3
+                                ),
+                                "remaining_seconds": round(
+                                    remaining_lifecycle_seconds(), 3
+                                ),
+                                "stopped_reason": quality_repair_stop_reason,
                             },
                         )
                         return staged_result, current_plan, repair_history
                     finally:
-                        await _close_llm_clients(source_analysis_llm, llm)
+                        await _close_llm_clients(
+                            source_analysis_llm,
+                            llm,
+                        )
 
                 (
                     staged_result,
@@ -1255,6 +1456,7 @@ class WorkbenchWorkflowRunner:
                     quality_repair_history,
                 ) = _run_async_blocking(execute_staged_lifecycle())
                 raw_output = json.dumps(staged_result, ensure_ascii=False, indent=2)
+                execution_timed_out = _staged_execution_timed_out(staged_result)
                 status = _staged_step_status(status, staged_result)
                 model = ", ".join(
                     str(item) for item in staged_result.get("models") or [] if str(item)
@@ -1316,7 +1518,7 @@ class WorkbenchWorkflowRunner:
             "started_at": started_at,
             "completed_at": _now(),
             "duration_ms": round((time.monotonic() - started_monotonic) * 1000, 1),
-            "timed_out": False,
+            "timed_out": execution_timed_out,
             "error": error,
             "provider_diagnostics": {
                 "owner": "codetalk_builtin_llm",
@@ -2438,7 +2640,120 @@ def _builtin_prior_step_artifacts(task_bundle: dict[str, Any]) -> dict[str, Any]
     return result
 
 
-async def _close_llm_clients(*clients: Any) -> None:
+def _consume_async_task(task: asyncio.Task[Any]) -> None:
+    try:
+        task.result()
+    except BaseException:
+        pass
+
+
+async def _cancel_async_task_bounded(task: asyncio.Task[Any]) -> None:
+    if task.done():
+        _consume_async_task(task)
+        return
+    task.cancel()
+    done, _ = await asyncio.wait(
+        {task},
+        timeout=float(settings.staged_workflow_shutdown_grace_seconds),
+    )
+    if task in done:
+        _consume_async_task(task)
+    else:
+        task.add_done_callback(_consume_async_task)
+
+
+async def _await_with_absolute_deadline(awaitable: Any, *, deadline: float) -> Any:
+    remaining_seconds = deadline - time.monotonic()
+    if remaining_seconds <= 0:
+        close = getattr(awaitable, "close", None)
+        if callable(close):
+            close()
+        raise asyncio.TimeoutError
+    task = asyncio.create_task(awaitable)
+    done, _ = await asyncio.wait({task}, timeout=remaining_seconds)
+    if task in done:
+        return task.result()
+    await _cancel_async_task_bounded(task)
+    raise asyncio.TimeoutError
+
+
+async def _run_sync_with_absolute_deadline(
+    callback: Callable[[], Any],
+    *,
+    deadline: float,
+) -> Any:
+    if time.monotonic() >= deadline:
+        raise asyncio.TimeoutError
+    if os.name == "nt":
+        result = callback()
+        if time.monotonic() >= deadline:
+            raise asyncio.TimeoutError
+        return result
+
+    context = multiprocessing.get_context("fork")
+    receive_connection, send_connection = context.Pipe(duplex=False)
+
+    def run_callback() -> None:
+        try:
+            send_connection.send(("result", callback()))
+        except BaseException as exc:
+            try:
+                send_connection.send(("error", exc))
+            except BaseException:
+                send_connection.send(("error_text", repr(exc)))
+        finally:
+            send_connection.close()
+
+    process = context.Process(target=run_callback, daemon=True)
+    process.start()
+    send_connection.close()
+    try:
+        while time.monotonic() < deadline:
+            if receive_connection.poll():
+                try:
+                    kind, payload = receive_connection.recv()
+                except (EOFError, OSError) as exc:
+                    process.join(
+                        timeout=float(
+                            settings.staged_workflow_shutdown_grace_seconds
+                        )
+                    )
+                    raise RuntimeError(
+                        "Quality audit worker exited without a result "
+                        f"(exit={process.exitcode})"
+                    ) from exc
+                process.join(
+                    timeout=float(settings.staged_workflow_shutdown_grace_seconds)
+                )
+                if kind == "result":
+                    return payload
+                if kind == "error":
+                    raise payload
+                raise RuntimeError(str(payload))
+            if not process.is_alive():
+                raise RuntimeError(
+                    f"Quality audit worker exited without a result (exit={process.exitcode})"
+                )
+            await asyncio.sleep(0.01)
+        raise asyncio.TimeoutError
+    finally:
+        receive_connection.close()
+        if process.is_alive():
+            process.terminate()
+            process.join(
+                timeout=float(settings.staged_workflow_shutdown_grace_seconds)
+            )
+        if process.is_alive() and hasattr(process, "kill"):
+            process.kill()
+            process.join(
+                timeout=float(settings.staged_workflow_shutdown_grace_seconds)
+            )
+
+
+async def _close_llm_clients(
+    *clients: Any,
+    deadline: float | None = None,
+) -> None:
     seen: set[int] = set()
     for client in clients:
         if client is None or id(client) in seen:
@@ -2446,22 +2761,69 @@ async def _close_llm_clients(*clients: Any) -> None:
         seen.add(id(client))
         close = getattr(client, "close", None)
         if callable(close):
-            await close()
+            close_deadline = (
+                deadline
+                if deadline is not None
+                else time.monotonic()
+                + float(settings.staged_workflow_shutdown_grace_seconds)
+            )
+            try:
+                await _await_with_absolute_deadline(
+                    close(),
+                    deadline=close_deadline,
+                )
+            except asyncio.TimeoutError:
+                continue
+
+
+def _run_awaitable_in_new_loop(awaitable: Any, result: dict[str, Any]) -> None:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        result["value"] = loop.run_until_complete(awaitable)
+    except BaseException as exc:
+        result["error"] = exc
+    finally:
+        pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+        for task in pending:
+            task.cancel()
+        if pending:
+            try:
+                loop.run_until_complete(
+                    asyncio.wait(
+                        pending,
+                        timeout=float(settings.staged_workflow_shutdown_grace_seconds),
+                    )
+                )
+            except BaseException:
+                pass
+        for task in pending:
+            if task.done():
+                _consume_async_task(task)
+            else:
+                task._log_destroy_pending = False
+        default_executor = getattr(loop, "_default_executor", None)
+        if default_executor is not None:
+            default_executor.shutdown(wait=False, cancel_futures=True)
+            loop._default_executor = None
+        loop.close()
+        asyncio.set_event_loop(None)
 
 
 def _run_async_blocking(awaitable: Any) -> Any:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(awaitable)
+        result: dict[str, Any] = {}
+        _run_awaitable_in_new_loop(awaitable, result)
+        if "error" in result:
+            raise result["error"]
+        return result.get("value")
 
     result: dict[str, Any] = {}
 
     def _target() -> None:
-        try:
-            result["value"] = asyncio.run(awaitable)
-        except BaseException as exc:  # pragma: no cover - re-raised in caller thread
-            result["error"] = exc
+        _run_awaitable_in_new_loop(awaitable, result)
 
     thread = threading.Thread(target=_target, daemon=True)
     thread.start()
@@ -3893,7 +4255,10 @@ async def _execute_staged_with_deadline(
     on_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     try:
-        return await asyncio.wait_for(awaitable, timeout=max(0.001, timeout_seconds))
+        return await _await_with_absolute_deadline(
+            awaitable,
+            deadline=time.monotonic() + max(0.001, timeout_seconds),
+        )
     except asyncio.TimeoutError:
         stage_statuses: dict[str, str] = {}
         partial_stages: list[str] = []
@@ -5228,39 +5593,28 @@ def _previous_test_activity_quality_feedback(artifact_dir: Path) -> dict[str, An
     status = str(payload.get("status") or "")
     if status not in {"needs_rework", "invalid"} and payload.get("deliverable") is not False:
         return {}
-    all_issues = [
+    raw_issues = [
         dict(item)
         for item in payload.get("issues") or []
         if isinstance(item, dict)
     ]
-    if not all_issues:
+    if not raw_issues:
         return {}
-    issues = all_issues[:50]
-    grouped_issues: dict[tuple[str, str, str], dict[str, Any]] = {}
-    for issue in all_issues:
-        artifact = str(issue.get("artifact") or "").strip()
-        code = str(issue.get("code") or "").strip()
-        field_name = str(issue.get("field") or issue.get("field_name") or "").strip()
-        key = (artifact, code, field_name)
-        group = grouped_issues.setdefault(
-            key,
-            {
-                "artifact": artifact,
-                "code": code,
-                "field": field_name,
-                "count": 0,
-                "messages": [],
-            },
-        )
-        group["count"] += 1
-        message = str(issue.get("message") or issue.get("reason") or "").strip()
-        if message and message not in group["messages"] and len(group["messages"]) < 3:
-            group["messages"].append(message)
-    affected_artifacts = []
-    for issue in all_issues:
-        artifact = str(issue.get("artifact") or "").strip()
-        if artifact and artifact not in affected_artifacts:
-            affected_artifacts.append(artifact)
+    bundle = _read_json(artifact_dir / "task_bundle.json")
+    required_artifacts = [
+        str(item)
+        for item in (bundle.get("required_artifacts") if isinstance(bundle, dict) else []) or []
+        if str(item).strip()
+    ]
+    feedback = _quality_feedback_from_audit(
+        payload,
+        required_artifacts=required_artifacts,
+        quality_artifact=str(audit_path.relative_to(task_dir)),
+    )
+    issues = [dict(item) for item in feedback.get("issues") or [] if isinstance(item, dict)]
+    affected_artifacts = [
+        str(item) for item in feedback.get("affected_artifacts") or [] if str(item).strip()
+    ]
     affected_names = {Path(item).name for item in affected_artifacts}
     acceptance_payload = _read_json(task_dir / "task_acceptance_audit.json")
     acceptance_failures = []
@@ -5285,22 +5639,10 @@ def _previous_test_activity_quality_feedback(artifact_dir: Path) -> dict[str, An
             acceptance_failures.append(detail)
             if len(acceptance_failures) >= 20:
                 break
-    return {
-        "quality_artifact": str(audit_path.relative_to(task_dir)),
-        "status": status,
-        "score": int(payload.get("score") or 0),
-        "issue_count": int(payload.get("issue_count") or len(all_issues)),
-        "total_issue_count": len(all_issues),
-        "issues_truncated": len(all_issues) > len(issues),
-        "issues": issues,
-        "issue_groups": list(grouped_issues.values()),
-        "affected_artifacts": affected_artifacts,
+    feedback.update({
+        "total_issue_count": len(raw_issues),
+        "issues_truncated": len(raw_issues) > len(issues),
         "acceptance_failures": acceptance_failures,
-        "recommendations": [
-            str(item)
-            for item in payload.get("recommendations") or []
-            if str(item).strip()
-        ][:50],
         "instruction": (
             "这是上一轮产品质量门禁的失败明细。仅修改受影响交付件，复用已通过验证的源码证据，"
             "不要重新执行整仓发现；复跑时必须逐项修正所有问题；"
@@ -5308,7 +5650,8 @@ def _previous_test_activity_quality_feedback(artifact_dir: Path) -> dict[str, An
             "每条整改还必须附带独立、可执行的测试、监控或日志验证动作；"
             "不得删除、绕过或弱化质量门禁。"
         ),
-    }
+    })
+    return feedback
 
 
 def _quality_feedback_from_audit(
@@ -5326,6 +5669,7 @@ def _quality_feedback_from_audit(
         ),
         str(required_artifacts[0]) if required_artifacts else "assistant-output.md",
     )
+    required_names = {Path(str(value)).name for value in required_artifacts if str(value).strip()}
     issues: list[dict[str, Any]] = []
     affected_artifacts: list[str] = []
     for raw_issue in audit.get("issues") or []:
@@ -5335,6 +5679,13 @@ def _quality_feedback_from_audit(
         source_artifact = str(issue.get("artifact") or "").strip()
         code = str(issue.get("code") or "").strip()
         artifact = report_artifact if source_artifact == "assistant-output.md" else source_artifact
+        if (
+            source_artifact
+            and Path(source_artifact).name not in required_names
+            and len(required_names) == 1
+            and Path(report_artifact).name in required_names
+        ):
+            artifact = report_artifact
         if source_artifact == "test_design.md" and code in {
             "missing_max_connections_target_setup",
             "incomplete_mcs_black_box_oracle",

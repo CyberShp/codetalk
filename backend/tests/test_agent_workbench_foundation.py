@@ -1,7 +1,9 @@
 import hashlib
 import json
 import os
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -557,9 +559,15 @@ def test_mr_artifact_validation_rejects_unsafe_required_artifacts_before_reading
     ]
 
 
-def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_path):
+def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(
+    tmp_path,
+    monkeypatch,
+):
+    from app.config import settings
     from app.services.agent_run_harness import AgentRunHarness
 
+    runtime_temp_dir = tmp_path / "runtime-temp"
+    monkeypatch.setattr(settings, "runtime_temp_dir", str(runtime_temp_dir))
     artifact_dir = tmp_path / "agent-run"
     output_file = artifact_dir / "agent_seen.json"
     script = (
@@ -680,11 +688,14 @@ def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_pa
     runtime_tmp_dir = Path(execution_input["env_hints"]["TEMP"])
     assert runtime_tmp_dir.parent == artifact_dir
     assert runtime_tmp_dir.name.startswith(".runtime-tmp-")
+    assert not runtime_tmp_dir.exists()
+    assert not list(artifact_dir.glob(".runtime-codex-home-*"))
     assert execution_input["env_hints"] == {
         "CODETALK_AGENT_READONLY": "1",
-        "CODETALK_REPO_PATH": str(tmp_path),
-        "CODETALK_AGENT_ARTIFACT_DIR": str(artifact_dir),
-        "GIT_CONFIG_COUNT": "1",
+            "CODETALK_REPO_PATH": str(tmp_path),
+            "CODETALK_AGENT_ARTIFACT_DIR": str(artifact_dir),
+            "CODETALK_TEMP_DIR": str(runtime_tmp_dir),
+            "GIT_CONFIG_COUNT": "1",
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_KEY_0": "core.excludesFile",
         "GIT_CONFIG_VALUE_0": "/dev/null",
@@ -698,10 +709,34 @@ def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(tmp_pa
     assert "agent_execution_input_prepared" in events
     assert "agent_run_started" in events
     assert "agent_run_completed" in events
+    assert not list(runtime_temp_dir.glob("codetalk-agent-probe-*"))
+
+
+def test_agent_run_harness_removes_codex_runtime_home_after_execution(tmp_path):
+    from app.services.agent_run_harness import AgentRunHarness
+
+    artifact_dir = tmp_path / "codex-agent-run"
+    script = "import json, sys; json.load(sys.stdin); print('audit complete')"
+    harness = AgentRunHarness(artifact_dir)
+    run = harness.create_run(
+        run_id="agent_run_codex_cleanup",
+        provider="agent-runtime:default-codex",
+        command=[sys.executable, "-c", script],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf"},
+        task_bundle={"task_id": "task-codex-cleanup"},
+    )
+
+    executed = harness.execute_run(run.run_id, timeout_sec=10)
+
+    assert executed.status == "completed"
+    assert not list(artifact_dir.glob(".runtime-tmp-*"))
+    assert not list(artifact_dir.glob(".runtime-codex-home-*"))
 
 
 def test_workflow_harness_projects_managed_claude_oauth_without_exposing_keychain(
     monkeypatch,
+    tmp_path,
 ):
     from app.services import agent_cli_bridge, agent_run_harness
 
@@ -733,6 +768,7 @@ def test_workflow_harness_projects_managed_claude_oauth_without_exposing_keychai
     env = agent_run_harness._agent_process_env_for_harness(
         provider="agent-runtime:default-claude-code",
         repo_path="/repo",
+        artifact_dir=tmp_path / "artifacts",
         command=["/usr/local/bin/claude"],
         prompt_transport="claude_print_arg",
     )
@@ -741,7 +777,10 @@ def test_workflow_harness_projects_managed_claude_oauth_without_exposing_keychai
     assert "do-not-pass" not in json.dumps(env)
 
 
-def test_workflow_harness_does_not_project_claude_oauth_to_custom_wrapper(monkeypatch):
+def test_workflow_harness_does_not_project_claude_oauth_to_custom_wrapper(
+    monkeypatch,
+    tmp_path,
+):
     from app.services import agent_cli_bridge, agent_run_harness
 
     monkeypatch.setattr(agent_cli_bridge.sys, "platform", "darwin")
@@ -762,6 +801,7 @@ def test_workflow_harness_does_not_project_claude_oauth_to_custom_wrapper(monkey
     env = agent_run_harness._agent_process_env_for_harness(
         provider="agent-runtime:custom-claude-wrapper",
         repo_path="/repo",
+        artifact_dir=tmp_path / "artifacts",
         command=["/tmp/custom-claude-wrapper"],
         prompt_transport="claude_print_arg",
     )
@@ -847,6 +887,124 @@ def test_quality_retry_prompt_bundle_preserves_user_input_and_omits_redundant_di
     }
 
 
+def test_initial_agent_prompt_compacts_duplicate_context_without_losing_user_text():
+    from app.services.agent_run_harness import (
+        _artifact_contract_reference,
+        _execution_contract_for_agent_prompt,
+        _output_contract_for_agent_prompt,
+        _task_bundle_for_agent_prompt,
+    )
+
+    user_text = "第一行\n第二行\n用户输入必须逐字保留"
+    task_bundle = {
+        "task_id": "task-compact",
+        "goal": user_text,
+        "inputs": {"analysis_target": user_text},
+        "input_materials": {
+            "materials": [{"path": "design.md", "user_note": user_text}]
+        },
+        "local_source_context": {"large": "x" * 300_000},
+        "context_bundle": {"large": "x" * 300_000},
+        "execution_contract": {"large": "x" * 300_000},
+        "test_activity_contract": {"large": "x" * 300_000},
+    }
+    execution_contract = {
+        "goal": user_text,
+        "repo_path": "/repo",
+        "user_inputs": [{"value": user_text}],
+        "source_context": {"files": [{"excerpt": "source evidence"}]},
+        "test_activity_contract": {"duplicate": "x" * 300_000},
+    }
+    output_contract = {
+        "contract_version": 1,
+        "required_artifacts": ["report.md"],
+        "execution_contract": execution_contract,
+        "test_activity_contract": {"duplicate": "x" * 300_000},
+    }
+
+    compact_bundle = _task_bundle_for_agent_prompt(task_bundle)
+    compact_execution = _execution_contract_for_agent_prompt(execution_contract)
+    compact_output = _output_contract_for_agent_prompt(output_contract)
+    artifact_reference = _artifact_contract_reference(
+        compact_output,
+        artifact_dir="/artifacts",
+    )
+    payload = json.dumps(
+        {
+            "task_bundle": compact_bundle,
+            "execution_contract": compact_execution,
+            "agent_output_contract": compact_output,
+            "artifact_contract": artifact_reference,
+        },
+        ensure_ascii=False,
+    )
+
+    assert compact_bundle["goal"] == user_text
+    assert compact_bundle["inputs"]["analysis_target"] == user_text
+    assert compact_bundle["input_materials"]["materials"][0]["user_note"] == user_text
+    assert compact_execution["user_inputs"][0]["value"] == user_text
+    assert len(payload) < 20_000
+    assert "local_source_context" not in compact_bundle
+    assert "test_activity_contract" not in compact_execution
+    assert "execution_contract" not in compact_output
+    assert artifact_reference["required_artifacts"] == ["report.md"]
+
+
+def test_agent_prompt_limits_unknown_extension_context_but_preserves_user_text(
+    monkeypatch,
+):
+    import app.services.agent_run_harness as harness_module
+
+    user_text = "用户输入的每一个字都必须保留\n第二行"
+    monkeypatch.setattr(
+        harness_module,
+        "_AGENT_PROMPT_EXTENSION_BUDGET_CHARACTERS",
+        1024,
+        raising=False,
+    )
+    task_bundle = {
+        "task_id": "task-extension-budget",
+        "goal": user_text,
+        "inputs": {"analysis_target": user_text},
+        "input_materials": {"design_doc": {"user_note": user_text}},
+        "plugin_context": {"diagnostics": "x" * 5000},
+    }
+
+    prompt_bundle = harness_module._task_bundle_for_agent_prompt(task_bundle)
+
+    assert prompt_bundle["goal"] == user_text
+    assert prompt_bundle["inputs"]["analysis_target"] == user_text
+    assert prompt_bundle["input_materials"]["design_doc"]["user_note"] == user_text
+    assert "plugin_context" not in prompt_bundle
+    assert "plugin_context" in prompt_bundle["context_omissions"]
+
+
+def test_agent_prompt_budget_counts_key_names_and_bounds_omission_metadata(monkeypatch):
+    import app.services.agent_run_harness as harness_module
+
+    monkeypatch.setattr(
+        harness_module,
+        "_AGENT_PROMPT_EXTENSION_BUDGET_CHARACTERS",
+        256,
+    )
+    enormous_key = "diagnostics-" + ("k" * 5000)
+    task_bundle = {
+        "goal": "保留用户目标",
+        enormous_key: "ok",
+        **{f"extra-{index}": "x" * 300 for index in range(100)},
+    }
+
+    prompt_bundle = harness_module._task_bundle_for_agent_prompt(task_bundle)
+    serialized = json.dumps(prompt_bundle, ensure_ascii=False)
+
+    assert prompt_bundle["goal"] == "保留用户目标"
+    assert enormous_key not in prompt_bundle
+    assert enormous_key not in serialized
+    assert prompt_bundle["context_omission_count"] == 101
+    assert len(prompt_bundle["context_omissions"]) <= 64
+    assert len(serialized) < 10_000
+
+
 def test_workflow_command_resolution_uses_windows_pathext(monkeypatch):
     from app.services import agent_run_harness
 
@@ -887,6 +1045,57 @@ def test_idle_timeout_observes_output_without_newlines(tmp_path):
     assert result.timed_out is False
     assert result.exit_code == 0
     assert result.stdout == "........"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
+def test_workflow_subprocess_cleans_descendant_after_parent_exits(tmp_path):
+    from app.services.agent_run_harness import _run_cancellable_subprocess
+
+    child_pid_file = tmp_path / "workflow-orphan.pid"
+    child_script = (
+        "import os,signal,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"open({str(child_pid_file)!r}, 'w').write(str(os.getpid())); "
+        "time.sleep(60)"
+    )
+    parent_script = (
+        "import subprocess,sys; "
+        f"subprocess.Popen([sys.executable, '-c', {child_script!r}], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+        "stderr=subprocess.DEVNULL, close_fds=True)"
+    )
+    child_pid = 0
+    try:
+        result = _run_cancellable_subprocess(
+            [sys.executable, "-c", parent_script],
+            cwd=str(tmp_path),
+            input_bytes=None,
+            timeout=5,
+            idle_timeout=2,
+            env=dict(os.environ),
+        )
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+
+        assert result.exit_code == 0
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            state = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(child_pid)],
+                check=False,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if not state or state.startswith("Z"):
+                break
+            time.sleep(0.02)
+        else:
+            pytest.fail("workflow descendant survived after parent exited")
+    finally:
+        if child_pid:
+            try:
+                os.kill(child_pid, 9)
+            except ProcessLookupError:
+                pass
 
 
 def test_workflow_agent_process_output_compacts_codex_command_updates():
@@ -1161,7 +1370,7 @@ def test_agent_run_harness_uses_provider_prompt_transport_for_argv_last(
     assert execution_input["prompt_transport"] == "argv"
 
 
-def test_codex_runtime_home_links_static_inputs_and_keeps_state_in_artifacts(
+def test_codex_runtime_home_copies_skills_and_keeps_state_in_artifacts(
     tmp_path, monkeypatch
 ):
     from app.services.agent_run_harness import _prepare_isolated_codex_home
@@ -1197,10 +1406,7 @@ def test_codex_runtime_home_links_static_inputs_and_keeps_state_in_artifacts(
 
     assert runtime_home.parent == artifact_dir.resolve()
     assert runtime_home.name.startswith(".runtime-codex-home-")
-    assert set(read_targets) == {
-        (real_home / "auth.json").resolve(),
-        (real_home / "skills").resolve(),
-    }
+    assert set(read_targets) == {(real_home / "auth.json").resolve()}
     assert (runtime_home / "auth.json").is_symlink()
     assert not (runtime_home / "config.toml").is_symlink()
     isolated_config = (runtime_home / "config.toml").read_text(encoding="utf-8")
@@ -1211,9 +1417,209 @@ def test_codex_runtime_home_links_static_inputs_and_keeps_state_in_artifacts(
     assert "marketplaces." not in isolated_config
     assert "mcp_servers." not in isolated_config
     assert "/host/private" not in isolated_config
-    assert not (runtime_home / "models_cache.json").is_symlink()
-    assert (runtime_home / "models_cache.json").read_text(encoding="utf-8") == "models_cache.json"
-    assert (runtime_home / "skills").is_symlink()
+    assert not (runtime_home / "models_cache.json").exists()
+    assert (runtime_home / "skills").is_dir()
+    assert not (runtime_home / "skills").is_symlink()
+
+
+def test_codex_runtime_home_rejects_nested_skill_symlinks(tmp_path, monkeypatch):
+    from app.services.agent_run_harness import _prepare_isolated_codex_home
+    from app.services.agent_sandbox import AgentSandboxError
+
+    real_home = tmp_path / "real-codex-home"
+    skills = real_home / "skills" / "linked-skill"
+    skills.mkdir(parents=True)
+    outside = tmp_path / "outside-secret.txt"
+    outside.write_text("must not be copied", encoding="utf-8")
+    (skills / "secret.txt").symlink_to(outside)
+    artifact_dir = tmp_path / "agent-run"
+    artifact_dir.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(real_home))
+
+    with pytest.raises(AgentSandboxError, match="符号链接"):
+        _prepare_isolated_codex_home(
+            provider="agent-runtime:default-codex",
+            command=["codex", "exec"],
+            artifact_dir=artifact_dir,
+        )
+
+    assert not any(
+        candidate.read_text(encoding="utf-8") == "must not be copied"
+        for candidate in artifact_dir.rglob("secret.txt")
+        if candidate.is_file() and not candidate.is_symlink()
+    )
+
+
+def test_codex_runtime_home_makes_copied_skills_owner_writable(tmp_path, monkeypatch):
+    from app.services.agent_run_harness import _prepare_isolated_codex_home
+
+    real_home = tmp_path / "real-codex-home"
+    skill_dir = real_home / "skills" / "readonly-skill"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text("readonly source", encoding="utf-8")
+    skill_file.chmod(0o444)
+    skill_dir.chmod(0o555)
+    (real_home / "skills").chmod(0o555)
+    artifact_dir = tmp_path / "agent-run"
+    artifact_dir.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(real_home))
+
+    runtime_home, _ = _prepare_isolated_codex_home(
+        provider="agent-runtime:default-codex",
+        command=["codex", "exec"],
+        artifact_dir=artifact_dir,
+    )
+
+    copied_dir = runtime_home / "skills" / "readonly-skill"
+    copied_file = copied_dir / "SKILL.md"
+    copied_file.write_text("updated", encoding="utf-8")
+    created_file = copied_dir / "created.txt"
+    created_file.write_text("created", encoding="utf-8")
+    copied_file.unlink()
+
+    assert created_file.read_text(encoding="utf-8") == "created"
+    assert not copied_file.exists()
+
+
+def test_codex_runtime_home_copies_from_open_fd_when_source_is_swapped(
+    tmp_path, monkeypatch
+):
+    import shutil
+
+    from app.services.agent_run_harness import _prepare_isolated_codex_home
+
+    real_home = tmp_path / "real-codex-home"
+    skill_dir = real_home / "skills" / "safe-skill"
+    skill_dir.mkdir(parents=True)
+    skill_file = skill_dir / "SKILL.md"
+    skill_file.write_text("safe source", encoding="utf-8")
+    outside = tmp_path / "outside-secret.txt"
+    outside.write_text("outside secret", encoding="utf-8")
+    outside.chmod(0o644)
+    artifact_dir = tmp_path / "agent-run"
+    artifact_dir.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(real_home))
+    original_copyfile = shutil.copyfile
+
+    def swap_source_before_copy(source, target, *args, **kwargs):
+        if Path(source) == skill_file:
+            skill_file.unlink()
+            skill_file.symlink_to(outside)
+        return original_copyfile(source, target, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "copyfile", swap_source_before_copy)
+
+    runtime_home, _ = _prepare_isolated_codex_home(
+        provider="agent-runtime:default-codex",
+        command=["codex", "exec"],
+        artifact_dir=artifact_dir,
+    )
+
+    copied = runtime_home / "skills" / "safe-skill" / "SKILL.md"
+    assert not copied.is_symlink()
+    assert copied.read_text(encoding="utf-8") == "safe source"
+    assert outside.read_text(encoding="utf-8") == "outside secret"
+    assert outside.stat().st_mode & 0o777 == 0o644
+
+
+def test_codex_runtime_home_limits_skill_directory_entries(tmp_path, monkeypatch):
+    from app.services.agent_run_harness import _prepare_isolated_codex_home
+    from app.services.agent_sandbox import AgentSandboxError
+    import app.services.agent_sandbox as sandbox_module
+
+    real_home = tmp_path / "real-codex-home"
+    skills = real_home / "skills"
+    skills.mkdir(parents=True)
+    for index in range(3):
+        (skills / f"empty-{index}").mkdir()
+    artifact_dir = tmp_path / "agent-run"
+    artifact_dir.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(real_home))
+    monkeypatch.setattr(sandbox_module, "_CODEX_SKILLS_MAX_ENTRIES", 2, raising=False)
+
+    with pytest.raises(AgentSandboxError, match="目录项"):
+        _prepare_isolated_codex_home(
+            provider="agent-runtime:default-codex",
+            command=["codex", "exec"],
+            artifact_dir=artifact_dir,
+        )
+
+
+def test_codex_runtime_home_stops_scanning_at_entry_limit(tmp_path, monkeypatch):
+    from app.services.agent_run_harness import _prepare_isolated_codex_home
+    from app.services.agent_sandbox import AgentSandboxError
+    import app.services.agent_sandbox as sandbox_module
+
+    real_home = tmp_path / "real-codex-home"
+    skills = real_home / "skills"
+    skills.mkdir(parents=True)
+    for index in range(10):
+        (skills / f"empty-{index}").mkdir()
+    artifact_dir = tmp_path / "agent-run"
+    artifact_dir.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(real_home))
+    monkeypatch.setattr(sandbox_module, "_CODEX_SKILLS_MAX_ENTRIES", 2)
+    original_scandir = sandbox_module.os.scandir
+    yielded = 0
+
+    class CountingScandir:
+        def __init__(self, source):
+            self._inner = original_scandir(source)
+            self._count_entries = isinstance(source, int)
+
+        def __enter__(self):
+            self._inner.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return self._inner.__exit__(*args)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            nonlocal yielded
+            entry = next(self._inner)
+            if self._count_entries:
+                yielded += 1
+            return entry
+
+    monkeypatch.setattr(sandbox_module.os, "scandir", CountingScandir)
+
+    with pytest.raises(AgentSandboxError, match="目录项"):
+        _prepare_isolated_codex_home(
+            provider="agent-runtime:default-codex",
+            command=["codex", "exec"],
+            artifact_dir=artifact_dir,
+        )
+
+    assert yielded == 3
+
+
+def test_codex_runtime_home_skips_skill_copy_without_secure_descriptor_walk(
+    tmp_path, monkeypatch
+):
+    from app.services.agent_run_harness import _prepare_isolated_codex_home
+    import app.services.agent_sandbox as sandbox_module
+
+    real_home = tmp_path / "real-codex-home"
+    skill_dir = real_home / "skills" / "unsafe-platform-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("must not be copied", encoding="utf-8")
+    artifact_dir = tmp_path / "agent-run"
+    artifact_dir.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(real_home))
+    monkeypatch.setattr(sandbox_module.os, "supports_dir_fd", set())
+
+    runtime_home, _ = _prepare_isolated_codex_home(
+        provider="agent-runtime:default-codex",
+        command=["codex", "exec"],
+        artifact_dir=artifact_dir,
+    )
+
+    assert (runtime_home / "skills").is_dir()
+    assert list((runtime_home / "skills").iterdir()) == []
 
 
 def test_codex_runtime_home_does_not_reuse_workspace_controlled_symlink(

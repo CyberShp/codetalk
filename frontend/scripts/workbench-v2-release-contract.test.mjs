@@ -38,7 +38,7 @@ test("release UI keeps both basic validation workflows as localized core presets
   );
   assert.ok(corePresetDeclaration);
   for (const [workflowId, label] of [
-    ["basic_source_report_claude", "基础源码报告（Claude Code）"],
+    ["basic_source_report_codex", "基础源码报告（Codex CLI）"],
     ["basic_source_design_report_builtin", "基础源码+设计文档报告（内置模型）"],
   ]) {
     assert.ok(corePresetDeclaration[1].includes(`"${workflowId}"`));
@@ -127,4 +127,10 @@ test("run cockpit presents structure, fact, and executability quality axes", () 
   assert.match(cockpit, /可执行性通过率/);
   assert.match(cockpit, /quality_axes/);
   assert.match(cockpit, /fact_verification/);
+});
+
+test("quality-blocked runs expose an in-context repair retry", () => {
+  assert.match(cockpit, /run\.quality_status === "blocked"/);
+  assert.match(cockpit, /修复质量问题并重试/);
+  assert.match(cockpit, /createRun\(taskId, runId\)/);
 });

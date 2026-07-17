@@ -1,9 +1,14 @@
 import asyncio
 import json
+import os
 import platform
 import shutil
+import subprocess
 import sys
+import time
 from pathlib import Path
+
+import pytest
 
 from app.schemas.workspace_analysis import AnalysisObject, LLMLimits
 from app.services.workspace_scope_resolver import WorkspaceScopeResolver, _GraphIndex
@@ -1497,7 +1502,7 @@ def test_run_external_agent_discovery_does_not_drop_custom_provider_at_parallel_
     monkeypatch.setattr(discovery.settings, "external_agent_max_parallel", 2)
     seen: list[str] = []
 
-    async def fake_run_provider(provider, request, *, session=None):
+    async def fake_run_provider(provider, request, *, session=None, artifact_dir=None):
         seen.append(provider)
         return AgentDiscoveryResult(provider=provider, status="unavailable")
 
@@ -2638,7 +2643,11 @@ def test_agent_process_env_injects_configured_ccr_config_path(tmp_path, monkeypa
     monkeypatch.delenv("CCR_CONFIG_PATH", raising=False)
     monkeypatch.setattr(settings, "claude_code_config_path", str(config))
 
-    env = _agent_process_env("claude-code", tmp_path)
+    env = _agent_process_env(
+        "claude-code",
+        tmp_path,
+        artifact_dir=tmp_path / "artifacts",
+    )
 
     assert env["CODETALK_AGENT_READONLY"] == "1"
     assert env["CODETALK_REPO_PATH"] == str(tmp_path.resolve())
@@ -2651,7 +2660,11 @@ def test_agent_process_env_filters_unrelated_parent_secret(tmp_path, monkeypatch
     monkeypatch.setenv("UNRELATED_DISCOVERY_SECRET", "must-not-leak")
     monkeypatch.setenv("PATH", "/usr/bin")
 
-    env = _agent_process_env("opencode", tmp_path)
+    env = _agent_process_env(
+        "opencode",
+        tmp_path,
+        artifact_dir=tmp_path / "artifacts",
+    )
 
     assert env["PATH"] == "/usr/bin"
     assert "UNRELATED_DISCOVERY_SECRET" not in env
@@ -3280,6 +3293,131 @@ def test_agent_diagnostic_redaction_preserves_python_parameter_syntax():
     ast.parse(redacted)
     assert "secret=None," in redacted
     assert "actual-secret-123" not in redacted
+
+
+def test_agent_diagnostic_redaction_does_not_treat_python_calls_as_csv():
+    import ast
+
+    from app.services.external_agent_discovery import redact_agent_diagnostic_text
+
+    source = (
+        'assert chap_md5(1, "secret", b"challenge")\n'
+        'rsp = describe_rsp(bytes([0x23, 0x80]) + b"\\0" * 46, b"")\n'
+        'assert_status(rsp, ISCSI_CLASS_INITIATOR_ERROR, 0x05, "synthetic")\n'
+    )
+
+    redacted = redact_agent_diagnostic_text(source)
+
+    ast.parse(redacted)
+    assert redacted == source
+
+
+def test_agent_diagnostic_redaction_redacts_secret_from_short_csv_row():
+    from app.services.external_agent_discovery import redact_agent_diagnostic_text
+
+    source = "api_key,name,region\nABC12345SECRET,bob\n"
+
+    redacted = redact_agent_diagnostic_text(source)
+
+    assert "ABC12345SECRET" not in redacted
+    assert "<redacted>,bob" in redacted
+
+
+def test_agent_diagnostic_redaction_redacts_single_field_truncated_csv_row():
+    from app.services.external_agent_discovery import redact_agent_diagnostic_text
+
+    source = "api_key,name\nSECRET_ABC_123456789\n"
+
+    redacted = redact_agent_diagnostic_text(source)
+
+    assert "SECRET_ABC_123456789" not in redacted
+    assert redacted.endswith("<redacted>\n")
+
+
+def test_agent_diagnostic_redaction_uses_secret_column_position_for_single_field_row():
+    from app.services.external_agent_discovery import redact_agent_diagnostic_text
+
+    secret_first = redact_agent_diagnostic_text(
+        "password,name\nCorrectHorseBatteryStaple\n"
+    )
+    public_first = redact_agent_diagnostic_text(
+        "name,password\nCorrectHorseBatteryStaple\n"
+    )
+
+    assert "CorrectHorseBatteryStaple" not in secret_first
+    assert "CorrectHorseBatteryStaple" in public_first
+
+
+def test_agent_diagnostic_redaction_redacts_multiline_quoted_csv_secret():
+    from app.services.external_agent_discovery import redact_agent_diagnostic_text
+
+    source = 'api_key,name\n"TOPSECRETLINEONE\nLINE_TWO",alice\n'
+
+    redacted = redact_agent_diagnostic_text(source)
+
+    assert "TOPSECRETLINEONE" not in redacted
+    assert "LINE_TWO" not in redacted
+    assert "<redacted>,alice" in redacted
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
+def test_external_agent_cleanup_kills_descendant_after_parent_exits(tmp_path):
+    from app.services.external_agent_discovery import _kill_and_wait_process
+
+    child_pid_file = tmp_path / "discovery-orphan.pid"
+    child_script = (
+        "import os,signal,time; "
+        "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+        f"open({str(child_pid_file)!r}, 'w').write(str(os.getpid())); "
+        "time.sleep(60)"
+    )
+    parent_script = (
+        "import subprocess,sys; "
+        f"subprocess.Popen([sys.executable, '-c', {child_script!r}], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+        "stderr=subprocess.DEVNULL, close_fds=True)"
+    )
+
+    async def exercise() -> tuple[asyncio.subprocess.Process, int]:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-c",
+            parent_script,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        await proc.wait()
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline and not child_pid_file.exists():
+            await asyncio.sleep(0.02)
+        child_pid = int(child_pid_file.read_text(encoding="utf-8"))
+        await _kill_and_wait_process(proc, process_group=True)
+        return proc, child_pid
+
+    child_pid = 0
+    try:
+        _, child_pid = asyncio.run(exercise())
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            state = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(child_pid)],
+                check=False,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            if not state or state.startswith("Z"):
+                break
+            time.sleep(0.02)
+        else:
+            pytest.fail("external-agent descendant survived after parent exited")
+    finally:
+        if child_pid:
+            try:
+                os.kill(child_pid, 9)
+            except ProcessLookupError:
+                pass
 
 
 def test_agent_diagnostic_redaction_preserves_json_string_delimiter_after_inline_secret():
