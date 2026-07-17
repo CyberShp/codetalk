@@ -2091,6 +2091,22 @@ def _build_workbench_staged_plan(
         "skills": dict(execution_contract.get("skills") or {}),
         "test_activity_contract": dict(test_activity_contract),
     }
+    plan["source_bound_domain_fact_candidates"] = [
+        {
+            "id": str(item.get("id") or "").strip()[:160],
+            "assertion": str(item.get("assertion") or "").strip()[:1200],
+            "evidence": [
+                str(value).strip()[:500]
+                for value in item.get("evidence") or []
+                if str(value).strip()
+            ][:8],
+        }
+        for item in test_activity_contract.get("professional_constraints") or []
+        if isinstance(item, dict)
+        and str(item.get("id") or "").strip()
+        and str(item.get("assertion") or "").strip()
+        and any(str(value).strip() for value in item.get("evidence") or [])
+    ][:64]
     plan["cache_bypass_artifacts"] = [
         str(value)
         for value in task_bundle.get("quality_retry_required_artifacts") or []

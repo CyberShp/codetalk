@@ -149,7 +149,7 @@ class Settings(BaseSettings):
     staged_workflow_timeout_seconds: int = Field(default=1200, ge=60, le=1200)
     staged_workflow_max_tokens: int = Field(default=12000, ge=1000, le=32000)
     staged_quality_repair_enabled: bool = True
-    staged_quality_repair_max_attempts: int = Field(default=2, ge=0, le=2)
+    staged_quality_repair_max_attempts: int = Field(default=3, ge=0, le=3)
     # Every staged LLM phase owns a bounded execution policy.  The generic
     # ceiling is six minutes; business-flow uses a tighter default because its
     # deterministic outline is already available before model enhancement.

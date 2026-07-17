@@ -440,6 +440,10 @@ _BASIC_ISCSI_EVIDENCE_HINTS = [
     {"path": "lib/iscsi/iscsi.c", "term": "Set T/CSG/NSG to reserved if login error", "label": "error response flag clearing"},
     {"path": "lib/iscsi/iscsi.c", "term": "case ISCSI_FULL_FEATURE_PHASE", "label": "full-feature login request rejection"},
     {"path": "scripts/rpc.py", "term": "--max-connections-per-session", "label": "MCS target startup configuration"},
+    {"path": "lib/iscsi/param.c", "term": "iscsi_parse_params", "label": "C-bit parameter reassembly"},
+    {"path": "lib/iscsi/iscsi.c", "term": "iscsi_op_login_session_normal", "label": "normal session and reinstatement semantics"},
+    {"path": "lib/iscsi/conn.c", "term": "iscsi_conn_info_json", "label": "public connection RPC fields"},
+    {"path": "lib/iscsi/param.c", "term": "iscsi_parse_param", "label": "bounded parameter parsing"},
 ]
 
 

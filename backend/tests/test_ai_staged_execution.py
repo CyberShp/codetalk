@@ -1002,6 +1002,106 @@ def test_workbench_plan_and_regular_prompt_preserve_named_execution_inputs(tmp_p
     assert len(prompt) < 35_000
 
 
+def test_workbench_plan_exposes_source_bound_domain_facts_without_lint_patterns():
+    execution_contract = {
+        "goal": "分析 iSCSI login",
+        "test_activity_contract": {
+            "professional_constraints": [
+                {
+                    "id": "iscsi_login_timer_after_first_pdu",
+                    "assertion": (
+                        "首个 Login payload 开始处理时注销 login_timer，"
+                        "后续不能预设该定时器仍会触发。"
+                    ),
+                    "evidence": [
+                        "lib/iscsi/iscsi.c::iscsi_pdu_payload_op_login"
+                    ],
+                    "conflict_patterns": ["REGEX_MUST_NOT_REACH_GENERATION"],
+                    "correction_patterns": ["CORRECTION_REGEX_MUST_NOT_REACH_GENERATION"],
+                }
+            ],
+        },
+    }
+
+    plan = _build_workbench_staged_plan(
+        run_id="run-domain-facts",
+        execution_contract=execution_contract,
+        task_bundle={},
+        output_contract={"expected_output_schemas": []},
+        required_artifacts=["black_box_cases.json"],
+    )
+
+    assert plan["source_bound_domain_fact_candidates"] == [
+        {
+            "id": "iscsi_login_timer_after_first_pdu",
+            "assertion": (
+                "首个 Login payload 开始处理时注销 login_timer，"
+                "后续不能预设该定时器仍会触发。"
+            ),
+            "evidence": [
+                "lib/iscsi/iscsi.c::iscsi_pdu_payload_op_login"
+            ],
+        }
+    ]
+    serialized = json.dumps(
+        plan["source_bound_domain_fact_candidates"], ensure_ascii=False
+    )
+    assert "REGEX_MUST_NOT_REACH_GENERATION" not in serialized
+    assert "CORRECTION_REGEX_MUST_NOT_REACH_GENERATION" not in serialized
+
+
+def test_regular_stage_prompt_includes_only_domain_facts_bound_to_verified_source():
+    facts = [
+        {
+            "id": "verified_timer_fact",
+            "assertion": "首个 Login payload 会注销 login_timer。",
+            "evidence": ["lib/iscsi/iscsi.c::iscsi_pdu_payload_op_login"],
+        },
+        {
+            "id": "missing_source_fact",
+            "assertion": "这条断言没有当前证据支持。",
+            "evidence": ["lib/iscsi/missing.c::missing_symbol"],
+        },
+    ]
+    plan = {
+        "original_user_request": "分析 iSCSI login",
+        "source_bound_domain_fact_candidates": facts,
+    }
+    stage = {
+        "id": "black_box_cases",
+        "artifact": "black_box_cases.json",
+        "purpose": "黑盒用例",
+        "depends_on": [],
+        "output_contract": {"schema": {"type": "array"}},
+    }
+    source_pack = {
+        "evidence_cards": [
+            {
+                "file_path": "lib/iscsi/iscsi.c",
+                "symbols": ["iscsi_pdu_payload_op_login"],
+                "excerpt": "iscsi_pdu_payload_op_login unregisters login_timer",
+            }
+        ]
+    }
+
+    prompt = _regular_stage_prompt(
+        plan=plan,
+        stage=stage,
+        source_pack=source_pack,
+        flow_pack={},
+        outline={},
+        completed={},
+        current_artifact_seed='[{"case_id":"BBC-11"}]',
+    )
+
+    assert "SOURCE_BOUND_DOMAIN_FACTS" in prompt
+    assert "verified_timer_fact" in prompt
+    assert "首个 Login payload 会注销 login_timer" in prompt
+    assert "missing_source_fact" not in prompt
+    assert "这条断言没有当前证据支持" not in prompt
+    assert "已验证源码片段矛盾时以源码片段为准" in prompt
+
+
 def test_workbench_staged_plan_preserves_combined_report_quality_contract():
     report_contract = {
         "sections": ["分析范围与证据缺口", "SFMEA", "黑盒测试用例"],

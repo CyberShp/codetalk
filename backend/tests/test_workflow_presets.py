@@ -78,6 +78,10 @@ def test_basic_report_workflow_presets_have_minimal_inputs_and_one_report_contra
             "Set T/CSG/NSG to reserved if login error",
             "case ISCSI_FULL_FEATURE_PHASE",
             "--max-connections-per-session",
+            "iscsi_parse_params",
+            "iscsi_op_login_session_normal",
+            "iscsi_conn_info_json",
+            "iscsi_parse_param",
         }
     )
     assert all(not item["path"].startswith("test/nvmf/") for item in evidence_hints)

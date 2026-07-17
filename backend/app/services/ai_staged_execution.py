@@ -4184,6 +4184,10 @@ def _regular_stage_prompt(
         else {}
     )
     claim_catalog = _build_verified_claim_catalog(source_pack)
+    source_bound_domain_facts = _source_bound_domain_facts(
+        plan=plan,
+        source_pack=source_pack,
+    )
     rules = [
         "- 只使用当前紧凑上下文中的已验证源码、测试与上游产物，不重新发现源码。",
         "- 任何源码或测试路径都必须逐字来自该白名单 VERIFIED_REPO_PATH_ALLOWLIST；白名单外路径只能写成待补证据，不得输出为路径。",
@@ -4191,6 +4195,7 @@ def _regular_stage_prompt(
         "- 协议状态码、超时秒数、容量阈值和日志原文只有逐字出现在证据片段或 VERIFIED_LITERAL_FACTS 时才能写成事实；不得用经验值替代。",
         "- 一个函数证据只支持片段中实际出现的行为；禁止仅凭函数名推断资源泄漏、常量时间比较、NULL 风险或连接关闭。",
         "- 上游产物与已验证证据矛盾时必须以证据为准并在当前产物中纠正，不得原样继承矛盾。",
+        "- SOURCE_BOUND_DOMAIN_FACTS 是已绑定当前源码路径/符号的领域事实；生成与修复不得与其矛盾，但它与已验证源码片段矛盾时以源码片段为准。",
         "- 只返回当前 artifact 的顶层值，不输出思维链、终端信息或 artifact 容器。",
         *_stage_format_rules(base_stage_id, artifact),
     ]
@@ -4297,6 +4302,9 @@ def _regular_stage_prompt(
             "VERIFIED_LITERAL_FACTS:",
             json.dumps(verified_literal_facts, ensure_ascii=False, indent=2),
             "",
+            "SOURCE_BOUND_DOMAIN_FACTS:",
+            json.dumps(source_bound_domain_facts, ensure_ascii=False, indent=2),
+            "",
         ]
     )
     if partial_seed:
@@ -4354,6 +4362,73 @@ def _regular_stage_prompt(
                 ]
             )
     return "\n".join(parts)
+
+
+def _source_bound_domain_facts(
+    *,
+    plan: dict[str, Any],
+    source_pack: dict[str, Any],
+) -> list[dict[str, Any]]:
+    cards_by_path: dict[str, list[dict[str, Any]]] = {}
+    for raw_card in source_pack.get("evidence_cards") or []:
+        if not isinstance(raw_card, dict):
+            continue
+        path = str(raw_card.get("file_path") or "").strip()
+        if path:
+            cards_by_path.setdefault(path, []).append(raw_card)
+
+    bound: list[dict[str, Any]] = []
+    for raw_fact in plan.get("source_bound_domain_fact_candidates") or []:
+        if not isinstance(raw_fact, dict):
+            continue
+        fact_id = str(raw_fact.get("id") or "").strip()
+        assertion = str(raw_fact.get("assertion") or "").strip()
+        references = [
+            str(value).strip()
+            for value in raw_fact.get("evidence") or []
+            if str(value).strip()
+        ][:8]
+        if not fact_id or not assertion or not references:
+            continue
+
+        resolved: list[dict[str, Any]] = []
+        for reference in references:
+            path, _, symbol = reference.partition("::")
+            matching_cards = cards_by_path.get(path.strip(), [])
+            if symbol:
+                symbol = symbol.strip()
+                matching_cards = [
+                    card
+                    for card in matching_cards
+                    if symbol in {
+                        str(value).strip()
+                        for value in card.get("symbols") or []
+                        if str(value).strip()
+                    }
+                    or symbol in str(card.get("excerpt") or "")
+                ]
+            if not matching_cards:
+                resolved = []
+                break
+            resolved.append(
+                {
+                    "reference": reference,
+                    "evidence_ids": [
+                        str(card.get("evidence_id") or "").strip()
+                        for card in matching_cards
+                        if str(card.get("evidence_id") or "").strip()
+                    ][:4],
+                }
+            )
+        if resolved:
+            bound.append(
+                {
+                    "id": fact_id,
+                    "assertion": assertion,
+                    "evidence": resolved,
+                }
+            )
+    return bound[:64]
 
 
 def _quality_feedback_for_artifact(

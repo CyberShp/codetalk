@@ -18,10 +18,10 @@ def test_workbench_v2_is_enabled_by_default_and_can_roll_back(monkeypatch):
     assert Settings(_env_file=None).workbench_v2_enabled is False
 
 
-def test_staged_quality_repair_defaults_to_two_bounded_attempts(monkeypatch):
+def test_staged_quality_repair_defaults_to_three_bounded_attempts(monkeypatch):
     monkeypatch.delenv("STAGED_QUALITY_REPAIR_MAX_ATTEMPTS", raising=False)
 
-    assert Settings(_env_file=None).staged_quality_repair_max_attempts == 2
+    assert Settings(_env_file=None).staged_quality_repair_max_attempts == 3
 
 
 def test_behavior_claim_audit_defaults_to_bounded_parallel_medium_reasoning(monkeypatch):
