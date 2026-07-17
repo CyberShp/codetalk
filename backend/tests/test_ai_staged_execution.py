@@ -26,6 +26,8 @@ from app.services.ai_staged_execution import (
     _finalize_combined_markdown_report,
     _regular_stage_prompt,
     _json_array_continuation_prompt,
+    _merge_json_array_patch,
+    _quality_repair_evidence_cards,
     _ISCSI_RAW_PDU_APPENDIX,
     _extract_business_flow_narrative,
     _render_deterministic_combined_report,
@@ -758,6 +760,293 @@ def test_quality_repair_array_prompt_requests_an_incremental_patch():
     assert "场景名称必须逐字包含门禁给出的场景名" in prompt
     assert "必须返回完整的修复后顶层值" not in prompt
     assert "必须输出至少 12 个" not in prompt
+
+
+def test_behavior_quality_repair_prompt_scopes_failed_rows_and_rejects_pending_relabel():
+    previous = json.dumps(
+        [
+            {
+                "case_id": "BBC-01",
+                "scenario_name": "accepted row",
+                "expected_result": "UNRELATED_ACCEPTED_ROW_MUST_NOT_ENTER_REPAIR_PROMPT",
+            },
+            {
+                "case_id": "BBC-10",
+                "scenario_name": "Mutual CHAP with wrong target response",
+                "expected_result": "target rejects the impossible response",
+                "technical_claims": [
+                    {
+                        "claim_id": "TC-BBC-10",
+                        "evidence": [{"evidence_id": "SRC-44:L938"}],
+                    }
+                ],
+            },
+            {
+                "case_id": "BBC-11",
+                "scenario_name": "Login timeout after first PDU",
+                "expected_result": "timer fires after 30 seconds",
+                "technical_claims": [
+                    {
+                        "claim_id": "TC-BBC-11",
+                        "evidence": [{"evidence_id": "SRC-43:L2228"}],
+                    }
+                ],
+            },
+        ],
+        ensure_ascii=False,
+        indent=2,
+    )
+    source_pack = {
+        "evidence_cards": [
+            {
+                "evidence_id": f"SRC-{index:02d}",
+                "file_path": f"lib/iscsi/source_{index:02d}.c",
+                "start_line": index,
+                "end_line": index + 1,
+                "excerpt": (
+                    "EXACT_FAILED_ROW_EVIDENCE"
+                    if index in {43, 44}
+                    else f"UNRELATED_EVIDENCE_{index:02d}_" + ("x" * 1200)
+                ),
+            }
+            for index in range(1, 45)
+        ]
+    }
+    feedback = {
+        "affected_artifacts": ["black_box_cases.json"],
+        "issues": [
+            {
+                "artifact": "black_box_cases.json",
+                "code": "behavior_claim_contradicted",
+                "claim_id": "ROW:black_box_cases.json:BBC-10",
+                "message": "target does not validate an initiator-supplied target response",
+                "evidence": [
+                    {
+                        "evidence_id": "SRC-44:L938",
+                        "path": "lib/iscsi/source_44.c",
+                        "quote": "target builds its own response",
+                    }
+                ],
+            },
+            {
+                "artifact": "black_box_cases.json",
+                "code": "behavior_claim_contradicted",
+                "claim_id": "ROW:black_box_cases.json:BBC-11",
+                "message": "the first login payload unregisters the timer",
+                "evidence": [
+                    {
+                        "evidence_id": "SRC-43:L2228",
+                        "path": "lib/iscsi/source_43.c",
+                        "quote": "spdk_poller_unregister",
+                    }
+                ],
+            },
+        ],
+    }
+
+    prompt = _regular_stage_prompt(
+        plan={
+            "original_user_request": "完整分析 iSCSI login",
+            "quality_retry_feedback": feedback,
+        },
+        stage={
+            "id": "black_box_cases",
+            "artifact": "black_box_cases.json",
+            "purpose": "黑盒用例",
+            "depends_on": [],
+            "output_contract": {"schema": {"type": "array"}},
+        },
+        source_pack=source_pack,
+        flow_pack={},
+        outline={},
+        completed={},
+        current_artifact_seed=previous,
+    )
+
+    assert "BBC-10" in prompt
+    assert "BBC-11" in prompt
+    assert "UNRELATED_ACCEPTED_ROW_MUST_NOT_ENTER_REPAIR_PROMPT" not in prompt
+    assert "EXACT_FAILED_ROW_EVIDENCE" in prompt
+    assert "UNRELATED_EVIDENCE_01_" not in prompt
+    assert "不能仅添加“待验证”" in prompt
+    assert "场景前提本身与源码相反" in prompt
+    assert len(prompt) < 30_000
+
+
+def test_quality_repair_array_patch_preserves_previous_rows_fields_and_capacity():
+    previous = [
+        {
+            "case_id": f"BBC-{index:02d}",
+            "scenario_name": f"accepted scenario {index}",
+            "expected_result": f"old result {index}",
+            "observability": [f"metric-{index}"],
+        }
+        for index in range(1, 13)
+    ]
+    patch = [
+        {
+            "case_id": "BBC-10",
+            "expected_result": "source-backed corrected result",
+        },
+        {
+            "case_id": "BBC-13",
+            "scenario_name": "unexpected new row",
+            "expected_result": "must not evict an accepted row",
+        },
+    ]
+
+    merged = _merge_json_array_patch(
+        previous,
+        patch,
+        allowed_existing_row_ids={"BBC-10"},
+    )
+    limited = _apply_regular_stage_output_limits(
+        merged,
+        {"output_limits": {"max_items": 12}},
+        minimum_items=len(merged),
+    )
+
+    assert [item["case_id"] for item in limited] == [
+        f"BBC-{index:02d}" for index in range(1, 13)
+    ] + ["BBC-13"]
+    repaired = next(item for item in limited if item["case_id"] == "BBC-10")
+    assert repaired["expected_result"] == "source-backed corrected result"
+    assert repaired["scenario_name"] == "accepted scenario 10"
+    assert repaired["observability"] == ["metric-10"]
+
+
+def test_quality_repair_evidence_cards_combine_exact_and_contextual_matches():
+    evidence_cards = [
+        {
+            "evidence_id": "SRC-44",
+            "file_path": "lib/iscsi/auth.c",
+            "symbols": ["iscsi_auth_params"],
+        },
+        {
+            "evidence_id": "SRC-45",
+            "file_path": "lib/iscsi/session.c",
+            "symbols": ["append_iscsi_sess"],
+        },
+        {
+            "evidence_id": "SRC-46",
+            "file_path": "lib/iscsi/unrelated.c",
+            "symbols": ["unrelated"],
+        },
+    ]
+
+    selected = _quality_repair_evidence_cards(
+        evidence_cards=evidence_cards,
+        evidence_ids={"SRC-44:L938"},
+        feedback_text=(
+            "SRC-44 contradicts the claim; inspect lib/iscsi/session.c "
+            "and append_iscsi_sess as supporting context"
+        ).lower(),
+    )
+
+    assert [item["evidence_id"] for item in selected] == ["SRC-44", "SRC-45"]
+
+
+def test_quality_repair_claim_catalog_filters_requested_evidence_before_global_limit():
+    evidence_cards = []
+    for index in range(1, 31):
+        start_line = index * 100
+        excerpt_lines = [f"int helper_{index}_{line} = {line};" for line in range(8)]
+        if index == 30:
+            excerpt_lines[7] = "int TARGET_LATE_CLAIM = 0x23;"
+        evidence_cards.append(
+            {
+                "evidence_id": f"SRC-{index:02d}",
+                "file_path": f"lib/iscsi/source_{index:02d}.c",
+                "start_line": start_line,
+                "end_line": start_line + 7,
+                "excerpt": "\n".join(excerpt_lines),
+                "symbols": [],
+            }
+        )
+    target_line = 3007
+    previous = json.dumps(
+        [
+            {
+                "case_id": "BBC-30",
+                "scenario_name": "late catalog evidence",
+                "technical_claims": [
+                    {
+                        "claim_id": "TC-BBC-30",
+                        "evidence": [{"evidence_id": f"SRC-30:L{target_line}"}],
+                    }
+                ],
+            }
+        ],
+        ensure_ascii=False,
+    )
+    feedback = {
+        "affected_artifacts": ["black_box_cases.json"],
+        "issues": [
+            {
+                "artifact": "black_box_cases.json",
+                "code": "behavior_claim_contradicted",
+                "claim_id": "ROW:black_box_cases.json:BBC-30",
+                "evidence": [{"evidence_id": f"SRC-30:L{target_line}"}],
+            }
+        ],
+    }
+
+    prompt = _regular_stage_prompt(
+        plan={"original_user_request": "分析 iSCSI", "quality_retry_feedback": feedback},
+        stage={
+            "id": "black_box_cases",
+            "artifact": "black_box_cases.json",
+            "purpose": "黑盒用例",
+            "depends_on": [],
+            "output_contract": {"schema": {"type": "array"}},
+        },
+        source_pack={"evidence_cards": evidence_cards},
+        flow_pack={},
+        outline={},
+        completed={},
+        current_artifact_seed=previous,
+    )
+    catalog_section = prompt.split("VERIFIED_CLAIM_EVIDENCE_CATALOG:", 1)[1].split(
+        "VERIFIED_REPO_PATH_ALLOWLIST:", 1
+    )[0]
+
+    assert f'"evidence_id": "SRC-30:L{target_line}"' in catalog_section
+    assert "TARGET_LATE_CLAIM" in catalog_section
+
+
+def test_requested_claim_catalog_keeps_exact_lines_across_large_cards():
+    source_pack = {
+        "evidence_cards": [
+            {
+                "evidence_id": "SRC-A",
+                "file_path": "lib/iscsi/a.c",
+                "start_line": 100,
+                "end_line": 199,
+                "excerpt": "\n".join(
+                    f"int a_line_{index} = {index};" for index in range(100)
+                ),
+            },
+            {
+                "evidence_id": "SRC-B",
+                "file_path": "lib/iscsi/b.c",
+                "start_line": 200,
+                "end_line": 299,
+                "excerpt": "\n".join(
+                    f"int b_line_{index} = {index};" for index in range(100)
+                ),
+            },
+        ]
+    }
+
+    catalog = _build_verified_claim_catalog(
+        source_pack,
+        requested_evidence_ids={"SRC-A:L199", "SRC-B:L299"},
+    )
+
+    assert {item["evidence_id"] for item in catalog} == {
+        "SRC-A:L199",
+        "SRC-B:L299",
+    }
 
 
 def test_performance_quality_repair_prompt_requires_a_statistical_basis():
@@ -4637,8 +4926,11 @@ async def test_truncated_quality_repair_preserves_previous_array_cardinality(tmp
                 return LLMResponse(
                     content=json.dumps(
                         [
-                            {"case_id": "case-3", "scenario_name": "reconnect"},
-                            {"case_id": "case-4", "scenario_name": "mutual chap"},
+                            {
+                                "case_id": "case-3",
+                                "scenario_name": "must not overwrite accepted reconnect",
+                            },
+                            {"case_id": "case-5", "scenario_name": "mutual chap"},
                         ]
                     ),
                     model="continuation",
@@ -4716,7 +5008,11 @@ async def test_truncated_quality_repair_preserves_previous_array_cardinality(tmp
         "case-2",
         "case-3",
         "case-4",
+        "case-5",
     ]
+    assert cases[2]["scenario_name"] == "existing-3"
+    assert cases[3]["scenario_name"] == "existing-4"
+    assert cases[4]["scenario_name"] == "mutual chap"
     assert stage_result["continuation_count"] == 1
     assert len(llm.continuation_prompts) == 1
 
@@ -4775,11 +5071,12 @@ async def test_quality_repair_restores_accepted_rows_omitted_by_model(tmp_path):
     plan["quality_retry_feedback"] = {
         "affected_artifacts": ["black_box_cases.json"],
         "issues": [
-            {
-                "artifact": "black_box_cases.json",
-                "code": "fix_case_one",
-                "message": "fix case one",
-            }
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "fix_case_one",
+                    "claim_id": "ROW:black_box_cases.json:case-1",
+                    "message": "fix case one",
+                }
         ],
     }
     plan["cache_bypass_artifacts"] = ["black_box_cases.json"]

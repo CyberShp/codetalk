@@ -2361,6 +2361,14 @@ async def _execute_regular_stage(
         if artifact in quality_affected and output_path.is_file()
         else ""
     )
+    allowed_existing_repair_row_ids = (
+        _quality_repair_row_ids(
+            artifact=artifact,
+            quality_feedback=quality_feedback,
+        )
+        if current_artifact_seed.strip() and isinstance(quality_feedback, dict)
+        else None
+    )
     deterministic_base = ""
     if base_stage_id == "business_flow":
         existing_content = (
@@ -2996,10 +3004,14 @@ async def _execute_regular_stage(
                 if current_artifact_seed.strip() and isinstance(rendered, list):
                     previous_items = _json_array_items(current_artifact_seed)
                     if previous_items:
-                        # A quality repair is a patch over an accepted artifact. Keep
-                        # repaired rows first, then restore accepted rows the model
-                        # omitted instead of treating its response as a replacement.
-                        rendered = _merge_json_array_items(rendered, previous_items)
+                        # A quality repair is a field patch over the accepted array.
+                        # Preserve its order and untouched fields so a partial model
+                        # response cannot evict rows at the output item limit.
+                        rendered = _merge_json_array_patch(
+                            previous_items,
+                            rendered,
+                            allowed_existing_row_ids=allowed_existing_repair_row_ids,
+                        )
                         if base_stage_id == "sfmea":
                             before_count = len(rendered)
                             rendered = _deduplicate_sfmea_semantic_categories(rendered)
@@ -3012,7 +3024,15 @@ async def _execute_regular_stage(
                     rendered,
                     claim_catalog,
                 )
-                rendered = _apply_regular_stage_output_limits(rendered, stage)
+                rendered = _apply_regular_stage_output_limits(
+                    rendered,
+                    stage,
+                    minimum_items=(
+                        len(rendered)
+                        if current_artifact_seed.strip() and isinstance(rendered, list)
+                        else 0
+                    ),
+                )
 
                 if isinstance(schema, dict):
                     schema_errors = _validate_schema(rendered, schema)
@@ -3083,7 +3103,11 @@ async def _execute_regular_stage(
                 if current_artifact_seed.strip() and isinstance(rendered, list):
                     previous_items = _json_array_items(current_artifact_seed)
                     if previous_items:
-                        rendered = _merge_json_array_items(rendered, previous_items)
+                        rendered = _merge_json_array_patch(
+                            previous_items,
+                            rendered,
+                            allowed_existing_row_ids=allowed_existing_repair_row_ids,
+                        )
                         if base_stage_id == "sfmea":
                             before_count = len(rendered)
                             rendered = _deduplicate_sfmea_semantic_categories(rendered)
@@ -3095,7 +3119,15 @@ async def _execute_regular_stage(
                     rendered,
                     claim_catalog,
                 )
-                rendered = _apply_regular_stage_output_limits(rendered, stage)
+                rendered = _apply_regular_stage_output_limits(
+                    rendered,
+                    stage,
+                    minimum_items=(
+                        len(rendered)
+                        if current_artifact_seed.strip() and isinstance(rendered, list)
+                        else 0
+                    ),
+                )
                 if isinstance(schema, dict):
                     schema_errors = _validate_schema(rendered, schema)
                     if schema_errors:
@@ -3898,6 +3930,7 @@ def _build_verified_claim_catalog(
     source_pack: dict[str, Any],
     *,
     max_entries: int = 128,
+    requested_evidence_ids: set[str] | None = None,
 ) -> list[dict[str, str]]:
     """Project verified excerpts into exact, model-selectable source anchors."""
     catalog: list[dict[str, str]] = []
@@ -3952,7 +3985,19 @@ def _build_verified_claim_catalog(
             )
             else 6
         )
-        for _, line_number, quote, symbol in candidates[:per_card_limit]:
+        selected_candidates = (
+            [
+                item
+                for item in candidates
+                if _requested_claim_evidence_matches(
+                    f"{card_id}:L{item[1]}",
+                    requested_evidence_ids,
+                )
+            ]
+            if requested_evidence_ids
+            else candidates[:per_card_limit]
+        )
+        for _, line_number, quote, symbol in selected_candidates:
             dedupe_key = (path, line_number, quote)
             if dedupe_key in seen:
                 continue
@@ -3969,6 +4014,24 @@ def _build_verified_claim_catalog(
             if len(catalog) >= max_entries:
                 return catalog
     return catalog
+
+
+def _requested_claim_evidence_matches(
+    candidate: str,
+    requested: set[str],
+) -> bool:
+    """Match exact claim lines while still accepting an explicit card-wide ID."""
+    value = str(candidate or "").strip()
+    for raw_expected in requested:
+        expected = str(raw_expected or "").strip()
+        if not expected:
+            continue
+        if ":L" in expected:
+            if value == expected:
+                return True
+        elif value == expected or value.startswith(f"{expected}:L"):
+            return True
+    return False
 
 
 def _canonicalize_technical_claim_evidence(
@@ -4041,13 +4104,19 @@ def _canonicalize_technical_claim_evidence(
     return rendered
 
 
-def _apply_regular_stage_output_limits(rendered: Any, stage: dict[str, Any]) -> Any:
+def _apply_regular_stage_output_limits(
+    rendered: Any,
+    stage: dict[str, Any],
+    *,
+    minimum_items: int = 0,
+) -> Any:
     output_limits = (
         stage.get("output_limits")
         if isinstance(stage.get("output_limits"), dict)
         else {}
     )
     max_items = int(output_limits.get("max_items") or 0)
+    max_items = max(max_items, int(minimum_items or 0))
     if isinstance(rendered, list) and max_items > 0 and len(rendered) > max_items:
         return rendered[:max_items]
     return rendered
@@ -4123,9 +4192,20 @@ def _regular_stage_prompt(
         for value in (quality_feedback or {}).get("affected_artifacts") or []
     } if isinstance(quality_feedback, dict) else set()
     scoped_quality_feedback: dict[str, Any] | None = None
+    repair_prompt_seed = current_artifact_seed[:60_000]
+    repair_evidence_ids: set[str] = set()
     if isinstance(quality_feedback, dict) and artifact in affected_artifacts:
         scoped_quality_feedback = _quality_feedback_for_artifact(
             quality_feedback, artifact
+        )
+        repair_prompt_seed = _quality_repair_prompt_seed(
+            current_artifact_seed=current_artifact_seed,
+            artifact=artifact,
+            quality_feedback=scoped_quality_feedback,
+        )
+        repair_evidence_ids = _quality_repair_evidence_ids(
+            quality_feedback=scoped_quality_feedback,
+            repair_prompt_seed=repair_prompt_seed,
         )
         feedback_text = json.dumps(
             scoped_quality_feedback, ensure_ascii=False, sort_keys=True
@@ -4135,17 +4215,12 @@ def _regular_stage_prompt(
             for card in source_pack.get("evidence_cards") or []
             if isinstance(card, dict)
         ]
-        relevant_cards = [
-            card
-            for card in evidence_cards
-            if str(card.get("file_path") or "").lower() in feedback_text
-            or any(
-                str(symbol).lower() in feedback_text
-                for symbol in card.get("symbols") or []
-                if str(symbol).strip()
-            )
-        ]
-        if len(relevant_cards) < 12:
+        relevant_cards = _quality_repair_evidence_cards(
+            evidence_cards=evidence_cards,
+            evidence_ids=repair_evidence_ids,
+            feedback_text=feedback_text,
+        )
+        if not relevant_cards:
             relevant_ids = {id(card) for card in relevant_cards}
             relevant_cards.extend(
                 card for card in evidence_cards
@@ -4184,6 +4259,20 @@ def _regular_stage_prompt(
         else {}
     )
     claim_catalog = _build_verified_claim_catalog(source_pack)
+    if scoped_quality_feedback and repair_evidence_ids:
+        repair_claim_catalog = _build_verified_claim_catalog(
+            source_pack,
+            requested_evidence_ids=repair_evidence_ids,
+        )
+        scoped_claim_catalog = [
+            item
+            for item in repair_claim_catalog
+            if _evidence_id_matches(
+                str(item.get("evidence_id") or ""),
+                repair_evidence_ids,
+            )
+        ]
+        claim_catalog = scoped_claim_catalog
     source_bound_domain_facts = _source_bound_domain_facts(
         plan=plan,
         source_pack=source_pack,
@@ -4239,6 +4328,17 @@ def _regular_stage_prompt(
         rules.append(
             "- 性能判定必须依据同环境样本的标准差、方差、置信区间或历史波动推导；禁止直接写固定百分比，数据不足时标为待采样并给出统计采样方法。"
         )
+    if "behavior_claim_contradicted" in quality_issue_codes:
+        rules.extend(
+            [
+                "- 独立审计器判定为 contradicted 的语句必须从对应字段中删除或按审计给出的源码真值重写；保留该行未被否定的字段，不能通过删除整行规避修复。不能仅添加“待验证”、‘可能’或括号说明后继续保留相反结论。",
+                "- 场景前提本身与源码相反时，必须重构为同一测试维度下真实可执行的场景；不得把不可能的操作继续放在 steps、expected_result 或 observability。",
+            ]
+        )
+    if "behavior_claim_insufficient" in quality_issue_codes:
+        rules.append(
+            "- 独立审计器判定为 insufficient 的实现结论必须删除，或改造成带明确操作与 oracle 的待执行测试；不得继续把它写成 expected_result、effect 或已实现行为。"
+        )
     if (
         isinstance(schema, dict)
         and int(schema.get("minItems") or 0) > 0
@@ -4284,7 +4384,7 @@ def _regular_stage_prompt(
         parts.extend(
             [
                 "CURRENT_ARTIFACT_TO_REPAIR:",
-                current_artifact_seed[:60_000],
+                repair_prompt_seed,
                 "",
             ]
         )
@@ -4362,6 +4462,148 @@ def _regular_stage_prompt(
                 ]
             )
     return "\n".join(parts)
+
+
+def _quality_repair_prompt_seed(
+    *,
+    current_artifact_seed: str,
+    artifact: str,
+    quality_feedback: dict[str, Any],
+) -> str:
+    """Expose only rejected rows to an array repair call.
+
+    The complete accepted artifact remains the merge base outside the prompt.  This
+    keeps exact audit feedback salient without allowing the model to rewrite rows
+    that the gate already accepted.
+    """
+    seed = str(current_artifact_seed or "")
+    if not seed.strip():
+        return ""
+    row_ids = _quality_repair_row_ids(
+        artifact=artifact,
+        quality_feedback=quality_feedback,
+    )
+    if not row_ids:
+        return seed[:60_000]
+    rows = _json_array_items(seed)
+    selected = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and str(
+            row.get("case_id")
+            or row.get("sfmea_id")
+            or row.get("risk_id")
+            or row.get("id")
+            or ""
+        ).strip()
+        in row_ids
+    ]
+    if not selected:
+        return seed[:60_000]
+    return json.dumps(selected, ensure_ascii=False, indent=2)[:60_000]
+
+
+def _quality_repair_row_ids(
+    *,
+    artifact: str,
+    quality_feedback: dict[str, Any],
+) -> set[str]:
+    row_ids: set[str] = set()
+    prefix = f"ROW:{Path(artifact).name}:"
+    for issue in quality_feedback.get("issues") or []:
+        if not isinstance(issue, dict):
+            continue
+        if Path(str(issue.get("artifact") or "")).name != Path(artifact).name:
+            continue
+        claim_id = str(issue.get("claim_id") or "").strip()
+        if claim_id.startswith(prefix):
+            row_id = claim_id[len(prefix) :].strip()
+            if row_id:
+                row_ids.add(row_id)
+        for key in ("row_id", "case_id", "sfmea_id", "risk_id"):
+            row_id = str(issue.get(key) or "").strip()
+            if row_id:
+                row_ids.add(row_id)
+    return row_ids
+
+
+def _quality_repair_evidence_ids(
+    *,
+    quality_feedback: dict[str, Any],
+    repair_prompt_seed: str,
+) -> set[str]:
+    evidence_ids: set[str] = set()
+
+    def visit(value: Any) -> None:
+        if isinstance(value, dict):
+            evidence_id = str(value.get("evidence_id") or "").strip()
+            if evidence_id:
+                evidence_ids.add(evidence_id)
+            for item in value.values():
+                visit(item)
+        elif isinstance(value, list):
+            for item in value:
+                visit(item)
+
+    visit(quality_feedback.get("issues") or [])
+    try:
+        visit(json.loads(repair_prompt_seed))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass
+    return evidence_ids
+
+
+def _evidence_id_matches(candidate: str, requested: set[str]) -> bool:
+    value = str(candidate or "").strip()
+    if not value:
+        return False
+    value_base = value.split(":L", 1)[0]
+    return any(
+        value == expected
+        or value_base == expected.split(":L", 1)[0]
+        or value.startswith(f"{expected}:")
+        or expected.startswith(f"{value}:")
+        for expected in requested
+        if expected
+    )
+
+
+def _quality_repair_evidence_cards(
+    *,
+    evidence_cards: list[dict[str, Any]],
+    evidence_ids: set[str],
+    feedback_text: str,
+) -> list[dict[str, Any]]:
+    exact = [
+        card
+        for card in evidence_cards
+        if _evidence_id_matches(
+            str(card.get("evidence_id") or ""),
+            evidence_ids,
+        )
+    ]
+    contextual = [
+        card
+        for card in evidence_cards
+        if str(card.get("file_path") or "").lower() in feedback_text
+        or any(
+            str(symbol).lower() in feedback_text
+            for symbol in card.get("symbols") or []
+            if str(symbol).strip()
+        )
+    ]
+    selected: list[dict[str, Any]] = []
+    selected_ids: set[int] = set()
+    for card in [*exact, *contextual]:
+        card_identity = id(card)
+        if card_identity in selected_ids:
+            continue
+        selected_ids.add(card_identity)
+        selected.append(card)
+        if len(selected) >= 12:
+            break
+    return selected
 
 
 def _source_bound_domain_facts(
@@ -5037,6 +5279,56 @@ def _merge_json_array_items(existing: list[Any], additional: list[Any]) -> list[
             continue
         identities.add(identity)
         merged.append(item)
+    return merged
+
+
+def _merge_json_array_patch(
+    previous: list[Any],
+    patch: list[Any],
+    *,
+    allowed_existing_row_ids: set[str] | None = None,
+) -> list[Any]:
+    """Apply array row patches without reordering or dropping accepted rows."""
+    patches_by_identity: dict[str, Any] = {}
+    new_items: list[Any] = []
+    new_identities: set[str] = set()
+    previous_identities = {
+        _json_array_item_identity(item)
+        for item in previous
+    }
+    for item in patch:
+        identity = _json_array_item_identity(item)
+        if identity in previous_identities:
+            row_id = ""
+            if isinstance(item, dict):
+                row_id = str(
+                    item.get("case_id")
+                    or item.get("sfmea_id")
+                    or item.get("risk_id")
+                    or item.get("id")
+                    or ""
+                ).strip()
+            if (
+                allowed_existing_row_ids is not None
+                and row_id not in allowed_existing_row_ids
+            ):
+                continue
+            patches_by_identity[identity] = item
+        elif identity not in new_identities:
+            new_identities.add(identity)
+            new_items.append(item)
+
+    merged: list[Any] = []
+    for item in previous:
+        identity = _json_array_item_identity(item)
+        replacement = patches_by_identity.get(identity)
+        if isinstance(item, dict) and isinstance(replacement, dict):
+            merged.append({**item, **replacement})
+        elif replacement is not None:
+            merged.append(replacement)
+        else:
+            merged.append(item)
+    merged.extend(new_items)
     return merged
 
 
