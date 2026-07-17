@@ -27,6 +27,24 @@ const routeGate = readFileSync(
   new URL("../src/features/release/workbench-v2-route-gate.tsx", import.meta.url),
   "utf8",
 );
+const workbenchShared = readFileSync(
+  new URL("../src/app/workbench/workbench-shared.tsx", import.meta.url),
+  "utf8",
+);
+
+test("release UI keeps both basic validation workflows as localized core presets", () => {
+  const corePresetDeclaration = workbenchShared.match(
+    /export const CORE_WORKFLOW_PRESET_IDS = new Set\(\[([\s\S]*?)\]\);/,
+  );
+  assert.ok(corePresetDeclaration);
+  for (const [workflowId, label] of [
+    ["basic_source_report_claude", "基础源码报告（Claude Code）"],
+    ["basic_source_design_report_builtin", "基础源码+设计文档报告（内置模型）"],
+  ]) {
+    assert.ok(corePresetDeclaration[1].includes(`"${workflowId}"`));
+    assert.ok(workbenchShared.includes(`${workflowId}: "${label}"`));
+  }
+});
 
 test("run cockpit keeps a 2,000 event window and pages older events", () => {
   assert.match(cockpit, /MAX_LOADED_EVENTS\s*=\s*2000/);

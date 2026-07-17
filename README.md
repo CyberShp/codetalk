@@ -407,6 +407,13 @@ Agent 节点的 Provider 来自设置页能力发现，Skills 和 MCP 以可搜�
 | `mr_blackbox_test` | 面向 MR 生成黑盒测试用例 |
 | `source_flow_sfmea_blackbox` | 代码分析 -> 流程梳理 -> SFMEA -> 黑盒测试用例 |
 | `testing_activity_orchestration` | 覆盖完整测试活动：策略、范围、环境、设计、执行、缺陷、回归、报告 |
+| `basic_source_report_claude` | 仅输入源码工作空间，由 Claude Code 生成流程、SFMEA 与黑盒测试报告 |
+| `basic_source_design_report_builtin` | 输入源码工作空间和设计文档，由内置模型生成同结构报告 |
+
+正式版默认展示 `source_flow_sfmea_blackbox` 以及上述两个基础验证预设。它们由源码注册，
+后端在全新数据目录启动时会自动发布，在已有数据目录升级时也会刷新为当前内置版本；
+因此它们不是本机数据库中的临时测试数据。两个基础预设用于对照验证 Agent 与内置模型的
+输入传递、源码读取、设计约束吸收和 `report.md` 交付链路，不应在发布清理中删除。
 
 存储和 SPDK 场景还内置了多组测试预设，例如：
 
