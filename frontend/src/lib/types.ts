@@ -1046,6 +1046,10 @@ export interface PreparedWorkbenchTaskRun {
       structure?: WorkbenchQualityAxis;
       facts?: WorkbenchQualityAxis;
       executability?: WorkbenchQualityAxis;
+      coverage_judge?: WorkbenchQualityAxis & {
+        judge_status?: string;
+        blocking_reasons?: string[];
+      };
     };
   };
   artifact_dir: string;

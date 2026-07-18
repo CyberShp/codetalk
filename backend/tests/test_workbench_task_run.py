@@ -10,6 +10,115 @@ from pathlib import Path
 import pytest
 
 
+def test_source_driven_judge_blocks_delivery_and_never_reports_empty_facts_as_100(
+    tmp_path,
+):
+    from app.services.workbench_workflow_runner import (
+        _apply_source_driven_judge_to_quality_audit,
+    )
+
+    (tmp_path / "judge_report.json").write_text(
+        json.dumps(
+            {
+                "status": "BLOCKED",
+                "ready": False,
+                "blocking_reasons": ["facts:not_checked"],
+                "axes": {
+                    "facts": {
+                        "status": "not_checked",
+                        "score": None,
+                        "total": 0,
+                        "verified": 0,
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    base = {
+        "status": "deliverable",
+        "deliverable": True,
+        "score": 100,
+        "issue_count": 0,
+        "issues": [],
+        "quality_axes": {},
+    }
+
+    result = _apply_source_driven_judge_to_quality_audit(
+        audit=base,
+        artifact_dir=tmp_path,
+    )
+
+    assert result["status"] == "needs_rework"
+    assert result["deliverable"] is False
+    assert result["score"] == 0
+    assert result["quality_axes"]["coverage_judge"]["status"] == "blocked"
+    assert result["issues"][-1]["code"] == "source_driven_coverage_judge_blocked"
+
+
+def test_source_driven_judge_is_found_in_agent_artifacts_and_promotes_four_axes(
+    tmp_path,
+):
+    from app.services.workbench_workflow_runner import (
+        _apply_source_driven_judge_to_quality_audit,
+    )
+
+    judge_dir = tmp_path / "agent_runs" / "analyze_source_flow"
+    judge_dir.mkdir(parents=True)
+    (judge_dir / "judge_report.json").write_text(
+        json.dumps(
+            {
+                "status": "BLOCKED",
+                "ready": False,
+                "blocking_reasons": ["facts:blocked"],
+                "axes": {
+                    "structure": {"status": "passed", "score": 100, "issues": []},
+                    "facts": {
+                        "status": "blocked",
+                        "score": 75,
+                        "total": 4,
+                        "verified": 3,
+                        "contradicted": 1,
+                        "insufficient": 0,
+                    },
+                    "executability": {"status": "passed", "score": 100, "issues": []},
+                    "coverage_disposition": {"status": "passed", "score": 100, "issues": []},
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _apply_source_driven_judge_to_quality_audit(
+        audit={"status": "deliverable", "deliverable": True, "issues": [], "quality_axes": {}},
+        artifact_dir=tmp_path,
+    )
+
+    assert result["quality_axes"]["structure"]["status"] == "passed"
+    assert result["quality_axes"]["facts"]["pass_rate"] == 75
+    assert result["fact_verification"]["verified"] == 3
+    assert result["fact_verification"]["contradicted"] == 1
+    assert result["quality_axes"]["executability"]["status"] == "passed"
+    assert result["quality_axes"]["executability"]["pass_rate"] == 100
+    assert result["quality_axes"]["coverage_judge"]["status"] == "passed"
+    assert result["quality_axes"]["coverage_judge"]["score"] == 100
+    assert result["deliverable"] is False
+
+
+def test_mindmap_output_is_not_misclassified_as_generic_test_design_json():
+    from app.services.workbench_workflow_runner import (
+        _test_activity_template_for_declaration,
+    )
+
+    assert _test_activity_template_for_declaration(
+        {
+            "id": "test_design_mindmap",
+            "type": "test_design_mindmap",
+            "artifact": "test_design_mindmap.json",
+        }
+    ) == ""
+
+
 def test_prepare_scopes_each_agent_bundle_to_its_declared_input_bindings(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer

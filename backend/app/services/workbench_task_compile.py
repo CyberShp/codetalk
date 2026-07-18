@@ -16,7 +16,10 @@ _EXECUTION_FIELDS = frozenset({
     "failure_policy", "retry_policy",
 })
 _AGENT_RESOURCE_FIELDS = frozenset({"provider", "mcp_profiles", "skill_ids"})
-_OUTPUT_TYPES = frozenset({"json", "markdown", "text", "patch", "diff", "test_cases", "scope_report"})
+_OUTPUT_TYPES = frozenset({
+    "json", "markdown", "text", "patch", "diff", "test_cases", "scope_report",
+    "test_design_mindmap",
+})
 
 
 def compile_task_configuration(
@@ -83,12 +86,14 @@ def compile_task_configuration(
             raise TaskConfigurationError(f"输出覆盖必须是对象：{output_id}")
         if "enabled" in change and not isinstance(change["enabled"], bool):
             raise TaskConfigurationError(f"输出 enabled 必须是布尔值：{output_id}")
-        enabled = change.get("enabled", True)
+        enabled = change.get("enabled", original.get("default_enabled", True))
         if original.get("required") and not enabled:
             raise TaskConfigurationError(f"必需输出不能关闭：{output_id}")
         if not enabled:
             continue
         output = copy.deepcopy(original)
+        if original.get("default_enabled") is False or "enabled" in change:
+            output["enabled"] = True
         if "label" in change:
             output["label"] = str(change.get("label") or output_id).strip()
         if "artifact" in change:
@@ -132,7 +137,28 @@ def compile_task_configuration(
             output["schema"] = copy.deepcopy(raw["schema"])
         elif output_type == "json":
             raise TaskConfigurationError(f"JSON 任务专用输出缺少 Schema：{output_id}")
+        if output_type == "test_design_mindmap":
+            from app.services.source_driven_test_design import MINDMAP_ARTIFACTS
+
+            output["artifact"] = MINDMAP_ARTIFACTS[0]
+            output["companion_artifacts"] = list(MINDMAP_ARTIFACTS[1:])
         effective_outputs.append(output)
+
+    for output in effective_outputs:
+        if str(output.get("type") or "") != "test_design_mindmap":
+            continue
+        source_id = str(output.get("from") or "")
+        source_step = steps.get(source_id) or {}
+        provider = str(source_step.get("provider") or "builtin-llm")
+        if (
+            str(source_step.get("type") or "") != "agent_task"
+            or str(source_step.get("execution_mode") or "") != "staged"
+            or provider != "builtin-llm"
+        ):
+            raise TaskConfigurationError(
+                "测试设计脑图只能连接到内置模型分阶段分析节点；"
+                f"当前来源节点为 {source_id or '未指定'}"
+            )
 
     artifacts: set[str] = set()
     for output in effective_outputs:
@@ -140,20 +166,27 @@ def compile_task_configuration(
         # those runnable, while every new/custom file output remains strict.
         if not str(output.get("artifact") or "").strip():
             continue
-        artifact = _artifact(output.get("artifact"), output_id=str(output.get("id") or ""))
-        if artifact in artifacts:
-            raise TaskConfigurationError(f"artifact 文件名重复：{artifact}")
-        artifacts.add(artifact)
+        output_id = str(output.get("id") or "")
+        declared = [output.get("artifact"), *(output.get("companion_artifacts") or [])]
+        for raw_artifact in declared:
+            artifact = _artifact(raw_artifact, output_id=output_id)
+            if artifact in artifacts:
+                raise TaskConfigurationError(f"artifact 文件名重复：{artifact}")
+            artifacts.add(artifact)
     for step_id, step in steps.items():
         required = []
         for artifact in step.get("required_artifacts") or []:
             next_artifact = artifact_renames.get((step_id, str(artifact)), str(artifact))
-            if next_artifact in artifacts:
+            if next_artifact in artifacts or str(step.get("execution_mode") or "") == "staged":
                 required.append(next_artifact)
         for output in effective_outputs:
-            if output.get("from") == step_id and output.get("required") and output.get("artifact") not in required:
-                required.append(str(output["artifact"]))
-        step["required_artifacts"] = sorted(required)
+            if output.get("from") != step_id:
+                continue
+            for artifact in [output.get("artifact"), *(output.get("companion_artifacts") or [])]:
+                artifact = str(artifact or "").strip()
+                if artifact and artifact not in required:
+                    required.append(artifact)
+        step["required_artifacts"] = required
 
     definition["outputs"] = effective_outputs
     for node in plan_nodes.values():

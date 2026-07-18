@@ -5,6 +5,10 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
+from app.services.source_driven_test_design import (
+    MINDMAP_ARTIFACTS,
+    SOURCE_DRIVEN_V2_ARTIFACTS,
+)
 from app.services.workflow_dsl import WorkflowDefinition, WorkflowStore, validate_workflow_definition
 
 
@@ -108,15 +112,27 @@ SFMEA_SCHEMA: dict[str, Any] = {
     "items": {
         "type": "object",
         "required": [
+            "sfmea_id",
             "failure_mode",
+            "mechanism",
+            "trigger_condition",
             "cause",
             "effect",
+            "local_effect",
+            "upstream_effect",
+            "downstream_effect",
+            "final_effect",
+            "latent",
             "detection",
+            "existing_controls",
+            "control_gaps",
             "severity",
             "occurrence",
             "detection_score",
             "rpn",
+            "score_explanation",
             "mitigation",
+            "recovery_verification",
             "source_evidence",
             "test_mapping",
         ],
@@ -125,15 +141,25 @@ SFMEA_SCHEMA: dict[str, Any] = {
             "module": {"type": "string"},
             "file_path": {"type": "string"},
             "failure_mode": {"type": "string"},
+            "mechanism": {"type": "string", "minLength": 1},
+            "trigger_condition": {"type": "string", "minLength": 1},
             "cause": {"type": "string"},
             "effect": {"type": "string"},
+            "local_effect": {"type": "string", "minLength": 1},
+            "upstream_effect": {"type": "string", "minLength": 1},
+            "downstream_effect": {"type": "string", "minLength": 1},
+            "final_effect": {"type": "string", "minLength": 1},
+            "latent": {"type": "string", "minLength": 1},
             "detection": {"type": "string"},
+            "existing_controls": {"type": "string", "minLength": 1},
+            "control_gaps": {"type": "string", "minLength": 1},
             "severity": {"type": "integer"},
             "occurrence": {"type": "integer"},
             "detection_score": {"type": "integer"},
             "rpn": {"type": "integer"},
             "score_explanation": {"type": "string"},
             "mitigation": {"type": "string"},
+            "recovery_verification": {"type": "string", "minLength": 1},
             "source_evidence": {"type": "array", "items": {"type": "string"}},
             "test_mapping": {"type": "string"},
             "evidence": {"type": "object"},
@@ -151,6 +177,7 @@ BLACK_BOX_CASES_SCHEMA: dict[str, Any] = {
         "type": "object",
         "required": [
             "case_id",
+            "risk_ids",
             "test_dimension",
             "scenario_name",
             "preconditions",
@@ -163,6 +190,11 @@ BLACK_BOX_CASES_SCHEMA: dict[str, Any] = {
         ],
         "properties": {
             "case_id": {"type": "string"},
+            "risk_ids": {
+                "type": "array",
+                "minItems": 1,
+                "items": {"type": "string", "minLength": 1},
+            },
             "test_dimension": {"type": "string"},
             "scenario_name": {"type": "string"},
             "preconditions": {"type": "array", "items": {"type": "string"}},
@@ -241,12 +273,17 @@ IMPACT_SCOPE_SCHEMA: dict[str, Any] = {
 }
 
 
-SOURCE_FLOW_REQUIRED_ARTIFACTS = [
+LEGACY_SOURCE_FLOW_REQUIRED_ARTIFACTS = [
     "source_scope.json",
     "evidence_cards.json",
     "flow_map.md",
     "sfmea.json",
     "black_box_cases.json",
+]
+
+SOURCE_FLOW_REQUIRED_ARTIFACTS = [
+    *LEGACY_SOURCE_FLOW_REQUIRED_ARTIFACTS,
+    *SOURCE_DRIVEN_V2_ARTIFACTS,
 ]
 
 TEST_PLAN_SCHEMA: dict[str, Any] = {
@@ -671,7 +708,7 @@ def _source_flow_scenario_preset(
                         "test generation chain. Check GitNexus/CGC artifacts first when present."
                     ),
                     "default_query": default_query,
-                    "required_artifacts": SOURCE_FLOW_REQUIRED_ARTIFACTS,
+                    "required_artifacts": LEGACY_SOURCE_FLOW_REQUIRED_ARTIFACTS,
                 },
                 {"id": "validate_evidence", "type": "evidence_validate"},
                 {"id": "render_report", "type": "report_render"},
@@ -937,30 +974,34 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
         },
         {
             "id": "source_flow_sfmea_blackbox",
-            "name": "Code Analysis -> Flow -> SFMEA -> Black-box Cases",
+            "name": "代码分析 -> 流程 -> SFMEA -> 黑盒用例",
             "description": (
-                "Run the workspace-report style chain: source-backed code analysis, flow mapping, "
-                "SFMEA, and externally executable black-box test cases. GitNexus and CGC artifacts "
-                "are treated as first-priority evidence when present."
+                "基于真实源码证据完成代码分析、流程梳理、SFMEA 和可执行黑盒用例；"
+                "优先消费可用的 GitNexus 与 CGC 产物。"
             ),
             "definition": {
                 "id": "source_flow_sfmea_blackbox",
-                "name": "Code Analysis -> Flow -> SFMEA -> Black-box Cases",
-                "version": 1,
+                "name": "代码分析 -> 流程 -> SFMEA -> 黑盒用例",
+                "description": (
+                    "基于真实源码证据完成代码分析、流程梳理、SFMEA 和可执行黑盒用例；"
+                    "优先消费可用的 GitNexus 与 CGC 产物。"
+                ),
+                "version": 2,
                 "execution_subject": "builtin_llm",
                 "execution_label": "内置模型分阶段分析",
                 "user_message": "内置模型将按源码证据、流程、SFMEA 和黑盒用例分阶段生成并校验交付件。",
                 "inputs": [
-                    {"id": "analysis_object", "type": "free_text", "required": True, "role": "module, feature, or flow under test"},
-                    {"id": "repo_path", "type": "directory", "required": True, "resolver": "local"},
-                    {"id": "requirements_doc", "type": "file", "required": False, "role": "requirements"},
-                    {"id": "design_doc", "type": "file", "required": False, "role": "design"},
-                    {"id": "coverage_report", "type": "coverage_report", "required": False, "role": "coverage context"},
-                    {"id": "semantic_library_ref", "type": "semantic_library_ref", "required": False, "role": "test terminology"},
+                    {"id": "analysis_object", "label": "分析对象", "type": "free_text", "required": True, "role": "要分析的模块、特性或业务流程"},
+                    {"id": "repo_path", "label": "源码工作空间", "type": "directory", "required": True, "resolver": "local", "role": "由已选择的工作空间自动注入"},
+                    {"id": "requirements_doc", "label": "需求文档", "type": "file", "required": False, "role": "需求与外部行为约束"},
+                    {"id": "design_doc", "label": "开发设计文档", "type": "file", "required": False, "role": "设计机制与异常约束"},
+                    {"id": "coverage_report", "label": "覆盖率报告", "type": "coverage_report", "required": False, "role": "覆盖现状与补测线索"},
+                    {"id": "semantic_library_ref", "label": "语义库参考", "type": "semantic_library_ref", "required": False, "role": "测试术语或历史用例参考"},
                 ],
                 "steps": [
                     {
                         "id": "analyze_source_flow",
+                        "label": "源码驱动测试分析",
                         "type": "agent_task",
                         "provider": "builtin-llm",
                         "execution_mode": "staged",
@@ -973,24 +1014,28 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                             "artifact-contract",
                         ],
                         "goal": (
-                            "First check GitNexus and CGC artifacts when available, then read local source "
-                            "evidence to produce code evidence, externally observable flow steps, SFMEA, "
-                            "and black-box test cases."
+                            "先检查可用的 GitNexus 和 CGC 产物，再读取本地源码与测试证据，"
+                            "生成代码证据、外部可观察流程、SFMEA 和可执行黑盒测试用例。"
                         ),
-                        "required_artifacts": [
-                            "source_scope.json",
-                            "evidence_cards.json",
-                            "flow_map.md",
-                            "sfmea.json",
-                            "black_box_cases.json",
-                        ],
+                        "required_artifacts": SOURCE_FLOW_REQUIRED_ARTIFACTS,
                     },
-                    {"id": "validate_evidence", "type": "evidence_validate"},
-                    {"id": "render_report", "type": "report_render"},
+                    {
+                        "id": "validate_evidence",
+                        "label": "源码证据校验",
+                        "type": "evidence_validate",
+                        "goal": "逐项校验文件、符号、行号和引用片段，阻止无效源码证据进入交付件。",
+                    },
+                    {
+                        "id": "render_report",
+                        "label": "汇总报告生成",
+                        "type": "report_render",
+                        "goal": "汇总已通过门禁的代码证据、流程、SFMEA、黑盒用例和可选测试设计脑图。",
+                    },
                 ],
                 "outputs": [
                     {
                         "id": "source_scope",
+                        "label": "源码范围",
                         "type": "json",
                         "from": "analyze_source_flow",
                         "artifact": "source_scope.json",
@@ -998,14 +1043,16 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                     },
                     {
                         "id": "code_evidence",
+                        "label": "代码证据卡",
                         "type": "json",
                         "from": "analyze_source_flow",
                         "artifact": "evidence_cards.json",
                         "schema": EVIDENCE_CARDS_SCHEMA,
                     },
-                    {"id": "flow_map", "type": "markdown", "from": "analyze_source_flow", "artifact": "flow_map.md"},
+                    {"id": "flow_map", "label": "业务流程图谱", "type": "markdown", "from": "analyze_source_flow", "artifact": "flow_map.md"},
                     {
                         "id": "sfmea",
+                        "label": "SFMEA 风险表",
                         "type": "json",
                         "from": "analyze_source_flow",
                         "artifact": "sfmea.json",
@@ -1013,6 +1060,7 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                     },
                     {
                         "id": "black_box_cases",
+                        "label": "黑盒测试用例",
                         "type": "test_cases",
                         "from": "analyze_source_flow",
                         "artifact": "black_box_cases.json",
@@ -1025,7 +1073,17 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                         },
                         "schema": BLACK_BOX_CASES_SCHEMA,
                     },
-                    {"id": "report", "type": "markdown", "from": "render_report"},
+                    {
+                        "id": "test_design_mindmap",
+                        "label": "测试设计脑图",
+                        "type": "test_design_mindmap",
+                        "from": "analyze_source_flow",
+                        "artifact": MINDMAP_ARTIFACTS[0],
+                        "companion_artifacts": list(MINDMAP_ARTIFACTS[1:]),
+                        "required": False,
+                        "default_enabled": False,
+                    },
+                    {"id": "report", "label": "汇总报告", "type": "markdown", "from": "render_report"},
                 ],
             },
         },

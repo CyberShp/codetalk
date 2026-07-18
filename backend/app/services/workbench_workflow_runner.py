@@ -36,6 +36,9 @@ from app.services.agent_run_harness import (
 )
 from app.services.behavior_claim_validator import materialize_behavior_claim_validation
 from app.services.regular_stage_governance import promote_regular_stage_caches
+from app.services.source_driven_test_design import (
+    refresh_source_driven_delivery_governance,
+)
 from app.services.test_activity_contract import (
     ARTIFACT_TEMPLATES,
     audit_test_activity_artifacts,
@@ -585,6 +588,10 @@ class WorkbenchWorkflowRunner:
             artifact_dir=artifact_dir,
             contract=scoped_contract,
             repo_path=str(task_run.repo_path or ""),
+        )
+        audit = _apply_source_driven_judge_to_quality_audit(
+            audit=audit,
+            artifact_dir=artifact_dir,
         )
         _write_json(artifact_dir / "test_activity_quality_audit.json", audit)
         _write_json(
@@ -1162,6 +1169,8 @@ class WorkbenchWorkflowRunner:
                     try:
                         staged_result = await execute_staged(current_plan)
                         behavior_validation = await validate_behavior_claims()
+                        if (artifact_dir / "judge_report.json").is_file():
+                            refresh_source_driven_delivery_governance(artifact_dir)
                         if (
                             behavior_validation.get("reason")
                             == "workflow_deadline_exceeded"
@@ -1322,6 +1331,8 @@ class WorkbenchWorkflowRunner:
                                 repair_started = time.monotonic()
                                 staged_result = await execute_staged(current_plan)
                                 behavior_validation = await validate_behavior_claims()
+                                if (artifact_dir / "judge_report.json").is_file():
+                                    refresh_source_driven_delivery_governance(artifact_dir)
                                 if (
                                     behavior_validation.get("reason")
                                     == "workflow_deadline_exceeded"
@@ -1377,6 +1388,21 @@ class WorkbenchWorkflowRunner:
                                         snapshot=accepted_snapshot,
                                     )
                                     audit_after = audit
+                                    self._emit_event(
+                                        "behavior_claim_validation_progress",
+                                        {
+                                            "step_id": step_id,
+                                            "kind": "stage_reused",
+                                            "stage_id": "behavior_claim_validation",
+                                            "status": "completed",
+                                            "model": str(
+                                                settings.behavior_claim_audit_model or ""
+                                            ),
+                                            "user_message": (
+                                                "候选修复质量回退，已恢复修复前通过绑定校验的独立事实核验"
+                                            ),
+                                        },
+                                    )
                                 else:
                                     audit_after = candidate_audit
                                 _write_json(
@@ -1428,6 +1454,8 @@ class WorkbenchWorkflowRunner:
                                     "invalid",
                                 }:
                                     break
+                        if (artifact_dir / "judge_report.json").is_file():
+                            refresh_source_driven_delivery_governance(artifact_dir)
                         _write_json(
                             artifact_dir / "quality_repair_result.json",
                             {
@@ -1905,6 +1933,8 @@ class WorkbenchWorkflowRunner:
         for output in workflow_snapshot.get("outputs") or []:
             if not isinstance(output, dict):
                 continue
+            if not _workflow_output_enabled(output):
+                continue
             output_id = str(output.get("id") or "").strip()
             output_type = str(output.get("type") or "").strip()
             source_step = str(output.get("from") or output.get("source") or "").strip()
@@ -2096,6 +2126,8 @@ def _workflow_scoped_test_activity_contract(
     for output in workflow_snapshot.get("outputs") or []:
         if not isinstance(output, dict):
             continue
+        if not _workflow_output_enabled(output):
+            continue
         artifact = str(output.get("artifact") or "").strip()
         if not artifact:
             continue
@@ -2166,11 +2198,124 @@ def _audit_staged_agent_artifacts(
         contract=contract,
         workflow_snapshot=workflow_snapshot,
     )
-    return audit_test_activity_artifacts(
+    audit = audit_test_activity_artifacts(
         artifact_dir=artifact_dir,
         contract=scoped,
         repo_path=str(execution_contract.get("repo_path") or ""),
     )
+    return _apply_source_driven_judge_to_quality_audit(
+        audit=audit,
+        artifact_dir=artifact_dir,
+    )
+
+
+def _apply_source_driven_judge_to_quality_audit(
+    *,
+    audit: dict[str, Any],
+    artifact_dir: Path,
+) -> dict[str, Any]:
+    """Make the final V2 coverage judge authoritative for delivery."""
+
+    judge_path = _find_source_driven_judge(artifact_dir)
+    if judge_path is None:
+        return audit
+    judge = _read_json(judge_path)
+    if not isinstance(judge, dict):
+        judge = {
+            "status": "BLOCKED",
+            "ready": False,
+            "blocking_reasons": ["judge_report:invalid"],
+            "axes": {},
+        }
+    result = dict(audit or {})
+    axes = dict(result.get("quality_axes") or {})
+    judge_ready = bool(judge.get("ready")) and str(judge.get("status") or "") == "READY"
+    judge_axes = dict(judge.get("axes") or {})
+    structure = dict(judge_axes.get("structure") or {})
+    if structure:
+        axes["structure"] = {
+            "status": str(structure.get("status") or "not_checked"),
+            "score": structure.get("score"),
+            "issue_count": len(structure.get("issues") or []),
+            "issues": list(structure.get("issues") or []),
+        }
+    facts = dict(judge_axes.get("facts") or {})
+    if facts:
+        fact_summary = {
+            "status": str(facts.get("status") or "not_checked"),
+            "pass_rate": facts.get("score"),
+            "score": facts.get("score"),
+            "total": int(facts.get("total") or 0),
+            "verified": int(facts.get("verified") or 0),
+            "contradicted": int(facts.get("contradicted") or 0),
+            "insufficient": int(facts.get("insufficient") or 0),
+        }
+        axes["facts"] = fact_summary
+        result["fact_verification"] = fact_summary
+    executability = dict(judge_axes.get("executability") or {})
+    if executability:
+        axes["executability"] = {
+            "status": str(executability.get("status") or "not_checked"),
+            "pass_rate": executability.get("score"),
+            "score": executability.get("score"),
+            "issue_count": len(executability.get("issues") or []),
+            "issues": list(executability.get("issues") or []),
+        }
+    coverage = dict(judge_axes.get("coverage_disposition") or {})
+    axes["coverage_judge"] = {
+        "status": str(
+            coverage.get("status")
+            or ("passed" if judge_ready else "blocked")
+        ),
+        "score": (
+            coverage.get("score")
+            if coverage
+            else 100 if judge_ready else 0
+        ),
+        "judge_status": str(judge.get("status") or "BLOCKED"),
+        "blocking_reasons": list(coverage.get("issues") or []),
+        "axes": judge_axes,
+    }
+    result["quality_axes"] = axes
+    result["coverage_judge"] = judge
+    if judge_ready:
+        return result
+
+    issues = [dict(item) for item in result.get("issues") or [] if isinstance(item, dict)]
+    if not any(item.get("code") == "source_driven_coverage_judge_blocked" for item in issues):
+        issues.append(
+            {
+                "code": "source_driven_coverage_judge_blocked",
+                "artifact": "judge_report.json",
+                "message": (
+                    "源码驱动覆盖门禁未通过："
+                    + "、".join(str(value) for value in judge.get("blocking_reasons") or [])
+                ).rstrip("："),
+                "severity": "blocking",
+            }
+        )
+    result.update(
+        {
+            "status": "needs_rework" if result.get("status") != "invalid" else "invalid",
+            "deliverable": False,
+            "score": 0,
+            "issues": issues,
+            "issue_count": len(issues),
+        }
+    )
+    return result
+
+
+def _find_source_driven_judge(artifact_dir: Path) -> Path | None:
+    direct = artifact_dir / "judge_report.json"
+    if direct.is_file():
+        return direct
+    candidates = sorted(
+        (artifact_dir / "agent_runs").glob("*/judge_report.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    return candidates[0] if candidates else None
 
 
 def _snapshot_staged_metrics(*, artifact_dir: Path, destination: Path) -> None:
@@ -2187,12 +2332,14 @@ def _test_activity_template_for_declaration(
     *,
     allow_flow_map_alias: bool = False,
 ) -> str:
+    output_type = str(declaration.get("type") or "").strip().lower()
+    if output_type == "test_design_mindmap":
+        return ""
     artifact = str(declaration.get("artifact") or declaration.get("path") or "").strip()
     if allow_flow_map_alias and artifact == "flow_map.md":
         return "business_flow.md"
     if artifact in ARTIFACT_TEMPLATES:
         return artifact
-    output_type = str(declaration.get("type") or "").strip().lower()
     by_type = {
         "business_flow": "business_flow.md",
         "flow": "business_flow.md",
@@ -3329,8 +3476,15 @@ def _source_flow_sfmea_item(
         "module": module,
         "file_path": file_path,
         "failure_mode": failure_mode,
+        "mechanism": f"{module} 源码路径中的状态、资源或错误处理与外部工作流约束不一致",
+        "trigger_condition": f"通过公开接口触发 {module} 正常、异常、超时或恢复流程",
         "cause": cause,
         "effect": "Users may see incorrect status, stale sessions/devices, failed recovery, or missing diagnostics during public workflows.",
+        "local_effect": f"{module} 当前操作失败、停滞或留下未闭合状态",
+        "upstream_effect": "发起端收到错误、超时或与实际状态不一致的成功响应",
+        "downstream_effect": "后续连接、队列、会话或 I/O 受到残留状态与资源占用影响",
+        "final_effect": "公开业务流程不可用、恢复失败或长期运行后资源耗尽",
+        "latent": "残留状态和资源占用可能在后续重连、并发或容量边界才暴露",
         "detection": (
             f"Run black-box cases under {test_directory}; collect RPC/tool output, logs, reconnect/reset behavior, metrics, and persisted state."
         ),
@@ -3349,8 +3503,11 @@ def _source_flow_sfmea_item(
             "timeout, reconnect/reset, concurrency, recovery, and performance degradation while monitoring "
             "RPC/tool results, logs, metrics, and persisted state."
         ),
+        "existing_controls": f"源码证据、公开返回值、日志以及 {test_directory} 中的现有测试",
+        "control_gaps": "现有测试可能未覆盖异常释放、容量翻转、并发交错和恢复后重申请",
+        "recovery_verification": "移除故障或资源压力后重复公开操作，确认状态恢复且资源能够重新申请",
         "source_evidence": [file_path] if file_path != "repo" else [],
-        "test_mapping": [test_directory],
+        "test_mapping": test_directory,
         "evidence": {
             "source": "local-source-flow-sfmea-blackbox",
             "file_path": file_path,
@@ -3373,6 +3530,7 @@ def _source_flow_black_box_case(
         index=index,
     )
     case["case_id"] = f"source_flow_black_box_{index:03d}"
+    case["risk_ids"] = [f"source_flow_sfmea_{index:03d}"]
     case["source"] = "local-source-flow-sfmea-blackbox"
     case["trace"] = {
         "task_run_id": str(task_run.task_run_id),
@@ -3523,7 +3681,7 @@ def _expand_black_box_dimension_cases(
                 "collect externally visible results, logs, metrics, timing, and state before cleanup",
             ]
             case["expected"] = [str(spec["expected"])]
-            case["expected_result"] = [str(spec["expected"])]
+            case["expected_result"] = str(spec["expected"])
             case["observable_signals"] = _dedupe_strings(
                 [*[str(item) for item in base.get("observable_signals") or []], str(spec["observe"])]
             )
@@ -3875,6 +4033,7 @@ def _black_box_case_for_changed_file(
 def _fallback_black_box_case(*, task_run: Any) -> dict[str, Any]:
     return {
         "case_id": "local_mr_black_box_001",
+        "risk_ids": ["source_flow_sfmea_001"],
         "title": "Patch black-box smoke regression",
         "scenario_name": "Patch black-box smoke regression",
         "module": "repo",
@@ -7113,6 +7272,7 @@ def _render_report_artifacts(
     outputs = [
         output for output in workflow_snapshot.get("outputs") or []
         if isinstance(output, dict)
+        and _workflow_output_enabled(output)
         and str(output.get("from") or output.get("source") or "") == step_id
     ]
     if not outputs:
@@ -7377,6 +7537,8 @@ def _workflow_declares_test_activity_deliverables(workflow_snapshot: dict[str, A
     for output in workflow_snapshot.get("outputs") or []:
         if not isinstance(output, dict):
             continue
+        if not _workflow_output_enabled(output):
+            continue
         if _test_activity_template_for_declaration(
             output,
             allow_flow_map_alias=allow_flow_map_alias,
@@ -7392,6 +7554,10 @@ def _workflow_declares_test_activity_deliverables(workflow_snapshot: dict[str, A
             ):
                 return True
     return False
+
+
+def _workflow_output_enabled(output: dict[str, Any]) -> bool:
+    return bool(output.get("enabled", output.get("default_enabled", True)))
 
 
 def _safe_segment(value: str) -> str:

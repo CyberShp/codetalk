@@ -5935,6 +5935,14 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
         "C-BEHAVIOR-001",
         "ROW:sfmea.json:SFMEA-001",
     }
+    limited_request = build_behavior_claim_validation_request(
+        artifact_dir=artifacts,
+        repo_path=repo,
+        max_claims=1,
+    )
+    assert limited_request["candidate_count"] == 2
+    assert limited_request["requested_count"] == 1
+    assert limited_request["truncated"] is True
     assert "if (params == NULL)" in request["contexts"][0]["content"]
     checked_evidence = [{**evidence, "sha256": source_sha}]
     binding = _behavior_claim_binding(

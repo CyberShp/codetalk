@@ -361,3 +361,40 @@ def test_legacy_compiler_preserves_historical_sequential_execution():
     compiled = compile_legacy_workflow(legacy, workflow_version_id="legacy-v4")
     assert compiled["topological_order"] == ["second-by-name", "first-by-name"]
     assert compiled["nodes"][1]["depends_on"] == ["second-by-name"]
+
+
+def test_graph_compiler_preserves_mindmap_companion_artifacts():
+    from app.services.workflow_graph import compile_workflow_graph
+
+    graph = _graph()
+    report = next(node for node in graph["nodes"] if node["id"] == "report")
+    report["config"].update(
+        {
+            "output_id": "test_design_mindmap",
+            "label": "测试设计脑图",
+            "type": "test_design_mindmap",
+            "artifact": "test_design_mindmap.json",
+            "companion_artifacts": [
+                "test_design_mindmap.html",
+                "test_design_mindmap.svg",
+            ],
+        }
+    )
+    render = next(node for node in graph["nodes"] if node["id"] == "render")
+    render["config"]["output_ports"] = [
+        {"id": "report", "type": "test_design_mindmap"}
+    ]
+    render["config"]["required_artifacts"] = ["test_design_mindmap.json"]
+
+    compiled = compile_workflow_graph(
+        graph,
+        capabilities=_capabilities(),
+        workflow_version_id="wfv-mindmap",
+    )
+
+    output = compiled["compiled_definition"]["outputs"][0]
+    assert output["type"] == "test_design_mindmap"
+    assert output["companion_artifacts"] == [
+        "test_design_mindmap.html",
+        "test_design_mindmap.svg",
+    ]

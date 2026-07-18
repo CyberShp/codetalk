@@ -73,6 +73,34 @@ def test_artifact_manifest_marks_custom_declared_workflow_output_as_deliverable(
     assert artifacts["workflow_outputs.json"]["audience"] == "diagnostic"
 
 
+def test_artifact_manifest_marks_declared_mindmap_companions_as_deliverables(tmp_path):
+    task_dir = tmp_path / "task"
+    agent_dir = task_dir / "agent_runs" / "analyze"
+    agent_dir.mkdir(parents=True)
+    for name, content in {
+        "test_design_mindmap.json": "{}",
+        "test_design_mindmap.html": "<!doctype html>",
+        "test_design_mindmap.svg": "<svg></svg>",
+    }.items():
+        (agent_dir / name).write_text(content, encoding="utf-8")
+    (task_dir / "workflow_snapshot.json").write_text(
+        '{"outputs":[{"id":"test_design_mindmap",'
+        '"artifact":"test_design_mindmap.json",'
+        '"companion_artifacts":["test_design_mindmap.html",'
+        '"test_design_mindmap.svg"]}]}',
+        encoding="utf-8",
+    )
+
+    artifacts = {
+        item["relative_path"]: item
+        for item in build_task_artifact_manifest(task_dir)
+    }
+
+    assert artifacts["agent_runs/analyze/test_design_mindmap.json"]["audience"] == "deliverable"
+    assert artifacts["agent_runs/analyze/test_design_mindmap.html"]["audience"] == "deliverable"
+    assert artifacts["agent_runs/analyze/test_design_mindmap.svg"]["audience"] == "deliverable"
+
+
 def test_artifact_manifest_keeps_undeclared_stage_files_out_of_deliverables(tmp_path):
     task_dir = tmp_path / "task"
     agent_dir = task_dir / "agent_runs" / "analyze"

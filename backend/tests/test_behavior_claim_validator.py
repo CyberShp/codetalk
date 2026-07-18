@@ -62,6 +62,9 @@ def test_normalize_behavior_claim_verdicts_binds_current_request_and_fills_omiss
     )
 
     assert result["status"] == "completed"
+    assert result["candidate_count"] == 2
+    assert result["requested_count"] == 2
+    assert result["truncated"] is False
     assert result["claims"][0] == {
         "claim_id": "ROW:sfmea.json:SFMEA-001",
         "binding": "binding-1",

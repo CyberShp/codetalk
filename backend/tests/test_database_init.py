@@ -545,6 +545,41 @@ class TestCrashRecovery:
 
 class TestInitDbFull:
     @pytest.mark.asyncio
+    async def test_init_db_migrates_ai_run_order_columns_before_dependent_indexes(
+        self, fresh_db
+    ):
+        legacy_schema = re.sub(r"\n\s*sequence INTEGER DEFAULT 0,", "", _SCHEMA)
+        legacy_schema = re.sub(r"\n\s*seq INTEGER DEFAULT 0,", "", legacy_schema)
+        legacy_schema = re.sub(
+            r"^CREATE INDEX IF NOT EXISTS idx_ai_(?:runs_conversation_sequence|run_events_run_seq).*?;\n",
+            "",
+            legacy_schema,
+            flags=re.MULTILINE,
+        )
+        async with aiosqlite.connect(fresh_db) as db:
+            await db.executescript(legacy_schema)
+            await db.commit()
+
+        with patch("app.config.settings.sqlite_db", fresh_db), \
+             patch("app.api.prompts.seed_default_template", return_value=None):
+            await init_db()
+
+        async with aiosqlite.connect(fresh_db) as db:
+            async with db.execute("PRAGMA table_info(ai_conversation_runs)") as cur:
+                run_columns = {row[1] for row in await cur.fetchall()}
+            async with db.execute("PRAGMA table_info(ai_run_events)") as cur:
+                event_columns = {row[1] for row in await cur.fetchall()}
+            async with db.execute(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            ) as cur:
+                indexes = {row[0] for row in await cur.fetchall()}
+
+        assert "sequence" in run_columns
+        assert "seq" in event_columns
+        assert "idx_ai_runs_conversation_sequence" in indexes
+        assert "idx_ai_run_events_run_seq" in indexes
+
+    @pytest.mark.asyncio
     async def test_init_db_on_fresh_database(self, fresh_db):
         with patch("app.config.settings.sqlite_db", fresh_db), \
              patch("app.api.prompts.seed_default_template", return_value=None):

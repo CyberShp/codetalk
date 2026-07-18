@@ -279,9 +279,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_runtimes_enabled ON agent_runtimes(enabled,
 CREATE INDEX IF NOT EXISTS idx_ai_conversations_scope ON ai_conversations(scope_type, scope_id, updated_at);
 CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation ON ai_messages(conversation_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_runs_conversation ON ai_conversation_runs(conversation_id, created_at);
-CREATE INDEX IF NOT EXISTS idx_ai_runs_conversation_sequence ON ai_conversation_runs(conversation_id, sequence);
 CREATE INDEX IF NOT EXISTS idx_ai_run_events_stream ON ai_run_events(conversation_id, event_id);
-CREATE INDEX IF NOT EXISTS idx_ai_run_events_run_seq ON ai_run_events(run_id, seq);
 CREATE INDEX IF NOT EXISTS idx_ai_agent_runtime_sessions_runtime ON ai_agent_runtime_sessions(agent_runtime_id, updated_at);
 
 """

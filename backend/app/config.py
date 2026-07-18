@@ -152,10 +152,12 @@ class Settings(BaseSettings):
     source_analysis_total_timeout_seconds: int = Field(default=480, ge=1, le=600)
     source_analysis_cache_enabled: bool = True
     source_analysis_schema_version: str = "source-evidence-pack-v1"
-    staged_workflow_timeout_seconds: int = Field(default=1200, ge=60, le=1200)
+    # Keep provider work below the 20-minute product SLA and reserve time for
+    # cancellation, final governance refresh, and task-state persistence.
+    staged_workflow_timeout_seconds: int = Field(default=1180, ge=60, le=1200)
     staged_workflow_max_tokens: int = Field(default=12000, ge=1000, le=32000)
     staged_quality_repair_enabled: bool = True
-    staged_quality_repair_max_attempts: int = Field(default=4, ge=0, le=4)
+    staged_quality_repair_max_attempts: int = Field(default=1, ge=0, le=4)
     staged_quality_repair_min_remaining_seconds: int = Field(
         default=120,
         ge=0,
@@ -197,7 +199,7 @@ class Settings(BaseSettings):
     behavior_claim_audit_timeout_seconds: int = Field(default=360, ge=30, le=600)
     behavior_claim_audit_max_claims: int = Field(default=64, ge=1, le=128)
     behavior_claim_audit_context_chars: int = Field(default=6000, ge=1000, le=12000)
-    behavior_claim_audit_batch_size: int = Field(default=16, ge=1, le=32)
+    behavior_claim_audit_batch_size: int = Field(default=8, ge=1, le=32)
     behavior_claim_audit_concurrency: int = Field(default=4, ge=1, le=8)
     gitnexus_poll_timeout: int = 600 # max seconds to wait for GitNexus indexing
     coverage_max_upload_mb: int = 100 # max single file size for coverage upload

@@ -4,10 +4,12 @@ import asyncio
 import hashlib
 import inspect
 import json
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from contextlib import suppress
@@ -34,6 +36,15 @@ from app.services.regular_stage_governance import (
     stage_execution_policy,
     store_regular_stage_cache,
 )
+from app.services.source_driven_test_design import (
+    MINDMAP_ARTIFACTS,
+    SOURCE_DRIVEN_V2_ARTIFACTS,
+    build_source_driven_test_design,
+    build_test_design_mindmap,
+    render_test_design_mindmap_html,
+    render_test_design_mindmap_svg,
+    verify_technical_claims,
+)
 from app.services.workflow_presets import BLACK_BOX_CASES_SCHEMA, SFMEA_SCHEMA
 
 
@@ -43,6 +54,56 @@ _CANCELLATION_POLL_INTERVAL = 0.1
 _SOURCE_EVIDENCE_PACK_VERSION = "source-evidence-pack-v1"
 _SOURCE_ANALYSIS_CACHE_VERSION = "source-analysis-cache-v3"
 _FLOW_DETERMINISTIC_STAGES = {"flow_evidence_pack", "flow_outline"}
+_SOURCE_DRIVEN_STAGE_GROUPS = {
+    "breadth_inventory": {
+        "anchor": "entrypoints.json",
+        "artifacts": (
+            "entrypoints.json", "flows.json", "states.json", "resources.json",
+            "model_applicability.json",
+        ),
+        "depends_on": ("flow_outline",),
+    },
+    "developer_explanation": {
+        "anchor": "flow_cards.json",
+        "artifacts": (
+            "flow_cards.json", "developer_explanation_coverage.json",
+            "branch_disposition.json", "state_transition_disposition.json",
+            "resource_lifecycle_disposition.json", "error_propagation_chains.json",
+            "evidence_consumption_ledger.json",
+        ),
+        "depends_on": ("breadth_inventory",),
+    },
+    "scenario_expansion": {
+        "anchor": "scenario_candidates.json",
+        "artifacts": ("scenario_candidates.json",),
+        "depends_on": ("developer_explanation",),
+    },
+    "test_design_governance": {
+        "anchor": "traceability_matrix.json",
+        "artifacts": (
+            "risk_register.json", "blackbox_control_observation.json",
+            "test_basis.json", "test_scenarios.json", "test_flows.json",
+            "traceability_matrix.json",
+        ),
+        "depends_on": ("developer_explanation", "sfmea", "black_box_cases"),
+    },
+    "coverage_judge": {
+        "anchor": "judge_report.json",
+        "artifacts": ("judge_report.json",),
+        "depends_on": ("test_design_governance",),
+    },
+    "test_design_mindmap": {
+        "anchor": MINDMAP_ARTIFACTS[0],
+        "artifacts": MINDMAP_ARTIFACTS,
+        "depends_on": ("coverage_judge",),
+    },
+}
+_SOURCE_DRIVEN_STAGE_BY_ARTIFACT = {
+    artifact: stage_id
+    for stage_id, spec in _SOURCE_DRIVEN_STAGE_GROUPS.items()
+    for artifact in spec["artifacts"]
+}
+_SOURCE_DRIVEN_DETERMINISTIC_STAGES = frozenset(_SOURCE_DRIVEN_STAGE_GROUPS)
 _PROVIDER_CAPACITY_LOCK = threading.Lock()
 _PROVIDER_CAPACITY: tuple[int, "_ProcessProviderCapacity"] | None = None
 
@@ -778,6 +839,11 @@ _STAGE_BY_ARTIFACT = {
         ["flow_outline", "black_box_cases"],
     ),
 }
+for _stage_id, _stage_spec in _SOURCE_DRIVEN_STAGE_GROUPS.items():
+    _STAGE_BY_ARTIFACT[str(_stage_spec["anchor"])] = (
+        _stage_id,
+        list(_stage_spec["depends_on"]),
+    )
 
 _CANONICAL_STAGE_ORDER = (
     "source_analysis",
@@ -785,6 +851,9 @@ _CANONICAL_STAGE_ORDER = (
     "evidence_cards",
     "flow_evidence_pack",
     "flow_outline",
+    "breadth_inventory",
+    "developer_explanation",
+    "scenario_expansion",
     "project_structure",
     "source_reading_plan",
     "module_map",
@@ -792,6 +861,9 @@ _CANONICAL_STAGE_ORDER = (
     "business_flow",
     "sfmea",
     "black_box_cases",
+    "test_design_governance",
+    "coverage_judge",
+    "test_design_mindmap",
     "test_strategy",
     "test_design",
     "coverage_gap",
@@ -807,6 +879,10 @@ _SUPPORT_ARTIFACT = {
     "business_flow": "business_flow.md",
     "sfmea": "sfmea.json",
     "black_box_cases": "black_box_cases.json",
+    **{
+        stage_id: str(spec["anchor"])
+        for stage_id, spec in _SOURCE_DRIVEN_STAGE_GROUPS.items()
+    },
 }
 
 
@@ -853,7 +929,26 @@ def build_staged_execution_plan(
         }
     ]
     requested: list[tuple[int, str, str, list[str]]] = []
+    requested_source_driven_groups: set[str] = set()
+    v2_requested = any(
+        artifact in _SOURCE_DRIVEN_STAGE_BY_ARTIFACT for artifact in outputs
+    )
     for output_index, artifact in enumerate(outputs):
+        source_driven_stage = _SOURCE_DRIVEN_STAGE_BY_ARTIFACT.get(artifact)
+        if source_driven_stage:
+            if source_driven_stage in requested_source_driven_groups:
+                continue
+            requested_source_driven_groups.add(source_driven_stage)
+            group = _SOURCE_DRIVEN_STAGE_GROUPS[source_driven_stage]
+            requested.append(
+                (
+                    output_index,
+                    str(group["anchor"]),
+                    source_driven_stage,
+                    list(group["depends_on"]),
+                )
+            )
+            continue
         stage_id, dependencies = _STAGE_BY_ARTIFACT.get(
             artifact,
             (f"artifact_{output_index + 1}", ["source_analysis"]),
@@ -868,6 +963,10 @@ def build_staged_execution_plan(
             )
         ):
             dependencies = ["business_flow", "sfmea", "black_box_cases"]
+        if v2_requested and stage_id == "sfmea" and "scenario_expansion" not in dependencies:
+            dependencies = [*dependencies, "scenario_expansion"]
+        if v2_requested and stage_id == "black_box_cases" and "scenario_expansion" not in dependencies:
+            dependencies = [*dependencies, "scenario_expansion"]
         requested.append((output_index, artifact, stage_id, list(dependencies)))
 
     requested_stage_ids = {item[2] for item in requested}
@@ -973,6 +1072,16 @@ def build_staged_execution_plan(
                 "purpose": _stage_purpose(stage_id),
                 "support": output_index < 0,
                 "output_contract": output_contract,
+                **(
+                    {
+                        "deterministic": True,
+                        "produces_artifacts": list(
+                            _SOURCE_DRIVEN_STAGE_GROUPS[base_stage_id]["artifacts"]
+                        ),
+                    }
+                    if base_stage_id in _SOURCE_DRIVEN_STAGE_GROUPS
+                    else {}
+                ),
                 **({"deterministic": True} if combined_markdown else {}),
                 **(
                     {
@@ -1453,6 +1562,30 @@ async def _execute_ready_stage_levels(
                     },
                 )
                 continue
+            if stage_id in _SOURCE_DRIVEN_DETERMINISTIC_STAGES:
+                outcome = await _execute_source_driven_deterministic_stage(
+                    plan=plan,
+                    stage=stage,
+                    stage_dir=stage_dir,
+                    artifact_dir=artifact_dir,
+                    is_cancelled=is_cancelled,
+                    on_progress=on_progress,
+                )
+                completed[stage_id] = Path(outcome["output_path"])
+                await _emit_progress(
+                    on_progress,
+                    {
+                        "event_type": "stage_completed",
+                        "stage_id": stage_id,
+                        "status": "completed",
+                        "current": positions[stage_id] + 1,
+                        "total": len(stages),
+                        "artifact": artifact,
+                        "degraded": False,
+                        "user_message": _regular_stage_completion_message(outcome),
+                    },
+                )
+                continue
             if _is_combined_report_stage(stage):
                 outcome = await _execute_combined_report_stage(
                     plan=plan,
@@ -1842,9 +1975,9 @@ def build_login_pdu(
     bhs[5:8] = len(data).to_bytes(3, "big")
     bhs[8:14] = isid
     bhs[14:16] = tsih.to_bytes(2, "big")
-    bhs[20:24] = itt.to_bytes(4, "big")
-    bhs[24:26] = cid.to_bytes(2, "big")
-    bhs[28:32] = cmdsn.to_bytes(4, "big")
+    bhs[16:20] = itt.to_bytes(4, "big")
+    bhs[20:22] = cid.to_bytes(2, "big")
+    bhs[24:28] = cmdsn.to_bytes(4, "big")
     padding = bytes((-len(data)) % 4)
     return bytes(bhs) + data + padding
 
@@ -1985,6 +2118,9 @@ def self_test() -> None:
     assert sample[5:8] == (3).to_bytes(3, "big")
     assert sample[1] == 0x87
     assert sample[2:4] == b"\\x00\\x00"
+    assert sample[16:20] == (2).to_bytes(4, "big")
+    assert sample[20:22] == (1).to_bytes(2, "big")
+    assert sample[24:28] == (3).to_bytes(4, "big")
     assert chap_digest(7, b"secret", b"challenge") == hashlib.md5(
         b"\\x07secretchallenge"
     ).digest()
@@ -2293,6 +2429,174 @@ async def _execute_flow_deterministic_stage(
         output_path=output_path,
         stage_result=result,
         quality_status="verified",
+    )
+    return {**result, "output_path": str(output_path)}
+
+
+async def _execute_source_driven_deterministic_stage(
+    *,
+    plan: dict[str, Any],
+    stage: dict[str, Any],
+    stage_dir: Path,
+    artifact_dir: Path,
+    is_cancelled: CancellationCallback | None,
+    on_progress: ProgressCallback | None,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    stage_id = str(stage.get("id") or "")
+    spec = _SOURCE_DRIVEN_STAGE_GROUPS.get(stage_id)
+    if not spec:
+        raise RuntimeError(f"未知源码驱动测试设计阶段：{stage_id}")
+    if await _callback_true(is_cancelled):
+        raise StagedExecutionCancelled("任务已取消，已停止测试设计台账生成")
+
+    messages = {
+        "breadth_inventory": "正在盘点入口、流程、状态、资源与模型适用性",
+        "developer_explanation": "正在生成逐流程开发讲解和分支/状态/资源处置台账",
+        "scenario_expansion": "正在按八类证据来源扩展测试场景",
+        "test_design_governance": "正在建立风险、黑盒控制观测和端到端追溯矩阵",
+        "coverage_judge": "正在独立核验事实、可执行性和覆盖处置",
+        "test_design_mindmap": "正在物化可离线预览的测试设计脑图",
+    }
+    await _emit_progress(
+        on_progress,
+        {
+            "event_type": f"stage_{stage_id}_started",
+            "stage_id": stage_id,
+            "status": "running",
+            "artifact": str(spec["anchor"]),
+            "user_message": messages.get(stage_id, "正在生成测试设计工件"),
+        },
+    )
+
+    source_pack = _read_json_file(
+        artifact_dir / "stages" / "source_analysis" / "source_evidence_pack.json"
+    )
+    if not source_pack:
+        source_pack = {
+            "analysis_target": str(plan.get("original_user_request") or ""),
+            "repo_revision": str(plan.get("repo_revision") or ""),
+            "source_scope": _read_json_file(artifact_dir / "source_scope.json"),
+            "evidence_cards": _read_json_file(
+                artifact_dir / "evidence_cards.json", default=[]
+            ),
+        }
+    flow_pack = _read_json_file(artifact_dir / "flow_evidence_pack.json")
+    flow_outline = _read_json_file(artifact_dir / "flow_outline.json")
+    sfmea_payload = _read_json_file(artifact_dir / "sfmea.json", default=[])
+    cases_payload = _read_json_file(
+        artifact_dir / "black_box_cases.json", default=[]
+    )
+    sfmea = sfmea_payload if isinstance(sfmea_payload, list) else []
+    black_box_cases = cases_payload if isinstance(cases_payload, list) else []
+
+    fact_verification: dict[str, Any] | None = None
+    if stage_id in {"coverage_judge", "test_design_mindmap"}:
+        fact_verification = verify_technical_claims(
+            source_pack=source_pack,
+            sfmea=sfmea,
+            black_box_cases=black_box_cases,
+        )
+        _write_json(
+            artifact_dir / "independent_fact_verification.json",
+            fact_verification,
+        )
+
+    bundle = build_source_driven_test_design(
+        source_pack=source_pack,
+        flow_pack=flow_pack,
+        flow_outline=flow_outline,
+        sfmea=sfmea,
+        black_box_cases=black_box_cases,
+        fact_verification=fact_verification,
+    )
+    produced = [str(value) for value in spec["artifacts"]]
+    if stage_id == "test_design_mindmap":
+        governed = {
+            name: _read_json_file(artifact_dir / name)
+            for name in SOURCE_DRIVEN_V2_ARTIFACTS
+            if (artifact_dir / name).is_file()
+        }
+        if "judge_report.json" not in governed:
+            governed["judge_report.json"] = bundle["judge_report.json"]
+        mindmap = build_test_design_mindmap(governed)
+        _write_json(artifact_dir / MINDMAP_ARTIFACTS[0], mindmap)
+        _write_text(
+            artifact_dir / MINDMAP_ARTIFACTS[1],
+            render_test_design_mindmap_html(mindmap),
+        )
+        _write_text(
+            artifact_dir / MINDMAP_ARTIFACTS[2],
+            render_test_design_mindmap_svg(mindmap),
+        )
+    else:
+        for artifact in produced:
+            payload = bundle.get(artifact)
+            if payload is None:
+                raise RuntimeError(f"{stage_id} 未生成必需工件 {artifact}")
+            _write_json(artifact_dir / artifact, payload)
+
+    validation_errors: list[str] = []
+    for artifact in produced:
+        path = artifact_dir / artifact
+        if not path.is_file() or path.stat().st_size == 0:
+            validation_errors.append(f"{artifact}:missing_or_empty")
+            continue
+        if path.suffix.lower() == ".json":
+            payload = _read_json_file(path, default=None)
+            if not isinstance(payload, (dict, list)):
+                validation_errors.append(f"{artifact}:invalid_json")
+        elif path.suffix.lower() == ".html":
+            content = path.read_text(encoding="utf-8", errors="replace")
+            if "data-mindmap-root" not in content or "mindmap-data" not in content:
+                validation_errors.append(f"{artifact}:invalid_offline_viewer")
+        elif path.suffix.lower() == ".svg":
+            content = path.read_text(encoding="utf-8", errors="replace")
+            if "<svg" not in content or "test-design-mindmap-v1" not in content:
+                validation_errors.append(f"{artifact}:invalid_svg")
+    if validation_errors:
+        raise RuntimeError(
+            "测试设计工件未通过确定性校验：" + "，".join(validation_errors)
+        )
+
+    output_path = artifact_dir / str(spec["anchor"])
+    judge = _read_json_file(artifact_dir / "judge_report.json")
+    duration_ms = round((time.monotonic() - started) * 1000, 1)
+    result = {
+        "stage_id": stage_id,
+        "status": "completed",
+        "artifact": str(spec["anchor"]),
+        "produced_artifacts": produced,
+        "artifact_count": len(produced),
+        "attempts": 0,
+        "attempt_count": 0,
+        "provider_call_count": 0,
+        "provider_wait_ms": 0.0,
+        "generation_ms": 0.0,
+        "validation_ms": duration_ms,
+        "total_duration_ms": duration_ms,
+        "duration_ms": duration_ms,
+        "model": "deterministic",
+        "producer": "source_driven_test_design_v2",
+        "gate_status": (
+            str(judge.get("status") or "")
+            if stage_id in {"coverage_judge", "test_design_mindmap"}
+            else "validated"
+        ),
+        "size_bytes": sum((artifact_dir / name).stat().st_size for name in produced),
+    }
+    _write_json(stage_dir / "stage_result.json", result)
+    await _emit_progress(
+        on_progress,
+        {
+            "event_type": f"stage_{stage_id}_ready",
+            "stage_id": stage_id,
+            "status": "completed",
+            "artifact": str(spec["anchor"]),
+            "artifact_count": len(produced),
+            "gate_status": result["gate_status"],
+            "user_message": f"已生成并校验 {len(produced)} 个测试设计工件",
+        },
     )
     return {**result, "output_path": str(output_path)}
 
@@ -6731,10 +7035,9 @@ def _regular_stage_completion_message(outcome: dict[str, Any]) -> str:
 
 
 def _write_json(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
+    _write_text(
+        path,
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
-        encoding="utf-8",
     )
 
 
@@ -6749,7 +7052,24 @@ def _read_json_file(path: Path, default: Any | None = None) -> Any:
 
 def _write_text(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text, encoding="utf-8")
+    temporary_path = ""
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+            temporary_path = handle.name
+        os.replace(temporary_path, path)
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.unlink(temporary_path)
 
 
 def _stage_purpose(stage_id: str) -> str:
@@ -6798,11 +7118,14 @@ def _stage_format_rules(stage_id: str, artifact: str) -> list[str]:
             "至少引用一个真实源码路径和一个真实测试路径。"
         ),
         "sfmea": (
-            "- 只返回最高风险 SFMEA JSON 数组；每条必须有评分依据、mitigation 和源码/测试映射；"
-            "每条 mitigation 必须同时写明具体整改和可执行的测试或监控验证动作。"
+            "- 只返回最高风险 SFMEA JSON 数组；每条必须明确源码机制、触发条件、"
+            "局部/上游/下游/最终影响、潜伏性、现有控制、控制缺口、恢复验证、"
+            "评分依据、mitigation 和源码/测试映射；每条 mitigation 必须同时写明"
+            "具体整改和可执行的测试或监控验证动作。"
         ),
         "black_box_cases": (
             "- 只返回黑盒用例 JSON 数组；条目数量以当前 OUTPUT_SCHEMA 和输出上限为准；"
+            "每条必须通过 risk_ids 显式引用现有 SFMEA ID，所有高 RPN 风险必须至少映射一条用例；"
             "test_dimension 必须覆盖且逐字使用 "
             "normal_path、invalid_input、resource_pressure、timeout、reconnect、concurrency、"
             "recovery、performance 八个值，每个至少一条；步骤只能使用外部操作和可观测结果。\n"

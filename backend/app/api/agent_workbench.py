@@ -1212,6 +1212,8 @@ def _task_run_ui_status_label(status: str) -> str:
         return "完成但信息不足"
     if normalized == "partial":
         return "部分完成"
+    if normalized in {"blocked", "upstream_blocked"}:
+        return "因上游门禁阻断"
     if normalized in {"needs_review"}:
         return "需要复核"
     if normalized in {"running", "queued"}:
@@ -1639,6 +1641,7 @@ async def get_workflow_capabilities() -> dict[str, Any]:
             "diff",
             "test_cases",
             "scope_report",
+            "test_design_mindmap",
         ],
         "input_features": {
             "json_schema_validation": True,
@@ -3423,7 +3426,7 @@ async def download_task_run_diagnostic_package(task_run_id: str) -> StreamingRes
 async def get_task_run_artifact_content(
     task_run_id: str,
     artifact_path: str,
-    max_chars: int = Query(50000, ge=1, le=200000),
+    max_chars: int = Query(50000, ge=1, le=2_000_000),
 ) -> dict[str, Any]:
     try:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
@@ -3605,7 +3608,9 @@ def _workflow_generation_messages(
                 "JSON outputs so audit does not warn about missing schemas. "
                 "Every agent_task must declare required_artifacts. Outputs that reference agent "
                 "artifacts must include from and artifact. Black-box test outputs should use "
-                "type test_cases with semantic_import defaults when appropriate."
+                "type test_cases with semantic_import defaults when appropriate. Use the "
+                "test_design_mindmap output type only when the user asks for a test-design mind map; "
+                "its canonical JSON/HTML/SVG artifacts are generated automatically."
             ),
         },
         {
@@ -3615,7 +3620,7 @@ def _workflow_generation_messages(
                 + ", ".join(sorted(ALLOWED_INPUT_TYPES))
                 + "\nAllowed step types: "
                 + ", ".join(sorted(ALLOWED_STEP_TYPES))
-                + "\nCommon output types: markdown, json, test_cases, scope_report.\n"
+                + "\nCommon output types: markdown, json, test_cases, scope_report, test_design_mindmap.\n"
                 "Resolvers: manual, local, agent_mcp.\n"
                 f"{preferred_text}\n\n"
                 "Required workflow JSON shape:\n"

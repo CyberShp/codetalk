@@ -7242,6 +7242,99 @@ body {
   box-shadow: none;
 }
 
+.ct-v2-mindmap-preview {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  width: min(1120px, 92vw);
+  max-height: min(72vh, 760px);
+  min-height: 460px;
+  overflow: hidden;
+  background: #f4f7fa;
+}
+
+.ct-v2-mindmap-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  padding: 10px;
+  border-bottom: 1px solid #d7e1e9;
+  background: #fff;
+}
+
+.ct-v2-mindmap-toolbar label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 220px;
+}
+
+.ct-v2-mindmap-toolbar input,
+.ct-v2-mindmap-toolbar select,
+.ct-v2-mindmap-toolbar button {
+  height: 32px;
+  border: 1px solid #cbd7e0;
+  border-radius: 4px;
+  background: #fff;
+  padding: 0 9px;
+  font-size: 12px;
+}
+
+.ct-v2-mindmap-toolbar input {
+  width: 100%;
+  border: 0;
+  padding: 0;
+  outline: 0;
+}
+
+.ct-v2-mindmap-body {
+  display: grid;
+  grid-template-columns: minmax(360px, 1fr) 330px;
+  min-height: 0;
+}
+
+.ct-v2-mindmap-tree {
+  min-height: 0;
+  overflow: auto;
+  padding: 10px;
+}
+
+.ct-v2-mindmap-tree > button {
+  display: flex;
+  width: 100%;
+  min-height: 48px;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  border: 0;
+  border-left: 3px solid #087f98;
+  border-bottom: 1px solid #e2e8ee;
+  background: #fff;
+  text-align: left;
+}
+
+.ct-v2-mindmap-tree > button.is-blocked { border-left-color: #c62828; }
+.ct-v2-mindmap-tree > button.is-partial { border-left-color: #ad6800; }
+.ct-v2-mindmap-tree > button.is-selected { background: #eaf5f7; }
+.ct-v2-mindmap-tree small { color: #667487; }
+
+.ct-v2-mindmap-detail {
+  overflow: auto;
+  border-left: 1px solid #d7e1e9;
+  background: #fff;
+  padding: 16px;
+}
+
+.ct-v2-mindmap-detail h2 { margin: 5px 0 10px; font-size: 15px; }
+.ct-v2-mindmap-detail h3 { margin: 15px 0 5px; font-size: 12px; }
+.ct-v2-mindmap-detail code { display: block; margin: 4px 0; overflow-wrap: anywhere; }
+.ct-v2-mindmap-invalid { display: flex; gap: 8px; padding: 24px; color: #9f1d1d; }
+
+@media (max-width: 760px) {
+  .ct-v2-mindmap-preview { min-height: 520px; }
+  .ct-v2-mindmap-body { grid-template-columns: 1fr; }
+  .ct-v2-mindmap-detail { max-height: 210px; border-left: 0; border-top: 1px solid #d7e1e9; }
+}
+
 @media (max-width: 900px) {
   .ct-ai-home {
     height: 100%;

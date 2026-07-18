@@ -16,6 +16,95 @@ def test_release_workflow_presets_expose_full_and_two_basic_workflows():
     assert "basic_source_report_claude" in reserved_builtin_workflow_ids()
 
 
+def test_source_flow_v2_keeps_release_presets_and_declares_optional_mindmap():
+    from app.services.source_driven_test_design import (
+        MINDMAP_ARTIFACTS,
+        SOURCE_DRIVEN_V2_ARTIFACTS,
+    )
+    from app.services.workflow_presets import active_builtin_workflow_presets
+
+    presets = active_builtin_workflow_presets()
+    assert [item["id"] for item in presets] == [
+        "source_flow_sfmea_blackbox",
+        "basic_source_report_codex",
+        "basic_source_design_report_builtin",
+    ]
+    source_flow = next(item for item in presets if item["id"] == "source_flow_sfmea_blackbox")["definition"]
+    assert source_flow["name"] == "代码分析 -> 流程 -> SFMEA -> 黑盒用例"
+    assert source_flow["description"].startswith("基于真实源码证据")
+    assert source_flow["version"] == 2
+    step = source_flow["steps"][0]
+    assert set(SOURCE_DRIVEN_V2_ARTIFACTS).issubset(step["required_artifacts"])
+    mindmap = next(item for item in source_flow["outputs"] if item["id"] == "test_design_mindmap")
+    assert mindmap == {
+        "id": "test_design_mindmap",
+        "label": "测试设计脑图",
+        "type": "test_design_mindmap",
+        "from": "analyze_source_flow",
+        "artifact": MINDMAP_ARTIFACTS[0],
+        "companion_artifacts": list(MINDMAP_ARTIFACTS[1:]),
+        "required": False,
+        "default_enabled": False,
+    }
+    for preset_id in ("basic_source_report_codex", "basic_source_design_report_builtin"):
+        definition = next(item for item in presets if item["id"] == preset_id)["definition"]
+        assert definition["steps"][0]["required_artifacts"] == ["report.md"]
+        assert all(item.get("type") != "test_design_mindmap" for item in definition["outputs"])
+
+
+def test_sfmea_schema_requires_source_mechanism_effect_chain_controls_and_recovery():
+    from app.services.workflow_presets import SFMEA_SCHEMA
+
+    required = set(SFMEA_SCHEMA["items"]["required"])
+    assert {
+        "sfmea_id",
+        "mechanism",
+        "trigger_condition",
+        "local_effect",
+        "upstream_effect",
+        "downstream_effect",
+        "final_effect",
+        "latent",
+        "existing_controls",
+        "control_gaps",
+        "score_explanation",
+        "recovery_verification",
+        "source_evidence",
+        "test_mapping",
+    } <= required
+
+
+def test_black_box_case_schema_requires_sfmea_traceability_ids():
+    from app.services.workflow_presets import BLACK_BOX_CASES_SCHEMA
+
+    assert "risk_ids" in BLACK_BOX_CASES_SCHEMA["items"]["required"]
+    assert BLACK_BOX_CASES_SCHEMA["items"]["properties"]["risk_ids"] == {
+        "type": "array",
+        "minItems": 1,
+        "items": {"type": "string", "minLength": 1},
+    }
+
+
+def test_source_driven_preset_exposes_chinese_input_and_output_labels():
+    from app.services.workflow_presets import get_workflow_preset
+
+    definition = get_workflow_preset("source_flow_sfmea_blackbox")["definition"]
+    inputs = {item["id"]: item for item in definition["inputs"]}
+    outputs = {item["id"]: item for item in definition["outputs"]}
+
+    assert inputs["analysis_object"]["label"] == "分析对象"
+    assert inputs["design_doc"]["label"] == "开发设计文档"
+    assert outputs["source_scope"]["label"] == "源码范围"
+    assert outputs["black_box_cases"]["label"] == "黑盒测试用例"
+
+    steps = {item["id"]: item for item in definition["steps"]}
+    assert steps["analyze_source_flow"]["label"] == "源码驱动测试分析"
+    assert steps["validate_evidence"]["label"] == "源码证据校验"
+    assert steps["render_report"]["label"] == "汇总报告生成"
+    assert "GitNexus" in steps["analyze_source_flow"]["goal"]
+    assert "读取本地源码" in steps["analyze_source_flow"]["goal"]
+
+
 def test_retired_claude_basic_preset_alias_resolves_to_codex_replacement():
     from app.services.workflow_presets import get_workflow_preset
 
@@ -430,7 +519,7 @@ def test_restore_builtin_workflow_presets_refreshes_active_release_definition(tm
     restore_builtin_workflow_presets(store)
 
     restored = store.get_workflow("source_flow_sfmea_blackbox")
-    assert restored.name == "Code Analysis -> Flow -> SFMEA -> Black-box Cases"
+    assert restored.name == "代码分析 -> 流程 -> SFMEA -> 黑盒用例"
     assert audit_workflow_definition(restored.raw)["warnings"] == []
     assert store.get_workflow("custom_workflow").name == "Custom Workflow"
     ids = {item.id for item in store.list_workflows()}

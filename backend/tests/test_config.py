@@ -26,7 +26,8 @@ def test_staged_quality_repair_defaults_to_four_bounded_attempts(monkeypatch):
 
     configured = Settings(_env_file=None)
 
-    assert configured.staged_quality_repair_max_attempts == 4
+    assert configured.staged_quality_repair_max_attempts == 1
+    assert configured.staged_workflow_timeout_seconds == 1180
     assert configured.staged_quality_repair_min_remaining_seconds == 120
     assert configured.staged_workflow_shutdown_grace_seconds == 2.0
 
@@ -43,7 +44,7 @@ def test_behavior_claim_audit_defaults_to_bounded_parallel_medium_reasoning(monk
     audit = Settings(_env_file=None)
 
     assert audit.behavior_claim_audit_reasoning_effort == "medium"
-    assert audit.behavior_claim_audit_batch_size == 16
+    assert audit.behavior_claim_audit_batch_size == 8
     assert audit.behavior_claim_audit_concurrency == 4
     assert audit.behavior_claim_audit_timeout_seconds == 360
 

@@ -48,6 +48,8 @@ export interface WorkflowNodeConfig {
   input_ports?: WorkflowPortDefinition[];
   output_ports?: WorkflowPortDefinition[];
   artifact?: string;
+  companion_artifacts?: string[];
+  default_enabled?: boolean;
   source_node_id?: string;
   source_port_id?: string;
   evidence_memory?: boolean | Record<string, unknown>;

@@ -172,6 +172,10 @@ def _declared_workflow_deliverable_paths(task_dir: Path) -> set[str]:
                 normalized = _safe_relative_artifact_path(output.get(key))
                 if normalized:
                     declared.add(normalized)
+            for companion in output.get("companion_artifacts") or []:
+                normalized = _safe_relative_artifact_path(companion)
+                if normalized:
+                    declared.add(normalized)
     return declared
 
 

@@ -522,7 +522,14 @@ def _compiled_output(
         "from": step_id_by_graph_id[source_graph_id],
         "source_port_id": _endpoint(incoming, "source", "port_id"),
     }
-    for key in ("schema", "evidence_memory", "semantic_import", "quality_rules"):
+    for key in (
+        "schema",
+        "evidence_memory",
+        "semantic_import",
+        "quality_rules",
+        "companion_artifacts",
+        "default_enabled",
+    ):
         if key in config:
             payload[key] = config[key]
     return payload

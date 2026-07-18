@@ -24,6 +24,7 @@ from app.services.ai_staged_execution import (
     _compact_execution_input_contract,
     _deterministic_quality_claim_repair,
     _deterministic_schema_repair,
+    _execute_source_driven_deterministic_stage,
     _finalize_combined_markdown_report,
     _regular_stage_prompt,
     _json_array_continuation_prompt,
@@ -196,16 +197,27 @@ class _StageLLM:
         elif stage == "sfmea":
             content = json.dumps([
                 {
+                    "sfmea_id": "SFMEA-001",
                     "failure_mode": "login timeout",
+                    "mechanism": "the bounded login timer expires while the peer is silent",
+                    "trigger_condition": "the peer sends no valid Login continuation before timeout",
                     "cause": "peer silent",
                     "effect": "session unavailable",
+                    "local_effect": "the pending Login exchange stops",
+                    "upstream_effect": "the initiator receives no usable session",
+                    "downstream_effect": "I/O setup cannot begin",
+                    "final_effect": "the target session remains unavailable",
+                    "latent": "not latent; externally visible at Login timeout",
                     "detection": "timeout log",
+                    "existing_controls": "bounded Login timer and error response path",
+                    "control_gaps": "timer expiry needs externally observable regression coverage",
                     "severity": 7,
                     "occurrence": 3,
                     "detection_score": 2,
                     "rpn": 42,
                     "score_explanation": "service unavailable",
                     "mitigation": "bounded retry",
+                    "recovery_verification": "retry Login after the timed-out connection is closed",
                     "source_evidence": ["lib/iscsi/iscsi.c:1262"],
                     "test_mapping": "test/iscsi_tgt/login.sh",
                     "technical_claims": [
@@ -240,6 +252,7 @@ class _StageLLM:
             content = json.dumps([
                 {
                     "case_id": f"TC-{index:02d}",
+                    "risk_ids": ["SFMEA-001"],
                     "test_dimension": dimension,
                     "scenario_name": dimension,
                     "preconditions": ["target running"],
@@ -418,6 +431,88 @@ def test_plan_compiles_dependency_order_and_declared_outputs():
     assert source_stage["max_tokens"] == 1600
     assert source_stage["output_limits"]["max_chinese_characters"] == 1200
     assert source_stage["output_limits"]["max_evidence_anchors"] == 12
+
+
+def test_source_driven_v2_plan_groups_ledgers_and_mindmap_without_extra_model_calls():
+    from app.services.source_driven_test_design import (
+        MINDMAP_ARTIFACTS,
+        SOURCE_DRIVEN_V2_ARTIFACTS,
+    )
+
+    required = [
+        "source_scope.json",
+        "evidence_cards.json",
+        "flow_map.md",
+        "sfmea.json",
+        "black_box_cases.json",
+        *SOURCE_DRIVEN_V2_ARTIFACTS,
+        *MINDMAP_ARTIFACTS,
+    ]
+    plan = build_staged_execution_plan(
+        contract={
+            "target": "SPDK iSCSI Login",
+            "required_outputs": required,
+            "artifact_contract": {name: {"artifact": name} for name in required},
+        },
+        original_user_request="分析 SPDK iSCSI Login 并输出测试设计脑图",
+    )
+
+    stage_ids = [stage["id"] for stage in plan["stages"]]
+    assert stage_ids == [
+        "source_analysis",
+        "source_scope",
+        "evidence_cards",
+        "flow_evidence_pack",
+        "flow_outline",
+        "breadth_inventory",
+        "developer_explanation",
+        "scenario_expansion",
+        "business_flow",
+        "sfmea",
+        "black_box_cases",
+        "test_design_governance",
+        "coverage_judge",
+        "test_design_mindmap",
+    ]
+    grouped = {stage["id"]: stage for stage in plan["stages"]}
+    assert set(grouped["breadth_inventory"]["produces_artifacts"]) == {
+        "entrypoints.json", "flows.json", "states.json", "resources.json", "model_applicability.json"
+    }
+    assert grouped["sfmea"]["depends_on"] == ["source_analysis", "flow_outline", "scenario_expansion"]
+    assert grouped["black_box_cases"]["depends_on"] == [
+        "source_analysis", "flow_outline", "sfmea", "scenario_expansion"
+    ]
+    assert grouped["coverage_judge"]["depends_on"] == ["test_design_governance"]
+    assert grouped["test_design_mindmap"]["depends_on"] == ["coverage_judge"]
+    assert all(grouped[name].get("deterministic") for name in (
+        "breadth_inventory", "developer_explanation", "scenario_expansion",
+        "test_design_governance", "coverage_judge", "test_design_mindmap",
+    ))
+
+
+def test_stage_artifact_writers_use_atomic_replace(tmp_path, monkeypatch):
+    import app.services.ai_staged_execution as staged
+
+    replacements: list[tuple[str, str]] = []
+    real_replace = staged.os.replace
+
+    def recording_replace(source, destination):
+        replacements.append((str(source), str(destination)))
+        real_replace(source, destination)
+
+    monkeypatch.setattr(staged.os, "replace", recording_replace)
+    json_path = tmp_path / "judge_report.json"
+    text_path = tmp_path / "test_design_mindmap.svg"
+
+    staged._write_json(json_path, {"status": "BLOCKED"})
+    staged._write_text(text_path, "<svg />")
+
+    assert json_path.read_text(encoding="utf-8").startswith("{")
+    assert text_path.read_text(encoding="utf-8") == "<svg />"
+    assert [destination for _, destination in replacements] == [
+        str(json_path),
+        str(text_path),
+    ]
 
 
 def test_business_flow_policy_is_single_attempt_streaming_and_hard_bounded():
@@ -3715,6 +3810,60 @@ def test_source_evidence_pack_materializes_three_verified_artifacts(tmp_path):
     assert "spdk_iscsi_login_0" in (tmp_path / "source_analysis.md").read_text(
         encoding="utf-8"
     )
+
+
+@pytest.mark.asyncio
+async def test_source_driven_v2_stages_materialize_complete_governed_bundle(tmp_path):
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "分析 iSCSI login", "target": "iSCSI login"},
+        staged_context=_verified_source_context(),
+        max_files=6,
+        excerpt_chars=1200,
+        max_evidence_anchors=12,
+    )
+    source_pack = build_source_evidence_pack(compact)
+    source_stage = tmp_path / "stages" / "source_analysis"
+    source_stage.mkdir(parents=True)
+    (source_stage / "source_evidence_pack.json").write_text(
+        json.dumps(source_pack), encoding="utf-8"
+    )
+    flow_pack = build_flow_evidence_pack(source_pack)
+    (tmp_path / "flow_evidence_pack.json").write_text(
+        json.dumps(flow_pack), encoding="utf-8"
+    )
+    (tmp_path / "flow_outline.json").write_text(
+        json.dumps(build_flow_outline(flow_pack)), encoding="utf-8"
+    )
+    (tmp_path / "sfmea.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "black_box_cases.json").write_text("[]", encoding="utf-8")
+
+    results = []
+    for stage_id in (
+        "breadth_inventory",
+        "developer_explanation",
+        "scenario_expansion",
+        "test_design_governance",
+        "coverage_judge",
+        "test_design_mindmap",
+    ):
+        stage_dir = tmp_path / "stages" / stage_id
+        stage_dir.mkdir(parents=True)
+        results.append(
+            await _execute_source_driven_deterministic_stage(
+                plan={"original_user_request": "分析 iSCSI login"},
+                stage={"id": stage_id},
+                stage_dir=stage_dir,
+                artifact_dir=tmp_path,
+                is_cancelled=None,
+                on_progress=None,
+            )
+        )
+
+    assert all(result["provider_call_count"] == 0 for result in results)
+    assert json.loads((tmp_path / "judge_report.json").read_text())["status"] == "BLOCKED"
+    assert (tmp_path / "test_design_mindmap.json").is_file()
+    assert "data-mindmap-root" in (tmp_path / "test_design_mindmap.html").read_text()
+    assert "test-design-mindmap-v1" in (tmp_path / "test_design_mindmap.svg").read_text()
 
 
 def test_source_evidence_pack_extracts_verified_constant_literals():

@@ -2263,7 +2263,9 @@ def build_behavior_claim_validation_request(
     contexts: list[dict[str, Any]] = []
     context_index: dict[tuple[str, int, int, str], str] = {}
     request_claims: list[dict[str, Any]] = []
-    for claim in candidates[: max(1, int(max_claims))]:
+    claim_limit = max(1, int(max_claims))
+    selected_candidates = candidates[:claim_limit]
+    for claim in selected_candidates:
         context_ids: list[str] = []
         for evidence in claim.get("evidence") or []:
             if not isinstance(evidence, dict):
@@ -2305,6 +2307,9 @@ def build_behavior_claim_validation_request(
         "repo_path": str(repo.resolve()) if repo.exists() else str(repo),
         "claims": request_claims,
         "contexts": contexts,
+        "candidate_count": len(candidates),
+        "requested_count": len(request_claims),
+        "truncated": len(candidates) > len(request_claims),
     }
     payload["request_sha256"] = hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")

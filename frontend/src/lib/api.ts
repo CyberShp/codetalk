@@ -1260,13 +1260,14 @@ export const api = {
           `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/artifacts`,
         ),
 
-      artifactContent: (taskRunId: string, artifactPath: string) => {
+      artifactContent: (taskRunId: string, artifactPath: string, maxChars?: number) => {
         const encodedPath = artifactPath
           .split("/")
           .map((part) => encodeURIComponent(part))
           .join("/");
+        const query = maxChars ? `?max_chars=${encodeURIComponent(String(maxChars))}` : "";
         return request<WorkbenchTaskArtifactContent>(
-          `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/artifacts/content/${encodedPath}`,
+          `/api/workbench/task-runs/${encodeURIComponent(taskRunId)}/artifacts/content/${encodedPath}${query}`,
         );
       },
 

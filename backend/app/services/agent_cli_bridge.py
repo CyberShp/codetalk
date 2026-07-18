@@ -132,6 +132,7 @@ async def _probe_claude_auth_in_runtime_sandbox(
                     settings.external_agent_sandbox_write_paths,
                 ),
                 "sandbox_command": command,
+                "sandbox_read_paths": _command_runtime_read_paths(command),
             }
             sandbox = prepare_agent_sandbox(
                 runtime=sandbox_runtime,
@@ -320,6 +321,7 @@ async def stream_agent_runtime(
         "sandbox_command": command,
         "sandbox_read_paths": [
             *list(runtime.get("sandbox_read_paths") or []),
+            *_command_runtime_read_paths(command),
             *_configured_runtime_read_paths(configured_runtime_args),
             *([prompt_file_path] if prompt_file_path else []),
         ],
@@ -650,6 +652,28 @@ def _configured_runtime_read_paths(args: list[str]) -> list[str]:
             except (OSError, RuntimeError):
                 continue
     return paths
+
+
+def _command_runtime_read_paths(command: str) -> list[str]:
+    """Expose an explicitly configured virtualenv runtime read-only.
+
+    macOS sandbox-exec can launch ``.venv/bin/python`` while still denying the
+    interpreter's sibling ``pyvenv.cfg``. The configured command is trusted,
+    so expose only its owning virtualenv when that marker is present.
+    """
+
+    try:
+        executable = Path(command).expanduser()
+        if not executable.is_absolute():
+            executable = Path(os.path.abspath(executable))
+        if not executable.exists():
+            return []
+    except (OSError, RuntimeError):
+        return []
+    for parent in (executable.parent, executable.parent.parent):
+        if (parent / "pyvenv.cfg").is_file():
+            return [str(parent)]
+    return []
 
 
 def _prompt_argument_or_file_bootstrap(prompt: str, *, prompt_file_path: str | None) -> str:

@@ -150,6 +150,13 @@ class _CompletedTaskRunResponse:
         return self._body
 
 
+async def test_run_ui_labels_upstream_blocked_nodes_in_chinese():
+    from app.api.agent_workbench import _task_run_ui_status_label
+
+    assert _task_run_ui_status_label("blocked") == "因上游门禁阻断"
+    assert _task_run_ui_status_label("upstream_blocked") == "因上游门禁阻断"
+
+
 class _SourceFlowStageLLM:
     async def complete(self, messages, max_tokens=4096, temperature=0.2):
         from app.llm.base import LLMResponse
@@ -197,22 +204,34 @@ class _SourceFlowStageLLM:
                 "## 观测点\nUse the response, target log, and `test/nvmf/nvmf.sh`."
             ),
             "sfmea.json": [{
+                "sfmea_id": "SFMEA-001",
                 "failure_mode": "connect rejected",
+                "mechanism": "connect request validation rejects an invalid public request",
+                "trigger_condition": "initiator sends an invalid connect request",
                 "cause": "invalid request",
                 "effect": "controller unavailable",
+                "local_effect": "connect operation is rejected",
+                "upstream_effect": "initiator receives an error response",
+                "downstream_effect": "no controller queue is established",
+                "final_effect": "the requested connection is unavailable",
+                "latent": "not latent because the connect response is observable",
                 "detection": "connect response",
+                "existing_controls": "request validation and public error response",
+                "control_gaps": "negative boundary coverage is incomplete",
                 "severity": 7,
                 "occurrence": 3,
                 "detection_score": 2,
                 "rpn": 42,
                 "score_explanation": "connection cannot progress",
                 "mitigation": "reject invalid requests early and add a negative connect black-box test monitoring response logs",
+                "recovery_verification": "retry a valid connect and confirm the controller becomes available",
                 "source_evidence": ["lib/nvmf/ctrlr.c:1"],
                 "test_mapping": "test/nvmf/nvmf.sh",
             }],
             "black_box_cases.json": [
                 {
                     "case_id": f"TC-{index}",
+                    "risk_ids": ["SFMEA-001"],
                     "case_type": "black_box_ready",
                     "scenario_name": dimension,
                     "test_dimension": dimension,
@@ -1131,6 +1150,7 @@ async def test_workbench_workflow_capabilities_api_documents_custom_workflows(wo
     assert "agent_task" in body["step_types"]
     assert "semantic_retrieve" in body["step_types"]
     assert "json" in body["output_types"]
+    assert "test_design_mindmap" in body["output_types"]
     assert body["input_features"]["json_schema_validation"] is True
     assert body["output_features"]["json_schema_validation"] is True
     assert body["output_features"]["workflow_output_materialization"] is True
@@ -1165,13 +1185,21 @@ async def test_workbench_core_workflow_readiness_api_covers_release_workflow(wor
         "basic_source_design_report_builtin",
     }
     assert by_id["source_flow_sfmea_blackbox"]["scenario"] == "source_flow_sfmea_blackbox"
-    assert by_id["source_flow_sfmea_blackbox"]["required_artifacts"] == [
+    required_artifacts = by_id["source_flow_sfmea_blackbox"]["required_artifacts"]
+    assert required_artifacts[:5] == [
         "source_scope.json",
         "evidence_cards.json",
         "flow_map.md",
         "sfmea.json",
         "black_box_cases.json",
     ]
+    assert {
+        "entrypoints.json",
+        "resources.json",
+        "scenario_candidates.json",
+        "traceability_matrix.json",
+        "judge_report.json",
+    } <= set(required_artifacts)
     assert not any(
         warning["code"] == "json_output_missing_schema"
         for warning in by_id["source_flow_sfmea_blackbox"]["warnings"]
@@ -4129,14 +4157,15 @@ async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
 
     assert response.status_code == 200
     body = response.json()
-    assert body["status"] == "completed"
+    # V2 preserves generated artifacts but blocks delivery until independent
+    # fact validation has verified at least one source-backed claim.
+    assert body["status"] == "needs_rework"
     outputs = {item["id"]: item for item in body["outputs"]}
     assert outputs["code_evidence"]["status"] == "ok"
     assert outputs["flow_map"]["status"] == "ok"
     assert outputs["sfmea"]["status"] == "ok"
     assert outputs["black_box_cases"]["status"] == "ok"
-    assert body["semantic_output_import"]["status"] == "ok"
-    assert body["semantic_output_import"]["imported_count"] >= 1
+    assert "semantic_output_import" not in body
 
     task_dir = _task_run_dir(body["task_run"]["task_run_id"])
     step_dir = task_dir / "agent_runs" / "analyze_source_flow"
@@ -4228,9 +4257,9 @@ async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
         (task_dir / "task_rerun_plan.json").read_text(encoding="utf-8")
     )
     assert recovered_acceptance.status_code == 200
-    assert recovered_execution["test_activity_quality"]["deliverable"] is True
-    assert recovered_execution["status"] == "completed"
-    assert recovered_rerun_plan["status"] == "clean"
+    assert recovered_execution["test_activity_quality"]["deliverable"] is False
+    assert recovered_execution["status"] == "needs_rework"
+    assert recovered_rerun_plan["status"] == "needs_rerun"
 
     (task_dir / "workflow_execution.json").write_text("{corrupt", encoding="utf-8")
     degraded_acceptance = await workbench_client.post(
@@ -4246,7 +4275,7 @@ async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
     assert degraded_checks["workflow_execution"]["reason"] == "workflow_execution_invalid_json"
     assert json.loads(
         (task_dir / "test_activity_quality_audit.json").read_text(encoding="utf-8")
-    )["status"] == "deliverable"
+    )["status"] == "needs_rework"
 
 
 async def test_builtin_common_scenario_preset_uses_default_query_when_scope_is_empty(

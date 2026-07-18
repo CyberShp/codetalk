@@ -10,6 +10,23 @@ import type {
 } from "@/lib/types/workflow";
 import { nodeKindLabel, validateInputPortId } from "../workflow-graph";
 
+const MINDMAP_ARTIFACTS = [
+  "test_design_mindmap.json",
+  "test_design_mindmap.html",
+  "test_design_mindmap.svg",
+] as const;
+
+const outputTypeLabels: Record<string, string> = {
+  markdown: "Markdown 报告",
+  json: "JSON 数据",
+  text: "纯文本",
+  patch: "补丁文件",
+  diff: "差异文件",
+  test_cases: "测试用例",
+  scope_report: "范围报告",
+  test_design_mindmap: "测试设计脑图",
+};
+
 interface Props {
   node: WorkflowGraphNode;
   capabilities: WorkflowCapabilities | null;
@@ -154,13 +171,40 @@ export function NodeInspector({ node, capabilities, providers, onChange, onClose
               <input value={String(config.output_id ?? node.id)} onChange={(event) => updateConfig({ output_id: event.target.value })} />
             </Field>
             <Field label="输出类型">
-              <select value={String(config.type ?? "markdown")} onChange={(event) => updateConfig({ type: event.target.value })}>
-                {(capabilities?.output_types ?? ["markdown", "json", "test_cases"]).map((item) => <option key={item}>{item}</option>)}
+              <select
+                value={String(config.type ?? "markdown")}
+                onChange={(event) => {
+                  const type = event.target.value;
+                  updateConfig(
+                    type === "test_design_mindmap"
+                      ? {
+                          type,
+                          artifact: MINDMAP_ARTIFACTS[0],
+                          companion_artifacts: MINDMAP_ARTIFACTS.slice(1),
+                          required: true,
+                        }
+                      : { type, companion_artifacts: undefined },
+                  );
+                }}
+              >
+                {(capabilities?.output_types ?? ["markdown", "json", "test_cases", "test_design_mindmap"]).map((item) => (
+                  <option key={item} value={item}>{outputTypeLabels[item] ?? item}</option>
+                ))}
               </select>
             </Field>
             <Field label="文件名">
-              <input value={String(config.artifact ?? "")} onChange={(event) => updateConfig({ artifact: event.target.value })} placeholder="report.md" />
+              <input
+                value={String(config.artifact ?? "")}
+                readOnly={config.type === "test_design_mindmap"}
+                onChange={(event) => updateConfig({ artifact: event.target.value })}
+                placeholder="report.md"
+              />
             </Field>
+            {config.type === "test_design_mindmap" && (
+              <p className="ct-v2-inspector-note">
+                仅适用于内置模型分阶段分析节点。系统会自动生成 {MINDMAP_ARTIFACTS.join("、")}，JSON 是唯一结构化事实源。
+              </p>
+            )}
             <Toggle label="必需交付" checked={Boolean(config.required)} onChange={(checked) => updateConfig({ required: checked })} />
             <Toggle label="写入证据库" checked={Boolean(config.evidence_memory)} onChange={(checked) => updateConfig({ evidence_memory: checked })} />
             <Toggle label="导入测试语义库" checked={Boolean(config.semantic_import)} onChange={(checked) => updateConfig({ semantic_import: checked })} />

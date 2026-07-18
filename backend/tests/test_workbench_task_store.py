@@ -194,10 +194,97 @@ def test_task_effective_config_uses_explicit_replace_and_keeps_workflow_immutabl
     assert step["provider"] == "builtin-llm"
     assert step["mcp_profiles"] == ["cgc"]
     assert step["skills"] == ["sfmea-analysis"]
-    assert step["required_artifacts"] == ["task-report.md"]
+    assert step["required_artifacts"] == ["task-report.md", "trace.md"]
     assert [item["artifact"] for item in compiled["compiled_definition"]["outputs"]] == ["task-report.md", "trace.md"]
     assert definition["steps"][0]["mcp_profiles"] == ["gitnexus"]
     assert definition["outputs"][0]["artifact"] == "report.md"
+
+
+def test_optional_mindmap_is_absent_by_default_and_expands_to_three_artifacts_when_enabled():
+    from app.services.source_driven_test_design import MINDMAP_ARTIFACTS
+    from app.services.workbench_task_compile import compile_task_configuration
+
+    definition = {
+        "id": "flow",
+        "name": "Flow",
+        "version": 1,
+        "inputs": [],
+        "steps": [{
+            "id": "analyze",
+            "type": "agent_task",
+            "execution_mode": "staged",
+            "required_artifacts": ["report.md"],
+        }],
+        "outputs": [
+            {
+                "id": "report",
+                "type": "markdown",
+                "from": "analyze",
+                "artifact": "report.md",
+                "required": True,
+            },
+            {
+                "id": "test_design_mindmap",
+                "label": "测试设计脑图",
+                "type": "test_design_mindmap",
+                "from": "analyze",
+                "artifact": MINDMAP_ARTIFACTS[0],
+                "companion_artifacts": list(MINDMAP_ARTIFACTS[1:]),
+                "required": False,
+                "default_enabled": False,
+            },
+        ],
+    }
+    plan = {"nodes": [{"node_id": "analyze", "output_contracts": definition["outputs"]}]}
+
+    default = compile_task_configuration(
+        compiled_definition=definition,
+        compiled_plan=plan,
+        execution_overrides={},
+        output_overrides={},
+    )
+    assert [item["id"] for item in default["compiled_definition"]["outputs"]] == ["report"]
+    assert default["compiled_definition"]["steps"][0]["required_artifacts"] == ["report.md"]
+
+    enabled = compile_task_configuration(
+        compiled_definition=definition,
+        compiled_plan=plan,
+        execution_overrides={},
+        output_overrides={"outputs": {"test_design_mindmap": {"enabled": True}}},
+    )
+    assert [item["id"] for item in enabled["compiled_definition"]["outputs"]] == [
+        "report",
+        "test_design_mindmap",
+    ]
+    assert enabled["compiled_definition"]["steps"][0]["required_artifacts"] == [
+        "report.md",
+        *MINDMAP_ARTIFACTS,
+    ]
+
+
+def test_mindmap_output_rejects_non_staged_or_external_agent_sources():
+    from app.services.workbench_task_compile import (
+        TaskConfigurationError,
+        compile_task_configuration,
+    )
+
+    definition = {
+        "steps": [{"id": "analyze", "type": "agent_task", "provider": "claude-code"}],
+        "outputs": [{
+            "id": "mindmap",
+            "type": "test_design_mindmap",
+            "from": "analyze",
+            "artifact": "test_design_mindmap.json",
+        }],
+    }
+
+    with pytest.raises(TaskConfigurationError, match="内置模型分阶段"):
+        compile_task_configuration(
+            compiled_definition=definition,
+            compiled_plan={"nodes": [{"node_id": "analyze", "output_contracts": []}]},
+            execution_overrides={},
+            output_overrides={},
+        )
 
 
 def test_task_effective_config_rejects_required_disable_unsafe_and_unknown_source():

@@ -147,7 +147,19 @@ def normalize_behavior_claim_verdicts(
         "request_sha256": str(request.get("request_sha256") or ""),
         "validator": dict(validator),
         "raw_verdict_count": len(raw_items),
+        **_request_coverage_fields(request),
         "claims": normalized,
+    }
+
+
+def _request_coverage_fields(request: dict[str, Any]) -> dict[str, Any]:
+    claims = [item for item in request.get("claims") or [] if isinstance(item, dict)]
+    candidate_count = max(len(claims), int(request.get("candidate_count") or 0))
+    requested_count = int(request.get("requested_count") or len(claims))
+    return {
+        "candidate_count": candidate_count,
+        "requested_count": requested_count,
+        "truncated": bool(request.get("truncated")) or candidate_count > requested_count,
     }
 
 
@@ -212,6 +224,7 @@ async def materialize_behavior_claim_validation(
             "status": "not_applicable",
             "request_sha256": str(request_payload.get("request_sha256") or ""),
             "validator": {"independent": False},
+            **_request_coverage_fields(request_payload),
             "claims": [],
         }
         _write_json(output_path, result)
@@ -282,6 +295,7 @@ async def materialize_behavior_claim_validation(
             **existing,
             "request_sha256": str(request_payload.get("request_sha256") or ""),
             "validator": validator,
+            **_request_coverage_fields(request_payload),
             "raw_verdict_count": len(reusable_verdicts),
             "claims": [
                 reusable_verdicts[
@@ -447,6 +461,7 @@ async def materialize_behavior_claim_validation(
         "status": "completed" if completed_batches else "unavailable",
         "request_sha256": str(request_payload.get("request_sha256") or ""),
         "validator": validator,
+        **_request_coverage_fields(request_payload),
         "batch_count": len(batches),
         "completed_batch_count": completed_batches,
         "raw_verdict_count": len(ordered_claims),
@@ -763,6 +778,7 @@ def _unavailable_validation(
         "status": "unavailable",
         "request_sha256": str(request.get("request_sha256") or ""),
         "validator": dict(validator),
+        **_request_coverage_fields(request),
         "claims": [
             {
                 "claim_id": str(item.get("claim_id") or ""),

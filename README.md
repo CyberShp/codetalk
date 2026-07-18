@@ -624,6 +624,43 @@ CodeTalk 推荐把大结果写成文件，而不是全部堆在聊天框或终�
 | `final_report.md` | Markdown | 总报告 |
 | `diagnostics.zip` | 压缩包 | 失败任务的日志摘要、trace、输入和任务 ID |
 
+### 源码驱动测试分析 V2
+
+正式预设 `source_flow_sfmea_blackbox` 不会让模型凭一段提示词自由发挥整份测试设计。系统先读取并校验源码证据，再按依赖关系物化以下工件：
+
+| 阶段 | 关键工件 | 回答的问题 |
+|---|---|---|
+| 广度盘点 | `entrypoints.json`、`flows.json`、`states.json`、`resources.json`、`model_applicability.json` | 有哪些入口、流程、状态、资源，哪些测试模型确实适用 |
+| 开发讲解与处置 | `flow_cards.json`、分支/状态/资源处置台账、`error_propagation_chains.json` | 每条机制如何工作，遗漏项为何保留、合并、阻塞或不适用 |
+| 八源场景扩展 | `scenario_candidates.json`、`evidence_consumption_ledger.json` | 分支、状态、资源、边界、并发、异常传播、协议和历史证据产生了哪些候选场景 |
+| 测试设计治理 | `risk_register.json`、`test_basis.json`、`test_scenarios.json`、`test_flows.json`、`traceability_matrix.json` | 风险如何映射到可执行黑盒用例和真实证据 |
+| 独立门禁 | `independent_fact_verification.json`、`judge_report.json` | 结构、事实、可执行性和覆盖处置是否允许交付 |
+
+资源分析不仅检查内存，还覆盖 cmd、PDU、队列项、连接、session、引用、Bitmap、计数器、Tag/Generation、句柄和配额。只有源码同时给出申请/释放生命周期与明确的池、容量、上限、Bitmap 或计数机制时，才扩展 `0/1/N-1/N/N+1`、`2N-1/2N/2N+1`；只有存在类型、序列、Tag 或 Generation 证据时才扩展上限、回绕和重用场景。普通的 `request`、`connection` 或 `count` 字样不会单独触发容量模型。
+
+SFMEA 与黑盒用例通过稳定 ID 关联。每条用例必须声明 `risk_ids`，高 RPN 风险没有用例映射、事实未核验、资源生命周期未闭合或存在孤立用例时，Coverage Judge 会显示 `PARTIAL` 或 `BLOCKED`，不会用结构分数冒充质量全绿。L1 只负责校验证据路径、符号、引用原文和字面绑定；最终事实通过必须来自独立 L2 行为核验。L2 未运行、非独立或证据不足时不能进入 `READY`。
+
+### 可选测试设计脑图
+
+创建任务时在“输出”步骤勾选“测试设计脑图”即可；未勾选时不会生成，也不会作为缺失交付件告警。该输出只能连接到“内置模型 + 分阶段分析”节点，编译器会拒绝普通外部 Agent 节点，避免把确定性渲染任务错误交给 Agent 自由生成。勾选后系统自动生成：
+
+| 文件 | 用途 |
+|---|---|
+| `test_design_mindmap.json` | 唯一结构化事实源，保存稳定 ID、状态、优先级、证据和追溯关系 |
+| `test_design_mindmap.html` | 可离线打开的交互版本 |
+| `test_design_mindmap.svg` | 适合评审、报告和归档的静态版本 |
+
+运行完成后在驾驶舱“交付件”区域点击脑图 JSON，可按标题和摘要搜索，按优先级、节点类型、状态筛选，展开或折叠层级，并查看节点对应的源码证据、Flow、State、Resource、SFMEA 和 Case。预览区域有固定高度和独立滚动，不会把整个页面无限拉长。HTML 与 SVG 由 CodeTalk 的确定性渲染器生成，模型不能自由插入脚本或决定布局；SVG 包含 JSON 中的全部节点，三件套携带同一 `generation_id`，刷新时通过临时文件原子替换。
+
+建议的使用顺序：
+
+1. 创建并完成源码工作空间索引。
+2. 新建任务，选择 `source_flow_sfmea_blackbox` 和工作空间。
+3. 输入具体分析对象，例如“iSCSI Login 登录、认证、错误恢复和并发连接流程”。
+4. 按需上传需求、设计或覆盖率材料；需要可视化评审时勾选“测试设计脑图”。
+5. 启动运行，在驾驶舱先看当前阶段，再看四轴质量状态，最后下载交付件。
+6. 只有 Coverage Judge 为 `READY` 且事实核验、可执行性和覆盖处置均通过时，才将结果作为正式测试设计交付。
+
 高质量产物要求：
 
 - 引用的文件必须真实存在。
