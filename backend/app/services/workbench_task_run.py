@@ -26,6 +26,7 @@ from app.services.external_agent_discovery import (
     split_agent_command,
 )
 from app.services.test_activity_contract import build_test_activity_contract
+from app.services.test_activity_stage_specs import default_test_activity_stage_specs
 from app.services.network_policy import IntranetNetworkPolicy
 from app.services.test_semantic_library import TestSemanticLibraryStore
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
@@ -168,6 +169,9 @@ class WorkbenchTaskRunPreparer:
             allowed_hosts=set(settings.intranet_allowed_hosts),
             allowed_cidrs=set(settings.intranet_allowed_cidrs),
         ).snapshot()
+        stage_specs = default_test_activity_stage_specs(
+            profile_id=str(execution_profile["id"])
+        )
         has_agent_step = any(
             isinstance(step, dict) and step.get("type") == "agent_task"
             for step in workflow_snapshot.get("steps") or []
@@ -349,6 +353,7 @@ class WorkbenchTaskRunPreparer:
             "workflow_id": workflow_id,
             "execution_profile": execution_profile,
             "network_policy": network_policy,
+            "stage_specs": stage_specs,
             "workspace_id": workspace_id,
             "repo_path": repo_path,
             "inputs": input_snapshot,
@@ -549,6 +554,7 @@ class WorkbenchTaskRunPreparer:
         _write_json(artifact_dir / "workflow_snapshot.json", workflow_snapshot)
         _write_json(artifact_dir / "execution_profile.json", execution_profile)
         _write_json(artifact_dir / "network_policy.json", network_policy)
+        _write_json(artifact_dir / "stage_specs.json", stage_specs)
         _write_json(artifact_dir / "workflow_contract.json", workflow_contract)
         _write_json(artifact_dir / "agent_mcp_requests.json", agent_mcp_requests)
         _write_json(artifact_dir / "input_snapshot.json", input_snapshot)

@@ -298,12 +298,14 @@ def test_prepare_freezes_selected_execution_profile_into_task_and_agent_bundles(
 
     assert prepared.execution_profile["id"] == "deep"
     assert prepared.task_bundle["execution_profile"]["delivery_class"] == "full_test_delivery"
+    assert prepared.task_bundle["stage_specs"][0]["stage_id"] == "input_scope"
     root = Path(prepared.artifact_dir)
     assert json.loads((root / "execution_profile.json").read_text(encoding="utf-8"))["id"] == "deep"
     agent_bundle = json.loads(
         (root / "agent_runs" / "analyze" / "task_bundle.json").read_text(encoding="utf-8")
     )
     assert agent_bundle["execution_profile"]["max_subagents"] == 4
+    assert agent_bundle["stage_specs"][-1]["stage_id"] == "publish"
 
 
 def test_prepare_legacy_workflow_allows_the_v3_deep_execution_profile(tmp_path):
