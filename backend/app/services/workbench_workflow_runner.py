@@ -46,6 +46,7 @@ from app.services.test_activity_contract import (
     audit_test_activity_artifacts,
     refresh_test_activity_contract,
 )
+from app.services.test_activity_stage_specs import project_test_activity_stage_progress
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_task_run import BUILTIN_LLM_PROVIDER_ID
 from app.services.workbench_task_run import WorkbenchTaskRunStore
@@ -2401,6 +2402,20 @@ class WorkbenchWorkflowRunner:
         _write_json(
             task_dir / "task_rerun_plan.json",
             result.rerun_plan,
+        )
+        write_task_artifact_manifest(task_dir, task_run_id=result.task_run_id)
+        execution_profile = _read_json(task_dir / "execution_profile.json")
+        profile_id = (
+            str(execution_profile.get("id") or "rapid")
+            if isinstance(execution_profile, dict)
+            else "rapid"
+        )
+        _write_json(
+            task_dir / "test_activity_stage_progress.json",
+            project_test_activity_stage_progress(
+                artifact_dir=task_dir,
+                profile_id=profile_id,
+            ),
         )
         write_task_artifact_manifest(task_dir, task_run_id=result.task_run_id)
 

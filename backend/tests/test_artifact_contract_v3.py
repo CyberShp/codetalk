@@ -106,3 +106,27 @@ def test_claim_evidence_ledger_carries_independent_behavior_verdicts(tmp_path):
     assert ledger["claims"][0]["l1_status"] == "verified"
     assert ledger["claims"][0]["l2_status"] == "contradicts"
     assert ledger["claims"][0]["verification_status"] == "contradicted"
+
+
+def test_stage_progress_only_marks_artifacts_that_were_really_materialized(tmp_path):
+    from app.services.test_activity_stage_specs import (
+        project_test_activity_stage_progress,
+    )
+
+    (tmp_path / "agent_runs" / "analyze").mkdir(parents=True)
+    (tmp_path / "input_snapshot.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "input_consumption.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "agent_runs" / "analyze" / "source_scope.json").write_text(
+        "{}", encoding="utf-8"
+    )
+
+    progress = project_test_activity_stage_progress(
+        artifact_dir=tmp_path,
+        profile_id="deep",
+    )
+    stages = {item["stage_id"]: item for item in progress["stages"]}
+
+    assert stages["input_scope"]["status"] == "completed"
+    assert stages["source_evidence"]["status"] == "partial"
+    assert stages["source_evidence"]["present_artifacts"] == ["source_scope.json"]
+    assert stages["sfmea"]["status"] == "not_requested"

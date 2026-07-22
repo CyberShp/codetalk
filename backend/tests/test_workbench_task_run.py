@@ -1275,6 +1275,15 @@ def test_workbench_runner_staged_builtin_llm_writes_each_declared_artifact(
     assert (agent_dir / "stages" / "source_analysis" / "stage_result.json").exists()
     assert json.loads((agent_dir / "evidence_cards.json").read_text())[0]["file_path"] == "lib/iscsi/iscsi.c"
     assert json.loads((agent_dir / "sfmea.json").read_text())[0]["rpn"] == 42
+    stage_progress = json.loads(
+        (Path(prepared.artifact_dir) / "test_activity_stage_progress.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    stages = {item["stage_id"]: item for item in stage_progress["stages"]}
+    assert stages["input_scope"]["status"] == "completed"
+    assert stages["source_evidence"]["status"] == "completed"
+    assert stages["sfmea"]["status"] == "partial"
     source_prompt = staged_prompts[0]
     assert "iSCSI login" in source_prompt
     assert "lib/iscsi/iscsi.c" in source_prompt
