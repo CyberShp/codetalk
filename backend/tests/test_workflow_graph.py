@@ -137,6 +137,59 @@ def test_graph_validator_and_compiler_are_deterministic_for_shuffled_nodes():
     }
 
 
+def test_graph_compiles_declared_execution_profiles_into_immutable_contracts():
+    from app.services.workflow_graph import compile_workflow_graph, validate_workflow_graph
+
+    graph = _graph()
+    graph["settings"]["execution_profiles"] = [
+        {
+            "id": "rapid",
+            "label": "速度型",
+            "delivery_class": "bounded_analysis",
+            "expected_duration_minutes": [10, 25],
+            "max_subagents": 1,
+            "stage_overrides": {"independent_judge": {"required": False}},
+        },
+        {
+            "id": "deep",
+            "label": "深度型",
+            "delivery_class": "full_test_delivery",
+            "expected_duration_minutes": [45, 90],
+            "max_subagents": 4,
+            "stage_overrides": {"independent_judge": {"required": True}},
+        },
+    ]
+    graph["settings"]["default_execution_profile"] = "rapid"
+
+    validation = validate_workflow_graph(graph, capabilities=_capabilities())
+    assert validation == {"valid": True, "errors": [], "warnings": []}
+
+    compiled = compile_workflow_graph(
+        graph, capabilities=_capabilities(), workflow_version_id="wfv_profiles"
+    )
+
+    for contract in (compiled["compiled_definition"], compiled["compiled_plan"]):
+        assert contract["default_execution_profile"] == "rapid"
+        assert contract["execution_profiles"] == [
+            {
+                "id": "rapid",
+                "label": "速度型",
+                "delivery_class": "bounded_analysis",
+                "expected_duration_minutes": [10, 25],
+                "max_subagents": 1,
+                "stage_overrides": {"independent_judge": {"required": False}},
+            },
+            {
+                "id": "deep",
+                "label": "深度型",
+                "delivery_class": "full_test_delivery",
+                "expected_duration_minutes": [45, 90],
+                "max_subagents": 4,
+                "stage_overrides": {"independent_judge": {"required": True}},
+            },
+        ]
+
+
 def test_graph_validator_reports_cycle_port_type_artifact_and_reachability_errors():
     from app.services.workflow_graph import validate_workflow_graph
 

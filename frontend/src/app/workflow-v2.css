@@ -552,6 +552,15 @@
 .ct-v2-dynamic-inputs small { color: #81909b; }
 .ct-v2-dynamic-inputs .ct-v2-uploaded-files { color: #32724a; }
 .ct-v2-execution-list, .ct-v2-output-list { display: grid; gap: 8px; }
+.ct-v2-execution-profile { margin: 0 0 16px; padding: 12px; border: 1px solid #d5dfe6; border-radius: 6px; background: #f8fbfd; }
+.ct-v2-execution-profile legend { padding: 0 5px; color: #516271; font-size: 12px; font-weight: 700; }
+.ct-v2-execution-profile > div { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px; }
+.ct-v2-execution-profile label { display: grid; grid-template-columns: auto 1fr; gap: 2px 8px; align-items: start; padding: 9px 10px; border: 1px solid #dce5eb; border-radius: 5px; background: #fff; cursor: pointer; }
+.ct-v2-execution-profile input { margin-top: 3px; }
+.ct-v2-execution-profile strong { color: #263846; font-size: 12px; }
+.ct-v2-execution-profile span, .ct-v2-execution-profile > small { color: #71818d; font-size: 11px; line-height: 1.5; }
+.ct-v2-execution-profile span { grid-column: 2; }
+.ct-v2-execution-profile > small { display: block; margin-top: 8px; }
 .ct-v2-execution-list article { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px 18px; padding: 13px 15px; border: 1px solid #d5dfe6; border-radius: 6px; background: #fff; }
 .ct-v2-execution-list article > div:first-child { display: grid; gap: 2px; }
 .ct-v2-execution-list article > div:first-child span, .ct-v2-execution-list small { color: #758590; font-size: 10px; }

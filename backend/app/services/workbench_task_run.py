@@ -60,6 +60,41 @@ def _new_id(prefix: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}"
 
 
+def resolve_execution_profile(
+    workflow_snapshot: dict[str, Any],
+    *,
+    execution_profile_id: str = "",
+) -> dict[str, Any]:
+    """Resolve and freeze the run policy without mutating its workflow version."""
+    profiles = [
+        dict(item)
+        for item in workflow_snapshot.get("execution_profiles") or []
+        if isinstance(item, dict) and str(item.get("id") or "").strip()
+    ]
+    if not profiles:
+        profiles = [{
+            "id": "rapid",
+            "label": "速度型",
+            "delivery_class": "bounded_analysis",
+            "expected_duration_minutes": [10, 25],
+            "max_subagents": 1,
+        }]
+    requested_id = str(
+        execution_profile_id
+        or workflow_snapshot.get("default_execution_profile")
+        or profiles[0].get("id")
+        or ""
+    ).strip()
+    selected = next(
+        (item for item in profiles if str(item.get("id") or "").strip() == requested_id),
+        None,
+    )
+    if selected is None:
+        available = ", ".join(str(item.get("id")) for item in profiles)
+        raise ValueError(f"执行档位不可用：{requested_id}（可选：{available}）")
+    return json.loads(json.dumps(selected, ensure_ascii=False))
+
+
 @dataclass(frozen=True)
 class PreparedWorkbenchTaskRun:
     task_run_id: str
@@ -70,6 +105,7 @@ class PreparedWorkbenchTaskRun:
     workflow_snapshot: dict[str, Any]
     input_snapshot: dict[str, Any]
     task_bundle: dict[str, Any]
+    execution_profile: dict[str, Any] = field(default_factory=dict)
     task_id: str = ""
     attempt_number: int = 0
     parent_task_run_id: str = ""
@@ -109,8 +145,13 @@ class WorkbenchTaskRunPreparer:
         task_id: str = "",
         attempt_number: int = 0,
         parent_task_run_id: str = "",
+        execution_profile_id: str = "",
     ) -> PreparedWorkbenchTaskRun:
         workflow_snapshot = self.workflow_store.freeze_workflow_snapshot(workflow_id)
+        execution_profile = resolve_execution_profile(
+            workflow_snapshot,
+            execution_profile_id=execution_profile_id,
+        )
         has_agent_step = any(
             isinstance(step, dict) and step.get("type") == "agent_task"
             for step in workflow_snapshot.get("steps") or []
@@ -290,6 +331,7 @@ class WorkbenchTaskRunPreparer:
             "attempt_number": max(0, int(attempt_number)),
             "parent_task_run_id": str(parent_task_run_id or ""),
             "workflow_id": workflow_id,
+            "execution_profile": execution_profile,
             "workspace_id": workspace_id,
             "repo_path": repo_path,
             "inputs": input_snapshot,
@@ -480,6 +522,7 @@ class WorkbenchTaskRunPreparer:
             workflow_snapshot=workflow_snapshot,
             input_snapshot=input_snapshot,
             task_bundle=task_bundle,
+            execution_profile=execution_profile,
             task_id=str(task_id or ""),
             attempt_number=max(0, int(attempt_number)),
             parent_task_run_id=str(parent_task_run_id or ""),
@@ -487,6 +530,7 @@ class WorkbenchTaskRunPreparer:
         )
         _write_json(artifact_dir / "task_run.json", asdict(result))
         _write_json(artifact_dir / "workflow_snapshot.json", workflow_snapshot)
+        _write_json(artifact_dir / "execution_profile.json", execution_profile)
         _write_json(artifact_dir / "workflow_contract.json", workflow_contract)
         _write_json(artifact_dir / "agent_mcp_requests.json", agent_mcp_requests)
         _write_json(artifact_dir / "input_snapshot.json", input_snapshot)

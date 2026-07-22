@@ -71,6 +71,7 @@ class TaskCloneRequest(BaseModel):
 
 class TaskRunCreateRequest(BaseModel):
     parent_task_run_id: str = ""
+    execution_profile_id: str = ""
 
 
 def task_store() -> WorkbenchTaskStore:
@@ -329,6 +330,16 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
                 parent_run,
                 effective_plan,
             )
+            frozen_profile_id = str(
+                (parent_run.task_bundle.get("execution_profile") or {}).get("id") or ""
+            )
+            requested_profile_id = str(payload.execution_profile_id or "").strip()
+            if requested_profile_id and requested_profile_id != frozen_profile_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="重试必须沿用父运行的执行档位；请创建新的运行以切换档位",
+                )
+            execution_profile_id = frozen_profile_id
         else:
             version = _published_version(task.workflow_id, task.workflow_version_id)
             effective = _effective_configuration_payload(
@@ -345,6 +356,7 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
             output_overrides = task.output_overrides
             retry_seed_results = {}
             retry_failed_node_ids = []
+            execution_profile_id = str(payload.execution_profile_id or "").strip()
         if not repo_path.is_dir():
             raise HTTPException(status_code=422, detail=f"工作空间源码目录不可用：{repo_path}")
         for definition in effective_definition.get("inputs") or []:
@@ -367,6 +379,7 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
                 task_id=task.task_id,
                 attempt_number=attempt_number,
                 parent_task_run_id=parent_run_id,
+                execution_profile_id=execution_profile_id,
             )
         except (FileNotFoundError, ValueError) as exc:
             raise HTTPException(status_code=422, detail=f"任务输入不完整或无效：{exc}") from exc

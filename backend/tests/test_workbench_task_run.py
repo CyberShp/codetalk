@@ -253,6 +253,58 @@ def test_prepare_workbench_task_run_freezes_workflow_and_creates_agent_run(tmp_p
     assert manifest_paths["agent_runs/collect_mr/agent_run.json"]["kind"] == "agent_run"
 
 
+def test_prepare_freezes_selected_execution_profile_into_task_and_agent_bundles(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "profiled-analysis",
+        "name": "Profiled analysis",
+        "version": 1,
+        "execution_profiles": [
+            {
+                "id": "rapid",
+                "label": "速度型",
+                "delivery_class": "bounded_analysis",
+                "expected_duration_minutes": [10, 25],
+                "max_subagents": 1,
+            },
+            {
+                "id": "deep",
+                "label": "深度型",
+                "delivery_class": "full_test_delivery",
+                "expected_duration_minutes": [45, 90],
+                "max_subagents": 4,
+            },
+        ],
+        "default_execution_profile": "rapid",
+        "inputs": [{"id": "analysis_target", "type": "free_text"}],
+        "steps": [{"id": "analyze", "type": "agent_task", "provider": "builtin-llm"}],
+        "outputs": [],
+    })
+
+    prepared = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="profiled-analysis",
+        workspace_id="ws1",
+        repo_path=str(tmp_path),
+        inputs={"analysis_target": "iSCSI login"},
+        execution_profile_id="deep",
+    )
+
+    assert prepared.execution_profile["id"] == "deep"
+    assert prepared.task_bundle["execution_profile"]["delivery_class"] == "full_test_delivery"
+    root = Path(prepared.artifact_dir)
+    assert json.loads((root / "execution_profile.json").read_text(encoding="utf-8"))["id"] == "deep"
+    agent_bundle = json.loads(
+        (root / "agent_runs" / "analyze" / "task_bundle.json").read_text(encoding="utf-8")
+    )
+    assert agent_bundle["execution_profile"]["max_subagents"] == 4
+
+
 def test_prepare_workbench_task_run_ingests_file_inputs(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer

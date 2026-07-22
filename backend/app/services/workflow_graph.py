@@ -26,7 +26,29 @@ EXECUTION_NODE_KINDS = SUPPORTED_NODE_KINDS - {"input", "output"}
 SUPPORTED_EDGE_KINDS = frozenset({"data", "dependency"})
 SUPPORTED_RESOLVERS = frozenset({"manual", "workspace", "local", "agent_mcp"})
 SUPPORTED_FAILURE_POLICIES = frozenset({"stop", "continue_independent"})
+SUPPORTED_EXECUTION_PROFILE_IDS = ("rapid", "deep")
+SUPPORTED_DELIVERY_CLASSES = frozenset({"bounded_analysis", "full_test_delivery"})
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+_DEFAULT_EXECUTION_PROFILES = (
+    {
+        "id": "rapid",
+        "label": "速度型",
+        "delivery_class": "bounded_analysis",
+        "expected_duration_minutes": [10, 25],
+        "max_subagents": 1,
+        "stage_overrides": {"independent_judge": {"required": False}},
+    },
+    {
+        "id": "deep",
+        "label": "深度型",
+        "delivery_class": "full_test_delivery",
+        "expected_duration_minutes": [45, 90],
+        "max_subagents": 4,
+        "stage_overrides": {"independent_judge": {"required": True}},
+    },
+)
+_DEFAULT_EXECUTION_PROFILE_ID = "rapid"
 
 
 class WorkflowGraphValidationError(ValueError):
@@ -182,6 +204,7 @@ def validate_workflow_graph(
         errors.append(_issue("max_parallelism_unsupported", "Workbench V2 currently requires max_parallelism = 1", field="max_parallelism"))
     if not isinstance(settings.get("stop_on_error", True), bool):
         errors.append(_issue("stop_on_error_invalid", "stop_on_error must be boolean", field="stop_on_error"))
+    _validate_execution_profiles(settings, errors)
     return _validation_result(errors, warnings)
 
 
@@ -264,6 +287,7 @@ def compile_workflow_graph(
         "outputs": compiled_outputs,
     }
     settings = graph.get("settings") if isinstance(graph.get("settings"), dict) else {}
+    execution_profiles, default_execution_profile = _normalized_execution_profiles(settings)
     compiled_plan = {
         "plan_version": PLAN_VERSION,
         "workflow_version_id": str(workflow_version_id),
@@ -271,12 +295,142 @@ def compile_workflow_graph(
         "nodes": plan_nodes,
         "max_parallelism": 1,
         "stop_on_error": bool(settings.get("stop_on_error", True)),
+        "execution_profiles": execution_profiles,
+        "default_execution_profile": default_execution_profile,
     }
+    compiled_definition["execution_profiles"] = execution_profiles
+    compiled_definition["default_execution_profile"] = default_execution_profile
     return {
         "compiled_definition": compiled_definition,
         "compiled_plan": compiled_plan,
         "validation_result": validation,
     }
+
+
+def _validate_execution_profiles(
+    settings: dict[str, Any], errors: list[dict[str, Any]]
+) -> None:
+    raw_profiles = settings.get("execution_profiles")
+    if raw_profiles is None:
+        return
+    if not isinstance(raw_profiles, list):
+        errors.append(_issue(
+            "execution_profiles_not_array",
+            "执行档位必须是数组",
+            field="execution_profiles",
+        ))
+        return
+    profile_ids: set[str] = set()
+    for index, raw_profile in enumerate(raw_profiles):
+        field = f"execution_profiles[{index}]"
+        if not isinstance(raw_profile, dict):
+            errors.append(_issue(
+                "execution_profile_not_object",
+                "执行档位必须是对象",
+                field=field,
+            ))
+            continue
+        profile_id = str(raw_profile.get("id") or "").strip()
+        if profile_id not in SUPPORTED_EXECUTION_PROFILE_IDS:
+            errors.append(_issue(
+                "execution_profile_id_invalid",
+                "执行档位只能是 rapid 或 deep",
+                field=f"{field}.id",
+            ))
+        elif profile_id in profile_ids:
+            errors.append(_issue(
+                "execution_profile_id_duplicate",
+                f"执行档位重复：{profile_id}",
+                field=f"{field}.id",
+            ))
+        profile_ids.add(profile_id)
+        if not str(raw_profile.get("label") or "").strip():
+            errors.append(_issue(
+                "execution_profile_label_missing",
+                "执行档位需要显示名称",
+                field=f"{field}.label",
+            ))
+        delivery_class = str(raw_profile.get("delivery_class") or "").strip()
+        if delivery_class not in SUPPORTED_DELIVERY_CLASSES:
+            errors.append(_issue(
+                "execution_profile_delivery_class_invalid",
+                "执行档位交付范围无效",
+                field=f"{field}.delivery_class",
+            ))
+        duration = raw_profile.get("expected_duration_minutes")
+        if (
+            not isinstance(duration, list)
+            or len(duration) != 2
+            or any(not isinstance(value, int) or isinstance(value, bool) or value <= 0 for value in duration)
+            or duration[0] > duration[1]
+        ):
+            errors.append(_issue(
+                "execution_profile_duration_invalid",
+                "执行档位预计耗时必须是递增的两个正整数分钟值",
+                field=f"{field}.expected_duration_minutes",
+            ))
+        max_subagents = raw_profile.get("max_subagents")
+        if (
+            not isinstance(max_subagents, int)
+            or isinstance(max_subagents, bool)
+            or not 0 <= max_subagents <= 8
+        ):
+            errors.append(_issue(
+                "execution_profile_subagents_invalid",
+                "执行档位 Subagent 上限必须是 0 到 8 的整数",
+                field=f"{field}.max_subagents",
+            ))
+        overrides = raw_profile.get("stage_overrides", {})
+        if not isinstance(overrides, dict) or any(
+            not isinstance(stage_id, str)
+            or not _SAFE_ID.fullmatch(stage_id)
+            or not isinstance(value, dict)
+            or ("required" in value and not isinstance(value["required"], bool))
+            for stage_id, value in overrides.items()
+        ):
+            errors.append(_issue(
+                "execution_profile_stage_overrides_invalid",
+                "执行档位阶段覆盖必须使用合法阶段 ID 和对象值",
+                field=f"{field}.stage_overrides",
+            ))
+    required_profiles = set(SUPPORTED_EXECUTION_PROFILE_IDS)
+    if set(profile_ids) != required_profiles:
+        errors.append(_issue(
+            "execution_profile_set_incomplete",
+            "工作流必须同时声明速度型 rapid 和深度型 deep",
+            field="execution_profiles",
+        ))
+    default_profile = str(settings.get("default_execution_profile") or "").strip()
+    if default_profile and default_profile not in profile_ids:
+        errors.append(_issue(
+            "default_execution_profile_invalid",
+            "默认执行档位必须是已声明的执行档位",
+            field="default_execution_profile",
+        ))
+
+
+def _normalized_execution_profiles(settings: dict[str, Any]) -> tuple[list[dict[str, Any]], str]:
+    raw_profiles = settings.get("execution_profiles")
+    source_profiles = raw_profiles if isinstance(raw_profiles, list) else _DEFAULT_EXECUTION_PROFILES
+    profiles_by_id = {
+        str(item.get("id") or ""): {
+            "id": str(item.get("id") or ""),
+            "label": str(item.get("label") or ""),
+            "delivery_class": str(item.get("delivery_class") or ""),
+            "expected_duration_minutes": list(item.get("expected_duration_minutes") or []),
+            "max_subagents": int(item.get("max_subagents") or 0),
+            "stage_overrides": {
+                str(stage_id): dict(value)
+                for stage_id, value in (item.get("stage_overrides") or {}).items()
+                if isinstance(value, dict)
+            },
+        }
+        for item in source_profiles
+        if isinstance(item, dict)
+    }
+    profiles = [profiles_by_id[profile_id] for profile_id in SUPPORTED_EXECUTION_PROFILE_IDS]
+    default_profile = str(settings.get("default_execution_profile") or _DEFAULT_EXECUTION_PROFILE_ID)
+    return profiles, default_profile
 
 
 def compile_legacy_workflow(

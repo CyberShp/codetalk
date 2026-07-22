@@ -818,10 +818,28 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
         description="Read source",
         authoring_graph={"schema_version": 2, "workflow_id": "source-review"},
     )
+    workflow_definition = _workflow()
+    workflow_definition["execution_profiles"] = [
+        {
+            "id": "rapid",
+            "label": "速度型",
+            "delivery_class": "bounded_analysis",
+            "expected_duration_minutes": [10, 25],
+            "max_subagents": 1,
+        },
+        {
+            "id": "deep",
+            "label": "深度型",
+            "delivery_class": "full_test_delivery",
+            "expected_duration_minutes": [45, 90],
+            "max_subagents": 4,
+        },
+    ]
+    workflow_definition["default_execution_profile"] = "rapid"
     published = version_store.publish_version(
         draft.version_id,
         authoring_graph=draft.authoring_graph,
-        compiled_definition=_workflow(),
+        compiled_definition=workflow_definition,
         compiled_plan={
             "plan_version": 1,
             "workflow_version_id": draft.version_id,
@@ -872,7 +890,10 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
 
         compiled = await client.post(f"/api/workbench/tasks/{task_id}/compile")
 
-        first = await client.post(f"/api/workbench/tasks/{task_id}/runs", json={})
+        first = await client.post(
+            f"/api/workbench/tasks/{task_id}/runs",
+            json={"execution_profile_id": "deep"},
+        )
         first_run_dir = data_dir / "workbench" / "task_runs" / first.json()["task_run_id"]
         (first_run_dir / "workflow_execution.json").write_text(
             json.dumps({
@@ -896,6 +917,13 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
         second = await client.post(
             f"/api/workbench/tasks/{task_id}/runs",
             json={"parent_task_run_id": first.json()["task_run_id"]},
+        )
+        profile_switch_retry = await client.post(
+            f"/api/workbench/tasks/{task_id}/runs",
+            json={
+                "parent_task_run_id": first.json()["task_run_id"],
+                "execution_profile_id": "rapid",
+            },
         )
         listed = await client.get(
             "/api/workbench/tasks",
@@ -924,6 +952,8 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
     assert second.status_code == 201
     assert second.json()["attempt_number"] == 2
     assert second.json()["parent_task_run_id"] == first.json()["task_run_id"]
+    assert profile_switch_retry.status_code == 422
+    assert "沿用父运行" in profile_switch_retry.json()["detail"]
     assert listed.status_code == 200
     assert [item["task_id"] for item in listed.json()["items"]] == [task_id]
     assert listed.json()["items"][0]["latest_run"]["attempt_number"] == 2
@@ -946,6 +976,7 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
         (data_dir / "workbench" / "task_runs" / second.json()["task_run_id"] / "task_bundle.json").read_text(encoding="utf-8")
     )
     assert run_bundle["effective_compiled_definition"]["outputs"][0]["artifact"] == "task-report.md"
+    assert run_bundle["execution_profile"]["id"] == "deep"
     assert retried_bundle["inputs"]["target"] == "lib/nvmf"
     assert retried_bundle["effective_compiled_definition"]["outputs"][0]["artifact"] == "task-report.md"
     assert retried_bundle["retry_source"] == {

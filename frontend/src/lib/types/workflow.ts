@@ -24,6 +24,15 @@ export interface WorkflowPortDefinition {
   collection?: boolean;
 }
 
+export interface WorkflowExecutionProfile {
+  id: "rapid" | "deep";
+  label: string;
+  delivery_class: "bounded_analysis" | "full_test_delivery";
+  expected_duration_minutes: [number, number];
+  max_subagents: number;
+  stage_overrides?: Record<string, Record<string, unknown>>;
+}
+
 export interface WorkflowNodeConfig {
   contract_id?: string;
   output_id?: string;
@@ -89,6 +98,8 @@ export interface AuthoringGraphV2 {
   settings: {
     stop_on_error: boolean;
     max_parallelism: 1;
+    execution_profiles?: WorkflowExecutionProfile[];
+    default_execution_profile?: WorkflowExecutionProfile["id"];
   };
 }
 
@@ -131,6 +142,8 @@ export interface CompiledWorkflowPlan {
   nodes: WorkflowPlanNode[];
   max_parallelism: 1;
   stop_on_error: boolean;
+  execution_profiles?: WorkflowExecutionProfile[];
+  default_execution_profile?: WorkflowExecutionProfile["id"];
 }
 
 export interface WorkflowCompileResult {
