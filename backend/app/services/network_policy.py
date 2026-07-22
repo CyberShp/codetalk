@@ -31,6 +31,24 @@ _INTRANET_BLOCKED_ENV_KEYS = {
     "LANGSMITH_API_KEY", "OPENAI_TRACING", "OPENAI_TRACE", "CLAUDE_CODE_TELEMETRY",
 }
 
+# These are product-runtime hard denials, not user-editable configuration.
+# A company gateway must use its own approved hostname; pointing a model, trace,
+# update or package client at an official vendor hostname is never an intranet path.
+_FORBIDDEN_VENDOR_HOST_SUFFIXES = (
+    "anthropic.com",
+    "claude.ai",
+    "deepseek.com",
+    "github.com",
+    "githubusercontent.com",
+    "langchain.com",
+    "langsmith.com",
+    "npmjs.org",
+    "openai.com",
+    "pypi.org",
+    "sentry.io",
+    "segment.io",
+)
+
 
 def scrub_intranet_agent_environment(environment: dict[str, str]) -> dict[str, str]:
     """Remove inherited public-egress channels before a provider subprocess starts."""
@@ -44,6 +62,12 @@ def scrub_intranet_agent_environment(environment: dict[str, str]) -> dict[str, s
         "CODEX_DISABLE_AUTO_UPDATE": "1",
         "CLAUDE_CODE_DISABLE_TELEMETRY": "1",
         "OPENCODE_DISABLE_TELEMETRY": "1",
+        "OPENAI_AGENTS_DISABLE_TRACING": "1",
+        "OPENAI_AGENTS_DONT_LOG_MODEL_DATA": "1",
+        "OPENAI_AGENTS_DONT_LOG_TOOL_DATA": "1",
+        "LANGCHAIN_TRACING_V2": "false",
+        "LANGSMITH_TRACING": "false",
+        "OTEL_SDK_DISABLED": "true",
     })
     return result
 
@@ -69,6 +93,8 @@ class IntranetNetworkPolicy:
             return NetworkDecision(False, "invalid_endpoint", host, port)
         if host in {"localhost", "localhost.localdomain"}:
             return NetworkDecision(True, "loopback_hostname", host, port)
+        if _is_forbidden_vendor_host(host):
+            return NetworkDecision(False, "vendor_endpoint_forbidden", host, port)
         try:
             address = ipaddress.ip_address(host)
         except ValueError:
@@ -80,12 +106,13 @@ class IntranetNetworkPolicy:
                 return NetworkDecision(False, "hostname_resolution_failed", host, port)
             if not resolved:
                 return NetworkDecision(False, "hostname_resolution_failed", host, port)
-            if all(self._address_allowed(value) for value in resolved):
-                return NetworkDecision(True, "approved_internal_hostname", host, port)
-            return NetworkDecision(False, "resolved_public_address", host, port)
+            # An approved corporate name may resolve to a globally-routable
+            # address in a large enterprise. Host approval is the authority;
+            # DNS and egress firewalls must be deployment-owned.
+            return NetworkDecision(True, "approved_hostname", host, port)
         return NetworkDecision(
             self._address_allowed(address),
-            "approved_private_address" if self._address_allowed(address) else "public_address",
+            "approved_direct_address" if self._address_allowed(address) else "direct_address_not_allowlisted",
             host,
             port,
         )
@@ -112,9 +139,17 @@ class IntranetNetworkPolicy:
 
     def _address_allowed(self, value: str | ipaddress._BaseAddress) -> bool:
         address = value if isinstance(value, ipaddress._BaseAddress) else ipaddress.ip_address(value)
-        if address.is_loopback or address.is_private or address.is_link_local:
+        if address.is_loopback:
             return True
         return any(address in ipaddress.ip_network(cidr, strict=False) for cidr in self.allowed_cidrs)
+
+
+def _is_forbidden_vendor_host(host: str) -> bool:
+    normalized = host.lower().rstrip(".")
+    return any(
+        normalized == suffix or normalized.endswith(f".{suffix}")
+        for suffix in _FORBIDDEN_VENDOR_HOST_SUFFIXES
+    )
 
 
 def runtime_network_policy() -> IntranetNetworkPolicy:

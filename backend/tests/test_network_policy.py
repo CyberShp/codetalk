@@ -1,20 +1,33 @@
 import pytest
 
 
-def test_intranet_policy_allows_loopback_private_and_explicit_internal_hosts():
+def test_intranet_policy_allows_loopback_and_explicitly_approved_hosts_even_when_publicly_addressed():
     from app.services.network_policy import IntranetNetworkPolicy
 
     policy = IntranetNetworkPolicy(
         policy_id="corp-approved-v1",
         allowed_hosts={"models.corp.example"},
         resolver=lambda host, _port: {
-            "models.corp.example": ["10.42.7.18"],
+            "models.corp.example": ["203.0.113.18"],
         }.get(host, []),
     )
 
     assert policy.evaluate_url("http://127.0.0.1:7100/api/repos").allowed
     assert policy.evaluate_url("http://[::1]:3004/health").allowed
     assert policy.evaluate_url("https://models.corp.example/v1/chat").allowed
+    assert not policy.evaluate_url("http://10.42.7.18:7100/api/repos").allowed
+
+
+def test_intranet_policy_allows_only_explicit_direct_ip_cidrs():
+    from app.services.network_policy import IntranetNetworkPolicy
+
+    policy = IntranetNetworkPolicy(
+        policy_id="corp-approved-v1",
+        allowed_cidrs={"10.42.0.0/16"},
+    )
+
+    assert policy.evaluate_url("http://10.42.7.18:7100/api/repos").allowed
+    assert not policy.evaluate_url("http://10.43.7.18:7100/api/repos").allowed
 
 
 def test_intranet_policy_rejects_public_url_before_a_connection_is_attempted():
@@ -37,7 +50,7 @@ def test_intranet_policy_rejects_public_url_before_a_connection_is_attempted():
         policy.require_url("https://example.com/secret")
 
 
-def test_allowlisted_hostname_is_rejected_when_dns_resolves_to_a_public_address():
+def test_allowlisted_hostname_can_resolve_to_a_non_rfc1918_intranet_address():
     from app.services.network_policy import IntranetNetworkPolicy
 
     policy = IntranetNetworkPolicy(
@@ -48,8 +61,21 @@ def test_allowlisted_hostname_is_rejected_when_dns_resolves_to_a_public_address(
 
     decision = policy.evaluate_url("https://models.corp.example/v1")
 
-    assert decision.allowed is False
-    assert decision.reason == "resolved_public_address"
+    assert decision.allowed is True
+    assert decision.reason == "approved_hostname"
+
+
+def test_vendor_and_telemetry_hosts_are_rejected_even_when_misconfigured_as_allowed():
+    from app.services.network_policy import IntranetNetworkPolicy
+
+    policy = IntranetNetworkPolicy(
+        policy_id="corp-approved-v1",
+        allowed_hosts={"api.openai.com", "trace.langchain.com"},
+        resolver=lambda _host, _port: ["203.0.113.18"],
+    )
+
+    assert policy.evaluate_url("https://api.openai.com/v1/responses").reason == "vendor_endpoint_forbidden"
+    assert policy.evaluate_url("https://trace.langchain.com/api").reason == "vendor_endpoint_forbidden"
 
 
 def test_policy_snapshot_is_json_safe_and_does_not_include_runtime_resolver():
@@ -90,9 +116,13 @@ def test_intranet_agent_environment_removes_proxy_telemetry_and_update_channels(
     assert "HTTPS_PROXY" not in env
     assert "ALL_PROXY" not in env
     assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in env
-    assert "LANGSMITH_TRACING" not in env
+    assert env["LANGSMITH_TRACING"] == "false"
     assert env["CODEX_DISABLE_AUTO_UPDATE"] == "1"
     assert env["DO_NOT_TRACK"] == "1"
+    assert env["OPENAI_AGENTS_DISABLE_TRACING"] == "1"
+    assert env["OPENAI_AGENTS_DONT_LOG_MODEL_DATA"] == "1"
+    assert env["LANGCHAIN_TRACING_V2"] == "false"
+    assert env["OTEL_SDK_DISABLED"] == "true"
 
 
 def test_runtime_policy_blocks_official_model_endpoint_before_client_connection(monkeypatch):
