@@ -467,6 +467,10 @@ def _public_task_run_runtime_summary(task_root: Path) -> dict[str, Any]:
             if key in quality
         }
 
+    stage_progress = _public_test_activity_stage_progress(task_root)
+    if stage_progress:
+        summary["test_activity_stage_progress"] = stage_progress
+
     acceptance = _read_json(task_root / "task_acceptance_audit.json")
     if task_status not in {"cancelled", "interrupted"} and isinstance(acceptance, dict):
         summary["acceptance_audit"] = {
@@ -481,6 +485,33 @@ def _public_task_run_runtime_summary(task_root: Path) -> dict[str, Any]:
             "manifest_path": "task_artifact_manifest.json",
         }
     return summary
+
+
+def _public_test_activity_stage_progress(task_root: Path) -> dict[str, Any]:
+    payload = _read_json(task_root / "test_activity_stage_progress.json")
+    if not isinstance(payload, dict):
+        return {}
+    stages = [
+        {
+            key: item.get(key)
+            for key in (
+                "stage_id",
+                "name",
+                "status",
+                "expected_artifacts",
+                "present_artifacts",
+                "deterministic_gate",
+                "fallback",
+            )
+        }
+        for item in payload.get("stages") or []
+        if isinstance(item, dict)
+    ]
+    return {
+        "schema_version": str(payload.get("schema_version") or ""),
+        "profile_id": str(payload.get("profile_id") or ""),
+        "stages": stages,
+    }
 
 
 def _public_workflow_output_summaries(outputs: list[Any]) -> list[dict[str, Any]]:
@@ -632,6 +663,7 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
         if node.get("status_label") in {"运行失败", "等待运行", "运行中断"}
     ]
     failure_class = _task_run_ui_failure_class(failure_reasons)
+    stage_progress = _public_test_activity_stage_progress(task_root)
     return {
         "status": status["status"],
         "status_label": status["label"],
@@ -679,6 +711,7 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
             workflow_contract=contract,
             outputs=outputs,
         ),
+        "test_activity_stage_progress": stage_progress,
         "debug_default_collapsed": True,
         "debug_sections": ["raw JSON", "prompt", "diagnostic", "replay plan"],
     }

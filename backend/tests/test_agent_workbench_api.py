@@ -7857,6 +7857,41 @@ async def test_run_ui_distinguishes_completed_quality_block_from_runtime_failure
     assert status == {"status": "quality_blocked", "label": "执行完成，质量待修复"}
 
 
+async def test_public_stage_progress_keeps_only_cockpit_fields(tmp_path):
+    import json
+
+    from app.api.agent_workbench import _public_test_activity_stage_progress
+
+    (tmp_path / "test_activity_stage_progress.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "test-activity-stage-progress-v1",
+                "profile_id": "deep",
+                "stages": [
+                    {
+                        "stage_id": "source_evidence",
+                        "name": "确定性源码证据整理",
+                        "status": "partial",
+                        "expected_artifacts": ["source_scope.json"],
+                        "present_artifacts": [],
+                        "deterministic_gate": "source_evidence_verified",
+                        "fallback": "deterministic_evidence_pack",
+                        "private_debug": "/private/worktree",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    progress = _public_test_activity_stage_progress(tmp_path)
+
+    assert progress["profile_id"] == "deep"
+    assert progress["stages"][0]["status"] == "partial"
+    assert "private_debug" not in progress["stages"][0]
+
+
 async def test_workbench_task_run_acceptance_audit_requires_declared_evidence_mapping(
     workbench_client,
     tmp_path,
