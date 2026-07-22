@@ -31,6 +31,7 @@ from app.services.agent_sandbox import (
     filtered_agent_environment,
     prepare_agent_sandbox,
 )
+from app.services.network_policy import agent_network_is_permitted
 
 AgentStatus = Literal[
     "ok",
@@ -924,7 +925,7 @@ def _sandbox_external_agent_argv(
     launch = prepare_agent_sandbox(
         runtime={
             "sandbox_mode": settings.external_agent_sandbox_mode,
-            "sandbox_allow_network": settings.external_agent_sandbox_allow_network,
+            "sandbox_allow_network": agent_network_is_permitted(),
             "sandbox_write_paths": settings.external_agent_sandbox_write_paths,
             "sandbox_command": process_argv[0] if process_argv else "",
         },

@@ -36,7 +36,7 @@ from app.services.agent_sandbox import (
     prepare_isolated_runtime_tmp as _prepare_isolated_runtime_tmp,
     prepare_agent_sandbox,
 )
-from app.services.network_policy import scrub_intranet_agent_environment
+from app.services.network_policy import agent_network_is_permitted, scrub_intranet_agent_environment
 from app.services.harness_facade import normalize_provider_event
 from app.services.agent_invocation_contract import (
     agent_invocation_artifact_event_payload,
@@ -1045,7 +1045,7 @@ class AgentRunHarness:
             sandbox = prepare_agent_sandbox(
                 runtime={
                     "sandbox_mode": settings.external_agent_sandbox_mode,
-                    "sandbox_allow_network": settings.external_agent_sandbox_allow_network,
+                    "sandbox_allow_network": agent_network_is_permitted(),
                     "sandbox_read_paths": [
                         str(path) for path in _task_run_read_roots(self.artifact_dir)
                     ] + [str(path) for path in codex_runtime_read_targets],

@@ -27,6 +27,7 @@ from app.services.agent_sandbox import (
     prepare_isolated_runtime_tmp,
     prepare_agent_sandbox,
 )
+from app.services.network_policy import agent_network_is_permitted, scrub_intranet_agent_environment
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
 from app.services.agent_runtimes import MANAGED_PROVIDER_PROMPT_TRANSPORTS, validate_agent_command
 
@@ -133,7 +134,7 @@ async def _probe_claude_auth_in_runtime_sandbox(
                 "sandbox_mode": runtime.get("sandbox_mode") or settings.external_agent_sandbox_mode,
                 "sandbox_allow_network": runtime.get(
                     "sandbox_allow_network",
-                    settings.external_agent_sandbox_allow_network,
+                    agent_network_is_permitted(),
                 ),
                 "sandbox_write_paths": runtime.get(
                     "sandbox_write_paths",
@@ -428,7 +429,7 @@ async def stream_agent_runtime(
         "sandbox_mode": runtime.get("sandbox_mode") or settings.external_agent_sandbox_mode,
         "sandbox_allow_network": runtime.get(
             "sandbox_allow_network",
-            settings.external_agent_sandbox_allow_network,
+            agent_network_is_permitted(),
         ),
         "sandbox_write_paths": runtime.get(
             "sandbox_write_paths",
@@ -2011,6 +2012,8 @@ def _build_env_with_artifact_ownership(
             )
         )
         env["CODETALK_AGENT_ARTIFACT_DIR"] = str(owned_artifact_dir)
+    if settings.intranet_network_mode:
+        env = scrub_intranet_agent_environment(env)
     return env, owned_artifact_dir
 
 

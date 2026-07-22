@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from typing import Callable
 from urllib.parse import urlparse
 
+from app.config import settings
+
 
 class NetworkEgressBlocked(ValueError):
     """Raised before an unapproved endpoint can be contacted."""
@@ -113,3 +115,32 @@ class IntranetNetworkPolicy:
         if address.is_loopback or address.is_private or address.is_link_local:
             return True
         return any(address in ipaddress.ip_network(cidr, strict=False) for cidr in self.allowed_cidrs)
+
+
+def runtime_network_policy() -> IntranetNetworkPolicy:
+    """Return the deployment-owned policy used by every runtime provider."""
+    return IntranetNetworkPolicy(
+        policy_id=str(settings.intranet_network_policy_id or "corp-approved-v1"),
+        allowed_hosts=set(settings.intranet_allowed_hosts or []),
+        allowed_cidrs=set(settings.intranet_allowed_cidrs or []),
+    )
+
+
+def require_runtime_url(url: str) -> NetworkDecision:
+    """Reject a public destination before an application client can connect."""
+    if not settings.intranet_network_mode:
+        parsed = urlparse(str(url or "").strip())
+        return NetworkDecision(
+            allowed=True,
+            reason="intranet_mode_disabled",
+            host=str(parsed.hostname or "").lower().rstrip("."),
+            port=parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80),
+        )
+    return runtime_network_policy().require_url(url)
+
+
+def agent_network_is_permitted() -> bool:
+    """Fail closed until deployment has certified its private-only firewall."""
+    if not settings.intranet_network_mode:
+        return bool(settings.external_agent_sandbox_allow_network)
+    return bool(settings.intranet_agent_egress_enforced_by_host)

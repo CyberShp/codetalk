@@ -93,3 +93,33 @@ def test_intranet_agent_environment_removes_proxy_telemetry_and_update_channels(
     assert "LANGSMITH_TRACING" not in env
     assert env["CODEX_DISABLE_AUTO_UPDATE"] == "1"
     assert env["DO_NOT_TRACK"] == "1"
+
+
+def test_runtime_policy_blocks_official_model_endpoint_before_client_connection(monkeypatch):
+    from app.services.network_policy import require_runtime_url
+
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_network_mode", True)
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_hosts", [])
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_cidrs", [])
+
+    with pytest.raises(Exception, match="公网出口已被内网策略拒绝"):
+        require_runtime_url("https://api.openai.com/v1/chat/completions")
+
+
+def test_intranet_agent_network_fails_closed_until_deployment_policy_is_certified(monkeypatch):
+    from app.services.network_policy import agent_network_is_permitted
+
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_network_mode", True)
+    monkeypatch.setattr(
+        "app.services.network_policy.settings.intranet_agent_egress_enforced_by_host",
+        False,
+        raising=False,
+    )
+
+    assert agent_network_is_permitted() is False
+
+    monkeypatch.setattr(
+        "app.services.network_policy.settings.intranet_agent_egress_enforced_by_host",
+        True,
+    )
+    assert agent_network_is_permitted() is True

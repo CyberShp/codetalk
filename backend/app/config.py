@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     intranet_network_policy_id: str = "corp-approved-v1"
     intranet_allowed_hosts: list[str] = Field(default_factory=list)
     intranet_allowed_cidrs: list[str] = Field(default_factory=list)
+    # Intranet Agent CLIs receive no network by default. Set this only after
+    # the deployment service account is protected by a private-only egress
+    # policy that matches intranet_allowed_hosts/cidrs.
+    intranet_agent_egress_enforced_by_host: bool = False
     external_agent_sandbox_write_paths: list[str] = Field(default_factory=list)
     external_agent_windows_shell_fallback_enabled: bool = True
     external_agent_windows_shell_load_profile: bool = True

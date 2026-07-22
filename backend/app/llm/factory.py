@@ -10,6 +10,7 @@ from app.config import settings
 from app.llm.anthropic import AnthropicClient
 from app.llm.base import BaseLLMClient
 from app.llm.openai_compat import OpenAICompatClient
+from app.services.network_policy import require_runtime_url
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +90,10 @@ async def create_llm_client(
             logger.warning("无法解析 config_json，使用默认配置")
     if model_override:
         model = model_override
+
+    # Runtime endpoints are deployment policy, never a user-controlled escape
+    # hatch. This happens before a client or proxy transport is created.
+    require_runtime_url(base_url)
 
     proxy_url, ssl_cert, force_direct = _resolve_proxy(general)
 

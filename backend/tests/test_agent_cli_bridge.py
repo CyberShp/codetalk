@@ -159,6 +159,25 @@ def test_build_env_does_not_leak_unrelated_parent_secrets(monkeypatch, tmp_path)
     assert not list(runtime_temp_dir.glob("codetalk-agent-runtime-*"))
 
 
+def test_build_env_removes_proxy_and_telemetry_in_intranet_mode(monkeypatch):
+    from app.config import settings
+    from app.services.agent_cli_bridge import _build_env
+
+    monkeypatch.setattr(settings, "intranet_network_mode", True)
+    env = _build_env({
+        "env": {
+            "HTTPS_PROXY": "http://public-proxy.example:8080",
+            "LANGSMITH_TRACING": "true",
+            "PROVIDER_API_KEY": "explicit-provider-secret",
+        }
+    })
+
+    assert "HTTPS_PROXY" not in env
+    assert "LANGSMITH_TRACING" not in env
+    assert env["PROVIDER_API_KEY"] == "explicit-provider-secret"
+    assert env["CODEX_DISABLE_AUTO_UPDATE"] == "1"
+
+
 @pytest.mark.asyncio
 async def test_stream_runtime_removes_internally_owned_artifact_directory(
     monkeypatch,
