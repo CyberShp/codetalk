@@ -126,6 +126,7 @@ async def _wait_for_task_run_status(
         "completed",
         "invalid",
         "needs_rework",
+        "quality_blocked",
         "failed",
         "error",
     }
@@ -3880,7 +3881,7 @@ async def test_shallow_module_analysis_is_not_materialized_as_verified_evidence(
 
     assert executed.status_code == 200
     body = executed.json()
-    assert body["status"] == "needs_rework"
+    assert body["status"] == "quality_blocked"
     quality_audit = json.loads(
         (_task_run_dir(task_run_id) / "test_activity_quality_audit.json").read_text(
             encoding="utf-8"
@@ -4212,7 +4213,7 @@ async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
     body = response.json()
     # V2 preserves generated artifacts but blocks delivery until independent
     # fact validation has verified at least one source-backed claim.
-    assert body["status"] == "needs_rework"
+    assert body["status"] == "quality_blocked"
     outputs = {item["id"]: item for item in body["outputs"]}
     assert outputs["code_evidence"]["status"] == "ok"
     assert outputs["flow_map"]["status"] == "ok"
@@ -4293,7 +4294,7 @@ async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
     assert refreshed_quality["status"] == "needs_rework"
     assert refreshed_quality["deliverable"] is False
     assert refreshed_execution["test_activity_quality"] == refreshed_quality
-    assert refreshed_execution["status"] == "needs_rework"
+    assert refreshed_execution["status"] == "quality_blocked"
     refreshed_rerun_plan = json.loads(
         (task_dir / "task_rerun_plan.json").read_text(encoding="utf-8")
     )
@@ -4315,7 +4316,7 @@ async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
     )
     assert recovered_acceptance.status_code == 200
     assert recovered_execution["test_activity_quality"]["deliverable"] is False
-    assert recovered_execution["status"] == "needs_rework"
+    assert recovered_execution["status"] == "quality_blocked"
     assert recovered_rerun_plan["status"] == "needs_rerun"
 
     (task_dir / "workflow_execution.json").write_text("{corrupt", encoding="utf-8")
@@ -7287,7 +7288,7 @@ async def test_acceptance_reconciliation_blocks_delivery_when_required_check_fai
         acceptance=acceptance,
     )
 
-    assert reconciled["status"] == "needs_rework"
+    assert reconciled["status"] == "quality_blocked"
     assert reconciled["test_activity_quality"]["deliverable"] is False
     assert reconciled["test_activity_quality"]["status"] == "needs_rework"
     assert reconciled["test_activity_quality"]["issue_count"] == 1
@@ -7846,6 +7847,14 @@ async def test_run_ui_treats_needs_rework_as_terminal_review_state():
     status = _task_run_ui_status(execution={"status": "needs_rework"}, nodes=[])
 
     assert status == {"status": "needs_rework", "label": "需要复核"}
+
+
+async def test_run_ui_distinguishes_completed_quality_block_from_runtime_failure():
+    from app.api.agent_workbench import _task_run_ui_status
+
+    status = _task_run_ui_status(execution={"status": "quality_blocked"}, nodes=[])
+
+    assert status == {"status": "quality_blocked", "label": "执行完成，质量待修复"}
 
 
 async def test_workbench_task_run_acceptance_audit_requires_declared_evidence_mapping(

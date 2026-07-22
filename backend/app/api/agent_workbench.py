@@ -92,6 +92,7 @@ _TASK_RUN_TERMINAL_STATUSES = {
     "error",
     "invalid",
     "needs_rework",
+    "quality_blocked",
     "partial",
     "cancelled",
     "canceled",
@@ -1198,6 +1199,8 @@ def _task_run_ui_status(*, execution: dict[str, Any], nodes: list[dict[str, Any]
         return {"status": "completed_empty", "label": "完成但信息不足"}
     if status == "partial":
         return {"status": "partial", "label": "部分完成"}
+    if status == "quality_blocked":
+        return {"status": "quality_blocked", "label": "执行完成，质量待修复"}
     if status in {"needs_review", "needs_rework"}:
         return {"status": status, "label": "需要复核"}
     if status in {"interrupted"}:
@@ -1217,6 +1220,8 @@ def _task_run_ui_status_label(status: str) -> str:
         return "完成但信息不足"
     if normalized == "partial":
         return "部分完成"
+    if normalized == "quality_blocked":
+        return "执行完成，质量待修复"
     if normalized in {"blocked", "upstream_blocked"}:
         return "因上游门禁阻断"
     if normalized in {"needs_review"}:
@@ -3138,10 +3143,10 @@ async def create_task_run_acceptance_audit(task_run_id: str) -> dict[str, Any]:
             and str(execution.get("status") or "") in {"completed", "completed_empty"}
         ):
             execution["quality_audit_base_status"] = str(execution.get("status") or "completed")
-            execution["status"] = "needs_rework"
+            execution["status"] = "quality_blocked"
         elif (
             quality.get("deliverable") is True
-            and str(execution.get("status") or "") == "needs_rework"
+            and str(execution.get("status") or "") == "quality_blocked"
             and quality_base_status in {"completed", "completed_empty"}
         ):
             execution["status"] = quality_base_status
@@ -7551,7 +7556,7 @@ def _reconcile_acceptance_quality(
         reconciled["quality_audit_base_status"] = str(
             reconciled.get("status") or "completed"
         )
-        reconciled["status"] = "needs_rework"
+        reconciled["status"] = "quality_blocked"
 
     quality = _read_json(task_dir / "test_activity_quality_audit.json")
     if not isinstance(quality, dict):

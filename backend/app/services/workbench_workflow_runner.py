@@ -678,7 +678,7 @@ class WorkbenchWorkflowRunner:
             status in {"completed", "completed_empty"}
             and test_activity_quality.get("status") in {"needs_rework", "invalid"}
         ):
-            status = "needs_rework"
+            status = "quality_blocked"
         result = WorkbenchWorkflowExecutionResult(
             task_run_id=task_run.task_run_id,
             status=status,
