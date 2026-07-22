@@ -44,7 +44,10 @@ from app.services.test_activity_contract import (
     audit_test_activity_artifacts,
     refresh_test_activity_contract,
 )
-from app.services.test_activity_stage_specs import project_test_activity_stage_progress
+from app.services.test_activity_stage_specs import (
+    TestActivityStageProgressTracker,
+    project_test_activity_stage_progress,
+)
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_task_run import BUILTIN_LLM_PROVIDER_ID
 from app.services.workbench_task_run import WorkbenchTaskRunStore
@@ -1174,6 +1177,19 @@ class WorkbenchWorkflowRunner:
         quality_repair_history: list[dict[str, Any]] = []
         try:
             if str(step.get("execution_mode") or "") == "staged":
+                execution_profile = task_bundle.get("execution_profile")
+                profile_id = (
+                    str(execution_profile.get("id") or "rapid")
+                    if isinstance(execution_profile, dict)
+                    else "rapid"
+                )
+                task_root = self.artifact_root / _safe_segment(
+                    str(task_bundle.get("task_run_id") or run_id)
+                )
+                live_stage_progress = TestActivityStageProgressTracker(
+                    task_root,
+                    profile_id=profile_id,
+                )
                 staged_context = _staged_builtin_context(
                     execution_contract=scoped_execution_contract,
                     task_bundle=task_bundle,
@@ -1201,6 +1217,7 @@ class WorkbenchWorkflowRunner:
                 )
 
                 def emit_stage_progress(payload: dict[str, Any]) -> None:
+                    live_stage_progress.update(payload)
                     public_metrics = {
                         key: payload.get(key)
                         for key in (

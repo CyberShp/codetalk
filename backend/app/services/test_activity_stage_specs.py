@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import copy
+import json
 from pathlib import Path
+from typing import Any
 
 
 _STAGES = (
@@ -17,6 +19,22 @@ _STAGES = (
     ("independent_judge", "独立质量审查与定向修复", ["judge_report.json", "claim_evidence_ledger.json"], "claim_quality_verified", "quality_blocked"),
     ("publish", "交付件发布", ["task_artifact_manifest.json"], "artifact_contract_verified", "block_delivery"),
 )
+
+_RUNTIME_STAGE_MAP = {
+    "source_analysis": "source_evidence",
+    "breadth_inventory": "breadth_inventory",
+    "flow_evidence_pack": "flow_modeling",
+    "flow_outline": "flow_modeling",
+    "developer_explanation": "flow_modeling",
+    "scenario_expansion": "scenario_expansion",
+    "sfmea": "sfmea",
+    "black_box_cases": "black_box_design",
+    "test_design_governance": "black_box_design",
+    "coverage_judge": "independent_judge",
+    "behavior_claim_validation": "independent_judge",
+    "test_design_mindmap": "publish",
+    "publish": "publish",
+}
 
 
 def default_test_activity_stage_specs(*, profile_id: str) -> list[dict[str, object]]:
@@ -74,3 +92,87 @@ def project_test_activity_stage_progress(
         "profile_id": profile_id,
         "stages": stages,
     }
+
+
+class TestActivityStageProgressTracker:
+    """Materialize only the stage state the running task can honestly prove."""
+
+    def __init__(self, artifact_dir: str | Path, *, profile_id: str) -> None:
+        self.root = Path(artifact_dir)
+        self.profile_id = profile_id
+        self.path = self.root / "test_activity_stage_progress.json"
+        self.root.mkdir(parents=True, exist_ok=True)
+        if not self.path.exists():
+            self._write(self._initial_progress())
+
+    def update(self, event: dict[str, Any]) -> dict[str, object]:
+        payload = self.read()
+        runtime_stage_id = str(event.get("stage_id") or "").strip()
+        stage_id = _RUNTIME_STAGE_MAP.get(runtime_stage_id)
+        if not stage_id:
+            return payload
+        raw_status = str(event.get("status") or "").strip().lower()
+        stages = payload.get("stages") if isinstance(payload.get("stages"), list) else []
+        stage = next(
+            (
+                item
+                for item in stages
+                if isinstance(item, dict) and item.get("stage_id") == stage_id
+            ),
+            None,
+        )
+        if stage is None:
+            return payload
+        present = self._present_artifacts(stage)
+        expected = list(stage.get("expected_artifacts") or [])
+        stage["present_artifacts"] = present
+        if raw_status in {"failed", "error", "invalid", "blocked"}:
+            stage["status"] = "failed"
+        elif raw_status in {"cancelled", "canceled"}:
+            stage["status"] = "cancelled"
+        elif len(present) == len(expected):
+            stage["status"] = "completed"
+        elif present:
+            stage["status"] = "partial"
+        elif raw_status in {"running", "started", "queued"}:
+            stage["status"] = "running"
+        elif raw_status in {"completed", "partial"}:
+            # A provider event is not proof that the declared artifact exists.
+            stage["status"] = "awaiting_artifacts"
+        self._write(payload)
+        return payload
+
+    def read(self) -> dict[str, object]:
+        try:
+            payload = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            payload = self._initial_progress()
+        return payload if isinstance(payload, dict) else self._initial_progress()
+
+    def _initial_progress(self) -> dict[str, object]:
+        projected = project_test_activity_stage_progress(
+            artifact_dir=self.root,
+            profile_id=self.profile_id,
+        )
+        for stage in projected["stages"]:
+            if isinstance(stage, dict) and stage.get("status") == "not_requested":
+                stage["status"] = "pending"
+        projected["live"] = True
+        return projected
+
+    def _present_artifacts(self, stage: dict[str, Any]) -> list[str]:
+        expected = [str(item) for item in stage.get("expected_artifacts") or []]
+        available = {
+            path.name
+            for path in self.root.rglob("*")
+            if path.is_file()
+        }
+        return [name for name in expected if name in available]
+
+    def _write(self, payload: dict[str, object]) -> None:
+        temporary = self.path.with_suffix(".json.tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+        temporary.replace(self.path)

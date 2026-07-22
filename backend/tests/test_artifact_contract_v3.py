@@ -130,3 +130,18 @@ def test_stage_progress_only_marks_artifacts_that_were_really_materialized(tmp_p
     assert stages["source_evidence"]["status"] == "partial"
     assert stages["source_evidence"]["present_artifacts"] == ["source_scope.json"]
     assert stages["sfmea"]["status"] == "not_requested"
+
+
+def test_live_stage_progress_tracks_running_stage_without_claiming_missing_artifacts(tmp_path):
+    from app.services.test_activity_stage_specs import TestActivityStageProgressTracker
+
+    tracker = TestActivityStageProgressTracker(tmp_path, profile_id="deep")
+    tracker.update({"stage_id": "source_analysis", "status": "running"})
+
+    progress = tracker.read()
+    stages = {item["stage_id"]: item for item in progress["stages"]}
+
+    assert stages["source_evidence"]["status"] == "running"
+    assert stages["source_evidence"]["present_artifacts"] == []
+    assert stages["sfmea"]["status"] == "pending"
+    assert (tmp_path / "test_activity_stage_progress.json").is_file()
