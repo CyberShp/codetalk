@@ -123,6 +123,38 @@ def test_artifact_manifest_keeps_undeclared_stage_files_out_of_deliverables(tmp_
     assert artifacts["agent_runs/analyze/evidence_cards.json"]["audience"] == "support"
 
 
+def test_artifact_manifest_uses_frozen_v3_contract_layers(tmp_path):
+    task_dir = tmp_path / "task"
+    task_dir.mkdir()
+    (task_dir / "完整分析报告.md").write_text("# 完整分析报告\n", encoding="utf-8")
+    (task_dir / "evidence_cards.json").write_text("[]", encoding="utf-8")
+    (task_dir / "provider_diagnostics.json").write_text("{}", encoding="utf-8")
+    (task_dir / "artifact_contract_v3.json").write_text(
+        """{
+          "schema_version": "artifact-contract-v3",
+          "artifacts": [
+            {"artifact": "完整分析报告.md", "layer": "deliverable", "required": true, "downloadable": true},
+            {"artifact": "evidence_cards.json", "layer": "supporting", "required": true, "downloadable": true},
+            {"artifact": "provider_diagnostics.json", "layer": "diagnostic", "required": false, "downloadable": false}
+          ]
+        }""",
+        encoding="utf-8",
+    )
+
+    artifacts = {
+        item["relative_path"]: item
+        for item in build_task_artifact_manifest(task_dir)
+    }
+
+    assert artifacts["完整分析报告.md"]["audience"] == "deliverable"
+    assert artifacts["完整分析报告.md"]["layer"] == "deliverable"
+    assert artifacts["完整分析报告.md"]["contract_required"] is True
+    assert artifacts["evidence_cards.json"]["audience"] == "support"
+    assert artifacts["evidence_cards.json"]["layer"] == "supporting"
+    assert artifacts["provider_diagnostics.json"]["audience"] == "diagnostic"
+    assert artifacts["provider_diagnostics.json"]["downloadable"] is False
+
+
 def test_artifact_manifest_ignores_agent_runtime_cache_directories(tmp_path):
     task_dir = tmp_path / "task"
     agent_dir = task_dir / "agent_runs" / "analyze"

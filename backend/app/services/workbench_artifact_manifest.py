@@ -100,6 +100,7 @@ def build_task_artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
     if not root.exists() or not root.is_dir():
         return []
     declared_deliverables = _declared_workflow_deliverable_paths(root)
+    contract_specs = _artifact_contract_v3_specs(root)
     artifacts: list[dict[str, Any]] = []
     for path in _iter_manifest_files(root):
         if not path.is_file():
@@ -130,11 +131,23 @@ def build_task_artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
             "size_bytes": len(data),
             "sha256": hashlib.sha256(data).hexdigest(),
         }
-        item["audience"] = workbench_artifact_audience(
-            relative_path,
-            kind=str(item["kind"]),
-            declared_deliverables=declared_deliverables,
+        contract_spec = contract_specs.get(relative_path) or contract_specs.get(
+            relative_path.rsplit("/", 1)[-1]
         )
+        if contract_spec:
+            layer = str(contract_spec["layer"])
+            item["layer"] = layer
+            item["audience"] = _audience_for_contract_layer(layer)
+            item["contract_required"] = bool(contract_spec["required"])
+            item["downloadable"] = bool(contract_spec["downloadable"])
+        else:
+            audience = workbench_artifact_audience(
+                relative_path,
+                kind=str(item["kind"]),
+                declared_deliverables=declared_deliverables,
+            )
+            item["audience"] = audience
+            item["layer"] = _legacy_layer_for_audience(audience)
         preview, preview_redacted = artifact_preview_with_redaction_status(
             resolved,
             data,
@@ -145,6 +158,42 @@ def build_task_artifact_manifest(task_dir: Path) -> list[dict[str, Any]]:
             item["preview_redacted"] = preview_redacted
         artifacts.append(item)
     return artifacts
+
+
+def _artifact_contract_v3_specs(task_dir: Path) -> dict[str, dict[str, Any]]:
+    path = task_dir / "artifact_contract_v3.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict) or payload.get("schema_version") != "artifact-contract-v3":
+        return {}
+    specs: dict[str, dict[str, Any]] = {}
+    for raw in payload.get("artifacts") or []:
+        if not isinstance(raw, dict):
+            continue
+        artifact = _safe_relative_artifact_path(raw.get("artifact"))
+        layer = str(raw.get("layer") or "")
+        if not artifact or layer not in {"deliverable", "supporting", "diagnostic"}:
+            continue
+        specs[artifact] = {
+            "layer": layer,
+            "required": bool(raw.get("required")),
+            "downloadable": bool(raw.get("downloadable")),
+        }
+    return specs
+
+
+def _audience_for_contract_layer(layer: str) -> str:
+    return "support" if layer == "supporting" else layer
+
+
+def _legacy_layer_for_audience(audience: str) -> str:
+    if audience == "support":
+        return "supporting"
+    if audience in {"deliverable", "diagnostic"}:
+        return audience
+    return audience
 
 
 def _declared_workflow_deliverable_paths(task_dir: Path) -> set[str]:
