@@ -50,6 +50,22 @@ SOURCE_SCAN_IGNORED_DIRS = frozenset({
 })
 _GIT_SOURCE_FILE_CACHE: dict[tuple[str, str, int, tuple[str, ...]], tuple[str, ...]] = {}
 _GIT_SOURCE_FILE_CACHE_LOCK = threading.Lock()
+_COMPATIBILITY_EXECUTION_PROFILES = (
+    {
+        "id": "rapid",
+        "label": "速度型",
+        "delivery_class": "bounded_analysis",
+        "expected_duration_minutes": [10, 25],
+        "max_subagents": 1,
+    },
+    {
+        "id": "deep",
+        "label": "深度型",
+        "delivery_class": "full_test_delivery",
+        "expected_duration_minutes": [45, 90],
+        "max_subagents": 4,
+    },
+)
 
 
 def _now() -> str:
@@ -72,13 +88,7 @@ def resolve_execution_profile(
         if isinstance(item, dict) and str(item.get("id") or "").strip()
     ]
     if not profiles:
-        profiles = [{
-            "id": "rapid",
-            "label": "速度型",
-            "delivery_class": "bounded_analysis",
-            "expected_duration_minutes": [10, 25],
-            "max_subagents": 1,
-        }]
+        profiles = [dict(item) for item in _COMPATIBILITY_EXECUTION_PROFILES]
     requested_id = str(
         execution_profile_id
         or workflow_snapshot.get("default_execution_profile")

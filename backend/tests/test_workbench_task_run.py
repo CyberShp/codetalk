@@ -305,6 +305,35 @@ def test_prepare_freezes_selected_execution_profile_into_task_and_agent_bundles(
     assert agent_bundle["execution_profile"]["max_subagents"] == 4
 
 
+def test_prepare_legacy_workflow_allows_the_v3_deep_execution_profile(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "legacy-profiled-analysis",
+        "name": "Legacy profiled analysis",
+        "version": 1,
+        "inputs": [],
+        "steps": [],
+        "outputs": [],
+    })
+
+    prepared = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="legacy-profiled-analysis",
+        workspace_id="ws1",
+        repo_path=str(tmp_path),
+        inputs={},
+        execution_profile_id="deep",
+    )
+
+    assert prepared.execution_profile["id"] == "deep"
+    assert prepared.execution_profile["expected_duration_minutes"] == [45, 90]
+
+
 def test_prepare_workbench_task_run_ingests_file_inputs(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer
