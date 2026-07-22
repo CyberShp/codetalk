@@ -1,5 +1,3 @@
-import socket
-
 import pytest
 
 
@@ -74,3 +72,24 @@ def test_policy_snapshot_is_json_safe_and_does_not_include_runtime_resolver():
         "hosted_mcp": "forbidden",
         "external_model_api": "forbidden",
     }
+
+
+def test_intranet_agent_environment_removes_proxy_telemetry_and_update_channels():
+    from app.services.network_policy import scrub_intranet_agent_environment
+
+    env = scrub_intranet_agent_environment({
+        "PATH": "/usr/bin",
+        "HTTPS_PROXY": "http://public-proxy.example:8080",
+        "ALL_PROXY": "socks5://public-proxy.example:1080",
+        "OTEL_EXPORTER_OTLP_ENDPOINT": "https://trace.example/v1",
+        "LANGSMITH_TRACING": "true",
+        "CODEX_DISABLE_AUTO_UPDATE": "0",
+    })
+
+    assert env["PATH"] == "/usr/bin"
+    assert "HTTPS_PROXY" not in env
+    assert "ALL_PROXY" not in env
+    assert "OTEL_EXPORTER_OTLP_ENDPOINT" not in env
+    assert "LANGSMITH_TRACING" not in env
+    assert env["CODEX_DISABLE_AUTO_UPDATE"] == "1"
+    assert env["DO_NOT_TRACK"] == "1"

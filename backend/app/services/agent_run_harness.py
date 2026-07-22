@@ -36,6 +36,7 @@ from app.services.agent_sandbox import (
     prepare_isolated_runtime_tmp as _prepare_isolated_runtime_tmp,
     prepare_agent_sandbox,
 )
+from app.services.network_policy import scrub_intranet_agent_environment
 from app.services.agent_invocation_contract import (
     agent_invocation_artifact_event_payload,
     agent_invocation_capability_event_payload,
@@ -1035,6 +1036,8 @@ class AgentRunHarness:
             artifact_dir=self.artifact_dir,
         )
         env.update(env_hints)
+        if settings.intranet_network_mode:
+            env = scrub_intranet_agent_environment(env)
         env = _prefer_native_macos_git_path(env)
         env["CODETALK_AGENT_ARTIFACT_DIR"] = str(self.artifact_dir.resolve())
         try:

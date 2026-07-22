@@ -22,6 +22,28 @@ class NetworkDecision:
 
 
 Resolver = Callable[[str, int], list[str]]
+_INTRANET_BLOCKED_ENV_KEYS = {
+    "ALL_PROXY", "HTTP_PROXY", "HTTPS_PROXY", "FTP_PROXY", "NO_PROXY",
+    "OTEL_EXPORTER_OTLP_ENDPOINT", "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+    "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT", "LANGSMITH_TRACING", "LANGSMITH_ENDPOINT",
+    "LANGSMITH_API_KEY", "OPENAI_TRACING", "OPENAI_TRACE", "CLAUDE_CODE_TELEMETRY",
+}
+
+
+def scrub_intranet_agent_environment(environment: dict[str, str]) -> dict[str, str]:
+    """Remove inherited public-egress channels before a provider subprocess starts."""
+    result = {
+        key: value
+        for key, value in environment.items()
+        if key.upper() not in _INTRANET_BLOCKED_ENV_KEYS
+    }
+    result.update({
+        "DO_NOT_TRACK": "1",
+        "CODEX_DISABLE_AUTO_UPDATE": "1",
+        "CLAUDE_CODE_DISABLE_TELEMETRY": "1",
+        "OPENCODE_DISABLE_TELEMETRY": "1",
+    })
+    return result
 
 
 def _default_resolver(host: str, port: int) -> list[str]:
