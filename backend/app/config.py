@@ -75,6 +75,10 @@ class Settings(BaseSettings):
     external_agent_enforce_readonly_cli: bool = True
     external_agent_sandbox_mode: str = "auto"  # auto | required | off
     external_agent_sandbox_allow_network: bool = True
+    intranet_network_mode: bool = True
+    intranet_network_policy_id: str = "corp-approved-v1"
+    intranet_allowed_hosts: list[str] = Field(default_factory=list)
+    intranet_allowed_cidrs: list[str] = Field(default_factory=list)
     external_agent_sandbox_write_paths: list[str] = Field(default_factory=list)
     external_agent_windows_shell_fallback_enabled: bool = True
     external_agent_windows_shell_load_profile: bool = True
