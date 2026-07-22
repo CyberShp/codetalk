@@ -28,6 +28,7 @@ from app.services.external_agent_discovery import (
 from app.services.test_activity_contract import build_test_activity_contract
 from app.services.test_activity_stage_specs import default_test_activity_stage_specs
 from app.services.artifact_contract_v3 import default_artifact_contract_v3
+from app.services.input_consumption import build_input_consumption_ledger
 from app.services.network_policy import IntranetNetworkPolicy
 from app.services.test_semantic_library import TestSemanticLibraryStore
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
@@ -206,6 +207,10 @@ class WorkbenchTaskRunPreparer:
             inputs=dict(inputs or {}),
             artifact_dir=artifact_dir,
         )
+        input_consumption = build_input_consumption_ledger(
+            input_snapshot=input_snapshot,
+            stage_specs=stage_specs,
+        )
         context_bundle = build_workbench_context_bundle(
             workspace_id=workspace_id,
             repo_path=repo_path,
@@ -359,6 +364,7 @@ class WorkbenchTaskRunPreparer:
             "network_policy": network_policy,
             "stage_specs": stage_specs,
             "artifact_contract_v3": artifact_contract_v3,
+            "input_consumption": input_consumption,
             "workspace_id": workspace_id,
             "repo_path": repo_path,
             "inputs": input_snapshot,
@@ -561,6 +567,7 @@ class WorkbenchTaskRunPreparer:
         _write_json(artifact_dir / "network_policy.json", network_policy)
         _write_json(artifact_dir / "stage_specs.json", stage_specs)
         _write_json(artifact_dir / "artifact_contract_v3.json", artifact_contract_v3)
+        _write_json(artifact_dir / "input_consumption.json", input_consumption)
         _write_json(artifact_dir / "workflow_contract.json", workflow_contract)
         _write_json(artifact_dir / "agent_mcp_requests.json", agent_mcp_requests)
         _write_json(artifact_dir / "input_snapshot.json", input_snapshot)
