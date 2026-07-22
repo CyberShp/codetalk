@@ -178,7 +178,8 @@ async def _probe_claude_auth_in_runtime_sandbox(
                 )
                 try:
                     readiness_stdout, readiness_stderr = await asyncio.wait_for(
-                        readiness.communicate(), timeout=20
+                        readiness.communicate(),
+                        timeout=settings.external_agent_startup_probe_timeout_sec,
                     )
                 except asyncio.TimeoutError:
                     return {
@@ -223,11 +224,48 @@ async def _probe_codex_model_in_runtime_sandbox(
             )
             for temp_name in ("CODETALK_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
                 env[temp_name] = str(artifact_dir)
+            codex_runtime_home, codex_runtime_read_targets = prepare_isolated_codex_home(
+                provider=str(runtime.get("name") or runtime.get("id") or ""),
+                command=[command, *_runtime_args(runtime, resume_session_id=None)],
+                artifact_dir=artifact_dir,
+            )
+            if codex_runtime_home is not None:
+                env["CODEX_HOME"] = str(codex_runtime_home)
+            sandbox_runtime = {
+                **runtime,
+                "sandbox_mode": runtime.get("sandbox_mode") or settings.external_agent_sandbox_mode,
+                "sandbox_allow_network": runtime.get(
+                    "sandbox_allow_network",
+                    agent_network_is_permitted(),
+                ),
+                "sandbox_write_paths": runtime.get(
+                    "sandbox_write_paths",
+                    settings.external_agent_sandbox_write_paths,
+                ),
+                "sandbox_command": command,
+                "sandbox_codex_home": str(codex_runtime_home) if codex_runtime_home else "",
+                "sandbox_read_paths": [
+                    *list(runtime.get("sandbox_read_paths") or []),
+                    *_command_runtime_read_paths(command),
+                    *[str(path) for path in codex_runtime_read_targets],
+                    *([str(Path(command).parent)] if Path(command).parent != Path(".") else []),
+                ],
+            }
+            sandbox = prepare_agent_sandbox(
+                runtime=sandbox_runtime,
+                cwd=str(artifact_dir),
+                artifact_dir=artifact_dir,
+            )
             readiness_args = _codex_exec_json_args(
                 _runtime_args(runtime, resume_session_id=None),
                 "Reply exactly CODETALK_PROBE_OK",
                 resume_session_id=None,
             )
+            readiness_args = _ensure_flag(readiness_args, "--ignore-user-config")
+            readiness_args = _ensure_flag(readiness_args, "--ignore-rules")
+            readiness_command = [command, *readiness_args]
+            if sandbox.wrapper:
+                readiness_command = [*sandbox.wrapper, *readiness_command]
             isolate_process_group = os.name != "nt"
             process_kwargs: dict[str, Any] = {}
             if isolate_process_group:
@@ -235,17 +273,22 @@ async def _probe_codex_model_in_runtime_sandbox(
             readiness: asyncio.subprocess.Process | None = None
             try:
                 readiness = await asyncio.create_subprocess_exec(
-                    command,
-                    *readiness_args,
+                    *readiness_command,
                     cwd=str(artifact_dir),
+                    stdin=asyncio.subprocess.PIPE,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     env=env,
                     **process_kwargs,
                 )
+                if readiness.stdin is not None:
+                    readiness.stdin.write(b"Reply exactly CODETALK_PROBE_OK")
+                    await readiness.stdin.drain()
+                    readiness.stdin.close()
                 try:
                     readiness_stdout, readiness_stderr = await asyncio.wait_for(
-                        readiness.communicate(), timeout=20
+                        readiness.communicate(),
+                        timeout=settings.external_agent_startup_probe_timeout_sec,
                     )
                 except asyncio.TimeoutError:
                     return {

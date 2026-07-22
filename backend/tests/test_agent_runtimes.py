@@ -6494,6 +6494,88 @@ class TestAgentRuntimes:
             "message": "Codex 可启动，但当前模型不受本机 CLI 支持。",
         }
 
+    async def test_codex_readiness_probe_uses_an_isolated_codex_home(self, monkeypatch, tmp_path):
+        from app.services import agent_cli_bridge
+
+        captured: dict[str, object] = {}
+        isolated_home = tmp_path / "isolated-codex-home"
+        isolated_home.mkdir()
+
+        class FakeStdin:
+            def __init__(self):
+                self.data = b""
+                self.closed = False
+
+            def write(self, data):
+                self.data += data
+
+            async def drain(self):
+                return None
+
+            def close(self):
+                self.closed = True
+
+        class FakeProbeProcess:
+            returncode = 0
+
+            def __init__(self):
+                self.stdin = FakeStdin()
+
+            async def communicate(self):
+                return (
+                    b'{"type":"item.completed","item":{"type":"agent_message","text":"CODETALK_PROBE_OK"}}\n'
+                    b'{"type":"turn.completed"}',
+                    b"",
+                )
+
+        async def fake_create_subprocess_exec(*_args, **kwargs):
+            captured["command"] = list(_args)
+            captured["env"] = kwargs["env"]
+            captured["stdin"] = kwargs.get("stdin")
+            process = FakeProbeProcess()
+            captured["process"] = process
+            return process
+
+        def fake_prepare_isolated_codex_home(**kwargs):
+            captured["isolated_home"] = kwargs
+            return isolated_home, []
+
+        monkeypatch.setattr(
+            agent_cli_bridge.asyncio,
+            "create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+        monkeypatch.setattr(
+            agent_cli_bridge,
+            "prepare_isolated_codex_home",
+            fake_prepare_isolated_codex_home,
+        )
+        monkeypatch.setattr(
+            agent_cli_bridge,
+            "prepare_agent_sandbox",
+            lambda **_kwargs: type("Sandbox", (), {"wrapper": []})(),
+        )
+        monkeypatch.setattr(
+            type(agent_cli_bridge.settings),
+            "ensure_runtime_temp_path",
+            lambda _settings: tmp_path,
+        )
+
+        result = await agent_cli_bridge._probe_codex_model_in_runtime_sandbox(
+            runtime={"name": "Codex", "prompt_transport": "codex_exec_json"},
+            command="codex",
+        )
+
+        assert result == {"success": True, "message": "Codex 已登录，真实模型请求可用"}
+        assert captured["env"]["CODEX_HOME"] == str(isolated_home)
+        assert captured["isolated_home"]["artifact_dir"].parent == tmp_path
+        assert captured["isolated_home"]["artifact_dir"].name.startswith("codetalk-codex-probe-")
+        assert captured["stdin"] is agent_cli_bridge.asyncio.subprocess.PIPE
+        assert captured["process"].stdin.data == b"Reply exactly CODETALK_PROBE_OK"
+        assert captured["process"].stdin.closed is True
+        assert "--ignore-user-config" in captured["command"]
+        assert "--ignore-rules" in captured["command"]
+
     @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group assertion")
     async def test_cancelled_runtime_probe_terminates_its_process_group(self, monkeypatch):
         from app.services import agent_cli_bridge
