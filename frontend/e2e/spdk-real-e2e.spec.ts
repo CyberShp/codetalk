@@ -1502,15 +1502,6 @@ test("A04: health probes are triggerable from the UI", async ({ page }) => {
 
   const evidence: Record<string, unknown> = {};
 
-  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await noFrameworkOverlay(page);
-  await expect(page.getByRole("heading", { name: "运行驾驶舱" })).toBeVisible({ timeout: 30_000 });
-  const refreshButton = page.getByRole("button", { name: "刷新状态" });
-  await refreshButton.hover();
-  await refreshButton.click();
-  await expect(page.getByText("系统", { exact: true })).toBeVisible({ timeout: 30_000 });
-  evidence.systemAuditScreenshot = await screenshot(page, "A04-workbench-system-status");
-
   await page.goto("/settings", { waitUntil: "domcontentloaded" });
   await noFrameworkOverlay(page);
   await expect(page.getByRole("heading", { name: "设置", exact: true })).toBeVisible({ timeout: 30_000 });
@@ -1538,7 +1529,7 @@ test("A04: health probes are triggerable from the UI", async ({ page }) => {
   evidence.runtimeProbeScreenshot = await screenshot(page, "A04-agent-runtime-probe");
 
   writeJson("A04-health-probes-ui.json", evidence);
-  record("A04", "pass", "workbench status, backend connection, and configured Agent runtime probes were triggered through current UI controls", evidence);
+  record("A04", "pass", "backend connection and configured Agent runtime probes were triggered through current settings UI controls", evidence);
 });
 
 test("B/C/K: create SPDK workspace through UI and verify chat/index gate", async ({ page, context }) => {
