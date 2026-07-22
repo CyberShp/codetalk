@@ -706,6 +706,27 @@ export function useWorkbenchController({
     : taskAcceptanceAudit;
   const runPhaseCards = useMemo(
     () => {
+      const stageProgress = activeRunUiSummary?.test_activity_stage_progress;
+      if (stageProgress?.stages?.length) {
+        return stageProgress.stages.map((stage) => {
+          const expected = stage.expected_artifacts?.length ?? 0;
+          const present = stage.present_artifacts?.length ?? 0;
+          const status = stage.status === "completed"
+            ? "已完成"
+            : stage.status === "partial"
+              ? "部分完成"
+              : stage.status === "not_requested"
+                ? "未请求"
+                : "等待";
+          return {
+            label: stage.name || stage.stage_id || "测试活动阶段",
+            status,
+            detail: expected
+              ? `产物 ${present}/${expected} · ${stage.deterministic_gate || "等待门禁"}`
+              : stage.fallback || "等待阶段运行",
+          };
+        });
+      }
       if (activeRunUiSummary?.nodes?.length) {
         return activeRunUiSummary.nodes.map((node) => {
           const inputCount = node.inputs?.length ?? 0;

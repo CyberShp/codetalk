@@ -1144,6 +1144,19 @@ export interface WorkbenchRunUiSummary {
     type?: string;
     status_label?: string;
   }>;
+  test_activity_stage_progress?: {
+    schema_version?: string;
+    profile_id?: string;
+    stages?: Array<{
+      stage_id?: string;
+      name?: string;
+      status?: string;
+      expected_artifacts?: string[];
+      present_artifacts?: string[];
+      deterministic_gate?: string;
+      fallback?: string;
+    }>;
+  };
   debug_default_collapsed?: boolean;
   debug_sections?: string[];
 }
