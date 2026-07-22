@@ -25,6 +25,22 @@ def build_input_consumption_ledger(*, input_snapshot: dict[str, Any], stage_spec
     }
 
 
+def scope_input_consumption_ledger(
+    ledger: dict[str, Any], *, input_snapshot: dict[str, Any]
+) -> dict[str, Any]:
+    """Return only the consumption records an Agent is allowed to receive."""
+    allowed_input_ids = {str(input_id) for input_id in input_snapshot}
+    return {
+        **ledger,
+        "inputs": [
+            dict(item)
+            for item in ledger.get("inputs") or []
+            if isinstance(item, dict)
+            and str(item.get("input_id") or "") in allowed_input_ids
+        ],
+    }
+
+
 def _input_hash(value: Any) -> str:
     if isinstance(value, dict) and str(value.get("sha256") or ""):
         return str(value["sha256"])

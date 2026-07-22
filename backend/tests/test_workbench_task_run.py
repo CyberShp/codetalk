@@ -172,6 +172,15 @@ def test_prepare_scopes_each_agent_bundle_to_its_declared_input_bindings(tmp_pat
     assert agent_bundle["inputs"] == {
         "analysis_target": "NVMe/TCP TLS handshake"
     }
+    assert agent_bundle["input_consumption"]["inputs"] == [
+        {
+            "input_id": "analysis_target",
+            "sha256": agent_bundle["input_consumption"]["inputs"][0]["sha256"],
+            "summary": "NVMe/TCP TLS handshake",
+            "consumed_by_stages": agent_bundle["input_consumption"]["inputs"][0]["consumed_by_stages"],
+            "consumption_mode": "frozen_task_bundle",
+        }
+    ]
     assert "THIS MUST NOT REACH THE AGENT" not in json.dumps(agent_bundle)
 
 
@@ -8549,10 +8558,30 @@ def test_runner_materializes_verified_fact_ledger_with_quality_audit(tmp_path, m
         "audit_test_activity_artifacts",
         lambda **_: audit,
     )
+    claim_ledger = {
+        "kind": "claim_evidence_ledger",
+        "schema_version": "claim-evidence-ledger-v3",
+        "status": "blocked",
+        "summary": {"total": 1, "verified": 0, "contradicted": 1, "insufficient": 0},
+        "claims": [{"claim_id": "C-001", "verification_status": "contradicted"}],
+    }
+    monkeypatch.setattr(
+        workbench_workflow_runner,
+        "materialize_claim_evidence_ledger",
+        lambda _: claim_ledger,
+    )
 
     result = WorkbenchWorkflowRunner(tmp_path).audit_test_activity_quality(task_run=task_run)
 
     assert result == audit
+    assert result["claim_evidence_ledger"] == {
+        "status": "blocked",
+        "summary": claim_ledger["summary"],
+    }
+    assert result["quality_axes"]["claim_evidence"] == {
+        "status": "blocked",
+        **claim_ledger["summary"],
+    }
     ledger = json.loads((task_dir / "verified_fact_ledger.json").read_text(encoding="utf-8"))
     assert ledger["kind"] == "verified_fact_ledger"
     assert ledger["summary"] == audit["fact_verification"]

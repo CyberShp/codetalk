@@ -35,6 +35,7 @@ from app.services.agent_run_harness import (
     AgentRunHarness,
     ArtifactValidationHarness,
 )
+from app.services.artifact_contract_v3 import materialize_claim_evidence_ledger
 from app.services.behavior_claim_validator import materialize_behavior_claim_validation
 from app.services.regular_stage_governance import promote_regular_stage_caches
 from app.services.source_driven_test_design import (
@@ -827,6 +828,18 @@ class WorkbenchWorkflowRunner:
             audit=audit,
             artifact_dir=artifact_dir,
         )
+        claim_ledger = materialize_claim_evidence_ledger(artifact_dir)
+        claim_summary = dict(claim_ledger.get("summary") or {})
+        audit["claim_evidence_ledger"] = {
+            "status": str(claim_ledger.get("status") or "not_checked"),
+            "summary": claim_summary,
+        }
+        quality_axes = audit.get("quality_axes")
+        if isinstance(quality_axes, dict):
+            quality_axes["claim_evidence"] = {
+                "status": str(claim_ledger.get("status") or "not_checked"),
+                **claim_summary,
+            }
         _write_json(artifact_dir / "test_activity_quality_audit.json", audit)
         _write_json(
             artifact_dir / "verified_fact_ledger.json",

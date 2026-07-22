@@ -28,7 +28,10 @@ from app.services.external_agent_discovery import (
 from app.services.test_activity_contract import build_test_activity_contract
 from app.services.test_activity_stage_specs import default_test_activity_stage_specs
 from app.services.artifact_contract_v3 import default_artifact_contract_v3
-from app.services.input_consumption import build_input_consumption_ledger
+from app.services.input_consumption import (
+    build_input_consumption_ledger,
+    scope_input_consumption_ledger,
+)
 from app.services.network_policy import IntranetNetworkPolicy
 from app.services.test_semantic_library import TestSemanticLibraryStore
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
@@ -409,6 +412,10 @@ class WorkbenchTaskRunPreparer:
             runtime_limits = _agent_task_runtime_limits(provider)
             prompt_transport = _agent_task_prompt_transport(provider)
             step_input_snapshot = _scoped_input_snapshot_for_step(step, input_snapshot)
+            step_input_consumption = scope_input_consumption_ledger(
+                input_consumption,
+                input_snapshot=step_input_snapshot,
+            )
             step_input_context = build_input_context(step_input_snapshot)
             step_input_materials = build_input_materials(
                 workflow_snapshot=workflow_snapshot,
@@ -496,6 +503,7 @@ class WorkbenchTaskRunPreparer:
             step_bundle = {
                 **task_bundle,
                 "inputs": step_input_snapshot,
+                "input_consumption": step_input_consumption,
                 "input_context": step_input_context,
                 "input_materials": step_input_materials,
                 "workflow_contract": step_workflow_contract,
