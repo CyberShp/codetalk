@@ -566,6 +566,7 @@ def _basic_report_preset(*, include_design: bool, provider: str) -> dict[str, An
             "name": name,
             "description": description,
             "version": 1,
+            "artifact_contract_version": "v3",
             "execution_subject": execution_subject,
             "execution_label": execution_label,
             "user_message": (
@@ -600,12 +601,24 @@ def _basic_report_preset(*, include_design: bool, provider: str) -> dict[str, An
                     ],
                     "source_evidence_hints": _BASIC_ISCSI_EVIDENCE_HINTS,
                     "goal": _BASIC_ISCSI_REPORT_GOAL,
-                    "required_artifacts": ["report.md"],
+                    "required_artifacts": [
+                        "source_analysis.md",
+                        "source_scope.json",
+                        "evidence_cards.json",
+                        "flow_cards.json",
+                        "sfmea.json",
+                        "black_box_cases.json",
+                    ],
                     "timeout_sec": 1200,
                     "idle_timeout_sec": 300,
                 }
             ],
             "outputs": [
+                {"id": "source_scope", "label": "源码范围", "type": "json", "from": "analyze", "artifact": "source_scope.json", "schema": SOURCE_SCOPE_SCHEMA},
+                {"id": "evidence_cards", "label": "代码证据", "type": "json", "from": "analyze", "artifact": "evidence_cards.json", "schema": EVIDENCE_CARDS_SCHEMA},
+                {"id": "flow_cards", "label": "流程卡片", "type": "json", "from": "analyze", "artifact": "flow_cards.json"},
+                {"id": "sfmea", "label": "SFMEA", "type": "json", "from": "analyze", "artifact": "sfmea.json", "schema": SFMEA_SCHEMA},
+                {"id": "black_box_cases", "label": "黑盒测试用例", "type": "test_cases", "from": "analyze", "artifact": "black_box_cases.json", "schema": BLACK_BOX_CASES_SCHEMA},
                 {
                     "id": "report",
                     "label": "分析报告",

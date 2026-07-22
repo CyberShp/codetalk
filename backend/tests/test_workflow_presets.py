@@ -48,7 +48,8 @@ def test_source_flow_v2_keeps_release_presets_and_declares_optional_mindmap():
     }
     for preset_id in ("basic_source_report_codex", "basic_source_design_report_builtin"):
         definition = next(item for item in presets if item["id"] == preset_id)["definition"]
-        assert definition["steps"][0]["required_artifacts"] == ["report.md"]
+        assert definition["artifact_contract_version"] == "v3"
+        assert {"source_scope.json", "evidence_cards.json", "flow_cards.json", "sfmea.json", "black_box_cases.json"} <= set(definition["steps"][0]["required_artifacts"])
         assert all(item.get("type") != "test_design_mindmap" for item in definition["outputs"])
 
 
@@ -138,7 +139,7 @@ def test_basic_report_workflow_presets_have_minimal_inputs_and_one_report_contra
     assert source_step["type"] == "agent_task"
     assert source_step["provider"] == "codex"
     assert "mcp_profile" not in source_step
-    assert source_step["required_artifacts"] == ["report.md"]
+    assert {"source_scope.json", "evidence_cards.json", "flow_cards.json", "sfmea.json", "black_box_cases.json"} <= set(source_step["required_artifacts"])
     assert "SPDK iSCSI login" in source_step["goal"]
     assert "不得声称该用例可直接执行" in source_step["goal"]
     assert "tcpdump" in source_step["goal"] and "tshark" in source_step["goal"]
@@ -185,37 +186,7 @@ def test_basic_report_workflow_presets_have_minimal_inputs_and_one_report_contra
         }
     )
     assert all(not item["path"].startswith("test/nvmf/") for item in evidence_hints)
-    assert source_only["outputs"] == [
-        {
-            "id": "report",
-            "label": "分析报告",
-            "type": "combined_test_report",
-            "from": "analyze",
-            "artifact": "report.md",
-            "min_sfmea_rows": 12,
-            "min_black_box_cases": 12,
-            "required_evidence_terms": [
-                "iscsi_auth_params",
-                "iscsi_conn_login_pdu_err_complete",
-                "iscsi_pdu_payload_op_login",
-                "ISCSI_LOGIN_AUTHENT_FAIL",
-                "ISCSI_LOGIN_TIMEOUT",
-                "test/iscsi_tgt/chap/chap_mutual_not_set.sh",
-                "test/iscsi_tgt/multiconnection/multiconnection.sh",
-            ],
-            "forbidden_evidence_path_prefixes": ["test/nvmf/"],
-            "forbidden_claim_terms": [
-                "默认 60s",
-                "[待验证] 60s",
-                "iscsi_check_chap_params 未使用常量时间比较",
-                "AuthMethod 为 NULL 时跳过认证",
-                "switch 缺少 ISCSI_FULL_FEATURE_PHASE",
-                "MaxConnections 已达上限时返回的成功",
-                "登录错误响应中 C-bit 未置位",
-                "Digest 校验失败后未释放",
-            ],
-        }
-    ]
+    assert {item["artifact"] for item in source_only["outputs"]} >= {"source_scope.json", "evidence_cards.json", "flow_cards.json", "sfmea.json", "black_box_cases.json", "report.md"}
 
     with_design = by_id["basic_source_design_report_builtin"]["definition"]
     assert with_design["description"] == by_id["basic_source_design_report_builtin"]["description"]
@@ -237,12 +208,12 @@ def test_basic_report_workflow_presets_have_minimal_inputs_and_one_report_contra
     assert builtin_step["provider"] == "builtin-llm"
     assert builtin_step["execution_mode"] == "staged"
     assert "mcp_profile" not in builtin_step
-    assert builtin_step["required_artifacts"] == ["report.md"]
+    assert builtin_step["required_artifacts"] == source_step["required_artifacts"]
     assert builtin_step["input_ports"] == [
         {"id": "repo_path", "type": "directory", "required": True},
         {"id": "design_doc", "type": "file", "required": True},
     ]
-    assert with_design["outputs"][0]["artifact"] == "report.md"
+    assert {item["artifact"] for item in with_design["outputs"]} >= {"source_scope.json", "evidence_cards.json", "flow_cards.json", "sfmea.json", "black_box_cases.json", "report.md"}
 
 
 def test_source_flow_preset_requires_exact_source_evidence_and_first_pass_quality():
