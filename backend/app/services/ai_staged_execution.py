@@ -183,6 +183,7 @@ def build_source_analysis_context(
     max_files: int | None = None,
     excerpt_chars: int | None = None,
     max_evidence_anchors: int | None = None,
+    min_test_files: int | None = None,
 ) -> dict[str, Any]:
     """Project the full execution context into the source-analysis contract."""
     return _project_source_analysis_context(
@@ -191,6 +192,7 @@ def build_source_analysis_context(
         max_files=max_files,
         excerpt_chars=excerpt_chars,
         max_evidence_anchors=max_evidence_anchors,
+        min_test_files=min_test_files,
     )
 
 
@@ -201,18 +203,44 @@ def _project_source_analysis_context(
     max_files: int | None = None,
     excerpt_chars: int | None = None,
     max_evidence_anchors: int | None = None,
+    min_test_files: int | None = None,
 ) -> dict[str, Any]:
     materials = _source_input_material_summaries(staged_context)
     gitnexus_summary, cgc_summary = _source_tool_summaries(staged_context)
-    return _assemble_source_analysis_context(
+    compact = _assemble_source_analysis_context(
         plan=plan,
         staged_context=staged_context,
         max_files=max_files,
         excerpt_chars=excerpt_chars,
         max_evidence_anchors=max_evidence_anchors,
+        min_test_files=min_test_files,
         materials=materials,
         gitnexus_summary=gitnexus_summary,
         cgc_summary=cgc_summary,
+    )
+    excerpt_limit = max(
+        200, int(excerpt_chars or settings.source_analysis_excerpt_chars)
+    )
+    source_context = (
+        staged_context.get("source_context")
+        if isinstance(staged_context.get("source_context"), dict)
+        else staged_context
+    )
+    compact = _complete_verified_source_slices(
+        compact,
+        excerpt_limit=excerpt_limit,
+    )
+    return _expand_verified_source_anchors(
+        compact,
+        source_context=source_context,
+        excerpt_limit=excerpt_limit,
+        anchor_limit=max(
+            1,
+            int(
+                max_evidence_anchors
+                or settings.source_analysis_max_evidence_anchors
+            ),
+        ),
     )
 
 
@@ -223,6 +251,7 @@ def _project_source_analysis_context_from_memory(
     max_files: int | None = None,
     excerpt_chars: int | None = None,
     max_evidence_anchors: int | None = None,
+    min_test_files: int | None = None,
 ) -> dict[str, Any]:
     """Budget fallback that performs no filesystem reads or full MCP serialization."""
     return _assemble_source_analysis_context(
@@ -231,6 +260,7 @@ def _project_source_analysis_context_from_memory(
         max_files=max_files,
         excerpt_chars=excerpt_chars,
         max_evidence_anchors=max_evidence_anchors,
+        min_test_files=min_test_files,
         materials=_source_input_material_summaries(
             staged_context,
             read_parsed_text=False,
@@ -247,12 +277,21 @@ def _assemble_source_analysis_context(
     max_files: int | None,
     excerpt_chars: int | None,
     max_evidence_anchors: int | None,
+    min_test_files: int | None,
     materials: list[dict[str, str]],
     gitnexus_summary: str,
     cgc_summary: str,
 ) -> dict[str, Any]:
-    min_source_files, min_test_files = _source_evidence_minimums(plan)
-    required_file_count = min_source_files + min_test_files
+    min_source_files, plan_min_test_files = _source_evidence_minimums(plan)
+    required_test_files = max(
+        plan_min_test_files,
+        int(
+            settings.source_analysis_min_test_files
+            if min_test_files is None
+            else min_test_files
+        ),
+    )
+    required_file_count = min_source_files + required_test_files
     file_limit = max(
         1,
         int(max_files or settings.source_analysis_max_files),
@@ -275,7 +314,12 @@ def _assemble_source_analysis_context(
         source_context.get("files") or [],
         limit=evidence_limit,
         min_source_files=min_source_files,
-        min_test_files=min_test_files,
+        min_test_files=required_test_files,
+        coverage_tokens=[
+            str(token)
+            for token in source_context.get("tokens") or []
+            if str(token).strip()
+        ],
     )
     for item in selected_source_items:
         path = str(item.get("file_path") or "").strip()
@@ -300,6 +344,9 @@ def _assemble_source_analysis_context(
                     for value in item.get("matched_terms") or []
                     if str(value).strip()
                 ][:16],
+                "score": int(item.get("score") or 0),
+                "content_match_count": int(item.get("content_match_count") or 0),
+                "behavior_score": int(item.get("behavior_score") or 0),
                 "sha256": str(item.get("sha256") or ""),
                 "validation_status": str(
                     item.get("status") or "validated_source_file"
@@ -340,19 +387,602 @@ def _assemble_source_analysis_context(
     }
 
 
+def _complete_verified_source_slices(
+    compact: dict[str, Any],
+    *,
+    excerpt_limit: int,
+) -> dict[str, Any]:
+    """Widen small verified C slices so an evidence card never cuts a branch."""
+    files = [dict(item) for item in compact.get("files") or [] if isinstance(item, dict)]
+    repo = Path(str(compact.get("repo_path") or ""))
+    if not files or not repo.is_dir():
+        return compact
+    try:
+        resolved_repo = repo.resolve()
+    except OSError:
+        return compact
+
+    for item in files:
+        path = str(item.get("file_path") or "").strip()
+        if Path(path).suffix.lower() not in {".c", ".h"}:
+            continue
+        source_path = (repo / path).resolve()
+        try:
+            source_path.relative_to(resolved_repo)
+            data = source_path.read_bytes()
+        except (OSError, ValueError):
+            continue
+        if hashlib.sha256(data).hexdigest() != str(item.get("sha256") or ""):
+            continue
+        source_text = data.decode("utf-8", errors="replace")
+        start_line = max(1, int(item.get("start_line") or 1))
+        end_line = max(start_line, int(item.get("end_line") or start_line))
+        anchor_line = start_line + ((end_line - start_line) // 2)
+        span = _source_enclosing_c_function_span(
+            source_text,
+            anchor_line=anchor_line,
+        )
+        if span is None:
+            continue
+        symbol, function_start, function_end = span
+        lines = source_text.splitlines()
+        function_excerpt = "\n".join(lines[function_start - 1 : function_end])
+        if not function_excerpt or len(function_excerpt) > excerpt_limit:
+            continue
+        item["start_line"] = function_start
+        item["end_line"] = function_end
+        item["excerpt"] = function_excerpt
+        item["symbols"] = list(
+            dict.fromkeys([symbol, *[str(value) for value in item.get("symbols") or []]])
+        )[:12]
+
+    result = {**compact, "files": files}
+    result["verified_symbols"] = sorted(
+        {
+            str(symbol)
+            for item in files
+            for symbol in item.get("symbols") or []
+            if str(symbol).strip()
+        }
+    )[:64]
+    return result
+
+
+def _expand_verified_source_anchors(
+    compact: dict[str, Any],
+    *,
+    source_context: dict[str, Any],
+    excerpt_limit: int,
+    anchor_limit: int,
+) -> dict[str, Any]:
+    """Add bounded, hash-verified slices without widening the selected file set."""
+    files = [dict(item) for item in compact.get("files") or [] if isinstance(item, dict)]
+    if not files or len(files) >= anchor_limit:
+        return compact
+    repo = Path(str(compact.get("repo_path") or ""))
+    if not repo.is_dir():
+        return compact
+    tokens = [
+        str(token).strip().lower()
+        for token in source_context.get("tokens") or []
+        if str(token).strip()
+    ]
+    if not tokens:
+        tokens = [
+            str(token).strip().lower()
+            for item in source_context.get("files") or []
+            if isinstance(item, dict)
+            for token in item.get("matched_terms") or []
+            if str(token).strip()
+        ]
+    if not tokens:
+        tokens = [
+            token.lower()
+            for token in re.findall(
+                r"[A-Za-z_][A-Za-z0-9_]{2,}",
+                str(compact.get("analysis_target") or ""),
+            )
+        ]
+    generic_terms = {
+        "analysis", "analyze", "source", "code", "test", "tests",
+        "linux", "commit", "current", "nvme", "cli", "libnvme",
+        "over", "log", "page", "cleanup", "release", "close",
+        "fabrics", "tcp", "controller",
+    }
+    tokens = [
+        token for token in dict.fromkeys(tokens) if token not in generic_terms
+    ][:32]
+    if not tokens:
+        return compact
+
+    selected_by_path: dict[str, dict[str, Any]] = {}
+    existing_ranges: dict[str, list[tuple[int, int]]] = {}
+    covered_terms: set[str] = set()
+    referenced_symbols: set[str] = set()
+    selected_symbols_by_path: dict[str, set[str]] = {}
+    for item in files:
+        path = str(item.get("file_path") or "")
+        selected_by_path.setdefault(path, item)
+        existing_ranges.setdefault(path, []).append(
+            (int(item.get("start_line") or 0), int(item.get("end_line") or 0))
+        )
+        excerpt_lower = str(item.get("excerpt") or "").lower()
+        covered_terms.update(token for token in tokens if token in excerpt_lower)
+        referenced_symbols.update(
+            _source_called_symbols(str(item.get("excerpt") or ""))
+        )
+        selected_symbols_by_path.setdefault(path, set()).update(
+            str(symbol) for symbol in item.get("symbols") or []
+        )
+
+    verified_text: dict[str, tuple[str, list[str]]] = {}
+    token_file_frequency = {token: 0 for token in tokens}
+    for path, item in selected_by_path.items():
+        source_path = (repo / path).resolve()
+        try:
+            source_path.relative_to(repo.resolve())
+            data = source_path.read_bytes()
+        except (OSError, ValueError):
+            continue
+        if hashlib.sha256(data).hexdigest() != str(item.get("sha256") or ""):
+            continue
+        text = data.decode("utf-8", errors="replace")
+        lines = text.splitlines()
+        verified_text[path] = (text, lines)
+        lowered = text.lower()
+        for token in tokens:
+            if token in lowered:
+                token_file_frequency[token] += 1
+
+    candidates: list[dict[str, Any]] = []
+    seen_slices: set[tuple[str, int, int]] = set()
+    for path, item in selected_by_path.items():
+        verified = verified_text.get(path)
+        if verified is None:
+            continue
+        source_text, lines = verified
+        ranges = existing_ranges.get(path) or []
+        for token_index, token in enumerate(tokens):
+            matching_lines = [
+                index for index, line in enumerate(lines) if token in line.lower()
+            ]
+            ranked_matching_lines = sorted(
+                matching_lines,
+                key=lambda index: (
+                    _source_symbol_matches_token(
+                        _source_enclosing_c_function(
+                            source_text,
+                            anchor_line=index + 1,
+                        ),
+                        token,
+                    ),
+                    _source_risk_signal_value(
+                        "\n".join(
+                            lines[max(0, index - 8) : min(len(lines), index + 9)]
+                        )
+                    ),
+                ),
+                reverse=True,
+            )[:6]
+            for line_index in ranked_matching_lines:
+                start_index = max(0, line_index - 8)
+                end_index = min(len(lines), line_index + 9)
+                excerpt_lines = lines[start_index:end_index]
+                while (
+                    len("\n".join(excerpt_lines)) > excerpt_limit
+                    and len(excerpt_lines) > 1
+                ):
+                    if line_index - start_index >= end_index - line_index - 1:
+                        start_index += 1
+                    else:
+                        end_index -= 1
+                    excerpt_lines = lines[start_index:end_index]
+                excerpt = "\n".join(excerpt_lines)
+                start_line = start_index + 1
+                end_line = start_index + max(1, len(excerpt_lines))
+                if any(
+                    not (end_line < start or start_line > end)
+                    for start, end in ranges
+                ):
+                    continue
+                slice_key = (path, start_line, end_line)
+                if not excerpt or slice_key in seen_slices:
+                    continue
+                seen_slices.add(slice_key)
+                excerpt_lower = excerpt.lower()
+                matched_terms = [value for value in tokens if value in excerpt_lower]
+                symbols = _source_anchor_symbols(
+                    excerpt,
+                    source_text=source_text,
+                    anchor_line=line_index + 1,
+                )
+                if not symbols:
+                    continue
+                function_span = _source_enclosing_c_function_span(
+                    source_text,
+                    anchor_line=line_index + 1,
+                )
+                function_risk = 0
+                if function_span is not None:
+                    _, function_start, function_end = function_span
+                    function_risk = _source_risk_signal_value(
+                        "\n".join(lines[function_start - 1 : function_end])
+                    )
+                candidates.append({
+                    "file_path": path,
+                    "classification": str(item.get("classification") or "source"),
+                    "start_line": start_line,
+                    "end_line": end_line,
+                    "excerpt": excerpt,
+                    "symbols": symbols,
+                    "matched_terms": matched_terms,
+                    "sha256": str(item.get("sha256") or ""),
+                    "validation_status": "validated_source_file",
+                    "anchor_origin": "verified_additional_slice",
+                    "_information_value": sum(
+                        1.0 / max(1, token_file_frequency.get(value, 1))
+                        for value in matched_terms
+                    ),
+                    "_token_priority": -token_index,
+                    "_risk_signal_value": max(
+                        _source_risk_signal_value(excerpt),
+                        function_risk,
+                    ),
+                    "_specialization_penalty": _unrequested_source_specialization_penalty(
+                        symbols,
+                        analysis_target=str(compact.get("analysis_target") or ""),
+                    ),
+                    "_symbol_term_relevance": sum(
+                        _source_symbol_matches_token(symbol, token)
+                        for symbol in symbols
+                        for token in matched_terms
+                    ),
+                })
+
+    additional_per_path: dict[str, int] = {}
+    recent_referenced_symbols: set[str] = set()
+    central_path = max(
+        selected_by_path,
+        key=lambda path: (
+            int(selected_by_path[path].get("content_match_count") or 0),
+            int(selected_by_path[path].get("behavior_score") or 0),
+            int(selected_by_path[path].get("score") or 0),
+        ),
+    )
+    critical_risk_terms = {
+        "child", "propagate", "rollback", "cleanup", "release",
+        "reconnect", "timeout", "race",
+    }
+    while candidates and len(files) < anchor_limit:
+        candidates = [
+            value
+            for value in candidates
+            if additional_per_path.get(value["file_path"], 0)
+            < (4 if value["file_path"] == central_path else 1)
+            and not (
+                set(value.get("symbols") or [])
+                & selected_symbols_by_path.get(value["file_path"], set())
+            )
+        ]
+        if not candidates:
+            break
+        candidate_index = max(
+            range(len(candidates)),
+            key=lambda index: (
+                candidates[index]["classification"] == "source",
+                bool(
+                    set(candidates[index]["symbols"])
+                    & recent_referenced_symbols
+                    and candidates[index]["file_path"] == central_path
+                ),
+                (
+                    candidates[index]["_risk_signal_value"]
+                    if set(candidates[index]["symbols"])
+                    & recent_referenced_symbols
+                    and candidates[index]["file_path"] == central_path
+                    else 0
+                ),
+                bool(
+                    (
+                        set(candidates[index]["matched_terms"])
+                        - covered_terms
+                    )
+                    & critical_risk_terms
+                ),
+                bool(
+                    set(candidates[index]["symbols"])
+                    & referenced_symbols
+                ),
+                -candidates[index]["_specialization_penalty"],
+                candidates[index]["_risk_signal_value"],
+                bool(
+                    set(candidates[index]["matched_terms"]) - covered_terms
+                ),
+                candidates[index]["_symbol_term_relevance"],
+                len(set(candidates[index]["matched_terms"]) - covered_terms),
+                candidates[index]["_information_value"],
+                -additional_per_path.get(candidates[index]["file_path"], 0),
+                bool(candidates[index]["symbols"]),
+                candidates[index]["_token_priority"],
+            ),
+        )
+        candidate = candidates.pop(candidate_index)
+        candidate.pop("_information_value", None)
+        candidate.pop("_token_priority", None)
+        candidate.pop("_risk_signal_value", None)
+        candidate.pop("_specialization_penalty", None)
+        candidate.pop("_symbol_term_relevance", None)
+        candidate["evidence_id"] = f"SRC-{len(files) + 1:02d}"
+        files.append(candidate)
+        additional_per_path[candidate["file_path"]] = (
+            additional_per_path.get(candidate["file_path"], 0) + 1
+        )
+        covered_terms.update(candidate.get("matched_terms") or [])
+        referenced_symbols.update(
+            _source_called_symbols(str(candidate.get("excerpt") or ""))
+        )
+        recent_referenced_symbols = _source_called_symbols(
+            str(candidate.get("excerpt") or "")
+        )
+        selected_symbols_by_path.setdefault(candidate["file_path"], set()).update(
+            str(symbol) for symbol in candidate.get("symbols") or []
+        )
+        candidates = [
+            value
+            for value in candidates
+            if not (
+                value["file_path"] == candidate["file_path"]
+                and not (
+                    value["end_line"] < candidate["start_line"]
+                    or value["start_line"] > candidate["end_line"]
+                )
+            )
+        ]
+
+    compact = {**compact, "files": files}
+    compact["verified_symbols"] = sorted(
+        {
+            str(symbol)
+            for item in files
+            for symbol in item.get("symbols") or []
+            if str(symbol).strip()
+        }
+    )[:64]
+    return compact
+
+
+def _source_risk_signal_value(excerpt: str) -> int:
+    """Rank implementation branches above declarations and option help text."""
+    text = str(excerpt or "")
+    lowered = text.lower()
+    signal_patterns = (
+        r"\bif\s*\(",
+        r"\b(?:else|switch|case|goto)\b",
+        r"\breturn\b",
+        r"\b(?:free|close|fclose|cleanup|release|destroy|unlink)\s*\(",
+        r"\b(?:read|write|open|fopen|malloc|calloc|realloc)\s*\(",
+        r"\b(?:errno|error|failed?|retry|timeout|abort|null)\b",
+        r"(?:!=|==|<=|>=|<\s*0|>\s*0)",
+    )
+    score = sum(len(re.findall(pattern, lowered)) for pattern in signal_patterns)
+    if re.search(r"\b(?:help|usage|description|option|opts?)\b", lowered):
+        score -= 2
+    if re.search(r"^\s*(?:static\s+)?(?:int|void|bool|char|struct\s+\w+).+\{", text, re.MULTILINE):
+        score += 2
+    return score
+
+
+def _unrequested_source_specialization_penalty(
+    symbols: list[str],
+    *,
+    analysis_target: str,
+) -> int:
+    """Deprioritize alternate transport/config branches absent from the request."""
+    target = str(analysis_target or "").lower()
+    symbol_text = " ".join(str(symbol).lower() for symbol in symbols)
+    markers = {
+        "nbft", "rdma", "fibre", "fc", "loop", "json", "yaml",
+        "windows", "win32", "avahi", "zeroconf",
+    }
+    return sum(
+        1
+        for marker in markers
+        if re.search(rf"(?:^|_){re.escape(marker)}(?:_|$)", symbol_text)
+        and not re.search(rf"\b{re.escape(marker)}\b", target)
+    )
+
+
+def _source_anchor_symbols(
+    excerpt: str,
+    *,
+    source_text: str = "",
+    anchor_line: int = 0,
+) -> list[str]:
+    symbols: list[str] = []
+    for line in excerpt.splitlines():
+        match = re.search(
+            r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}]*\)\s*(?:\{|$)",
+            line,
+        )
+        if not match or match.group(1) in {"if", "for", "while", "switch", "return"}:
+            continue
+        symbols.append(match.group(1))
+    if source_text and anchor_line > 0:
+        enclosing = _source_enclosing_c_function(source_text, anchor_line=anchor_line)
+        if enclosing:
+            symbols.insert(0, enclosing)
+    return list(dict.fromkeys(symbols))[:12]
+
+
+def _source_called_symbols(excerpt: str) -> set[str]:
+    ignored = {"if", "for", "while", "switch", "return", "sizeof"}
+    return {
+        match.group(1)
+        for match in re.finditer(
+            r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+            str(excerpt or ""),
+        )
+        if match.group(1) not in ignored
+    }
+
+
+def _source_symbol_matches_token(symbol: str, token: str) -> bool:
+    normalized_symbol = str(symbol or "").lower()
+    normalized_token = str(token or "").lower()
+    if not normalized_symbol or not normalized_token:
+        return False
+    return bool(
+        re.search(
+            rf"(?:^|_){re.escape(normalized_token)}(?:_|$)",
+            normalized_symbol,
+        )
+    )
+
+
+def _source_enclosing_c_function(source_text: str, *, anchor_line: int) -> str:
+    """Return the C function containing an evidence line, including multiline signatures."""
+    span = _source_enclosing_c_function_span(source_text, anchor_line=anchor_line)
+    return span[0] if span else ""
+
+
+def _source_enclosing_c_function_span(
+    source_text: str,
+    *,
+    anchor_line: int,
+) -> tuple[str, int, int] | None:
+    """Return the enclosing C function name and inclusive line range."""
+    sanitized = re.sub(
+        r"//[^\n]*|/\*.*?\*/|\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'",
+        lambda match: "".join("\n" if char == "\n" else " " for char in match.group(0)),
+        source_text,
+        flags=re.DOTALL,
+    )
+    anchor_offset = 0
+    for _ in range(max(0, anchor_line - 1)):
+        newline = sanitized.find("\n", anchor_offset)
+        if newline < 0:
+            anchor_offset = len(sanitized)
+            break
+        anchor_offset = newline + 1
+    signature_pattern = re.compile(
+        r"(?m)^[ \t]*(?:[A-Za-z_][A-Za-z0-9_]*[ \t\n*]+)+"
+        r"([A-Za-z_][A-Za-z0-9_]*)[ \t]*\([^;{}]*\)[ \t\r\n]*\{"
+    )
+    enclosing: tuple[int, str, int, int] | None = None
+    for match in signature_pattern.finditer(sanitized):
+        open_brace = sanitized.find("{", match.start(), match.end())
+        if open_brace < 0 or match.start() > anchor_offset:
+            continue
+        depth = 0
+        close_brace = -1
+        for index in range(open_brace, len(sanitized)):
+            char = sanitized[index]
+            if char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    close_brace = index
+                    break
+        if close_brace >= anchor_offset:
+            function_start = sanitized.count("\n", 0, match.start()) + 1
+            function_end = sanitized.count("\n", 0, close_brace) + 1
+            enclosing = (
+                open_brace,
+                match.group(1),
+                function_start,
+                function_end,
+            )
+    if enclosing is None:
+        return None
+    return enclosing[1], enclosing[2], enclosing[3]
+
+
 def _select_bounded_source_context_files(
     values: Any,
     *,
     limit: int,
     min_source_files: int = 1,
     min_test_files: int = 1,
+    coverage_tokens: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     candidates = [
         item
         for item in values
         if isinstance(item, dict) and str(item.get("file_path") or "").strip()
     ]
-    selected = list(candidates[: max(0, limit)])
+    coverage = set(_source_evidence_coverage_tokens(coverage_tokens or []))
+    term_frequency = {
+        token: sum(
+            token in set(item.get("matched_terms") or []) for item in candidates
+        )
+        for token in coverage
+    }
+
+    def information_value(item: dict[str, Any]) -> float:
+        return sum(
+            1.0 / max(1, term_frequency.get(token, 1))
+            for token in set(item.get("matched_terms") or []) & coverage
+        )
+
+    def implementation_value(item: dict[str, Any]) -> tuple[bool, bool]:
+        suffix = Path(str(item.get("file_path") or "")).suffix.lower()
+        return bool(item.get("symbols")), suffix in {".c", ".cc", ".cpp", ".cxx"}
+
+    def symbol_coverage(item: dict[str, Any]) -> set[str]:
+        return {
+            token for token in coverage
+            if token
+            and any(
+                _source_symbol_matches_token(str(symbol), token)
+                for symbol in item.get("symbols") or []
+            )
+        }
+
+    def absolute_relevance(item: dict[str, Any]) -> float:
+        content_matches = max(0, int(item.get("content_match_count") or 0))
+        return (
+            int(item.get("score") or 0)
+            + min(24, content_matches.bit_length() * 3)
+            + min(16, max(0, int(item.get("behavior_score") or 0)) * 2)
+            + 6 * len(symbol_coverage(item))
+            + 4.0 * information_value(item)
+        )
+
+    if coverage_tokens:
+        selected = []
+        remaining = list(candidates)
+        covered_terms: set[str] = set()
+        covered_symbol_terms: set[str] = set()
+        while remaining and len(selected) < max(0, limit):
+            candidate_index = max(
+                range(len(remaining)),
+                key=lambda index: (
+                    implementation_value(remaining[index]),
+                    absolute_relevance(remaining[index]),
+                    len(
+                        symbol_coverage(remaining[index])
+                        - covered_symbol_terms
+                    ),
+                    len(
+                        (
+                            set(remaining[index].get("matched_terms") or [])
+                            & coverage
+                        )
+                        - covered_terms
+                    ),
+                    int(remaining[index].get("score") or 0),
+                    -index,
+                ),
+            )
+            candidate = remaining.pop(candidate_index)
+            selected.append(candidate)
+            covered_terms.update(
+                set(candidate.get("matched_terms") or []) & coverage
+            )
+            covered_symbol_terms.update(symbol_coverage(candidate))
+    else:
+        selected = list(candidates[: max(0, limit)])
     if limit < 2 or not selected:
         return selected
     selected_paths = {str(item.get("file_path") or "") for item in selected}
@@ -368,17 +998,26 @@ def _select_bounded_source_context_files(
             ) == required_class
             for item in selected
         ) < desired[required_class]:
-            replacement = next(
-                (
-                    item
-                    for item in candidates
-                    if str(item.get("file_path") or "") not in selected_paths
-                    and str(
-                        item.get("classification")
-                        or _source_file_classification(str(item.get("file_path") or ""))
-                    ) == required_class
-                ),
-                None,
+            replacement_candidates = [
+                item
+                for item in candidates
+                if str(item.get("file_path") or "") not in selected_paths
+                and str(
+                    item.get("classification")
+                    or _source_file_classification(str(item.get("file_path") or ""))
+                ) == required_class
+            ]
+            replacement = (
+                max(
+                    replacement_candidates,
+                    key=lambda item: (
+                        implementation_value(item),
+                        information_value(item),
+                        int(item.get("score") or 0),
+                    ),
+                )
+                if coverage_tokens and replacement_candidates
+                else (replacement_candidates[0] if replacement_candidates else None)
             )
             if replacement is None:
                 break
@@ -421,7 +1060,64 @@ def _select_bounded_source_context_files(
             selected_paths.discard(str(selected[replace_index].get("file_path") or ""))
             selected[replace_index] = replacement
             selected_paths.add(str(replacement.get("file_path") or ""))
+    if desired["test"]:
+        def test_relevance(item: dict[str, Any]) -> tuple[bool, float, int, str]:
+            score = int(item.get("score") or 0)
+            return (
+                bool(item.get("evidence_hint")),
+                score + 16.0 * information_value(item),
+                score,
+                str(item.get("file_path") or ""),
+            )
+
+        while True:
+            selected_test_indexes = [
+                index
+                for index, item in enumerate(selected)
+                if str(
+                    item.get("classification")
+                    or _source_file_classification(str(item.get("file_path") or ""))
+                )
+                == "test"
+            ]
+            unselected_tests = [
+                item
+                for item in candidates
+                if str(
+                    item.get("classification")
+                    or _source_file_classification(str(item.get("file_path") or ""))
+                )
+                == "test"
+                and str(item.get("file_path") or "") not in selected_paths
+            ]
+            if not selected_test_indexes or not unselected_tests:
+                break
+            weakest_index = min(
+                selected_test_indexes,
+                key=lambda index: test_relevance(selected[index]),
+            )
+            strongest = max(unselected_tests, key=test_relevance)
+            if test_relevance(strongest) <= test_relevance(selected[weakest_index]):
+                break
+            selected_paths.discard(str(selected[weakest_index].get("file_path") or ""))
+            selected[weakest_index] = strongest
+            selected_paths.add(str(strongest.get("file_path") or ""))
     return selected
+
+
+def _source_evidence_coverage_tokens(values: list[str]) -> list[str]:
+    """Remove prose/path vocabulary that rewards formatters over behavior."""
+    generic = {
+        "analysis", "analyze", "source", "code", "test", "tests",
+        "linux", "commit", "current", "over", "log", "page", "long",
+        "src", "tree", "file", "path", "report", "output", "json",
+        "markdown", "sfmea", "black", "box", "case", "cases",
+    }
+    return [
+        token
+        for token in dict.fromkeys(str(value).strip().lower() for value in values)
+        if token and token not in generic
+    ]
 
 
 def _source_evidence_minimums(plan: dict[str, Any]) -> tuple[int, int]:
@@ -430,6 +1126,14 @@ def _source_evidence_minimums(plan: dict[str, Any]) -> tuple[int, int]:
     for stage in plan.get("stages") or []:
         if not isinstance(stage, dict):
             continue
+        if str(stage.get("id") or "").split("__", 1)[0] in {
+            "sfmea",
+            "black_box_cases",
+            "test_strategy",
+            "test_design",
+            "test_design_mindmap",
+        }:
+            min_test_files = max(min_test_files, 3)
         contract = stage.get("output_contract")
         if not isinstance(contract, dict):
             continue
@@ -450,10 +1154,16 @@ def build_source_evidence_pack(context: dict[str, Any]) -> dict[str, Any]:
     for index, item in enumerate(context.get("files") or [], 1):
         if not isinstance(item, dict):
             continue
+        file_path = str(item.get("file_path") or "")
+        symbols = [str(value) for value in item.get("symbols") or []]
+        if not symbols and Path(file_path).suffix.lower() in {
+            ".sh", ".bash", ".zsh", ".ksh"
+        }:
+            symbols = [Path(file_path).name]
         cards.append(
             {
                 "evidence_id": str(item.get("evidence_id") or f"SRC-{index:02d}"),
-                "file_path": str(item.get("file_path") or ""),
+                "file_path": file_path,
                 "classification": str(item.get("classification") or "source"),
                 "kind": str(item.get("classification") or "source"),
                 "start_line": int(item.get("start_line") or 0),
@@ -465,7 +1175,7 @@ def build_source_evidence_pack(context: dict[str, Any]) -> dict[str, Any]:
                     + 1,
                 ),
                 "excerpt": str(item.get("excerpt") or ""),
-                "symbols": [str(value) for value in item.get("symbols") or []],
+                "symbols": symbols,
                 "matched_terms": [
                     str(value) for value in item.get("matched_terms") or []
                 ],
@@ -489,12 +1199,13 @@ def build_source_evidence_pack(context: dict[str, Any]) -> dict[str, Any]:
         card["evidence_id"] for card in cards if not card.get("symbols")
     ]
     has_verified_symbol = any(card.get("symbols") for card in cards)
-    source_files = [
+    source_files = list(dict.fromkeys(
         card["file_path"] for card in cards if card["classification"] == "source"
-    ]
-    test_files = [
+    ))
+    test_files = list(dict.fromkeys(
         card["file_path"] for card in cards if card["classification"] == "test"
-    ]
+    ))
+    unique_files = list(dict.fromkeys(card["file_path"] for card in cards))
     scope_seed = "\n".join(
         [
             str(context.get("repo_revision") or ""),
@@ -526,13 +1237,14 @@ def build_source_evidence_pack(context: dict[str, Any]) -> dict[str, Any]:
                 "method": "sha256-validated-evidence-pack",
                 "file_count": len(cards),
             },
-            "files": [card["file_path"] for card in cards],
+            "files": unique_files,
             "entry_points": entry_points,
             "analysis_target": str(context.get("analysis_target") or ""),
             "repo_revision": str(context.get("repo_revision") or ""),
             "source_files": source_files,
             "test_files": test_files,
-            "file_count": len(cards),
+            "file_count": len(unique_files),
+            "evidence_anchor_count": len(cards),
             "verified_symbols": [
                 str(value) for value in context.get("verified_symbols") or []
             ],
@@ -611,9 +1323,12 @@ def materialize_source_evidence_pack(
         "evidence_cards": artifact_dir / "evidence_cards.json",
     }
     _write_text(paths["source_analysis"], _source_analysis_markdown(pack))
-    if not paths["source_scope"].exists():
+    # A task-level quality retry can seed these files from its parent attempt.
+    # A non-empty current source stage is authoritative: keeping the seed would
+    # split evidence IDs between prompts and final validation artifacts. If no
+    # source could be prepared, retain the protected seed for diagnosis/retry.
+    if pack.get("evidence_cards") or not paths["evidence_cards"].exists():
         _write_json(paths["source_scope"], pack.get("source_scope") or {})
-    if not paths["evidence_cards"].exists():
         _write_json(paths["evidence_cards"], pack.get("evidence_cards") or [])
     return paths
 
@@ -827,9 +1542,16 @@ _STAGE_BY_ARTIFACT = {
         "black_box_cases",
         ["source_analysis", "flow_outline", "sfmea"],
     ),
-    "test_strategy.md": ("test_strategy", ["source_analysis", "flow_outline"]),
+    "test_strategy.md": (
+        "test_strategy",
+        ["source_analysis", "flow_outline", "sfmea", "black_box_cases"],
+    ),
     "test_design.md": (
         "test_design",
+        ["source_analysis", "flow_outline", "sfmea", "black_box_cases"],
+    ),
+    "test_design_mindmap.md": (
+        "test_design_mindmap",
         ["source_analysis", "flow_outline", "sfmea", "black_box_cases"],
     ),
     "coverage_gap_report.md": ("coverage_gap", ["source_analysis"]),
@@ -863,9 +1585,9 @@ _CANONICAL_STAGE_ORDER = (
     "black_box_cases",
     "test_design_governance",
     "coverage_judge",
-    "test_design_mindmap",
     "test_strategy",
     "test_design",
+    "test_design_mindmap",
     "coverage_gap",
     "risk_review",
     "execution_checklist",
@@ -1043,6 +1765,30 @@ def build_staged_execution_plan(
             )
         )
         stage_limits = _stage_execution_limits(base_stage_id)
+        declared_minimum_items = int(
+            output_contract.get(
+                "min_sfmea_rows"
+                if base_stage_id == "sfmea"
+                else "min_black_box_cases"
+                if base_stage_id == "black_box_cases"
+                else ""
+            )
+            or 0
+        )
+        if declared_minimum_items and base_stage_id in {"sfmea", "black_box_cases"}:
+            stage_limits = {
+                "max_tokens": max(
+                    int(stage_limits.get("max_tokens") or 0),
+                    9000 if base_stage_id == "sfmea" else settings.black_box_cases_max_tokens,
+                ),
+                "output_limits": {
+                    **dict(stage_limits.get("output_limits") or {}),
+                    "max_items": max(
+                        int((stage_limits.get("output_limits") or {}).get("max_items") or 0),
+                        declared_minimum_items,
+                    ),
+                },
+            }
         if output_index < 0 and base_stage_id in {"sfmea", "black_box_cases"} and combined_report_contract:
             minimum_items = int(
                 combined_report_contract.get(
@@ -1403,6 +2149,10 @@ def _existing_quality_stage_result(
     output_path = artifact_dir / artifact
     if not output_path.is_file():
         return None
+    if str(stage.get("id") or "") == "source_analysis":
+        canonical_pack = _read_json_file(stage_dir / "source_evidence_pack.json")
+        if canonical_pack:
+            materialize_source_evidence_pack(canonical_pack, artifact_dir)
     result = {
         "stage_id": str(stage.get("id") or ""),
         "status": "completed",
@@ -2672,6 +3422,12 @@ async def _execute_regular_stage(
         if artifact in quality_affected and output_path.is_file()
         else ""
     )
+    invalid_repair_seed_discarded = False
+    if current_artifact_seed.strip() and artifact.endswith(".json"):
+        if not _is_valid_json_artifact_seed(current_artifact_seed, artifact):
+            current_artifact_seed = ""
+            invalid_repair_seed_discarded = True
+            output_path.unlink(missing_ok=True)
     stage_llm = _select_regular_stage_llm(
         llm,
         auxiliary_llm,
@@ -2917,6 +3673,17 @@ async def _execute_regular_stage(
             "user_message": f"{stage_id} 已提交模型，正在等待首段输出",
         },
     )
+    if invalid_repair_seed_discarded:
+        await _emit_progress(
+            on_progress,
+            {
+                "event_type": "stage_invalid_repair_seed_discarded",
+                "stage_id": stage_id,
+                "status": "running",
+                "artifact": artifact,
+                "user_message": f"已丢弃不可解析的 {artifact} 修复基线，将重新生成本阶段",
+            },
+        )
     queue_started = time.monotonic()
     try:
         acquired = await provider_capacity.acquire(
@@ -3336,6 +4103,12 @@ async def _execute_regular_stage(
                             quality_feedback=quality_feedback or {},
                             base_items=previous_items,
                         )
+                        if base_stage_id == "sfmea":
+                            rendered = _apply_sfmea_nonrisk_deletion_tombstones(
+                                rendered,
+                                quality_feedback=quality_feedback or {},
+                                base_items=previous_items,
+                            )
                         if not allow_new_repair_items:
                             missing_repair_rows = _missing_quality_repair_row_ids(
                                 rendered,
@@ -3354,6 +4127,11 @@ async def _execute_regular_stage(
                             rendered,
                             allowed_existing_row_ids=allowed_existing_repair_row_ids,
                             allow_new_items=allow_new_repair_items,
+                            immutable_fields=(
+                                {"test_dimension"}
+                                if base_stage_id == "black_box_cases"
+                                else None
+                            ),
                         )
                         if base_stage_id == "sfmea":
                             before_count = len(rendered)
@@ -3363,10 +4141,29 @@ async def _execute_regular_stage(
                                     "sfmea_semantic_duplicates_removed"
                                 )
 
+                rendered, stable_id_fields = _ensure_stable_stage_row_ids(
+                    rendered,
+                    base_stage_id,
+                )
+                deterministic_repair_fields.extend(stable_id_fields)
                 rendered = _canonicalize_technical_claim_evidence(
                     rendered,
                     claim_catalog,
                 )
+                if base_stage_id == "black_box_cases":
+                    rendered = _normalize_black_box_source_anchor_claims(rendered)
+                    rendered, oracle_fields = _normalize_black_box_oracle_contract(
+                        rendered
+                    )
+                    deterministic_repair_fields.extend(oracle_fields)
+                    rendered, dimension_fields = (
+                        _normalize_black_box_dimension_contract(rendered, stage)
+                    )
+                    deterministic_repair_fields.extend(dimension_fields)
+                    rendered, delivery_fields = (
+                        _normalize_black_box_delivery_contract(rendered)
+                    )
+                    deterministic_repair_fields.extend(delivery_fields)
                 rendered = _apply_regular_stage_output_limits(
                     rendered,
                     stage,
@@ -3452,6 +4249,12 @@ async def _execute_regular_stage(
                             quality_feedback=quality_feedback or {},
                             base_items=previous_items,
                         )
+                        if base_stage_id == "sfmea":
+                            rendered = _apply_sfmea_nonrisk_deletion_tombstones(
+                                rendered,
+                                quality_feedback=quality_feedback or {},
+                                base_items=previous_items,
+                            )
                         if not allow_new_repair_items:
                             missing_repair_rows = _missing_quality_repair_row_ids(
                                 rendered,
@@ -3467,6 +4270,11 @@ async def _execute_regular_stage(
                             rendered,
                             allowed_existing_row_ids=allowed_existing_repair_row_ids,
                             allow_new_items=allow_new_repair_items,
+                            immutable_fields=(
+                                {"test_dimension"}
+                                if base_stage_id == "black_box_cases"
+                                else None
+                            ),
                         )
                         if base_stage_id == "sfmea":
                             before_count = len(rendered)
@@ -3475,10 +4283,29 @@ async def _execute_regular_stage(
                                 deterministic_repair_fields.append(
                                     "sfmea_semantic_duplicates_removed"
                                 )
+                rendered, stable_id_fields = _ensure_stable_stage_row_ids(
+                    rendered,
+                    base_stage_id,
+                )
+                deterministic_repair_fields.extend(stable_id_fields)
                 rendered = _canonicalize_technical_claim_evidence(
                     rendered,
                     claim_catalog,
                 )
+                if base_stage_id == "black_box_cases":
+                    rendered = _normalize_black_box_source_anchor_claims(rendered)
+                    rendered, oracle_fields = _normalize_black_box_oracle_contract(
+                        rendered
+                    )
+                    deterministic_repair_fields.extend(oracle_fields)
+                    rendered, dimension_fields = (
+                        _normalize_black_box_dimension_contract(rendered, stage)
+                    )
+                    deterministic_repair_fields.extend(dimension_fields)
+                    rendered, delivery_fields = (
+                        _normalize_black_box_delivery_contract(rendered)
+                    )
+                    deterministic_repair_fields.extend(delivery_fields)
                 rendered = _apply_regular_stage_output_limits(
                     rendered,
                     stage,
@@ -3529,6 +4356,7 @@ async def _execute_regular_stage(
         else {}
     )
     if status == "completed" and isinstance(rendered, str) and artifact.endswith(".md"):
+        rendered = _canonicalize_verified_repo_path_mentions(rendered, source_pack)
         rendered, removed_unverified_paths = _finalize_combined_markdown_report(
             content=rendered,
             source_pack=source_pack,
@@ -4246,6 +5074,144 @@ def _finalize_combined_markdown_report(
     return finalized + "\n" + "\n".join(index_lines).rstrip() + "\n", removed
 
 
+def _canonicalize_verified_repo_path_mentions(
+    content: str,
+    source_pack: dict[str, Any],
+) -> str:
+    """Expand a unique source basename without guessing between duplicate files."""
+    paths = [
+        str(card.get("file_path") or "").strip().replace("\\", "/")
+        for card in source_pack.get("evidence_cards") or []
+        if isinstance(card, dict) and str(card.get("file_path") or "").strip()
+    ]
+    by_basename: dict[str, set[str]] = {}
+    ranges_by_basename: dict[str, list[tuple[str, int, int]]] = {}
+    for card in source_pack.get("evidence_cards") or []:
+        if not isinstance(card, dict):
+            continue
+        path = str(card.get("file_path") or "").strip().replace("\\", "/")
+        if not path:
+            continue
+        basename = Path(path).name
+        by_basename.setdefault(basename, set()).add(path)
+        start_line = int(card.get("start_line") or 0)
+        end_line = int(card.get("end_line") or 0)
+        if start_line > 0 and end_line >= start_line:
+            ranges_by_basename.setdefault(basename, []).append(
+                (path, start_line, end_line)
+            )
+    normalized = str(content or "")
+    for basename, candidates in sorted(
+        by_basename.items(),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    ):
+        prefixed_reference_pattern = re.compile(
+            rf"(?<![A-Za-z0-9_./-])"
+            rf"(?P<path>(?:[A-Za-z0-9_.-]+/)+{re.escape(basename)})"
+            r"(?P<suffix>:(?P<prefix>L?)(?P<start>\d+)"
+            r"(?P<range>-(?:L?)(?P<end>\d+))?)?"
+            r"(?![A-Za-z0-9_.-])"
+        )
+
+        def replace_prefixed_reference(match: re.Match[str]) -> str:
+            original_path = match.group("path")
+            if original_path in candidates:
+                return match.group(0)
+            matching_paths = set(candidates)
+            if match.group("start"):
+                start_line = int(match.group("start"))
+                end_line = int(match.group("end") or start_line)
+                matching_paths = {
+                    path
+                    for path, range_start, range_end in ranges_by_basename.get(
+                        basename, []
+                    )
+                    if range_start <= start_line <= range_end
+                    and range_start <= end_line <= range_end
+                }
+            elif len(matching_paths) > 1:
+                original_parts = original_path.split("/")
+
+                def path_similarity(path: str) -> int:
+                    candidate_parts = path.split("/")
+                    shared_suffix = 0
+                    for left, right in zip(
+                        reversed(original_parts), reversed(candidate_parts)
+                    ):
+                        if left != right:
+                            break
+                        shared_suffix += 1
+                    shared_prefix = 0
+                    for left, right in zip(original_parts, candidate_parts):
+                        if left != right:
+                            break
+                        shared_prefix += 1
+                    return (
+                        shared_suffix * 10
+                        + shared_prefix * 2
+                        - abs(len(original_parts) - len(candidate_parts))
+                    )
+
+                scored_paths = sorted(
+                    ((path_similarity(path), path) for path in matching_paths),
+                    reverse=True,
+                )
+                if (
+                    scored_paths
+                    and scored_paths[0][0] > 0
+                    and (
+                        len(scored_paths) == 1
+                        or scored_paths[0][0] > scored_paths[1][0]
+                    )
+                ):
+                    matching_paths = {scored_paths[0][1]}
+            if len(matching_paths) != 1:
+                return match.group(0)
+            return next(iter(matching_paths)) + str(match.group("suffix") or "")
+
+        normalized = prefixed_reference_pattern.sub(
+            replace_prefixed_reference,
+            normalized,
+        )
+        reference_pattern = re.compile(
+            rf"(?<![A-Za-z0-9_./-]){re.escape(basename)}:"
+            r"(?P<prefix>L?)(?P<start>\d+)"
+            r"(?P<range>-(?:L?)(?P<end>\d+))?"
+        )
+
+        def replace_ranged_reference(match: re.Match[str]) -> str:
+            start_line = int(match.group("start"))
+            end_line = int(match.group("end") or start_line)
+            matching_paths = {
+                path
+                for path, range_start, range_end in ranges_by_basename.get(
+                    basename, []
+                )
+                if range_start <= start_line <= range_end
+                and range_start <= end_line <= range_end
+            }
+            if len(matching_paths) != 1:
+                return match.group(0)
+            canonical = next(iter(matching_paths))
+            suffix = match.group(0)[len(basename):]
+            return canonical + suffix
+
+        normalized = reference_pattern.sub(replace_ranged_reference, normalized)
+        if len(candidates) != 1:
+            continue
+        canonical = next(iter(candidates))
+        if canonical == basename:
+            continue
+        normalized = re.sub(
+            rf"(?<![A-Za-z0-9_./-]){re.escape(basename)}"
+            r"(?![A-Za-z0-9_.-])",
+            canonical,
+            normalized,
+        )
+    return normalized
+
+
 def _extract_markdown_delivery_body(
     content: str,
     *,
@@ -4404,6 +5370,51 @@ def _canonicalize_technical_claim_evidence(
         for item in catalog
         if str(item.get("evidence_id") or "")
     }
+
+    def canonical_for(
+        evidence_id: str,
+        evidence: dict[str, Any] | None = None,
+    ) -> dict[str, str] | None:
+        exact = by_id.get(str(evidence_id or "").strip())
+        if exact is not None:
+            return exact
+        requested = {str(evidence_id or "").strip()}
+        by_requested_id = next(
+            (
+                item
+                for candidate_id, item in by_id.items()
+                if _requested_claim_evidence_matches(candidate_id, requested)
+            ),
+            None,
+        )
+        if by_requested_id is not None:
+            return by_requested_id
+        if not isinstance(evidence, dict):
+            return None
+        path = str(evidence.get("path") or "").strip()
+        quote = str(evidence.get("quote") or "").strip()
+        symbol = str(evidence.get("symbol") or "").strip()
+        candidates = [
+            item
+            for item in catalog
+            if path
+            and str(item.get("path") or "").strip() == path
+            and quote
+            and str(item.get("quote") or "").strip() == quote
+        ]
+        if len(candidates) == 1:
+            return dict(candidates[0])
+        if symbol:
+            symbol_candidates = [
+                item
+                for item in catalog
+                if path
+                and str(item.get("path") or "").strip() == path
+                and str(item.get("symbol") or "").strip() == symbol
+            ]
+            if len(symbol_candidates) == 1:
+                return dict(symbol_candidates[0])
+        return None
     if not isinstance(rendered, list):
         return rendered
     for row in rendered:
@@ -4419,7 +5430,9 @@ def _canonicalize_technical_claim_evidence(
                 if isinstance(claim, dict)
                 and any(
                     isinstance(evidence, dict)
-                    and str(evidence.get("evidence_id") or "") in by_id
+                    and canonical_for(
+                        str(evidence.get("evidence_id") or ""), evidence
+                    ) is not None
                     for evidence in claim.get("evidence") or []
                 )
             ),
@@ -4440,7 +5453,9 @@ def _canonicalize_technical_claim_evidence(
                     evidence
                     for evidence in evidence_items
                     if isinstance(evidence, dict)
-                    and str(evidence.get("evidence_id") or "") in by_id
+                    and canonical_for(
+                        str(evidence.get("evidence_id") or ""), evidence
+                    ) is not None
                 ),
                 next(
                     (
@@ -4458,10 +5473,201 @@ def _canonicalize_technical_claim_evidence(
             for index, evidence in enumerate(evidence_items):
                 if not isinstance(evidence, dict):
                     continue
-                canonical = by_id.get(str(evidence.get("evidence_id") or ""))
+                canonical = canonical_for(
+                    str(evidence.get("evidence_id") or ""), evidence
+                )
                 if canonical:
                     evidence_items[index] = dict(canonical)
     return rendered
+
+
+def _normalize_black_box_source_anchor_claims(rendered: Any) -> Any:
+    """Separate a test oracle from facts already established by source."""
+    if not isinstance(rendered, list):
+        return rendered
+    for row in rendered:
+        if not isinstance(row, dict):
+            continue
+        claims = row.get("technical_claims")
+        if not isinstance(claims, list) or not claims or not isinstance(claims[0], dict):
+            continue
+        claim = claims[0]
+        evidence = claim.get("evidence")
+        if not isinstance(evidence, list) or not evidence or not isinstance(evidence[0], dict):
+            continue
+        quote = str(evidence[0].get("quote") or "").strip()
+        if not quote:
+            continue
+        claim["type"] = "source_anchor"
+        claim["statement"] = quote
+        row["technical_claims"] = [claim]
+    return rendered
+
+
+def _normalize_black_box_delivery_contract(
+    rendered: Any,
+) -> tuple[Any, list[str]]:
+    """Keep test mappings and actions inside the external black-box contract."""
+    if not isinstance(rendered, list):
+        return rendered, []
+    normalized = json.loads(json.dumps(rendered, ensure_ascii=False))
+    fields: list[str] = []
+    for index, row in enumerate(normalized):
+        if not isinstance(row, dict):
+            continue
+        mapping = str(row.get("mapped_test_dir") or "").strip()
+        mapping_parts = [
+            part.lower()
+            for part in re.split(r"[/\\]", mapping.rstrip("/\\"))
+            if part
+        ]
+        explicit_unverified = mapping.startswith(
+            ("ai_suggested_unverified:", "ai_suggested_unverified：")
+        )
+        test_like = any(
+            part in {"test", "tests", "spec", "specs"}
+            for part in mapping_parts
+        )
+        if mapping and not explicit_unverified and not test_like:
+            scenario = str(
+                row.get("scenario_name") or row.get("case_id") or "该场景"
+            ).strip()
+            row["mapped_test_dir"] = (
+                f"ai_suggested_unverified: 为 {scenario} 新增外部黑盒测试"
+            )
+            fields.append(f"$[{index}].mapped_test_dir")
+        steps = row.get("steps")
+        if not isinstance(steps, list):
+            continue
+        for step_index, step in enumerate(steps):
+            text = str(step or "")
+            if not re.search(
+                r"(?i)unit\s*test(?:\s+candidate)?|单元测试(?:候选|用例)?",
+                text,
+            ):
+                continue
+            steps[step_index] = (
+                "若无法通过公开 CLI、协议报文或环境故障注入完成该操作，"
+                "将该用例标记为环境能力阻塞，并保留待补外部测试能力说明。"
+            )
+            fields.append(f"$[{index}].steps[{step_index}]")
+    return normalized, fields
+
+
+def _normalize_black_box_oracle_contract(
+    rendered: Any,
+) -> tuple[Any, list[str]]:
+    """Make variable test thresholds traceable without inventing numeric limits."""
+    if not isinstance(rendered, list):
+        return rendered, []
+    from app.services.test_activity_contract import black_box_oracle_basis_quality_gaps
+
+    normalized = json.loads(json.dumps(rendered, ensure_ascii=False))
+    fields: list[str] = []
+    traceable_supplements = {
+        "resource_pressure": (
+            "判据来源：运行前记录源码/配置公开的容量上限与环境配置；若项目未定义上限，"
+            "先建立同环境基线，不得预设固定数值。"
+        ),
+        "timeout": (
+            "判据来源：仅使用 CLI 帮助/手册、源码常量、用户配置或外部测试环境的超时配置；"
+            "未找到公开超时参数时由外部 harness 限时并明确区分。"
+        ),
+        "performance": (
+            "判据来源：同提交、同硬件、同网络配置的环境基线或已登记 SLO，"
+            "不得临时编造通过阈值。"
+        ),
+        "long_steady_state": (
+            "判据来源：持续时长和资源漂移阈值来自用户测试策略、项目 SLO 或同环境基线；"
+            "运行前登记，未登记则结果只报告观测值。"
+        ),
+        "resource_wraparound": (
+            "判据来源：边界值来自源码类型位宽、公开接口/配置范围或环境可验证上限；"
+            "无法通过外部接口安全注入时标记环境能力阻塞，不得改用内部函数冒充黑盒。"
+        ),
+    }
+    performance_sampling = (
+        "采样计划：预热 5 次，随后至少 30 次重复采样，报告 P50/P95、方差和失败率。"
+    )
+    for index, row in enumerate(normalized):
+        if not isinstance(row, dict):
+            continue
+        dimension = str(row.get("test_dimension") or "").strip().lower()
+        basis = str(row.get("oracle_basis") or "").strip()
+        unregistered_literal = bool(
+            dimension == "performance"
+            and re.search(r"(?i)\b\d+(?:\.\d+)?\s*%", basis)
+            or dimension == "long_steady_state"
+            and re.search(
+                r"(?i)\b\d+(?:\.\d+)?[- ]*(?:hours?|hrs?|days?)\b|\d+\s*(?:小时|天)",
+                basis,
+            )
+            or dimension == "resource_wraparound"
+            and re.search(
+                r"(?i)implementation[- ]defined|undefined behavior|wraparound behavior",
+                basis,
+            )
+        )
+        if unregistered_literal:
+            basis = ""
+        gaps = set(black_box_oracle_basis_quality_gaps({**row, "oracle_basis": basis}))
+        if not gaps and not unregistered_literal:
+            continue
+        additions: list[str] = []
+        if unregistered_literal or {
+            "missing_oracle_basis",
+            "oracle_basis_not_traceable",
+        } & gaps:
+            supplement = traceable_supplements.get(dimension)
+            if supplement:
+                additions.append(supplement)
+        if "missing_performance_sampling_plan" in gaps:
+            additions.append(performance_sampling)
+        if additions:
+            row["oracle_basis"] = " ".join(
+                value for value in [basis, *additions] if value
+            )
+            fields.append(f"$[{index}].oracle_basis")
+    return normalized, fields
+
+
+def _normalize_black_box_dimension_contract(
+    rendered: Any,
+    stage: dict[str, Any],
+) -> tuple[Any, list[str]]:
+    """Keep exactly one row for each declared black-box dimension."""
+    if not isinstance(rendered, list):
+        return rendered, []
+    output_contract = (
+        stage.get("output_contract")
+        if isinstance(stage.get("output_contract"), dict)
+        else {}
+    )
+    required = [
+        str(value).strip().lower()
+        for value in output_contract.get("required_dimensions") or []
+        if str(value).strip()
+    ]
+    if not required:
+        return rendered, []
+    allowed = set(required)
+    seen: set[str] = set()
+    normalized: list[Any] = []
+    fields: list[str] = []
+    for index, item in enumerate(rendered):
+        if not isinstance(item, dict):
+            normalized.append(item)
+            continue
+        dimension = str(item.get("test_dimension") or "").strip().lower()
+        if dimension not in allowed:
+            fields.append(f"$[{index}].test_dimension:noncontract_removed")
+            continue
+        if dimension in seen:
+            fields.append(f"$[{index}].test_dimension:duplicate_removed")
+            continue
+        seen.add(dimension)
+        normalized.append(item)
+    return normalized, fields
 
 
 def _apply_regular_stage_output_limits(
@@ -4634,19 +5840,22 @@ def _regular_stage_prompt(
     )
     claim_catalog = _build_verified_claim_catalog(source_pack)
     if scoped_quality_feedback and repair_evidence_ids:
-        repair_claim_catalog = _build_verified_claim_catalog(
+        exact_repair_claims = _build_verified_claim_catalog(
             source_pack,
             requested_evidence_ids=repair_evidence_ids,
         )
-        scoped_claim_catalog = [
-            item
-            for item in repair_claim_catalog
-            if _evidence_id_matches(
-                str(item.get("evidence_id") or ""),
-                repair_evidence_ids,
-            )
-        ]
-        claim_catalog = scoped_claim_catalog
+        contextual_claims = _build_verified_claim_catalog(
+            {"evidence_cards": repair_relevant_cards},
+            max_entries=64,
+        )
+        claim_catalog = []
+        seen_claim_ids: set[str] = set()
+        for item in [*exact_repair_claims, *contextual_claims]:
+            evidence_id = str(item.get("evidence_id") or "").strip()
+            if not evidence_id or evidence_id in seen_claim_ids:
+                continue
+            seen_claim_ids.add(evidence_id)
+            claim_catalog.append(item)
     source_bound_domain_facts = _source_bound_domain_facts(
         plan=plan,
         source_pack=source_pack,
@@ -4689,6 +5898,11 @@ def _regular_stage_prompt(
                 "- 没有证据支持的事实必须改写为证据缺口或测试假设，不能伪造 technical claim。",
             ]
         )
+    if base_stage_id == "black_box_cases":
+        rules.append(
+            "- 黑盒 expected_result、steps 和 observability 是待执行测试契约，不是当前源码事实；"
+            "technical_claims 只绑定一条已验证源码锚点，系统会将 statement 固化为对应 quote。"
+        )
     schema = output_contract.get("schema") if isinstance(output_contract, dict) else None
     is_array_quality_patch = bool(
         current_artifact_seed.strip()
@@ -4705,6 +5919,33 @@ def _regular_stage_prompt(
         for issue in (scoped_quality_feedback or {}).get("issues") or []
         if isinstance(issue, dict)
     }
+    if quality_issue_codes.intersection(
+        {
+            "non_risk_sfmea_row",
+            "absence_of_evidence_as_defect",
+            "test_harness_risk_as_product_risk",
+        }
+    ):
+        rules.extend(
+            [
+                "- SFMEA 修复不能把错误行改写成‘当前源码不支持、待验证、未见缺陷’后继续保留；"
+                "若当前证据中存在已验证产品风险，沿用原 sfmea_id，用产品实现中的分支、状态、"
+                "返回值或资源生命周期完整替换；若不存在可验证替代风险，只返回"
+                "{\"sfmea_id\": \"原ID\", \"_delete\": true} 删除该行，不得为了数量补造。",
+                "- ‘片段未显示校验/清理’只代表证据缺口，不是 failure mode 或 cause；"
+                "替换后的 technical_claim 必须由当前证据逐字支持。",
+                "- failure_mode 必须描述产品偏离预期的行为，例如错误输入被接受、错误未传播、"
+                "资源未释放或重复释放、失败后继续推进、重试无法停止；不得描述正常拒绝、"
+                "安全释放、当前没有缺陷、未来可能或单纯证据缺口。",
+                "- 若原行属于正常行为、证据缺口或测试辅助代码问题，且没有已验证的产品源码"
+                "异常分支可替换，必须使用 _delete 墓碑删除；不得把正常行为包装成风险。",
+            ]
+        )
+    if "non_actionable_mitigation" in quality_issue_codes:
+        rules.append(
+            "- mitigation 必须逐字采用‘整改: <生产代码/配置/运行时动作>。"
+            "验证: <故障注入、测试或监控动作>’结构；只新增测试、检查日志或继续分析不算整改。"
+        )
     if is_array_quality_patch:
         rules.extend(
             [
@@ -4736,6 +5977,7 @@ def _regular_stage_prompt(
         rules.extend(
             [
                 "- 独立审计器判定为 contradicted 的语句必须从对应字段中删除或按审计给出的源码真值重写；保留该行未被否定的字段，不能通过删除整行规避修复。不能仅添加“待验证”、‘可能’或括号说明后继续保留相反结论。",
+                "- 若审计 reason 已明确指出源码中的真实缺陷、资源泄漏点、错误分支或正确行为，必须把 reason 与其证据视为修复真值；对 SFMEA 应沿用原 sfmea_id，将原来的错误假设替换成该真实失效模式，并据此重写 cause、effect、detection、评分、mitigation 和 technical_claim。",
                 "- 场景前提本身与源码相反时，必须重构为同一测试维度下真实可执行的场景；不得把不可能的操作继续放在 steps、expected_result 或 observability。",
             ]
         )
@@ -4906,6 +6148,12 @@ def _quality_repair_prompt_seed(
     if not row_ids:
         return seed[:60_000]
     rows = _json_array_items(seed)
+    rows = _apply_quality_feedback_field_patches(
+        rows,
+        artifact=artifact,
+        quality_feedback=quality_feedback,
+        base_items=rows,
+    )
     selected = [
         row
         for row in rows
@@ -5532,6 +6780,41 @@ def _deterministic_schema_repair(
     return repaired, fields
 
 
+def _ensure_stable_stage_row_ids(
+    payload: Any,
+    stage_id: str,
+) -> tuple[Any, list[str]]:
+    """Assign deterministic IDs before row-scoped quality repair can run."""
+    if not isinstance(payload, list):
+        return payload, []
+    base_stage_id = str(stage_id or "").split("__", 1)[0]
+    if base_stage_id == "sfmea":
+        id_field, prefix = "sfmea_id", "SFMEA"
+    elif base_stage_id == "black_box_cases":
+        id_field, prefix = "case_id", "BB"
+    else:
+        return payload, []
+    normalized = json.loads(json.dumps(payload, ensure_ascii=False))
+    fields: list[str] = []
+    used = {
+        str(item.get(id_field) or "").strip()
+        for item in normalized
+        if isinstance(item, dict) and str(item.get(id_field) or "").strip()
+    }
+    for index, item in enumerate(normalized, start=1):
+        if not isinstance(item, dict) or str(item.get(id_field) or "").strip():
+            continue
+        candidate_number = index
+        candidate = f"{prefix}-{candidate_number:03d}"
+        while candidate in used:
+            candidate_number += 1
+            candidate = f"{prefix}-{candidate_number:03d}"
+        item[id_field] = candidate
+        used.add(candidate)
+        fields.append(f"$[{index - 1}].{id_field}")
+    return normalized, fields
+
+
 def _deterministic_quality_claim_repair(
     payload: Any,
     *,
@@ -5840,7 +7123,7 @@ def _apply_quality_feedback_field_patches(
             "observability",
             "failure_diagnostics",
             "mapped_test_dir",
-            "test_dimension",
+            "oracle_basis",
         }
     else:
         return list(rendered)
@@ -5894,6 +7177,104 @@ def _apply_quality_feedback_field_patches(
     return result
 
 
+def _apply_sfmea_nonrisk_deletion_tombstones(
+    rendered: list[Any],
+    *,
+    quality_feedback: dict[str, Any],
+    base_items: list[Any],
+) -> list[Any]:
+    """Turn independently disproved SFMEA rows into deterministic deletions."""
+    unconditional_deletion_codes = {
+        "absence_of_evidence_as_defect",
+        "non_risk_sfmea_row",
+        "test_harness_risk_as_product_risk",
+    }
+    contradiction_codes = {
+        "behavior_claim_contradicted",
+        "source_claim_contradicted",
+    }
+    insufficient_codes = {
+        "behavior_claim_insufficient",
+        "source_claim_insufficient",
+    }
+    base_ids = {
+        _json_array_row_id(item)
+        for item in base_items
+        if _json_array_row_id(item)
+    }
+    issues_by_row: dict[str, list[dict[str, Any]]] = {}
+    for issue in quality_feedback.get("issues") or []:
+        if not isinstance(issue, dict):
+            continue
+        if Path(str(issue.get("artifact") or "")).name != "sfmea.json":
+            continue
+        row_id = str(
+            issue.get("row_id")
+            or issue.get("sfmea_id")
+            or issue.get("risk_id")
+            or ""
+        ).strip()
+        if not row_id:
+            claim_id = str(issue.get("claim_id") or "").strip()
+            prefix = "ROW:sfmea.json:"
+            if claim_id.startswith(prefix):
+                row_id = claim_id[len(prefix) :].strip()
+            elif re.match(r"^SFMEA-[A-Za-z0-9_-]+:", claim_id):
+                row_id = claim_id.split(":", 1)[0]
+        if row_id in base_ids:
+            issues_by_row.setdefault(row_id, []).append(issue)
+
+    deletion_ids: set[str] = set()
+    nonrisk_markers = re.compile(
+        r"(?:删除(?:该|此)?.{0,12}(?:SFMEA|行)|当前源码未|给定源码不支持|"
+        r"未从.{0,24}发现|不属于失效|不应作为失效|正常(?:保护|拒绝|释放|行为)|"
+        r"无需.{0,16}整改|不是.{0,12}(?:泄漏|缺陷|故障)|"
+        r"\b(?:no defect|not a failure|does not show|no evidence)\b)",
+        re.IGNORECASE,
+    )
+    for row_id, issues in issues_by_row.items():
+        codes = {str(issue.get("code") or "").strip() for issue in issues}
+        if codes & unconditional_deletion_codes:
+            deletion_ids.add(row_id)
+            continue
+        if not codes & (contradiction_codes | insufficient_codes):
+            continue
+        field_patches = [
+            issue.get("field_patch")
+            for issue in issues
+            if isinstance(issue.get("field_patch"), dict)
+        ]
+        has_verified_risk_replacement = False
+        has_explicit_nonrisk_replacement = False
+        for field_patch in field_patches:
+            risk_claim = " ".join(
+                str(field_patch.get(key) or "")
+                for key in ("failure_mode", "cause", "effect")
+            ).strip()
+            if risk_claim and nonrisk_markers.search(risk_claim):
+                has_explicit_nonrisk_replacement = True
+            elif risk_claim:
+                has_verified_risk_replacement = True
+                break
+        if has_explicit_nonrisk_replacement or (
+            codes & contradiction_codes and not has_verified_risk_replacement
+        ):
+            deletion_ids.add(row_id)
+    if not deletion_ids:
+        return list(rendered)
+
+    result = [
+        item
+        for item in rendered
+        if _json_array_row_id(item) not in deletion_ids
+    ]
+    for item in base_items:
+        row_id = _json_array_row_id(item)
+        if row_id in deletion_ids:
+            result.append({"sfmea_id": row_id, "_delete": True})
+    return result
+
+
 def _json_array_row_id(item: Any) -> str:
     if not isinstance(item, dict):
         return ""
@@ -5912,9 +7293,11 @@ def _merge_json_array_patch(
     *,
     allowed_existing_row_ids: set[str] | None = None,
     allow_new_items: bool = True,
+    immutable_fields: set[str] | None = None,
 ) -> list[Any]:
     """Apply array row patches without reordering or dropping accepted rows."""
     patches_by_identity: dict[str, Any] = {}
+    deleted_identities: set[str] = set()
     new_items: list[Any] = []
     new_identities: set[str] = set()
     previous_identities = {
@@ -5938,6 +7321,9 @@ def _merge_json_array_patch(
                 and row_id not in allowed_existing_row_ids
             ):
                 continue
+            if isinstance(item, dict) and item.get("_delete") is True:
+                deleted_identities.add(identity)
+                continue
             patches_by_identity[identity] = item
         elif allow_new_items and identity not in new_identities:
             new_identities.add(identity)
@@ -5946,9 +7332,17 @@ def _merge_json_array_patch(
     merged: list[Any] = []
     for item in previous:
         identity = _json_array_item_identity(item)
+        if identity in deleted_identities:
+            continue
         replacement = patches_by_identity.get(identity)
         if isinstance(item, dict) and isinstance(replacement, dict):
-            merged.append({**item, **replacement})
+            normalized_replacement = dict(replacement)
+            for field in immutable_fields or set():
+                if field in item:
+                    normalized_replacement[field] = item[field]
+                else:
+                    normalized_replacement.pop(field, None)
+            merged.append({**item, **normalized_replacement})
         elif replacement is not None:
             merged.append(replacement)
         else:
@@ -6093,6 +7487,7 @@ async def _execute_source_analysis_stage(
                 max_files=effective["max_files"],
                 excerpt_chars=effective["excerpt_chars"],
                 max_evidence_anchors=effective["max_evidence_anchors"],
+                min_test_files=effective["min_test_files"],
             ),
             timeout=max(0.001, context_timeout),
         )
@@ -6104,6 +7499,7 @@ async def _execute_source_analysis_stage(
             max_files=effective["max_files"],
             excerpt_chars=effective["excerpt_chars"],
             max_evidence_anchors=effective["max_evidence_anchors"],
+            min_test_files=effective["min_test_files"],
         )
     context_prepare_ms = round((time.monotonic() - context_started) * 1000, 1)
     _write_json(stage_dir / "source_analysis_context.json", compact)
@@ -6669,6 +8065,7 @@ def _source_analysis_limits(overrides: dict[str, Any] | None) -> dict[str, Any]:
         "max_chinese_characters": settings.source_analysis_max_chinese_characters,
         "max_evidence_anchors": settings.source_analysis_max_evidence_anchors,
         "max_files": settings.source_analysis_max_files,
+        "min_test_files": settings.source_analysis_min_test_files,
         "excerpt_chars": settings.source_analysis_excerpt_chars,
         "context_timeout_seconds": settings.source_analysis_context_timeout_seconds,
         "timeout_seconds": settings.source_analysis_timeout_seconds,
@@ -7016,6 +8413,14 @@ def _render_stage_artifact(content: str, artifact: str) -> Any:
     raise RuntimeError(f"阶段交付文件 {artifact} 不是有效 JSON")
 
 
+def _is_valid_json_artifact_seed(content: str, artifact: str) -> bool:
+    try:
+        _render_stage_artifact(content, artifact)
+    except (RuntimeError, TypeError, ValueError, json.JSONDecodeError):
+        return False
+    return True
+
+
 async def _emit_progress(callback: ProgressCallback | None, payload: dict[str, Any]) -> None:
     if callback is None:
         return
@@ -7076,9 +8481,13 @@ def _stage_purpose(stage_id: str) -> str:
     return {
         "business_flow": "基于源码证据梳理外部触发、主流程、异常恢复和观测点",
         "sfmea": "基于已验收流程生成可追踪、可评分、可转测试的 SFMEA",
-        "black_box_cases": "生成只使用外部输入与观测点的八维黑盒测试用例",
+        "black_box_cases": "生成只使用外部输入与观测点的十二维黑盒测试用例",
         "test_strategy": "形成范围、风险、资源、优先级和准入准出策略",
         "test_design": "聚合证据、流程、风险和用例形成可执行测试设计",
+        "test_design_mindmap": (
+            "把已验证证据、主流程、异常分支、资源生命周期、并发风险和黑盒用例"
+            "组织成可追踪的测试设计脑图"
+        ),
         "coverage_gap": "识别入口、覆盖缺口和补充测试建议",
         "risk_review": "复核高风险、证据缺口和未验证建议",
         "execution_checklist": "形成环境、数据、步骤、观测和复跑检查清单",
@@ -7096,6 +8505,7 @@ def _stage_execution_limits(stage_id: str) -> dict[str, Any]:
         ),
         "sfmea": (5500, {"max_items": 10, "max_field_characters": 180}),
         "black_box_cases": (6000, {"max_items": 12, "max_field_characters": 180}),
+        "test_design_mindmap": (3500, {"max_chinese_characters": 3200}),
     }.get(base_stage_id)
     if limits is None:
         return {}
@@ -7112,26 +8522,67 @@ def _stage_format_rules(stage_id: str, artifact: str) -> list[str]:
             "每张卡至少提供一个真实的 file-local symbol；每个 symbol 必须逐字出现在对应 "
             "file_path，跨文件定义必须填写真正的定义文件。"
         ),
+        "module_map": (
+            "- 每个模块职责、入口、调用关系和内核接口结论必须引用当前证据包中的 evidence_id；"
+            "不得把测试辅助代码、日志读取或 ioctl 测试误写成生产 connect 提交路径。"
+            "证据未覆盖实现时必须写入证据缺口，不得根据文件名或声明推断。"
+        ),
         "business_flow": (
             "- 只写流程和证据引用，不要写 SFMEA 表或测试用例；"
             "必须使用四个独立二级标题：## 外部触发、## 流程步骤、## 异常分支、## 观测点；"
-            "至少引用一个真实源码路径和一个真实测试路径。"
+            "至少引用一个真实源码路径和一个真实测试路径。每个流程步骤、异常传播、清理和恢复"
+            "结论都必须绑定 evidence_id；缺少 discovery 到 connect、内核提交、认证/TLS、回滚或"
+            "重连证据时必须明确列为缺口，不得声称完整链路。"
         ),
         "sfmea": (
             "- 只返回最高风险 SFMEA JSON 数组；每条必须明确源码机制、触发条件、"
             "局部/上游/下游/最终影响、潜伏性、现有控制、控制缺口、恢复验证、"
             "评分依据、mitigation 和源码/测试映射；每条 mitigation 必须同时写明"
-            "具体整改和可执行的测试或监控验证动作。"
+            "具体整改和可执行的测试或监控验证动作，并使用"
+            "‘整改: <生产代码/配置/运行时动作>。验证: <故障注入、测试或监控动作>’结构。\n"
+            "- technical_claims.statement 只能陈述依赖证据逐字支持的当前行为；failure_mode 和 cause "
+            "必须用‘若/当/可能’表达假设性失效。不得把风险假设写成已存在的代码缺陷，"
+            "除非引用片段本身能够直接证明该缺陷。不得用‘片段未显示、未见校验、未见清理’"
+            "作为缺陷证据；声明文件只能证明接口，不能证明实现中的校验、并发或资源清理行为；"
+            "测试辅助代码的问题不得冒充被测产品风险。正常拒绝、安全释放、返回预期错误、"
+            "当前没有缺陷或仅需补测试都不是可评分失效模式，禁止为凑条目保留。"
+            "module、source_evidence 与 technical_claims 必须指向同一路径和函数，并共同支持该行语义。"
+            "相同 failure mode、cause 和 effect 不得重复，同一根因或同一错误分支不得拆成多条；"
+            "每条风险必须锚定已验证实现中的不同分支、状态迁移、返回值或资源生命周期。"
         ),
         "black_box_cases": (
             "- 只返回黑盒用例 JSON 数组；条目数量以当前 OUTPUT_SCHEMA 和输出上限为准；"
             "每条必须通过 risk_ids 显式引用现有 SFMEA ID，所有高 RPN 风险必须至少映射一条用例；"
             "test_dimension 必须覆盖且逐字使用 "
             "normal_path、invalid_input、resource_pressure、timeout、reconnect、concurrency、"
-            "recovery、performance 八个值，每个至少一条；步骤只能使用外部操作和可观测结果。\n"
+            "recovery、performance、long_steady_state、resource_wraparound、resource_cleanup、"
+            "upstream_error_propagation 十二个值，每个恰好一条；步骤只能使用外部操作和可观测结果。\n"
+            "- 命令行选项、sysfs 路径、日志字面量和状态值必须来自已验证证据或输入材料；"
+            "证据不足时写明待环境确认，不得猜测。不得编造性能阈值，性能用例应要求先建立基线并"
+            "报告分位数或退化比例；预期结果必须唯一可判定，不得使用‘可能成功或失败’。"
+            "resource_pressure、timeout、performance、long_steady_state、resource_wraparound 必须填写 "
+            "oracle_basis，说明阈值/时长来自源码常量、用户配置、协议规范或同环境基线；performance "
+            "还必须包含预热次数、至少 30 次重复、P50/P95 和方差。\n"
+            "- 质量修复必须保持既有 case_id 的 test_dimension 不变；resource_wraparound 只能通过"
+            "公开 CLI、sysfs、配置或外部故障注入观测边界，禁止 mock/调用 libnvme 或 libnvmf 内部函数；"
+            "若环境没有安全的外部边界注入能力，应把该能力写成前置条件和 Blocked 判据。"
+            "upstream_error_propagation 必须从目标端、网络、配置文件或公开 CLI 注入上游错误，"
+            "并以 CLI 退出码、stdout/stderr、控制器状态或日志证明错误是否被覆盖，不得改成内部单元测试。\n"
             "- 如果包含 MCS/MaxConnections 容量用例，前置条件必须逐字给出 target 启动前命令 "
             "`scripts/rpc.py iscsi_set_options -c 1`；不得写成 "
             "`-c MaxConnectionsPerSession=1`，也不得用客户端连接参数代替。"
+        ),
+        "test_strategy": (
+            "- 只能根据当前已验证证据与已生成用例声明覆盖状态；仍有证据缺口、待补场景或未执行"
+            "用例时，禁止写‘完整覆盖’或同义结论。环境版本、命令、服务名、日志原文和阈值必须"
+            "来自输入材料、源码/文档证据或标记为待环境确认，不得自行猜测。"
+        ),
+        "test_design_mindmap": (
+            "- 输出可直接渲染的 Markdown Mermaid mindmap；根节点使用分析对象，一级分支必须包含"
+            "目标、输入、源码证据、业务流程、SFMEA、黑盒用例、观测点、剩余风险；"
+            "业务流程下继续展开正常流程、异常传播、边界与翻转、资源生命周期、并发与恢复；"
+            "源码证据必须包含真实源码路径和测试路径；风险节点引用 SFMEA ID，用例节点引用 case_id，"
+            "事实节点引用 evidence_id；不得补写依赖产物之外的源码事实。"
         ),
     }
     rule = rules.get(base_stage_id)

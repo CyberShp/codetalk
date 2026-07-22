@@ -6454,6 +6454,46 @@ class TestAgentRuntimes:
         assert result["success"] is False
         assert "隔离环境无法读取登录状态" in result["message"]
 
+    async def test_codex_probe_requires_a_real_model_round_trip(self, monkeypatch):
+        from app.services import agent_cli_bridge
+
+        class FakeProbeProcess:
+            returncode = 0
+
+            async def communicate(self):
+                return b"codex-cli 0.test", b""
+
+        async def fake_create_subprocess_exec(*_args, **_kwargs):
+            return FakeProbeProcess()
+
+        async def fake_readiness_probe(**kwargs):
+            assert kwargs["command"].endswith("codex")
+            return {
+                "success": False,
+                "message": "Codex 可启动，但当前模型不受本机 CLI 支持。",
+            }
+
+        monkeypatch.setattr(
+            agent_cli_bridge.asyncio,
+            "create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+        monkeypatch.setattr(
+            agent_cli_bridge,
+            "_probe_codex_model_in_runtime_sandbox",
+            fake_readiness_probe,
+        )
+
+        result = await agent_cli_bridge.probe_agent_runtime({
+            "command": "/usr/local/bin/codex",
+            "prompt_transport": "codex_exec_json",
+        })
+
+        assert result == {
+            "success": False,
+            "message": "Codex 可启动，但当前模型不受本机 CLI 支持。",
+        }
+
     @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group assertion")
     async def test_cancelled_runtime_probe_terminates_its_process_group(self, monkeypatch):
         from app.services import agent_cli_bridge

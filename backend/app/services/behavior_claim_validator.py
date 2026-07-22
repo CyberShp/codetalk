@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
+import re
 import shutil
 import time
 from pathlib import Path
@@ -38,6 +40,7 @@ _FIELD_PATCH_ALLOWLIST = {
         "failure_diagnostics",
         "mapped_test_dir",
         "test_dimension",
+        "oracle_basis",
     },
 }
 
@@ -47,14 +50,23 @@ def build_behavior_claim_audit_prompt(request: dict[str, Any]) -> str:
         [
             "你是独立、只读的源码事实审计器。生成模型无权影响你的判断。",
             "逐条判断 claim 是否被给定源码上下文支持。只允许三种状态：",
-            "- supports：源码直接支持完整陈述；",
-            "- contradicts：源码与陈述相反；",
+            "- supports：源码直接支持陈述；",
+            "- contradicts：源码与陈述相反，或遗漏的关键条件会反转陈述含义；",
             "- insufficient：上下文不足，或陈述混合了已证实与未证实内容。",
             "禁止因为文件、符号或 quote 真实就推断整条 claim 为真。",
+            "不得把准确的局部源码事实误判为 contradicts：若 quote 直接展示该赋值、调用、返回或释放，"
+            "外围 guard、调用者或后续分支没有改变该局部事实时，应判 supports。准确的常用语义概括"
+            "（例如 rejects、frees、returns a negative error）也应支持；日志文字同样允许保持对象与信息内容的"
+            "同义概括，不要求逐字复述 format string。只有概括与源码值、对象或条件冲突时才阻断。",
+            "每个 claim 的 evidence_bindings 给出经哈希绑定的 symbol、行号和 quote。symbol 是该代码片段"
+            "所属函数/声明的权威名称；即使截取上下文未包含声明行，也不得把这个函数内的 return/assignment"
+            "误归属到调用者。",
             "按 claim.type 分层判断，不要用同一条 source-entailment 规则处理所有字段。",
             "source_behavior：完整陈述必须被源码直接支持，否则为 contradicts 或 insufficient。",
             "sfmea_row_behavior：failure_mode、cause、effect、detection 中的实现事实必须被源码支持；mitigation 是建议动作，只检查是否具体、可执行、可验证，不要要求建议动作已经存在于源码；test_mapping 是候选落点，只检查路径真实且场景相关，除非陈述明确声称现有测试已经覆盖。",
-            "black_box_case_behavior：核对外部步骤是否可执行、expected_result 与 observability 中的实现事实是否有源码依据、诊断线索是否可行动；test_mapping 是候选落点，不自动等价于已有覆盖。",
+            "SFMEA 行若只描述正常保护行为或测试覆盖缺口，或者只描述预期错误返回、构建配置差异，必须判 contradicts；这些不是可评分失效模式。",
+            "black_box_case_behavior：核对外部步骤是否可执行、expected_result 与 observability 中的实现事实是否有源码依据、诊断线索是否可行动；必须核对命令行选项的真实语义，不得把重连期限、初始连接超时或其他参数角色混淆；test_mapping 是候选落点，不自动等价于已有覆盖。",
+            "对资源上限、超时、长稳态、计数翻转和性能阈值，必须检查 oracle_basis 是否来自源码常量、真实配置、规范或同环境基线；性能还必须有预热、重复采样和 P50/P95。没有依据时判 insufficient，依据与源码冲突时判 contradicts。",
             "如果一行混合了已证实事实和错误事实，判 contradicts；只有确实缺少必要上下文时才判 insufficient。",
             "必要时可在当前只读仓库中用 rg/git grep 阅读引用函数及邻近调用方；不得修改文件。",
             "不要修改仓库或报告文件；你的任务是给出三值判断，并为错误行提供最小字段修正建议。",
@@ -124,8 +136,29 @@ def normalize_behavior_claim_verdicts(
         elif not reason:
             reason = "独立审计器未给出可核查理由"
             status = "insufficient"
+        elif _verdict_reason_explicitly_confirms_support(
+            status=status,
+            reason=reason,
+            field_patch=field_patch,
+        ):
+            # Some providers occasionally emit an internally inconsistent JSON
+            # verdict: `contradicts` with a final conclusion that the claim is
+            # supported and no corrective patch.  Preserve a real negative
+            # verdict whenever it proposes a patch; otherwise trust its explicit
+            # conclusion rather than blocking a source-backed deliverable.
+            status = "supports"
+            reason = f"审计器状态自相矛盾，按其最终结论归一化为支持：{reason}"
         if status == "supports":
             field_patch = {}
+        elif (
+            str(requested.get("type") or "") == "black_box_case_behavior"
+            and "oracle_basis" not in field_patch
+        ):
+            field_patch["oracle_basis"] = (
+                "判据以运行前登记的公开配置、命令退出码、stderr、日志及资源状态"
+                "前后差异为准；当前源码证据不足的结果标记为待验证，不预设具体错误码、"
+                "恢复或清理结论。"
+            )
         normalized.append(
             {
                 "claim_id": claim_id,
@@ -161,6 +194,21 @@ def _request_coverage_fields(request: dict[str, Any]) -> dict[str, Any]:
         "requested_count": requested_count,
         "truncated": bool(request.get("truncated")) or candidate_count > requested_count,
     }
+
+
+def _verdict_reason_explicitly_confirms_support(
+    *, status: str, reason: str, field_patch: dict[str, Any]
+) -> bool:
+    if status != "contradicts" or field_patch:
+        return False
+    normalized = " ".join(str(reason or "").strip().lower().split())
+    return bool(
+        re.search(
+            r"(?:the )?(?:claim|statement|assertion) is (?:fully )?supported\.?$"
+            r"|(?:changing|change) to supports\.?$",
+            normalized,
+        )
+    )
 
 
 def partition_behavior_claim_request(
@@ -205,6 +253,7 @@ async def materialize_behavior_claim_validation(
     request: dict[str, Any] | None = None,
     runtime_loader: Callable[[str], dict[str, Any] | None] = get_agent_runtime_sync,
     streamer: Callable[..., AsyncIterator[str]] = stream_agent_runtime,
+    llm_factory: Callable[[], Any] | None = None,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
     timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
@@ -245,22 +294,30 @@ async def materialize_behavior_claim_validation(
         )
         return {**existing, "reused": True}
 
-    runtime_id = str(settings.behavior_claim_audit_runtime_id or "default-codex")
-    runtime = runtime_loader(runtime_id)
+    configured_runtime_id = str(settings.behavior_claim_audit_runtime_id or "auto")
+    generator_key = str(generator_identity or "").strip().lower()
+    use_builtin_llm = configured_runtime_id == "auto" and "codex" in generator_key
+    runtime_id = "active-chat-model" if use_builtin_llm else (
+        "default-codex" if configured_runtime_id == "auto" else configured_runtime_id
+    )
+    runtime = None if use_builtin_llm else runtime_loader(runtime_id)
+    runtime_provider = str((runtime or {}).get("provider") or "").strip().lower()
+    if runtime_provider and runtime_provider in generator_key and "codex" in generator_key:
+        use_builtin_llm = True
+        runtime_id = "active-chat-model"
+        runtime = None
+        runtime_provider = "builtin-llm"
     validator = {
-        "provider": str((runtime or {}).get("provider") or ""),
+        "provider": "builtin-llm" if use_builtin_llm else runtime_provider,
         "runtime_id": runtime_id,
-        "model": str(settings.behavior_claim_audit_model or ""),
-        "reasoning_effort": str(settings.behavior_claim_audit_reasoning_effort or ""),
+        "model": "active-chat-model" if use_builtin_llm else str(settings.behavior_claim_audit_model or ""),
+        "reasoning_effort": "provider-default" if use_builtin_llm else str(settings.behavior_claim_audit_reasoning_effort or ""),
         "generator_identity": str(generator_identity or ""),
-        "independent": bool(
-            runtime
-            and str((runtime or {}).get("provider") or "").strip()
-            and str((runtime or {}).get("provider") or "").strip().lower()
-            not in str(generator_identity or "").strip().lower()
-        ),
+        "independent": bool(use_builtin_llm or (runtime_provider and runtime_provider not in generator_key)),
     }
-    if not settings.behavior_claim_audit_enabled or not runtime or not runtime.get("enabled", True):
+    if not settings.behavior_claim_audit_enabled or (
+        not use_builtin_llm and (not runtime or not runtime.get("enabled", True))
+    ):
         return _write_unavailable_validation(
             output_path=output_path,
             request=request_payload,
@@ -331,7 +388,24 @@ async def materialize_behavior_claim_validation(
         pending_claims,
     )
 
-    runtime = _audit_runtime(runtime, artifact_dir=root)
+    llm_client = None
+    if use_builtin_llm:
+        try:
+            if llm_factory is None:
+                from app.llm.factory import create_llm_client_from_active
+
+                llm_factory = create_llm_client_from_active
+            created = llm_factory()
+            llm_client = await created if inspect.isawaitable(created) else created
+        except (OSError, RuntimeError, ValueError) as exc:
+            return _write_unavailable_validation(
+                output_path=output_path,
+                request=request_payload,
+                validator=validator,
+                reason=f"无法创建独立内置模型审计器：{type(exc).__name__}: {exc}",
+            )
+    else:
+        runtime = _audit_runtime(runtime or {}, artifact_dir=root)
     diagnostics_dir = root / "behavior_claim_audit"
     diagnostics_dir.mkdir(parents=True, exist_ok=True)
     reset_behavior_claim_audit_diagnostics(diagnostics_dir)
@@ -381,6 +455,7 @@ async def materialize_behavior_claim_validation(
                 runtime=runtime,
                 validator=validator,
                 streamer=streamer,
+                llm_client=llm_client,
                 repo_path=str(Path(repo_path)),
                 diagnostics_dir=diagnostics_dir,
                 semaphore=semaphore,
@@ -394,21 +469,54 @@ async def materialize_behavior_claim_validation(
             effective_timeout_seconds,
             max(0.001, float(timeout_seconds)),
         )
+    done: set[asyncio.Task[dict[str, Any]]] = set()
+    pending: set[asyncio.Task[dict[str, Any]]] = set(tasks)
+    heartbeat_seconds = float(settings.behavior_claim_audit_heartbeat_seconds)
+    deadline = started + effective_timeout_seconds
+    next_heartbeat = started + heartbeat_seconds
     try:
-        done, pending = await asyncio.wait(
-            tasks,
-            timeout=effective_timeout_seconds,
-        )
+        while pending:
+            now = time.monotonic()
+            remaining = deadline - now
+            if remaining <= 0:
+                break
+            completed, pending = await asyncio.wait(
+                pending,
+                timeout=min(remaining, max(0.001, next_heartbeat - now)),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            done.update(completed)
+            now = time.monotonic()
+            if pending and now >= next_heartbeat:
+                _notify_progress(
+                    on_progress,
+                    {
+                        "kind": "stage_heartbeat",
+                        "stage_id": "behavior_claim_validation",
+                        "status": "running",
+                        "claim_count": len(pending_claims),
+                        "pending_batch_count": len(pending),
+                        "elapsed_ms": round((now - started) * 1000, 1),
+                        "model": str(settings.behavior_claim_audit_model or ""),
+                        "user_message": (
+                            "事实核验仍在进行，"
+                            f"剩余 {len(pending)} 个审计批次"
+                        ),
+                    },
+                )
+                next_heartbeat = now + heartbeat_seconds
     except asyncio.CancelledError:
         for task in tasks:
             if not task.done():
                 task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await _close_llm_client(llm_client)
         raise
     for task in pending:
         task.cancel()
     if pending:
         await asyncio.gather(*pending, return_exceptions=True)
+    await _close_llm_client(llm_client)
     batch_results: list[dict[str, Any]] = []
     for index, (task, batch) in enumerate(zip(tasks, batches), start=1):
         if task in done:
@@ -560,9 +668,10 @@ async def _validate_behavior_claim_batch(
     *,
     index: int,
     request: dict[str, Any],
-    runtime: dict[str, Any],
+    runtime: dict[str, Any] | None,
     validator: dict[str, Any],
     streamer: Callable[..., AsyncIterator[str]],
+    llm_client: Any | None,
     repo_path: str,
     diagnostics_dir: Path,
     semaphore: asyncio.Semaphore,
@@ -572,25 +681,45 @@ async def _validate_behavior_claim_batch(
     prompt = build_behavior_claim_audit_prompt(request)
     _write_json(batch_dir / "request.json", request)
     (batch_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
-    batch_runtime = {**runtime, "env": dict(runtime.get("env") or {})}
     runtime_dir = (batch_dir / "runtime").resolve()
-    batch_runtime["env"]["CODETALK_AGENT_ARTIFACT_DIR"] = str(runtime_dir)
-    try:
-        async with semaphore:
+    async with semaphore:
+        if llm_client is not None:
+            response = await llm_client.complete_once(
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=int(settings.behavior_claim_audit_max_tokens),
+                temperature=0.0,
+            )
+            raw_output = str(response.content or "").strip()
+            response_model = str(getattr(response, "model", "") or "").strip()
+            if response_model:
+                validator["model"] = response_model
+        else:
+            batch_runtime = {**(runtime or {}), "env": dict((runtime or {}).get("env") or {})}
+            batch_runtime["env"]["CODETALK_AGENT_ARTIFACT_DIR"] = str(runtime_dir)
             raw_output = await _collect_agent_answer(
                 streamer=streamer,
                 runtime=batch_runtime,
                 prompt=prompt,
                 cwd=repo_path,
             )
-    finally:
-        shutil.rmtree(runtime_dir, ignore_errors=True)
+            shutil.rmtree(runtime_dir, ignore_errors=True)
     (batch_dir / "raw_output.txt").write_text(raw_output, encoding="utf-8")
     return normalize_behavior_claim_verdicts(
         raw_output=raw_output,
         request=request,
         validator=validator,
     )
+
+
+async def _close_llm_client(client: Any | None) -> None:
+    if client is None:
+        return
+    closer = getattr(client, "close", None) or getattr(client, "aclose", None)
+    if closer is None:
+        return
+    result = closer()
+    if inspect.isawaitable(result):
+        await result
 
 
 def _notify_progress(

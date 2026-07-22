@@ -53,7 +53,15 @@ def test_quality_retry_reaudits_parent_and_seeds_report(tmp_path, monkeypatch):
     )
     prepared = SimpleNamespace(
         artifact_dir=str(child_root),
-        task_bundle={},
+        task_bundle={
+            "retry_seed_results": {
+                "analyze": {
+                    "step_id": "analyze",
+                    "status": "completed",
+                    "reused_from_task_run_id": "task_run_parent",
+                },
+            },
+        },
         agent_runs=[{
             "step_id": "analyze",
             "artifact_dir": str(child_agent),
@@ -69,9 +77,130 @@ def test_quality_retry_reaudits_parent_and_seeds_report(tmp_path, monkeypatch):
     assert (child_agent / "report.md").read_text(encoding="utf-8") == "# 旧报告\n"
     assert json.loads((child_root / "test_activity_quality_audit.json").read_text()) == audit
     assert prepared.task_bundle["retry_source"]["mode"] == "quality_repair"
+    assert prepared.task_bundle["retry_source"]["failed_node_ids"] == ["analyze"]
+    assert prepared.task_bundle["retry_seed_results"] == {}
     assert prepared.task_bundle["quality_retry_seed"]["copied_artifacts"] == [
         "analyze:report.md"
     ]
+
+
+def test_quality_blocked_parent_with_green_reaudit_reuses_agent_outputs(
+    tmp_path,
+    monkeypatch,
+):
+    from app.api import workbench_v2_tasks
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    parent_root = tmp_path / "parent"
+    parent_agent = parent_root / "agent_runs" / "analyze"
+    child_root = tmp_path / "child"
+    child_agent = child_root / "agent_runs" / "analyze"
+    parent_agent.mkdir(parents=True)
+    child_agent.mkdir(parents=True)
+    (parent_agent / "report.md").write_text("# 已核验报告\n", encoding="utf-8")
+    (parent_agent / "behavior_claim_validation.json").write_text(
+        json.dumps({"status": "verified"}),
+        encoding="utf-8",
+    )
+    (parent_agent / "execution_result.json").write_text(
+        json.dumps({"status": "completed"}),
+        encoding="utf-8",
+    )
+    (parent_root / "workflow_execution.json").write_text(
+        json.dumps({
+            "status": "needs_rework",
+            "step_results": [
+                {
+                    "step_id": "analyze",
+                    "type": "agent_task",
+                    "status": "completed",
+                    "artifact_dir": str(parent_agent),
+                    "artifacts": ["report.md"],
+                    "validated_outputs": {
+                        "artifact_dir": str(parent_agent),
+                        "artifacts": ["report.md"],
+                    },
+                },
+                {
+                    "step_id": "render",
+                    "type": "report_render",
+                    "status": "completed",
+                    "artifact_dir": str(parent_root / "steps" / "render"),
+                },
+            ],
+            "outputs": [],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        WorkbenchWorkflowRunner,
+        "audit_test_activity_quality",
+        lambda self, *, task_run: {
+            "status": "deliverable",
+            "score": 100,
+            "issue_count": 0,
+            "issues": [],
+        },
+    )
+    parent = SimpleNamespace(
+        task_run_id="task_run_parent",
+        quality_status="blocked",
+        artifact_dir=str(parent_root),
+        agent_runs=[{
+            "step_id": "analyze",
+            "artifact_dir": str(parent_agent),
+            "required_artifacts": ["report.md"],
+        }],
+    )
+    plan = {
+        "nodes": [
+            {"node_id": "analyze", "type": "agent_task", "depends_on": []},
+            {"node_id": "render", "type": "report_render", "depends_on": ["analyze"]},
+        ],
+        "topological_order": ["analyze", "render"],
+    }
+
+    seeds, failed_nodes = workbench_v2_tasks._retry_seed_results_from_parent(
+        parent,
+        plan,
+    )
+    prepared = SimpleNamespace(
+        artifact_dir=str(child_root),
+        task_bundle={"retry_seed_results": seeds},
+        agent_runs=[{
+            "step_id": "analyze",
+            "artifact_dir": str(child_agent),
+            "required_artifacts": ["report.md"],
+        }],
+    )
+    workbench_v2_tasks._seed_quality_retry_from_parent(
+        parent_run=parent,
+        prepared=prepared,
+    )
+
+    assert failed_nodes == []
+    assert set(seeds) == {"analyze"}
+    assert prepared.task_bundle["retry_source"] == {
+        "task_run_id": "task_run_parent",
+        "mode": "quality_revalidation",
+        "failed_node_ids": [],
+    }
+    assert (child_agent / "report.md").read_text(encoding="utf-8") == "# 已核验报告\n"
+    reused = prepared.task_bundle["retry_seed_results"]["analyze"]
+    assert reused["artifact_dir"] == str(child_agent)
+    assert reused["validated_outputs"]["artifact_dir"] == str(child_agent)
+    assert prepared.task_bundle["quality_revalidation_seed"] == {
+        "audit_status": "deliverable",
+        "issue_count": 0,
+        "copied_artifacts": ["analyze:report.md"],
+        "copied_support_files": [
+            "analyze:behavior_claim_validation.json",
+            "analyze:execution_result.json",
+        ],
+    }
+    assert json.loads((child_agent / "behavior_claim_validation.json").read_text()) == {
+        "status": "verified"
+    }
 
 
 def test_task_store_migration_crud_filters_archive_and_clone(tmp_path):
@@ -310,6 +439,48 @@ def test_task_effective_config_rejects_required_disable_unsafe_and_unknown_sourc
                 execution_overrides={},
                 output_overrides=output_overrides,
             )
+
+
+def test_task_effective_config_rejects_file_output_from_local_step():
+    from app.services.workbench_task_compile import TaskConfigurationError, compile_task_configuration
+
+    definition = {
+        "id": "flow",
+        "name": "Flow",
+        "version": 1,
+        "inputs": [],
+        "steps": [
+            {"id": "scope", "type": "local_scope_discover"},
+            {"id": "analyze", "type": "agent_task", "provider": "builtin-llm"},
+        ],
+        "outputs": [],
+    }
+    plan = {
+        "topological_order": ["scope", "analyze"],
+        "nodes": [
+            {"node_id": "scope", "node_type": "local_scope_discover", "output_contracts": []},
+            {"node_id": "analyze", "node_type": "agent_task", "output_contracts": []},
+        ],
+    }
+
+    with pytest.raises(TaskConfigurationError, match="不能生成任务专用文件"):
+        compile_task_configuration(
+            compiled_definition=definition,
+            compiled_plan=plan,
+            execution_overrides={},
+            output_overrides={
+                "custom_outputs": [
+                    {
+                        "id": "report",
+                        "label": "分析报告",
+                        "type": "markdown",
+                        "from": "scope",
+                        "artifact": "report.md",
+                        "required": False,
+                    }
+                ]
+            },
+        )
 
     for execution_overrides, marker in [
         ({"nodes": {"analyze": {"skill_ids": {"mode": "replace", "value": "sfmea"}}}}, "字符串数组"),

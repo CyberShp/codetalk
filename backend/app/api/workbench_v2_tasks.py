@@ -444,14 +444,17 @@ def _retry_seed_results_from_parent(
         and str(item.get("status") or "").lower() in {"missing", "invalid", "failed"}
         and str(item.get("from") or "")
     )
-    if not failed_nodes:
-        return {}, []
-
     plan_nodes = {
         str(item.get("node_id") or ""): item
         for item in compiled_plan.get("nodes") or []
         if isinstance(item, dict) and str(item.get("node_id") or "")
     }
+    revalidate_quality_only = (
+        not failed_nodes
+        and str(getattr(parent_run, "quality_status", "") or "") == "blocked"
+    )
+    if not failed_nodes and not revalidate_quality_only:
+        return {}, []
     impacted = set(failed_nodes)
     changed = True
     while changed:
@@ -467,9 +470,16 @@ def _retry_seed_results_from_parent(
         step_id = str(item.get("step_id") or "")
         if (
             step_id not in plan_nodes
-            or step_id in impacted
             or str(item.get("status") or "").lower() not in success_statuses
         ):
+            continue
+        if revalidate_quality_only:
+            # Final acceptance failures do not invalidate a successfully generated
+            # deliverable. Reuse the expensive Agent node and rerun deterministic
+            # validators/renderers against a child-local copy of its artifacts.
+            if str(plan_nodes[step_id].get("type") or "") != "agent_task":
+                continue
+        elif step_id in impacted:
             continue
         reused = dict(item)
         reused["node_id"] = step_id
@@ -507,9 +517,6 @@ def _seed_quality_retry_from_parent(*, parent_run: Any, prepared: Any) -> None:
     audit = WorkbenchWorkflowRunner(settings.data_path / "workbench" / "task_runs").audit_test_activity_quality(
         task_run=parent_run
     )
-    if str(audit.get("status") or "") not in {"needs_rework", "invalid"}:
-        return
-
     child_root = Path(str(prepared.artifact_dir)).resolve()
     (child_root / "test_activity_quality_audit.json").write_text(
         json.dumps(audit, ensure_ascii=False, indent=2, sort_keys=True),
@@ -520,15 +527,88 @@ def _seed_quality_retry_from_parent(*, parent_run: Any, prepared: Any) -> None:
         for item in getattr(parent_run, "agent_runs", []) or []
         if isinstance(item, dict) and str(item.get("step_id") or "")
     }
+    issue_artifacts = {
+        str(item.get("artifact") or "").strip()
+        for item in audit.get("issues") or []
+        if isinstance(item, dict) and str(item.get("artifact") or "").strip()
+    }
+    child_agents = [
+        item
+        for item in getattr(prepared, "agent_runs", []) or []
+        if isinstance(item, dict) and str(item.get("step_id") or "")
+    ]
+    audit_status = str(audit.get("status") or "")
+    copied, copied_support, path_replacements = _copy_parent_agent_artifacts(
+        parent_agents=parent_agents,
+        child_agents=child_agents,
+        include_support=audit_status not in {"needs_rework", "invalid"},
+    )
+    if audit_status not in {"needs_rework", "invalid"}:
+        retry_seed_results = prepared.task_bundle.get("retry_seed_results")
+        if isinstance(retry_seed_results, dict):
+            prepared.task_bundle["retry_seed_results"] = _replace_path_prefixes(
+                retry_seed_results,
+                path_replacements,
+            )
+        prepared.task_bundle["retry_source"] = {
+            "task_run_id": str(parent_run.task_run_id),
+            "mode": "quality_revalidation",
+            "failed_node_ids": [],
+        }
+        prepared.task_bundle["quality_revalidation_seed"] = {
+            "audit_status": audit_status,
+            "issue_count": int(audit.get("issue_count") or 0),
+            "copied_artifacts": copied,
+            "copied_support_files": copied_support,
+        }
+        return
+
+    affected_agent_ids = [
+        str(item.get("step_id") or "")
+        for item in child_agents
+        if issue_artifacts
+        and issue_artifacts.intersection(
+            str(artifact) for artifact in item.get("required_artifacts") or []
+        )
+    ]
+    if not affected_agent_ids:
+        # A quality retry must execute a generator. Old artifacts are copied only
+        # as a repair draft; reusing the completed Agent node would skip repair.
+        affected_agent_ids = [str(item.get("step_id") or "") for item in child_agents]
+
+    retry_seed_results = prepared.task_bundle.get("retry_seed_results")
+    if isinstance(retry_seed_results, dict):
+        for step_id in affected_agent_ids:
+            retry_seed_results.pop(step_id, None)
+    prepared.task_bundle["retry_source"] = {
+        "task_run_id": str(parent_run.task_run_id),
+        "mode": "quality_repair",
+        "failed_node_ids": affected_agent_ids,
+    }
+    prepared.task_bundle["quality_retry_seed"] = {
+        "audit_status": str(audit.get("status") or ""),
+        "issue_count": int(audit.get("issue_count") or 0),
+        "copied_artifacts": copied,
+    }
+
+
+def _copy_parent_agent_artifacts(
+    *,
+    parent_agents: dict[str, dict[str, Any]],
+    child_agents: list[dict[str, Any]],
+    include_support: bool = False,
+) -> tuple[list[str], list[str], dict[str, str]]:
     copied: list[str] = []
-    for child_agent in getattr(prepared, "agent_runs", []) or []:
-        if not isinstance(child_agent, dict):
-            continue
-        parent_agent = parent_agents.get(str(child_agent.get("step_id") or ""))
+    copied_support: list[str] = []
+    path_replacements: dict[str, str] = {}
+    for child_agent in child_agents:
+        step_id = str(child_agent.get("step_id") or "")
+        parent_agent = parent_agents.get(step_id)
         if not isinstance(parent_agent, dict):
             continue
         source_root = Path(str(parent_agent.get("artifact_dir") or "")).resolve()
         destination_root = Path(str(child_agent.get("artifact_dir") or "")).resolve()
+        path_replacements[str(source_root)] = str(destination_root)
         for artifact in child_agent.get("required_artifacts") or []:
             relative = Path(str(artifact or ""))
             if not str(relative) or relative.is_absolute() or ".." in relative.parts:
@@ -541,17 +621,39 @@ def _seed_quality_retry_from_parent(*, parent_run: Any, prepared: Any) -> None:
                 continue
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
-            copied.append(f"{child_agent.get('step_id')}:{relative.as_posix()}")
-    prepared.task_bundle["retry_source"] = {
-        "task_run_id": str(parent_run.task_run_id),
-        "mode": "quality_repair",
-        "failed_node_ids": [],
-    }
-    prepared.task_bundle["quality_retry_seed"] = {
-        "audit_status": str(audit.get("status") or ""),
-        "issue_count": int(audit.get("issue_count") or 0),
-        "copied_artifacts": copied,
-    }
+            copied.append(f"{step_id}:{relative.as_posix()}")
+        if include_support and source_root.is_dir():
+            for source in sorted(path for path in source_root.rglob("*") if path.is_file()):
+                try:
+                    relative = source.relative_to(source_root)
+                except ValueError:
+                    continue
+                destination = (destination_root / relative).resolve()
+                if destination_root not in destination.parents or destination.exists():
+                    continue
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+                copied_support.append(f"{step_id}:{relative.as_posix()}")
+    return copied, copied_support, path_replacements
+
+
+def _replace_path_prefixes(value: Any, replacements: dict[str, str]) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _replace_path_prefixes(item, replacements)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_replace_path_prefixes(item, replacements) for item in value]
+    if isinstance(value, str):
+        for source, destination in sorted(
+            replacements.items(),
+            key=lambda item: len(item[0]),
+            reverse=True,
+        ):
+            if value == source or value.startswith(f"{source}/"):
+                return f"{destination}{value[len(source):]}"
+    return value
 
 
 def _task(task_id: str) -> WorkbenchTask:

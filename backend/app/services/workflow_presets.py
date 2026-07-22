@@ -53,11 +53,25 @@ EVIDENCE_CARDS_SCHEMA: dict[str, Any] = {
     "minItems": 1,
     "items": {
         "type": "object",
-        "required": ["evidence_id", "kind", "file_path", "symbols", "reason", "source"],
+        "required": [
+            "evidence_id",
+            "kind",
+            "file_path",
+            "start_line",
+            "end_line",
+            "excerpt",
+            "symbols",
+            "reason",
+            "sha256",
+            "source",
+        ],
         "properties": {
             "evidence_id": {"type": "string"},
             "kind": {"type": "string"},
             "file_path": {"type": "string"},
+            "start_line": {"type": "integer", "minimum": 1},
+            "end_line": {"type": "integer", "minimum": 1},
+            "excerpt": {"type": "string", "minLength": 1},
             "symbols": {
                 "type": "array",
                 "items": {"type": "string", "minLength": 1},
@@ -200,6 +214,7 @@ BLACK_BOX_CASES_SCHEMA: dict[str, Any] = {
             "preconditions": {"type": "array", "items": {"type": "string"}},
             "steps": {"type": "array", "items": {"type": "string"}},
             "expected_result": {"type": "string"},
+            "oracle_basis": {"type": "string"},
             "observability": {"type": "array", "items": {"type": "string"}},
             "failure_diagnostics": {"type": "array", "items": {"type": "string"}},
             "mapped_test_dir": {"type": "string"},
@@ -1013,11 +1028,41 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                             "black-box-test-design",
                             "artifact-contract",
                         ],
+                        "source_context_limit": 44,
+                        "source_context_min_test_files": 6,
+                        "source_analysis_max_files": 6,
+                        "source_analysis_max_evidence_anchors": 12,
+                        "source_analysis_min_test_files": 3,
                         "goal": (
-                            "先检查可用的 GitNexus 和 CGC 产物，再读取本地源码与测试证据，"
-                            "生成代码证据、外部可观察流程、SFMEA 和可执行黑盒测试用例。"
+                            "先检查可用的 GitNexus 和 CGC 产物，再读取本地源码与测试证据；"
+                            "First check GitNexus and CGC artifacts when available, then read local source "
+                            "evidence to produce code evidence, externally observable flow steps, SFMEA, "
+                            "and black-box test cases. Every evidence card must contain a SHA256-verified "
+                            "file_path, start_line, end_line, and a verbatim contiguous excerpt from that "
+                            "range. Every technical claim must reference the base evidence_id and use an "
+                            "exact source quote within that card; 禁止省略号、拼接或改写 quote，必须逐字可核验。 "
+                            "SFMEA only includes actual failure behavior or plausible defect paths: 禁止把正常保护逻辑、"
+                            "预期参数拒绝或测试覆盖缺口当作失效模式。Each mitigation must include both a "
+                            "production/configuration/operational remediation and an executable test or "
+                            "monitoring verification. mapped_test_dir must be one existing repository test "
+                            "path, multiple existing paths separated by semicolons, or an explicit "
+                            "ai_suggested_unverified marker. Performance cases must state warmup, repeated "
+                            "sampling, P50/P95, and a source/config/spec/same-environment baseline. Markdown "
+                            "evidence must use full repository-relative paths instead of bare filenames. A "
+                            "technical claim may state only what its exact quote directly establishes; do not "
+                            "upgrade call ordering, return handling, cleanup ordering, or a guard branch into "
+                            "a defect unless the verified evidence directly establishes the adverse effect. "
+                            "Put uncertain or externally testable concerns in a clearly labeled hypothesis or "
+                            "remaining-risk section, never in a scored SFMEA failure mode or a technical claim. "
+                            "flow_map.md must name at least one existing repository test path as its test "
+                            "mapping, and test_strategy.md must name at least one existing repository source "
+                            "path as its source anchor."
                         ),
-                        "required_artifacts": SOURCE_FLOW_REQUIRED_ARTIFACTS,
+                        "required_artifacts": [
+                            *SOURCE_FLOW_REQUIRED_ARTIFACTS,
+                            "module_map.md",
+                            "test_strategy.md",
+                        ],
                     },
                     {
                         "id": "validate_evidence",
@@ -1049,6 +1094,13 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                         "artifact": "evidence_cards.json",
                         "schema": EVIDENCE_CARDS_SCHEMA,
                     },
+                    {
+                        "id": "module_map",
+                        "label": "模块地图",
+                        "type": "markdown",
+                        "from": "analyze_source_flow",
+                        "artifact": "module_map.md",
+                    },
                     {"id": "flow_map", "label": "业务流程图谱", "type": "markdown", "from": "analyze_source_flow", "artifact": "flow_map.md"},
                     {
                         "id": "sfmea",
@@ -1056,6 +1108,7 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                         "type": "json",
                         "from": "analyze_source_flow",
                         "artifact": "sfmea.json",
+                        "min_sfmea_rows": 12,
                         "schema": SFMEA_SCHEMA,
                     },
                     {
@@ -1064,6 +1117,7 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                         "type": "test_cases",
                         "from": "analyze_source_flow",
                         "artifact": "black_box_cases.json",
+                        "min_black_box_cases": 12,
                         "semantic_import": {
                             "enabled": True,
                             "defaults": {
@@ -1072,6 +1126,13 @@ def builtin_workflow_presets() -> list[dict[str, Any]]:
                             },
                         },
                         "schema": BLACK_BOX_CASES_SCHEMA,
+                    },
+                    {
+                        "id": "test_strategy",
+                        "label": "测试策略",
+                        "type": "markdown",
+                        "from": "analyze_source_flow",
+                        "artifact": "test_strategy.md",
                     },
                     {
                         "id": "test_design_mindmap",

@@ -95,6 +95,14 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
                 )
                 if not auth_result["success"]:
                     return auth_result
+            if str(runtime.get("prompt_transport") or "") == "codex_exec_json":
+                readiness_result = await _probe_codex_model_in_runtime_sandbox(
+                    runtime=runtime,
+                    command=command,
+                )
+                if not readiness_result["success"]:
+                    return readiness_result
+                return readiness_result
             return {"success": True, "message": stdout_text or stderr_text or "执行器可启动"}
         message = stderr_text or stdout_text or f"命令退出码：{proc.returncode}"
         return {"success": False, "message": redact_agent_diagnostic_text(message)}
@@ -193,6 +201,75 @@ async def _probe_claude_auth_in_runtime_sandbox(
         return failure
 
 
+async def _probe_codex_model_in_runtime_sandbox(
+    *, runtime: dict[str, Any], command: str
+) -> dict[str, Any]:
+    """Verify that Codex can make a real request with the configured model."""
+    failure = {
+        "success": False,
+        "message": "Codex 可启动，但真实模型请求失败。请检查登录状态、模型配置或网络。",
+    }
+    try:
+        with tempfile.TemporaryDirectory(
+            prefix="codetalk-codex-probe-",
+            dir=settings.ensure_runtime_temp_path(),
+        ) as temp_dir:
+            artifact_dir = Path(temp_dir).resolve()
+            env = _build_env(
+                runtime,
+                include_claude_auth=False,
+                artifact_dir_override=artifact_dir,
+            )
+            for temp_name in ("CODETALK_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
+                env[temp_name] = str(artifact_dir)
+            readiness_args = _codex_exec_json_args(
+                _runtime_args(runtime, resume_session_id=None),
+                "Reply exactly CODETALK_PROBE_OK",
+                resume_session_id=None,
+            )
+            isolate_process_group = os.name != "nt"
+            process_kwargs: dict[str, Any] = {}
+            if isolate_process_group:
+                process_kwargs["start_new_session"] = True
+            readiness: asyncio.subprocess.Process | None = None
+            try:
+                readiness = await asyncio.create_subprocess_exec(
+                    command,
+                    *readiness_args,
+                    cwd=str(artifact_dir),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env,
+                    **process_kwargs,
+                )
+                try:
+                    readiness_stdout, readiness_stderr = await asyncio.wait_for(
+                        readiness.communicate(), timeout=20
+                    )
+                except asyncio.TimeoutError:
+                    return {
+                        "success": False,
+                        "message": "Codex 可启动，但真实模型请求探测超时。请检查网络或代理后重试。",
+                    }
+                except asyncio.CancelledError:
+                    raise
+            finally:
+                if readiness is not None:
+                    await _terminate_process(
+                        readiness,
+                        process_group=isolate_process_group,
+                    )
+            readiness_text = "\n".join(
+                part for part in (_decode(readiness_stdout), _decode(readiness_stderr)) if part
+            ).strip()
+            return _codex_readiness_result(
+                readiness_text,
+                returncode=int(readiness.returncode or 0),
+            )
+    except (AgentSandboxError, FileNotFoundError, OSError):
+        return failure
+
+
 def _claude_readiness_result(text: str, *, returncode: int) -> dict[str, Any]:
     payloads: list[dict[str, Any]] = []
     for line in str(text or "").splitlines() or [str(text or "")]:
@@ -226,6 +303,45 @@ def _claude_readiness_result(text: str, *, returncode: int) -> dict[str, Any]:
             "message": "Claude Code 已响应，但未返回预期确认标记。请检查命令参数和输出格式。",
         }
     return {"success": True, "message": "Claude Code 已登录，真实模型请求可用"}
+
+
+def _codex_readiness_result(text: str, *, returncode: int) -> dict[str, Any]:
+    payloads: list[dict[str, Any]] = []
+    for line in str(text or "").splitlines() or [str(text or "")]:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    lower = str(text or "").lower()
+    if "requires a newer version of codex" in lower or "model metadata" in lower:
+        return {
+            "success": False,
+            "message": "Codex 可启动，但当前模型不受本机 CLI 支持。请升级 Codex CLI 或改用受支持模型。",
+        }
+    if "status\\\":401" in lower or "status\\\":403" in lower or "authentication" in lower:
+        return {
+            "success": False,
+            "message": "Codex 可启动，但真实模型请求未获授权。请重新登录并检查账号或代理权限。",
+        }
+    completed = any(payload.get("type") == "turn.completed" for payload in payloads)
+    answer_text = "\n".join(
+        str((payload.get("item") or {}).get("text") or "")
+        for payload in payloads
+        if isinstance(payload.get("item"), dict)
+    )
+    if returncode != 0 or not completed:
+        return {
+            "success": False,
+            "message": "Codex 可启动，但真实模型请求失败。请检查登录状态、模型配置或网络。",
+        }
+    if "CODETALK_PROBE_OK" not in answer_text:
+        return {
+            "success": False,
+            "message": "Codex 已响应，但未返回预期确认标记。请检查模型或运行参数。",
+        }
+    return {"success": True, "message": "Codex 已登录，真实模型请求可用"}
 
 
 async def stream_agent_runtime(

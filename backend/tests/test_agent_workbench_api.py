@@ -176,6 +176,59 @@ class _SourceFlowStageLLM:
             "concurrency",
             "recovery",
             "performance",
+            "long_steady_state",
+            "resource_wraparound",
+            "resource_cleanup",
+            "upstream_error_propagation",
+        ]
+        oracle_bases = {
+            "resource_pressure": "resource limit from source constant and test environment configuration",
+            "timeout": "timeout option from command help and configuration evidence",
+            "performance": "same environment baseline after warmup 5 runs and repeat 30 samples with P50/P95",
+            "long_steady_state": "duration and sampling interval from the test specification and environment baseline",
+            "resource_wraparound": "maximum value and bit-width from source constant evidence",
+        }
+        failure_signals = [
+            "normal connection processing failure",
+            "invalid request validation failure",
+            "resource allocation failure",
+            "connection timeout failure",
+            "reconnect cleanup failure",
+            "concurrent request race failure",
+            "recovery rollback failure",
+            "performance degradation failure",
+            "long-running connection hang failure",
+            "resource counter wraparound failure",
+            "resource cleanup failure",
+            "upstream error propagation failure",
+        ]
+        sfmea_rows = [
+            {
+                "sfmea_id": f"SFMEA-{index:03d}",
+                "failure_mode": f"{failure_signals[index - 1]} during {dimension} connection handling",
+                "mechanism": "the public connection path processes the requested input and returns its observable result",
+                "trigger_condition": f"exercise the public connection path under {dimension}",
+                "cause": f"{dimension} validation or state transition is applied incorrectly",
+                "effect": f"controller connection cannot complete during {dimension}",
+                "local_effect": "the current connection operation reports a failure",
+                "upstream_effect": "the initiator receives the public failure result",
+                "downstream_effect": "the controller queue is not available for follow-on IO",
+                "final_effect": "the requested connection service is unavailable until recovery",
+                "latent": "not latent because the public response and target log are observable",
+                "detection": f"observe the public connection response and target log during {dimension}",
+                "existing_controls": "public request validation and the existing NVMf test workflow",
+                "control_gaps": "the focused negative and recovery scenario requires explicit coverage",
+                "severity": 7,
+                "occurrence": 3,
+                "detection_score": 2,
+                "rpn": 42,
+                "score_explanation": "connection cannot progress and is externally observable",
+                "mitigation": f"implement {dimension} state validation, add an external regression test, and monitor response and target logs",
+                "recovery_verification": "restore a valid public request and confirm a new connection becomes available",
+                "source_evidence": ["lib/nvmf/ctrlr.c:1"],
+                "test_mapping": f"TC-{index}; test/nvmf/nvmf.sh",
+            }
+            for index, dimension in enumerate(dimensions, 1)
         ]
         payloads = {
             "source_analysis.md": "# Source evidence\nlib/nvmf/ctrlr.c:1 spdk_nvmf_ctrlr_connect",
@@ -195,6 +248,11 @@ class _SourceFlowStageLLM:
                 "reason": "connect entry",
                 "source": "local-source",
             }],
+            "module_map.md": (
+                "# 模块地图\n\n## 模块边界\n`lib/nvmf/ctrlr.c:1` 负责控制器连接。\n\n"
+                "## 入口\n`spdk_nvmf_ctrlr_connect`。\n\n## 依赖\n传输层公开连接请求。\n\n"
+                "## 测试映射\n`test/nvmf/nvmf.sh`。"
+            ),
             "flow_map.md": (
                 "# Connect flow\n\n"
                 "## 外部触发\nInitiator sends a connect request to `lib/nvmf/ctrlr.c`.\n\n"
@@ -203,31 +261,7 @@ class _SourceFlowStageLLM:
                 "## 异常分支\nInvalid requests return an observable error.\n\n"
                 "## 观测点\nUse the response, target log, and `test/nvmf/nvmf.sh`."
             ),
-            "sfmea.json": [{
-                "sfmea_id": "SFMEA-001",
-                "failure_mode": "connect rejected",
-                "mechanism": "connect request validation rejects an invalid public request",
-                "trigger_condition": "initiator sends an invalid connect request",
-                "cause": "invalid request",
-                "effect": "controller unavailable",
-                "local_effect": "connect operation is rejected",
-                "upstream_effect": "initiator receives an error response",
-                "downstream_effect": "no controller queue is established",
-                "final_effect": "the requested connection is unavailable",
-                "latent": "not latent because the connect response is observable",
-                "detection": "connect response",
-                "existing_controls": "request validation and public error response",
-                "control_gaps": "negative boundary coverage is incomplete",
-                "severity": 7,
-                "occurrence": 3,
-                "detection_score": 2,
-                "rpn": 42,
-                "score_explanation": "connection cannot progress",
-                "mitigation": "reject invalid requests early and add a negative connect black-box test monitoring response logs",
-                "recovery_verification": "retry a valid connect and confirm the controller becomes available",
-                "source_evidence": ["lib/nvmf/ctrlr.c:1"],
-                "test_mapping": "test/nvmf/nvmf.sh",
-            }],
+            "sfmea.json": sfmea_rows,
             "black_box_cases.json": [
                 {
                     "case_id": f"TC-{index}",
@@ -239,6 +273,7 @@ class _SourceFlowStageLLM:
                     "preconditions": [f"target running for {dimension}"],
                     "steps": [f"exercise the public {dimension} connection scenario"],
                     "expected_result": f"observable {dimension} connection result",
+                    "oracle_basis": oracle_bases.get(dimension, "public contract and same-commit source evidence"),
                     "observability": [f"{dimension} connection response"],
                     "failure_diagnostics": [f"target log for {dimension}"],
                     "mapped_test_dir": "test/nvmf",
@@ -246,6 +281,19 @@ class _SourceFlowStageLLM:
                 }
                 for index, dimension in enumerate(dimensions, 1)
             ],
+            "test_strategy.md": (
+                "# 测试策略\n\n## 范围\n`lib/nvmf/ctrlr.c:1` 的连接流程。\n\n"
+                "## 风险\n连接拒绝、超时、恢复和资源压力。\n\n## 分层策略\n"
+                "使用 `test/nvmf/nvmf.sh` 执行外部黑盒验证。\n\n"
+                "## 执行顺序\n先正常路径，再异常与恢复，最后并发和性能。"
+            ),
+            "test_design_mindmap.md": (
+                "```mermaid\nmindmap\n  root((NVMf 测试设计))\n    目标\n      连接流程\n"
+                "    输入\n      公开连接请求\n    源码证据\n      lib/nvmf/ctrlr.c:1\n"
+                "    业务流程\n      connect\n    SFMEA\n      connect rejected\n"
+                "    黑盒用例\n      test/nvmf/nvmf.sh\n    观测点\n      response\n"
+                "    剩余风险\n      timeout\n```"
+            ),
         }
         content = payloads[artifact]
         if not isinstance(content, str):
@@ -1193,6 +1241,7 @@ async def test_workbench_core_workflow_readiness_api_covers_release_workflow(wor
         "sfmea.json",
         "black_box_cases.json",
     ]
+    assert {"module_map.md", "test_strategy.md"} <= set(required_artifacts)
     assert {
         "entrypoints.json",
         "resources.json",
@@ -3995,14 +4044,14 @@ async def test_builtin_mr_blackbox_run_produces_executable_black_box_case_contra
     assert body["outputs"][1]["id"] == "black_box_cases"
     assert body["outputs"][1]["status"] == "ok"
     assert body["semantic_output_import"]["status"] == "ok"
-    assert body["semantic_output_import"]["imported_count"] == 8
+    assert body["semantic_output_import"]["imported_count"] == 12
     assert body["acceptance_audit"]["status"] == "ready"
 
     task_dir = _task_run_dir(body["task_run"]["task_run_id"])
     cases_path = task_dir / "steps" / "collect_mr" / "black_box_cases.json"
     assert cases_path.exists()
     cases = json.loads(cases_path.read_text(encoding="utf-8"))
-    assert len(cases) == 8
+    assert len(cases) == 12
     assert {item["test_dimension"] for item in cases} == {
         "normal_path",
         "invalid_input",
@@ -4012,6 +4061,10 @@ async def test_builtin_mr_blackbox_run_produces_executable_black_box_case_contra
         "concurrency",
         "recovery",
         "performance",
+        "long_steady_state",
+        "resource_wraparound",
+        "resource_cleanup",
+        "upstream_error_propagation",
     }
     case = cases[0]
     assert case["case_type"] == "black_box_ready"
@@ -4165,7 +4218,7 @@ async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
     assert outputs["flow_map"]["status"] == "ok"
     assert outputs["sfmea"]["status"] == "ok"
     assert outputs["black_box_cases"]["status"] == "ok"
-    assert "semantic_output_import" not in body
+    assert body["semantic_output_import"]["status"] in {"completed", "skipped"}
 
     task_dir = _task_run_dir(body["task_run"]["task_run_id"])
     step_dir = task_dir / "agent_runs" / "analyze_source_flow"
@@ -4185,6 +4238,10 @@ async def test_builtin_source_flow_sfmea_blackbox_run_produces_four_piece_chain(
         "concurrency",
         "recovery",
         "performance",
+        "long_steady_state",
+        "resource_wraparound",
+        "resource_cleanup",
+        "upstream_error_propagation",
     }
     assert {
         "failure_mode",
@@ -4608,7 +4665,8 @@ async def test_workbench_task_run_run_auto_imports_declared_semantic_outputs(
     script_path.write_text(
         "import json, pathlib, os\n"
         "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
-        "dimensions=['normal_path','invalid_input','resource_pressure','timeout','reconnect','concurrency','recovery','performance']\n"
+        "dimensions=['normal_path','invalid_input','resource_pressure','timeout','reconnect','concurrency','recovery','performance','long_steady_state','resource_wraparound','resource_cleanup','upstream_error_propagation']\n"
+        "basis={'resource_pressure':'resource limit from source constant and environment configuration','timeout':'timeout option from command help and configuration evidence','performance':'same environment baseline after warmup 5 runs and repeat 30 samples with P50/P95','long_steady_state':'duration and sampling interval from test specification and environment baseline','resource_wraparound':'maximum value and bit-width from source constant evidence'}\n"
         "base={\n"
         "    'title': 'TLS handshake uses existing failure wording',\n"
         "    'entry_kind': 'rpc',\n"
@@ -4622,7 +4680,7 @@ async def test_workbench_task_run_run_auto_imports_declared_semantic_outputs(
         "    'mapped_test_dir': 'test/nvmf',\n"
         "    'source_or_test_evidence': 'test/nvmf'\n"
         "}\n"
-        "cases=[{**base,'case_id':f'bb-tls-expired-cert-{i:02d}','test_dimension':dimension,'scenario_name':f'Expired certificate handshake rejection {dimension}','steps':[*base['steps'],f'exercise {dimension} conditions'],'expected_result':f'{dimension}: '+base['expected_result']} for i,dimension in enumerate(dimensions,1)]\n"
+        "cases=[{**base,'case_id':f'bb-tls-expired-cert-{i:02d}','test_dimension':dimension,'scenario_name':f'Expired certificate handshake rejection {dimension}','steps':[*base['steps'],f'exercise {dimension} conditions'],'expected_result':f'{dimension}: '+base['expected_result'],'oracle_basis':basis.get(dimension,'public contract and same-commit source evidence')} for i,dimension in enumerate(dimensions,1)]\n"
         "(root/'black_box_cases.json').write_text(json.dumps(cases), encoding='utf-8')\n",
         encoding="utf-8",
     )
@@ -4677,7 +4735,7 @@ async def test_workbench_task_run_run_auto_imports_declared_semantic_outputs(
     assert response.status_code == 200
     body = response.json()
     assert body["semantic_output_import"]["status"] == "ok"
-    assert body["semantic_output_import"]["imported_count"] == 8
+    assert body["semantic_output_import"]["imported_count"] == 12
     task_dir = _task_run_dir(body["task_run"]["task_run_id"])
     artifact = task_dir / "semantic_output_import.json"
     assert artifact.exists()
@@ -4811,7 +4869,8 @@ async def test_workbench_materialize_outputs_auto_imports_declared_semantic_outp
     script_path.write_text(
         "import json, pathlib, os\n"
         "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
-        "dimensions=['normal_path','invalid_input','resource_pressure','timeout','reconnect','concurrency','recovery','performance']\n"
+        "dimensions=['normal_path','invalid_input','resource_pressure','timeout','reconnect','concurrency','recovery','performance','long_steady_state','resource_wraparound','resource_cleanup','upstream_error_propagation']\n"
+        "basis={'resource_pressure':'resource limit from source constant and environment configuration','timeout':'timeout option from command help and configuration evidence','performance':'same environment baseline after warmup 5 runs and repeat 30 samples with P50/P95','long_steady_state':'duration and sampling interval from test specification and environment baseline','resource_wraparound':'maximum value and bit-width from source constant evidence'}\n"
         "base={\n"
         "    'title': 'TLS listener reports configured alert text',\n"
         "    'entry_kind': 'cli',\n"
@@ -4825,7 +4884,7 @@ async def test_workbench_materialize_outputs_auto_imports_declared_semantic_outp
         "    'mapped_test_dir': 'test/nvmf',\n"
         "    'source_or_test_evidence': 'test/nvmf'\n"
         "}\n"
-        "cases=[{**base,'case_id':f'bb-tls-alert-text-{i:02d}','test_dimension':dimension,'scenario_name':f'Configured TLS alert is observable {dimension}','steps':[*base['steps'],f'exercise {dimension} conditions'],'expected_result':f'{dimension}: '+base['expected_result']} for i,dimension in enumerate(dimensions,1)]\n"
+        "cases=[{**base,'case_id':f'bb-tls-alert-text-{i:02d}','test_dimension':dimension,'scenario_name':f'Configured TLS alert is observable {dimension}','steps':[*base['steps'],f'exercise {dimension} conditions'],'expected_result':f'{dimension}: '+base['expected_result'],'oracle_basis':basis.get(dimension,'public contract and same-commit source evidence')} for i,dimension in enumerate(dimensions,1)]\n"
         "(root/'black_box_cases.json').write_text(json.dumps(cases), encoding='utf-8')\n",
         encoding="utf-8",
     )
@@ -4888,7 +4947,7 @@ async def test_workbench_materialize_outputs_auto_imports_declared_semantic_outp
     assert materialized.status_code == 200
     body = materialized.json()
     assert body["semantic_output_import"]["status"] == "ok"
-    assert body["semantic_output_import"]["imported_count"] == 8
+    assert body["semantic_output_import"]["imported_count"] == 12
     artifact = _task_run_dir(prepared.json()["task_run_id"]) / "semantic_output_import.json"
     assert json.loads(artifact.read_text(encoding="utf-8"))["mode"] == "auto"
 
@@ -4943,6 +5002,7 @@ async def test_workbench_materialize_workflow_outputs_blocks_failed_quality_gate
                 "from": "discover",
                 "artifact": "scope.json",
                 "schema": {"type": "object", "required": ["files"]},
+                "semantic_import": True,
             }
         ],
     }
@@ -4983,6 +5043,14 @@ async def test_workbench_materialize_workflow_outputs_blocks_failed_quality_gate
         .read_text(encoding="utf-8")
     )
     assert materialization["rejected_outputs"] == body["rejected_outputs"]
+    semantic_import = json.loads(
+        (_task_run_dir(prepared.json()["task_run_id"]) / "semantic_output_import.json")
+        .read_text(encoding="utf-8")
+    )
+    assert semantic_import["mode"] == "auto_deferred"
+    assert semantic_import["result"]["status"] == "skipped"
+    assert semantic_import["result"]["reason"] == "test_activity_quality_gate_failed"
+    assert semantic_import["result"]["imported_count"] == 0
 
 
 async def test_workbench_materialize_rejects_output_path_outside_task_artifacts(
@@ -6712,7 +6780,8 @@ async def test_workbench_task_run_acceptance_audit_records_semantic_import_artif
         "import json, os, pathlib, sys\n"
         "json.load(sys.stdin)\n"
         "root=pathlib.Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])\n"
-        "dimensions=['normal_path','invalid_input','resource_pressure','timeout','reconnect','concurrency','recovery','performance']\n"
+        "dimensions=['normal_path','invalid_input','resource_pressure','timeout','reconnect','concurrency','recovery','performance','long_steady_state','resource_wraparound','resource_cleanup','upstream_error_propagation']\n"
+        "basis={'resource_pressure':'resource limit from source constant and environment configuration','timeout':'timeout option from command help and configuration evidence','performance':'same environment baseline after warmup 5 runs and repeat 30 samples with P50/P95','long_steady_state':'duration and sampling interval from test specification and environment baseline','resource_wraparound':'maximum value and bit-width from source constant evidence'}\n"
         "base={'title':'TLS audit semantic case','steps':['connect'],"
         "'expected':['observable failure'],'expected_result':'observable failure',"
         "'preconditions':['NVMe-oF target is configured with TLS enabled'],"
@@ -6721,7 +6790,7 @@ async def test_workbench_task_run_acceptance_audit_records_semantic_import_artif
         "'failure_diagnostics':['compare target log timestamps with initiator timeout window'],"
         "'mapped_test_dir':'test/nvmf','source_or_test_evidence':'test/nvmf',"
         "'suggested_spdk_test_dir':'test/nvmf'}\n"
-        "cases=[{**base,'case_id':f'bb-tls-audit-{i:02d}','test_dimension':dimension,'scenario_name':f'TLS audit semantic case {dimension}','steps':[*base['steps'],f'exercise {dimension} conditions'],'expected_result':f'{dimension}: '+base['expected_result']} for i,dimension in enumerate(dimensions,1)]\n"
+        "cases=[{**base,'case_id':f'bb-tls-audit-{i:02d}','test_dimension':dimension,'scenario_name':f'TLS audit semantic case {dimension}','steps':[*base['steps'],f'exercise {dimension} conditions'],'expected_result':f'{dimension}: '+base['expected_result'],'oracle_basis':basis.get(dimension,'public contract and same-commit source evidence')} for i,dimension in enumerate(dimensions,1)]\n"
         "(root/'black_box_cases.json').write_text(json.dumps(cases), encoding='utf-8')\n",
         encoding="utf-8",
     )
@@ -6921,6 +6990,44 @@ async def test_acceptance_quality_uses_direct_file_path_when_source_evidence_ref
     assert _risk_finding_quality_reasons(finding, repo_path=str(tmp_path)) == []
 
 
+async def test_acceptance_quality_uses_verified_claim_path_when_source_evidence_references_cards(tmp_path):
+    from app.api.agent_workbench import _risk_finding_quality_reasons
+
+    source = tmp_path / "libnvme" / "src" / "nvme" / "crypto.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int libnvmf_create_raw_secret(void) { return 0; }\n", encoding="utf-8")
+    finding = {
+        "failure_mode": "TLS 密钥构造失败",
+        "cause": "输入密钥长度非法",
+        "effect": "控制器连接被拒绝",
+        "detection": "观察 nvme connect 退出码和 TLS 日志",
+        "severity": 8,
+        "occurrence": 3,
+        "detection_score": 2,
+        "rpn": 48,
+        "score_explanation": "S=8 连接阻断；O=3 需特定输入；D=2 有退出码和日志",
+        "mitigation": (
+            "Production control: add a key format preflight guard. "
+            "Verification: run an invalid-key attach test and assert the exit code and TLS log."
+        ),
+        "source_evidence": ["SRC-12:L1"],
+        "technical_claims": [{
+            "claim_id": "TC-005",
+            "type": "behavior",
+            "statement": "非法密钥输入被拒绝",
+            "evidence": [{
+                "evidence_id": "SRC-12:L1",
+                "path": "libnvme/src/nvme/crypto.c",
+                "symbol": "libnvmf_create_raw_secret",
+                "lines": "L1-L1",
+                "quote": "int libnvmf_create_raw_secret(void) { return 0; }",
+            }],
+        }],
+    }
+
+    assert _risk_finding_quality_reasons(finding, repo_path=str(tmp_path)) == []
+
+
 async def test_acceptance_quality_prefers_canonical_sfmea_scores_over_legacy_aliases(tmp_path):
     from app.api.agent_workbench import _risk_finding_quality_reasons
 
@@ -7022,6 +7129,63 @@ async def test_acceptance_quality_allows_external_protocol_steps_and_explicit_ev
     assert _black_box_case_quality_reasons(case) == []
 
 
+async def test_acceptance_quality_allows_measurable_performance_oracle():
+    from app.api.agent_workbench import _black_box_case_quality_reasons
+
+    case = {
+        "case_id": "BLACKBOX-PERF-001",
+        "scenario_name": "Large discovery log performance",
+        "preconditions": ["A baseline run with 10 subsystems has been recorded"],
+        "steps": ["Run time nvme discover against a target with 1000 subsystems"],
+        "expected_result": "real 时间不超过基线的 2 倍",
+        "observability": ["time command real duration", "nvme discover stdout"],
+        "failure_diagnostics": ["Collect target subsystem count and network latency"],
+        "mapped_test_dir": "ai_suggested_unverified: add discovery scale harness",
+        "oracle_basis": (
+            "同一内核、目标配置和网络环境预热 5 次后重复 30 次，"
+            "记录未改动 commit 与本次运行的 P50/P95 和方差。"
+        ),
+    }
+
+    assert _black_box_case_quality_reasons(case) == []
+
+
+async def test_acceptance_quality_rejects_performance_threshold_without_basis():
+    from app.api.agent_workbench import _black_box_case_quality_reasons
+
+    case = {
+        "case_id": "BLACKBOX-PERF-002",
+        "test_dimension": "performance",
+        "scenario_name": "Discovery latency",
+        "preconditions": ["Target is available"],
+        "steps": ["Run time nvme discover 30 times"],
+        "expected_result": "P95 real 时间不超过基线的 2 倍",
+        "observability": ["real duration"],
+        "failure_diagnostics": ["Collect target and network logs"],
+        "mapped_test_dir": "ai_suggested_unverified: add discovery performance harness",
+    }
+
+    assert "missing_oracle_basis" in _black_box_case_quality_reasons(case)
+
+
+async def test_acceptance_quality_rejects_direct_libnvme_call_as_black_box_step():
+    from app.api.agent_workbench import _black_box_case_quality_reasons
+
+    case = {
+        "case_id": "BLACKBOX-TLS-001",
+        "test_dimension": "invalid_input",
+        "scenario_name": "Invalid encoded key",
+        "preconditions": ["Build libnvme"],
+        "steps": ["执行测试程序，调用 libnvmf_import_tls_key_versioned"],
+        "expected_result": "测试程序退出码非零并在 stderr 输出参数错误",
+        "observability": ["exit code", "stderr"],
+        "failure_diagnostics": ["保存测试程序输出"],
+        "mapped_test_dir": "libnvme/test/psk.c",
+    }
+
+    assert "white_box_boundary" in _black_box_case_quality_reasons(case)
+
+
 async def test_acceptance_quality_allows_external_protocol_field_fault_injection():
     from app.api.agent_workbench import _black_box_case_quality_reasons
 
@@ -7043,6 +7207,35 @@ async def test_acceptance_quality_allows_external_protocol_field_fault_injection
     }
 
     assert _black_box_case_quality_reasons(case) == []
+
+
+async def test_acceptance_quality_allows_verified_nested_test_mapping_and_state_arrow(
+    tmp_path,
+):
+    from app.api.agent_workbench import _black_box_case_quality_reasons
+
+    mapped_test = tmp_path / "libnvme" / "test" / "tree-fabrics.c"
+    mapped_test.parent.mkdir(parents=True)
+    mapped_test.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    case = {
+        "case_id": "BB-RECONNECT-01",
+        "scenario_name": "Controller reconnect after network flap",
+        "preconditions": ["controller is live"],
+        "steps": [
+            "block the target TCP port",
+            "observe the controller state",
+            "restore the target TCP port",
+        ],
+        "expected_result": "controller state transitions: live -> reconnecting -> live",
+        "observability": ["sysfs controller state", "kernel log"],
+        "failure_diagnostics": ["collect sysfs and kernel log timestamps"],
+        "mapped_test_dir": "libnvme/test/tree-fabrics.c",
+    }
+
+    assert _black_box_case_quality_reasons(
+        case,
+        repo_path=str(tmp_path),
+    ) == []
 
 
 async def test_black_box_boundary_does_not_allow_internal_state_when_protocol_words_are_elsewhere():

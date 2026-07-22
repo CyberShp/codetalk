@@ -28,6 +28,7 @@ from app.services.external_agent_discovery import (
 from app.services.test_activity_contract import build_test_activity_contract
 from app.services.test_semantic_library import TestSemanticLibraryStore
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
+from app.services.workbench_skills import resolve_workbench_skill_instructions
 from app.services.workbench_input_ingest import ingest_workbench_inputs
 from app.services.workflow_dsl import WorkflowStore
 
@@ -152,7 +153,7 @@ class WorkbenchTaskRunPreparer:
         def prepared_source_context(
             query: str,
             *,
-            limit: int = 8,
+            limit: int = 12,
             min_test_files: int = 2,
             evidence_hints: list[dict[str, Any]] | None = None,
             search_roots: list[str] | None = None,
@@ -188,8 +189,40 @@ class WorkbenchTaskRunPreparer:
                 )
             return json.loads(json.dumps(source_context_memo[key]))
 
+        agent_source_steps = [
+            step
+            for step in workflow_snapshot.get("steps") or []
+            if isinstance(step, dict) and step.get("type") == "agent_task"
+        ]
+        task_source_context_limit = max(
+            [max(1, int(step.get("source_context_limit") or 12)) for step in agent_source_steps]
+            or [12]
+        )
+        task_source_context_min_test_files = max(
+            [
+                max(0, int(step.get("source_context_min_test_files") or 2))
+                for step in agent_source_steps
+            ]
+            or [2]
+        )
+        task_source_evidence_hints = [
+            dict(item)
+            for step in agent_source_steps
+            for item in step.get("source_evidence_hints") or []
+            if isinstance(item, dict)
+        ]
+        task_source_search_roots = _unique_strings(
+            str(value)
+            for step in agent_source_steps
+            for value in step.get("source_context_search_roots") or []
+            if str(value).strip()
+        )
         local_source_context = prepared_source_context(
-            str(context_bundle.get("query") or "")
+            str(context_bundle.get("query") or ""),
+            limit=task_source_context_limit,
+            min_test_files=task_source_context_min_test_files,
+            evidence_hints=task_source_evidence_hints,
+            search_roots=task_source_search_roots,
         )
         context_bundle["local_source_context"] = local_source_context
         agent_instructions = collect_agent_instructions(
@@ -286,6 +319,13 @@ class WorkbenchTaskRunPreparer:
         for step in workflow_snapshot.get("steps") or []:
             if not isinstance(step, dict) or step.get("type") != "agent_task":
                 continue
+            step = {
+                **step,
+                "skill_instructions": resolve_workbench_skill_instructions(
+                    step.get("skills") or [],
+                    step.get("skill_instructions") or [],
+                ),
+            }
             step_id = str(step.get("id") or f"step_{len(agent_runs) + 1}")
             provider = _canonical_agent_provider(
                 str(provider_override or step.get("provider") or "claude-code")
@@ -309,7 +349,7 @@ class WorkbenchTaskRunPreparer:
             )
             step_local_source_context = prepared_source_context(
                 str(step_context_bundle.get("query") or ""),
-                limit=max(1, int(step.get("source_context_limit") or 8)),
+                limit=max(1, int(step.get("source_context_limit") or 12)),
                 min_test_files=max(
                     0, int(step.get("source_context_min_test_files") or 2)
                 ),
@@ -588,10 +628,14 @@ def build_local_source_context(
     evidence_hints: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     repo = Path(str(repo_path or ""))
+    repo_name_tokens = set(_source_query_tokens(repo.name.replace("-", " ")))
+    repo_name_tokens.update(
+        f"lib{token}" for token in tuple(repo_name_tokens) if len(token) >= 3
+    )
     tokens = [
         token
         for token in _source_query_tokens(query)
-        if token != repo.name.lower()
+        if token != repo.name.lower() and token not in repo_name_tokens
     ]
     base = {
         "provider": "local-source-search",
@@ -625,7 +669,15 @@ def build_local_source_context(
         repo_revision=repo_revision,
         search_roots=effective_roots,
     )
-    candidates = _rank_source_candidates_by_path(
+    explicit_path_candidates = _explicit_source_path_candidates(
+        root=root,
+        query=query,
+        tokens=tokens,
+        max_file_bytes=max_file_bytes,
+        max_candidates=max(1, min(24, max_candidates_to_read // 2)),
+        tracked_paths=git_files,
+    )
+    ranked_path_candidates = _rank_source_candidates_by_path(
         root=root,
         tokens=tokens,
         max_files_scanned=max_files_scanned,
@@ -633,42 +685,118 @@ def build_local_source_context(
         relative_paths=git_files,
         search_roots=effective_roots,
     )
+    explicit_paths = {
+        str(item.get("file_path") or "") for item in explicit_path_candidates
+    }
+    candidates = [
+        *explicit_path_candidates,
+        *[
+            item for item in ranked_path_candidates
+            if str(item.get("file_path") or "") not in explicit_paths
+        ],
+    ]
+    ranked_content_candidates = _content_priority_source_candidates(
+        root=root,
+        tokens=tokens,
+        path_candidates=candidates,
+        max_file_bytes=max_file_bytes,
+        search_roots=effective_roots,
+        tracked_paths=git_files,
+    )
+    content_candidates = [
+        *explicit_path_candidates,
+        *[
+            item for item in ranked_content_candidates
+            if str(item.get("file_path") or "") not in explicit_paths
+        ],
+    ]
+    reserved_content_slots = min(len(content_candidates), max_candidates_to_read)
+    path_read_limit = max(0, max_candidates_to_read - reserved_content_slots)
+    promoted_tests = [
+        item
+        for item in content_candidates
+        if _local_source_classification(str(item.get("file_path") or "")) == "test"
+    ][: max(0, min_test_files)]
+    promoted_test_paths = {
+        str(item.get("file_path") or "") for item in promoted_tests
+    }
+    promoted_content = [
+        item
+        for item in content_candidates
+        if str(item.get("file_path") or "") not in promoted_test_paths
+    ][: max(0, reserved_content_slots - len(promoted_tests))]
+    promoted_content.extend(promoted_tests)
+    promoted_paths = {
+        str(item.get("file_path") or "") for item in promoted_content
+    }
+    remaining_path_candidates = [
+        item
+        for item in candidates
+        if str(item.get("file_path") or "") not in promoted_paths
+    ]
+    candidates_to_read = [
+        *promoted_content,
+        *remaining_path_candidates[:path_read_limit],
+        *remaining_path_candidates[path_read_limit:],
+        *content_candidates[reserved_content_slots:],
+    ]
     scored = _materialize_source_evidence_hints(
         root=root,
         evidence_hints=evidence_hints,
         max_file_bytes=max_file_bytes,
         excerpt_radius=max(8, excerpt_radius),
     )
-    for item in candidates[:max_candidates_to_read]:
+    for item in candidates_to_read[:max_candidates_to_read]:
         rel_path = str(item["file_path"])
-        source_path = root / rel_path
+        if _is_unrequested_vendor_plugin_path(
+            rel_path,
+            query=query,
+        ) or _is_unrequested_bundled_dependency_path(
+            rel_path,
+            query=query,
+        ) or _is_unrequested_platform_path(rel_path, query=query):
+            continue
+        source_path = _safe_repo_source_file(root, root / rel_path)
+        if source_path is None:
+            continue
         try:
             data = source_path.read_bytes()
         except OSError:
             continue
         text = data.decode("utf-8", errors="replace")
-        content_terms = [token for token in tokens if token in text.lower()]
-        score = int(item["score"]) + len(content_terms) * 4
+        score = int(item["score"])
         rel_lower = rel_path.lower()
-        if rel_lower.startswith(("lib/", "src/", "app/", "include/")):
+        classification = _local_source_classification(rel_path)
+        path_parts = {
+            part for part in rel_lower.replace("\\", "/").split("/") if part
+        }
+        if classification == "source" and path_parts.intersection(
+            {"lib", "src", "app", "include"}
+        ):
             score += 12
-        if rel_lower.startswith(("test/", "tests/", "spec/")):
+        if classification == "test":
             score -= 4
-        if tokens and score <= 0:
-            continue
         excerpt, start_line, end_line = _source_excerpt(
             text,
             tokens=tokens,
             radius=excerpt_radius,
         )
         sha256 = hashlib.sha256(data).hexdigest()
-        matched_terms = _unique_strings([
-            *[str(term) for term in item.get("matched_terms") or []],
-            *content_terms,
-        ])
+        excerpt_lower = excerpt.lower()
+        matched_terms = _unique_strings(
+            token
+            for token in tokens
+            if _source_token_matches_line(token, excerpt_lower)
+        )
+        score += len(matched_terms) * 4
+        if tokens and score <= 0:
+            continue
         scored.append({
             "file_path": rel_path,
             "score": score,
+            "content_match_count": int(item.get("content_match_count") or 0),
+            "behavior_score": _source_excerpt_behavior_score(excerpt),
+            "explicit_path": bool(item.get("explicit_path")),
             "matched_terms": matched_terms,
             "start_line": start_line,
             "end_line": end_line,
@@ -677,7 +805,7 @@ def build_local_source_context(
             "size_bytes": len(data),
             "line_count": _line_count_text(text),
             "symbols": _source_symbols(excerpt)[:12],
-            "classification": _local_source_classification(rel_path),
+            "classification": classification,
             "status": "validated_source_file",
         })
     deduplicated: list[dict[str, Any]] = []
@@ -695,6 +823,7 @@ def build_local_source_context(
     scored = deduplicated
     scored.sort(
         key=lambda item: (
+            not bool(item.get("explicit_path")),
             not bool(item.get("evidence_hint")),
             not bool(item.get("symbols")),
             -int(item.get("score") or 0),
@@ -705,15 +834,18 @@ def build_local_source_context(
         scored,
         limit=limit,
         min_test_files=min_test_files,
+        coverage_tokens=tokens,
     )
     return {
         **base,
         "status": "ready" if files else "empty",
         "file_count": len(files),
         "files": files,
-        "scanned_file_count": min(len(candidates), max_files_scanned),
+        "scanned_file_count": min(
+            len(candidates) + len(content_candidates), max_files_scanned
+        ),
         "token_count": len(tokens),
-        "tokens": tokens[:24],
+        "tokens": tokens[:48],
         "repo_revision": repo_revision,
         "file_discovery": "git_ls_files" if git_files is not None else "bounded_recursive",
         "search_roots": effective_roots,
@@ -783,10 +915,142 @@ def _materialize_source_evidence_hints(
     return cards
 
 
-def _select_source_and_test_evidence(
-    scored: list[dict[str, Any]], *, limit: int, min_test_files: int = 2
+def _explicit_source_path_candidates(
+    *,
+    root: Path,
+    query: str,
+    tokens: list[str],
+    max_file_bytes: int,
+    max_candidates: int,
+    tracked_paths: tuple[str, ...] | None = None,
 ) -> list[dict[str, Any]]:
-    selected = list(scored[: max(0, limit)])
+    """Turn existing source paths typed by the user into deterministic priorities."""
+    raw_paths = re.findall(
+        r"(?<![A-Za-z0-9_.-])(?:/?[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+",
+        str(query or ""),
+    )
+    candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    allowed_paths = set(tracked_paths) if tracked_paths is not None else None
+    try:
+        resolved_root = root.resolve()
+    except OSError:
+        return []
+
+    for raw_index, raw_path in enumerate(_unique_strings(raw_paths)):
+        path = Path(raw_path)
+        candidate_path = path if path.is_absolute() else root / path
+        try:
+            resolved = candidate_path.resolve()
+            relative = resolved.relative_to(resolved_root)
+        except (OSError, ValueError):
+            continue
+        if not relative.parts or str(relative) == "." or not resolved.exists():
+            continue
+        source_paths: list[Path]
+        if resolved.is_file():
+            source_paths = [resolved]
+        elif resolved.is_dir():
+            source_paths = list(
+                _iter_source_files(
+                    resolved_root,
+                    search_roots=[relative.as_posix()],
+                )
+            )[: max_candidates]
+        else:
+            continue
+        ranked: list[dict[str, Any]] = []
+        for source_path in source_paths:
+            source_path = _safe_repo_source_file(resolved_root, source_path)
+            if source_path is None:
+                continue
+            try:
+                data = source_path.read_bytes()
+                rel_path = source_path.relative_to(resolved_root).as_posix()
+            except (OSError, ValueError):
+                continue
+            if (
+                len(data) > max_file_bytes
+                or rel_path in seen
+                or (allowed_paths is not None and rel_path not in allowed_paths)
+            ):
+                continue
+            text = data.decode("utf-8", errors="replace").lower()
+            matched = [token for token in tokens if token in text]
+            ranked.append({
+                "file_path": rel_path,
+                "score": 100_000 - raw_index * 100 + min(99, len(matched) * 3),
+                "matched_terms": matched,
+                "content_match_count": sum(text.count(token) for token in matched),
+                "explicit_path": True,
+            })
+        ranked.sort(
+            key=lambda item: (
+                -len(item.get("matched_terms") or []),
+                -int(item.get("content_match_count") or 0),
+                str(item.get("file_path") or ""),
+            )
+        )
+        for item in ranked:
+            path_key = str(item.get("file_path") or "")
+            if path_key in seen:
+                continue
+            seen.add(path_key)
+            candidates.append(item)
+            if len(candidates) >= max_candidates:
+                return candidates
+    return candidates
+
+
+def _select_source_and_test_evidence(
+    scored: list[dict[str, Any]],
+    *,
+    limit: int,
+    min_test_files: int = 2,
+    coverage_tokens: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    selection_limit = max(0, limit)
+    coverage = set(coverage_tokens or [])
+    selected: list[dict[str, Any]] = []
+    eligible = [item for item in scored if _source_evidence_is_deliverable(item)]
+    remaining = list(eligible)
+    covered_terms: set[str] = set()
+
+    def implementation_bonus(item: dict[str, Any]) -> int:
+        suffix = Path(str(item.get("file_path") or "")).suffix.lower()
+        content_matches = max(0, int(item.get("content_match_count") or 0))
+        return (
+            (20 if suffix == ".c" else 8 if suffix in {".h", ".hpp"} else 0)
+            + (12 if item.get("symbols") else 0)
+            + min(24, content_matches.bit_length() * 3)
+            + min(16, max(0, int(item.get("behavior_score") or 0)) * 2)
+        )
+
+    while remaining and len(selected) < selection_limit:
+        if not selected:
+            candidate_index = 0
+        else:
+            candidate_index = max(
+                range(len(remaining)),
+                key=lambda index: (
+                    int(remaining[index].get("score") or 0)
+                    + implementation_bonus(remaining[index])
+                    + 8
+                    * len(
+                        (
+                            set(remaining[index].get("matched_terms") or [])
+                            & coverage
+                        )
+                        - covered_terms
+                    ),
+                    bool(remaining[index].get("evidence_hint")),
+                    int(remaining[index].get("score") or 0),
+                    str(remaining[index].get("file_path") or ""),
+                ),
+            )
+        candidate = remaining.pop(candidate_index)
+        selected.append(candidate)
+        covered_terms.update(set(candidate.get("matched_terms") or []) & coverage)
     if limit < 2 or not selected:
         return selected
     selected_classes = {str(item.get("classification") or "source") for item in selected}
@@ -796,8 +1060,9 @@ def _select_source_and_test_evidence(
         replacement = next(
             (
                 item
-                for item in scored[limit:]
+                for item in eligible
                 if str(item.get("classification") or "source") == required_class
+                and item not in selected
             ),
             None,
         )
@@ -820,7 +1085,7 @@ def _select_source_and_test_evidence(
         str(item.get("classification") or "source") == "test"
         for item in selected
     )
-    for candidate in scored:
+    for candidate in eligible:
         if test_count >= desired_test_files:
             break
         if str(candidate.get("classification") or "source") != "test":
@@ -841,10 +1106,65 @@ def _select_source_and_test_evidence(
         selected[replace_index] = candidate
         selected_paths.add(str(candidate.get("file_path") or ""))
         test_count += 1
+    if desired_test_files:
+        def test_relevance(item: dict[str, Any]) -> tuple[bool, int, int, str]:
+            return (
+                bool(item.get("evidence_hint")),
+                int(item.get("score") or 0),
+                implementation_bonus(item),
+                str(item.get("file_path") or ""),
+            )
+
+        while True:
+            selected_test_indexes = [
+                index
+                for index, item in enumerate(selected)
+                if str(item.get("classification") or "source") == "test"
+            ]
+            unselected_tests = [
+                item
+                for item in eligible
+                if str(item.get("classification") or "source") == "test"
+                and str(item.get("file_path") or "") not in selected_paths
+            ]
+            if not selected_test_indexes or not unselected_tests:
+                break
+            weakest_index = min(
+                selected_test_indexes,
+                key=lambda index: test_relevance(selected[index]),
+            )
+            strongest = max(unselected_tests, key=test_relevance)
+            if test_relevance(strongest) <= test_relevance(selected[weakest_index]):
+                break
+            selected_paths.discard(str(selected[weakest_index].get("file_path") or ""))
+            selected[weakest_index] = strongest
+            selected_paths.add(str(strongest.get("file_path") or ""))
     selected.sort(
         key=lambda item: (-int(item.get("score") or 0), str(item.get("file_path") or ""))
     )
     return selected
+
+
+def _source_evidence_is_deliverable(item: dict[str, Any]) -> bool:
+    """Mirror evidence validation before a candidate consumes a source slot."""
+    if item.get("symbols"):
+        return True
+    suffix = Path(str(item.get("file_path") or "")).suffix.lower()
+    return suffix in {".json", ".sh"}
+
+
+def _source_excerpt_behavior_score(excerpt: str) -> int:
+    """Measure executable branch/error/resource behavior in a bounded C slice."""
+    lowered = str(excerpt or "").lower()
+    patterns = (
+        r"\bif\s*\(",
+        r"\b(?:else|switch|case|goto)\b",
+        r"\breturn\b",
+        r"\b(?:free|close|cleanup|release|destroy|unlink)\s*\(",
+        r"\b(?:retry|timeout|error|failed?|errno|null)\b",
+        r"(?:!=|==|<=|>=|<\s*0|>\s*0)",
+    )
+    return sum(len(re.findall(pattern, lowered)) for pattern in patterns)
 
 
 def _rank_source_candidates_by_path(
@@ -867,6 +1187,9 @@ def _rank_source_candidates_by_path(
         if scanned >= max_files_scanned:
             break
         scanned += 1
+        source_path = _safe_repo_source_file(root, source_path)
+        if source_path is None:
+            continue
         try:
             stat = source_path.stat()
         except OSError:
@@ -893,6 +1216,157 @@ def _rank_source_candidates_by_path(
     return candidates
 
 
+def _content_priority_source_candidates(
+    *,
+    root: Path,
+    tokens: list[str],
+    path_candidates: list[dict[str, Any]],
+    max_file_bytes: int,
+    search_roots: list[str] | None = None,
+    tracked_paths: tuple[str, ...] | None = None,
+) -> list[dict[str, Any]]:
+    rg = shutil.which("rg")
+    if not rg or not tokens:
+        return []
+    path_term_counts = {
+        token: sum(
+            token in set(candidate.get("matched_terms") or [])
+            for candidate in path_candidates
+        )
+        for token in tokens
+    }
+    priority_terms = [
+        token
+        for token in sorted(
+            tokens,
+            key=lambda token: (
+                path_term_counts.get(token, 0),
+                -len(token),
+                tokens.index(token),
+            ),
+        )
+        if not re.fullmatch(r"[0-9a-f]{7,}", token)
+    ][:32]
+    if not priority_terms:
+        return []
+    command = [
+        rg,
+        "--count-matches",
+        "-i",
+        "--no-messages",
+        "--max-filesize",
+        str(max_file_bytes),
+        "-e",
+        "|".join(re.escape(token) for token in priority_terms),
+        "--",
+        *(search_roots or ["."]),
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            cwd=root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    path_candidates_by_path = {
+        str(candidate.get("file_path") or ""): candidate
+        for candidate in path_candidates
+    }
+    allowed_paths = set(tracked_paths) if tracked_paths is not None else None
+    candidates: list[dict[str, Any]] = []
+    seen_paths: set[str] = set()
+    for raw_match in result.stdout.splitlines():
+        raw_path, separator, raw_count = raw_match.rpartition(":")
+        rel_path = raw_path.strip().removeprefix("./").replace("\\", "/")
+        if (
+            not separator
+            or not rel_path
+            or rel_path in seen_paths
+            or (allowed_paths is not None and rel_path not in allowed_paths)
+            or Path(rel_path).suffix.lower() not in SOURCE_EXTENSIONS
+        ):
+            continue
+        seen_paths.add(rel_path)
+        existing = path_candidates_by_path.get(rel_path) or {}
+        try:
+            content_match_count = int(raw_count.strip())
+        except ValueError:
+            content_match_count = 1
+        candidates.append({
+            **existing,
+            "file_path": rel_path,
+            "score": int(existing.get("score") or 0),
+            "matched_terms": list(existing.get("matched_terms") or []),
+            "content_priority": True,
+            "content_match_count": content_match_count,
+        })
+    candidates.sort(
+        key=lambda item: (
+            _local_source_classification(str(item.get("file_path") or "")) == "test",
+            -int(item.get("content_match_count") or 0),
+            -int(item.get("score") or 0),
+            str(item.get("file_path") or ""),
+        )
+    )
+    source_candidates = [
+        item
+        for item in candidates
+        if _local_source_classification(str(item.get("file_path") or "")) != "test"
+    ]
+    test_candidates = [
+        item
+        for item in candidates
+        if _local_source_classification(str(item.get("file_path") or "")) == "test"
+    ]
+    # rg may emit paths in a different order across processes. Keep bounded,
+    # independently ranked pools so test evidence cannot disappear at an
+    # arbitrary pre-sort cutoff.
+    return [*source_candidates[:2048], *test_candidates[:512]]
+
+
+def _is_unrequested_vendor_plugin_path(path: str, *, query: str) -> bool:
+    """Keep generic risk terms from pulling unrelated vendor plugins into scope."""
+    normalized = str(path or "").replace("\\", "/").lower().lstrip("./")
+    parts = [part for part in normalized.split("/") if part]
+    if len(parts) < 3 or parts[0] not in {"plugin", "plugins"}:
+        return False
+    vendor = parts[1]
+    query_lower = str(query or "").lower()
+    return (
+        vendor not in query_lower
+        and f"plugins/{vendor}" not in query_lower
+        and f"plugin/{vendor}" not in query_lower
+    )
+
+
+def _is_unrequested_platform_path(path: str, *, query: str) -> bool:
+    normalized = str(path or "").replace("\\", "/").lower().lstrip("./")
+    query_lower = str(query or "").lower()
+    requests_linux = bool(re.search(r"\blinux\b", query_lower))
+    requests_windows = bool(re.search(r"\b(?:windows|win32)\b", query_lower))
+    windows_specific = bool(
+        re.search(
+            r"(?:^|/)(?:windows|win32)(?:/|$)|"
+            r"(?:^|/)(?:win|[^/]*(?:-win|_win|_win32|_windows))\.[^.]+$",
+            normalized,
+        )
+    )
+    return requests_linux and not requests_windows and windows_specific
+
+
+def _is_unrequested_bundled_dependency_path(path: str, *, query: str) -> bool:
+    normalized = str(path or "").replace("\\", "/").lower().lstrip("./")
+    first = normalized.split("/", 1)[0]
+    if first not in {"vendor", "third_party", "third-party"}:
+        return False
+    query_lower = str(query or "").lower().replace("-", "_")
+    return first.replace("-", "_") not in query_lower
+
+
 def _iter_source_files(root: Path, *, search_roots: list[str] | None = None):
     stack = [
         candidate
@@ -910,6 +1384,8 @@ def _iter_source_files(root: Path, *, search_roots: list[str] | None = None):
         except OSError:
             continue
         for entry in entries:
+            if entry.is_symlink():
+                continue
             if entry.is_dir():
                 if entry.name in SOURCE_SCAN_IGNORED_DIRS:
                     continue
@@ -917,6 +1393,20 @@ def _iter_source_files(root: Path, *, search_roots: list[str] | None = None):
                 continue
             if entry.suffix.lower() in SOURCE_EXTENSIONS:
                 yield entry
+
+
+def _safe_repo_source_file(root: Path, candidate: Path) -> Path | None:
+    """Resolve a regular source file without following links outside the repo."""
+    try:
+        if candidate.is_symlink():
+            return None
+        resolved = candidate.resolve(strict=True)
+        resolved.relative_to(root)
+        if not resolved.is_file():
+            return None
+    except (OSError, ValueError):
+        return None
+    return resolved
 
 
 def _git_repo_revision(root: Path) -> str:
@@ -998,18 +1488,19 @@ def _source_search_roots(
     path_hints: list[str] | None,
     search_roots: list[str] | None,
 ) -> list[str]:
-    requested = [
+    explicit_requested = [
         str(value).strip().replace("\\", "/").strip("/")
         for value in [*(search_roots or []), *(path_hints or [])]
         if str(value).strip()
     ]
-    requested.extend(
+    inferred_requested = [
         match.strip("/")
         for match in re.findall(
             r"(?<![A-Za-z0-9_.-])(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+",
             str(query or ""),
         )
-    )
+    ]
+    requested = [*explicit_requested, *inferred_requested]
     safe = []
     for value in _unique_strings(requested):
         candidate = (root / value).resolve()
@@ -1019,12 +1510,45 @@ def _source_search_roots(
             continue
         if candidate.exists():
             safe.append(value)
+    explicit_count = len(_unique_strings(explicit_requested))
+    inferred_unique = _unique_strings(inferred_requested)
+    safe_inferred = {
+        value
+        for value in safe
+        if value in inferred_unique
+    }
+    if (
+        not explicit_count
+        and inferred_unique
+        and len(safe_inferred) < len(inferred_unique)
+    ):
+        # Paths mentioned in prose are relevance hints, not a safe exclusive
+        # search root. A stale or conventionalized path must not hide valid
+        # entry points elsewhere in the repository.
+        return []
+    if not explicit_count and safe and re.search(
+        r"源码|源代码|\bsource\b|\bcode\b",
+        str(query or ""),
+        flags=re.IGNORECASE,
+    ):
+        test_parts = {"test", "tests", "spec", "specs"}
+        if all(
+            any(part.lower() in test_parts for part in value.split("/"))
+            for value in safe
+        ):
+            # A test-directory mention is an evidence request, not permission to
+            # exclude production source from a source-first analysis.
+            return []
     return safe[:16]
 
 
 def _local_source_classification(path: str) -> str:
     normalized = path.replace("\\", "/").lower().lstrip("./")
-    return "test" if normalized.startswith(("test/", "tests/", "spec/")) else "source"
+    parts = [part for part in normalized.split("/") if part]
+    is_test = any(
+        part in {"test", "tests", "spec", "specs"} for part in parts[:-1]
+    )
+    return "test" if is_test else "source"
 
 
 def _source_query_tokens(query: str) -> list[str]:
@@ -1038,15 +1562,35 @@ def _source_query_tokens(query: str) -> list[str]:
     )
     if re.search(r"\bio\b", query_without_paths, flags=re.IGNORECASE):
         raw_tokens.append("io")
+    semantic_expansions = (
+        (r"nvme[- ]?o[- ]?f|nvme\s+over\s+fabrics", ["nvmf", "fabrics"]),
+        (r"dh[- ]?hmac[- ]?chap", ["dhchap"]),
+        (r"资源(?:清理|释放|泄漏|耗尽)|长时间运行", ["cleanup", "release", "close", "refcount"]),
+        (r"断线重连|重新连接|恢复", ["reconnect", "retry", "recovery"]),
+        (r"认证|鉴权", ["auth", "authenticate"]),
+        (r"超时", ["timeout"]),
+        (r"并发|竞态", ["concurrent", "race", "lock"]),
+        (r"回滚|部分成功", ["rollback"]),
+        (r"子任务|子连接|子控制器", ["child"]),
+        (r"异常传播|错误传播|失败传播|上游异常", ["error", "fail", "propagate", "return"]),
+        (r"最终成功覆盖|吞掉错误|忽略错误", ["continue", "ret", "err"]),
+        (r"翻转|溢出", ["wrap", "overflow", "counter"]),
+    )
+    semantic_tokens: list[str] = []
+    for pattern, values in semantic_expansions:
+        if re.search(pattern, query_without_paths, flags=re.IGNORECASE):
+            semantic_tokens.extend(values)
+    raw_tokens = [*semantic_tokens, *raw_tokens]
     stop = {
         "the", "and", "for", "with", "from", "this", "that", "shall",
         "must", "should", "when", "then", "only", "path", "file",
         "tmp", "volumes", "media",
         "analysis", "analyze", "source", "code", "evidence", "output",
         "report", "workflow", "markdown", "json", "sfmea", "black",
-        "box", "case", "cases",
+        "box", "case", "cases", "test", "tests", "testing", "unit",
+        "linux", "commit", "current",
     }
-    return _unique_strings(token for token in raw_tokens if token not in stop)[:32]
+    return _unique_strings(token for token in raw_tokens if token not in stop)[:48]
 
 
 def _source_excerpt(
@@ -1137,6 +1681,13 @@ def _source_symbols(text: str) -> list[str]:
             continue
         symbols.append(name)
     supplemental_patterns = (
+        re.compile(
+            r"^\s*(?:(?:static|inline|extern|const|volatile)\s+)*"
+            r"(?:struct\s+|enum\s+|union\s+)?[A-Za-z_][A-Za-z0-9_]*"
+            r"(?:\s+[A-Za-z_][A-Za-z0-9_]*)*\s+\*+\s*"
+            r"([A-Za-z_][A-Za-z0-9_]*)\s*\(",
+            re.MULTILINE,
+        ),
         re.compile(r"^\s*#\s*define\s+([A-Za-z_][A-Za-z0-9_]*)", re.MULTILINE),
         re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.MULTILINE),
         re.compile(r"^\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(\s*\)\s*\{", re.MULTILINE),
@@ -1695,10 +2246,11 @@ def build_executor_handoff_contract(
             source_context=source_context,
         ),
         "source_analysis_limits": {
-            key: max(1, int(step[field]))
+            key: max(0 if key == "min_test_files" else 1, int(step[field]))
             for key, field in (
                 ("max_files", "source_analysis_max_files"),
                 ("max_evidence_anchors", "source_analysis_max_evidence_anchors"),
+                ("min_test_files", "source_analysis_min_test_files"),
             )
             if step.get(field) is not None
         },
@@ -1825,6 +2377,11 @@ def _execution_source_context(*, source_context: dict[str, Any]) -> dict[str, An
         "status": str(source_context.get("status") or "unknown"),
         "repo_revision": str(source_context.get("repo_revision") or ""),
         "file_discovery": str(source_context.get("file_discovery") or ""),
+        "tokens": [
+            str(token)
+            for token in source_context.get("tokens") or []
+            if str(token).strip()
+        ],
         "source_first": bool((source_context.get("rules") or {}).get("source_first", False)),
         "rule": (
             "Read and cite these current repo source excerpts before making source-based claims. "
@@ -1841,6 +2398,9 @@ def _execution_source_context(*, source_context: dict[str, Any]) -> dict[str, An
                     or _local_source_classification(str(item.get("file_path") or ""))
                 ),
                 "status": str(item.get("status") or "validated_source_file"),
+                "score": int(item.get("score") or 0),
+                "content_match_count": int(item.get("content_match_count") or 0),
+                "behavior_score": int(item.get("behavior_score") or 0),
                 "matched_terms": [str(term) for term in item.get("matched_terms") or []],
                 "symbols": [str(symbol) for symbol in item.get("symbols") or []],
                 "excerpt": str(item.get("excerpt") or ""),
@@ -3423,8 +3983,13 @@ def _agent_instruction_candidates(root: Path, input_snapshot: dict[str, Any]) ->
         for part in relative.parts[:-1]:
             current = current / part
             candidates.append(current / "AGENTS.md")
-        if len(relative.parts) and (root / relative).is_dir():
-            candidates.append(root / relative / "AGENTS.md")
+        if len(relative.parts):
+            try:
+                is_directory = (root / relative).is_dir()
+            except OSError:
+                is_directory = False
+            if is_directory:
+                candidates.append(root / relative / "AGENTS.md")
     return candidates
 
 
@@ -3449,7 +4014,15 @@ def _input_path_hints(input_snapshot: dict[str, Any]) -> list[str]:
 
 def _looks_like_path(value: str) -> bool:
     text = value.strip()
-    return bool(text) and ("/" in text or "\\" in text)
+    if not text or ("/" not in text and "\\" not in text):
+        return False
+    if "\x00" in text or "\n" in text or "\r" in text:
+        return False
+    encoded = text.encode("utf-8", errors="surrogatepass")
+    if len(encoded) > 4096:
+        return False
+    components = text.replace("\\", "/").split("/")
+    return all(len(part.encode("utf-8", errors="surrogatepass")) <= 255 for part in components)
 
 
 def _is_within(path: Path, root: Path) -> bool:

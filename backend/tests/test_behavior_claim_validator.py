@@ -1,9 +1,11 @@
 import json
+import asyncio
 from pathlib import Path
 
 import pytest
 
 from app.services.agent_cli_bridge import AGENT_FINAL_ANSWER_PREFIX
+from app.llm.base import LLMResponse
 
 
 def _request():
@@ -43,6 +45,130 @@ def _request():
             }
         ],
     }
+
+
+@pytest.mark.asyncio
+async def test_materialize_routes_codex_generation_to_active_builtin_llm(
+    tmp_path, monkeypatch
+):
+    from app.config import settings
+    from app.services.behavior_claim_validator import materialize_behavior_claim_validation
+
+    monkeypatch.setattr(settings, "behavior_claim_audit_enabled", True)
+    monkeypatch.setattr(settings, "behavior_claim_audit_runtime_id", "auto")
+    calls = []
+
+    class FakeLLM:
+        async def complete_once(self, messages, max_tokens, temperature):
+            calls.append(
+                {
+                    "messages": messages,
+                    "max_tokens": max_tokens,
+                    "temperature": temperature,
+                }
+            )
+            request = json.loads(
+                messages[0]["content"].split("VALIDATION_REQUEST:\n", 1)[1]
+            )
+            return LLMResponse(
+                content=json.dumps(
+                    {
+                        "claims": [
+                            {
+                                "claim_id": claim["claim_id"],
+                                "binding": claim["binding"],
+                                "status": "supports",
+                                "reason": "由独立内置模型依据源码片段核验",
+                            }
+                            for claim in request["claims"]
+                        ]
+                    }
+                ),
+                model="deepseek-chat",
+                usage={},
+                finish_reason="stop",
+            )
+
+        async def close(self):
+            calls.append({"closed": True})
+
+    result = await materialize_behavior_claim_validation(
+        artifact_dir=tmp_path / "artifacts",
+        repo_path=tmp_path,
+        generator_identity="agent-runtime:default-codex",
+        request=_request(),
+        runtime_loader=lambda _runtime_id: {
+            "id": "default-codex",
+            "provider": "codex",
+            "enabled": True,
+        },
+        llm_factory=lambda: FakeLLM(),
+    )
+
+    assert result["status"] == "completed"
+    assert result["validator"]["provider"] == "builtin-llm"
+    assert result["validator"]["model"] == "deepseek-chat"
+    assert result["validator"]["independent"] is True
+    assert [item["status"] for item in result["claims"]] == [
+        "supports",
+        "supports",
+    ]
+    assert calls[-1] == {"closed": True}
+
+
+@pytest.mark.asyncio
+async def test_materialize_behavior_claim_validation_emits_heartbeats_while_audit_runs(
+    tmp_path, monkeypatch
+):
+    from app.config import settings
+    from app.services.behavior_claim_validator import materialize_behavior_claim_validation
+
+    monkeypatch.setattr(settings, "behavior_claim_audit_enabled", True)
+    monkeypatch.setattr(settings, "behavior_claim_audit_heartbeat_seconds", 0.01)
+    progress = []
+
+    async def slow_streamer(**kwargs):
+        await asyncio.sleep(0.04)
+        request = json.loads(kwargs["prompt"].split("VALIDATION_REQUEST:\n", 1)[1])
+        yield AGENT_FINAL_ANSWER_PREFIX + json.dumps(
+            {
+                "claims": [
+                    {
+                        "claim_id": claim["claim_id"],
+                        "binding": claim["binding"],
+                        "status": "supports",
+                        "reason": "verified",
+                    }
+                    for claim in request["claims"]
+                ]
+            }
+        )
+
+    runtime = {
+        "id": "default-codex",
+        "provider": "codex",
+        "command": "codex",
+        "args": [],
+        "resume_args": [],
+        "env": {},
+        "enabled": True,
+    }
+    result = await materialize_behavior_claim_validation(
+        artifact_dir=tmp_path / "artifacts",
+        repo_path=tmp_path,
+        generator_identity="deepseek-chat",
+        request=_request(),
+        runtime_loader=lambda runtime_id: runtime,
+        streamer=slow_streamer,
+        on_progress=progress.append,
+    )
+
+    assert result["status"] == "completed"
+    heartbeats = [item for item in progress if item.get("kind") == "stage_heartbeat"]
+    assert heartbeats
+    assert heartbeats[0]["stage_id"] == "behavior_claim_validation"
+    assert heartbeats[0]["pending_batch_count"] == 1
+    assert "事实核验仍在进行" in heartbeats[0]["user_message"]
 
 
 def test_normalize_behavior_claim_verdicts_binds_current_request_and_fills_omissions():
@@ -87,7 +213,71 @@ def test_normalize_behavior_claim_verdicts_binds_current_request_and_fills_omiss
     assert "mitigation 是建议动作" in prompt
     assert "test_mapping 是候选落点" in prompt
     assert "不要要求建议动作已经存在于源码" in prompt
+    assert "准确的局部源码事实" in prompt
+    assert "日志文字同样允许" in prompt
+    assert "evidence_bindings" in prompt
+    assert "遗漏的关键条件会反转陈述含义" in prompt
+    assert "命令行选项的真实语义" in prompt
+    assert "oracle_basis" in prompt
+    assert "正常保护行为或测试覆盖缺口" in prompt
     assert "field_patch" in prompt
+
+
+def test_normalize_behavior_claim_verdicts_recovers_self_contradictory_support_reason():
+    from app.services.behavior_claim_validator import normalize_behavior_claim_verdicts
+
+    raw = json.dumps(
+        {
+            "claims": [
+                {
+                    "claim_id": "ROW:sfmea.json:SFMEA-001",
+                    "binding": "binding-1",
+                    "status": "contradicts",
+                    "reason": "The claim is fully supported.",
+                    "field_patch": {},
+                }
+            ]
+        }
+    )
+
+    result = normalize_behavior_claim_verdicts(
+        raw_output=raw,
+        request=_request(),
+        validator={"provider": "codex", "independent": True},
+    )
+
+    assert result["claims"][0]["status"] == "supports"
+    assert "自相矛盾" in result["claims"][0]["reason"]
+
+
+def test_normalize_behavior_claim_verdicts_recovers_explicit_final_status_correction():
+    from app.services.behavior_claim_validator import normalize_behavior_claim_verdicts
+
+    raw = json.dumps(
+        {
+            "claims": [
+                {
+                    "claim_id": "ROW:sfmea.json:SFMEA-001",
+                    "binding": "binding-1",
+                    "status": "contradicts",
+                    "reason": (
+                        "The source supports the claim. "
+                        "Re-evaluating: Changing to supports."
+                    ),
+                    "field_patch": {},
+                }
+            ]
+        }
+    )
+
+    result = normalize_behavior_claim_verdicts(
+        raw_output=raw,
+        request=_request(),
+        validator={"provider": "codex", "independent": True},
+    )
+
+    assert result["claims"][0]["status"] == "supports"
+    assert "自相矛盾" in result["claims"][0]["reason"]
 
 
 def test_normalize_behavior_claim_verdicts_keeps_only_allowed_field_patch_keys():
@@ -128,6 +318,95 @@ def test_normalize_behavior_claim_verdicts_keeps_only_allowed_field_patch_keys()
         "detection": "通过登录响应状态与连接状态观测，不声称存在该日志。"
     }
     assert result["claims"][1].get("field_patch") == {}
+
+
+def test_black_box_behavior_patch_keeps_oracle_basis_correction():
+    from app.services.behavior_claim_validator import normalize_behavior_claim_verdicts
+
+    request = {
+        "claims": [
+            {
+                "claim_id": "ROW:black_box_cases.json:BB-11",
+                "binding": "binding-bb-11",
+                "type": "black_box_case_behavior",
+            }
+        ]
+    }
+    raw = json.dumps(
+        {
+            "claims": [
+                {
+                    "claim_id": "ROW:black_box_cases.json:BB-11",
+                    "binding": "binding-bb-11",
+                    "status": "contradicts",
+                    "reason": "the current oracle cites an unrelated unit test",
+                    "field_patch": {
+                        "oracle_basis": (
+                            "Use observed keyring/sysfs before-after state; "
+                            "do not claim cleanup without source or measured evidence."
+                        ),
+                        "technical_claims": [],
+                    },
+                }
+            ]
+        }
+    )
+
+    result = normalize_behavior_claim_verdicts(
+        raw_output=raw,
+        request=request,
+        validator={"provider": "codex", "independent": True},
+    )
+
+    assert result["claims"][0]["field_patch"] == {
+        "oracle_basis": (
+            "Use observed keyring/sysfs before-after state; "
+            "do not claim cleanup without source or measured evidence."
+        )
+    }
+
+
+def test_failed_black_box_verdict_gets_a_neutral_oracle_fallback():
+    from app.services.behavior_claim_validator import normalize_behavior_claim_verdicts
+
+    request = {
+        "claims": [
+            {
+                "claim_id": "ROW:black_box_cases.json:BB-12",
+                "binding": "binding-bb-12",
+                "type": "black_box_case_behavior",
+                "statement": json.dumps(
+                    {
+                        "oracle_basis": "unrelated source test proves cleanup",
+                        "expected_result": "all resources are cleaned",
+                    }
+                ),
+            }
+        ]
+    }
+    raw = json.dumps(
+        {
+            "claims": [
+                {
+                    "claim_id": "ROW:black_box_cases.json:BB-12",
+                    "binding": "binding-bb-12",
+                    "status": "contradicts",
+                    "reason": "the oracle is unrelated to cleanup",
+                    "field_patch": {},
+                }
+            ]
+        }
+    )
+
+    result = normalize_behavior_claim_verdicts(
+        raw_output=raw,
+        request=request,
+        validator={"provider": "codex", "independent": True},
+    )
+
+    oracle = result["claims"][0]["field_patch"]["oracle_basis"]
+    assert "运行前登记" in oracle
+    assert "不预设" in oracle
 
 
 def test_normalize_behavior_claim_verdicts_keeps_duplicate_ids_bound_to_each_request():

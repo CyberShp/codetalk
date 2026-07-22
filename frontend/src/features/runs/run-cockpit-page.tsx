@@ -35,6 +35,7 @@ import {
   taskStatusLabel,
 } from "@/features/tasks/task-status";
 import {
+  formatStageAttemptLabel,
   selectStageAttemptStart,
   selectStageProgressEvent,
 } from "@/features/runs/stage-progress-event";
@@ -365,7 +366,6 @@ function StageProgressPanel({ events, runPartial, onRetry, busy }: { events: Wor
   const elapsedEnd = !partial && !completed && clockMs ? clockMs : new Date(latest.created_at).getTime();
   const elapsedSeconds = first ? Math.max(0, Math.round((elapsedEnd - new Date(first.created_at).getTime()) / 1000)) : 0;
   const stateLabel = partial ? "部分完成" : completed ? "已完成" : "运行中";
-  const attemptCount = Number(payload.attempt_count ?? 0);
   return <section className={`ct-v2-stage-progress ${partial ? "is-partial" : ""}`} aria-label="阶段执行进度">
     <header><div><span>{stageDisplayName(stageId)}</span><h2>{runPartial ? "工作流已结束，当前最佳结果已保留" : eventMessage(latest)}</h2></div><em>{stateLabel}</em></header>
     <dl>
@@ -374,7 +374,7 @@ function StageProgressPanel({ events, runPartial, onRetry, busy }: { events: Wor
       <div><dt>已运行</dt><dd>{elapsedSeconds} 秒</dd></div>
       <div><dt>最后活动</dt><dd>{new Date(latest.created_at).toLocaleTimeString("zh-CN", { hour12: false })}</dd></div>
       <div><dt>执行器</dt><dd>{String(payload.model || "当前内置模型")}</dd></div>
-      <div><dt>尝试</dt><dd>{attemptCount ? `${attemptCount} 次完整生成` : "未调用模型"}</dd></div>
+      <div><dt>尝试</dt><dd>{formatStageAttemptLabel(payload)}</dd></div>
     </dl>
     {latestDeltaText && <pre className="ct-v2-stage-live-output" aria-label="阶段实时输出">{latestDeltaText}</pre>}
     {partial && <button type="button" disabled={busy} onClick={onRetry}><RefreshCw size={14} />继续生成 / 从本阶段重试</button>}

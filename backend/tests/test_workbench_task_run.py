@@ -6,6 +6,7 @@ import sys
 import threading
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -444,6 +445,11 @@ def test_prepare_workbench_task_run_builds_executor_handoff_contract(tmp_path):
         "sfmea",
         "black-box-test-design",
     ]
+    assert [item["id"] for item in contract["skills"]["instructions"]] == [
+        "sfmea",
+        "storage-flow-analysis",
+        "black-box-test-design",
+    ]
     assert contract["input_materials"]["read_order"] == ["requirements"]
     assert contract["outputs"]["required_artifacts"] == [
         "sfmea.json",
@@ -465,6 +471,69 @@ def test_prepare_workbench_task_run_builds_executor_handoff_contract(tmp_path):
         "sfmea.json",
         "black_box_cases.md",
     ]
+
+
+def test_external_agent_finalization_materializes_behavior_validation_before_quality_audit(
+    tmp_path, monkeypatch
+):
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+    import app.services.workbench_workflow_runner as runner_module
+
+    monkeypatch.setattr(runner_module.settings, "behavior_claim_audit_enabled", True)
+    calls = []
+
+    async def fake_materialize(**kwargs):
+        calls.append(kwargs)
+        return {
+            "status": "completed",
+            "claims": [{"claim_id": "C-1", "status": "supports"}],
+        }
+
+    monkeypatch.setattr(
+        runner_module,
+        "materialize_behavior_claim_validation",
+        fake_materialize,
+    )
+    task_run = SimpleNamespace(
+        artifact_dir=str(tmp_path / "task-run"),
+        repo_path=str(tmp_path / "repo"),
+        task_bundle={"test_activity_contract": {"schema_version": 1}},
+        workflow_snapshot={
+            "outputs": [
+                {"id": "sfmea", "artifact": "sfmea.json", "type": "json"},
+                {
+                    "id": "black_box_cases",
+                    "artifact": "black_box_cases.json",
+                    "type": "json",
+                },
+            ]
+        },
+    )
+    events = []
+    runner = WorkbenchWorkflowRunner(
+        tmp_path / "task-runs",
+        event_sink=lambda event_type, payload: events.append((event_type, payload)),
+    )
+
+    result = runner._materialize_final_behavior_validation(
+        task_run=task_run,
+        step_results=[
+            {
+                "step_id": "analyze",
+                "type": "agent_task",
+                "status": "completed",
+                "provider": "agent-runtime:default-codex",
+            }
+        ],
+    )
+
+    assert result["status"] == "completed"
+    assert calls[0]["generator_identity"] == "agent-runtime:default-codex"
+    assert calls[0]["artifact_dir"] == Path(task_run.artifact_dir)
+    assert any(
+        event_type == "behavior_claim_validation_completed"
+        for event_type, _payload in events
+    )
 
 
 def test_agent_runtime_timeout_limits_are_frozen_into_task_run(tmp_path, monkeypatch):
@@ -1038,12 +1107,33 @@ def test_workbench_runner_staged_builtin_llm_writes_each_declared_artifact(
                 for line in prompt.splitlines()
                 if line.startswith("OUTPUT_ARTIFACT:")
             )
+            dimensions = [
+                "normal_path",
+                "invalid_input",
+                "resource_pressure",
+                "timeout",
+                "reconnect",
+                "concurrency",
+                "recovery",
+                "performance",
+                "long_steady_state",
+                "resource_wraparound",
+                "resource_cleanup",
+                "upstream_error_propagation",
+            ]
+            oracle_bases = {
+                "resource_pressure": "resource limit from source constant and environment configuration",
+                "timeout": "timeout option from command help and configuration evidence",
+                "performance": "same environment baseline after warmup 5 runs and repeat 30 samples with P50/P95",
+                "long_steady_state": "duration and sampling interval from the test specification and environment baseline",
+                "resource_wraparound": "maximum value and bit-width from source constant evidence",
+            }
             payloads = {
                 "source_analysis.md": "# Source evidence\nlib/iscsi/iscsi.c:1 spdk_iscsi_login_authenticate",
                 "source_scope.json": {"scope_id": "iscsi", "query": "login", "repo": "spdk", "discovery": {"provider": "builtin-llm", "method": "source_context", "file_count": 2}, "files": ["lib/iscsi/iscsi.c", "test/iscsi_tgt/login.sh"], "entry_points": []},
                 "evidence_cards.json": [{"evidence_id": "ev-1", "kind": "source", "file_path": "lib/iscsi/iscsi.c", "symbols": ["spdk_iscsi_login_authenticate"], "reason": "login entry", "source": "local-source"}],
                     "flow_map.md": "# Login flow\n## 外部触发\nlogin PDU\n## 流程步骤\n1. negotiate via lib/iscsi/iscsi.c\n## 异常分支\ntimeout\n## 观测点\nlog and test/iscsi_tgt/login.sh",
-                "sfmea.json": [{"failure_mode": "auth rejected", "cause": "bad CHAP", "effect": "session unavailable", "detection": "login response", "severity": 7, "occurrence": 3, "detection_score": 2, "rpn": 42, "score_explanation": "authentication failure blocks session establishment", "mitigation": "reject invalid CHAP before session creation and add a negative login test monitoring target logs", "source_evidence": "lib/iscsi/iscsi.c:1", "test_mapping": "test/iscsi_tgt/login.sh"}],
+                "sfmea.json": [{"failure_mode": "authentication failure: valid CHAP credentials rejected", "cause": "valid CHAP response is classified as invalid", "effect": "session unavailable", "detection": "login response", "severity": 7, "occurrence": 3, "detection_score": 2, "rpn": 42, "score_explanation": "authentication failure blocks session establishment", "mitigation": "fix the CHAP validation path and add a valid-credential login test monitoring target logs", "source_evidence": "lib/iscsi/iscsi.c:1", "test_mapping": "test/iscsi_tgt/login.sh"}],
                 "black_box_cases.json": [
                     {
                         "case_id": f"TC-{index}",
@@ -1052,24 +1142,13 @@ def test_workbench_runner_staged_builtin_llm_writes_each_declared_artifact(
                         "preconditions": ["target running"],
                         "steps": ["exercise the public login interface"],
                         "expected_result": "observable login result",
+                        "oracle_basis": oracle_bases.get(dimension, "public contract and same-commit source evidence"),
                         "observability": ["login response"],
                         "failure_diagnostics": ["target log"],
                         "mapped_test_dir": "test/iscsi_tgt",
                         "source_or_test_evidence": ["lib/iscsi/iscsi.c:1"],
                     }
-                    for index, dimension in enumerate(
-                        [
-                            "normal_path",
-                            "invalid_input",
-                            "resource_pressure",
-                            "timeout",
-                            "reconnect",
-                            "concurrency",
-                            "recovery",
-                            "performance",
-                        ],
-                        1,
-                    )
+                    for index, dimension in enumerate(dimensions, 1)
                 ],
             }
             content = payloads[artifact]
@@ -2043,6 +2122,28 @@ def test_prepare_workbench_task_run_embeds_repo_agent_instructions(tmp_path, mon
         step_bundle["context_discovery_decision"]["fast-context"]["codetalk_callable"]
         is decision["codetalk_callable"]
     )
+
+
+def test_collect_agent_instructions_ignores_long_prose_with_path_separators(tmp_path):
+    from app.services.workbench_task_run import collect_agent_instructions
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "AGENTS.md").write_text("# Repository instructions\n", encoding="utf-8")
+    analysis_object = (
+        "基于 linux-nvme/nvme-cli 的真实源码分析 discovery、connect、TLS 和资源清理，"
+        + "必须覆盖异常传播和长稳态。" * 40
+    )
+
+    result = collect_agent_instructions(
+        repo_path=repo,
+        input_snapshot={
+            "analysis_object": analysis_object,
+            "module_path": "lib/nvme/fabrics.c",
+        },
+    )
+
+    assert [item["relative_path"] for item in result["files"]] == ["AGENTS.md"]
 
 
 def test_prepare_workbench_task_run_embeds_agent_provider_snapshot(tmp_path, monkeypatch):
@@ -3941,7 +4042,10 @@ def test_agent_rerun_injects_previous_test_activity_quality_feedback(tmp_path):
             ],
             "test_activity_contract": {
                 "required_outputs": ["business_flow.md", "sfmea.json"],
-                "artifact_contract": {},
+                "artifact_contract": {
+                    "sfmea.json": {"min_sfmea_rows": 12},
+                    "black_box_cases.json": {"min_black_box_cases": 12},
+                },
             },
         }),
         encoding="utf-8",
@@ -3996,15 +4100,86 @@ def test_agent_rerun_injects_previous_test_activity_quality_feedback(tmp_path):
     assert feedback["protected_artifacts"] == [
         "source_scope.json",
         "evidence_cards.json",
+    ]
+    assert bundle["quality_retry_required_artifacts"] == [
+        "flow_map.md",
+        "sfmea.json",
         "black_box_cases.json",
     ]
-    assert bundle["quality_retry_required_artifacts"] == ["flow_map.md", "sfmea.json"]
     assert bundle["test_activity_contract"]["required_outputs"] == [
         "flow_map.md",
         "sfmea.json",
+        "black_box_cases.json",
     ]
+    assert (
+        bundle["test_activity_contract"]["artifact_contract"]["sfmea.json"][
+            "min_sfmea_rows"
+        ]
+        == 12
+    )
+    assert (
+        bundle["test_activity_contract"]["artifact_contract"]
+        ["black_box_cases.json"]["min_black_box_cases"]
+        == 12
+    )
     assert "仅修改受影响交付件" in feedback["instruction"]
     assert "必须逐项修正" in feedback["instruction"]
+
+
+def test_quality_retry_regenerates_declared_descendants_of_failed_artifact(tmp_path):
+    from app.services.workbench_workflow_runner import _inject_prior_step_context
+
+    task_dir = tmp_path / "task"
+    artifact_dir = task_dir / "agent_runs" / "analyze_source_flow"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "task_bundle.json").write_text(
+        json.dumps({
+            "required_artifacts": [
+                "source_scope.json",
+                "sfmea.json",
+                "black_box_cases.json",
+                "test_strategy.md",
+                "test_design_mindmap.md",
+                "report.md",
+            ],
+            "test_activity_contract": {
+                "required_outputs": [
+                    "sfmea.json",
+                    "black_box_cases.json",
+                    "test_strategy.md",
+                    "test_design_mindmap.md",
+                    "report.md",
+                ],
+                "artifact_contract": {},
+            },
+        }),
+        encoding="utf-8",
+    )
+    (task_dir / "test_activity_quality_audit.json").write_text(
+        json.dumps({
+            "status": "needs_rework",
+            "issues": [{
+                "artifact": "sfmea.json",
+                "code": "non_risk_sfmea_row",
+                "message": "该行描述的是正常保护行为，不是失效模式",
+            }],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    _inject_prior_step_context(artifact_dir=artifact_dir, prior_step_results=[])
+
+    bundle = json.loads((artifact_dir / "task_bundle.json").read_text(encoding="utf-8"))
+    assert bundle["quality_retry_required_artifacts"] == [
+        "sfmea.json",
+        "black_box_cases.json",
+        "test_strategy.md",
+        "test_design_mindmap.md",
+        "report.md",
+    ]
+    assert bundle["retry_quality_feedback"]["protected_artifacts"] == [
+        "source_scope.json"
+    ]
 
 
 def test_quality_retry_maps_combined_report_findings_to_declared_report(tmp_path):
@@ -4148,6 +4323,266 @@ def test_quality_retry_restores_protected_artifacts_when_agent_step_raises(tmp_p
     assert json.loads(protected.read_text(encoding="utf-8"))[0]["evidence_id"] == "accepted"
 
 
+def test_quality_retry_keeps_current_canonical_source_pack_over_parent_snapshot(
+    tmp_path,
+    monkeypatch,
+):
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    task_dir = tmp_path / "task_runs" / "task-1"
+    artifact_dir = task_dir / "agent_runs" / "analyze"
+    stage_dir = artifact_dir / "stages" / "source_analysis"
+    stage_dir.mkdir(parents=True)
+    protected = artifact_dir / "evidence_cards.json"
+    protected.write_text('[{"evidence_id":"parent-old"}]', encoding="utf-8")
+    (artifact_dir / "source_scope.json").write_text(
+        '{"files":["parent.c"]}',
+        encoding="utf-8",
+    )
+    (artifact_dir / "agent_run.json").write_text(
+        json.dumps({"run_id": "run-1", "provider": "builtin-llm"}),
+        encoding="utf-8",
+    )
+    (artifact_dir / "task_bundle.json").write_text(
+        json.dumps(
+            {
+                "required_artifacts": [
+                    "source_scope.json",
+                    "evidence_cards.json",
+                    "sfmea.json",
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (task_dir / "test_activity_quality_audit.json").write_text(
+        json.dumps(
+            {
+                "status": "needs_rework",
+                "issues": [{"artifact": "sfmea.json", "code": "bad_sfmea"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    canonical_pack = {
+        "source_scope": {"files": ["current.c"]},
+        "evidence_cards": [
+            {
+                "evidence_id": "SRC-01",
+                "file_path": "current.c",
+                "start_line": 1,
+                "end_line": 1,
+                "excerpt": "int current;",
+                "sha256": "abc",
+                "symbols": ["current"],
+            }
+        ],
+    }
+
+    def complete_with_current_pack(self, **kwargs):
+        (stage_dir / "source_evidence_pack.json").write_text(
+            json.dumps(canonical_pack),
+            encoding="utf-8",
+        )
+        protected.write_text(
+            json.dumps(canonical_pack["evidence_cards"]),
+            encoding="utf-8",
+        )
+        (artifact_dir / "source_scope.json").write_text(
+            json.dumps(canonical_pack["source_scope"]),
+            encoding="utf-8",
+        )
+        return {"step_id": "analyze", "status": "completed"}
+
+    monkeypatch.setattr(
+        WorkbenchWorkflowRunner,
+        "_execute_agent_step_unprotected",
+        complete_with_current_pack,
+        raising=False,
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs")._execute_agent_step(
+        task_run_id="task-1",
+        step={"id": "analyze", "type": "agent_task"},
+        agent_run={
+            "step_id": "analyze",
+            "provider": "builtin-llm",
+            "artifact_dir": str(artifact_dir),
+        },
+        prior_step_results=[],
+        resolved_inputs={},
+        timeout_sec=0,
+    )
+
+    assert result["status"] == "completed"
+    assert json.loads(protected.read_text(encoding="utf-8")) == canonical_pack[
+        "evidence_cards"
+    ]
+    assert json.loads(
+        (artifact_dir / "source_scope.json").read_text(encoding="utf-8")
+    ) == canonical_pack["source_scope"]
+
+
+def test_final_behavior_validation_field_patch_is_materialized_without_new_generation(
+    tmp_path,
+):
+    from app.services.workbench_workflow_runner import (
+        _apply_behavior_validation_field_patches,
+    )
+
+    artifact_dir = tmp_path / "agent"
+    artifact_dir.mkdir()
+    cases = artifact_dir / "black_box_cases.json"
+    cases.write_text(
+        json.dumps(
+            [
+                {
+                    "case_id": "BB-11",
+                    "scenario_name": "Discovery cleanup",
+                    "steps": ["nvme connect --nqn=<nqn>"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    validation = {
+        "status": "completed",
+        "claims": [
+            {
+                "claim_id": "ROW:black_box_cases.json:BB-11",
+                "status": "contradicts",
+                "field_patch": {
+                    "scenario_name": "TLS PSK connect cleanup",
+                    "steps": ["nvme connect --tls --tls-key=<key> --nqn=<nqn>"],
+                },
+            }
+        ],
+    }
+
+    changed = _apply_behavior_validation_field_patches(
+        artifact_dir=artifact_dir,
+        validation=validation,
+    )
+
+    repaired = json.loads(cases.read_text(encoding="utf-8"))[0]
+    assert changed == {"black_box_cases.json": ["BB-11"]}
+    assert repaired["scenario_name"] == "TLS PSK connect cleanup"
+    assert repaired["steps"] == ["nvme connect --tls --tls-key=<key> --nqn=<nqn>"]
+
+
+def test_final_behavior_validation_field_patches_converge_to_fixed_point(tmp_path):
+    import asyncio
+
+    from app.services.test_activity_contract import _behavior_claim_binding
+    from app.services.workbench_workflow_runner import (
+        _converge_behavior_validation_field_patches,
+    )
+
+    artifact_dir = tmp_path / "agent"
+    artifact_dir.mkdir()
+    cases = artifact_dir / "black_box_cases.json"
+    cases.write_text(
+        json.dumps(
+            [
+                {
+                    "case_id": "BB-01",
+                    "scenario_name": "Discovery log",
+                    "steps": ["run nvme discover"],
+                    "expected_result": "one entry is returned",
+                    "observability": ["entry output"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    first = {
+        "status": "completed",
+        "claims": [
+            {
+                "claim_id": "ROW:black_box_cases.json:BB-01",
+                "status": "contradicts",
+                "field_patch": {
+                    "expected_result": "zero or more records are returned"
+                },
+            }
+        ],
+    }
+    validation_calls = 0
+
+    async def validate():
+        nonlocal validation_calls
+        validation_calls += 1
+        row = json.loads(cases.read_text(encoding="utf-8"))[0]
+        statement = json.dumps(
+            {
+                field: row.get(field)
+                for field in (
+                    "scenario_name",
+                    "steps",
+                    "expected_result",
+                    "observability",
+                )
+                if field in row
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        binding = _behavior_claim_binding(
+            claim_id="ROW:black_box_cases.json:BB-01",
+            claim_type="black_box_case_behavior",
+            statement=statement,
+            evidence=[],
+        )
+        if validation_calls == 1:
+            return {
+                "status": "completed",
+                "claims": [
+                    {
+                        "claim_id": "ROW:black_box_cases.json:BB-01",
+                        "binding": binding,
+                        "status": "contradicts",
+                        "field_patch": {
+                            "steps": [
+                                "run nvme discover and parse the record count"
+                            ],
+                            "observability": ["record count and exit code"],
+                        },
+                    }
+                ],
+            }
+        return {
+            "status": "completed",
+            "claims": [
+                {
+                    "claim_id": "ROW:black_box_cases.json:BB-01",
+                    "binding": binding,
+                    "status": "supports",
+                }
+            ],
+        }
+
+    final_validation, changed, rounds = asyncio.run(
+        _converge_behavior_validation_field_patches(
+            artifact_dir=artifact_dir,
+            validation=first,
+            validate=validate,
+            max_rounds=3,
+        )
+    )
+
+    repaired = json.loads(cases.read_text(encoding="utf-8"))[0]
+    assert repaired["expected_result"] == "zero or more records are returned"
+    assert repaired["steps"] == [
+        "run nvme discover and parse the record count"
+    ]
+    assert repaired["observability"] == ["record count and exit code"]
+    assert changed == {"black_box_cases.json": ["BB-01"]}
+    assert rounds == 2
+    assert validation_calls == 2
+    assert final_validation["claims"][0]["status"] == "supports"
+
+
 def test_quality_retry_generation_scope_applies_to_builtin_llm():
     from app.services.workbench_workflow_runner import _quality_retry_generation_artifacts
 
@@ -4244,6 +4679,76 @@ def test_each_quality_repair_attempt_only_bypasses_its_current_failed_artifacts(
     assert second["cache_bypass_artifacts"] == ["sfmea.json", "report.md"]
     assert "business_flow.md" not in second["cache_bypass_artifacts"]
     assert "black_box_cases.json" not in second["cache_bypass_artifacts"]
+
+
+def test_in_run_quality_repair_drops_task_level_retry_invalidations():
+    from app.services.workbench_workflow_runner import (
+        _apply_quality_feedback_to_staged_plan,
+    )
+
+    plan = {
+        "required_outputs": ["flow_map.md", "black_box_cases.json"],
+        "cache_bypass_artifacts": [
+            "flow_map.md",
+            "black_box_cases.json",
+            "test_strategy.md",
+        ],
+        "stages": [
+            {"id": "source_analysis", "artifact": "source_analysis.md", "depends_on": []},
+            {"id": "business_flow", "artifact": "flow_map.md", "depends_on": ["source_analysis"]},
+            {"id": "black_box_cases", "artifact": "black_box_cases.json", "depends_on": ["source_analysis"]},
+            {"id": "test_strategy", "artifact": "test_strategy.md", "depends_on": ["black_box_cases"]},
+        ],
+    }
+
+    repaired = _apply_quality_feedback_to_staged_plan(
+        plan,
+        {
+            "affected_artifacts": ["black_box_cases.json"],
+            "issues": [],
+        },
+    )
+
+    assert repaired["quality_repair_base_cache_bypass_artifacts"] == []
+    assert repaired["cache_bypass_artifacts"] == [
+        "black_box_cases.json",
+        "test_strategy.md",
+    ]
+    assert "flow_map.md" not in repaired["cache_bypass_artifacts"]
+
+
+def test_quality_repair_invalidates_only_dependency_descendants():
+    from app.services.workbench_workflow_runner import (
+        _apply_quality_feedback_to_staged_plan,
+    )
+
+    plan = {
+        "required_outputs": ["flow_map.md", "test_design_mindmap.md"],
+        "cache_bypass_artifacts": [],
+        "stages": [
+            {"id": "source_analysis", "artifact": "source_analysis.md", "depends_on": []},
+            {"id": "flow_outline", "artifact": "flow_outline.json", "depends_on": ["source_analysis"]},
+            {"id": "business_flow", "artifact": "flow_map.md", "depends_on": ["flow_outline"]},
+            {"id": "sfmea", "artifact": "sfmea.json", "depends_on": ["source_analysis", "flow_outline"]},
+            {"id": "black_box_cases", "artifact": "black_box_cases.json", "depends_on": ["source_analysis", "flow_outline", "sfmea"]},
+            {"id": "test_design_mindmap", "artifact": "test_design_mindmap.md", "depends_on": ["source_analysis", "flow_outline", "sfmea", "black_box_cases"]},
+        ],
+    }
+
+    repaired = _apply_quality_feedback_to_staged_plan(
+        plan,
+        {
+            "affected_artifacts": ["sfmea.json", "black_box_cases.json"],
+            "issues": [],
+        },
+    )
+
+    assert repaired["cache_bypass_artifacts"] == [
+        "sfmea.json",
+        "black_box_cases.json",
+        "test_design_mindmap.md",
+    ]
+    assert "flow_map.md" not in repaired["cache_bypass_artifacts"]
 
 
 def test_combined_report_fact_conflict_repairs_structured_sources_not_layout_only():
@@ -4447,6 +4952,7 @@ def test_staged_builtin_quality_repair_respects_the_shared_attempt_budget(
     (artifact_dir / "agent_output_contract.json").write_text("{}", encoding="utf-8")
     plans: list[dict] = []
     deadline_timeouts: list[float] = []
+    behavior_validations: list[str] = []
 
     clients: list["DummyLLM"] = []
 
@@ -4511,6 +5017,12 @@ def test_staged_builtin_quality_repair_respects_the_shared_attempt_budget(
                 },
             ],
         }
+
+    async def fake_behavior_validation(*, artifact_dir, **_kwargs):
+        behavior_validations.append(
+            (artifact_dir / "report.md").read_text(encoding="utf-8")
+        )
+        return {"status": "completed", "claims": []}
     monkeypatch.setattr(runner_module, "create_llm_client_from_active", fake_factory)
     monkeypatch.setattr(runner_module, "create_source_analysis_llm_client", fake_factory)
     monkeypatch.setattr(
@@ -4529,9 +5041,19 @@ def test_staged_builtin_quality_repair_respects_the_shared_attempt_budget(
         fake_audit,
     )
     monkeypatch.setattr(
+        runner_module,
+        "materialize_behavior_claim_validation",
+        fake_behavior_validation,
+    )
+    monkeypatch.setattr(
         runner_module.settings,
         "staged_quality_repair_min_remaining_seconds",
         minimum_remaining_seconds,
+    )
+    monkeypatch.setattr(
+        runner_module.settings,
+        "behavior_claim_audit_enabled",
+        True,
     )
 
     result = WorkbenchWorkflowRunner(tmp_path / "task_runs")._execute_builtin_llm_step(
@@ -4565,6 +5087,7 @@ def test_staged_builtin_quality_repair_respects_the_shared_attempt_budget(
     assert repair["stopped_reason"] == expected_stop_reason
     if expected_plan_count == 2:
         assert repair["attempts"][0]["status_after"] == "deliverable"
+    assert len(behavior_validations) == (3 if expected_plan_count == 2 else 1)
     assert clients
     assert all(client.closed for client in clients)
 
@@ -4750,6 +5273,148 @@ def test_quality_repair_keeps_a_blocked_candidate_with_far_fewer_issues():
     after = {"status": "needs_rework", "score": 0, "issue_count": 2}
 
     assert _quality_repair_regressed(before=before, after=after) is False
+
+
+def test_quality_repair_salvages_only_rows_with_fewer_issues():
+    from app.services.workbench_workflow_runner import (
+        _merge_non_regressing_json_rows,
+    )
+
+    previous = json.dumps(
+        [
+            {"sfmea_id": "SFMEA-001", "failure_mode": "旧错误结论"},
+            {"sfmea_id": "SFMEA-002", "failure_mode": "上一版"},
+        ],
+        ensure_ascii=False,
+    ).encode()
+    candidate = json.dumps(
+        [
+            {"sfmea_id": "SFMEA-001", "failure_mode": "已按源码纠正"},
+            {"sfmea_id": "SFMEA-002", "failure_mode": "候选退化"},
+        ],
+        ensure_ascii=False,
+    ).encode()
+    before = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-001",
+                "code": "behavior_claim_contradicted",
+            },
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-002",
+                "code": "non_risk_sfmea_row",
+            },
+        ]
+    }
+    after = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-002",
+                "code": "non_risk_sfmea_row",
+            },
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-002",
+                "code": "non_actionable_mitigation",
+            },
+        ]
+    }
+
+    merged, accepted_rows = _merge_non_regressing_json_rows(
+        artifact="sfmea.json",
+        previous=previous,
+        candidate=candidate,
+        before=before,
+        after=after,
+    )
+
+    rows = json.loads(merged)
+    assert accepted_rows == ["SFMEA-001"]
+    assert rows[0]["failure_mode"] == "已按源码纠正"
+    assert rows[1]["failure_mode"] == "上一版"
+
+
+def test_quality_repair_does_not_salvage_a_row_with_a_new_issue_type():
+    from app.services.workbench_workflow_runner import (
+        _merge_non_regressing_json_rows,
+    )
+
+    previous = b'[{"sfmea_id":"SFMEA-001","failure_mode":"previous"}]'
+    candidate = b'[{"sfmea_id":"SFMEA-001","failure_mode":"candidate"}]'
+    before = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-001",
+                "code": "non_risk_sfmea_row",
+            },
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-001",
+                "code": "non_actionable_mitigation",
+            },
+        ]
+    }
+    after = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-001",
+                "code": "behavior_claim_contradicted",
+            }
+        ]
+    }
+
+    merged, accepted_rows = _merge_non_regressing_json_rows(
+        artifact="sfmea.json",
+        previous=previous,
+        candidate=candidate,
+        before=before,
+        after=after,
+    )
+
+    assert accepted_rows == []
+    assert json.loads(merged)[0]["failure_mode"] == "previous"
+
+
+def test_quality_repair_does_not_salvage_rows_when_downstream_artifact_exists(
+    tmp_path,
+):
+    from app.services.workbench_workflow_runner import (
+        _salvage_non_regressing_quality_rows,
+    )
+
+    previous = b'[{"sfmea_id":"SFMEA-001","failure_mode":"previous"}]'
+    candidate = b'[{"sfmea_id":"SFMEA-001","failure_mode":"corrected"}]'
+    (tmp_path / "sfmea.json").write_bytes(candidate)
+    (tmp_path / "test_design_mindmap.md").write_text(
+        "# stale mindmap\n",
+        encoding="utf-8",
+    )
+    before = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-001",
+                "code": "behavior_claim_contradicted",
+            }
+        ]
+    }
+    after = {"issues": []}
+
+    salvaged, rows = _salvage_non_regressing_quality_rows(
+        artifact_dir=tmp_path,
+        snapshot={"sfmea.json": previous},
+        before=before,
+        after=after,
+        artifact_names=["sfmea.json"],
+    )
+
+    assert salvaged == {}
+    assert rows == {}
 
 
 def test_builtin_llm_quality_retry_receives_feedback_and_cannot_write_protected_artifacts(
@@ -5046,6 +5711,59 @@ def test_local_source_context_prefers_git_files_and_records_revision(tmp_path):
     assert context["files"][0]["classification"] == "source"
 
 
+def test_local_source_context_does_not_narrow_repo_when_a_mentioned_path_is_missing(tmp_path):
+    import subprocess
+
+    from app.services.workbench_task_run import build_local_source_context
+
+    repo = tmp_path / "repo"
+    cli_source = repo / "fabrics.c"
+    lib_source = repo / "libnvme" / "src" / "nvme" / "fabrics.c"
+    cli_source.parent.mkdir(parents=True)
+    lib_source.parent.mkdir(parents=True)
+    cli_source.write_text(
+        "int fabrics_discovery(void) { return discovery_timeout(); }\n",
+        encoding="utf-8",
+    )
+    lib_source.write_text(
+        "int libnvmf_connect_ctrl(void) { return connect_ctrl(); }\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=CodeTalk Test",
+            "-c",
+            "user.email=codetalk@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+    )
+
+    context = build_local_source_context(
+        repo_path=str(repo),
+        query=(
+            "must read libnvme/src/nvme/fabrics.c and src/fabrics.c "
+            "for discovery timeout"
+        ),
+        limit=4,
+        min_test_files=0,
+    )
+
+    assert context["search_roots"] == []
+    assert {item["file_path"] for item in context["files"]} == {
+        "fabrics.c",
+        "libnvme/src/nvme/fabrics.c",
+    }
+
+
 def test_local_source_context_reserves_a_related_test_anchor(tmp_path):
     from app.services.workbench_task_run import build_local_source_context
 
@@ -5075,6 +5793,582 @@ def test_local_source_context_reserves_a_related_test_anchor(tmp_path):
     )
 
     assert {item["classification"] for item in context["files"]} == {"source", "test"}
+
+
+def test_local_source_context_drops_hyphenated_repo_name_tokens_before_candidate_cap(
+    tmp_path,
+):
+    from app.services.workbench_task_run import build_local_source_context
+
+    repo = tmp_path / "nvme-cli"
+    repo.mkdir()
+    (repo / "fabrics.c").write_text(
+        "int fabrics_discovery_connect_tls(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+    decoys = repo / "plugins"
+    decoys.mkdir()
+    for index in range(12):
+        (decoys / f"linux_libnvme_nvme_cli_test_{index}.c").write_text(
+            f"int unrelated_vendor_command_{index}(void) {{ return 0; }}\n",
+            encoding="utf-8",
+        )
+
+    context = build_local_source_context(
+        repo_path=str(repo),
+        query=(
+            "分析 linux-nvme/nvme-cli 的 NVMe-oF fabrics discovery connect "
+            "DH-HMAC-CHAP TLS，并映射 tests/unit/libnvme/test"
+        ),
+        limit=4,
+        min_test_files=0,
+        max_candidates_to_read=8,
+    )
+
+    selected_paths = [item["file_path"] for item in context["files"]]
+    assert "fabrics.c" in selected_paths
+    assert all("nvme_cli_test_" not in path for path in selected_paths)
+
+
+def test_execution_source_context_preserves_ranking_signals_for_stage_compaction():
+    from app.services.workbench_task_run import _execution_source_context
+
+    projected = _execution_source_context(
+        source_context={
+            "provider": "local-source-search",
+            "status": "completed",
+            "repo_revision": "abc123",
+            "tokens": ["dhchap", "tls", "cleanup"],
+            "files": [
+                {
+                    "file_path": "libnvme/src/nvme/tree-fabrics.c",
+                    "score": 76,
+                    "matched_terms": ["dhchap", "tls"],
+                    "symbols": ["libnvmf_read_sysfs_dhchap"],
+                    "excerpt": "static void libnvmf_read_sysfs_dhchap(void) {}",
+                }
+            ],
+        }
+    )
+
+    assert projected["tokens"] == ["dhchap", "tls", "cleanup"]
+    assert projected["files"][0]["score"] == 76
+
+
+def test_local_source_context_classifies_nested_test_directories_as_test():
+    from app.services.workbench_task_run import _local_source_classification
+
+    assert _local_source_classification("libnvme/libnvme3/tests/test-config.py") == "test"
+    assert _local_source_classification("libnvme/test/config-api.c") == "test"
+    assert _local_source_classification("src/nvme/fabrics.c") == "source"
+
+
+def test_source_query_tokens_expand_storage_test_concepts():
+    from app.services.workbench_task_run import _source_query_tokens
+
+    tokens = set(
+        _source_query_tokens(
+            "覆盖 NVMe-oF、资源清理、资源泄漏、断线重连、认证失败、超时、并发竞态、"
+            "失败回滚、子任务失败和上游异常传播，避免错误被最终成功覆盖"
+        )
+    )
+
+    assert {
+        "cleanup",
+        "release",
+        "refcount",
+        "reconnect",
+        "retry",
+        "auth",
+        "timeout",
+        "concurrent",
+        "race",
+        "rollback",
+        "child",
+        "error",
+        "propagate",
+        "continue",
+        "nvmf",
+        "fabrics",
+    }.issubset(tokens)
+
+
+def test_local_source_context_rewards_nested_production_source_directories(tmp_path):
+    from app.services.workbench_task_run import build_local_source_context
+
+    nested = tmp_path / "libnvme" / "src" / "nvme" / "tree-fabrics.c"
+    nested.parent.mkdir(parents=True)
+    nested.write_text(
+        "int tree_fabrics_dhchap_tls_keyring(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+    decoy = tmp_path / "aaa.h"
+    decoy.write_text(
+        "int decoy_dhchap_tls_keyring(void);\n",
+        encoding="utf-8",
+    )
+
+    context = build_local_source_context(
+        repo_path=str(tmp_path),
+        query="dhchap tls keyring",
+        limit=2,
+        min_test_files=0,
+    )
+
+    scores = {item["file_path"]: item["score"] for item in context["files"]}
+    assert scores["libnvme/src/nvme/tree-fabrics.c"] > scores["aaa.h"]
+
+
+def test_local_source_context_preserves_rare_target_terms_within_file_limit(tmp_path):
+    from app.services.workbench_task_run import build_local_source_context
+
+    for index in range(5):
+        (tmp_path / f"fabrics_connect_{index}.c").write_text(
+            (
+                f"int fabrics_connect_{index}(void) {{ return 0; }}\n"
+                "// fabrics tcp discovery controller connect sysfs udev log page\n"
+            ),
+            encoding="utf-8",
+        )
+    (tmp_path / "crypto.c").write_text(
+        "int derive_dh_hmac_chap_psk(void) { return keyring_tls_psk(); }\n",
+        encoding="utf-8",
+    )
+
+    context = build_local_source_context(
+        repo_path=str(tmp_path),
+        query=(
+            "NVMe-oF TCP fabrics discovery controller connect DH HMAC CHAP "
+            "TLS PSK keyring sysfs udev log page"
+        ),
+        limit=3,
+        min_test_files=0,
+    )
+
+    selected_paths = [item["file_path"] for item in context["files"]]
+    assert "crypto.c" in selected_paths, context
+    assert {"hmac", "chap", "psk", "keyring"}.issubset(
+        {
+            term
+            for item in context["files"]
+            for term in item.get("matched_terms") or []
+        }
+    )
+
+
+def test_local_source_context_ranks_core_implementation_above_output_formatter(
+    tmp_path,
+):
+    from app.services.workbench_task_run import build_local_source_context
+
+    core = tmp_path / "libnvme" / "src" / "nvme" / "fabrics.c"
+    core.parent.mkdir(parents=True)
+    core.write_text(
+        "static int nvmf_connect_disc_entry(void)\n"
+        "{\n"
+        "    if (connect_discovery_controller() < 0)\n"
+        "        return -1;\n"
+        "    return retry_tls_dhchap_keyring();\n"
+        "}\n"
+        "\n"
+        "static int _nvmf_discovery(void)\n"
+        "{\n"
+        "    int ret = nvmf_connect_disc_entry();\n"
+        "    if (ret < 0)\n"
+        "        cleanup_controller();\n"
+        "    return ret;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    formatter = tmp_path / "nvme-print-binary.c"
+    formatter.write_text(
+        "void binary_discovery_log(void)\n"
+        "{\n"
+        "    print_discovery_log_page();\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    context = build_local_source_context(
+        repo_path=str(tmp_path),
+        query=(
+            "NVMe-oF TCP discovery controller connect DH-HMAC-CHAP TLS PSK "
+            "keyring reconnect retry resource cleanup"
+        ),
+        limit=1,
+        min_test_files=0,
+    )
+
+    assert context["files"][0]["file_path"] == "libnvme/src/nvme/fabrics.c"
+
+
+def test_local_source_context_prioritizes_explicit_source_file_and_test_directory(
+    tmp_path,
+):
+    from app.services.workbench_task_run import build_local_source_context
+
+    required = tmp_path / "libnvme" / "src" / "nvme" / "fabrics.c"
+    required.parent.mkdir(parents=True)
+    required.write_text(
+        "static int requested_entry(void) { return submit_request(); }\n",
+        encoding="utf-8",
+    )
+    test_dir = tmp_path / "libnvme" / "test"
+    test_dir.mkdir(parents=True)
+    for index in range(3):
+        (test_dir / f"case_{index}.c").write_text(
+            f"static int test_requested_{index}(void) {{ return {index}; }}\n",
+            encoding="utf-8",
+        )
+    for index in range(8):
+        (tmp_path / f"decoy_{index}.c").write_text(
+            (
+                f"static int discovery_connect_tls_dhchap_retry_{index}(void)\n"
+                "{\n"
+                "    if (connect_controller() < 0) return retry_tls_keyring();\n"
+                "    return cleanup_discovery();\n"
+                "}\n"
+            ),
+            encoding="utf-8",
+        )
+
+    context = build_local_source_context(
+        repo_path=str(tmp_path),
+        query=(
+            "分析 discovery connect TLS，必须读取 "
+            "libnvme/src/nvme/fabrics.c 和 libnvme/test"
+        ),
+        limit=4,
+        min_test_files=3,
+    )
+
+    paths = {item["file_path"] for item in context["files"]}
+    assert "libnvme/src/nvme/fabrics.c" in paths
+    assert len([path for path in paths if path.startswith("libnvme/test/")]) == 3
+
+
+def test_local_source_context_counts_terms_from_selected_excerpt_not_whole_file(
+    tmp_path,
+):
+    from app.services.workbench_task_run import build_local_source_context
+
+    for index in range(2):
+        (tmp_path / f"fabrics_{index}.c").write_text(
+            "int connect_target(void) { return 0; }\n"
+            + ("/* unrelated padding */\n" * 40)
+            + "/* dhchap tls psk keyring */\n",
+            encoding="utf-8",
+        )
+    (tmp_path / "crypto.c").write_text(
+        "int derive_dhchap_tls_psk_keyring(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+
+    context = build_local_source_context(
+        repo_path=str(tmp_path),
+        query="connect dhchap tls psk keyring",
+        limit=2,
+        min_test_files=0,
+    )
+
+    assert "crypto.c" in [item["file_path"] for item in context["files"]]
+    for item in context["files"]:
+        excerpt = item["excerpt"].lower()
+        assert all(term in excerpt for term in item["matched_terms"])
+
+
+def test_local_source_context_excludes_unrequested_vendor_plugins(tmp_path):
+    from app.services.workbench_task_run import build_local_source_context
+
+    core = tmp_path / "libnvme" / "src" / "nvme" / "fabrics.c"
+    core.parent.mkdir(parents=True)
+    core.write_text(
+        "int nvmf_discovery_connect(void) { return reconnect_controller(); }\n",
+        encoding="utf-8",
+    )
+    plugin = tmp_path / "plugins" / "wdc" / "wdc-nvme.c"
+    plugin.parent.mkdir(parents=True)
+    plugin.write_text(
+        "int error_recovery_log_page(void) { return timeout_cleanup(); }\n",
+        encoding="utf-8",
+    )
+    third_party = tmp_path / "third_party" / "vendor" / "nvme-helper.c"
+    third_party.parent.mkdir(parents=True)
+    third_party.write_text(
+        "int discovery_connect_cleanup(void) { return timeout_cleanup(); }\n",
+        encoding="utf-8",
+    )
+
+    context = build_local_source_context(
+        repo_path=str(tmp_path),
+        query="NVMe-oF fabrics discovery connect recovery log page timeout cleanup",
+        limit=4,
+        min_test_files=0,
+    )
+
+    assert [item["file_path"] for item in context["files"]] == [
+        "libnvme/src/nvme/fabrics.c"
+    ]
+
+
+def test_local_source_context_excludes_unrequested_windows_implementation(tmp_path):
+    from app.services.workbench_task_run import build_local_source_context
+
+    source = tmp_path / "libnvme" / "src" / "nvme"
+    source.mkdir(parents=True)
+    (source / "ioctl.c").write_text(
+        "int nvme_linux_connect(void) { return fabrics_connect(); }\n",
+        encoding="utf-8",
+    )
+    (source / "ioctl-win.c").write_text(
+        "int nvme_windows_connect(void) { return fabrics_connect(); }\n",
+        encoding="utf-8",
+    )
+    (source / "ioctl_windows.c").write_text(
+        "int nvme_windows_connect_alt(void) { return fabrics_connect(); }\n",
+        encoding="utf-8",
+    )
+    (source / "ioctl_win.c").write_text(
+        "int nvme_win_connect(void) { return fabrics_connect(); }\n",
+        encoding="utf-8",
+    )
+    (source / "win.c").write_text(
+        "int win_connect(void) { return fabrics_connect(); }\n",
+        encoding="utf-8",
+    )
+
+    context = build_local_source_context(
+        repo_path=str(tmp_path),
+        query="Linux NVMe fabrics connect",
+        limit=8,
+        min_test_files=0,
+    )
+
+    assert "libnvme/src/nvme/ioctl.c" in {
+        item["file_path"] for item in context["files"]
+    }
+    assert all(
+        item["file_path"] == "libnvme/src/nvme/ioctl.c"
+        for item in context["files"]
+    )
+
+
+def test_local_source_context_honors_large_test_evidence_quota(tmp_path):
+    from app.services.workbench_task_run import build_local_source_context
+
+    source_root = tmp_path / "libnvme" / "src" / "nvme"
+    source_root.mkdir(parents=True)
+    for index in range(90):
+        (source_root / f"fabrics_{index}.c").write_text(
+            f"int fabrics_connect_{index}(void) {{ return 0; }}\n",
+            encoding="utf-8",
+        )
+    test_root = tmp_path / "libnvme" / "test"
+    test_root.mkdir(parents=True)
+    for index in range(10):
+        (test_root / f"case_{index}.c").write_text(
+            f"int case_{index}(void) {{ return nvmf_discovery_tls_psk(); }}\n",
+            encoding="utf-8",
+        )
+
+    context = build_local_source_context(
+        repo_path=str(tmp_path),
+        query=(
+            "NVMe-oF fabrics discovery controller connect DH HMAC CHAP TLS PSK "
+            "keyring sysfs udev retry timeout cleanup recovery rollback race counter"
+        ),
+        limit=20,
+        min_test_files=8,
+        max_candidates_to_read=80,
+    )
+
+    assert sum(
+        item["classification"] == "test" for item in context["files"]
+    ) >= 8
+
+
+def test_source_selector_upgrades_low_score_tests_after_meeting_quota():
+    import app.services.workbench_task_run as task_run_module
+
+    scored = [
+        {
+            "file_path": "src/fabrics.c",
+            "classification": "source",
+            "score": 100,
+            "matched_terms": ["connect", "tls"],
+            "symbols": ["connect_ctrl"],
+        },
+        {
+            "file_path": "test/rare_a.c",
+            "classification": "test",
+            "score": 1,
+            "matched_terms": ["rare_a"],
+            "symbols": ["test_a"],
+        },
+        {
+            "file_path": "test/rare_b.c",
+            "classification": "test",
+            "score": 2,
+            "matched_terms": ["rare_b"],
+            "symbols": ["test_b"],
+        },
+        {
+            "file_path": "test/psk.c",
+            "classification": "test",
+            "score": 5,
+            "matched_terms": ["tls"],
+            "symbols": ["test_psk"],
+        },
+        {
+            "file_path": "test/discovery.c",
+            "classification": "test",
+            "score": 4,
+            "matched_terms": ["connect"],
+            "symbols": ["test_discovery"],
+        },
+    ]
+
+    selected = task_run_module._select_source_and_test_evidence(
+        scored,
+        limit=3,
+        min_test_files=2,
+        coverage_tokens=["connect", "tls", "rare_a", "rare_b"],
+    )
+
+    assert {
+        item["file_path"] for item in selected if item["classification"] == "test"
+    } == {"test/psk.c", "test/discovery.c"}
+
+
+def test_source_selector_does_not_use_symbol_free_code_as_test_evidence():
+    import app.services.workbench_task_run as task_run_module
+
+    scored = [
+        {
+            "file_path": "src/fabrics.c",
+            "classification": "source",
+            "score": 100,
+            "matched_terms": ["fabrics"],
+            "symbols": ["fabrics_connect"],
+        },
+        {
+            "file_path": "test/tree.c",
+            "classification": "test",
+            "score": 90,
+            "matched_terms": ["fabrics", "tree"],
+            "symbols": [],
+        },
+        {
+            "file_path": "test/discovery.c",
+            "classification": "test",
+            "score": 20,
+            "matched_terms": ["discovery"],
+            "symbols": ["test_discovery"],
+        },
+    ]
+
+    selected = task_run_module._select_source_and_test_evidence(
+        scored,
+        limit=2,
+        min_test_files=1,
+        coverage_tokens=["fabrics", "tree", "discovery"],
+    )
+
+    assert {item["file_path"] for item in selected} == {
+        "src/fabrics.c",
+        "test/discovery.c",
+    }
+
+
+def test_local_source_context_promotes_content_hits_already_present_in_git_candidates(
+    tmp_path,
+):
+    import subprocess
+
+    from app.services.workbench_task_run import build_local_source_context
+
+    repo = tmp_path / "nvme-cli"
+    source = repo / "libnvme" / "src" / "nvme" / "fabrics.c"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "int production_entry(void) { return dh_hmac_chap_tls_keyring(); }\n",
+        encoding="utf-8",
+    )
+    tests = repo / "libnvme" / "test"
+    tests.mkdir(parents=True)
+    for index in range(12):
+        (tests / f"fabrics_discovery_connect_{index}.c").write_text(
+            f"int test_fixture_{index}(void) {{ return 0; }}\n",
+            encoding="utf-8",
+        )
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=CodeTalk Test",
+            "-c",
+            "user.email=codetalk@example.invalid",
+            "commit",
+            "-qm",
+            "fixture",
+        ],
+        check=True,
+    )
+
+    context = build_local_source_context(
+        repo_path=str(repo),
+        query=(
+            "基于源码和 libnvme/test 证据分析 fabrics discovery connect "
+            "DH HMAC CHAP TLS keyring"
+        ),
+        limit=4,
+        min_test_files=1,
+        max_candidates_to_read=6,
+    )
+
+    selected_paths = [item["file_path"] for item in context["files"]]
+    assert "libnvme/src/nvme/fabrics.c" in selected_paths, context
+    assert any(item["classification"] == "source" for item in context["files"])
+
+
+def test_content_priority_candidates_keep_tests_beyond_first_256_rg_rows(
+    tmp_path,
+    monkeypatch,
+):
+    from types import SimpleNamespace
+
+    import app.services.workbench_task_run as task_run_module
+
+    source_paths = [f"src/file_{index:03d}.c" for index in range(300)]
+    test_paths = [f"libnvme/test/case_{index:02d}.c" for index in range(8)]
+    rows = [
+        *(f"{path}:1" for path in source_paths),
+        *(f"{path}:20" for path in test_paths),
+    ]
+    monkeypatch.setattr(task_run_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(
+        task_run_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout="\n".join(rows)),
+    )
+
+    candidates = task_run_module._content_priority_source_candidates(
+        root=tmp_path,
+        tokens=["nvme", "connect"],
+        path_candidates=[],
+        max_file_bytes=1024,
+        tracked_paths=tuple([*source_paths, *test_paths]),
+    )
+
+    assert {
+        item["file_path"]
+        for item in candidates
+        if item["file_path"].startswith("libnvme/test/")
+    } == set(test_paths)
 
 
 def test_local_source_context_materializes_multiple_verified_evidence_hints_per_file(
@@ -5138,6 +6432,29 @@ def test_local_source_context_ignores_unsafe_or_unmatched_evidence_hints(tmp_pat
     assert all("outside-secret.c" not in item["file_path"] for item in context["files"])
 
 
+def test_local_source_context_does_not_follow_symlinks_outside_repo(tmp_path):
+    from app.services.workbench_task_run import build_local_source_context
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    outside = tmp_path / "outside-secret.c"
+    outside.write_text("int escaped_secret(void) { return 42; }\n", encoding="utf-8")
+    try:
+        (repo / "escaped.c").symlink_to(outside)
+    except OSError:
+        pytest.skip("symlinks are unavailable on this platform")
+
+    context = build_local_source_context(
+        repo_path=str(repo),
+        query="escaped secret",
+        limit=12,
+        min_test_files=0,
+    )
+
+    assert context["files"] == []
+    assert "escaped_secret" not in json.dumps(context, ensure_ascii=False)
+
+
 def test_prepare_memoizes_identical_local_source_queries(tmp_path, monkeypatch):
     import app.services.workbench_task_run as task_run_module
     from app.services.workflow_dsl import WorkflowStore
@@ -5185,6 +6502,75 @@ def test_prepare_memoizes_identical_local_source_queries(tmp_path, monkeypatch):
     assert len(calls) == 1
 
 
+def test_prepare_uses_agent_source_context_budget_for_task_level_context(
+    tmp_path,
+    monkeypatch,
+):
+    import app.services.workbench_task_run as task_run_module
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    calls: list[dict[str, object]] = []
+
+    def fake_source_context(*, repo_path, query, **kwargs):
+        calls.append({"repo_path": repo_path, "query": query, **kwargs})
+        return {
+            "provider": "local-source-search",
+            "status": "ready",
+            "query": query,
+            "repo_path": repo_path,
+            "repo_revision": "fixture-revision",
+            "requested_limit": kwargs.get("limit"),
+            "requested_min_test_files": kwargs.get("min_test_files"),
+            "files": [],
+        }
+
+    monkeypatch.setattr(task_run_module, "build_local_source_context", fake_source_context)
+    store = WorkflowStore(tmp_path / "workflows.db")
+    store.save_workflow(
+        {
+            "id": "large-source-context",
+            "name": "large source context",
+            "version": 1,
+            "inputs": [{"id": "analysis_target", "type": "free_text"}],
+            "steps": [
+                {
+                    "id": "analyze",
+                    "type": "agent_task",
+                    "provider": "builtin-llm",
+                    "source_context_limit": 44,
+                    "source_context_min_test_files": 8,
+                }
+            ],
+            "outputs": [],
+        }
+    )
+
+    prepared = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=store,
+    ).prepare(
+        workflow_id="large-source-context",
+        workspace_id="ws-large",
+        repo_path=str(tmp_path),
+        inputs={"analysis_target": "NVMe TCP TLS"},
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["limit"] == 44
+    assert calls[0]["min_test_files"] == 8
+    assert prepared.task_bundle["local_source_context"]["requested_limit"] == 44
+    agent_bundle = json.loads(
+        (
+            Path(prepared.artifact_dir)
+            / "agent_runs"
+            / "analyze"
+            / "task_bundle.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert agent_bundle["local_source_context"]["requested_min_test_files"] == 8
+
+
 def test_executor_handoff_carries_step_source_analysis_limits():
     from app.services.workbench_task_run import build_executor_handoff_contract
 
@@ -5199,6 +6585,7 @@ def test_executor_handoff_carries_step_source_analysis_limits():
             "type": "agent_task",
             "source_analysis_max_files": 18,
             "source_analysis_max_evidence_anchors": 18,
+            "source_analysis_min_test_files": 4,
         },
         step_id="analyze",
         provider="builtin-llm",
@@ -5210,6 +6597,7 @@ def test_executor_handoff_carries_step_source_analysis_limits():
     assert contract["source_analysis_limits"] == {
         "max_files": 18,
         "max_evidence_anchors": 18,
+        "min_test_files": 4,
     }
 
 
@@ -5857,6 +7245,88 @@ def test_evidence_validation_rejects_empty_symbols_and_comment_only_symbol(tmp_p
         "evidence_symbols_missing",
         "evidence_symbol_not_in_file",
     }
+
+
+def test_evidence_validation_accepts_sha_verified_data_slice_but_not_symbol_less_c(tmp_path):
+    from types import SimpleNamespace
+
+    from app.services.workbench_workflow_runner import _evidence_validation_payload
+
+    repo = tmp_path / "repo"
+    data_file = repo / "test" / "config" / "tls.json"
+    source_file = repo / "test" / "tree.c"
+    data_file.parent.mkdir(parents=True)
+    source_file.parent.mkdir(parents=True, exist_ok=True)
+    data_content = '{\n  "transport": "tcp",\n  "tls": true\n}\n'
+    source_content = "/* unit tests */\n#include <assert.h>\n"
+    data_file.write_text(data_content, encoding="utf-8")
+    source_file.write_text(source_content, encoding="utf-8")
+    artifact_dir = tmp_path / "agent"
+    artifact_dir.mkdir()
+    (artifact_dir / "evidence_cards.json").write_text(
+        json.dumps(
+            [
+                {
+                    "file_path": "test/config/tls.json",
+                    "symbols": [],
+                    "start_line": 2,
+                    "end_line": 3,
+                    "line_count": 2,
+                    "excerpt": '  "transport": "tcp",\n  "tls": true',
+                    "sha256": hashlib.sha256(data_content.encode()).hexdigest(),
+                },
+                {
+                    "file_path": "test/tree.c",
+                    "symbols": [],
+                    "start_line": 1,
+                    "end_line": 2,
+                    "line_count": 2,
+                    "excerpt": source_content.rstrip(),
+                    "sha256": hashlib.sha256(source_content.encode()).hexdigest(),
+                },
+            ]
+        ),
+        encoding="utf-8",
+    )
+    task_run = SimpleNamespace(
+        task_bundle={"context_bundle": {}},
+        task_run_id="task-data-slice",
+        workflow_id="source_flow_sfmea_blackbox",
+        workspace_id="ws-nvme",
+        repo_path=str(repo),
+    )
+
+    payload = _evidence_validation_payload(
+        task_run=task_run,
+        step_id="validate_evidence",
+        prior_step_results=[
+            {
+                "step_id": "analyze",
+                "artifact_dir": str(artifact_dir),
+                "validation": {
+                    "accepted_artifacts": ["evidence_cards.json"],
+                    "rejected_artifacts": [],
+                    "warnings": [],
+                },
+            }
+        ],
+    )
+
+    assert payload["status"] == "invalid"
+    assert payload["rejected_count"] == 1
+    assert payload["rejected_artifact_details"][0]["file_path"] == "test/tree.c"
+    assert payload["rejected_artifact_details"][0]["code"] == "evidence_symbols_missing"
+
+
+def test_source_symbols_extracts_pointer_return_prototype():
+    from app.services.workbench_task_run import _source_symbols
+
+    excerpt = (
+        "const char *libnvmf_get_default_trsvcid(const char *transport,\n"
+        "\t\tbool discovery_ctrl);\n"
+    )
+
+    assert _source_symbols(excerpt) == ["libnvmf_get_default_trsvcid"]
 
 
 def test_evidence_validation_rejects_python_and_shell_comment_only_symbols(tmp_path):

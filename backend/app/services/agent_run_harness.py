@@ -172,6 +172,7 @@ _AGENT_PROMPT_EXECUTION_CONTRACT_KEYS = (
     "outputs",
     "mcp",
     "skills",
+    "execution_rules",
     "source_context",
     "source_analysis_limits",
     "workflow",
@@ -391,6 +392,16 @@ def _agent_output_contract_payload(
             "readonly_env_var": "CODETALK_AGENT_READONLY",
             "artifact_dir_env_var": "CODETALK_AGENT_ARTIFACT_DIR",
             "repo_path_env_var": "CODETALK_REPO_PATH",
+            "path_resolution": {
+                "source_reads": (
+                    "Use $CODETALK_REPO_PATH/<repo-relative-path> for every source or "
+                    "test read; do not rely on a bare relative path."
+                ),
+                "artifact_reads_and_writes": (
+                    "Use $CODETALK_AGENT_ARTIFACT_DIR/<artifact-name> for every task "
+                    "artifact read or write; do not rely on the current directory."
+                ),
+            },
             "network_and_mcp_credentials_owner": "agent_cli",
             "codetalk_may_not_fetch_agent_owned_mcp_inputs": True,
             "long_running_services_allowed": False,

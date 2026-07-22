@@ -120,6 +120,10 @@ def compile_task_configuration(
             raise TaskConfigurationError(f"任务专用输出 ID 无效或重复：{output_id}")
         if source not in steps:
             raise TaskConfigurationError(f"任务专用输出来源节点不存在：{source}")
+        if str(steps[source].get("type") or "") != "agent_task":
+            raise TaskConfigurationError(
+                f"节点 {source} 不能生成任务专用文件；请选择 Agent 节点作为输出来源"
+            )
         output_type = str(raw.get("type") or "").strip()
         if output_type not in _OUTPUT_TYPES:
             raise TaskConfigurationError(f"任务专用输出类型不支持：{output_id} ({output_type or 'empty'})")

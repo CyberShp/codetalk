@@ -144,6 +144,7 @@ class Settings(BaseSettings):
     source_analysis_max_chinese_characters: int = Field(default=1200, ge=200, le=8000)
     source_analysis_max_evidence_anchors: int = Field(default=12, ge=1, le=48)
     source_analysis_max_files: int = Field(default=6, ge=1, le=24)
+    source_analysis_min_test_files: int = Field(default=1, ge=0, le=16)
     source_analysis_excerpt_chars: int = Field(default=1200, ge=200, le=6000)
     source_analysis_context_timeout_seconds: int = Field(default=30, ge=1, le=300)
     source_analysis_timeout_seconds: int = Field(default=300, ge=1, le=480)
@@ -151,7 +152,9 @@ class Settings(BaseSettings):
     source_analysis_repair_timeout_seconds: int = Field(default=120, ge=1, le=180)
     source_analysis_total_timeout_seconds: int = Field(default=480, ge=1, le=600)
     source_analysis_cache_enabled: bool = True
-    source_analysis_schema_version: str = "source-evidence-pack-v1"
+    # Bump whenever deterministic evidence ranking/selection semantics change so
+    # old but checksum-valid packs cannot preserve obsolete relevance mistakes.
+    source_analysis_schema_version: str = "source-evidence-pack-v6"
     # Keep provider work below the 20-minute product SLA and reserve time for
     # cancellation, final governance refresh, and task-state persistence.
     staged_workflow_timeout_seconds: int = Field(default=1180, ge=60, le=1200)
@@ -193,10 +196,14 @@ class Settings(BaseSettings):
     flow_evidence_schema_version: str = "flow-evidence-pack-v1"
     flow_outline_schema_version: str = "flow-outline-v1"
     behavior_claim_audit_enabled: bool = True
-    behavior_claim_audit_runtime_id: str = "default-codex"
+    behavior_claim_audit_runtime_id: str = "auto"
     behavior_claim_audit_model: str = "gpt-5.5"
+    behavior_claim_audit_max_tokens: int = Field(default=6000, ge=1000, le=12000)
     behavior_claim_audit_reasoning_effort: str = "medium"
     behavior_claim_audit_timeout_seconds: int = Field(default=360, ge=30, le=600)
+    behavior_claim_audit_heartbeat_seconds: float = Field(
+        default=10.0, ge=1.0, le=60.0
+    )
     behavior_claim_audit_max_claims: int = Field(default=64, ge=1, le=128)
     behavior_claim_audit_context_chars: int = Field(default=6000, ge=1000, le=12000)
     behavior_claim_audit_batch_size: int = Field(default=8, ge=1, le=32)

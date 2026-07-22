@@ -78,6 +78,42 @@ def test_manifest_fails_closed_for_missing_required_or_invalid_json(tmp_path):
     assert (root / "artifact_manifest.json").exists()
 
 
+def test_manifest_redacts_json_values_without_corrupting_escaped_cli_arguments(tmp_path):
+    root = tmp_path / "run"
+    root.mkdir()
+    cases = [
+        {
+            "scenario_name": "invalid DH-HMAC-CHAP secret",
+            "steps": [
+                'nvme connect --dhchap-secret "abc\\ndef"',
+            ],
+        }
+    ]
+    artifact = root / "black_box_cases.json"
+    artifact.write_text(json.dumps(cases, ensure_ascii=False), encoding="utf-8")
+
+    manifest = materialize_ai_thread_manifest(
+        root,
+        run_id="run-json-redaction",
+        declared_artifacts=[
+            {
+                "artifact": "black_box_cases.json",
+                "type": "json",
+                "required": True,
+                "schema": {"type": "array", "minItems": 1},
+            }
+        ],
+        producer="builtin_llm:deepseek",
+    )
+
+    persisted = json.loads(artifact.read_text(encoding="utf-8"))
+    assert manifest["status"] == "accepted"
+    assert persisted[0]["steps"] == [
+        'nvme connect --dhchap-secret "<redacted>"',
+    ]
+    assert "abc\\ndef" not in artifact.read_text(encoding="utf-8")
+
+
 def test_manifest_rejects_symlink_artifact_without_reading_target(tmp_path):
     root = tmp_path / "run"
     root.mkdir()

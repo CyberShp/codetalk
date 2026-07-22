@@ -27,6 +27,7 @@ from app.llm.factory import (
     create_source_analysis_llm_client,
 )
 from app.services.ai_staged_execution import (
+    _apply_quality_feedback_field_patches,
     build_staged_execution_plan,
     execute_staged_builtin_plan,
 )
@@ -62,9 +63,11 @@ _QUALITY_ARTIFACT_DEPENDENCIES = {
         "black_box_cases.json",
         "test_strategy.md",
         "test_design.md",
+        "test_design_mindmap.md",
         "coverage_gap.json",
         "risk_review.md",
         "execution_checklist.md",
+        "report.md",
     },
     "flow_evidence_pack.json": {
         "flow_outline.json",
@@ -73,8 +76,10 @@ _QUALITY_ARTIFACT_DEPENDENCIES = {
         "black_box_cases.json",
         "test_strategy.md",
         "test_design.md",
+        "test_design_mindmap.md",
         "risk_review.md",
         "execution_checklist.md",
+        "report.md",
     },
     "flow_outline.json": {
         "business_flow.md",
@@ -82,24 +87,37 @@ _QUALITY_ARTIFACT_DEPENDENCIES = {
         "black_box_cases.json",
         "test_strategy.md",
         "test_design.md",
+        "test_design_mindmap.md",
         "risk_review.md",
         "execution_checklist.md",
+        "report.md",
     },
     "business_flow.md": {
         "sfmea.json",
         "black_box_cases.json",
         "test_strategy.md",
         "test_design.md",
+        "test_design_mindmap.md",
         "risk_review.md",
         "execution_checklist.md",
+        "report.md",
     },
     "sfmea.json": {
         "black_box_cases.json",
+        "test_strategy.md",
         "test_design.md",
+        "test_design_mindmap.md",
         "risk_review.md",
         "execution_checklist.md",
+        "report.md",
     },
-    "black_box_cases.json": {"test_design.md", "execution_checklist.md"},
+    "black_box_cases.json": {
+        "test_strategy.md",
+        "test_design.md",
+        "test_design_mindmap.md",
+        "execution_checklist.md",
+        "report.md",
+    },
 }
 
 
@@ -174,6 +192,152 @@ def _restore_quality_repair_artifacts(
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
+
+
+def _quality_issue_row_id(issue: dict[str, Any], artifact: str) -> str:
+    row_id = str(
+        issue.get("row_id")
+        or issue.get("case_id")
+        or issue.get("sfmea_id")
+        or issue.get("risk_id")
+        or ""
+    ).strip()
+    if row_id:
+        return row_id
+    claim_id = str(issue.get("claim_id") or "").strip()
+    prefix = f"ROW:{Path(artifact).name}:"
+    if claim_id.startswith(prefix):
+        return claim_id[len(prefix) :].strip()
+    return ""
+
+
+def _quality_row_issue_counts(
+    audit: dict[str, Any], artifact: str
+) -> dict[str, int]:
+    artifact_name = Path(artifact).name
+    counts: dict[str, int] = {}
+    for issue in audit.get("issues") or []:
+        if not isinstance(issue, dict):
+            continue
+        if Path(str(issue.get("artifact") or "")).name != artifact_name:
+            continue
+        row_id = _quality_issue_row_id(issue, artifact_name)
+        if row_id:
+            counts[row_id] = counts.get(row_id, 0) + 1
+    return counts
+
+
+def _quality_row_issue_keys(
+    audit: dict[str, Any], artifact: str
+) -> dict[str, set[tuple[str, str]]]:
+    artifact_name = Path(artifact).name
+    keys: dict[str, set[tuple[str, str]]] = {}
+    for issue in audit.get("issues") or []:
+        if not isinstance(issue, dict):
+            continue
+        if Path(str(issue.get("artifact") or "")).name != artifact_name:
+            continue
+        row_id = _quality_issue_row_id(issue, artifact_name)
+        if not row_id:
+            continue
+        issue_key = (
+            str(issue.get("code") or "quality_issue").strip(),
+            str(issue.get("field") or "").strip(),
+        )
+        keys.setdefault(row_id, set()).add(issue_key)
+    return keys
+
+
+def _json_quality_row_id(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    return str(
+        item.get("case_id")
+        or item.get("sfmea_id")
+        or item.get("risk_id")
+        or item.get("id")
+        or ""
+    ).strip()
+
+
+def _merge_non_regressing_json_rows(
+    *,
+    artifact: str,
+    previous: bytes,
+    candidate: bytes,
+    before: dict[str, Any],
+    after: dict[str, Any],
+) -> tuple[bytes, list[str]]:
+    """Keep only candidate rows whose audited issue count strictly decreases."""
+    try:
+        previous_rows = json.loads(previous.decode("utf-8"))
+        candidate_rows = json.loads(candidate.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return previous, []
+    if not isinstance(previous_rows, list) or not isinstance(candidate_rows, list):
+        return previous, []
+    candidate_by_id = {
+        _json_quality_row_id(item): item
+        for item in candidate_rows
+        if _json_quality_row_id(item)
+    }
+    before_counts = _quality_row_issue_counts(before, artifact)
+    after_counts = _quality_row_issue_counts(after, artifact)
+    before_keys = _quality_row_issue_keys(before, artifact)
+    after_keys = _quality_row_issue_keys(after, artifact)
+    accepted_rows: list[str] = []
+    merged: list[Any] = []
+    for previous_item in previous_rows:
+        row_id = _json_quality_row_id(previous_item)
+        candidate_item = candidate_by_id.get(row_id)
+        if (
+            row_id
+            and candidate_item is not None
+            and after_counts.get(row_id, 0) < before_counts.get(row_id, 0)
+            and after_keys.get(row_id, set()).issubset(
+                before_keys.get(row_id, set())
+            )
+        ):
+            merged.append(candidate_item)
+            accepted_rows.append(row_id)
+        else:
+            merged.append(previous_item)
+    return (
+        json.dumps(merged, ensure_ascii=False, indent=2).encode("utf-8"),
+        accepted_rows,
+    )
+
+
+def _salvage_non_regressing_quality_rows(
+    *,
+    artifact_dir: Path,
+    snapshot: dict[str, bytes | None],
+    before: dict[str, Any],
+    after: dict[str, Any],
+    artifact_names: Iterable[str],
+) -> tuple[dict[str, bytes], dict[str, list[str]]]:
+    salvaged: dict[str, bytes] = {}
+    accepted_rows: dict[str, list[str]] = {}
+    for raw_name in artifact_names:
+        name = Path(str(raw_name or "")).name
+        previous = snapshot.get(name)
+        candidate_path = artifact_dir / name
+        if not name.endswith(".json") or previous is None or not candidate_path.is_file():
+            continue
+        materialized_descendants = _expand_quality_blocked_artifacts({name}) - {name}
+        if any((artifact_dir / descendant).is_file() for descendant in materialized_descendants):
+            continue
+        merged, row_ids = _merge_non_regressing_json_rows(
+            artifact=name,
+            previous=previous,
+            candidate=candidate_path.read_bytes(),
+            before=before,
+            after=after,
+        )
+        if row_ids:
+            salvaged[name] = merged
+            accepted_rows[name] = row_ids
+    return salvaged, accepted_rows
 
 
 def _archive_behavior_claim_audit(
@@ -478,6 +642,10 @@ class WorkbenchWorkflowRunner:
         for output in outputs:
             if isinstance(output, dict) and output.get("status") in {"ok", "completed", "ready", "success"}:
                 self._emit_event("artifact_created", dict(output))
+        self._materialize_final_behavior_validation(
+            task_run=task_run,
+            step_results=step_results,
+        )
         test_activity_quality = self.audit_test_activity_quality(task_run=task_run)
         if _quality_allows_cache_promotion(
             str(test_activity_quality.get("status") or "")
@@ -534,6 +702,72 @@ class WorkbenchWorkflowRunner:
         )
         self._write_execution_artifact(task_run.task_run_id, result)
         return result
+
+    def _materialize_final_behavior_validation(
+        self,
+        *,
+        task_run: Any,
+        step_results: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        """Run the independent fact audit for external-Agent test deliverables."""
+
+        contract = task_run.task_bundle.get("test_activity_contract")
+        if (
+            not settings.behavior_claim_audit_enabled
+            or not isinstance(contract, dict)
+            or not contract
+            or not _workflow_declares_test_activity_deliverables(
+                task_run.workflow_snapshot
+            )
+        ):
+            return {"status": "not_applicable", "claims": []}
+        external_steps = [
+            item
+            for item in step_results
+            if isinstance(item, dict)
+            and item.get("type") == "agent_task"
+            and item.get("status") in {"completed", "needs_review"}
+            and str(item.get("provider") or "") != BUILTIN_LLM_PROVIDER_ID
+        ]
+        if not external_steps:
+            return {"status": "not_applicable", "claims": []}
+        generator_identity = str(external_steps[-1].get("provider") or "external-agent")
+
+        def progress(payload: dict[str, Any]) -> None:
+            self._emit_event(
+                "behavior_claim_validation_progress",
+                {**dict(payload), "generator_identity": generator_identity},
+            )
+
+        try:
+            validation = _run_async_blocking(
+                materialize_behavior_claim_validation(
+                    artifact_dir=Path(str(task_run.artifact_dir)),
+                    repo_path=Path(str(task_run.repo_path)),
+                    generator_identity=generator_identity,
+                    on_progress=progress,
+                )
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            validation = {
+                "status": "unavailable",
+                "claims": [],
+                "reason": f"独立源码事实核验执行失败：{type(exc).__name__}: {exc}",
+            }
+        self._emit_event(
+            "behavior_claim_validation_completed",
+            {
+                "status": str(validation.get("status") or "unavailable"),
+                "claim_count": len(validation.get("claims") or []),
+                "generator_identity": generator_identity,
+                "user_message": (
+                    "独立源码事实核验完成"
+                    if validation.get("status") == "completed"
+                    else "独立源码事实核验不可用，当前产物不会被标记为可交付"
+                ),
+            },
+        )
+        return validation
 
     def _emit_step_finished(self, step_result: dict[str, Any]) -> None:
         status = str(step_result.get("status") or "")
@@ -649,7 +883,11 @@ class WorkbenchWorkflowRunner:
                 timeout_sec=timeout_sec,
             )
         finally:
+            current_source_snapshot = _snapshot_current_canonical_source_artifacts(
+                artifact_dir
+            )
             _restore_protected_artifacts(artifact_dir, protected_artifact_snapshot)
+            _restore_protected_artifacts(artifact_dir, current_source_snapshot)
 
     def _execute_agent_step_unprotected(
         self,
@@ -1378,31 +1616,68 @@ class WorkbenchWorkflowRunner:
                                     before=audit,
                                     after=candidate_audit,
                                 )
+                                salvaged_rows: dict[str, list[str]] = {}
                                 if regressed:
                                     _write_json(
                                         repair_dir / "quality_audit_candidate.json",
                                         candidate_audit,
+                                    )
+                                    salvaged_artifacts, salvaged_rows = (
+                                        _salvage_non_regressing_quality_rows(
+                                            artifact_dir=artifact_dir,
+                                            snapshot=accepted_snapshot,
+                                            before=audit,
+                                            after=candidate_audit,
+                                            artifact_names=feedback.get(
+                                                "affected_artifacts"
+                                            )
+                                            or [],
+                                        )
                                     )
                                     _restore_quality_repair_artifacts(
                                         artifact_dir=artifact_dir,
                                         snapshot=accepted_snapshot,
                                     )
                                     audit_after = audit
-                                    self._emit_event(
-                                        "behavior_claim_validation_progress",
-                                        {
-                                            "step_id": step_id,
-                                            "kind": "stage_reused",
-                                            "stage_id": "behavior_claim_validation",
-                                            "status": "completed",
-                                            "model": str(
-                                                settings.behavior_claim_audit_model or ""
-                                            ),
-                                            "user_message": (
-                                                "候选修复质量回退，已恢复修复前通过绑定校验的独立事实核验"
-                                            ),
-                                        },
-                                    )
+                                    for name, content in salvaged_artifacts.items():
+                                        (artifact_dir / name).write_bytes(content)
+                                    if salvaged_artifacts:
+                                        behavior_validation = (
+                                            await validate_behavior_claims()
+                                        )
+                                        if str(
+                                            behavior_validation.get("status") or ""
+                                        ) == "completed":
+                                            audit_after = (
+                                                await audit_staged_artifacts()
+                                            )
+                                            regressed = _quality_repair_regressed(
+                                                before=audit,
+                                                after=audit_after,
+                                            )
+                                        if regressed:
+                                            _restore_quality_repair_artifacts(
+                                                artifact_dir=artifact_dir,
+                                                snapshot=accepted_snapshot,
+                                            )
+                                            salvaged_rows = {}
+                                            audit_after = audit
+                                    if regressed:
+                                        self._emit_event(
+                                            "behavior_claim_validation_progress",
+                                            {
+                                                "step_id": step_id,
+                                                "kind": "stage_reused",
+                                                "stage_id": "behavior_claim_validation",
+                                                "status": "completed",
+                                                "model": str(
+                                                    settings.behavior_claim_audit_model or ""
+                                                ),
+                                                "user_message": (
+                                                    "候选修复质量回退，已恢复修复前通过绑定校验的独立事实核验"
+                                                ),
+                                            },
+                                        )
                                 else:
                                     audit_after = candidate_audit
                                 _write_json(
@@ -1434,6 +1709,7 @@ class WorkbenchWorkflowRunner:
                                     "affected_artifacts": list(
                                         feedback.get("affected_artifacts") or []
                                     ),
+                                    "salvaged_rows": salvaged_rows,
                                 }
                                 repair_history.append(history_item)
                                 self._emit_event(
@@ -1445,7 +1721,11 @@ class WorkbenchWorkflowRunner:
                                         "user_message": (
                                             "候选修复质量回退，已保留修复前的较优产物"
                                             if regressed
-                                            else "定向质量修复已完成，正在确认最终交付质量"
+                                            else (
+                                                "已按行保留质量改善，正在确认最终交付质量"
+                                                if salvaged_rows
+                                                else "定向质量修复已完成，正在确认最终交付质量"
+                                            )
                                         ),
                                     },
                                 )
@@ -1454,6 +1734,68 @@ class WorkbenchWorkflowRunner:
                                     "invalid",
                                 }:
                                     break
+                        if repair_history:
+                            # Repair stages can apply deterministic field patches after
+                            # their provider output. Rebind the independent verdicts to
+                            # the final bytes so task-level acceptance never consumes a
+                            # stale validation snapshot.
+                            behavior_validation = await validate_behavior_claims()
+                            if (
+                                behavior_validation.get("reason")
+                                == "workflow_deadline_exceeded"
+                            ):
+                                staged_result = (
+                                    _mark_staged_workflow_deadline_exceeded(
+                                        staged_result
+                                    )
+                                )
+                                quality_repair_stop_reason = (
+                                    "workflow_deadline_exceeded"
+                                )
+                            (
+                                behavior_validation,
+                                materialized_patches,
+                                patch_rounds,
+                            ) = await _converge_behavior_validation_field_patches(
+                                artifact_dir=artifact_dir,
+                                validation=behavior_validation,
+                                validate=validate_behavior_claims,
+                                max_rounds=3,
+                            )
+                            try:
+                                final_repair_audit = await audit_staged_artifacts()
+                            except asyncio.TimeoutError:
+                                final_repair_audit = {
+                                    "status": "needs_rework",
+                                    "score": 0,
+                                    "issue_count": 1,
+                                    "issues": [
+                                        {
+                                            "artifact": "workflow",
+                                            "code": "workflow_deadline_exceeded",
+                                            "message": "工作流总时间预算已用尽，最终质量复核未完成。",
+                                        }
+                                    ],
+                                }
+                                quality_repair_stop_reason = (
+                                    "workflow_deadline_exceeded"
+                                )
+                            _write_json(
+                                artifact_dir
+                                / "quality_repairs"
+                                / "final_quality_audit.json",
+                                final_repair_audit,
+                            )
+                            repair_history[-1]["materialized_field_patches"] = (
+                                materialized_patches
+                            )
+                            repair_history[-1]["field_patch_rounds"] = patch_rounds
+                            repair_history[-1]["final_status"] = str(
+                                final_repair_audit.get("status") or ""
+                            )
+                            repair_history[-1]["final_issues"] = int(
+                                final_repair_audit.get("issue_count") or 0
+                            )
                         if (artifact_dir / "judge_report.json").is_file():
                             refresh_source_driven_delivery_governance(artifact_dir)
                         _write_json(
@@ -3199,6 +3541,9 @@ def _local_source_flow_sfmea_blackbox_payloads(
     files = [str(item) for item in scope.get("files") or []]
     query = str(scope.get("query") or _public_local_scope_query(task_run))
     selected_files = _prioritize_source_files_for_analysis(files)[:8]
+    sfmea_files = [
+        file_path for file_path in selected_files if not _is_test_source_path(file_path)
+    ]
     sfmea = [
         _source_flow_sfmea_item(
             task_run=task_run,
@@ -3206,7 +3551,7 @@ def _local_source_flow_sfmea_blackbox_payloads(
             evidence_card=_evidence_card_for_file(evidence_cards, file_path),
             index=index,
         )
-        for index, file_path in enumerate(selected_files or ["repo"], start=1)
+        for index, file_path in enumerate(sfmea_files or ["repo"], start=1)
     ]
     cases = [
         _source_flow_black_box_case(
@@ -3398,7 +3743,12 @@ def _prioritize_source_files_for_analysis(files: list[str]) -> list[str]:
 
 
 def _is_test_source_path(file_path: str) -> bool:
-    return file_path.startswith("test/")
+    parts = [
+        part.lower()
+        for part in str(file_path or "").replace("\\", "/").split("/")
+        if part
+    ]
+    return any(part in {"test", "tests", "spec", "specs"} for part in parts[:-1])
 
 
 def _evidence_card_for_file(evidence_cards: list[dict[str, Any]], file_path: str) -> dict[str, Any]:
@@ -3465,7 +3815,9 @@ def _source_flow_sfmea_item(
     occurrence = min(10, 3 + len(symbols[:4]))
     detection_score = 5 if evidence_line_count else 8
     rpn = severity * occurrence * detection_score
-    failure_mode = f"{module} public workflow diverges from source-backed flow evidence"
+    failure_mode = (
+        f"{module} failure path returns incorrect public status or leaves stale resources"
+    )
     cause = (
         f"Source evidence in {file_path} changes or constrains the flow, but external tests may only cover the happy path."
         if file_path != "repo"
@@ -3500,8 +3852,9 @@ def _source_flow_sfmea_item(
         "mitigation": (
             f"Enforce bounded state transitions and guaranteed resource cleanup/recovery in the {module} "
             f"public workflow; add or extend black-box tests in {test_directory} for normal path, invalid input, "
-            "timeout, reconnect/reset, concurrency, recovery, and performance degradation while monitoring "
-            "RPC/tool results, logs, metrics, and persisted state."
+            "timeout, reconnect/reset, concurrency, recovery, performance degradation, long steady-state, "
+            "resource wraparound, cleanup, and upstream error propagation while monitoring RPC/tool results, "
+            "logs, metrics, and persisted state."
         ),
         "existing_controls": f"源码证据、公开返回值、日志以及 {test_directory} 中的现有测试",
         "control_gaps": "现有测试可能未覆盖异常释放、容量翻转、并发交错和恢复后重申请",
@@ -3599,6 +3952,7 @@ _BLACK_BOX_DIMENSION_SPECS: list[dict[str, Any]] = [
         "operation": "run the public success workflow once and repeat it to verify idempotent behavior",
         "expected": "the operation succeeds, returns the documented public status, and leaves the target ready for subsequent operations",
         "observe": "success status, negotiated/public state, completion latency, logs, and metrics",
+        "oracle_basis": "documented public command or API success contract, source evidence, and the same-commit environment baseline",
     },
     {
         "id": "invalid_input",
@@ -3607,6 +3961,7 @@ _BLACK_BOX_DIMENSION_SPECS: list[dict[str, Any]] = [
         "operation": "invoke the same public workflow for each invalid input without changing source code",
         "expected": "each request is rejected with a stable error and no partial session, device, queue, or configuration remains",
         "observe": "client-visible error, RPC/tool exit status, target logs, and post-failure state",
+        "oracle_basis": "documented public input constraints, command help, configuration schema, and source evidence for rejected values",
     },
     {
         "id": "resource_pressure",
@@ -3615,6 +3970,7 @@ _BLACK_BOX_DIMENSION_SPECS: list[dict[str, Any]] = [
         "operation": "increase public workload until the documented resource limit is reached, then submit one additional operation",
         "expected": "resource exhaustion is surfaced cleanly, existing work remains consistent, and resources are reclaimed after load drops",
         "observe": "public error, outstanding work, memory/queue counters, logs, and recovery after pressure is removed",
+        "oracle_basis": "record the actual resource limit from source constants, public configuration, or the test environment before increasing load",
     },
     {
         "id": "timeout",
@@ -3623,6 +3979,7 @@ _BLACK_BOX_DIMENSION_SPECS: list[dict[str, Any]] = [
         "operation": "start the public operation, wait beyond its configured timeout, and inspect final state",
         "expected": "the operation terminates within the timeout budget with an actionable error and no indefinitely pending work",
         "observe": "elapsed time, timeout status, pending operation count, logs, and cleanup state",
+        "oracle_basis": "record the configured timeout option and matching command help or source evidence before the run",
     },
     {
         "id": "reconnect",
@@ -3631,6 +3988,7 @@ _BLACK_BOX_DIMENSION_SPECS: list[dict[str, Any]] = [
         "operation": "disconnect the peer, reconnect with valid settings, and repeat the original public operation",
         "expected": "stale state is removed, reconnect succeeds according to policy, and subsequent operations complete exactly once",
         "observe": "connection/session state, host-visible resources, completion results, retry count, and logs",
+        "oracle_basis": "documented reconnect policy, public configuration, and same-commit normal-path baseline",
     },
     {
         "id": "concurrency",
@@ -3639,6 +3997,7 @@ _BLACK_BOX_DIMENSION_SPECS: list[dict[str, Any]] = [
         "operation": "run parallel success and cancellation/disconnect operations while collecting ordered results",
         "expected": "all operations reach a valid terminal state without deadlock, lost completion, cross-session leakage, or duplicate result",
         "observe": "per-client result, completion count, latency distribution, state convergence, and logs",
+        "oracle_basis": "configured worker count, documented concurrency contract, and a same-commit serial baseline",
     },
     {
         "id": "recovery",
@@ -3647,6 +4006,7 @@ _BLACK_BOX_DIMENSION_SPECS: list[dict[str, Any]] = [
         "operation": "restart through the supported deployment path, inspect recovered public state, and rerun the operation",
         "expected": "state is restored or rolled back according to contract, no stale ownership remains, and the workflow is usable again",
         "observe": "restart result, recovered state, integrity/status checks, rerun result, and recovery logs",
+        "oracle_basis": "documented recovery contract, persisted public state, and a pre-failure environment snapshot",
     },
     {
         "id": "performance",
@@ -3655,6 +4015,43 @@ _BLACK_BOX_DIMENSION_SPECS: list[dict[str, Any]] = [
         "operation": "compare throughput, median/tail latency, CPU, and memory against the same baseline configuration",
         "expected": "results stay within the agreed regression budget and resource use does not grow without bound",
         "observe": "throughput, p50/p95/p99 latency, CPU, memory, error rate, and long-run trend",
+        "oracle_basis": "in the same commit, kernel, hardware, network, and configuration environment, warmup 5 runs, repeat 30 samples, and compare P50/P95 plus variance with the recorded baseline",
+    },
+    {
+        "id": "long_steady_state",
+        "label": "长稳态",
+        "input": "run the supported public workload continuously for the duration and sampling interval defined by the test environment",
+        "operation": "record a pre-run baseline, sustain the workload, sample public health and resource counters periodically, then stop and verify cleanup",
+        "expected": "the service remains available, latency and error rate stay within the recorded baseline budget, and resource use shows no unbounded monotonic growth",
+        "observe": "periodic throughput and tail latency, error rate, file descriptors, memory, connection or queue counts, and post-run cleanup state",
+        "oracle_basis": "use the duration, sampling interval, resource limits, and acceptable drift from the approved test specification or same-environment baseline",
+    },
+    {
+        "id": "resource_wraparound",
+        "label": "资源翻转",
+        "input": "identify a public counter, identifier, queue depth, or generation range from source evidence or configuration and exercise values around its boundary",
+        "operation": "drive the externally supported operation through maximum-minus-one, maximum, and the next permitted attempt without modifying internal code",
+        "expected": "the boundary is rejected, recycled, or advanced according to contract without silent wraparound, stale ownership, duplicate completion, or resource-accounting drift",
+        "observe": "public return status, identifier and resource counters, completion uniqueness, logs, and resource availability after the boundary",
+        "oracle_basis": "derive the maximum value and bit-width from a source constant, public configuration limit, or specification evidence and record the exact value used",
+    },
+    {
+        "id": "resource_cleanup",
+        "label": "资源清理",
+        "input": "repeat supported create, connect, I/O, disconnect, and delete operations with both success and injected public failures",
+        "operation": "capture resource baselines, execute repeated lifecycle loops, wait for supported cleanup, and compare the final public state with baseline",
+        "expected": "all externally visible resources return to baseline and a fresh operation succeeds without exhaustion, stale ownership, or leaked session state",
+        "observe": "file descriptors, key or credential objects, controllers, paths, sessions, queues, process memory, logs, and a final fresh-operation result",
+        "oracle_basis": "same-process and same-environment resource baseline plus documented cleanup state from source evidence and public status interfaces",
+    },
+    {
+        "id": "upstream_error_propagation",
+        "label": "上游异常传播",
+        "input": "inject a failure through a supported external dependency such as an unreachable peer, rejected credential, partial discovery result, or unavailable key service",
+        "operation": "trigger the public workflow, preserve the first upstream error, and inspect the final command result and residual state",
+        "expected": "the original failure remains observable at the public boundary, success is not reported for a partial result, and downstream state is rolled back or clearly marked degraded",
+        "observe": "command exit status, first-cause error, partial-result count, logs, controller or session state, and retry behavior",
+        "oracle_basis": "documented public error contract and source evidence for upstream return propagation, compared with the injected environment fault",
     },
 ]
 
@@ -3682,6 +4079,7 @@ def _expand_black_box_dimension_cases(
             ]
             case["expected"] = [str(spec["expected"])]
             case["expected_result"] = str(spec["expected"])
+            case["oracle_basis"] = str(spec["oracle_basis"])
             case["observable_signals"] = _dedupe_strings(
                 [*[str(item) for item in base.get("observable_signals") or []], str(spec["observe"])]
             )
@@ -3967,6 +4365,11 @@ def _black_box_case_for_changed_file(
     file_path = str(changed_file.get("path") or changed_file.get("old_path") or "")
     module = _module_label_for_path(file_path)
     test_directory = _test_directory_for_source(file_path)
+    test_mapping = _deliverable_test_mapping(
+        task_run=task_run,
+        candidate=test_directory,
+        scenario=f"{module} changed path regression",
+    )
     focus = _black_box_focus_for_path(file_path)
     observable = _observable_change_for_path(file_path)
     return {
@@ -4020,7 +4423,7 @@ def _black_box_case_for_changed_file(
             "capture before/after logs and public result payloads",
             "triage failures by changed file path, not by calling internal functions",
         ],
-        "mapped_test_dir": test_directory,
+        "mapped_test_dir": test_mapping,
         "source_or_test_evidence": [file_path] if file_path else [],
         "source": "local-mr-blackbox",
         "trace": {
@@ -4031,6 +4434,11 @@ def _black_box_case_for_changed_file(
 
 
 def _fallback_black_box_case(*, task_run: Any) -> dict[str, Any]:
+    test_mapping = _deliverable_test_mapping(
+        task_run=task_run,
+        candidate="test",
+        scenario="patch smoke regression",
+    )
     return {
         "case_id": "local_mr_black_box_001",
         "risk_ids": ["source_flow_sfmea_001"],
@@ -4052,8 +4460,8 @@ def _fallback_black_box_case(*, task_run: Any) -> dict[str, Any]:
         "observability": ["logs", "exit status", "RPC or tool output"],
         "diagnostics": ["provide a unified diff with changed paths for sharper scope"],
         "failure_diagnostics": ["provide a unified diff with changed paths for sharper scope"],
-        "mapped_test_dir": "test",
-        "source_or_test_evidence": ["test"],
+        "mapped_test_dir": test_mapping,
+        "source_or_test_evidence": [test_mapping],
         "source": "local-mr-blackbox",
         "trace": {"task_run_id": str(task_run.task_run_id)},
     }
@@ -4337,6 +4745,28 @@ def _test_directory_for_source(file_path: str) -> str:
     return "test"
 
 
+def _deliverable_test_mapping(
+    *,
+    task_run: Any,
+    candidate: str,
+    scenario: str,
+) -> str:
+    """Use a real repository test path or make the missing coverage explicit."""
+    normalized = str(candidate or "").strip().replace("\\", "/").rstrip("/")
+    repo_text = str(getattr(task_run, "repo_path", "") or "").strip()
+    if normalized and repo_text:
+        try:
+            repo = Path(repo_text).expanduser().resolve()
+            path = (repo / normalized).resolve()
+        except OSError:
+            path = Path()
+        else:
+            if repo in path.parents and path.exists():
+                return normalized
+    label = str(scenario or "该场景").strip()
+    return f"ai_suggested_unverified: 为 {label} 新增外部黑盒测试"
+
+
 def _preferred_source_roots(query_lower: str) -> list[str]:
     roots: list[str] = []
     keyword_roots = [
@@ -4538,6 +4968,8 @@ def _local_evidence_card(
         data = b""
         text = ""
     symbols = _extract_local_symbols(text)
+    if not symbols and path.suffix.lower() in {".sh", ".bash", ".zsh", ".ksh"}:
+        symbols = [path.name]
     return {
         "evidence_id": f"local_evidence_{index:03d}",
         "kind": "source_file",
@@ -4556,6 +4988,7 @@ def _extract_local_symbols(text: str, *, limit: int = 24) -> list[str]:
         re.compile(r"^\s*(?:static\s+)?(?:inline\s+)?[A-Za-z_][\w\s\*]*\s+([A-Za-z_]\w*)\s*\([^;]*\)\s*\{", re.MULTILINE),
         re.compile(r"^\s*(?:int|void|bool|static)\s+([A-Za-z_]\w*)\s*\(", re.MULTILINE),
         re.compile(r"^\s*(?:function\s+)?([A-Za-z_][\w-]*)\s*\(\)\s*\{", re.MULTILINE),
+        re.compile(r"^\s*(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.MULTILINE),
     ]
     for pattern in patterns:
         for match in pattern.finditer(text):
@@ -4843,6 +5276,104 @@ def _restore_protected_artifacts(
             continue
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
+
+
+def _snapshot_current_canonical_source_artifacts(
+    artifact_dir: Path,
+) -> dict[str, bytes]:
+    """Keep a current deterministic source pack ahead of a parent retry seed."""
+    pack = _read_json(
+        artifact_dir / "stages" / "source_analysis" / "source_evidence_pack.json"
+    )
+    if not isinstance(pack, dict) or not pack.get("evidence_cards"):
+        return {}
+    expected = {
+        "evidence_cards.json": pack.get("evidence_cards"),
+        "source_scope.json": pack.get("source_scope") or {},
+    }
+    snapshot: dict[str, bytes] = {}
+    for name, payload in expected.items():
+        path = artifact_dir / name
+        if path.is_file() and _read_json(path) == payload:
+            snapshot[name] = path.read_bytes()
+    return snapshot
+
+
+def _apply_behavior_validation_field_patches(
+    *,
+    artifact_dir: Path,
+    validation: dict[str, Any],
+) -> dict[str, list[str]]:
+    """Materialize independently audited row fixes without another generation."""
+    feedback_issues: list[dict[str, Any]] = []
+    for claim in validation.get("claims") or []:
+        if not isinstance(claim, dict) or not isinstance(claim.get("field_patch"), dict):
+            continue
+        match = re.match(
+            r"^ROW:(sfmea\.json|black_box_cases\.json):(.+)$",
+            str(claim.get("claim_id") or "").strip(),
+        )
+        if not match or not claim.get("field_patch"):
+            continue
+        feedback_issues.append(
+            {
+                "artifact": match.group(1),
+                "row_id": match.group(2),
+                "field_patch": dict(claim["field_patch"]),
+            }
+        )
+
+    changed: dict[str, list[str]] = {}
+    for artifact in ("sfmea.json", "black_box_cases.json"):
+        path = artifact_dir / artifact
+        rows = _read_json(path)
+        if not isinstance(rows, list):
+            continue
+        patched = _apply_quality_feedback_field_patches(
+            rows,
+            artifact=artifact,
+            quality_feedback={"issues": feedback_issues},
+            base_items=rows,
+        )
+        changed_ids = [
+            row_id
+            for before, after in zip(rows, patched)
+            if before != after and (row_id := _json_quality_row_id(after))
+        ]
+        if patched == rows:
+            continue
+        _write_json(path, patched)
+        changed[artifact] = changed_ids
+    return changed
+
+
+async def _converge_behavior_validation_field_patches(
+    *,
+    artifact_dir: Path,
+    validation: dict[str, Any],
+    validate: Callable[[], Any],
+    max_rounds: int = 3,
+) -> tuple[dict[str, Any], dict[str, list[str]], int]:
+    """Apply independent field patches until validation reaches a fixed point."""
+    current = validation
+    changed: dict[str, list[str]] = {}
+    rounds = 0
+    for _ in range(max(0, max_rounds)):
+        if str(current.get("status") or "") != "completed":
+            break
+        round_changes = _apply_behavior_validation_field_patches(
+            artifact_dir=artifact_dir,
+            validation=current,
+        )
+        if not round_changes:
+            break
+        rounds += 1
+        for artifact, row_ids in round_changes.items():
+            changed[artifact] = list(
+                dict.fromkeys([*changed.get(artifact, []), *row_ids])
+            )
+        current = await validate()
+    return current, changed, rounds
 
 
 def _provider_diagnostics_summary(artifact_dir: Path) -> dict[str, Any]:
@@ -5682,15 +6213,19 @@ def _inject_prior_step_context(
             for item in retry_quality_feedback.get("affected_artifacts") or []
             if str(item).strip()
         }
+        affected_with_descendants = _expand_quality_blocked_artifacts(affected)
+        retry_quality_feedback["dependent_artifacts"] = sorted(
+            affected_with_descendants - affected
+        )
         retry_quality_feedback["protected_artifacts"] = [
             str(item)
             for item in bundle.get("required_artifacts") or []
-            if Path(str(item)).name not in affected
+            if Path(str(item)).name not in affected_with_descendants
         ]
         retry_required_artifacts = [
             str(item)
             for item in bundle.get("required_artifacts") or []
-            if Path(str(item)).name in affected
+            if Path(str(item)).name in affected_with_descendants
         ]
         bundle["quality_retry_required_artifacts"] = retry_required_artifacts
         if isinstance(bundle.get("test_activity_contract"), dict):
@@ -5928,8 +6463,11 @@ def _apply_quality_feedback_to_staged_plan(
     repaired["quality_retry_feedback"] = dict(feedback)
     base_bypass = repaired.get("quality_repair_base_cache_bypass_artifacts")
     if not isinstance(base_bypass, list):
-        base_bypass = list(repaired.get("cache_bypass_artifacts") or [])
-        repaired["quality_repair_base_cache_bypass_artifacts"] = list(base_bypass)
+        # Task-level retry invalidations have already been regenerated by the
+        # first execution in this lifecycle. Carrying them into an in-run
+        # quality repair needlessly rewrites accepted sibling artifacts.
+        base_bypass = []
+        repaired["quality_repair_base_cache_bypass_artifacts"] = []
     bypass: list[str] = []
     for value in [
         *base_bypass,
@@ -5938,7 +6476,12 @@ def _apply_quality_feedback_to_staged_plan(
         artifact = str(value).strip()
         if artifact and artifact not in bypass:
             bypass.append(artifact)
-    if any(
+    stage_by_id = {
+        str(stage.get("id") or ""): stage
+        for stage in repaired.get("stages") or []
+        if isinstance(stage, dict) and str(stage.get("id") or "").strip()
+    }
+    if not stage_by_id and any(
         Path(str(value)).name in {
             "business_flow.md",
             "sfmea.json",
@@ -5950,6 +6493,29 @@ def _apply_quality_feedback_to_staged_plan(
             artifact = str(output).strip()
             if artifact.endswith(".md") and artifact not in bypass:
                 bypass.append(artifact)
+    invalidated_stage_ids = {
+        stage_id
+        for stage_id, stage in stage_by_id.items()
+        if Path(str(stage.get("artifact") or "")).name
+        in {Path(value).name for value in bypass}
+    }
+    while True:
+        expanded = set(invalidated_stage_ids)
+        for stage_id, stage in stage_by_id.items():
+            if any(
+                str(dependency) in invalidated_stage_ids
+                for dependency in stage.get("depends_on") or []
+            ):
+                expanded.add(stage_id)
+        if expanded == invalidated_stage_ids:
+            break
+        invalidated_stage_ids = expanded
+    for stage_id, stage in stage_by_id.items():
+        if stage_id not in invalidated_stage_ids:
+            continue
+        artifact = str(stage.get("artifact") or "").strip()
+        if artifact and artifact not in bypass:
+            bypass.append(artifact)
     repaired["cache_bypass_artifacts"] = bypass
     return repaired
 
@@ -7000,18 +7566,44 @@ def _evidence_card_validation_issues(
         if not symbols and str(card.get("symbol") or "").strip():
             symbols = [str(card.get("symbol") or "").strip()]
         if not isinstance(symbols, list) or not any(str(item or "").strip() for item in symbols):
+            code_suffixes = {
+                ".c", ".cc", ".cpp", ".cxx", ".h", ".hh", ".hpp", ".hxx",
+                ".py", ".sh", ".bash", ".zsh", ".ksh", ".rs", ".go",
+                ".java", ".js", ".jsx", ".ts", ".tsx",
+            }
             expected_sha256 = str(card.get("sha256") or "").strip().lower()
             try:
                 actual_sha256 = hashlib.sha256(candidate.read_bytes()).hexdigest()
             except OSError:
                 actual_sha256 = ""
-            expected_line_count = card.get("line_count")
-            line_count_matches = (
-                expected_line_count in (None, "")
-                or str(expected_line_count).isdigit()
-                and int(expected_line_count) == len(source_text.splitlines())
+            start_line = int(card.get("start_line") or 0)
+            end_line = int(card.get("end_line") or 0)
+            excerpt = str(card.get("excerpt") or "").strip()
+            source_lines = source_text.splitlines()
+            selected_excerpt = (
+                "\n".join(source_lines[start_line - 1 : end_line]).strip()
+                if 0 < start_line <= end_line <= len(source_lines)
+                else ""
             )
-            if expected_sha256 and expected_sha256 == actual_sha256 and line_count_matches:
+            expected_line_count = int(card.get("line_count") or 0)
+            whole_file_verified = (
+                candidate.suffix.lower() not in code_suffixes
+                and bool(expected_sha256)
+                and expected_sha256 == actual_sha256
+                and not excerpt
+                and start_line == 0
+                and end_line == 0
+                and expected_line_count == len(source_lines)
+            )
+            data_slice_verified = (
+                candidate.suffix.lower() not in code_suffixes
+                and bool(expected_sha256)
+                and expected_sha256 == actual_sha256
+                and bool(excerpt)
+                and excerpt == selected_excerpt
+                and expected_line_count == end_line - start_line + 1
+            )
+            if whole_file_verified or data_slice_verified:
                 continue
             issues.append({
                 "artifact": artifact_path.name,

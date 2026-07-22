@@ -6,6 +6,280 @@ from urllib.parse import parse_qs, urlparse
 import pytest
 
 
+def test_json_row_quality_issues_include_stable_row_id(tmp_path):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    rows = [
+        {
+            "sfmea_id": "SFMEA-007",
+            "failure_mode": "待验证：当前片段未显示失败后的状态恢复",
+            "cause": "当前上下文未提供完整错误路径",
+            "effect": "可能影响后续运行",
+            "detection": "检查运行状态",
+            "severity": 5,
+            "occurrence": 3,
+            "detection_score": 4,
+            "rpn": 60,
+            "mitigation": "继续分析",
+            "source_evidence": ["lib/nvme/fabrics.c::connect"],
+            "test_mapping": "test/nvme",
+        }
+    ]
+
+    issues = _audit_json_artifact(
+        artifact="sfmea.json",
+        payload=rows,
+        spec={"required_fields": []},
+        repo=tmp_path,
+    )
+
+    indexed = [issue for issue in issues if issue.get("index") == 1]
+    assert indexed
+    assert {issue.get("row_id") for issue in indexed} == {"SFMEA-007"}
+
+
+@pytest.mark.parametrize(
+    "failure_mode,cause",
+    [
+        (
+            "读取 none 后释放临时字符串并置 NULL，后续不会使用该指针",
+            "该分支跳过 setter，不存在 use-after-free",
+        ),
+        (
+            "是否存在中间资源泄漏需用故障注入验证",
+            "当前上下文只显示 cleanup 属性",
+        ),
+        (
+            "给定源码不支持该路径存在函数内资源泄漏",
+            "分配失败前没有需要释放的资源",
+        ),
+    ],
+)
+def test_sfmea_safety_or_unproven_row_is_not_a_scored_failure_mode(
+    tmp_path, failure_mode, cause
+):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    row = {
+        "sfmea_id": "SFMEA-002",
+        "failure_mode": failure_mode,
+        "cause": cause,
+        "effect": "没有已证实的失效影响",
+        "detection": "运行回归测试",
+        "severity": 2,
+        "occurrence": 2,
+        "detection_score": 2,
+        "rpn": 8,
+        "mitigation": "增加回归测试并检查资源计数",
+        "source_evidence": ["lib/nvme/fabrics.c::connect"],
+        "test_mapping": "test/nvme",
+    }
+
+    issues = _audit_json_artifact(
+        artifact="sfmea.json",
+        payload=[row],
+        spec={"required_fields": []},
+        repo=tmp_path,
+    )
+
+    assert any(issue["code"] == "non_risk_sfmea_row" for issue in issues)
+
+
+@pytest.mark.parametrize(
+    "failure_mode,cause",
+    [
+        (
+            "构建时未启用 TLS 功能，命令返回不支持错误",
+            "编译配置未选择 TLS 后端",
+        ),
+        (
+            "配置字段为 NULL 时保持原值，不会覆盖现有配置",
+            "setter 按接口约定跳过空字段",
+        ),
+        (
+            "底层连接失败后错误码直接向上传播",
+            "调用链保留原始负错误码",
+        ),
+        (
+            "测试只覆盖正常路径，缺少异常用例",
+            "现有测试目录没有对应场景",
+        ),
+    ],
+)
+def test_sfmea_rejects_normal_behavior_and_test_coverage_gaps(
+    tmp_path, failure_mode, cause
+):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    row = {
+        "sfmea_id": "SFMEA-010",
+        "failure_mode": failure_mode,
+        "cause": cause,
+        "effect": "没有已证明的产品失效影响",
+        "detection": "运行回归测试",
+        "severity": 2,
+        "occurrence": 2,
+        "detection_score": 2,
+        "rpn": 8,
+        "mitigation": "整改: 保持当前错误处理。验证: 增加回归测试并检查退出码。",
+        "source_evidence": ["libnvme/src/nvme/fabrics.c:1-2"],
+        "test_mapping": "libnvme/test",
+    }
+
+    issues = _audit_json_artifact(
+        artifact="sfmea.json",
+        payload=[row],
+        spec={"required_fields": []},
+        repo=tmp_path,
+    )
+
+    assert any(issue["code"] == "non_risk_sfmea_row" for issue in issues)
+
+
+def test_sfmea_error_not_propagated_remains_a_scored_failure_mode(tmp_path):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    row = {
+        "sfmea_id": "SFMEA-001",
+        "failure_mode": "registry 清理失败仅记录 WARN，不向上传播",
+        "cause": "函数返回 void，调用方不会收到该清理错误",
+        "effect": "旧 ownership registry 条目可能保留",
+        "detection": "检查 registry 条目和 WARN 日志",
+        "severity": 6,
+        "occurrence": 3,
+        "detection_score": 4,
+        "rpn": 72,
+        "mitigation": (
+            "整改: 返回清理错误并由调用方执行补偿。"
+            "验证: 注入清理失败并确认错误可观察"
+        ),
+        "source_evidence": ["libnvme/src/nvme/fabrics.c:1407-1421"],
+        "test_mapping": "注入 registry 删除失败",
+    }
+
+    issues = _audit_json_artifact(
+        artifact="sfmea.json",
+        payload=[row],
+        spec={"required_fields": []},
+        repo=tmp_path,
+    )
+
+    assert not any(issue["code"] == "non_risk_sfmea_row" for issue in issues)
+
+
+@pytest.mark.parametrize(
+    "failure_mode",
+    [
+        "A malformed DH-HMAC-CHAP secret is written verbatim to an error log.",
+        "The compatibility retry is unreachable after a negative mapped error.",
+        "An odd-length secret can be accepted as valid key material.",
+    ],
+)
+def test_sfmea_accepts_source_backed_english_failure_modes(failure_mode):
+    from app.services.test_activity_contract import sfmea_failure_mode_is_risk
+
+    assert sfmea_failure_mode_is_risk(failure_mode)
+
+
+@pytest.mark.parametrize(
+    "failure_mode",
+    [
+        "A configured discovery controller is not created, yet the task returns success.",
+        "A TLS key id with trailing garbage is accepted into topology.",
+    ],
+)
+def test_sfmea_accepts_english_creation_and_parse_failure_modes(failure_mode):
+    from app.services.test_activity_contract import sfmea_failure_mode_is_risk
+
+    assert sfmea_failure_mode_is_risk(failure_mode)
+
+
+def test_sfmea_mitigation_accepts_change_as_a_concrete_remediation():
+    from app.services.test_activity_contract import sfmea_mitigation_quality_gaps
+
+    assert sfmea_mitigation_quality_gaps(
+        "Production remediation: change the error branch to return its original status. "
+        "Verification: execute the negative test and assert the status in logs."
+    ) == []
+
+
+@pytest.mark.parametrize(
+    "failure_mode",
+    [
+        "构建配置差异可能导致同一 hmac 参数行为不同：非 OpenSSL 构建拒绝非 NONE HMAC。",
+        "若 host_key 为 NULL，函数不会更新字段，现有控制器字段保持不变；不存在 free(NULL) 路径。",
+        "非法 key_len 时函数返回错误且不设置 raw_secret；源码不支持 encoded_key 故障。",
+        "该测试只覆盖 32 字节 discovery log；当前测试覆盖不足。",
+        "分配失败时函数返回错误且不使用 args；当前源码已按此处理。",
+    ],
+)
+def test_sfmea_failure_mode_classifier_rejects_attempt3_normal_rows(failure_mode):
+    from app.services.test_activity_contract import sfmea_failure_mode_is_risk
+
+    assert sfmea_failure_mode_is_risk(failure_mode) is False
+
+
+@pytest.mark.parametrize(
+    "failure_mode",
+    [
+        "registry 清理失败仅记录 WARN，错误不向上传播，旧条目残留",
+        "重复连接竞态使新 controller 泄漏并留下悬空 path",
+        "长稳态运行后 16 位资源计数翻转，错误接受已耗尽的槽位",
+    ],
+)
+def test_sfmea_failure_mode_classifier_keeps_real_product_hazards(failure_mode):
+    from app.services.test_activity_contract import sfmea_failure_mode_is_risk
+
+    assert sfmea_failure_mode_is_risk(failure_mode) is True
+
+
+@pytest.mark.parametrize(
+    "mitigation",
+    [
+        (
+            "整改: 若发现泄漏，在对应错误路径前添加资源释放逻辑。"
+            "验证: 对主要错误返回点做故障注入并检查资源计数"
+        ),
+        (
+            "整改: 使用循环写入直到累计写满 len，短写时返回错误。"
+            "验证: 注入短写和磁盘空间不足，确认错误可观测"
+        ),
+        (
+            "整改: 保持 -1 作为不传 tos 的哨兵值并增加边界保护。"
+            "验证: 运行单元测试检查参数字符串不含 tos=-1"
+        ),
+        (
+            "整改: 在 save_discovery_log 中校验 write 返回值是否等于 len，"
+            "短写时返回错误。验证: 注入短写并检查错误可观测"
+        ),
+    ],
+)
+def test_sfmea_mitigation_accepts_explicit_chinese_remediation_and_validation(
+    mitigation,
+):
+    from app.services.test_activity_contract import sfmea_mitigation_quality_gaps
+
+    assert sfmea_mitigation_quality_gaps(mitigation) == []
+
+
+def test_source_anchor_claim_is_l1_verified_only_when_statement_matches_quote():
+    from app.services.test_activity_contract import _deterministic_claim_semantics
+
+    evidence = [{"quote": "c = libnvme_lookup_ctrl(s, &f.ctrl_params, NULL);"}]
+
+    assert _deterministic_claim_semantics(
+        claim_type="source_anchor",
+        statement="c = libnvme_lookup_ctrl(s, &f.ctrl_params, NULL);",
+        evidence=evidence,
+    ) == ("supported", "")
+    status, _ = _deterministic_claim_semantics(
+        claim_type="source_anchor",
+        statement="lookup performs network I/O",
+        evidence=evidence,
+    )
+    assert status == "contradicted"
+
+
 def test_professional_marker_findings_are_lint_but_harness_failures_are_l3():
     from app.services.test_activity_contract import _partition_combined_professional_issues
 
@@ -104,6 +378,10 @@ def test_test_activity_contract_covers_storage_testing_profiles_and_templates():
         "concurrency",
         "recovery",
         "performance",
+        "long_steady_state",
+        "resource_wraparound",
+        "resource_cleanup",
+        "upstream_error_propagation",
     ]
     assert set(contract["artifact_contract"]["sfmea.json"]["required_fields"]) >= {
         "failure_mode",
@@ -143,7 +421,10 @@ def test_refresh_test_activity_contract_upgrades_declared_artifacts_without_losi
         "required_outputs": ["business_flow.md", "sfmea.json"],
         "artifact_contract": {
             "business_flow.md": {"sections": ["old"]},
-            "sfmea.json": {"required_fields": ["failure_mode"]},
+            "sfmea.json": {
+                "required_fields": ["failure_mode"],
+                "min_sfmea_rows": 12,
+            },
         },
     }
 
@@ -161,6 +442,7 @@ def test_refresh_test_activity_contract_upgrades_declared_artifacts_without_losi
         "观测点",
     ]
     assert "mitigation" in refreshed["artifact_contract"]["sfmea.json"]["field_rules"]
+    assert refreshed["artifact_contract"]["sfmea.json"]["min_sfmea_rows"] == 12
     assert refreshed["quality_gates"]["require_independent_behavior_validation"] is True
 
 
@@ -213,6 +495,121 @@ def test_test_activity_contract_uses_declared_flow_artifact_and_actionable_sfmea
     assert contract["artifact_contract"]["sfmea.json"]["field_rules"]["mitigation"] == (
         "每条 mitigation 必须同时包含具体整改动作，以及可执行的测试、监控或日志验证动作。"
     )
+
+
+def test_test_design_mindmap_uses_its_own_contract_instead_of_plain_test_design():
+    from app.services.test_activity_contract import build_test_activity_contract
+
+    contract = build_test_activity_contract(
+        target="NVMe/TCP 测试设计脑图",
+        workflow_outputs=[
+            {
+                "id": "mindmap",
+                "artifact": "test_design_mindmap.md",
+                "type": "markdown",
+            }
+        ],
+    )
+
+    assert "test_design_mindmap.md" in contract["required_outputs"]
+    assert "test_design.md" not in contract["required_outputs"]
+    assert contract["artifact_contract"]["test_design_mindmap.md"]["required_terms"] == [
+        "目标",
+        "输入",
+        "源码证据",
+        "业务流程",
+        "SFMEA",
+        "黑盒用例",
+        "观测点",
+        "剩余风险",
+    ]
+
+
+def test_test_design_mindmap_audit_accepts_mermaid_branches(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_artifacts,
+        build_test_activity_contract,
+    )
+
+    contract = build_test_activity_contract(
+        target="NVMe/TCP 测试设计脑图",
+        workflow_outputs=[
+            {
+                "id": "mindmap",
+                "artifact": "test_design_mindmap.md",
+                "type": "markdown",
+            }
+        ],
+    )
+    repo = tmp_path / "nvme-cli"
+    (repo / "libnvme/src/nvme").mkdir(parents=True)
+    (repo / "libnvme/test/ioctl").mkdir(parents=True)
+    (repo / "libnvme/src/nvme/fabrics.c").write_text("int connect_ctrl(void);\n")
+    (repo / "libnvme/test/ioctl/discovery.c").write_text("int test_discovery(void);\n")
+    (tmp_path / "test_design_mindmap.md").write_text(
+        """# NVMe/TCP 测试设计脑图
+
+```mermaid
+mindmap
+  root((NVMe/TCP))
+    目标
+    输入
+    源码证据
+      libnvme/src/nvme/fabrics.c
+      libnvme/test/ioctl/discovery.c
+    业务流程
+    SFMEA
+    黑盒用例
+    观测点
+    剩余风险
+```
+""",
+        encoding="utf-8",
+    )
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=tmp_path,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert audit["status"] == "deliverable"
+    assert audit["issues"] == []
+
+
+def test_sfmea_audit_rejects_non_risks_and_absence_of_evidence_claims(tmp_path):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    rows = [
+        {
+            "sfmea_id": "SFMEA-001",
+            "failure_mode": "当前源码不支持该 failure mode",
+            "cause": "修复模型确认原结论错误",
+        },
+        {
+            "sfmea_id": "SFMEA-002",
+            "failure_mode": "连接超时后发生 fd 泄漏",
+            "cause": "当前片段未显示 fd 清理",
+        },
+        {
+            "sfmea_id": "SFMEA-003",
+            "failure_mode": "被测产品连接流程会崩溃",
+            "cause": "测试 helper 未检查 NULL",
+            "source_evidence": ["test/connect.c::test_connect"],
+        },
+    ]
+
+    issues = _audit_json_artifact(
+        artifact="sfmea.json",
+        payload=rows,
+        spec={},
+        repo=tmp_path,
+    )
+    codes = {issue["code"] for issue in issues}
+
+    assert "non_risk_sfmea_row" in codes
+    assert "absence_of_evidence_as_defect" in codes
+    assert "test_harness_risk_as_product_risk" in codes
 
 
 def test_prepare_workbench_task_run_builds_test_activity_contract_for_executor(tmp_path):
@@ -339,6 +736,300 @@ def test_test_activity_quality_audit_flags_shallow_or_graybox_artifacts(tmp_path
     assert audit["recommendations"][0].startswith("补齐")
 
 
+def test_black_box_quality_rejects_chinese_internal_call_and_return_code_only():
+    from app.services.test_activity_contract import (
+        _black_box_boundary_violation,
+        _black_box_expected_result_is_observable,
+    )
+
+    case = {
+        "steps": ["调用 libnvmf_create_raw_secret(ctx, secret, 16, &raw, &length)"],
+        "expected_result": "返回 -EINVAL",
+    }
+
+    assert _black_box_boundary_violation(case) is True
+    assert _black_box_expected_result_is_observable(case["expected_result"]) is False
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        "执行测试程序，调用 libnvmf_import_tls_key_versioned",
+        "测试程序传入 NULL hostnqn 后直接调用 libnvmf_gen_dhchap_key",
+        "invoke libnvme_ctrl_set_dhchap_host_key with a NULL value",
+    ],
+)
+def test_black_box_boundary_rejects_direct_library_api_harness_steps(step):
+    from app.services.test_activity_contract import _black_box_boundary_violation
+
+    assert _black_box_boundary_violation({"steps": [step]}) is True
+
+
+def test_black_box_delivery_gate_rejects_source_mapping_and_unit_test_fallback(
+    tmp_path,
+):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    repo = tmp_path / "nvme-cli"
+    (repo / "libnvme" / "src" / "nvme").mkdir(parents=True)
+    (repo / "libnvme" / "test" / "ioctl").mkdir(parents=True)
+    (repo / "libnvme" / "test" / "ioctl" / "discovery.c").write_text(
+        "int main(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+    case = {
+        "case_id": "BB-10",
+        "test_dimension": "boundary",
+        "scenario_name": "discovery record boundary",
+        "preconditions": ["discovery controller is reachable"],
+        "steps": [
+            "run nvme discover; if injection is unavailable, convert this to a unit test candidate"
+        ],
+        "expected_result": "the command exits with a visible status",
+        "observability": ["exit code and stderr"],
+        "failure_diagnostics": ["capture command output"],
+        "mapped_test_dir": "libnvme/src/nvme/",
+        "source_or_test_evidence": ["libnvme/test/ioctl/discovery.c"],
+    }
+
+    issues = _audit_json_artifact(
+        artifact="black_box_cases.json",
+        payload=[case],
+        spec={"required_fields": list(case)},
+        repo=repo,
+    )
+
+    assert any(
+        issue["code"] == "missing_test_directory_mapping" for issue in issues
+    )
+    assert any(issue["code"] == "black_box_boundary_violation" for issue in issues)
+
+
+def test_black_box_delivery_gate_accepts_existing_test_directory(tmp_path):
+    from app.services.test_activity_contract import black_box_case_delivery_quality_gaps
+
+    repo = tmp_path / "nvme-cli"
+    (repo / "libnvme" / "test").mkdir(parents=True)
+    case = {
+        "steps": [
+            "run nvme discover and record the public command return value"
+        ],
+        "expected_result": (
+            "记录公开 CLI 返回值；不要用内部 mock 冒充黑盒结果"
+        ),
+        "mapped_test_dir": "libnvme/test/",
+    }
+
+    assert black_box_case_delivery_quality_gaps(case, repo_path=str(repo)) == []
+
+
+def test_black_box_delivery_gate_accepts_multiple_existing_test_mappings(tmp_path):
+    from app.services.test_activity_contract import black_box_case_delivery_quality_gaps
+
+    repo = tmp_path / "nvme-cli"
+    first = repo / "libnvme" / "test" / "config-api.c"
+    second = repo / "libnvme" / "test" / "psk.c"
+    first.parent.mkdir(parents=True)
+    first.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    second.write_text("int main(void) { return 0; }\n", encoding="utf-8")
+    case = {
+        "steps": ["run nvme discover and record the public command result"],
+        "expected_result": "the command exit code and stderr are recorded",
+        "mapped_test_dir": "libnvme/test/config-api.c; libnvme/test/psk.c",
+    }
+
+    assert black_box_case_delivery_quality_gaps(case, repo_path=str(repo)) == []
+
+
+def test_explicit_claim_accepts_base_evidence_card_id_with_exact_quote(tmp_path):
+    import hashlib
+
+    from app.services.test_activity_contract import (
+        _audit_explicit_technical_claims,
+        _verified_evidence_files,
+    )
+
+    repo = tmp_path / "nvme-cli"
+    source = repo / "libnvme" / "src" / "nvme" / "fabrics.c"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "static int discover(void)\n"
+        "{\n"
+        "\treturn 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    (root / "evidence_cards.json").write_text(
+        json.dumps(
+            [
+                {
+                    "evidence_id": "EV-FAB-001",
+                    "file_path": "libnvme/src/nvme/fabrics.c",
+                    "start_line": 1,
+                    "end_line": 4,
+                    "excerpt": "static int discover(void)\n{\n\treturn 0;\n}",
+                    "sha256": digest,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    verified_files = _verified_evidence_files(root=root, repo=repo)
+    rows = [
+        {
+            "sfmea_id": "SFMEA-001",
+            "source_evidence": ["EV-FAB-001"],
+            "technical_claims": [
+                {
+                    "claim_id": "TC-001",
+                    "type": "source_anchor",
+                    "statement": "return 0;",
+                    "evidence": [
+                        {
+                            "evidence_id": "EV-FAB-001",
+                            "path": "libnvme/src/nvme/fabrics.c",
+                            "symbol": "discover",
+                            "lines": "L3",
+                            "quote": "return 0;",
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+
+    claims, issues = _audit_explicit_technical_claims(
+        artifact="sfmea.json",
+        rows=rows,
+        verified_files=verified_files,
+    )
+
+    assert issues == []
+    assert claims[0]["status"] == "verified"
+    assert claims[0]["evidence"][0]["evidence_id_matches"] is True
+
+
+def test_black_box_quality_accepts_measurable_performance_oracle():
+    from app.services.test_activity_contract import (
+        _black_box_expected_result_is_observable,
+    )
+
+    assert _black_box_expected_result_is_observable(
+        "real 时间不超过基线的 2 倍"
+    ) is True
+
+
+def test_performance_oracle_requires_reproducible_basis():
+    from app.services.test_activity_contract import (
+        black_box_oracle_basis_quality_gaps,
+    )
+
+    case = {
+        "test_dimension": "performance",
+        "expected_result": "P95 耗时不得超过基线的 2 倍",
+    }
+
+    assert black_box_oracle_basis_quality_gaps(case) == [
+        "missing_oracle_basis",
+        "missing_performance_sampling_plan",
+    ]
+
+    case["oracle_basis"] = (
+        "在同一内核、目标配置和网络环境预热 5 次后重复 30 次，"
+        "记录 P50/P95；阈值取未改动 commit 的 P95 基线与方差。"
+    )
+    assert black_box_oracle_basis_quality_gaps(case) == []
+
+
+def test_resource_and_timeout_oracles_require_source_or_configuration_basis():
+    from app.services.test_activity_contract import (
+        black_box_oracle_basis_quality_gaps,
+    )
+
+    assert black_box_oracle_basis_quality_gaps({
+        "test_dimension": "resource_wraparound",
+        "expected_result": "65536 次操作后计数器不得翻转为 0",
+        "oracle_basis": "循环执行并观察计数",
+    }) == ["oracle_basis_not_traceable"]
+    assert black_box_oracle_basis_quality_gaps({
+        "test_dimension": "timeout",
+        "expected_result": "5 秒内返回超时错误",
+        "oracle_basis": "来自命令行 --timeout=5 配置及对应帮助文本证据",
+    }) == []
+
+
+def test_black_box_contract_requires_storage_lifecycle_dimensions():
+    from app.services.test_activity_contract import BLACK_BOX_REQUIRED_DIMENSIONS
+
+    assert BLACK_BOX_REQUIRED_DIMENSIONS == [
+        "normal_path",
+        "invalid_input",
+        "resource_pressure",
+        "timeout",
+        "reconnect",
+        "concurrency",
+        "recovery",
+        "performance",
+        "long_steady_state",
+        "resource_wraparound",
+        "resource_cleanup",
+        "upstream_error_propagation",
+    ]
+
+
+def test_cross_artifact_audit_rejects_stale_sfmea_and_case_ids_in_mindmap(tmp_path):
+    from app.services.test_activity_contract import _audit_cross_artifact_references
+
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps([{"sfmea_id": "SFMEA-001"}]), encoding="utf-8"
+    )
+    (tmp_path / "black_box_cases.json").write_text(
+        json.dumps([{"case_id": "BB-001"}]), encoding="utf-8"
+    )
+    (tmp_path / "test_design_mindmap.md").write_text(
+        "```mermaid\nmindmap\n root\n  SFMEA-001\n  SFMEA-007\n  BB-001\n  BB-099\n```\n",
+        encoding="utf-8",
+    )
+
+    issues = _audit_cross_artifact_references(
+        root=tmp_path,
+        declared_artifacts={
+            "sfmea.json",
+            "black_box_cases.json",
+            "test_design_mindmap.md",
+        },
+    )
+
+    assert issues == [{
+        "code": "stale_cross_artifact_reference",
+        "artifact": "test_design_mindmap.md",
+        "message": "test_design_mindmap.md 引用了当前交付件中不存在的条目: BB-099, SFMEA-007",
+        "references": ["BB-099", "SFMEA-007"],
+    }]
+
+
+def test_strategy_rejects_complete_coverage_claim_when_gaps_remain(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    issues = _audit_markdown_artifact(
+        artifact="test_strategy.md",
+        content=(
+            "# 测试策略\n已完整覆盖认证、重连和资源回收。\n"
+            "## 证据缺口\nTLS 异常传播仍待补证据，长稳态尚未覆盖。\n"
+        ),
+        spec={},
+        repo=tmp_path,
+    )
+
+    assert any(
+        issue["code"] == "unsupported_complete_coverage_claim"
+        for issue in issues
+    )
+
+
 def test_structured_evidence_paths_ignore_human_annotations():
     from app.services.test_activity_contract import _strict_evidence_path_strings
 
@@ -387,6 +1078,68 @@ def test_markdown_sections_accept_content_organized_under_nested_headings(tmp_pa
     )
 
     assert "empty_markdown_sections" not in {item["code"] for item in issues}
+
+
+def test_markdown_sections_accept_descriptive_heading_suffixes(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    content = """# Flow
+## 外部触发
+CLI request.
+## 流程步骤（主流程表）
+One step.
+## 异常分支
+One branch.
+## 观测点与证据引用
+Check exit status and logs.
+"""
+
+    issues = _audit_markdown_artifact(
+        artifact="flow_map.md",
+        content=content,
+        spec={"sections": ["外部触发", "流程步骤", "异常分支", "观测点"]},
+        repo=tmp_path,
+    )
+
+    assert "missing_markdown_sections" not in {item["code"] for item in issues}
+
+
+def test_markdown_evidence_accepts_top_level_source_and_nested_test_directories(
+    tmp_path,
+):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    repo = tmp_path / "nvme-cli"
+    source = repo / "fabrics.c"
+    nested_source = repo / "libnvme" / "src" / "nvme" / "fabrics.c"
+    nested_test = repo / "libnvme" / "test" / "psk.c"
+    source.parent.mkdir(parents=True)
+    nested_source.parent.mkdir(parents=True)
+    nested_test.parent.mkdir(parents=True)
+    source.write_text("int fabrics_discovery(void);\n", encoding="utf-8")
+    nested_source.write_text("int nvmf_connect(void);\n", encoding="utf-8")
+    nested_test.write_text("int psk_test(void);\n", encoding="utf-8")
+    content = """# Flow
+## 外部触发
+`fabrics.c`
+## 流程步骤
+`libnvme/src/nvme/fabrics.c`
+## 异常分支
+`libnvme/test/psk.c`
+## 观测点
+检查连接状态。
+"""
+
+    issues = _audit_markdown_artifact(
+        artifact="flow_map.md",
+        content=content,
+        spec={"sections": ["外部触发", "流程步骤", "异常分支", "观测点"]},
+        repo=repo,
+    )
+
+    codes = {item["code"] for item in issues}
+    assert "missing_source_evidence" not in codes
+    assert "missing_test_evidence" not in codes
 
 
 def test_module_analysis_quality_audit_rejects_shallow_markdown(tmp_path):
@@ -1716,6 +2469,10 @@ def test_sfmea_audit_requires_test_or_monitor_verification_in_mitigation(tmp_pat
         "启用 HeaderDigest/DataDigest，并添加 digest 错误计数监控",
         "确保 target 配置正确；添加 target 存在性检查；返回明确错误",
         "严格校验 CSG；返回明确错误；添加协议状态机监控",
+        "free(host_key) 后立即置 host_key = NULL；添加单元测试验证后续访问不崩溃",
+        "调用 libnvme_strerror 后检查返回值，若为 NULL 则使用默认字符串；构造异常返回并验证日志",
+        "Track skipped invalid records and report a partial-success status; add a black-box regression test",
+        "Capture disconnect failures and surface a warning; add cleanup assertions to BB-011",
     ],
 )
 def test_sfmea_mitigation_accepts_remediation_plus_verification(mitigation):
@@ -1870,6 +2627,10 @@ def test_black_box_audit_rejects_missing_required_test_dimensions(tmp_path):
         "concurrency",
         "recovery",
         "performance",
+        "long_steady_state",
+        "resource_wraparound",
+        "resource_cleanup",
+        "upstream_error_propagation",
     }
 
 
@@ -4293,6 +5054,58 @@ def test_markdown_audit_rejects_truncated_table_row(tmp_path):
     assert any(issue["code"] == "malformed_markdown_table" for issue in issues), issues
 
 
+def test_markdown_audit_does_not_treat_explicit_evidence_gap_as_claimed_path(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "test").mkdir()
+    (repo / "src" / "connect.c").write_text("int connect_target;\n", encoding="utf-8")
+    (repo / "test" / "connect.c").write_text("int test_connect;\n", encoding="utf-8")
+    content = (
+        "## 证据\n"
+        "已验证源码 `src/connect.c`，测试证据 `test/connect.c`。\n"
+        "## 证据缺口\n"
+        "TLS PSK 失败清理证据：待补（psk.c 不在当前证据白名单内）。\n"
+    )
+
+    issues = _audit_markdown_artifact(
+        artifact="test_design_mindmap.md",
+        content=content,
+        spec={"sections": ["证据", "证据缺口"]},
+        repo=repo,
+    )
+
+    assert not any(
+        issue["code"] == "evidence_path_not_found" and "psk.c" in issue["message"]
+        for issue in issues
+    ), issues
+
+
+def test_markdown_audit_still_rejects_unqualified_missing_evidence_path(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    repo = tmp_path / "repo"
+    (repo / "src").mkdir(parents=True)
+    (repo / "test").mkdir()
+    (repo / "src" / "connect.c").write_text("int connect_target;\n", encoding="utf-8")
+    (repo / "test" / "connect.c").write_text("int test_connect;\n", encoding="utf-8")
+
+    issues = _audit_markdown_artifact(
+        artifact="test_design_mindmap.md",
+        content=(
+            "源码 `src/connect.c`，测试 `test/connect.c`，TLS 证据 `psk.c`。\n"
+        ),
+        spec={},
+        repo=repo,
+    )
+
+    assert any(
+        issue["code"] == "evidence_path_not_found" and "psk.c" in issue["message"]
+        for issue in issues
+    ), issues
+
+
 def test_raw_pdu_static_analysis_rejects_reinstatement_that_closes_old_session_first():
     import ast
 
@@ -5533,6 +6346,73 @@ def test_fact_ledger_rejects_exact_log_literal_missing_from_verified_source(tmp_
     assert issue["row_id"] == "SFMEA-005"
 
 
+def test_fact_ledger_resolves_exact_log_literal_from_verified_evidence_anchor(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+    from app.services.workflow_presets import SFMEA_SCHEMA
+
+    repo = tmp_path / "repo"
+    source = repo / "lib" / "nvme" / "fabrics.c"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        'libnvme_msg(ctx, WARN, "registry update failed: %s\\n", err);\n',
+        encoding="utf-8",
+    )
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "evidence_cards.json").write_text(
+        json.dumps(
+            [
+                {
+                    "evidence_id": "SRC-01",
+                    "file_path": "lib/nvme/fabrics.c",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "excerpt": source.read_text(encoding="utf-8").strip(),
+                    "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "symbols": ["libnvme_msg"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    row = {
+        "sfmea_id": "SFMEA-006",
+        "failure_mode": "若 registry 更新失败仅记录告警，调用链可能继续推进",
+        "cause": "更新函数没有向调用方返回错误",
+        "effect": "控制器状态与 registry 状态可能不一致",
+        "detection": "日志原文包含 'registry update failed'。",
+        "severity": 6,
+        "occurrence": 2,
+        "detection_score": 3,
+        "rpn": 36,
+        "score_explanation": "S6 O2 D3",
+        "mitigation": "整改: 返回错误并回滚。验证: 注入 registry 写入失败并检查返回码。",
+        "source_evidence": ["SRC-01:L1"],
+        "test_mapping": "注入 registry 更新失败",
+    }
+    (artifacts / "sfmea.json").write_text(json.dumps([row]), encoding="utf-8")
+    contract = {
+        "artifact_contract": {"sfmea.json": {"schema": SFMEA_SCHEMA}},
+        "quality_gates": {"min_score": 0},
+    }
+
+    result = audit_test_activity_artifacts(
+        artifact_dir=artifacts,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    log_claim = next(
+        claim for claim in result["fact_claims"]
+        if claim.get("type") == "log_literal"
+    )
+    assert log_claim["status"] == "verified"
+    assert not any(
+        issue.get("claim_id") == "SFMEA-006:log_literal:1"
+        for issue in result["issues"]
+    )
+
+
 def test_fact_ledger_only_extracts_explicit_local_log_claims(tmp_path):
     from app.services.test_activity_contract import audit_test_activity_artifacts
     from app.services.workflow_presets import SFMEA_SCHEMA
@@ -5851,8 +6731,8 @@ def test_source_behavior_claim_requires_bound_l2_validation(tmp_path):
         if claim["claim_id"] == "ROW:sfmea.json:SFMEA-001"
     )
     assert row_claim["status"] == "insufficient"
-    assert row_claim["type"] == "sfmea_row_behavior"
-    assert "has no NULL guard" in row_claim["statement"]
+    assert row_claim["type"] == "row_source_claim_coverage"
+    assert "C-BEHAVIOR-001" in row_claim["statement"]
     row_issue = next(
         issue for issue in result["issues"]
         if issue.get("claim_id") == "ROW:sfmea.json:SFMEA-001"
@@ -5933,16 +6813,17 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
     )
     assert {claim["claim_id"] for claim in request["claims"]} == {
         "C-BEHAVIOR-001",
-        "ROW:sfmea.json:SFMEA-001",
     }
     limited_request = build_behavior_claim_validation_request(
         artifact_dir=artifacts,
         repo_path=repo,
         max_claims=1,
     )
-    assert limited_request["candidate_count"] == 2
+    # Only explicit technical claims are sent to the independent L2 auditor;
+    # aggregate row claims are derived after those verdicts return.
+    assert limited_request["candidate_count"] == 1
     assert limited_request["requested_count"] == 1
-    assert limited_request["truncated"] is True
+    assert limited_request["truncated"] is False
     assert "if (params == NULL)" in request["contexts"][0]["content"]
     checked_evidence = [{**evidence, "sha256": source_sha}]
     binding = _behavior_claim_binding(
@@ -5950,11 +6831,6 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
         claim_type="source_behavior",
         statement=statement,
         evidence=checked_evidence,
-    )
-    row_request = next(
-        claim
-        for claim in request["claims"]
-        if claim["claim_id"] == "ROW:sfmea.json:SFMEA-001"
     )
     (artifacts / "behavior_claim_validation.json").write_text(
         json.dumps(
@@ -5972,15 +6848,6 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
                         "binding": binding,
                         "status": "supports",
                         "reason": "The referenced guard returns before dereference.",
-                    },
-                    {
-                        "claim_id": row_request["claim_id"],
-                        "binding": row_request["binding"],
-                        "status": "contradicts",
-                        "reason": "The row says NULL is accepted, but the guard rejects it.",
-                        "field_patch": {
-                            "effect": "Function rejects the request before dereference."
-                        },
                     },
                 ],
             }
@@ -6007,14 +6874,18 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
     )
     assert explicit["status"] == "verified"
     assert explicit["validation_layer"] == "L2_independent_behavior"
-    row_issue = next(
+    row_claim = next(
+        claim
+        for claim in result["fact_claims"]
+        if claim["claim_id"] == "ROW:sfmea.json:SFMEA-001"
+    )
+    assert row_claim["status"] == "verified"
+    assert row_claim["validation_layer"] == "aggregate_source_claims"
+    assert not [
         issue
         for issue in result["issues"]
-        if issue.get("claim_id") == row_request["claim_id"]
-    )
-    assert row_issue["field_patch"] == {
-        "effect": "Function rejects the request before dereference."
-    }
+        if issue.get("claim_id") == row_claim["claim_id"]
+    ]
 
     validation = json.loads(
         (artifacts / "behavior_claim_validation.json").read_text(encoding="utf-8")
@@ -6033,6 +6904,327 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
         if claim["claim_id"] == "C-BEHAVIOR-001"
     )
     assert stale_claim["status"] == "insufficient"
+
+
+def test_behavior_validation_context_honors_plain_line_ranges(tmp_path):
+    """Evidence cards persist ranges as `123-126`, not only `L123-L126`."""
+    from app.services.test_activity_contract import build_behavior_claim_validation_request
+
+    repo = tmp_path / "repo"
+    source = repo / "src" / "connect.c"
+    source.parent.mkdir(parents=True)
+    lines = [f"/* filler {index} */" for index in range(1, 180)]
+    lines[0] = "/* connect_target is declared below */"
+    lines[119] = "int connect_target(void) {"
+    lines[120] = "    return connect_real_target();"
+    lines[121] = "}"
+    source.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    (artifacts / "evidence_cards.json").write_text(
+        json.dumps(
+            [
+                {
+                    "evidence_id": "SRC-001",
+                    "file_path": "src/connect.c",
+                    "start_line": 120,
+                    "end_line": 122,
+                    "excerpt": "\n".join(lines[119:122]),
+                    "sha256": source_sha,
+                    "symbols": ["connect_target"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (artifacts / "sfmea.json").write_text(
+        json.dumps(
+            [
+                {
+                    "sfmea_id": "SFMEA-001",
+                    "failure_mode": "target connect is rejected",
+                    "cause": "connect call returns an error",
+                    "effect": "controller is not created",
+                    "detection": "public CLI exit status",
+                    "severity": 6,
+                    "occurrence": 2,
+                    "detection_score": 2,
+                    "rpn": 24,
+                    "mitigation": "Return a clear error and add a negative test",
+                    "source_evidence": ["src/connect.c::connect_target"],
+                    "test_mapping": "new negative test",
+                    "technical_claims": [
+                        {
+                            "claim_id": "C-PLAIN-RANGE",
+                            "type": "source_behavior",
+                            "statement": "connect_target delegates to connect_real_target",
+                            "evidence": [
+                                {
+                                    "evidence_id": "SRC-001:L121",
+                                    "path": "src/connect.c",
+                                    "symbol": "connect_target",
+                                    "lines": "120-122",
+                                    "quote": "return connect_real_target();",
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    request = build_behavior_claim_validation_request(
+        artifact_dir=artifacts,
+        repo_path=repo,
+    )
+
+    claim = next(
+        item for item in request["claims"] if item["claim_id"] == "C-PLAIN-RANGE"
+    )
+    context = next(
+        item
+        for item in request["contexts"]
+        if item["context_id"] == claim["context_ids"][0]
+    )
+    assert context["start_line"] <= 120 <= context["end_line"]
+    assert "000121:     return connect_real_target();" in context["content"]
+    assert claim["evidence_bindings"] == [
+        {
+            "path": "src/connect.c",
+            "symbol": "connect_target",
+            "lines": "120-122",
+            "quote": "return connect_real_target();",
+        }
+    ]
+
+
+def test_behavior_validation_excludes_black_box_test_contract_from_source_entailment(
+    tmp_path,
+):
+    from app.services.test_activity_contract import build_behavior_claim_validation_request
+
+    repo = tmp_path / "repo"
+    source = repo / "src" / "connect.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int connect_target(void) { return 0; }\n", encoding="utf-8")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "evidence_cards.json").write_text(
+        json.dumps(
+            [
+                {
+                    "evidence_id": "SRC-001",
+                    "file_path": "src/connect.c",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "excerpt": source.read_text(encoding="utf-8"),
+                    "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "symbols": ["connect_target"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (artifacts / "black_box_cases.json").write_text(
+        json.dumps(
+            [
+                {
+                    "case_id": "BB-001",
+                    "test_dimension": "timeout",
+                    "scenario_name": "target unreachable timeout",
+                    "preconditions": ["target address is unreachable"],
+                    "steps": ["run the public connect command"],
+                    "expected_result": "command fails without creating a controller",
+                    "oracle_basis": "public CLI contract and the referenced source error path",
+                    "observability": ["exit code", "controller list"],
+                    "source_or_test_evidence": ["src/connect.c::connect_target"],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    request = build_behavior_claim_validation_request(
+        artifact_dir=artifacts,
+        repo_path=repo,
+    )
+
+    assert request["claims"] == []
+
+
+def test_sfmea_json_requires_twelve_risk_rows(tmp_path):
+    from app.services.test_activity_contract import (
+        _audit_json_artifact,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="NVMe-oF TCP connect SFMEA",
+        repo_path=str(repo),
+        workflow_outputs=[
+            {
+                "artifact": "sfmea.json",
+                "type": "json",
+                "min_sfmea_rows": 12,
+            }
+        ],
+    )
+    spec = contract["artifact_contract"]["sfmea.json"]
+
+    issues = _audit_json_artifact(
+        artifact="sfmea.json",
+        payload=[{"sfmea_id": "SFMEA-001"}],
+        spec=spec,
+        repo=repo,
+    )
+
+    assert spec["min_sfmea_rows"] == 12
+    assert any(issue["code"] == "insufficient_sfmea_rows" for issue in issues)
+
+
+def test_structured_claim_evidence_must_belong_to_row_evidence(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+
+    repo = tmp_path / "repo"
+    source_a = repo / "src" / "connect.c"
+    source_b = repo / "test" / "cleanup.c"
+    source_a.parent.mkdir(parents=True)
+    source_b.parent.mkdir(parents=True)
+    source_a.write_text("int connect_target(void) { return 0; }\n", encoding="utf-8")
+    source_b.write_text("int cleanup_target(void) { return 0; }\n", encoding="utf-8")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    cards = []
+    for evidence_id, path, source, symbol in (
+        ("SRC-001", "src/connect.c", source_a, "connect_target"),
+        ("SRC-002", "test/cleanup.c", source_b, "cleanup_target"),
+    ):
+        cards.append({
+            "evidence_id": evidence_id,
+            "file_path": path,
+            "start_line": 1,
+            "end_line": 1,
+            "excerpt": source.read_text(encoding="utf-8"),
+            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            "symbols": [symbol],
+        })
+    (artifacts / "evidence_cards.json").write_text(json.dumps(cards), encoding="utf-8")
+    (artifacts / "black_box_cases.json").write_text(
+        json.dumps([{
+            "case_id": "BB-001",
+            "test_dimension": "resource_cleanup",
+            "scenario_name": "cleanup",
+            "preconditions": ["connected"],
+            "steps": ["run public disconnect command"],
+            "expected_result": "command exits 0 and controller disappears",
+            "observability": ["exit code", "controller list"],
+            "failure_diagnostics": ["stderr"],
+            "mapped_test_dir": "test",
+            "source_or_test_evidence": ["test/cleanup.c:1"],
+            "technical_claims": [{
+                "claim_id": "TC-001",
+                "type": "behavior",
+                "statement": "connect returns success",
+                "evidence": [{
+                    "evidence_id": "SRC-001:L1",
+                    "path": "src/connect.c",
+                    "lines": "L1",
+                    "quote": "int connect_target(void) { return 0; }",
+                    "symbol": "connect_target",
+                }],
+            }],
+        }]),
+        encoding="utf-8",
+    )
+    contract = {
+        "artifact_contract": {
+            "black_box_cases.json": {
+                "required_fields": [],
+                "schema": {"type": "array"},
+            }
+        }
+    }
+
+    result = audit_test_activity_artifacts(
+        artifact_dir=artifacts,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert any(
+        issue["code"] == "claim_evidence_not_declared_for_row"
+        for issue in result["issues"]
+    )
+
+
+def test_markdown_evidence_anchor_must_match_evidence_card_range(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+
+    repo = tmp_path / "repo"
+    source = repo / "src" / "connect.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("\n".join(f"line {index}" for index in range(1, 31)) + "\n")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "evidence_cards.json").write_text(
+        json.dumps([{
+            "evidence_id": "SRC-001",
+            "file_path": "src/connect.c",
+            "start_line": 10,
+            "end_line": 20,
+            "excerpt": "line 10",
+            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            "symbols": [],
+        }]),
+        encoding="utf-8",
+    )
+    (artifacts / "flow_map.md").write_text(
+        "# Flow\nEvidence: SRC-001:L99-L101\n",
+        encoding="utf-8",
+    )
+
+    result = audit_test_activity_artifacts(
+        artifact_dir=artifacts,
+        contract={"artifact_contract": {"flow_map.md": {"sections": []}}},
+        repo_path=str(repo),
+    )
+
+    assert any(
+        issue["code"] == "evidence_anchor_out_of_range"
+        for issue in result["issues"]
+    )
+
+
+def test_disconnected_flow_cannot_pass_as_complete_delivery(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    issues = _audit_markdown_artifact(
+        artifact="flow_map.md",
+        content=(
+            "# 流程\n"
+            "当前调用图包含 12 个互不连通的调用分量，不能证明单一端到端业务顺序。\n"
+        ),
+        spec={"sections": []},
+        repo=tmp_path,
+    )
+
+    assert any(issue["code"] == "disconnected_flow_evidence" for issue in issues)
+
+
+def test_evidence_path_classification_ignores_markdown_line_anchor():
+    from app.services.test_activity_contract import _evidence_path_classification
+
+    assert _evidence_path_classification(
+        "libnvme/src/nvme/fabrics.h:L300-308"
+    ) == "source"
+    assert _evidence_path_classification(
+        "libnvme/test/ioctl/discovery.c:40-54"
+    ) == "test"
 
 
 def test_bound_behavior_validation_skips_same_id_with_stale_binding():

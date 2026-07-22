@@ -110,6 +110,7 @@ function browserFallbackApiBases(): string[] {
   if (typeof window === "undefined") return ["http://localhost:3004"];
   const { protocol, hostname, port } = window.location;
   const sameHost = (apiPort: string) => `${protocol}//${hostname}:${apiPort}`;
+  if (port === "3013") return [sameHost("3014"), sameHost("3004")];
   if (port === "3123") return [sameHost("3124")];
   return [sameHost("3004")];
 }

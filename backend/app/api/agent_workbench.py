@@ -39,7 +39,12 @@ from app.services.test_semantic_library import (
     SemanticCaseValidationError,
     TestSemanticLibraryStore,
 )
-from app.services.test_activity_contract import sfmea_mitigation_is_actionable
+from app.services.test_activity_contract import (
+    black_box_case_delivery_quality_gaps,
+    black_box_expected_result_is_observable,
+    black_box_oracle_basis_quality_gaps,
+    sfmea_mitigation_is_actionable,
+)
 from app.services.workbench_artifact_manifest import (
     TEXT_ARTIFACT_SUFFIXES,
     artifact_preview,
@@ -2695,6 +2700,15 @@ def _materialize_task_run_outputs_if_available(*, task_run: Any) -> dict[str, An
             workflow_outputs=workflow_outputs,
             result=quality_gate_result,
         )
+        deferred_semantic_import = _defer_semantic_output_import_if_configured(
+            task_run=task_run,
+            reason=str(
+                quality_gate_result.get("reason")
+                or "test_activity_quality_gate_failed"
+            ),
+        )
+        if deferred_semantic_import is not None:
+            quality_gate_result["semantic_output_import"] = deferred_semantic_import
         write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
         return quality_gate_result
     evidence_ids, rejected = _materialize_workflow_output_evidence(
@@ -2769,6 +2783,31 @@ def _auto_import_semantic_outputs_if_available(*, task_run: Any) -> dict[str, An
     )
     write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
     return combined
+
+
+def _defer_semantic_output_import_if_configured(
+    *,
+    task_run: Any,
+    reason: str,
+) -> dict[str, Any] | None:
+    if not _semantic_import_output_configs(task_run):
+        return None
+    result = {
+        "status": "skipped",
+        "reason": str(reason or "test_activity_quality_gate_failed"),
+        "imported_count": 0,
+        "rejected_count": 0,
+        "imported": [],
+        "rejected": [],
+        "source_ref": f"task_run:{task_run.task_run_id}",
+        "source_refs": [],
+    }
+    _write_semantic_output_import_artifact(
+        task_run=task_run,
+        mode="auto_deferred",
+        result=result,
+    )
+    return result
 
 
 def _semantic_import_output_configs(task_run: Any) -> list[tuple[str, dict[str, Any]]]:
@@ -2881,6 +2920,15 @@ async def materialize_task_run_outputs(task_run_id: str) -> dict[str, Any]:
             workflow_outputs=workflow_outputs,
             result=quality_gate_result,
         )
+        deferred_semantic_import = _defer_semantic_output_import_if_configured(
+            task_run=task_run,
+            reason=str(
+                quality_gate_result.get("reason")
+                or "test_activity_quality_gate_failed"
+            ),
+        )
+        if deferred_semantic_import is not None:
+            quality_gate_result["semantic_output_import"] = deferred_semantic_import
         write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
         return quality_gate_result
     evidence_ids, rejected = _materialize_workflow_output_evidence(
@@ -6712,6 +6760,7 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
                     check_id=f"black_box_case_quality:{step_id}:{Path(artifact).name}",
                     relative_path=f"{base}/{artifact}",
                     task_dir=task_dir,
+                    repo_path=str(task_run.repo_path or ""),
                     description=f"black-box case content quality for step {step_id}",
                 ))
             if Path(artifact).name in {"risk_findings.json", "sfmea.json"}:
@@ -7222,6 +7271,7 @@ def _acceptance_black_box_case_quality_check(
     check_id: str,
     relative_path: str,
     task_dir: Path,
+    repo_path: str = "",
     description: str,
 ) -> dict[str, Any]:
     payload = _read_json(task_dir / relative_path)
@@ -7253,7 +7303,7 @@ def _acceptance_black_box_case_quality_check(
                 "reasons": ["case_must_be_object"],
             })
             continue
-        reasons = _black_box_case_quality_reasons(case)
+        reasons = _black_box_case_quality_reasons(case, repo_path=repo_path)
         duplicate_key = _black_box_case_duplicate_key(case)
         if duplicate_key:
             if duplicate_key in seen_case_keys:
@@ -7296,8 +7346,10 @@ _BLACK_BOX_WHITE_BOX_RE = re.compile(
     r"\b(?:invoke|call|mock|stub|patch|unit\s*test|internal\s+function|"
     r"direct\s+function|private\s+function|return\s+value)\b|"
     r"\b[a-z0-9_./-]+\.(?:c|cc|cpp|cxx|h|hpp):\d+\b|"
-    r"->|::|"
+    r"\b[a-z_][a-z0-9_]*->[a-z_][a-z0-9_]*\b|"
+    r"\b[a-z_][a-z0-9_]*::[a-z_][a-z0-9_]*\b|"
     r"调用\s*(?:内部|私有)?\s*(?:函数|方法)|"
+    r"(?:调用|直接调用)\s*(?:libnvmf|libnvme)[a-z0-9_]*\b|"
     r"(?:内部|私有)(?:函数|方法|变量|状态|字段|调用栈)|"
     r"返回值|调用栈|"
     r"修改[^，。；;\n]*?(?:变量|状态|字段)|"
@@ -7311,17 +7363,6 @@ _BLACK_BOX_EXTERNAL_COMMAND_CONTEXT_RE = re.compile(
 _BLACK_BOX_EXTERNAL_PROTOCOL_FIELD_CONTEXT_RE = re.compile(
     r"(?i)\b(?:pdu|packet|frame|request|response|header|digest|opcode|flag)\b|"
     r"(?:报文|数据包|请求|响应|协议|包头|摘要|标志位)"
-)
-_BLACK_BOX_OBSERVABLE_EXPECTED_RE = re.compile(
-    r"(?i)\b("
-    r"log|metric|status|state|exit\s*code|error|timeout|reject|accept|connect|disconnect|"
-    r"reconnect|response|message|event|alert|counter|latency|throughput|code|cli|stdout|stderr"
-    r")\b|"
-    r"(日志|指标|状态|退出码|错误|超时|拒绝|接受|连接|断开|重连|响应|消息|事件|告警|计数|延迟|吞吐|返回码|标准输出|标准错误)"
-)
-_BLACK_BOX_VAGUE_EXPECTED_RE = re.compile(
-    r"(?i)^\s*(success|successful|ok|pass|passed|works?|normal|valid|correct|done|"
-    r"成功|正常|通过|可用|有效|正确|完成|工作正常)\s*[。.!！]?\s*$"
 )
 _BLACK_BOX_ACTIONABLE_STEP_RE = re.compile(
     r"(?i)\b("
@@ -7381,7 +7422,11 @@ def _black_box_case_test_directory(case: dict[str, Any]) -> str:
     ).strip()
 
 
-def _black_box_case_quality_reasons(case: dict[str, Any]) -> list[str]:
+def _black_box_case_quality_reasons(
+    case: dict[str, Any],
+    *,
+    repo_path: str = "",
+) -> list[str]:
     reasons: list[str] = []
     steps = _semantic_string_list(case.get("steps"))
     expected = _black_box_case_expected(case)
@@ -7419,24 +7464,10 @@ def _black_box_case_quality_reasons(case: dict[str, Any]) -> list[str]:
         reasons.append("missing_observability")
     if not diagnostics:
         reasons.append("missing_diagnostics")
-    if not (
-        test_directory.startswith("test/")
-        or _is_explicit_unverified_mapping(test_directory)
-    ):
-        reasons.append("missing_test_directory_mapping")
-    boundary_components = [
-        str(case.get("title") or ""),
-        str(case.get("scenario") or case.get("scenario_name") or ""),
-        str(case.get("inputs") or ""),
-        *steps,
-        *expected,
-        *preconditions,
-        *observability,
-        *diagnostics,
-        test_directory,
-    ]
-    if any(_black_box_component_has_white_box_boundary(item) for item in boundary_components):
-        reasons.append("white_box_boundary")
+    reasons.extend(
+        black_box_case_delivery_quality_gaps(case, repo_path=repo_path)
+    )
+    reasons.extend(black_box_oracle_basis_quality_gaps(case))
     return _semantic_dedupe(reasons)
 
 
@@ -7444,6 +7475,36 @@ def _is_explicit_unverified_mapping(value: str) -> bool:
     marker = "ai_suggested_unverified"
     normalized = str(value or "").strip()
     return normalized == marker or normalized.startswith((marker + ":", marker + "："))
+
+
+def _is_verified_test_mapping(value: str, *, repo_path: str = "") -> bool:
+    normalized = str(value or "").strip().replace("\\", "/")
+    normalized = re.sub(r":L?\d+(?:-L?\d+)?$", "", normalized)
+    relative = Path(normalized)
+    if (
+        not normalized
+        or relative.is_absolute()
+        or ".." in relative.parts
+        or not any(
+            part.lower() in {"test", "tests", "spec", "specs"}
+            for part in relative.parts[:-1]
+        )
+    ):
+        return False
+    if relative.parts[0].lower() in {"test", "tests", "spec", "specs"}:
+        return True
+    if not repo_path:
+        return relative.parts[0].lower() in {"test", "tests", "spec", "specs"}
+    try:
+        repo = Path(repo_path).expanduser().resolve()
+        candidate = (repo / relative).resolve()
+    except OSError:
+        return False
+    return (
+        repo in candidate.parents
+        and candidate.exists()
+        and (candidate.is_file() or candidate.is_dir())
+    )
 
 
 def _black_box_component_has_white_box_boundary(value: str) -> bool:
@@ -7553,16 +7614,7 @@ def _black_box_steps_are_actionable(steps: list[str]) -> bool:
 
 
 def _black_box_expected_is_observable(expected: list[str]) -> bool:
-    combined = " ".join(str(item or "").strip() for item in expected if str(item or "").strip())
-    if not combined:
-        return False
-    if _BLACK_BOX_OBSERVABLE_EXPECTED_RE.search(combined):
-        return True
-    return any(
-        len(str(item or "").strip()) >= 18
-        and not _BLACK_BOX_VAGUE_EXPECTED_RE.match(str(item or ""))
-        for item in expected
-    )
+    return black_box_expected_result_is_observable(expected)
 
 
 def _acceptance_risk_finding_quality_check(
@@ -7743,13 +7795,29 @@ def _risk_finding_source_candidates(finding: dict[str, Any]) -> list[str]:
             candidate = str(item.get("file_path") or item.get("path") or "").strip()
         else:
             candidate = str(item or "").strip()
-            if re.match(r"(?i)^EV[-_][A-Za-z0-9_-]+(?::\d+(?:-\d+)?)?$", candidate):
+            if re.match(
+                r"(?i)^(?:EV|SRC|TEST)[-_][A-Za-z0-9_-]+(?::L?\d+(?:-L?\d+)?)?$",
+                candidate,
+            ):
                 continue
             if "::" in candidate:
                 candidate = candidate.split("::", 1)[0].strip()
             candidate = re.sub(r":\d+(?:-\d+)?$", "", candidate)
         if candidate:
             candidates.append(candidate)
+    technical_claims = finding.get("technical_claims")
+    claim_items = technical_claims if isinstance(technical_claims, list) else []
+    for claim in claim_items:
+        if not isinstance(claim, dict):
+            continue
+        claim_evidence = claim.get("evidence")
+        claim_evidence_items = claim_evidence if isinstance(claim_evidence, list) else []
+        for evidence in claim_evidence_items:
+            if not isinstance(evidence, dict):
+                continue
+            candidate = str(evidence.get("path") or evidence.get("file_path") or "").strip()
+            if candidate:
+                candidates.append(candidate)
     if not any(candidates):
         candidates.append(str(finding.get("module") or "").strip())
     return _semantic_dedupe([item for item in candidates if item])

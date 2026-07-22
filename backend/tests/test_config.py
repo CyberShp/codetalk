@@ -21,7 +21,7 @@ def test_workbench_v2_is_enabled_by_default_and_can_roll_back(monkeypatch):
     assert Settings(_env_file=None).workbench_v2_enabled is False
 
 
-def test_staged_quality_repair_defaults_to_four_bounded_attempts(monkeypatch):
+def test_staged_quality_repair_defaults_to_two_bounded_attempts(monkeypatch):
     monkeypatch.delenv("STAGED_QUALITY_REPAIR_MAX_ATTEMPTS", raising=False)
 
     configured = Settings(_env_file=None)
@@ -47,6 +47,13 @@ def test_behavior_claim_audit_defaults_to_bounded_parallel_medium_reasoning(monk
     assert audit.behavior_claim_audit_batch_size == 8
     assert audit.behavior_claim_audit_concurrency == 4
     assert audit.behavior_claim_audit_timeout_seconds == 360
+    assert audit.behavior_claim_audit_heartbeat_seconds == 10.0
+
+
+def test_source_analysis_cache_schema_tracks_relevance_v6(monkeypatch):
+    monkeypatch.delenv("SOURCE_ANALYSIS_SCHEMA_VERSION", raising=False)
+
+    assert Settings(_env_file=None).source_analysis_schema_version == "source-evidence-pack-v6"
 
 
 def test_runtime_temp_directory_defaults_to_data_directory(monkeypatch, tmp_path):

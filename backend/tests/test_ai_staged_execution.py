@@ -18,8 +18,14 @@ from app.services.ai_staged_execution import (
     _business_flow_stage_prompt,
     _build_verified_claim_catalog,
     _canonicalize_technical_claim_evidence,
+    _canonicalize_verified_repo_path_mentions,
+    _normalize_black_box_dimension_contract,
+    _normalize_black_box_delivery_contract,
+    _normalize_black_box_source_anchor_claims,
+    _normalize_black_box_oracle_contract,
     _apply_regular_stage_output_limits,
     _apply_quality_feedback_field_patches,
+    _apply_sfmea_nonrisk_deletion_tombstones,
     _business_flow_deterministic_base,
     _compact_execution_input_contract,
     _deterministic_quality_claim_repair,
@@ -31,12 +37,17 @@ from app.services.ai_staged_execution import (
     _merge_json_array_patch,
     _missing_quality_repair_row_ids,
     _quality_repair_row_ids,
+    _quality_repair_prompt_seed,
     _quality_repair_evidence_cards,
     _ISCSI_RAW_PDU_APPENDIX,
     _extract_business_flow_narrative,
+    _ensure_stable_stage_row_ids,
     _render_deterministic_combined_report,
     _select_regular_stage_llm,
+    _select_bounded_source_context_files,
+    _source_enclosing_c_function,
     _salvage_truncated_json_array,
+    _is_valid_json_artifact_seed,
     _render_stage_artifact,
     _stage_prompt,
     _stage_format_rules,
@@ -162,6 +173,43 @@ def test_quality_feedback_field_patch_overrides_model_repair_for_bound_row():
     assert patched[0]["sfmea_id"] == "SFMEA-04"
     assert patched[0]["detection"] == "通过登录响应状态观测，不声称存在日志。"
     assert patched[1] == rendered[1]
+
+
+def test_quality_repair_prompt_seed_applies_independent_field_patch_first():
+    seed = json.dumps(
+        [
+            {
+                "sfmea_id": "SFMEA-001",
+                "failure_mode": "注册表更新失败会导致连接失败",
+                "test_mapping": "验证连接返回失败",
+            }
+        ],
+        ensure_ascii=False,
+    )
+    feedback = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-001",
+                "code": "behavior_claim_contradicted",
+                "field_patch": {
+                    "test_mapping": "验证注册表失败仅记录告警，连接仍返回实例。"
+                },
+            }
+        ]
+    }
+
+    prompt_seed = json.loads(
+        _quality_repair_prompt_seed(
+            current_artifact_seed=seed,
+            artifact="sfmea.json",
+            quality_feedback=feedback,
+        )
+    )
+
+    assert prompt_seed[0]["test_mapping"] == (
+        "验证注册表失败仅记录告警，连接仍返回实例。"
+    )
 from app.services.workbench_workflow_runner import (
     _build_workbench_staged_plan,
     _expand_quality_blocked_artifacts,
@@ -938,6 +986,41 @@ def test_quality_repair_array_prompt_requests_an_incremental_patch():
     assert "必须输出至少 12 个" not in prompt
 
 
+def test_sfmea_non_risk_repair_prompt_allows_verified_row_deletion():
+    prompt = _regular_stage_prompt(
+        plan={
+            "original_user_request": "分析资源生命周期",
+            "quality_retry_feedback": {
+                "affected_artifacts": ["sfmea.json"],
+                "issues": [
+                    {
+                        "artifact": "sfmea.json",
+                        "row_id": "SFMEA-02",
+                        "code": "non_risk_sfmea_row",
+                        "message": "该行描述的是正常释放行为",
+                    }
+                ],
+            },
+        },
+        stage={
+            "id": "sfmea",
+            "artifact": "sfmea.json",
+            "purpose": "SFMEA",
+            "depends_on": [],
+            "output_contract": {"schema": {"type": "array", "minItems": 1}},
+        },
+        source_pack={"evidence_cards": []},
+        flow_pack={},
+        outline={},
+        completed={},
+        current_artifact_seed='[{"sfmea_id":"SFMEA-02","failure_mode":"正常释放"}]',
+    )
+
+    assert '"_delete": true' in prompt
+    assert "不得为了数量补造" in prompt
+    assert "不得把正常行为包装成风险" in prompt
+
+
 def test_behavior_quality_repair_prompt_scopes_failed_rows_and_rejects_pending_relabel():
     previous = json.dumps(
         [
@@ -1227,6 +1310,367 @@ def test_quality_repair_row_only_patch_rejects_unrequested_new_rows():
     ]
 
 
+def test_quality_repair_patch_preserves_black_box_dimension_contract():
+    previous = [
+        {
+            "case_id": "BB-12",
+            "test_dimension": "upstream_error_propagation",
+            "scenario_name": "upstream error reaches the CLI",
+        }
+    ]
+    model_patch = [
+        {
+            "case_id": "BB-12",
+            "test_dimension": "discovery_log_error_handling",
+            "scenario_name": "corrected externally observable error flow",
+        }
+    ]
+
+    merged = _merge_json_array_patch(
+        previous,
+        model_patch,
+        allowed_existing_row_ids={"BB-12"},
+        allow_new_items=False,
+        immutable_fields={"test_dimension"},
+    )
+
+    assert merged == [
+        {
+            "case_id": "BB-12",
+            "test_dimension": "upstream_error_propagation",
+            "scenario_name": "corrected externally observable error flow",
+        }
+    ]
+
+
+def test_black_box_oracle_contract_adds_traceable_basis_without_inventing_thresholds():
+    rows = [
+        {
+            "case_id": "BB-03",
+            "test_dimension": "resource_pressure",
+            "oracle_basis": "observe partial failures",
+        },
+        {
+            "case_id": "BB-08",
+            "test_dimension": "performance",
+            "oracle_basis": "same-environment baseline",
+        },
+    ]
+
+    normalized, fields = _normalize_black_box_oracle_contract(rows)
+
+    assert "环境配置" in normalized[0]["oracle_basis"]
+    assert "不得预设固定数值" in normalized[0]["oracle_basis"]
+    assert "预热" in normalized[1]["oracle_basis"]
+    assert "至少 30 次" in normalized[1]["oracle_basis"]
+    assert "P50/P95" in normalized[1]["oracle_basis"]
+    assert "方差" in normalized[1]["oracle_basis"]
+    assert fields == ["$[0].oracle_basis", "$[1].oracle_basis"]
+
+
+def test_black_box_oracle_contract_removes_unregistered_fixed_thresholds():
+    rows = [
+        {
+            "case_id": "BB-08",
+            "test_dimension": "performance",
+            "oracle_basis": "Threshold is 50% for P50 and 100% for P95",
+        },
+        {
+            "case_id": "BB-09",
+            "test_dimension": "long_steady_state",
+            "oracle_basis": "24-hour steady state with stable RSS",
+        },
+        {
+            "case_id": "BB-10",
+            "test_dimension": "resource_wraparound",
+            "oracle_basis": "scanf overflow wraparound is implementation-defined",
+        },
+    ]
+
+    normalized, fields = _normalize_black_box_oracle_contract(rows)
+
+    assert "50%" not in normalized[0]["oracle_basis"]
+    assert "100%" not in normalized[0]["oracle_basis"]
+    assert "24-hour" not in normalized[1]["oracle_basis"]
+    assert "implementation-defined" not in normalized[2]["oracle_basis"]
+    assert "已登记 SLO" in normalized[0]["oracle_basis"]
+    assert "运行前登记" in normalized[1]["oracle_basis"]
+    assert "环境能力阻塞" in normalized[2]["oracle_basis"]
+    assert fields == [
+        "$[0].oracle_basis",
+        "$[1].oracle_basis",
+        "$[2].oracle_basis",
+    ]
+
+
+def test_black_box_dimension_contract_removes_noncontract_and_duplicate_rows():
+    rows = [
+        {"case_id": "BB-01", "test_dimension": "normal_path"},
+        {"case_id": "BB-02", "test_dimension": "invalid_input"},
+        {"case_id": "BB-X", "test_dimension": "discovery_log_error_handling"},
+        {"case_id": "BB-02B", "test_dimension": "invalid_input"},
+    ]
+    stage = {
+        "output_contract": {
+            "required_dimensions": ["normal_path", "invalid_input"],
+        }
+    }
+
+    normalized, fields = _normalize_black_box_dimension_contract(rows, stage)
+
+    assert [item["case_id"] for item in normalized] == ["BB-01", "BB-02"]
+    assert fields == [
+        "$[2].test_dimension:noncontract_removed",
+        "$[3].test_dimension:duplicate_removed",
+    ]
+
+
+def test_quality_repair_patch_can_delete_a_disproved_sfmea_row():
+    previous = [
+        {"sfmea_id": "SFMEA-01", "failure_mode": "verified risk"},
+        {"sfmea_id": "SFMEA-02", "failure_mode": "disproved risk"},
+    ]
+    patch = [{"sfmea_id": "SFMEA-02", "_delete": True}]
+
+    merged = _merge_json_array_patch(
+        previous,
+        patch,
+        allowed_existing_row_ids={"SFMEA-02"},
+        allow_new_items=False,
+    )
+
+    assert merged == [
+        {"sfmea_id": "SFMEA-01", "failure_mode": "verified risk"},
+    ]
+
+
+def test_non_risk_sfmea_feedback_forces_deletion_tombstone():
+    previous = [
+        {"sfmea_id": "SFMEA-01", "failure_mode": "verified risk"},
+        {"sfmea_id": "SFMEA-02", "failure_mode": "disproved risk"},
+    ]
+    model_patch = [
+        {
+            "sfmea_id": "SFMEA-02",
+            "failure_mode": "safe behavior repackaged as a risk",
+        }
+    ]
+    feedback = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-02",
+                "code": "non_risk_sfmea_row",
+            }
+        ]
+    }
+
+    patch = _apply_sfmea_nonrisk_deletion_tombstones(
+        model_patch,
+        quality_feedback=feedback,
+        base_items=previous,
+    )
+
+    assert patch == [{"sfmea_id": "SFMEA-02", "_delete": True}]
+
+
+def test_sfmea_delete_instruction_field_patch_forces_deletion_tombstone():
+    previous = [
+        {"sfmea_id": "SFMEA-03", "failure_mode": "unsupported resource leak"},
+    ]
+    feedback = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-03",
+                "code": "behavior_claim_contradicted",
+                "field_patch": {
+                    "failure_mode": (
+                        "删除该 SFMEA 行：当前源码显示该分支属于正常保护行为，"
+                        "不应作为失效模式。"
+                    )
+                },
+            }
+        ]
+    }
+
+    patch = _apply_sfmea_nonrisk_deletion_tombstones(
+        [
+            {
+                "sfmea_id": "SFMEA-03",
+                "failure_mode": "删除该 SFMEA 行：该路径属于正常保护行为。",
+            }
+        ],
+        quality_feedback=feedback,
+        base_items=previous,
+    )
+
+    assert patch == [{"sfmea_id": "SFMEA-03", "_delete": True}]
+
+
+def test_sfmea_insufficient_claim_preserves_risk_unless_feedback_explicitly_marks_nonrisk():
+    previous = [
+        {"sfmea_id": "SFMEA-03", "failure_mode": "safe path presented as risk"},
+        {"sfmea_id": "SFMEA-04", "failure_mode": "unchecked sscanf result"},
+    ]
+    feedback = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-03",
+                "code": "behavior_claim_insufficient",
+                "field_patch": {
+                    "failure_mode": "删除该 SFMEA 行：当前源码显示这是正常保护路径。",
+                },
+            },
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-04",
+                "code": "behavior_claim_insufficient",
+                "field_patch": {},
+            },
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-04",
+                "code": "source_claim_insufficient",
+            },
+        ]
+    }
+
+    patch = _apply_sfmea_nonrisk_deletion_tombstones(
+        [
+            {"sfmea_id": "SFMEA-03", "failure_mode": "safe path presented as risk"},
+            {"sfmea_id": "SFMEA-04", "failure_mode": "unchecked sscanf result"},
+        ],
+        quality_feedback=feedback,
+        base_items=previous,
+    )
+
+    assert patch == [
+        {"sfmea_id": "SFMEA-04", "failure_mode": "unchecked sscanf result"},
+        {"sfmea_id": "SFMEA-03", "_delete": True},
+    ]
+
+
+def test_contradicted_sfmea_claim_forces_deletion_instead_of_rewording():
+    previous = [
+        {"sfmea_id": "SFMEA-01", "failure_mode": "verified risk"},
+        {"sfmea_id": "SFMEA-02", "failure_mode": "unsupported risk"},
+    ]
+    feedback = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "claim_id": "SFMEA-02:behavior:1",
+                "code": "behavior_claim_contradicted",
+            }
+        ]
+    }
+
+    patch = _apply_sfmea_nonrisk_deletion_tombstones(
+        [{"sfmea_id": "SFMEA-02", "failure_mode": "reworded guess"}],
+        quality_feedback=feedback,
+        base_items=previous,
+    )
+
+    assert patch == [{"sfmea_id": "SFMEA-02", "_delete": True}]
+
+
+def test_contradicted_sfmea_claim_keeps_independently_corrected_real_risk():
+    previous = [{"sfmea_id": "SFMEA-07", "failure_mode": "overstated risk"}]
+    corrected = {
+        "sfmea_id": "SFMEA-07",
+        "failure_mode": "reconnect_delay 缺少用户态范围校验",
+    }
+    feedback = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-07",
+                "code": "behavior_claim_contradicted",
+                "field_patch": {
+                    "failure_mode": "reconnect_delay 缺少用户态范围校验",
+                    "effect": "越界值会继续传递给内核，最终行为需要黑盒验证。",
+                    "mitigation": "增加边界校验，并执行越界输入回归测试。",
+                },
+            }
+        ]
+    }
+
+    patch = _apply_sfmea_nonrisk_deletion_tombstones(
+        [corrected],
+        quality_feedback=feedback,
+        base_items=previous,
+    )
+
+    assert patch == [corrected]
+
+
+def test_contradicted_sfmea_claim_detection_only_patch_still_deletes_row():
+    previous = [{"sfmea_id": "SFMEA-08", "failure_mode": "unsupported risk"}]
+    feedback = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-08",
+                "code": "behavior_claim_contradicted",
+                "field_patch": {
+                    "detection": "观察控制器状态和错误日志。",
+                },
+            }
+        ]
+    }
+
+    patch = _apply_sfmea_nonrisk_deletion_tombstones(
+        [{"sfmea_id": "SFMEA-08", "failure_mode": "reworded guess"}],
+        quality_feedback=feedback,
+        base_items=previous,
+    )
+
+    assert patch == [{"sfmea_id": "SFMEA-08", "_delete": True}]
+
+
+def test_source_function_detection_does_not_treat_else_if_as_function():
+    source = (
+        "int handle_state(int state) {\n"
+        "    if (state == 1) {\n"
+        "        return 1;\n"
+        "    } else if (state == 2) {\n"
+        "        return 2;\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n"
+    )
+
+    assert _source_enclosing_c_function(source, anchor_line=5) == "handle_state"
+
+
+def test_contradicted_sfmea_claim_deletes_explicit_safe_path_correction():
+    previous = [{"sfmea_id": "SFMEA-02", "failure_mode": "use after free"}]
+    feedback = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "row_id": "SFMEA-02",
+                "code": "behavior_claim_contradicted",
+                "field_patch": {
+                    "failure_mode": "当前源码未表现出悬空指针使用",
+                    "effect": "未从给定源码发现 use-after-free。",
+                    "mitigation": "无需添加置空语句；该语句已存在。",
+                },
+            }
+        ]
+    }
+
+    patch = _apply_sfmea_nonrisk_deletion_tombstones(
+        [{"sfmea_id": "SFMEA-02", "failure_mode": "safe path reworded"}],
+        quality_feedback=feedback,
+        base_items=previous,
+    )
+
+    assert patch == [{"sfmea_id": "SFMEA-02", "_delete": True}]
+
+
 def test_quality_repair_row_ids_extracts_row_from_derived_claim_id():
     feedback = {
         "issues": [
@@ -1247,6 +1691,55 @@ def test_quality_repair_row_ids_extracts_row_from_derived_claim_id():
         artifact="sfmea.json",
         quality_feedback=feedback,
     ) == {"SFMEA-09", "SFMEA-12"}
+
+
+def test_black_box_claim_is_normalized_to_verified_source_anchor():
+    rows = [
+        {
+            "case_id": "BB-009",
+            "technical_claims": [
+                {
+                    "claim_id": "TC-BB-009",
+                    "type": "behavior",
+                    "statement": "lookup latency depends on the network",
+                    "evidence": [
+                        {
+                            "evidence_id": "SRC-06:L186",
+                            "path": "libnvme/test/tree-fabrics.c",
+                            "lines": "L186",
+                            "quote": "c = libnvme_lookup_ctrl(s, &f.ctrl_params, NULL);",
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+
+    normalized = _normalize_black_box_source_anchor_claims(rows)
+
+    claim = normalized[0]["technical_claims"][0]
+    assert claim["type"] == "source_anchor"
+    assert claim["statement"] == "c = libnvme_lookup_ctrl(s, &f.ctrl_params, NULL);"
+
+
+def test_normalize_black_box_delivery_contract_replaces_source_mapping_and_unit_fallback():
+    rendered, fields = _normalize_black_box_delivery_contract(
+        [
+            {
+                "case_id": "BB-10",
+                "scenario_name": "discovery boundary",
+                "steps": [
+                    "若无法通过外部接口注入边界值，将该场景改为单元测试候选"
+                ],
+                "mapped_test_dir": "libnvme/src/nvme/",
+            }
+        ]
+    )
+
+    assert rendered[0]["mapped_test_dir"].startswith("ai_suggested_unverified:")
+    assert "单元测试" not in rendered[0]["steps"][0]
+    assert "环境能力阻塞" in rendered[0]["steps"][0]
+    assert fields == ["$[0].mapped_test_dir", "$[0].steps[0]"]
 
 
 def test_quality_repair_evidence_cards_combine_exact_and_contextual_matches():
@@ -1346,6 +1839,116 @@ def test_quality_repair_claim_catalog_filters_requested_evidence_before_global_l
 
     assert f'"evidence_id": "SRC-30:L{target_line}"' in catalog_section
     assert "TARGET_LATE_CLAIM" in catalog_section
+
+
+def test_quality_repair_claim_catalog_includes_context_for_a_stale_evidence_id():
+    evidence_cards = [
+        {
+            "evidence_id": "SRC-06",
+            "file_path": "libnvme/test/ioctl/ana.c",
+            "start_line": 255,
+            "end_line": 257,
+            "excerpt": "static void test_long_log(void)\n{\n}",
+            "symbols": ["test_long_log"],
+        },
+        {
+            "evidence_id": "SRC-15",
+            "file_path": "libnvme/src/nvme/crypto.c",
+            "start_line": 1004,
+            "end_line": 1006,
+            "excerpt": (
+                "__libnvme_public int libnvmf_set_keyring(\n"
+                "\t\tstruct libnvme_global_ctx *ctx, long key_id)\n"
+                "{"
+            ),
+            "symbols": ["libnvmf_set_keyring"],
+        },
+    ]
+    previous = json.dumps(
+        [
+            {
+                "case_id": "BB-11",
+                "scenario_name": "TLS keyring cleanup",
+                "technical_claims": [
+                    {
+                        "claim_id": "TC-BB-11",
+                        "evidence": [{"evidence_id": "SRC-06:L165"}],
+                    }
+                ],
+            }
+        ]
+    )
+    feedback = {
+        "affected_artifacts": ["black_box_cases.json"],
+        "issues": [
+            {
+                "artifact": "black_box_cases.json",
+                "row_id": "BB-11",
+                "code": "source_claim_contradicted",
+                "message": (
+                    "Use libnvme/src/nvme/crypto.c and libnvmf_set_keyring "
+                    "instead of the stale source anchor"
+                ),
+            }
+        ],
+    }
+
+    prompt = _regular_stage_prompt(
+        plan={"original_user_request": "analyze TLS", "quality_retry_feedback": feedback},
+        stage={
+            "id": "black_box_cases",
+            "artifact": "black_box_cases.json",
+            "purpose": "black-box cases",
+            "depends_on": [],
+            "output_contract": {"schema": {"type": "array"}},
+        },
+        source_pack={"evidence_cards": evidence_cards},
+        flow_pack={},
+        outline={},
+        completed={},
+        current_artifact_seed=previous,
+    )
+    catalog_section = prompt.split("VERIFIED_CLAIM_EVIDENCE_CATALOG:", 1)[1].split(
+        "VERIFIED_REPO_PATH_ALLOWLIST:", 1
+    )[0]
+
+    assert "SRC-15:L1004" in catalog_section
+    assert "libnvmf_set_keyring" in catalog_section
+
+
+def test_canonical_claim_evidence_recovers_stale_id_from_verified_path_and_quote():
+    rows = [
+        {
+            "case_id": "BB-03",
+            "technical_claims": [
+                {
+                    "claim_id": "TC-BB-03",
+                    "evidence": [
+                        {
+                            "evidence_id": "SRC-13:L1004",
+                            "path": "libnvme/src/nvme/crypto.c",
+                            "lines": "L1004",
+                            "quote": "__libnvme_public int libnvmf_set_keyring(",
+                            "symbol": "libnvmf_set_keyring",
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+    catalog = [
+        {
+            "evidence_id": "SRC-15:L1004",
+            "path": "libnvme/src/nvme/crypto.c",
+            "lines": "L1004",
+            "quote": "__libnvme_public int libnvmf_set_keyring(",
+            "symbol": "libnvmf_set_keyring",
+        }
+    ]
+
+    normalized = _canonicalize_technical_claim_evidence(rows, catalog)
+
+    assert normalized[0]["technical_claims"][0]["evidence"] == catalog
 
 
 def test_requested_claim_catalog_keeps_exact_lines_across_large_cards():
@@ -2413,6 +3016,17 @@ def test_json_renderer_accepts_valid_json_with_an_unclosed_markdown_fence():
     assert rendered == [{"case_id": "BB-001", "test_dimension": "normal_path"}]
 
 
+def test_invalid_json_artifact_cannot_be_reused_as_quality_repair_seed():
+    assert _is_valid_json_artifact_seed(
+        '[{"steps":["nvme connect --dhchap-secret <redacted>"abc"]}]',
+        "black_box_cases.json",
+    ) is False
+    assert _is_valid_json_artifact_seed(
+        '[{"steps":["nvme connect --dhchap-secret \\\"<redacted>\\\""]}]',
+        "black_box_cases.json",
+    ) is True
+
+
 def test_deterministic_schema_repair_marks_missing_text_as_unverified():
     payload = [
         {
@@ -2598,6 +3212,9 @@ def test_deterministic_iscsi_report_harness_supports_claimed_scenarios():
         ],
     )
 
+    assert 'bhs[16:20] = itt.to_bytes(4, "big")' in report
+    assert 'bhs[20:22] = cid.to_bytes(2, "big")' in report
+    assert 'bhs[24:28] = cmdsn.to_bytes(4, "big")' in report
     assert _audit_raw_pdu_scenario_capabilities(report) == []
 
 
@@ -2684,6 +3301,9 @@ def test_black_box_stage_rules_name_every_required_dimension():
         "performance",
     ):
         assert dimension in rules
+    assert "命令行选项" in rules
+    assert "不得编造性能阈值" in rules
+    assert "不得使用‘可能成功或失败’" in rules
 
 
 def test_deterministic_business_flow_uses_quality_contract_section_names():
@@ -3052,6 +3672,977 @@ def test_source_analysis_context_keeps_only_bounded_verified_inputs():
     assert "quality_retry" not in serialized
     assert "unrelated_history" not in serialized
     assert len(serialized) < 12000
+
+
+def test_source_analysis_context_adds_verified_anchors_within_selected_files(
+    tmp_path,
+):
+    source = tmp_path / "libnvme" / "src" / "nvme" / "fabrics.c"
+    source.parent.mkdir(parents=True)
+    source_text = (
+        "static int connect_ctrl(void) { return submit_connect(); }\n"
+        + "\n" * 80
+        + "static int load_tls_psk(void) { return keyring_search(); }\n"
+        + "\n" * 80
+        + "static void rollback_ctrl(void) { release_controller(); }\n"
+    )
+    source.write_text(source_text, encoding="utf-8")
+    test_file = tmp_path / "libnvme" / "test" / "fabrics.c"
+    test_file.parent.mkdir(parents=True)
+    test_text = "int test_reconnect(void) { return verify_recovery(); }\n"
+    test_file.write_text(test_text, encoding="utf-8")
+    staged_context = {
+        "repo_path": str(tmp_path),
+        "source_context": {
+            "repo_path": str(tmp_path),
+            "repo_revision": "fixture",
+            "tokens": [
+                "connect",
+                "tls",
+                "psk",
+                "keyring",
+                "rollback",
+                "controller",
+                "reconnect",
+            ],
+            "files": [
+                {
+                    "file_path": "libnvme/src/nvme/fabrics.c",
+                    "classification": "source",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "excerpt": source_text.splitlines()[0],
+                    "symbols": ["connect_ctrl"],
+                    "matched_terms": ["connect", "tls", "psk", "keyring", "rollback"],
+                    "sha256": hashlib.sha256(source_text.encode()).hexdigest(),
+                    "status": "validated_source_file",
+                },
+                {
+                    "file_path": "libnvme/test/fabrics.c",
+                    "classification": "test",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "excerpt": test_text.strip(),
+                    "symbols": ["test_reconnect"],
+                    "matched_terms": ["reconnect"],
+                    "sha256": hashlib.sha256(test_text.encode()).hexdigest(),
+                    "status": "validated_source_file",
+                },
+            ],
+        },
+    }
+
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "分析 connect TLS PSK rollback reconnect"},
+        staged_context=staged_context,
+        max_files=2,
+        excerpt_chars=500,
+        max_evidence_anchors=4,
+    )
+
+    assert len({item["file_path"] for item in compact["files"]}) == 2
+    assert len(compact["files"]) == 4
+    assert any("load_tls_psk" in item["excerpt"] for item in compact["files"])
+    assert any("rollback_ctrl" in item["excerpt"] for item in compact["files"])
+    assert all(item["sha256"] for item in compact["files"])
+
+
+def test_source_analysis_context_prefers_error_branch_over_help_text(tmp_path):
+    source = tmp_path / "libnvme" / "src" / "nvme" / "fabrics.c"
+    source.parent.mkdir(parents=True)
+    source_text = "\n".join(
+        [
+            "static int connect_ctrl(void) { return submit_connect(); }",
+            *([""] * 20),
+            'const char *help = "reconnect delay option";',
+            *([""] * 50),
+            "static int reconnect_ctrl(int fd) {",
+            "    int ret = write(fd, \"reconnect\", 9);",
+            "    if (ret != 9) {",
+            "        close(fd);",
+            "        return -EIO;",
+            "    }",
+            "    return 0;",
+            "}",
+        ]
+    )
+    source.write_text(source_text, encoding="utf-8")
+    staged_context = {
+        "repo_path": str(tmp_path),
+        "source_context": {
+            "repo_path": str(tmp_path),
+            "repo_revision": "fixture",
+            "tokens": ["reconnect"],
+            "files": [
+                {
+                    "file_path": "libnvme/src/nvme/fabrics.c",
+                    "classification": "source",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "excerpt": source_text.splitlines()[0],
+                    "symbols": ["connect_ctrl"],
+                    "matched_terms": ["reconnect"],
+                    "sha256": hashlib.sha256(source_text.encode()).hexdigest(),
+                    "status": "validated_source_file",
+                }
+            ],
+        },
+    }
+
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "分析 reconnect 错误恢复"},
+        staged_context=staged_context,
+        max_files=1,
+        excerpt_chars=500,
+        max_evidence_anchors=2,
+    )
+
+    assert len(compact["files"]) == 2
+    assert "if (ret != 9)" in compact["files"][1]["excerpt"]
+    assert "close(fd)" in compact["files"][1]["excerpt"]
+
+
+def test_compact_source_selector_upgrades_low_score_test_evidence():
+    candidates = [
+        {
+            "file_path": "src/fabrics.c",
+            "classification": "source",
+            "score": 100,
+            "matched_terms": ["connect", "tls"],
+            "symbols": ["connect_ctrl"],
+        },
+        {
+            "file_path": "test/rare.c",
+            "classification": "test",
+            "score": 1,
+            "matched_terms": ["rare"],
+            "symbols": ["test_rare"],
+        },
+        {
+            "file_path": "test/psk.c",
+            "classification": "test",
+            "score": 20,
+            "matched_terms": ["tls"],
+            "symbols": ["test_psk"],
+        },
+    ]
+
+    selected = _select_bounded_source_context_files(
+        candidates,
+        limit=2,
+        min_source_files=1,
+        min_test_files=1,
+        coverage_tokens=["connect", "tls", "rare"],
+    )
+
+    assert {item["file_path"] for item in selected} == {
+        "src/fabrics.c",
+        "test/psk.c",
+    }
+
+
+def test_source_analysis_context_prefers_risk_branch_over_term_rich_declaration(
+    tmp_path,
+):
+    source = tmp_path / "fabrics.c"
+    source_text = "\n".join(
+        [
+            "static int seed_entry(void) { return 0; }",
+            *( [""] * 20 ),
+            "static int describe_tls_keyring_reconnect_timeout(void)",
+            "{",
+            "    return 0;",
+            "}",
+            *( [""] * 15 ),
+            "static int write_zeroes(int fd)",
+            "{",
+            "    int retry = read(fd, NULL, 0);",
+            "    if (retry < 0) {",
+            "        close(fd);",
+            "        return -EIO;",
+            "    }",
+            "    return retry;",
+            "}",
+            *( [""] * 30 ),
+            "static int reconnect_ctrl(int fd)",
+            "{",
+            '    int ret = write(fd, "reconnect", 9);',
+            "    if (ret != 9) {",
+            "        close(fd);",
+            "        return -EIO;",
+            "    }",
+            "    return 0;",
+            "}",
+        ]
+    )
+    source.write_text(source_text, encoding="utf-8")
+    staged_context = {
+        "repo_path": str(tmp_path),
+        "source_context": {
+            "repo_path": str(tmp_path),
+            "repo_revision": "fixture",
+            "tokens": ["tls", "keyring", "reconnect", "timeout", "retry"],
+            "files": [
+                {
+                    "file_path": "fabrics.c",
+                    "classification": "source",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "excerpt": source_text.splitlines()[0],
+                    "symbols": ["seed_entry"],
+                    "matched_terms": ["seed"],
+                    "sha256": hashlib.sha256(source_text.encode()).hexdigest(),
+                    "status": "validated_source_file",
+                }
+            ],
+        },
+    }
+
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "分析 TLS keyring reconnect timeout retry"},
+        staged_context=staged_context,
+        max_files=1,
+        excerpt_chars=500,
+        max_evidence_anchors=2,
+    )
+
+    assert compact["files"][1]["symbols"] == ["reconnect_ctrl"]
+    assert "if (ret != 9)" in compact["files"][1]["excerpt"]
+    assert "close(fd)" in compact["files"][1]["excerpt"]
+
+
+def test_source_analysis_expansion_prefers_complex_core_discovery_function(
+    tmp_path,
+):
+    source = tmp_path / "fabrics.c"
+    source_text = "\n".join(
+        [
+            "static int seed(void) { return 0; }",
+            *( [""] * 20 ),
+            "static int libnvmf_discovery_nbft(void)",
+            "{",
+            "    int ret = discovery_from_table();",
+            "    if (ret < 0) return ret;",
+            "    if (ret == 1) return retry_discovery();",
+            "    if (ret == 2) return cleanup_discovery();",
+            "    if (ret == 3) return reconnect_discovery();",
+            "    if (ret == 4) return fail_discovery();",
+            "    return ret;",
+            "}",
+            *( [""] * 20 ),
+            "static int _nvmf_discovery(void)",
+            "{",
+            "    int ret = read_discovery_log();",
+            "    if (ret < 0)",
+            "        return ret;",
+            "    for (int i = 0; i < 8; i++) {",
+            "        ret = nvmf_connect_disc_entry(i);",
+            "        if (ret < 0) {",
+            "            cleanup_controller(i);",
+            "            continue;",
+            "        }",
+            "    }",
+            "    return 0;",
+            "}",
+        ]
+    )
+    source.write_text(source_text, encoding="utf-8")
+    staged_context = {
+        "repo_path": str(tmp_path),
+        "source_context": {
+            "repo_path": str(tmp_path),
+            "repo_revision": "fixture",
+            "tokens": ["discovery", "connect", "cleanup"],
+            "files": [
+                {
+                    "file_path": "fabrics.c",
+                    "classification": "source",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "excerpt": source_text.splitlines()[0],
+                    "symbols": ["seed"],
+                    "matched_terms": [],
+                    "sha256": hashlib.sha256(source_text.encode()).hexdigest(),
+                    "status": "validated_source_file",
+                }
+            ],
+        },
+    }
+
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "分析 discovery connect cleanup"},
+        staged_context=staged_context,
+        max_files=1,
+        excerpt_chars=800,
+        max_evidence_anchors=2,
+        min_test_files=0,
+    )
+
+    assert compact["files"][1]["symbols"][0] == "_nvmf_discovery"
+
+
+def test_source_symbol_relevance_uses_identifier_boundaries():
+    from app.services.ai_staged_execution import _source_symbol_matches_token
+
+    assert _source_symbol_matches_token("nvmf_connect_disc_entry", "connect")
+    assert _source_symbol_matches_token("_nvmf_discovery", "discovery")
+    assert not _source_symbol_matches_token("derive_retained_key", "ret")
+    assert not _source_symbol_matches_token("getrandom_bytes", "err")
+
+
+def test_source_analysis_expansion_follows_calls_between_selected_functions(
+    tmp_path,
+):
+    source = tmp_path / "fabrics.c"
+    source_text = "\n".join(
+        [
+            "static int seed(void) { return 0; }",
+            *( [""] * 10 ),
+            "static int nvmf_connect_disc_entry(int entry)",
+            "{",
+            "    if (entry < 0) return -1;",
+            "    return connect_entry(entry);",
+            "}",
+            *( [""] * 10 ),
+            "static int nvmf_update_tls_concat(void)",
+            "{",
+            "    if (tls_keyring_error()) return cleanup_tls();",
+            "    if (tls_keyring_error()) return retry_tls_connect();",
+            "    if (tls_keyring_error()) return cleanup_tls();",
+            "    if (tls_keyring_error()) return retry_tls_connect();",
+            "    return retry_tls_connect();",
+            "}",
+            *( [""] * 10 ),
+            "static int _nvmf_discovery(void)",
+            "{",
+            "    int child = nvmf_connect_disc_entry(1);",
+            "    if (child < 0) continue_discovery();",
+            "    return child;",
+            "}",
+        ]
+    )
+    source.write_text(source_text, encoding="utf-8")
+    staged_context = {
+        "repo_path": str(tmp_path),
+        "source_context": {
+            "repo_path": str(tmp_path),
+            "repo_revision": "fixture",
+            "tokens": [
+                "nvmf", "discovery", "connect", "child", "tls",
+                "keyring", "error", "cleanup", "retry",
+            ],
+            "files": [
+                {
+                    "file_path": "fabrics.c",
+                    "classification": "source",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "excerpt": source_text.splitlines()[0],
+                    "symbols": ["seed"],
+                    "matched_terms": [],
+                    "sha256": hashlib.sha256(source_text.encode()).hexdigest(),
+                    "status": "validated_source_file",
+                    "content_match_count": 20,
+                }
+            ],
+        },
+    }
+
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "分析 discovery 子任务 connect 和 TLS"},
+        staged_context=staged_context,
+        max_files=1,
+        excerpt_chars=800,
+        max_evidence_anchors=3,
+        min_test_files=0,
+    )
+
+    assert [item["symbols"][0] for item in compact["files"][1:]] == [
+        "_nvmf_discovery",
+        "nvmf_connect_disc_entry",
+    ]
+
+
+def test_source_analysis_context_additional_slice_keeps_enclosing_multiline_c_symbol(
+    tmp_path,
+):
+    source = tmp_path / "libnvme" / "src" / "nvme" / "fabrics.c"
+    source.parent.mkdir(parents=True)
+    source_text = "\n".join(
+        [
+            "static int seed_entry(void) { return 0; }",
+            *( [""] * 30 ),
+            "static int libnvme_add_ctrl(struct libnvmf_context *fctx,",
+            "        struct libnvme_host *host, struct libnvme_ctrl *ctrl)",
+            "{",
+            "    int err;",
+            "retry:",
+            "    err = libnvmf_add_ctrl(host, ctrl);",
+            "    if (err && fctx->retry(err))",
+            "        goto retry;",
+            "    return err;",
+            "}",
+        ]
+    )
+    source.write_text(source_text, encoding="utf-8")
+    staged_context = {
+        "repo_path": str(tmp_path),
+        "source_context": {
+            "repo_path": str(tmp_path),
+            "repo_revision": "fixture",
+            "tokens": ["retry"],
+            "files": [
+                {
+                    "file_path": "libnvme/src/nvme/fabrics.c",
+                    "classification": "source",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "excerpt": source_text.splitlines()[0],
+                    "symbols": ["seed_entry"],
+                    "matched_terms": ["retry"],
+                    "sha256": hashlib.sha256(source_text.encode()).hexdigest(),
+                    "status": "validated_source_file",
+                }
+            ],
+        },
+    }
+
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "分析 retry 错误恢复"},
+        staged_context=staged_context,
+        max_files=1,
+        excerpt_chars=500,
+        max_evidence_anchors=2,
+    )
+
+    assert compact["files"][1]["symbols"] == ["libnvme_add_ctrl"]
+
+
+def test_source_symbol_detection_accepts_token_on_multiline_signature():
+    source_text = "\n".join(
+        [
+            "static bool hook_decide_retry(struct context *ctx, int err,",
+            "        void *user_data)",
+            "{",
+            "    return err == -EAGAIN;",
+            "}",
+        ]
+    )
+
+    assert (
+        _source_enclosing_c_function(source_text, anchor_line=1)
+        == "hook_decide_retry"
+    )
+
+
+def test_source_analysis_context_completes_small_c_function_instead_of_cutting_branch(
+    tmp_path,
+):
+    source = tmp_path / "libnvme" / "src" / "nvme" / "tree-fabrics.c"
+    source.parent.mkdir(parents=True)
+    source_text = "\n".join(
+        [
+            "static void read_dhchap(struct ctrl *ctrl)",
+            "{",
+            "    char *ctrl_key;",
+            "",
+            '    ctrl_key = get_attr(ctrl, "dhchap_ctrl_secret");',
+            '    if (ctrl_key && !strcmp(ctrl_key, "none")) {',
+            "        free(ctrl_key);",
+            "        ctrl_key = NULL;",
+            "    }",
+            "    if (ctrl_key)",
+            "        set_key(ctrl, ctrl_key);",
+            "}",
+        ]
+    )
+    source.write_text(source_text, encoding="utf-8")
+    staged_context = {
+        "repo_path": str(tmp_path),
+        "source_context": {
+            "repo_path": str(tmp_path),
+            "repo_revision": "fixture",
+            "tokens": ["dhchap", "ctrl_key"],
+            "files": [
+                {
+                    "file_path": "libnvme/src/nvme/tree-fabrics.c",
+                    "classification": "source",
+                    "start_line": 1,
+                    "end_line": 7,
+                    "excerpt": "\n".join(source_text.splitlines()[:7]),
+                    "symbols": ["read_dhchap"],
+                    "matched_terms": ["dhchap", "ctrl_key"],
+                    "sha256": hashlib.sha256(source_text.encode()).hexdigest(),
+                    "status": "validated_source_file",
+                }
+            ],
+        },
+    }
+
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "分析 dhchap ctrl_key 生命周期"},
+        staged_context=staged_context,
+        max_files=1,
+        excerpt_chars=800,
+        max_evidence_anchors=1,
+    )
+
+    assert compact["files"][0]["start_line"] == 1
+    assert compact["files"][0]["end_line"] == 12
+    assert "ctrl_key = NULL;" in compact["files"][0]["excerpt"]
+    assert "set_key(ctrl, ctrl_key);" in compact["files"][0]["excerpt"]
+
+
+def test_source_analysis_context_does_not_fill_anchor_budget_with_help_text(
+    tmp_path,
+):
+    source = tmp_path / "fabrics.c"
+    source_text = "\n".join(
+        [
+            "static int connect_ctrl(void) { return submit_connect(); }",
+            *( [""] * 20 ),
+            'static const char *help = "tls keyring reconnect timeout option";',
+            *( [""] * 30 ),
+            "static int reconnect_ctrl(int fd)",
+            "{",
+            "    if (write(fd, \"retry\", 5) < 0) {",
+            "        close(fd);",
+            "        return -EIO;",
+            "    }",
+            "    return 0;",
+            "}",
+        ]
+    )
+    source.write_text(source_text, encoding="utf-8")
+    staged_context = {
+        "repo_path": str(tmp_path),
+        "source_context": {
+            "repo_path": str(tmp_path),
+            "repo_revision": "fixture",
+            "tokens": ["tls", "keyring", "reconnect", "timeout", "retry"],
+            "files": [
+                {
+                    "file_path": "fabrics.c",
+                    "classification": "source",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "excerpt": source_text.splitlines()[0],
+                    "symbols": ["connect_ctrl"],
+                    "matched_terms": ["connect"],
+                    "sha256": hashlib.sha256(source_text.encode()).hexdigest(),
+                    "status": "validated_source_file",
+                }
+            ],
+        },
+    }
+
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "分析 TLS keyring reconnect timeout retry"},
+        staged_context=staged_context,
+        max_files=1,
+        excerpt_chars=500,
+        max_evidence_anchors=2,
+    )
+
+    assert len(compact["files"]) == 2
+    assert compact["files"][1]["symbols"] == ["reconnect_ctrl"]
+    assert "close(fd)" in compact["files"][1]["excerpt"]
+    assert "const char *help" not in compact["files"][1]["excerpt"]
+
+
+def test_markdown_canonicalizes_unique_verified_source_basename():
+    content = (
+        "`tree-fabrics.c:308-325` 读取密钥；"
+        "`libnvme/src/nvme/tree-fabrics.c:319` 已是完整路径；"
+        "`tree-fabrics.c:181` 是测试证据；"
+        "`fabrics.c:10` 存在重名，不应猜测。"
+    )
+    source_pack = {
+        "evidence_cards": [
+            {
+                "file_path": "libnvme/src/nvme/tree-fabrics.c",
+                "start_line": 308,
+                "end_line": 325,
+            },
+            {
+                "file_path": "libnvme/test/tree-fabrics.c",
+                "start_line": 178,
+                "end_line": 195,
+            },
+            {"file_path": "libnvme/src/nvme/fabrics.c"},
+            {"file_path": "fabrics.c"},
+        ]
+    }
+
+    normalized = _canonicalize_verified_repo_path_mentions(content, source_pack)
+
+    assert "`libnvme/src/nvme/tree-fabrics.c:308-325`" in normalized
+    assert normalized.count("libnvme/src/nvme/tree-fabrics.c") == 2
+    assert "`libnvme/test/tree-fabrics.c:181`" in normalized
+    assert "`fabrics.c:10`" in normalized
+
+
+def test_markdown_canonicalizes_stale_prefix_to_unique_verified_repo_path():
+    content = "`src/fabrics.c:1567-1585` handles connect cleanup."
+    source_pack = {
+        "evidence_cards": [
+            {
+                "file_path": "libnvme/src/nvme/fabrics.c",
+                "start_line": 1567,
+                "end_line": 1585,
+            }
+        ]
+    }
+
+    normalized = _canonicalize_verified_repo_path_mentions(content, source_pack)
+
+    assert "`libnvme/src/nvme/fabrics.c:1567-1585`" in normalized
+    assert "`src/fabrics.c" not in normalized
+
+
+def test_markdown_canonicalizes_stale_prefix_to_closest_verified_repo_path():
+    content = "分析目标提到 src/fabrics.c，源码入口仍以实际仓库为准。"
+    source_pack = {
+        "evidence_cards": [
+            {"file_path": "fabrics.c", "start_line": 664, "end_line": 681},
+            {
+                "file_path": "libnvme/src/nvme/fabrics.c",
+                "start_line": 1567,
+                "end_line": 1585,
+            },
+        ]
+    }
+
+    normalized = _canonicalize_verified_repo_path_mentions(content, source_pack)
+
+    assert "src/fabrics.c" not in normalized
+    assert "分析目标提到 fabrics.c" in normalized
+
+
+def test_sfmea_generation_rules_forbid_normal_behavior_padding_and_evidence_drift():
+    rules = "\n".join(_stage_format_rules("sfmea", "sfmea.json"))
+
+    assert "正常拒绝" in rules
+    assert "安全释放" in rules
+    assert "同一路径和函数" in rules
+    assert "不得拆成多条" in rules
+
+
+def test_black_box_generation_rules_keep_dimensions_and_external_boundaries():
+    rules = "\n".join(_stage_format_rules("black_box_cases", "black_box_cases.json"))
+
+    assert "保持既有 case_id 的 test_dimension 不变" in rules
+    assert "禁止 mock/调用 libnvme 或 libnvmf 内部函数" in rules
+    assert "upstream_error_propagation" in rules
+    assert "CLI 退出码" in rules
+
+
+def test_supporting_markdown_rules_forbid_unverified_coverage_and_interface_claims():
+    from app.services.ai_staged_execution import _stage_format_rules
+
+    module_rules = "\n".join(_stage_format_rules("module_map", "module_map.md"))
+    flow_rules = "\n".join(_stage_format_rules("business_flow", "flow_map.md"))
+    strategy_rules = "\n".join(_stage_format_rules("test_strategy", "test_strategy.md"))
+
+    assert "evidence_id" in module_rules
+    assert "内核接口" in module_rules
+    assert "每个流程步骤" in flow_rules
+    assert "完整覆盖" in strategy_rules
+    assert "环境版本" in strategy_rules
+
+
+def test_test_strategy_runs_after_risk_and_case_design():
+    from app.services.ai_staged_execution import build_staged_execution_plan
+
+    contract = _contract()
+    contract["required_outputs"].append("test_strategy.md")
+    contract["artifact_contract"]["test_strategy.md"] = {
+        "artifact": "test_strategy.md"
+    }
+
+    plan = build_staged_execution_plan(
+        contract=contract,
+        original_user_request="输出完整测试策略",
+    )
+    stage = next(item for item in plan["stages"] if item["artifact"] == "test_strategy.md")
+
+    assert stage["depends_on"] == [
+        "source_analysis",
+        "flow_outline",
+        "sfmea",
+        "black_box_cases",
+    ]
+
+
+def test_sfmea_rows_receive_stable_ids_before_quality_repair():
+    rows = [
+        {"failure_mode": "risk-a"},
+        {"sfmea_id": "SFMEA-009", "failure_mode": "risk-b"},
+        {"failure_mode": "risk-c"},
+    ]
+
+    normalized, fields = _ensure_stable_stage_row_ids(rows, "sfmea")
+
+    assert [item["sfmea_id"] for item in normalized] == [
+        "SFMEA-001",
+        "SFMEA-009",
+        "SFMEA-003",
+    ]
+    assert fields == ["$[0].sfmea_id", "$[2].sfmea_id"]
+
+
+def test_source_context_compaction_prefers_implementation_symbols_over_headers():
+    from app.services.ai_staged_execution import _select_bounded_source_context_files
+
+    selected = _select_bounded_source_context_files(
+        [
+            {
+                "file_path": "libnvme/src/nvme/fabrics.c",
+                "classification": "source",
+                "symbols": ["connect_ctrl"],
+                "matched_terms": ["connect"],
+                "score": 80,
+            },
+            {
+                "file_path": "libnvme/src/nvme/fabrics.h",
+                "classification": "source",
+                "symbols": [],
+                "matched_terms": ["auth", "timeout"],
+                "score": 100,
+            },
+            {
+                "file_path": "libnvme/src/nvme/tree-fabrics.c",
+                "classification": "source",
+                "symbols": ["read_dhchap"],
+                "matched_terms": ["dhchap", "tls"],
+                "score": 60,
+            },
+            {
+                "file_path": "libnvme/test/fabrics.c",
+                "classification": "test",
+                "symbols": ["test_connect"],
+                "matched_terms": ["connect"],
+                "score": 20,
+            },
+        ],
+        limit=3,
+        min_source_files=2,
+        min_test_files=1,
+        coverage_tokens=["connect", "auth", "timeout", "dhchap", "tls"],
+    )
+
+    paths = {item["file_path"] for item in selected}
+    assert "libnvme/src/nvme/fabrics.c" in paths
+    assert "libnvme/src/nvme/tree-fabrics.c" in paths
+    assert "libnvme/test/fabrics.c" in paths
+    assert "libnvme/src/nvme/fabrics.h" not in paths
+
+
+def test_source_context_keeps_core_library_connect_implementation_for_broad_target():
+    from app.services.ai_staged_execution import _select_bounded_source_context_files
+
+    candidates = [
+        {
+            "file_path": "libnvme/src/nvme/fabrics.h",
+            "classification": "source",
+            "symbols": ["libnvmf_get_default_trsvcid"],
+            "matched_terms": ["discovery", "connect", "fabrics", "nvmf", "retry"],
+            "score": 44,
+        },
+        {
+            "file_path": "fabrics.c",
+            "classification": "source",
+            "symbols": ["fabrics_discovery"],
+            "matched_terms": ["discovery", "controller", "connect", "sysfs", "fabrics", "nvmf", "cleanup"],
+            "score": 40,
+        },
+        {
+            "file_path": "libnvme/src/nvme/config-ini.c",
+            "classification": "source",
+            "symbols": ["libnvmf_key_lookup"],
+            "matched_terms": ["controller", "chap", "keyring", "nvmf", "dhchap"],
+            "score": 32,
+        },
+        {
+            "file_path": "libnvme/src/nvme/crypto.c",
+            "classification": "source",
+            "symbols": ["libnvmf_gen_dhchap_key"],
+            "matched_terms": ["hmac", "chap", "nvmf", "dhchap"],
+            "score": 32,
+        },
+        {
+            "file_path": "libnvme/src/nvme/fabrics.c",
+            "classification": "source",
+            "symbols": ["libnvmf_connect_ctrl"],
+            "matched_terms": ["connect", "nvmf", "cleanup"],
+            "score": 32,
+        },
+        {
+            "file_path": "libnvme/src/nvme/tree.c",
+            "classification": "source",
+            "symbols": ["libnvme_ctrl_get_reconnect_count"],
+            "matched_terms": ["cleanup", "reconnect"],
+            "score": 20,
+        },
+        {
+            "file_path": "libnvme/src/nvme/tree-fabrics.c",
+            "classification": "source",
+            "symbols": ["libnvmf_read_sysfs_dhchap"],
+            "matched_terms": ["chap", "sysfs", "nvmf", "dhchap"],
+            "score": 36,
+        },
+    ]
+
+    selected = _select_bounded_source_context_files(
+        candidates,
+        limit=6,
+        min_source_files=6,
+        min_test_files=0,
+        coverage_tokens=[
+            "discovery", "controller", "connect", "hmac", "chap", "tls",
+            "keyring", "sysfs", "nvmf", "dhchap", "cleanup", "reconnect",
+        ],
+    )
+
+    assert "libnvme/src/nvme/fabrics.c" in {
+        item["file_path"] for item in selected
+    }
+
+
+def test_source_context_prefers_core_behavior_over_term_rich_formatter():
+    from app.services.ai_staged_execution import _select_bounded_source_context_files
+
+    candidates = [
+        {
+            "file_path": "nvme-print-binary.c",
+            "classification": "source",
+            "symbols": ["binary_discovery_log"],
+            "matched_terms": ["discovery", "over", "log", "page", "nvmf"],
+            "score": 20,
+            "content_match_count": 12,
+            "behavior_score": 0,
+        },
+        {
+            "file_path": "fabrics.c",
+            "classification": "source",
+            "symbols": ["fabrics_discovery"],
+            "matched_terms": ["discovery", "controller", "connect", "fabrics", "cleanup", "nvmf"],
+            "score": 36,
+            "content_match_count": 182,
+            "behavior_score": 4,
+        },
+        {
+            "file_path": "libnvme/src/nvme/crypto.c",
+            "classification": "source",
+            "symbols": ["libnvmf_gen_dhchap_key"],
+            "matched_terms": ["hmac", "chap", "dhchap", "nvmf"],
+            "score": 48,
+            "content_match_count": 435,
+            "behavior_score": 5,
+        },
+        {
+            "file_path": "libnvme/src/nvme/fabrics.c",
+            "classification": "source",
+            "symbols": ["libnvmf_connect_ctrl"],
+            "matched_terms": ["connect", "cleanup", "nvmf"],
+            "score": 40,
+            "content_match_count": 500,
+            "behavior_score": 8,
+        },
+        {
+            "file_path": "libnvme/src/nvme/tree.c",
+            "classification": "source",
+            "symbols": ["libnvme_ctrl_get_reconnect_count"],
+            "matched_terms": ["reconnect", "cleanup", "long"],
+            "score": 40,
+            "content_match_count": 63,
+            "behavior_score": 3,
+        },
+        {
+            "file_path": "libnvme/test/ioctl/discovery.c",
+            "classification": "test",
+            "symbols": ["fetch_discovery_log"],
+            "matched_terms": ["discovery", "log", "nvmf"],
+            "score": 28,
+            "content_match_count": 35,
+            "behavior_score": 4,
+        },
+        {
+            "file_path": "libnvme/test/tree-fabrics.c",
+            "classification": "test",
+            "symbols": ["tcp_ctrl_lookup"],
+            "matched_terms": ["tcp", "nvmf"],
+            "score": 20,
+            "content_match_count": 40,
+            "behavior_score": 3,
+        },
+        {
+            "file_path": "libnvme/test/ioctl/logs.c",
+            "classification": "test",
+            "symbols": ["test_get_log_discovery"],
+            "matched_terms": ["discovery", "log", "page"],
+            "score": 20,
+            "content_match_count": 25,
+            "behavior_score": 2,
+        },
+    ]
+
+    selected = _select_bounded_source_context_files(
+        candidates,
+        limit=6,
+        min_source_files=1,
+        min_test_files=3,
+        coverage_tokens=[
+            "tcp", "discovery", "controller", "connect", "hmac", "chap",
+            "tls", "psk", "keyring", "fabrics", "dhchap", "over", "log",
+            "page", "reconnect", "resource", "cleanup", "long",
+        ],
+    )
+
+    paths = {item["file_path"] for item in selected}
+    assert "libnvme/src/nvme/fabrics.c" in paths
+    assert "nvme-print-binary.c" not in paths
+
+
+def test_source_scope_counts_unique_files_separately_from_evidence_anchors():
+    from app.services.ai_staged_execution import build_source_evidence_pack
+
+    context = {
+        "analysis_target": "connect and reconnect",
+        "repo_path": "/repo",
+        "repo_revision": "abc",
+        "files": [
+            {
+                "evidence_id": "SRC-01",
+                "file_path": "src/fabrics.c",
+                "classification": "source",
+                "start_line": 10,
+                "end_line": 20,
+                "excerpt": "connect",
+                "symbols": ["connect_ctrl"],
+                "matched_terms": ["connect"],
+                "sha256": "a" * 64,
+            },
+            {
+                "evidence_id": "SRC-02",
+                "file_path": "src/fabrics.c",
+                "classification": "source",
+                "start_line": 30,
+                "end_line": 40,
+                "excerpt": "reconnect",
+                "symbols": ["reconnect_ctrl"],
+                "matched_terms": ["reconnect"],
+                "sha256": "a" * 64,
+            },
+        ],
+    }
+
+    scope = build_source_evidence_pack(context)["source_scope"]
+
+    assert scope["files"] == ["src/fabrics.c"]
+    assert scope["source_files"] == ["src/fabrics.c"]
+    assert scope["file_count"] == 1
+    assert scope["evidence_anchor_count"] == 2
 
 
 def test_source_analysis_context_expands_to_combined_report_evidence_minimums():
@@ -3866,6 +5457,54 @@ async def test_source_driven_v2_stages_materialize_complete_governed_bundle(tmp_
     assert "test-design-mindmap-v1" in (tmp_path / "test_design_mindmap.svg").read_text()
 
 
+def test_source_evidence_pack_replaces_retry_seed_with_current_canonical_pack(tmp_path):
+    stale_cards = [
+        {
+            "evidence_id": "SRC-01",
+            "file_path": "stale.c",
+            "start_line": 1,
+            "end_line": 1,
+            "excerpt": "int stale(void);",
+            "symbols": ["stale"],
+            "sha256": "0" * 64,
+        }
+    ]
+    (tmp_path / "source_scope.json").write_text(
+        json.dumps({"files": ["stale.c"]}), encoding="utf-8"
+    )
+    (tmp_path / "evidence_cards.json").write_text(
+        json.dumps(stale_cards), encoding="utf-8"
+    )
+    pack = build_source_evidence_pack(
+        {
+            "analysis_target": "NVMe fabrics connect",
+            "repo_revision": "abc123",
+            "files": [
+                {
+                    "evidence_id": "SRC-12",
+                    "file_path": "libnvme/test/ioctl/logs.c",
+                    "classification": "test",
+                    "start_line": 849,
+                    "end_line": 849,
+                    "excerpt": "static void test_get_log_discovery(void)",
+                    "symbols": ["test_get_log_discovery"],
+                    "matched_terms": ["discovery"],
+                    "sha256": "a" * 64,
+                }
+            ],
+        }
+    )
+
+    materialize_source_evidence_pack(pack, tmp_path)
+
+    assert json.loads((tmp_path / "source_scope.json").read_text(encoding="utf-8")) == pack[
+        "source_scope"
+    ]
+    assert json.loads((tmp_path / "evidence_cards.json").read_text(encoding="utf-8")) == pack[
+        "evidence_cards"
+    ]
+
+
 def test_source_evidence_pack_extracts_verified_constant_literals():
     pack = build_source_evidence_pack({
         "analysis_target": "iSCSI login",
@@ -4040,6 +5679,97 @@ def test_plan_does_not_collapse_multiple_source_facing_deliverables():
         "module_map.md",
         "tester_code_understanding.md",
     ]
+
+
+def test_test_design_mindmap_consumes_evidence_flow_risk_and_cases():
+    contract = _contract()
+    contract["required_outputs"].append("test_design_mindmap.md")
+    contract["artifact_contract"]["test_design_mindmap.md"] = {
+        "artifact": "test_design_mindmap.md"
+    }
+
+    plan = build_staged_execution_plan(
+        contract=contract,
+        original_user_request="输出测试设计脑图",
+    )
+
+    stage = next(
+        item for item in plan["stages"] if item["artifact"] == "test_design_mindmap.md"
+    )
+    assert stage["id"] == "test_design_mindmap"
+    assert stage["depends_on"] == [
+        "source_analysis",
+        "flow_outline",
+        "sfmea",
+        "black_box_cases",
+    ]
+
+
+def test_compact_source_context_keeps_rare_target_term_evidence():
+    from app.services.ai_staged_execution import _select_bounded_source_context_files
+
+    common = [
+        {
+            "file_path": f"src/fabrics_{index}.c",
+            "classification": "source",
+            "score": 100 - index,
+            "matched_terms": ["fabrics", "connect", "discovery"],
+        }
+        for index in range(6)
+    ]
+    psk_test = {
+        "file_path": "test/psk.c",
+        "classification": "test",
+        "score": 20,
+        "matched_terms": ["hmac", "chap", "tls", "psk"],
+    }
+    common_test = {
+        "file_path": "test/fabrics.c",
+        "classification": "test",
+        "score": 40,
+        "matched_terms": ["fabrics", "connect", "discovery"],
+    }
+    rare_source = {
+        "file_path": "src/nvme.c",
+        "classification": "source",
+        "score": 80,
+        "matched_terms": ["hmac", "chap", "tls", "psk"],
+    }
+
+    selected = _select_bounded_source_context_files(
+        [*common, rare_source, common_test, psk_test],
+        limit=4,
+        min_source_files=1,
+        min_test_files=1,
+        coverage_tokens=["fabrics", "connect", "discovery", "hmac", "chap", "tls", "psk"],
+    )
+
+    assert "test/psk.c" in [item["file_path"] for item in selected]
+
+
+def test_test_design_plan_requires_three_test_evidence_files():
+    from app.services.ai_staged_execution import _source_evidence_minimums
+
+    plan = build_staged_execution_plan(
+        contract=_contract(),
+        original_user_request="基于源码生成 SFMEA 和黑盒测试",
+    )
+
+    assert _source_evidence_minimums(plan) == (1, 3)
+
+
+def test_sfmea_prompt_separates_verified_behavior_from_hypothetical_failure():
+    from app.services.ai_staged_execution import _stage_format_rules
+
+    rules = "\n".join(_stage_format_rules("sfmea", "sfmea.json"))
+
+    assert "technical_claims.statement" in rules
+    assert "假设性失效" in rules
+    assert "不得把风险假设写成已存在的代码缺陷" in rules
+    assert "未显示" in rules
+    assert "声明文件" in rules
+    assert "测试辅助代码" in rules
+    assert "不得重复" in rules
 
 
 def test_plan_uses_canonical_dependency_order_for_unordered_user_outputs():
@@ -5878,6 +7608,59 @@ def test_quality_repair_reuses_existing_unaffected_stage_artifact(tmp_path):
         stage_dir=stage_dir,
         stage={"id": "business_flow", "artifact": "business_flow.md"},
     ) is None
+
+
+def test_reused_source_analysis_rematerializes_its_canonical_evidence_pack(tmp_path):
+    from app.services.ai_staged_execution import _existing_quality_stage_result
+
+    artifact_dir = tmp_path / "run"
+    stage_dir = artifact_dir / "stages" / "source_analysis"
+    stage_dir.mkdir(parents=True)
+    (artifact_dir / "source_analysis.md").write_text("# source\n", encoding="utf-8")
+    canonical_pack = {
+        "source_scope": {"scope_id": "current"},
+        "evidence_cards": [
+            {
+                "evidence_id": "SRC-15",
+                "file_path": "libnvme/src/nvme/crypto.c",
+                "start_line": 1004,
+                "end_line": 1004,
+                "excerpt": "int libnvmf_set_keyring(void);",
+                "symbols": ["libnvmf_set_keyring"],
+                "sha256": "digest",
+            }
+        ],
+    }
+    (stage_dir / "source_evidence_pack.json").write_text(
+        json.dumps(canonical_pack),
+        encoding="utf-8",
+    )
+    (artifact_dir / "evidence_cards.json").write_text(
+        json.dumps([{"evidence_id": "SRC-01", "file_path": "stale.c"}]),
+        encoding="utf-8",
+    )
+    (artifact_dir / "source_scope.json").write_text(
+        json.dumps({"scope_id": "stale"}),
+        encoding="utf-8",
+    )
+
+    reused = _existing_quality_stage_result(
+        plan={
+            "quality_retry_feedback": {"issue_count": 1},
+            "cache_bypass_artifacts": ["black_box_cases.json"],
+        },
+        artifact_dir=artifact_dir,
+        stage_dir=stage_dir,
+        stage={"id": "source_analysis", "artifact": "source_analysis.md"},
+    )
+
+    assert reused is not None
+    assert json.loads((artifact_dir / "source_scope.json").read_text()) == {
+        "scope_id": "current"
+    }
+    assert json.loads((artifact_dir / "evidence_cards.json").read_text()) == canonical_pack[
+        "evidence_cards"
+    ]
 
 
 @pytest.mark.asyncio

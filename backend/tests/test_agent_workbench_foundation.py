@@ -912,6 +912,11 @@ def test_initial_agent_prompt_compacts_duplicate_context_without_losing_user_tex
         "goal": user_text,
         "repo_path": "/repo",
         "user_inputs": [{"value": user_text}],
+        "execution_rules": {
+            "path_resolution": {
+                "source_reads": "Use $CODETALK_REPO_PATH/<repo-relative-path>.",
+            }
+        },
         "source_context": {"files": [{"excerpt": "source evidence"}]},
         "test_activity_contract": {"duplicate": "x" * 300_000},
     }
@@ -943,6 +948,9 @@ def test_initial_agent_prompt_compacts_duplicate_context_without_losing_user_tex
     assert compact_bundle["inputs"]["analysis_target"] == user_text
     assert compact_bundle["input_materials"]["materials"][0]["user_note"] == user_text
     assert compact_execution["user_inputs"][0]["value"] == user_text
+    assert compact_execution["execution_rules"]["path_resolution"]["source_reads"] == (
+        "Use $CODETALK_REPO_PATH/<repo-relative-path>."
+    )
     assert len(payload) < 20_000
     assert "local_source_context" not in compact_bundle
     assert "test_activity_contract" not in compact_execution

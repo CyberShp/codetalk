@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  formatStageAttemptLabel,
   selectStageAttemptStart,
   selectStageProgressEvent,
 } from "./stage-progress-event.ts";
@@ -38,5 +39,29 @@ test("repaired stages measure elapsed time from the latest provider attempt", ()
       "sfmea",
     ),
     repairStart,
+  );
+});
+
+test("independent claim validation is shown as an active model audit", () => {
+  assert.equal(
+    formatStageAttemptLabel({
+      stage_id: "behavior_claim_validation",
+      kind: "stage_provider_started",
+      status: "running",
+      attempt_count: 0,
+    }),
+    "正在进行事实核验",
+  );
+});
+
+test("completed independent claim validation is not mislabeled as no model call", () => {
+  assert.equal(
+    formatStageAttemptLabel({
+      stage_id: "behavior_claim_validation",
+      kind: "stage_completed",
+      status: "completed",
+      attempt_count: 0,
+    }),
+    "事实核验已完成",
   );
 });

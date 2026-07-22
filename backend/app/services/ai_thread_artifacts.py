@@ -143,9 +143,7 @@ def materialize_ai_thread_manifest(
             rejection_messages.append(f"{relative_path}: 交付文件为空")
             continue
         if path.suffix.lower() in _TEXT_SUFFIXES:
-            text = data.decode("utf-8", errors="replace")
-            redacted = redact_agent_diagnostic_text(text)
-            data = redacted.encode("utf-8")
+            data = _redact_artifact_data(path, data)
             if data != path.read_bytes():
                 path.write_bytes(data)
         artifact_type = str(contract.get("type") or "").strip().lower()
@@ -211,6 +209,34 @@ def materialize_ai_thread_manifest(
     if rejection_messages:
         raise ArtifactContractError("；".join(rejection_messages), manifest=manifest)
     return manifest
+
+
+def _redact_artifact_data(path: Path, data: bytes) -> bytes:
+    """Redact text artifacts without corrupting structured JSON syntax."""
+    text = data.decode("utf-8", errors="replace")
+    if path.suffix.lower() == ".json":
+        try:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
+            return redact_agent_diagnostic_text(text).encode("utf-8")
+        redacted = _redact_json_value(payload)
+        return json.dumps(
+            redacted,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        ).encode("utf-8")
+    return redact_agent_diagnostic_text(text).encode("utf-8")
+
+
+def _redact_json_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {str(key): _redact_json_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_json_value(item) for item in value]
+    if isinstance(value, str):
+        return redact_agent_diagnostic_text(value)
+    return value
 
 
 def build_ai_thread_delivery_zip(root: Path, manifest: dict[str, Any]) -> bytes:

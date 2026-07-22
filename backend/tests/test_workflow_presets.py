@@ -245,7 +245,29 @@ def test_basic_report_workflow_presets_have_minimal_inputs_and_one_report_contra
     assert with_design["outputs"][0]["artifact"] == "report.md"
 
 
+def test_source_flow_preset_requires_exact_source_evidence_and_first_pass_quality():
+    from app.services.workflow_presets import get_workflow_preset
+
+    definition = get_workflow_preset("source_flow_sfmea_blackbox")["definition"]
+    step = definition["steps"][0]
+    outputs = {item["id"]: item for item in definition["outputs"]}
+    evidence_item = outputs["code_evidence"]["schema"]["items"]
+
+    assert {
+        "start_line",
+        "end_line",
+        "excerpt",
+        "sha256",
+    }.issubset(set(evidence_item["required"]))
+    assert "逐字" in step["goal"]
+    assert "禁止省略号" in step["goal"]
+    assert "P50/P95" in step["goal"]
+    assert "正常保护逻辑" in step["goal"]
+    assert "mapped_test_dir" in step["goal"]
+
+
 def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
+    from app.services.source_driven_test_design import MINDMAP_ARTIFACTS
     from app.services.workflow_dsl import audit_workflow_definition, validate_workflow_definition
     from app.services.workflow_presets import (
         COMMON_TEST_SCENARIO_PRESET_IDS,
@@ -356,6 +378,18 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
     assert source_flow_step["provider"] == "builtin-llm"
     assert source_flow_step["execution_mode"] == "staged"
     assert source_flow_step["mcp_profile"] == "codehub-mcp"
+    assert source_flow_step["source_context_limit"] == 44
+    assert source_flow_step["source_context_min_test_files"] == 6
+    assert source_flow_step["source_analysis_max_files"] == 6
+    assert source_flow_step["source_analysis_max_evidence_anchors"] == 12
+    assert source_flow_step["source_analysis_min_test_files"] == 3
+    assert "may state only what its exact quote directly establishes" in source_flow_step["goal"]
+    assert "flow_map.md must name at least one existing repository test path" in source_flow_step["goal"]
+    assert "test_strategy.md must name at least one existing repository source path" in source_flow_step["goal"]
+    assert {
+        "module_map.md",
+        "test_strategy.md",
+    }.issubset(set(source_flow_step["required_artifacts"]))
     assert {
         "source-evidence-first",
         "storage-flow-analysis",
@@ -371,7 +405,13 @@ def test_builtin_workflow_presets_are_valid_and_cover_core_scenarios():
         source_flow_outputs["code_evidence"]["schema"]["items"]["properties"]["symbols"]
     )
     assert source_flow_outputs["sfmea"]["schema"]["minItems"] == 1
+    assert source_flow_outputs["sfmea"]["min_sfmea_rows"] == 12
     assert source_flow_outputs["black_box_cases"]["schema"]["minItems"] == 1
+    assert source_flow_outputs["black_box_cases"]["min_black_box_cases"] == 12
+    assert source_flow_outputs["module_map"]["artifact"] == "module_map.md"
+    assert source_flow_outputs["test_strategy"]["artifact"] == "test_strategy.md"
+    assert source_flow_outputs["test_design_mindmap"]["artifact"] == MINDMAP_ARTIFACTS[0]
+    assert source_flow_outputs["test_design_mindmap"]["default_enabled"] is False
     sfmea_required = source_flow_outputs["sfmea"]["schema"]["items"]["required"]
     assert "source_evidence" in sfmea_required
     assert "test_mapping" in sfmea_required
@@ -536,6 +576,13 @@ def test_workflow_preset_can_be_installed_into_store(tmp_path):
 
     assert workflow.id == "patch_impact_review"
     assert store.get_workflow("patch_impact_review").name == "Patch Impact Review"
+
+
+def test_black_box_schema_exposes_oracle_basis_for_runtime_quality_gate():
+    from app.services.workflow_presets import BLACK_BOX_CASES_SCHEMA
+
+    properties = BLACK_BOX_CASES_SCHEMA["items"]["properties"]
+    assert properties["oracle_basis"] == {"type": "string"}
 
 
 def test_workflow_definition_rejects_unsafe_artifact_paths():

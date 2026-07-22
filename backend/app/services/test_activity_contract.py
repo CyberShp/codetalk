@@ -1311,6 +1311,10 @@ BLACK_BOX_REQUIRED_DIMENSIONS = [
     "concurrency",
     "recovery",
     "performance",
+    "long_steady_state",
+    "resource_wraparound",
+    "resource_cleanup",
+    "upstream_error_propagation",
 ]
 
 
@@ -1352,6 +1356,21 @@ ARTIFACT_TEMPLATES: dict[str, dict[str, Any]] = {
     "black_box_cases.md": {"preview": "markdown", "sections": ["用例列表", "观测点", "诊断线索"], "required_fields": ["case_id", "steps", "expected_result"]},
     "test_strategy.md": {"preview": "markdown", "sections": ["范围", "风险", "分层策略", "执行顺序"], "required_fields": ["scope", "risks", "layers"]},
     "test_design.md": {"preview": "markdown", "sections": ["目标", "输入", "用例设计", "覆盖矩阵", "剩余风险"], "required_fields": ["target", "cases", "coverage"]},
+    "test_design_mindmap.md": {
+        "preview": "mermaid",
+        "required_fields": ["target", "evidence", "flows", "risks", "cases"],
+        "required_terms": [
+            "目标",
+            "输入",
+            "源码证据",
+            "业务流程",
+            "SFMEA",
+            "黑盒用例",
+            "观测点",
+            "剩余风险",
+        ],
+        "required_mermaid_diagram": "mindmap",
+    },
     "coverage_gap_report.md": {"preview": "markdown", "sections": ["覆盖缺口", "入口", "补充建议"], "required_fields": ["gaps", "recommendations"]},
     "risk_review.md": {"preview": "markdown", "sections": ["高风险项", "证据", "建议"], "required_fields": ["risks", "evidence"]},
     "execution_checklist.md": {"preview": "markdown", "sections": ["前置检查", "执行步骤", "验收"], "required_fields": ["preflight", "steps", "acceptance"]},
@@ -1466,6 +1485,11 @@ def refresh_test_activity_contract(
 ) -> dict[str, Any]:
     """Upgrade artifact rules for a saved task while preserving its domain analysis."""
     refreshed = dict(contract or {})
+    existing_artifacts = (
+        contract.get("artifact_contract")
+        if isinstance(contract.get("artifact_contract"), dict)
+        else {}
+    )
     declared = _unique_strings(
         str(item).strip()
         for item in declared_artifacts
@@ -1477,10 +1501,27 @@ def refresh_test_activity_contract(
     quality_gates.setdefault("require_independent_behavior_validation", True)
     refreshed["quality_gates"] = quality_gates
     refreshed["required_outputs"] = declared
-    refreshed["artifact_contract"] = {
-        artifact: _artifact_contract_payload(artifact, ARTIFACT_TEMPLATES[artifact])
-        for artifact in declared
-    }
+    artifact_contract: dict[str, dict[str, Any]] = {}
+    preserved_policy_fields = (
+        "min_sfmea_rows",
+        "min_black_box_cases",
+        "min_source_paths",
+        "min_test_paths",
+        "required_dimensions",
+        "required_evidence_terms",
+        "required_terms",
+        "forbidden_evidence_path_prefixes",
+        "forbidden_claim_terms",
+    )
+    for artifact in declared:
+        payload = _artifact_contract_payload(artifact, ARTIFACT_TEMPLATES[artifact])
+        existing = existing_artifacts.get(artifact)
+        if isinstance(existing, dict):
+            for key in preserved_policy_fields:
+                if existing.get(key) not in (None, [], ""):
+                    payload[key] = copy.deepcopy(existing[key])
+        artifact_contract[artifact] = payload
+    refreshed["artifact_contract"] = artifact_contract
     return refreshed
 
 
@@ -1565,6 +1606,13 @@ def audit_test_activity_artifacts(
                         repo=repo,
                     )
                 )
+                structural_issues.extend(
+                    _audit_markdown_evidence_anchors(
+                        artifact=artifact,
+                        content=content,
+                        root=root,
+                    )
+                )
                 combined_report = _is_combined_test_report_spec(spec)
                 lint_warnings.extend(
                     _audit_professional_constraints(
@@ -1593,6 +1641,10 @@ def audit_test_activity_artifacts(
                         _audit_raw_pdu_runtime_evidence(root=root, content=content)
                     )
                     lint_warnings.extend(_audit_combined_report_consistency(content))
+    structural_issues.extend(_audit_cross_artifact_references(
+        root=root,
+        declared_artifacts={str(item) for item in artifact_contract},
+    ))
     fact_claims, fact_issues = _audit_structured_fact_claims(
         root=root,
         repo=repo,
@@ -1795,7 +1847,10 @@ def _audit_structured_fact_claims(
             str(row.get(field) or "") for field in ("effect", "detection")
         )
         log_literals = _extract_exact_log_literals(log_fields)
-        evidence_paths = _structured_source_evidence_paths(row.get("source_evidence"))
+        evidence_paths = _structured_source_evidence_paths(
+            row.get("source_evidence"),
+            verified_files=verified_files,
+        )
         candidate_files = [
             verified_files[path]
             for path in evidence_paths
@@ -1850,6 +1905,24 @@ def _audit_structured_fact_claims(
     return claims, issues
 
 
+def _claim_lines_within_evidence_card(
+    value: str,
+    card: dict[str, Any],
+) -> bool:
+    normalized = str(value or "").strip()
+    if not normalized:
+        return True
+    match = re.fullmatch(r"L?(\d+)(?:\s*-\s*L?(\d+))?", normalized)
+    if not match:
+        return False
+    first_line = int(match.group(1))
+    last_line = int(match.group(2) or first_line)
+    return (
+        int(card.get("start_line") or 0) <= first_line <= last_line
+        <= int(card.get("end_line") or 0)
+    )
+
+
 def _audit_explicit_technical_claims(
     *,
     artifact: str,
@@ -1870,6 +1943,15 @@ def _audit_explicit_technical_claims(
             or row.get("id")
             or f"row-{row_index}"
         ).strip()
+        row_declared_paths = set(
+            _structured_source_evidence_paths(
+                [
+                    *(row.get("source_evidence") or []),
+                    *(row.get("source_or_test_evidence") or []),
+                ],
+                verified_files=verified_files,
+            )
+        )
         for claim_index, raw_claim in enumerate(row.get("technical_claims") or [], start=1):
             if not isinstance(raw_claim, dict):
                 continue
@@ -1885,6 +1967,21 @@ def _audit_explicit_technical_claims(
                 relative = str(raw_evidence.get("path") or "").replace("\\", "/").lstrip("/")
                 if not relative or ".." in Path(relative).parts:
                     continue
+                if row_declared_paths and relative not in row_declared_paths:
+                    issues.append(
+                        _issue(
+                            "claim_evidence_not_declared_for_row",
+                            artifact,
+                            (
+                                f"{row_id} 的技术断言 {claim_id} 使用了未在该条目证据集合中声明的路径: "
+                                f"{relative}"
+                            ),
+                            row_id=row_id,
+                            claim_id=claim_id,
+                            evidence_path=relative,
+                            declared_paths=sorted(row_declared_paths),
+                        )
+                    )
                 metadata = verified_files.get(relative)
                 if not metadata:
                     checked_evidence.append({"path": relative, "verified_path": False})
@@ -1899,12 +1996,27 @@ def _audit_explicit_technical_claims(
                     if evidence_id and isinstance(metadata.get("evidence_anchors"), dict)
                     else None
                 )
+                canonical_card = (
+                    metadata.get("evidence_cards", {}).get(evidence_id)
+                    if evidence_id and isinstance(metadata.get("evidence_cards"), dict)
+                    else None
+                )
+                card_quote_matches = bool(
+                    isinstance(canonical_card, dict)
+                    and quote
+                    and quote in str(canonical_card.get("excerpt") or "")
+                    and _claim_lines_within_evidence_card(
+                        str(raw_evidence.get("lines") or ""),
+                        canonical_card,
+                    )
+                )
                 evidence_id_matches = bool(
                     not evidence_id
                     or (
                         isinstance(canonical_anchor, dict)
                         and quote == str(canonical_anchor.get("quote") or "")
                     )
+                    or card_quote_matches
                 )
                 quote_matches = bool(quote and quote in content and evidence_id_matches)
                 symbol_matches = bool(not symbol or symbol in content)
@@ -2031,6 +2143,13 @@ def _deterministic_claim_semantics(
         None,
     )
     normalized_type = str(claim_type or "").strip().lower()
+    if normalized_type == "source_anchor":
+        quotes = [str(item.get("quote") or "").strip() for item in evidence]
+        if not quotes:
+            return "insufficient", "source_anchor 没有引用已验证源码行"
+        if str(statement or "").strip() in quotes:
+            return "supported", ""
+        return "contradicted", "source_anchor statement 必须逐字等于已验证源码 quote"
     if constant_evidence is None and normalized_type not in {
         "protocol_constant",
         "macro_value",
@@ -2063,7 +2182,14 @@ def _audit_row_behavior_claims(
     explicit_claims: list[dict[str, Any]],
     behavior_validation: dict[str, Any],
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Require one L2 verdict for every complete SFMEA/test-case semantic unit."""
+    """Summarize source-claim coverage for each SFMEA/test-case row.
+
+    A row also contains test hypotheses, expected observations and remediation
+    proposals.  Those are deliberately evaluated by the structural and
+    executability gates, not re-submitted as one giant source-entailment
+    sentence.  The latter made a correct source fact fail whenever its proposed
+    effect or test oracle was necessarily not present in the implementation.
+    """
     claims: list[dict[str, Any]] = []
     issues: list[dict[str, Any]] = []
     claims_by_row: dict[str, list[dict[str, Any]]] = {}
@@ -2081,53 +2207,48 @@ def _audit_row_behavior_claims(
             or row.get("id")
             or f"row-{row_index}"
         ).strip()
-        claim_type = (
-            "sfmea_row_behavior"
-            if artifact == "sfmea.json"
-            else "black_box_case_behavior"
-        )
-        statement = _row_behavior_statement(artifact=artifact, row=row)
+        row_claims = claims_by_row.get(row_id, [])
         evidence = _row_behavior_evidence(
             row=row,
             verified_files=verified_files,
-            explicit_claims=claims_by_row.get(row_id, []),
+            explicit_claims=row_claims,
         )
         claim_id = f"ROW:{artifact}:{row_id}"
-        binding = _behavior_claim_binding(
-            claim_id=claim_id,
-            claim_type=claim_type,
-            statement=statement,
-            evidence=evidence,
-        )
-        if evidence:
-            l2_status, reason, field_patch = _bound_behavior_validation_details(
-                validation=behavior_validation,
-                claim_id=claim_id,
-                binding=binding,
-            )
+        failed_claims = [claim for claim in row_claims if claim.get("status") != "verified"]
+        if not row_claims or not evidence:
+            status = "insufficient"
+            reason = "该条目没有可供事实核验的技术断言或已验证源码证据"
+        elif any(claim.get("status") == "contradicted" for claim in failed_claims):
+            status = "contradicted"
+            reason = "该条目包含与源码矛盾的技术断言"
+        elif failed_claims:
+            status = "insufficient"
+            reason = "该条目包含证据不足的技术断言"
         else:
-            l2_status, reason, field_patch = (
-                "insufficient",
-                "该条目没有可供行为核验的已验证源码证据",
-                {},
-            )
-        status = (
-            "verified"
-            if l2_status == "supports"
-            else "contradicted"
-            if l2_status == "contradicts"
-            else "insufficient"
+            status = "verified"
+            reason = "该条目的技术断言均已通过源码事实核验"
+        statement = json.dumps(
+            {
+                "source_claim_ids": [
+                    str(claim.get("claim_id") or "") for claim in row_claims
+                ],
+                "source_claim_status": {
+                    str(claim.get("claim_id") or ""): str(claim.get("status") or "")
+                    for claim in row_claims
+                },
+            },
+            ensure_ascii=False,
+            sort_keys=True,
         )
         claim = {
             "claim_id": claim_id,
-            "type": claim_type,
+            "type": "row_source_claim_coverage",
             "statement": statement,
             "status": status,
             "artifact": artifact,
             "row_id": row_id,
-            "binding": binding,
             "evidence": evidence,
-            "validation_layer": "L2_independent_behavior",
+            "validation_layer": "aggregate_source_claims",
         }
         claims.append(claim)
         if status == "verified":
@@ -2135,19 +2256,18 @@ def _audit_row_behavior_claims(
         issues.append(
             _issue(
                 (
-                    "behavior_claim_contradicted"
+                    "row_source_claim_contradicted"
                     if status == "contradicted"
-                    else "behavior_claim_insufficient"
+                    else "row_source_claim_insufficient"
                 ),
                 artifact,
-                f"{row_id} 的完整行为语义未通过独立核验：{reason}。",
+                f"{row_id} 的源码事实覆盖未通过：{reason}。",
                 claim_id=claim_id,
-                claim_type=claim_type,
+                claim_type="row_source_claim_coverage",
                 row_id=row_id,
                 statement=statement,
                 evidence=evidence,
-                field_patch=field_patch,
-                validation_layer="L2_independent_behavior",
+                validation_layer="aggregate_source_claims",
             )
         )
     return claims, issues
@@ -2170,6 +2290,7 @@ def _row_behavior_statement(*, artifact: str, row: dict[str, Any]) -> str:
             "preconditions",
             "steps",
             "expected_result",
+            "oracle_basis",
             "observability",
             "failure_diagnostics",
             "mapped_test_dir",
@@ -2247,16 +2368,9 @@ def build_behavior_claim_validation_request(
             behavior_validation={},
             require_behavior_validation=True,
         )
-        row_claims, _ = _audit_row_behavior_claims(
-            artifact=artifact,
-            rows=rows,
-            verified_files=verified_files,
-            explicit_claims=explicit,
-            behavior_validation={},
-        )
         candidates.extend(
             claim
-            for claim in [*explicit, *row_claims]
+            for claim in explicit
             if claim.get("validation_layer") == "L2_independent_behavior"
         )
 
@@ -2299,6 +2413,19 @@ def build_behavior_claim_validation_request(
                 "statement": str(claim.get("statement") or ""),
                 "binding": str(claim.get("binding") or ""),
                 "context_ids": context_ids,
+                # Keep declaration ownership alongside the compact source window.
+                # The window is intentionally bounded, so a static function's
+                # signature can otherwise sit immediately above it.
+                "evidence_bindings": [
+                    {
+                        "path": str(evidence.get("path") or ""),
+                        "symbol": str(evidence.get("symbol") or ""),
+                        "lines": str(evidence.get("lines") or ""),
+                        "quote": str(evidence.get("quote") or ""),
+                    }
+                    for evidence in claim.get("evidence") or []
+                    if isinstance(evidence, dict)
+                ],
             }
         )
     payload = {
@@ -2331,8 +2458,11 @@ def _expanded_behavior_source_context(
     lines = content.splitlines()
     if not lines:
         return None
-    line_match = re.search(r"L(\d+)", str(evidence.get("lines") or ""))
-    anchor = int(line_match.group(1)) if line_match else 0
+    # Evidence cards serialize ranges as either `L120-L122` or `120-122`.
+    # Treat the first numeric line as the anchor; otherwise an L2 audit can
+    # fall back to an unrelated earlier symbol declaration in the same file.
+    line_match = re.search(r"\d+", str(evidence.get("lines") or ""))
+    anchor = int(line_match.group(0)) if line_match else 0
     if anchor <= 0:
         symbol = str(evidence.get("symbol") or "").strip()
         quote = str(evidence.get("quote") or "").strip()
@@ -2535,6 +2665,7 @@ def _verified_evidence_files(
                 "sha256": digest,
                 "content": content,
                 "evidence_anchors": {},
+                "evidence_cards": {},
             },
         )
         card_id = str(card.get("evidence_id") or "").strip()
@@ -2542,8 +2673,19 @@ def _verified_evidence_files(
         end_line = int(card.get("end_line") or 0)
         if card_id and start_line > 0 and end_line >= start_line:
             source_lines = content.splitlines()
+            bounded_end = min(end_line, len(source_lines))
+            source_excerpt = "\n".join(source_lines[start_line - 1 : bounded_end])
+            declared_excerpt = str(card.get("excerpt") or "").strip("\n")
+            if bounded_end != end_line or declared_excerpt != source_excerpt.strip("\n"):
+                continue
+            metadata["evidence_cards"][card_id] = {
+                "path": relative,
+                "start_line": start_line,
+                "end_line": end_line,
+                "excerpt": source_excerpt,
+            }
             anchors = metadata["evidence_anchors"]
-            for line_number in range(start_line, min(end_line, len(source_lines)) + 1):
+            for line_number in range(start_line, bounded_end + 1):
                 quote = source_lines[line_number - 1].strip()
                 if not quote:
                     continue
@@ -2555,13 +2697,32 @@ def _verified_evidence_files(
     return allowed_files
 
 
-def _structured_source_evidence_paths(value: Any) -> list[str]:
+def _structured_source_evidence_paths(
+    value: Any,
+    *,
+    verified_files: dict[str, dict[str, Any]] | None = None,
+) -> list[str]:
     paths: list[str] = []
     for item in value if isinstance(value, list) else []:
         text = str(item or "").strip().replace("\\", "/")
         match = re.match(r"^([^:]+(?:/[^:]+)+?)(?:::{1}|:\d|\s|$)", text)
         if match:
             paths.append(match.group(1).strip())
+            continue
+        if not verified_files:
+            continue
+        card_id = text.split(":L", 1)[0]
+        for path, metadata in verified_files.items():
+            anchors = (
+                metadata.get("evidence_anchors")
+                if isinstance(metadata.get("evidence_anchors"), dict)
+                else {}
+            )
+            if text in anchors or any(
+                str(anchor_id).startswith(f"{card_id}:L")
+                for anchor_id in anchors
+            ):
+                paths.append(path)
     return list(dict.fromkeys(paths))
 
 
@@ -2876,7 +3037,7 @@ def audit_test_activity_response(
             path
             for path in evidence_paths
             if path not in proposed_paths
-            and path.lower().startswith(("test/", "tests/"))
+            and _evidence_path_classification(path) == "test"
             and Path(path).suffix
         ]
         if not specific_test_paths:
@@ -5712,6 +5873,14 @@ def _is_labeled_unverified_proposal(content: str, path: str) -> bool:
         ):
             return True
         if re.search(
+            r"(?:待补(?:证据)?|证据缺口|尚未验证|未验证|无已验证证据|"
+            r"不在[^\n]{0,40}(?:白名单|allowlist)|"
+            r"evidence\s+gap|not\s+in[^\n]{0,40}allowlist)",
+            lower,
+            flags=re.IGNORECASE,
+        ):
+            return True
+        if re.search(
             rf"(?:删除|移除|不再把|不再使用|removed?|do not use).{{0,120}}{re.escape(path.lower())}.{{0,160}}(?:证据|映射|test_mapping|引用|evidence|mapping)",
             lower,
             flags=re.IGNORECASE,
@@ -5831,6 +6000,8 @@ def _requested_outputs(outputs: list[dict[str, Any]], text: str) -> list[str]:
     }
     for keyword, artifact in keyword_map.items():
         if keyword in lower or keyword in text:
+            if artifact == "test_design.md" and "test_design_mindmap.md" in requested:
+                continue
             if artifact == "black_box_cases.json" and any(
                 item in requested for item in ("black_box_cases.json", "black_box_cases.md")
             ):
@@ -5864,6 +6035,7 @@ def _declared_output_templates(
             "min_sfmea_rows",
             "min_black_box_cases",
             "required_evidence_terms",
+            "required_terms",
             "forbidden_evidence_path_prefixes",
             "forbidden_claim_terms",
         ):
@@ -5900,6 +6072,7 @@ def _artifact_contract_payload(artifact: str, template: dict[str, Any]) -> dict[
         payload["field_rules"] = dict(template["field_rules"])
     for key in (
         "required_evidence_terms",
+        "required_terms",
         "forbidden_evidence_path_prefixes",
         "forbidden_claim_terms",
     ):
@@ -5907,6 +6080,10 @@ def _artifact_contract_payload(artifact: str, template: dict[str, Any]) -> dict[
             payload[key] = [
                 str(value) for value in template[key] if str(value).strip()
             ]
+    if str(template.get("required_mermaid_diagram") or "").strip():
+        payload["required_mermaid_diagram"] = str(
+            template["required_mermaid_diagram"]
+        ).strip()
     for key in (
         "min_sfmea_rows",
         "min_black_box_cases",
@@ -5958,6 +6135,25 @@ def _audit_json_artifact(
     if not rows:
         return [_issue("empty_json_items", artifact, f"{artifact} 没有任何可交付条目")]
     issues: list[dict[str, Any]] = []
+    minimum_rows = int(
+        spec.get(
+            "min_sfmea_rows" if artifact == "sfmea.json" else "min_black_box_cases"
+        )
+        or 0
+    )
+    if minimum_rows and len(rows) < minimum_rows:
+        label = "SFMEA 风险项" if artifact == "sfmea.json" else "黑盒测试用例"
+        issues.append(
+            _issue(
+                "insufficient_sfmea_rows"
+                if artifact == "sfmea.json"
+                else "insufficient_black_box_cases",
+                artifact,
+                f"{artifact} {label}不足: {len(rows)}/{minimum_rows}",
+                actual=len(rows),
+                required=minimum_rows,
+            )
+        )
     required_fields = [str(item) for item in spec.get("required_fields") or []]
     seen_case_ids: set[str] = set()
     seen_case_signatures: set[str] = set()
@@ -5966,6 +6162,14 @@ def _audit_json_artifact(
         if not isinstance(row, dict):
             issues.append(_issue("json_item_invalid", artifact, f"{artifact} 第 {index} 项不是对象"))
             continue
+        row_issue_start = len(issues)
+        row_id = str(
+            row.get("sfmea_id")
+            or row.get("case_id")
+            or row.get("risk_id")
+            or row.get("id")
+            or f"row-{index}"
+        ).strip()
         missing = [
             field for field in required_fields
             if not _field_present(row, field)
@@ -5975,6 +6179,17 @@ def _audit_json_artifact(
             issues.append(_issue(code, artifact, f"{artifact} 第 {index} 项缺少字段: {', '.join(missing)}", index=index, fields=missing))
         if artifact.startswith("black_box") and _black_box_boundary_violation(row):
             issues.append(_issue("black_box_boundary_violation", artifact, f"{artifact} 第 {index} 项混入内部函数调用或修改源码步骤", index=index))
+        if artifact.startswith("black_box") and not _black_box_expected_result_is_observable(
+            row.get("expected_result") or row.get("expected")
+        ):
+            issues.append(
+                _issue(
+                    "black_box_expected_result_ambiguous",
+                    artifact,
+                    f"{artifact} 第 {index} 项的预期结果缺少可观测状态、日志、指标或退出码语义",
+                    index=index,
+                )
+            )
         if artifact.startswith("black_box") and _unsafe_destructive_test_step(row):
             issues.append(
                 _issue(
@@ -5987,10 +6202,108 @@ def _audit_json_artifact(
         if artifact == "sfmea.json":
             issues.extend(_audit_sfmea_scores(row, artifact=artifact, index=index))
             issues.extend(_audit_sfmea_mitigation(row, artifact=artifact, index=index))
+            risk_text = " ".join(
+                str(row.get(field) or "")
+                for field in ("failure_mode", "cause", "effect")
+            )
+            if not sfmea_failure_mode_is_risk(row.get("failure_mode")) or re.search(
+                r"(?:当前|该)?源码.{0,8}不支持.{0,20}(?:failure\s*mode|失效|风险)"
+                r"|待验证\s*[:：]"
+                r"|无法从.{0,40}(?:推导|证明|确认)"
+                r"|(?:该|此)(?:路径|片段|上下文).{0,20}(?:未显示|未见).{0,30}(?:泄漏|缺陷|失效|风险)"
+                r"|源码.{0,16}不支持.{0,40}(?:泄漏|缺陷|失效|风险|错误|EINVAL)"
+                r"|是否存在.{0,40}(?:需|需要).{0,20}(?:验证|确认)"
+                r"|不会.{0,12}使用该指针"
+                r"|不会(?:发生|导致|造成|出现|触发|产生|访问).{0,16}(?:use-after-free|泄漏|崩溃|失效|缺陷|错误)"
+                r"|(?:不存在|没有).{0,24}(?:use-after-free|泄漏|崩溃|失效|缺陷|错误|使用该指针)",
+                risk_text,
+                flags=re.IGNORECASE,
+            ):
+                issues.append(
+                    _issue(
+                        "non_risk_sfmea_row",
+                        artifact,
+                        f"{artifact} 第 {index} 项描述的是被否定或待验证的假设，不是可评分失效模式",
+                        index=index,
+                    )
+                )
+            if re.search(
+                r"(?:片段|上下文|声明).{0,12}(?:未显示|未见|没有显示|未提供).{0,30}(?:校验|检查|清理|释放|处理)",
+                risk_text,
+                flags=re.IGNORECASE,
+            ):
+                issues.append(
+                    _issue(
+                        "absence_of_evidence_as_defect",
+                        artifact,
+                        f"{artifact} 第 {index} 项把当前证据未覆盖误当成已存在缺陷",
+                        index=index,
+                    )
+                )
+            evidence_paths = _structured_source_evidence_paths(
+                [
+                    *(row.get("source_evidence") or []),
+                    *(row.get("source_or_test_evidence") or []),
+                ]
+            )
+            if (
+                evidence_paths
+                and all(_evidence_path_classification(path) == "test" for path in evidence_paths)
+                and not re.search(r"测试|test\s+harness|test\s+helper", str(row.get("failure_mode") or ""), re.IGNORECASE)
+            ):
+                issues.append(
+                    _issue(
+                        "test_harness_risk_as_product_risk",
+                        artifact,
+                        f"{artifact} 第 {index} 项只有测试代码证据，却描述为被测产品风险",
+                        index=index,
+                    )
+                )
         if artifact == "black_box_cases.json":
             dimension = str(row.get("test_dimension") or "").strip().lower()
             if dimension:
                 observed_dimensions.add(dimension)
+            for gap in black_box_case_delivery_quality_gaps(
+                row,
+                repo_path=str(repo),
+            ):
+                if gap == "missing_test_directory_mapping":
+                    issues.append(
+                        _issue(
+                            gap,
+                            artifact,
+                            f"{artifact} 第 {index} 项必须映射到仓库内真实测试路径，或明确标记为待新增测试",
+                            index=index,
+                        )
+                    )
+                elif gap == "white_box_boundary" and not any(
+                    issue.get("code") == "black_box_boundary_violation"
+                    and issue.get("index") == index
+                    for issue in issues[row_issue_start:]
+                ):
+                    issues.append(
+                        _issue(
+                            "black_box_boundary_violation",
+                            artifact,
+                            f"{artifact} 第 {index} 项混入内部实现或单元测试操作，不是可交付黑盒步骤",
+                            index=index,
+                        )
+                    )
+            for gap in black_box_oracle_basis_quality_gaps(row):
+                messages = {
+                    "missing_oracle_basis": "缺少阈值或时长判据的来源说明",
+                    "oracle_basis_not_traceable": "判据来源未映射到源码、配置、规范或环境基线",
+                    "missing_performance_sampling_plan": (
+                        "性能判据缺少预热、重复采样、P50 和 P95 统计计划"
+                    ),
+                }
+                issues.append(_issue(
+                    gap,
+                    artifact,
+                    f"{artifact} 第 {index} 项{messages[gap]}",
+                    index=index,
+                    test_dimension=dimension,
+                ))
             duplicate_reason = _black_box_duplicate_reason(
                 row,
                 seen_case_ids=seen_case_ids,
@@ -6011,6 +6324,9 @@ def _audit_json_artifact(
         for evidence in _strict_evidence_path_strings(row):
             if _looks_like_repo_path(evidence) and not _repo_path_exists(repo, evidence):
                 issues.append(_issue("evidence_path_not_found", artifact, f"证据路径不存在: {evidence}", index=index))
+        for issue in issues[row_issue_start:]:
+            if isinstance(issue, dict):
+                issue.setdefault("row_id", row_id)
     if artifact == "black_box_cases.json":
         required_dimensions = {
             str(item).strip().lower()
@@ -6191,6 +6507,128 @@ def _canonical_black_box_case_id(value: str) -> str:
     return re.sub(r"[-_ ]", "", str(value or "").upper())
 
 
+def _audit_cross_artifact_references(
+    *,
+    root: Path,
+    declared_artifacts: set[str],
+) -> list[dict[str, Any]]:
+    sfmea_ids: set[str] = set()
+    black_box_ids: set[str] = set()
+    sfmea_payload = _read_json(root / "sfmea.json")
+    if isinstance(sfmea_payload, list):
+        sfmea_ids = {
+            re.sub(r"[-_ ]", "", str(row.get("sfmea_id") or "").upper())
+            for row in sfmea_payload
+            if isinstance(row, dict) and str(row.get("sfmea_id") or "").strip()
+        }
+    black_box_payload = _read_json(root / "black_box_cases.json")
+    if isinstance(black_box_payload, list):
+        black_box_ids = {
+            _canonical_black_box_case_id(str(row.get("case_id") or ""))
+            for row in black_box_payload
+            if isinstance(row, dict) and str(row.get("case_id") or "").strip()
+        }
+
+    issues: list[dict[str, Any]] = []
+    for artifact in (
+        "test_design_mindmap.md",
+        "test_design.md",
+        "report.md",
+    ):
+        path = root / artifact
+        if artifact not in declared_artifacts or not path.is_file():
+            continue
+        content = path.read_text(encoding="utf-8", errors="ignore")
+        stale: list[str] = []
+        for reference in re.findall(
+            r"(?i)(?<![A-Z0-9])(?:SFMEA|BLACKBOX|BB)[-_ ]?\d+(?![A-Z0-9])",
+            content,
+        ):
+            display = re.sub(r"\s+", "-", reference.upper())
+            normalized = re.sub(r"[-_ ]", "", display)
+            if normalized.startswith("SFMEA"):
+                if sfmea_ids and normalized not in sfmea_ids:
+                    stale.append(display)
+            elif black_box_ids and normalized not in black_box_ids:
+                stale.append(display)
+        stale = sorted(set(stale))
+        if stale:
+            issues.append(_issue(
+                "stale_cross_artifact_reference",
+                artifact,
+                f"{artifact} 引用了当前交付件中不存在的条目: {', '.join(stale)}",
+                references=stale,
+            ))
+    return issues
+
+
+def _audit_markdown_evidence_anchors(
+    *,
+    artifact: str,
+    content: str,
+    root: Path,
+) -> list[dict[str, Any]]:
+    cards = _read_json(_artifact_path(root, "evidence_cards.json"))
+    if not isinstance(cards, list):
+        return []
+    ranges = {
+        str(card.get("evidence_id") or "").strip(): (
+            int(card.get("start_line") or 0),
+            int(card.get("end_line") or 0),
+            str(card.get("file_path") or ""),
+        )
+        for card in cards
+        if isinstance(card, dict) and str(card.get("evidence_id") or "").strip()
+    }
+    issues: list[dict[str, Any]] = []
+    seen: set[tuple[str, int, int]] = set()
+    for match in re.finditer(
+        r"\b(SRC-\d+)\s*:\s*L(\d+)(?:\s*-\s*L?(\d+))?",
+        content,
+        flags=re.IGNORECASE,
+    ):
+        evidence_id = match.group(1).upper()
+        first_line = int(match.group(2))
+        last_line = int(match.group(3) or first_line)
+        key = (evidence_id, first_line, last_line)
+        if key in seen:
+            continue
+        seen.add(key)
+        expected = ranges.get(evidence_id)
+        if expected is None:
+            issues.append(
+                _issue(
+                    "evidence_anchor_unknown",
+                    artifact,
+                    f"证据锚点不存在: {evidence_id}",
+                    evidence_id=evidence_id,
+                )
+            )
+            continue
+        start_line, end_line, file_path = expected
+        if (
+            start_line <= 0
+            or end_line < start_line
+            or first_line < start_line
+            or last_line > end_line
+        ):
+            issues.append(
+                _issue(
+                    "evidence_anchor_out_of_range",
+                    artifact,
+                    (
+                        f"证据锚点 {evidence_id}:L{first_line}-L{last_line} 超出证据卡范围 "
+                        f"L{start_line}-L{end_line} ({file_path})"
+                    ),
+                    evidence_id=evidence_id,
+                    claimed_lines=f"L{first_line}-L{last_line}",
+                    expected_lines=f"L{start_line}-L{end_line}",
+                    file_path=file_path,
+                )
+            )
+    return issues
+
+
 def _audit_markdown_artifact(
     *,
     artifact: str,
@@ -6199,13 +6637,76 @@ def _audit_markdown_artifact(
     repo: Path,
 ) -> list[dict[str, Any]]:
     issues: list[dict[str, Any]] = []
+    if artifact in {"flow_map.md", "business_flow.md"} and re.search(
+        r"(?:互不连通|不连通|disconnected).{0,80}(?:不能|无法|不足以|cannot|unable).{0,80}(?:端到端|业务顺序|end[- ]to[- ]end)",
+        content,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        issues.append(
+            _issue(
+                "disconnected_flow_evidence",
+                artifact,
+                "调用证据尚未连成可核验的端到端流程，不能作为完整流程交付",
+            )
+        )
+    if artifact == "test_strategy.md" and re.search(
+        r"(?i)(?:完整覆盖|全量覆盖|fully\s+covered|complete\s+coverage)",
+        content,
+    ) and re.search(
+        r"(?i)(?:待补证据|证据缺口|尚未覆盖|未覆盖|remaining\s+gap|evidence\s+gap)",
+        content,
+    ):
+        issues.append(_issue(
+            "unsupported_complete_coverage_claim",
+            artifact,
+            "测试策略在仍有证据或覆盖缺口时声称完整覆盖",
+        ))
+    missing_terms = [
+        str(term)
+        for term in spec.get("required_terms") or []
+        if str(term).strip() and str(term) not in content
+    ]
+    if missing_terms:
+        issues.append(
+            _issue(
+                "missing_required_terms",
+                artifact,
+                f"{artifact} 缺少必要内容: {', '.join(missing_terms)}",
+                terms=missing_terms,
+            )
+        )
+    required_diagram = str(spec.get("required_mermaid_diagram") or "").strip()
+    if required_diagram and not re.search(
+        rf"```mermaid\s+{re.escape(required_diagram)}\b",
+        content,
+        flags=re.IGNORECASE,
+    ):
+        issues.append(
+            _issue(
+                "missing_mermaid_diagram",
+                artifact,
+                f"{artifact} 缺少 Mermaid {required_diagram} 图",
+            )
+        )
     heading_matches = _markdown_heading_matches(content)
     required_sections = [str(item) for item in spec.get("sections") or []]
     section_headings: dict[str, tuple[int, re.Match[str]]] = {}
     for index, match in enumerate(heading_matches):
         normalized = _normalized_markdown_heading(match.group(1))
-        if normalized in required_sections and normalized not in section_headings:
-            section_headings[normalized] = (index, match)
+        section = next(
+            (
+                required
+                for required in required_sections
+                if normalized == required
+                or re.match(
+                    rf"^{re.escape(required)}(?:\s|与|和|及|/|:|：|·)",
+                    normalized,
+                )
+            ),
+            None,
+        )
+        if section is not None and section not in section_headings:
+            section_headings[section] = (index, match)
     missing_sections = [
         section
         for section in required_sections
@@ -6263,6 +6764,11 @@ def _audit_markdown_artifact(
         )
 
     evidence_paths = _markdown_repo_paths(content)
+    claimed_evidence_paths = [
+        path
+        for path in evidence_paths
+        if not _is_labeled_unverified_proposal(content, path)
+    ]
     required_evidence_terms = [
         str(value).strip()
         for value in spec.get("required_evidence_terms") or []
@@ -6299,7 +6805,7 @@ def _audit_markdown_artifact(
         for value in spec.get("forbidden_evidence_path_prefixes") or []
         if str(value).strip()
     ]
-    for evidence_path in evidence_paths:
+    for evidence_path in claimed_evidence_paths:
         if any(evidence_path.startswith(prefix) for prefix in forbidden_prefixes):
             issues.append(
                 _issue(
@@ -6310,13 +6816,17 @@ def _audit_markdown_artifact(
                 )
             )
     existing_evidence_paths = [
-        path for path in evidence_paths if _repo_path_exists(repo, path)
+        path for path in claimed_evidence_paths if _repo_path_exists(repo, path)
     ]
     source_paths = [
         path for path in existing_evidence_paths
-        if path.startswith(("lib/", "include/", "module/", "app/"))
+        if _evidence_path_classification(path) == "source"
     ]
-    test_paths = [path for path in existing_evidence_paths if path.startswith("test/")]
+    test_paths = [
+        path
+        for path in existing_evidence_paths
+        if _evidence_path_classification(path) == "test"
+    ]
     if not source_paths:
         issues.append(
             _issue(
@@ -6408,7 +6918,7 @@ def _audit_markdown_artifact(
                 artifact,
                 f"{artifact} 黑盒用例不足: {black_box_cases}/{min_black_box_cases}",
             ))
-    for evidence in evidence_paths:
+    for evidence in claimed_evidence_paths:
         if not _repo_path_exists(repo, evidence):
             issues.append(
                 _issue(
@@ -6513,23 +7023,27 @@ def _audit_sfmea_scores(
 
 _SFMEA_REMEDIATION_ACTION_RE = re.compile(
     r"(?i)\b("
-    r"fix|release|reset|bound|limit|lock|retry|rollback|clean(?:up)?|reject|close|abort|"
+    r"fix|change|modify|release|reset|bound|limit|lock|retry|rollback|clean(?:up)?|reject|close|abort|"
     r"prevent|block|add|introduce|validate|require|keep|configure|emit|expose|ensure|"
     r"recover|restore|serializ|sanitize|enforce|implement|replace|refactor|"
-    r"retain|buffer|input\s+validation"
+    r"retain|buffer|input\s+validation|track|accumulate|capture|preserve|"
+    r"surface|propagate|report|warn|combine"
     r")\b|"
     r"(修复|释放|重置|限制|加锁|重试|回滚|清理|拒绝|恢复|串行|净化|强制|"
-    r"实现|替换|重构|引用计数|持有.{0,12}引用|缓冲|关闭|中止|参数校验|输入校验|防止|阻止)"
+    r"实现|替换|重构|初始化|清空|调用|使用|保持|避免|引用计数|持有.{0,12}引用|缓冲|关闭|中止|参数校验|输入校验|防止|阻止)"
     r"|(启用|严格校验|强制校验|返回.{0,12}(?:错误|失败)|添加.{0,20}(?:检查|校验)|"
     r"增加.{0,24}(?:检查|校验|断言|处理|保护|上限|清理|析构|回调)|"
+    r"置.{0,24}(?:NULL|null|零|0)|"
+    r"检查.{0,24}(?:返回值|返回结果).{0,24}(?:默认|替代|回退)|"
+    r"检查.{0,24}(?:NULL|null|为空|有效性)|"
     r"确保.{0,24}(?:配置|状态|资源|连接|会话|参数).{0,20}(?:正确|有效|一致|释放|关闭))"
 )
 _SFMEA_VERIFICATION_ACTION_RE = re.compile(
     r"(?i)\b("
     r"tests?|cases?|coverage|monitor(?:ing)?|metrics?|logs?|alerts?|probes?|traces?|diagnos|"
-    r"observable|validate|check|assert"
+    r"observable|validate|check|assert(?:ion)?s?"
     r")\b|"
-    r"(测试|用例|覆盖|监控|指标|日志|告警|探针|追踪|诊断|校验|检查|断言)"
+    r"(测试|用例|覆盖|监控|指标|日志|告警|探针|追踪|诊断|验证|校验|检查|断言)"
 )
 _SFMEA_TEST_SCENARIO_ACTION_RE = re.compile(
     r"(?i)\b(?:retry|reset|recovery|reconnect|rollback|cleanup|abort|close)"
@@ -6604,6 +7118,38 @@ def sfmea_mitigation_quality_gaps(mitigation: Any) -> list[str]:
 
 def sfmea_mitigation_is_actionable(mitigation: Any) -> bool:
     return not sfmea_mitigation_quality_gaps(mitigation)
+
+
+_SFMEA_NON_FAILURE_MODE_RE = re.compile(
+    r"(?i)(?:"
+    r"(?:构建|编译|配置).{0,24}(?:差异|不同).{0,24}(?:行为|返回)|"
+    r"(?:不会|不再).{0,24}(?:更新|覆盖|使用|访问).{0,40}(?:保持|不变|安全|不存在)|"
+    r"(?:不存在|没有).{0,40}(?:路径|缺陷|泄漏|故障|风险)|"
+    r"(?:返回|传播).{0,16}(?:错误|负错误码).{0,20}(?:且不|直接|原样)|"
+    r"源码.{0,20}不支持.{0,40}(?:结论|故障|缺陷|风险)|"
+    r"(?:该|当前|现有)?测试.{0,24}(?:只覆盖|覆盖不足|缺少|未覆盖)|"
+    r"当前源码.{0,16}(?:已按此处理|正确处理)|"
+    r"source.{0,20}(?:does not support|already handles)|"
+    r"test.{0,20}(?:coverage gap|only covers)"
+    r")"
+)
+_SFMEA_FAILURE_SIGNAL_RE = re.compile(
+    r"(?i)\b(?:fail(?:ure|ed)?|timeout|leak|corrupt(?:ion)?|lost|stale|race|"
+    r"deadlock|hang|incorrect|bypass|ignored|unpropagated|exhaust(?:ed|ion)?|"
+    r"overflow|wraparound|double[- ]free|use[- ]after[- ]free|crash|downgrade|"
+    r"expos(?:e|ed|ure)|disclos(?:e|ed|ure)|unreachable|unavailable|"
+    r"accept(?:ed|s|ance)?|mismatch|verbatim|fails?|missing|absent|incomplete|"
+    r"trailing|garbage|not\s+created)\b|"
+    r"(?:失败|超时|泄漏|错误|异常|丢失|残留|竞态|死锁|阻塞|耗尽|翻转|溢出|"
+    r"绕过|未传播|不向上传播|未释放|重复释放|悬空|崩溃|降级|错误接受|错误拒绝|误报)"
+)
+
+
+def sfmea_failure_mode_is_risk(failure_mode: Any) -> bool:
+    text = str(failure_mode or "").strip()
+    if not text or _SFMEA_NON_FAILURE_MODE_RE.search(text):
+        return False
+    return bool(_SFMEA_FAILURE_SIGNAL_RE.search(text))
 
 
 def _audit_sfmea_mitigation(
@@ -6681,12 +7227,22 @@ def _normalized_markdown_heading(value: str) -> str:
 
 
 def _markdown_repo_paths(content: str) -> list[str]:
-    pattern = re.compile(
-        r"(?<![A-Za-z0-9_/])(?:lib|test|include|module|app)/"
-        r"[A-Za-z0-9_.+@%/\-]+(?::L?\d+(?:-L?\d+)?)?"
+    patterns = (
+        re.compile(
+            r"(?<![A-Za-z0-9_/])(?:[A-Za-z0-9_.+@%\-]+/)*"
+            r"[A-Za-z0-9_.+@%\-]+\."
+            r"(?:c|h|cc|cpp|hpp)"
+            r"(?![A-Za-z0-9])"
+            r"(?::L?\d+(?:-L?\d+)?)?"
+        ),
+        re.compile(
+            r"(?<![A-Za-z0-9_/])(?:lib|test|tests|include|module|app)/"
+            r"[A-Za-z0-9_.+@%/\-]+(?::L?\d+(?:-L?\d+)?)?"
+        ),
     )
     return _unique_strings(
         match.group(0).rstrip(".,;:)]}`'")
+        for pattern in patterns
         for match in pattern.finditer(content)
     )
 
@@ -6699,7 +7255,195 @@ def _black_box_boundary_violation(row: dict[str, Any]) -> bool:
         row.get("test_steps"),
     ]
     text = " ".join(part for value in action_fields for part in _flatten_text(value)).lower()
-    return bool(re.search(r"\b(call|invoke)\s+[a-z0-9_]*\(|直接调用|调用内部函数|修改源码|private struct|internal function", text))
+    return bool(
+        re.search(
+            r"\b(call|invoke)\s+[a-z0-9_]*\(|"
+            r"\b(?:call|invoke)\s+(?:libnvmf|libnvme)[a-z0-9_]*\b|"
+            r"调用\s*[a-z_][a-z0-9_]*\s*\(|"
+            r"(?:调用|直接调用)\s*(?:libnvmf|libnvme)[a-z0-9_]*\b|"
+            r"直接调用|调用内部函数|修改源码|private struct|internal function",
+            text,
+        )
+    )
+
+
+_BLACK_BOX_DELIVERY_WHITE_BOX_RE = re.compile(
+    r"(?i)("
+    r"\b(?:mock|stub|patch|unit\s*test|internal\s+function|"
+    r"direct\s+function|private\s+function)\b|"
+    r"\b(?:invoke|call)\s+(?:an?\s+)?(?:internal|private)\s+(?:function|method)\b|"
+    r"\b(?:invoke|call)\s+[a-z_][a-z0-9_]*\s*\(|"
+    r"\b[a-z0-9_./-]+\.(?:c|cc|cpp|cxx|h|hpp):\d+\b|"
+    r"\b[a-z_][a-z0-9_]*->[a-z_][a-z0-9_]*\b|"
+    r"\b[a-z_][a-z0-9_]*::[a-z_][a-z0-9_]*\b|"
+    r"调用\s*(?:内部|私有)?\s*(?:函数|方法)|"
+    r"(?:调用|直接调用)\s*(?:libnvmf|libnvme)[a-z0-9_]*\b|"
+    r"(?:内部|私有)(?:函数|方法|变量|状态|字段|调用栈)|"
+    r"单元测试(?:候选|用例)?|(?:内部|私有)(?:函数|方法)?返回值|调用栈|"
+    r"修改[^，。；;\n]*?(?:变量|状态|字段)|"
+    r"进入[^，。；;\n]*?:\d+[^，。；;\n]*?分支"
+    r")"
+)
+
+
+def _is_explicit_unverified_test_mapping(value: str) -> bool:
+    normalized = str(value or "").strip()
+    marker = "ai_suggested_unverified"
+    return normalized == marker or normalized.startswith((marker + ":", marker + "："))
+
+
+def _test_mapping_values(value: Any) -> list[str]:
+    raw_values = value if isinstance(value, list) else [value]
+    return _unique_strings(
+        part.strip()
+        for raw in raw_values
+        for part in re.split(r"[;；\n]+", str(raw or ""))
+        if part.strip()
+    )
+
+
+def _is_verified_test_mapping(value: str, *, repo_path: str = "") -> bool:
+    normalized = str(value or "").strip().replace("\\", "/").rstrip("/")
+    normalized = re.sub(r":L?\d+(?:-L?\d+)?$", "", normalized)
+    relative = Path(normalized)
+    if not normalized or relative.is_absolute() or ".." in relative.parts:
+        return False
+    if not any(
+        part.lower() in {"test", "tests", "spec", "specs"}
+        for part in relative.parts
+    ):
+        return False
+    if relative.parts[0].lower() in {"test", "tests", "spec", "specs"}:
+        return True
+    if not repo_path:
+        return False
+    try:
+        repo = Path(repo_path).expanduser().resolve()
+        candidate = (repo / relative).resolve()
+    except OSError:
+        return False
+    return (
+        (candidate == repo or repo in candidate.parents)
+        and candidate.exists()
+        and (candidate.is_file() or candidate.is_dir())
+    )
+
+
+def black_box_case_delivery_quality_gaps(
+    row: dict[str, Any],
+    *,
+    repo_path: str = "",
+) -> list[str]:
+    """Shared stage/final checks for a deliverable black-box test case."""
+    mapping = (
+        row.get("suggested_spdk_test_dir")
+        or row.get("suggested_test_directory")
+        or row.get("test_directory")
+        or row.get("test_dir")
+        or row.get("mapped_test_dir")
+        or ""
+    )
+    mappings = _test_mapping_values(mapping)
+    gaps: list[str] = []
+    if not mappings or not all(
+        _is_verified_test_mapping(item, repo_path=repo_path)
+        or _is_explicit_unverified_test_mapping(item)
+        for item in mappings
+    ):
+        gaps.append("missing_test_directory_mapping")
+    boundary_fields = (
+        "title",
+        "scenario",
+        "scenario_name",
+        "inputs",
+        "steps",
+        "expected",
+        "expected_result",
+        "preconditions",
+        "observability",
+        "diagnostics",
+        "failure_diagnostics",
+    )
+    boundary_parts = [
+        part
+        for field in boundary_fields
+        for part in _flatten_text(row.get(field))
+        if part
+    ]
+    if any(
+        _BLACK_BOX_DELIVERY_WHITE_BOX_RE.search(part)
+        and not re.search(
+            r"(?i)(?:\bnot\s+by\b|\bwithout\b|\bdo\s+not\b|\bmust\s+not\b|"
+            r"不得|不要|禁止|不应)[^。；;\n]{0,100}"
+            r"(?:internal|private|unit\s*test|内部|私有|单元测试|修改源码)",
+            part,
+        )
+        for part in boundary_parts
+    ):
+        gaps.append("white_box_boundary")
+    return gaps
+
+
+_BLACK_BOX_OBSERVABLE_RESULT_RE = re.compile(
+    r"(?i)\b(?:log|metric|status|state|exit\s*code|error|timeout|reject|accept|"
+    r"connect|disconnect|reconnect|response|message|event|alert|counter|latency|"
+    r"throughput|duration|elapsed|runtime|baseline|percentile|stdout|stderr)\b|"
+    r"(?:日志|指标|状态|退出码|错误|超时|拒绝|接受|连接|断开|重连|响应|消息|"
+    r"事件|告警|计数|延迟|吞吐|耗时|用时|时间|基线|百分位|标准输出|标准错误)"
+)
+
+
+def black_box_expected_result_is_observable(value: Any) -> bool:
+    text = " ".join(_flatten_text(value)).strip()
+    if not text:
+        return False
+    if _BLACK_BOX_OBSERVABLE_RESULT_RE.search(text):
+        return True
+    return len(text) >= 18 and not re.fullmatch(
+        r"(?i)(?:success|successful|ok|pass|passed|正常|成功|通过|返回\s*-?[A-Z0-9_]+)",
+        text,
+    )
+
+
+_black_box_expected_result_is_observable = black_box_expected_result_is_observable
+
+
+_BLACK_BOX_BASIS_REQUIRED_DIMENSIONS = {
+    "resource_pressure",
+    "timeout",
+    "performance",
+    "long_steady_state",
+    "resource_wraparound",
+}
+_BLACK_BOX_TRACEABLE_BASIS_RE = re.compile(
+    r"(?i)\b(?:source|code|macro|constant|config(?:uration)?|option|argument|"
+    r"environment|baseline|spec(?:ification)?|limit|maximum|range|bit[- ]?width|"
+    r"ulimit|commit|help|manpage)\b|"
+    r"(?:源码|代码|宏|常量|配置|参数|选项|环境|基线|规范|上限|最大值|范围|位宽|"
+    r"提交|帮助文本|手册|证据)"
+)
+_BLACK_BOX_PERFORMANCE_SAMPLE_RE = re.compile(
+    r"(?i)(?=.*(?:warmup|preheat|预热))"
+    r"(?=.*(?:repeat|iterations?|samples?|runs?|重复|样本|运行))"
+    r"(?=.*(?:p50|50th\s*percentile|中位数))"
+    r"(?=.*(?:p95|95th\s*percentile))",
+    flags=re.DOTALL,
+)
+
+
+def black_box_oracle_basis_quality_gaps(row: dict[str, Any]) -> list[str]:
+    dimension = str(row.get("test_dimension") or "").strip().lower()
+    if dimension not in _BLACK_BOX_BASIS_REQUIRED_DIMENSIONS:
+        return []
+    basis = " ".join(_flatten_text(row.get("oracle_basis"))).strip()
+    gaps: list[str] = []
+    if not basis:
+        gaps.append("missing_oracle_basis")
+    elif not _BLACK_BOX_TRACEABLE_BASIS_RE.search(basis):
+        gaps.append("oracle_basis_not_traceable")
+    if dimension == "performance" and not _BLACK_BOX_PERFORMANCE_SAMPLE_RE.search(basis):
+        gaps.append("missing_performance_sampling_plan")
+    return gaps
 
 
 def _unsafe_destructive_test_step(row: dict[str, Any]) -> bool:
@@ -6799,6 +7543,32 @@ def _artifact_path(root: Path, artifact: str) -> Path:
 def _looks_like_repo_path(value: str) -> bool:
     text = str(value or "").strip()
     return bool(re.match(r"^(lib|test|include|module|app)/", text))
+
+
+def _evidence_path_classification(value: str) -> str:
+    normalized = str(value or "").strip().replace("\\", "/").lstrip("./")
+    normalized = re.sub(r":L?\d+(?:-L?\d+)?$", "", normalized)
+    parts = [part.lower() for part in normalized.split("/") if part]
+    if any(part in {"test", "tests", "spec", "specs"} for part in parts[:-1]):
+        return "test"
+    if Path(normalized).suffix.lower() in {
+        ".c",
+        ".h",
+        ".cc",
+        ".cpp",
+        ".hpp",
+        ".go",
+        ".java",
+        ".js",
+        ".jsx",
+        ".py",
+        ".rs",
+        ".sh",
+        ".ts",
+        ".tsx",
+    }:
+        return "source"
+    return ""
 
 
 def _repo_path_exists(repo: Path, value: str) -> bool:
