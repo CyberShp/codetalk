@@ -1223,9 +1223,14 @@ async function configureSettingsPersistenceLlm(page: Page) {
     .filter({ has: page.locator("option", { hasText: settingsLlmConfigName }) })
     .first();
   await expect(persistedActiveModel).toHaveValue(configId, { timeout: 15_000 });
+
+  // The persistence probe deliberately uses an unreachable endpoint. Restore the
+  // model that was active before the probe so it cannot contaminate later AI E2E.
+  await selectActiveChatModelAndWait(page, persistedActiveModel, currentActiveModelId);
+  await expect(persistedActiveModel).toHaveValue(currentActiveModelId, { timeout: 15_000 });
   const bodyText = await page.locator("body").innerText();
   expect(bodyText).not.toContain(fakeKey);
-  record("A02", "pass", "settings page saved a local model config, selected it as active, and persisted after reload");
+  record("A02", "pass", "settings page persisted a local model config and restored the pre-probe active model");
   record("A03", "pass", "fake API key stayed masked and was not exposed in rendered page text");
 }
 
