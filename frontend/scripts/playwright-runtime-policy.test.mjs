@@ -12,6 +12,7 @@ import {
   resolveReuseExistingServer,
   sanitizePlaywrightRunId,
 } from "./playwright-runtime-policy.mjs";
+import { buildExternalAgentProviders } from "./playwright-agent-fixtures.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const e2eDir = path.resolve(__dirname, "../e2e");
@@ -35,6 +36,17 @@ test("Playwright does not reuse an existing backend unless explicitly requested"
   assert.equal(resolveReuseExistingServer({}), false);
   assert.equal(resolveReuseExistingServer({ CODETALK_REUSE_EXISTING_SERVER: "0" }), false);
   assert.equal(resolveReuseExistingServer({ CODETALK_REUSE_EXISTING_SERVER: "1" }), true);
+});
+
+test("synthetic Agent fixtures are opt-in and never replace configured real providers", () => {
+  const slowAgentCommand = "python playwright-slow-agent.py";
+  const realProvider = '[{"id":"codex","command":"codex"}]';
+
+  assert.equal(buildExternalAgentProviders("", slowAgentCommand, false), "");
+  assert.equal(buildExternalAgentProviders(realProvider, slowAgentCommand, false), realProvider);
+  assert.match(buildExternalAgentProviders("", slowAgentCommand, true), /"slow-agent"/);
+  assert.match(buildExternalAgentProviders(realProvider, slowAgentCommand, true), /"codex"/);
+  assert.match(buildExternalAgentProviders(realProvider, slowAgentCommand, true), /"slow-agent"/);
 });
 
 test("3003/3004 is recognized as the public local runtime", () => {
