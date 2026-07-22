@@ -299,6 +299,7 @@ def test_prepare_freezes_selected_execution_profile_into_task_and_agent_bundles(
     assert prepared.execution_profile["id"] == "deep"
     assert prepared.task_bundle["execution_profile"]["delivery_class"] == "full_test_delivery"
     assert prepared.task_bundle["stage_specs"][0]["stage_id"] == "input_scope"
+    assert prepared.task_bundle["artifact_contract_v3"]["delivery_class"] == "full_test_delivery"
     root = Path(prepared.artifact_dir)
     assert json.loads((root / "execution_profile.json").read_text(encoding="utf-8"))["id"] == "deep"
     agent_bundle = json.loads(
