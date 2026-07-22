@@ -145,3 +145,46 @@ def test_live_stage_progress_tracks_running_stage_without_claiming_missing_artif
     assert stages["source_evidence"]["present_artifacts"] == []
     assert stages["sfmea"]["status"] == "pending"
     assert (tmp_path / "test_activity_stage_progress.json").is_file()
+
+
+def test_deep_contract_materializes_named_deliverables_only_from_real_stage_outputs(tmp_path):
+    import json
+
+    from app.services.artifact_contract_v3 import materialize_artifact_contract_v3_outputs
+
+    (tmp_path / "source_scope.json").write_text(
+        json.dumps({"analysis_target": "iSCSI login", "files": ["lib/iscsi/login.c"]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "evidence_cards.json").write_text(
+        json.dumps([{"file_path": "lib/iscsi/login.c", "symbols": ["login"]}]),
+        encoding="utf-8",
+    )
+    (tmp_path / "flow_cards.json").write_text(
+        json.dumps({"items": [{"title": "Login flow", "summary": "validate then respond"}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps([{"failure_mode": "认证失败", "effect": "登录被拒绝"}]),
+        encoding="utf-8",
+    )
+    (tmp_path / "black_box_cases.json").write_text(
+        json.dumps([{"title": "错误凭据", "expected_result": "登录失败"}]),
+        encoding="utf-8",
+    )
+
+    written = materialize_artifact_contract_v3_outputs(tmp_path, profile_id="deep")
+
+    assert {"完整分析报告.md", "开发给测试讲代码.md", "流程状态资源与异常传播.md", "风险点与SFMEA.md", "黑盒测试设计.md"} <= set(written)
+    assert "iSCSI login" in (tmp_path / "完整分析报告.md").read_text(encoding="utf-8")
+
+
+def test_deep_contract_validation_blocks_missing_named_deliverables(tmp_path):
+    from app.services.artifact_contract_v3 import (
+        validate_artifact_contract_v3_outputs,
+    )
+
+    result = validate_artifact_contract_v3_outputs(tmp_path, profile_id="deep")
+
+    assert result["status"] == "blocked"
+    assert "完整分析报告.md" in result["missing_required"]

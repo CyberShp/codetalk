@@ -43,6 +43,134 @@ def _item(artifact: str, layer: str, required: bool, format_name: str) -> dict[s
     return {"artifact": artifact, "layer": layer, "required": required, "format": format_name, "downloadable": layer != "diagnostic"}
 
 
+def materialize_artifact_contract_v3_outputs(
+    artifact_dir: str | Path,
+    *,
+    profile_id: str,
+) -> list[str]:
+    """Render named user deliverables from already materialized, auditable artifacts.
+
+    This is intentionally deterministic: it never fills missing analysis with prose, so a
+    named file cannot make an incomplete run look deliverable.
+    """
+    root = Path(artifact_dir)
+    scope = _read_json_object(_find_artifact(root, "source_scope.json"))
+    evidence = _read_json_list(_find_artifact(root, "evidence_cards.json"))
+    flow_payload = _read_json(_find_artifact(root, "flow_cards.json"))
+    flow_cards = _items(flow_payload)
+    sfmea = _read_json_list(_find_artifact(root, "sfmea.json"))
+    cases = _read_json_list(_find_artifact(root, "black_box_cases.json"))
+    target = str(
+        scope.get("analysis_target")
+        or scope.get("target")
+        or scope.get("query")
+        or "已冻结分析范围"
+    )
+    written: list[str] = []
+
+    if profile_id == "rapid":
+        if scope and evidence:
+            _write_markdown(
+                root / "快速分析报告.md",
+                [
+                    "# 快速分析报告",
+                    f"\n## 分析对象\n{target}",
+                    "\n## 已验证代码证据",
+                    *_evidence_lines(evidence),
+                    "\n## 说明",
+                    "本报告只引用本次运行已物化的源码证据；未验证结论不会写入交付件。",
+                ],
+            )
+            written.append("快速分析报告.md")
+        if scope and evidence:
+            _write_markdown(
+                root / "覆盖缺口与建议.md",
+                [
+                    "# 覆盖缺口与建议",
+                    f"\n分析对象：{target}",
+                    "\n- 请优先补充尚未形成流程或测试证据的分支。",
+                    "- 对每条建议保留源码位置、外部观测点和可执行前置条件。",
+                ],
+            )
+            written.append("覆盖缺口与建议.md")
+        return written
+
+    if profile_id != "deep":
+        raise ValueError(f"未知执行档位：{profile_id}")
+    if scope and evidence and flow_cards and sfmea and cases:
+        _write_markdown(
+            root / "完整分析报告.md",
+            [
+                "# 完整测试活动分析报告",
+                f"\n## 分析对象\n{target}",
+                "\n## 代码证据", *_evidence_lines(evidence),
+                "\n## 流程摘要", *_flow_lines(flow_cards),
+                f"\n## 风险与 SFMEA\n已形成 {len(sfmea)} 条风险项。",
+                f"\n## 黑盒测试设计\n已形成 {len(cases)} 条可执行候选用例。",
+            ],
+        )
+        written.append("完整分析报告.md")
+    if evidence and flow_cards:
+        _write_markdown(
+            root / "开发给测试讲代码.md",
+            [
+                "# 开发给测试讲代码",
+                "\n## 源码入口与证据", *_evidence_lines(evidence),
+                "\n## 业务流程", *_flow_lines(flow_cards),
+                "\n## 测试解读",
+                "请以外部输入、状态、日志、指标和可观测结果构造测试，不把内部函数调用写入黑盒步骤。",
+            ],
+        )
+        written.append("开发给测试讲代码.md")
+        _write_markdown(
+            root / "流程状态资源与异常传播.md",
+            ["# 流程、状态、资源与异常传播", "\n## 已建模流程", *_flow_lines(flow_cards)],
+        )
+        written.append("流程状态资源与异常传播.md")
+    if sfmea:
+        _write_markdown(
+            root / "风险点与SFMEA.md",
+            ["# 风险点与 SFMEA", *_sfmea_lines(sfmea)],
+        )
+        written.append("风险点与SFMEA.md")
+    if cases:
+        _write_markdown(
+            root / "黑盒测试设计.md",
+            ["# 黑盒测试设计", *_case_lines(cases)],
+        )
+        written.append("黑盒测试设计.md")
+    return written
+
+
+def validate_artifact_contract_v3_outputs(
+    artifact_dir: str | Path,
+    *,
+    profile_id: str,
+) -> dict[str, Any]:
+    """Fail closed when a required V3 file is not physically present and non-empty."""
+    root = Path(artifact_dir)
+    contract = default_artifact_contract_v3(profile_id=profile_id)
+    required = [
+        str(item["artifact"])
+        for item in contract["artifacts"]
+        if isinstance(item, dict) and bool(item.get("required"))
+    ]
+    present = [
+        name for name in required
+        if (root / name).is_file() and (root / name).stat().st_size > 0
+    ]
+    missing = [name for name in required if name not in present]
+    return {
+        "kind": "artifact_contract_v3_validation",
+        "schema_version": "artifact-contract-v3-validation-v1",
+        "profile_id": profile_id,
+        "status": "passed" if not missing else "blocked",
+        "required": required,
+        "present_required": present,
+        "missing_required": missing,
+    }
+
+
 def materialize_claim_evidence_ledger(artifact_dir: str | Path) -> dict[str, Any]:
     """Persist the shared L1/L2 truth source consumed by later test stages."""
     root = Path(artifact_dir)
@@ -161,6 +289,57 @@ def _read_json(path: Path) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
+
+
+def _find_artifact(root: Path, name: str) -> Path:
+    direct = root / name
+    if direct.is_file():
+        return direct
+    return next((path for path in root.rglob(name) if path.is_file()), direct)
+
+
+def _items(payload: Any) -> list[dict[str, Any]]:
+    if isinstance(payload, list):
+        return [dict(item) for item in payload if isinstance(item, dict)]
+    if isinstance(payload, dict) and isinstance(payload.get("items"), list):
+        return [dict(item) for item in payload["items"] if isinstance(item, dict)]
+    return []
+
+
+def _evidence_lines(evidence: list[dict[str, Any]]) -> list[str]:
+    result = []
+    for item in evidence[:20]:
+        path = str(item.get("file_path") or item.get("path") or "未知文件")
+        symbols = ", ".join(str(value) for value in item.get("symbols") or [] if str(value))
+        result.append(f"- `{path}`{f'：{symbols}' if symbols else ''}")
+    return result or ["- 未发现可交付的代码证据。"]
+
+
+def _flow_lines(flow_cards: list[dict[str, Any]]) -> list[str]:
+    result = []
+    for item in flow_cards[:20]:
+        title = str(item.get("title") or item.get("name") or item.get("id") or "流程节点")
+        detail = str(item.get("summary") or item.get("description") or "")
+        result.append(f"- **{title}**{f'：{detail}' if detail else ''}")
+    return result or ["- 未形成可交付的流程卡片。"]
+
+
+def _sfmea_lines(rows: list[dict[str, Any]]) -> list[str]:
+    return [
+        f"- **{item.get('failure_mode') or item.get('title') or item.get('sfmea_id') or '风险项'}**：{item.get('effect') or item.get('description') or '详见 JSON 交付件'}"
+        for item in rows[:50]
+    ]
+
+
+def _case_lines(rows: list[dict[str, Any]]) -> list[str]:
+    return [
+        f"- **{item.get('title') or item.get('scenario_name') or item.get('case_id') or '测试用例'}**：{item.get('expected_result') or item.get('expected') or '详见 JSON 交付件'}"
+        for item in rows[:100]
+    ]
+
+
+def _write_markdown(path: Path, lines: list[str]) -> None:
+    path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 
 
 def _json_sha256(payload: Any) -> str:

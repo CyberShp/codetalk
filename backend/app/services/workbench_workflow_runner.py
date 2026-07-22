@@ -33,7 +33,11 @@ from app.services.ai_staged_execution import (
 )
 from app.services.agent_run_harness import ArtifactValidationHarness
 from app.services.harness_facade import AgentHarnessFacade
-from app.services.artifact_contract_v3 import materialize_claim_evidence_ledger
+from app.services.artifact_contract_v3 import (
+    materialize_artifact_contract_v3_outputs,
+    materialize_claim_evidence_ledger,
+    validate_artifact_contract_v3_outputs,
+)
 from app.services.behavior_claim_validator import materialize_behavior_claim_validation
 from app.services.regular_stage_governance import promote_regular_stage_caches
 from app.services.source_driven_test_design import (
@@ -645,6 +649,16 @@ class WorkbenchWorkflowRunner:
         for output in outputs:
             if isinstance(output, dict) and output.get("status") in {"ok", "completed", "ready", "success"}:
                 self._emit_event("artifact_created", dict(output))
+        execution_profile = task_run.task_bundle.get("execution_profile")
+        profile_id = (
+            str(execution_profile.get("id") or "rapid")
+            if isinstance(execution_profile, dict)
+            else "rapid"
+        )
+        materialize_artifact_contract_v3_outputs(
+            task_run.artifact_dir,
+            profile_id=profile_id,
+        )
         self._materialize_final_behavior_validation(
             task_run=task_run,
             step_results=step_results,
@@ -842,6 +856,45 @@ class WorkbenchWorkflowRunner:
                 "status": str(claim_ledger.get("status") or "not_checked"),
                 **claim_summary,
             }
+        execution_profile = task_run.task_bundle.get("execution_profile")
+        profile_id = (
+            str(execution_profile.get("id") or "rapid")
+            if isinstance(execution_profile, dict)
+            else "rapid"
+        )
+        artifact_contract_validation = (
+            validate_artifact_contract_v3_outputs(
+                artifact_dir,
+                profile_id=profile_id,
+            )
+            if _workflow_enforces_artifact_contract_v3(task_run.workflow_snapshot)
+            else {"status": "not_enforced", "required": [], "missing_required": []}
+        )
+        audit["artifact_contract_v3"] = artifact_contract_validation
+        if isinstance(quality_axes, dict):
+            quality_axes["artifact_contract"] = {
+                "status": artifact_contract_validation["status"],
+                "required": len(artifact_contract_validation["required"]),
+                "missing": len(artifact_contract_validation["missing_required"]),
+            }
+        if artifact_contract_validation["status"] == "blocked":
+            issues = audit.get("issues")
+            if not isinstance(issues, list):
+                issues = []
+                audit["issues"] = issues
+            issues.append(
+                {
+                    "code": "artifact_contract_v3_missing",
+                    "severity": "error",
+                    "artifact": ", ".join(
+                        artifact_contract_validation["missing_required"]
+                    ),
+                    "message": "V3 必需正式交付件尚未全部物化，当前结果不能交付。",
+                }
+            )
+            audit["issue_count"] = len(issues)
+            audit["deliverable"] = False
+            audit["status"] = "needs_rework"
         _write_json(artifact_dir / "test_activity_quality_audit.json", audit)
         _write_json(
             artifact_dir / "verified_fact_ledger.json",
@@ -2424,6 +2477,10 @@ class WorkbenchWorkflowRunner:
             str(execution_profile.get("id") or "rapid")
             if isinstance(execution_profile, dict)
             else "rapid"
+        )
+        materialize_artifact_contract_v3_outputs(
+            task_dir,
+            profile_id=profile_id,
         )
         _write_json(
             task_dir / "test_activity_stage_progress.json",
@@ -8193,6 +8250,11 @@ def _workflow_declares_test_activity_deliverables(workflow_snapshot: dict[str, A
 
 def _workflow_output_enabled(output: dict[str, Any]) -> bool:
     return bool(output.get("enabled", output.get("default_enabled", True)))
+
+
+def _workflow_enforces_artifact_contract_v3(workflow_snapshot: dict[str, Any]) -> bool:
+    """Legacy workflows keep their published contract; V3 is explicit at publication."""
+    return str(workflow_snapshot.get("artifact_contract_version") or "") == "v3"
 
 
 def _safe_segment(value: str) -> str:
