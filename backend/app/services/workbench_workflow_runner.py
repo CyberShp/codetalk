@@ -31,10 +31,8 @@ from app.services.ai_staged_execution import (
     build_staged_execution_plan,
     execute_staged_builtin_plan,
 )
-from app.services.agent_run_harness import (
-    AgentRunHarness,
-    ArtifactValidationHarness,
-)
+from app.services.agent_run_harness import ArtifactValidationHarness
+from app.services.harness_facade import AgentHarnessFacade
 from app.services.artifact_contract_v3 import materialize_claim_evidence_ledger
 from app.services.behavior_claim_validator import materialize_behavior_claim_validation
 from app.services.regular_stage_governance import promote_regular_stage_caches
@@ -966,7 +964,7 @@ class WorkbenchWorkflowRunner:
                 },
             )
 
-        execution = AgentRunHarness(artifact_dir).execute_run(
+        execution = AgentHarnessFacade(artifact_dir).execute(
             run_id,
             timeout_sec=_effective_agent_timeout_sec(
                 requested_timeout_sec=timeout_sec,
@@ -997,7 +995,7 @@ class WorkbenchWorkflowRunner:
                 warnings=source_slice_warnings,
             )
             _set_agent_turn_id(artifact_dir=artifact_dir, turn_id="turn_2")
-            execution = AgentRunHarness(artifact_dir).execute_run(
+            execution = AgentHarnessFacade(artifact_dir).execute(
                 run_id,
                 timeout_sec=_effective_agent_timeout_sec(
                     requested_timeout_sec=timeout_sec,

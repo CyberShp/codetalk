@@ -37,3 +37,35 @@ def test_agent_harness_emits_facade_fields_without_breaking_legacy_event_type():
     assert event_type == "agent_output"
     assert payload["harness_event_kind"] == "activity"
     assert payload["harness_visibility"] == "summary"
+
+
+def test_agent_harness_facade_runs_local_adapter_and_collects_normalized_result(tmp_path):
+    """The workflow-facing facade, not the CLI adapter, owns the stable result shape."""
+    import sys
+
+    from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
+
+    workspace = tmp_path / "repo"
+    workspace.mkdir()
+    artifact_dir = tmp_path / "artifacts"
+    facade = AgentHarnessFacade(artifact_dir)
+    events = []
+    request = HarnessRunRequest(
+        provider="local-test-agent",
+        command=[
+            sys.executable,
+            "-c",
+            "from pathlib import Path; Path('report.md').write_text('ready', encoding='utf-8'); print('completed')",
+        ],
+        cwd=str(artifact_dir),
+        workflow_snapshot={"id": "workflow"},
+        task_bundle={"required_artifacts": ["report.md"]},
+    )
+
+    session = facade.prepare(request)
+    result = facade.execute(session.run_id, timeout_sec=10, event_sink=lambda kind, payload: events.append((kind, payload)))
+
+    assert result.status == "completed"
+    assert result.session_id == session.run_id
+    assert result.artifacts == ["report.md"]
+    assert any(payload["harness_event_kind"] == "completed" for _, payload in events)

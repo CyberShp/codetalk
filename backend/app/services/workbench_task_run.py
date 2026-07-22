@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from app.config import settings
-from app.services.agent_run_harness import AgentRunHarness
+from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
 from app.services.agent_runtimes import get_agent_runtime_sync
 from app.services.evidence_memory import EvidenceMemoryStore
 from app.services.external_agent_discovery import (
@@ -531,17 +531,21 @@ class WorkbenchTaskRunPreparer:
                 "mcp_profile": step.get("mcp_profile") or "",
                 "execution_contract": execution_contract,
             }
-            agent_run = AgentRunHarness(artifact_dir / "agent_runs" / step_id).create_run(
-                provider=provider,
-                command=command,
-                cwd=repo_path,
-                workflow_snapshot=workflow_snapshot,
-                task_bundle=step_bundle,
-                mcp_profile=str(step.get("mcp_profile") or ""),
-                prompt_transport=prompt_transport,
-                timeout_seconds=runtime_limits.get("timeout_seconds"),
-                idle_timeout_seconds=runtime_limits.get("idle_timeout_seconds"),
-                run_id=f"{task_run_id}_{step_id}",
+            agent_run = AgentHarnessFacade(
+                artifact_dir / "agent_runs" / step_id
+            ).prepare(
+                HarnessRunRequest(
+                    provider=provider,
+                    command=command,
+                    cwd=repo_path,
+                    workflow_snapshot=workflow_snapshot,
+                    task_bundle=step_bundle,
+                    mcp_profile=str(step.get("mcp_profile") or ""),
+                    prompt_transport=prompt_transport,
+                    timeout_seconds=runtime_limits.get("timeout_seconds"),
+                    idle_timeout_seconds=runtime_limits.get("idle_timeout_seconds"),
+                    run_id=f"{task_run_id}_{step_id}",
+                )
             )
             agent_runs.append({
                 "step_id": step_id,

@@ -23,7 +23,8 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config import settings
-from app.services.agent_run_harness import AgentRunHarness, ArtifactValidationHarness
+from app.services.agent_run_harness import ArtifactValidationHarness
+from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
 from app.services.agent_provider_settings import apply_persisted_agent_provider_settings
 from app.services.agent_runtimes import list_agent_runtimes_sync
 from app.services.evidence_memory import EvidenceMemoryStore
@@ -2158,14 +2159,16 @@ async def create_agent_run(payload: AgentRunCreate) -> dict[str, Any]:
 
     run_id = f"agent_run_{uuid.uuid4().hex}"
     artifact_dir = _agent_run_dir(run_id)
-    run = AgentRunHarness(artifact_dir).create_run(
-        run_id=run_id,
-        provider=payload.provider,
-        command=payload.command,
-        cwd=payload.cwd,
-        workflow_snapshot=payload.workflow_snapshot,
-        task_bundle=payload.task_bundle,
-        mcp_profile=payload.mcp_profile,
+    run = AgentHarnessFacade(artifact_dir).prepare(
+        HarnessRunRequest(
+            run_id=run_id,
+            provider=payload.provider,
+            command=payload.command,
+            cwd=payload.cwd,
+            workflow_snapshot=payload.workflow_snapshot,
+            task_bundle=payload.task_bundle,
+            mcp_profile=payload.mcp_profile,
+        )
     )
     return asdict(run)
 
@@ -2175,7 +2178,7 @@ async def record_agent_run_raw_output(run_id: str, payload: RawOutputCreate) -> 
     artifact_dir = _agent_run_dir(run_id)
     if not (artifact_dir / "agent_run.json").exists():
         raise HTTPException(status_code=404, detail=f"Unknown agent run: {run_id}")
-    AgentRunHarness(artifact_dir).record_raw_output(
+    AgentHarnessFacade(artifact_dir).record_raw_output(
         run_id,
         stdout=payload.stdout,
         stderr=payload.stderr,
@@ -2192,7 +2195,7 @@ async def execute_agent_run(
     if not (artifact_dir / "agent_run.json").exists():
         raise HTTPException(status_code=404, detail=f"Unknown agent run: {run_id}")
     try:
-        result = AgentRunHarness(artifact_dir).execute_run(
+        result = AgentHarnessFacade(artifact_dir).execute(
             run_id,
             timeout_sec=payload.timeout_sec,
         )
@@ -2219,7 +2222,7 @@ async def execute_task_agent_run(
 
         run_payload = json.loads(agent_run_path.read_text(encoding="utf-8"))
         run_id = str(run_payload.get("run_id") or "")
-        result = AgentRunHarness(artifact_dir).execute_run(
+        result = AgentHarnessFacade(artifact_dir).execute(
             run_id,
             timeout_sec=payload.timeout_sec,
         )
