@@ -21,3 +21,19 @@ def test_harness_event_normalizer_hides_raw_provider_diagnostics_from_user_outpu
     assert event.kind == "diagnostic"
     assert event.visibility == "diagnostic"
     assert event.user_message == ""
+
+
+def test_agent_harness_emits_facade_fields_without_breaking_legacy_event_type():
+    from app.services.agent_run_harness import _emit_agent_run_event
+
+    received = []
+    _emit_agent_run_event(
+        lambda event_type, payload: received.append((event_type, payload)),
+        "agent_output",
+        {"content": "reading source"},
+    )
+
+    event_type, payload = received[0]
+    assert event_type == "agent_output"
+    assert payload["harness_event_kind"] == "activity"
+    assert payload["harness_visibility"] == "summary"

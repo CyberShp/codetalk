@@ -37,6 +37,7 @@ from app.services.agent_sandbox import (
     prepare_agent_sandbox,
 )
 from app.services.network_policy import scrub_intranet_agent_environment
+from app.services.harness_facade import normalize_provider_event
 from app.services.agent_invocation_contract import (
     agent_invocation_artifact_event_payload,
     agent_invocation_capability_event_payload,
@@ -1339,7 +1340,14 @@ def _emit_agent_run_event(
     if event_sink is None:
         return
     try:
-        event_sink(event_type, {key: value for key, value in payload.items() if value not in (None, "")})
+        public_payload = {key: value for key, value in payload.items() if value not in (None, "")}
+        normalized = normalize_provider_event(event_type, public_payload)
+        event_sink(event_type, {
+            **public_payload,
+            "harness_event_kind": normalized.kind,
+            "harness_visibility": normalized.visibility,
+            "harness_user_message": normalized.user_message,
+        })
     except Exception:
         return
 
