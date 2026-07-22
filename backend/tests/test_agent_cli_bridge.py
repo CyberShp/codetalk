@@ -173,7 +173,7 @@ def test_build_env_removes_proxy_and_telemetry_in_intranet_mode(monkeypatch):
     })
 
     assert "HTTPS_PROXY" not in env
-    assert "LANGSMITH_TRACING" not in env
+    assert env["LANGSMITH_TRACING"] == "false"
     assert env["PROVIDER_API_KEY"] == "explicit-provider-secret"
     assert env["CODEX_DISABLE_AUTO_UPDATE"] == "1"
 
