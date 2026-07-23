@@ -139,6 +139,17 @@ test("configured temp root also drives Node and browser child temporary variable
   }
 });
 
+test("legacy runtime temp root is promoted to the shared temporary directory", () => {
+  const tempRoot = makeTestTemp("codetalk-legacy-runtime-temp-");
+  const env = { CODETALK_RUNTIME_TEMP_ROOT: tempRoot };
+
+  assert.equal(configureRuntimeTempEnvironment(env), path.resolve(tempRoot));
+  assert.equal(env.CODETALK_TEMP_DIR, path.resolve(tempRoot));
+  for (const name of ["TEMP", "TMP", "TMPDIR"]) {
+    assert.equal(env[name], path.resolve(tempRoot));
+  }
+});
+
 test("Playwright run ids cannot escape the configured temp root", () => {
   const runId = sanitizePlaywrightRunId("../../outside/run\\name");
 
