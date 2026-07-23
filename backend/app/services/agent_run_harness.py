@@ -1087,14 +1087,14 @@ class AgentRunHarness:
 
         process_stream_state: dict[Any, Any] = {}
 
-        def emit_process_output(stream: str, chunk: str) -> None:
+        def emit_process_output(stream: str, chunk: str) -> bool:
             text = _public_agent_process_output(
                 stream,
                 chunk,
                 stream_state=process_stream_state,
             )
             if not text:
-                return
+                return False
             _emit_agent_run_event(
                 event_sink,
                 "agent_output",
@@ -1107,6 +1107,7 @@ class AgentRunHarness:
                     "content": text,
                 },
             )
+            return True
 
         exit_code: int | None = None
         stdout = ""
@@ -2256,7 +2257,7 @@ def _run_cancellable_subprocess(
     idle_timeout: float | None,
     env: dict[str, str],
     is_cancelled: Callable[[], bool] | None = None,
-    output_sink: Callable[[str, str], None] | None = None,
+    output_sink: Callable[[str, str], bool] | None = None,
 ) -> _SubprocessExecutionResult:
     popen_kwargs: dict[str, Any] = {}
     if os.name == "nt":
@@ -2291,15 +2292,17 @@ def _run_cancellable_subprocess(
                 if not chunk:
                     break
                 chunks.append(chunk)
-                _mark_activity()
                 if output_sink is None:
+                    _mark_activity()
                     continue
                 pending += chunk
                 while b"\n" in pending:
                     line, pending = pending.split(b"\n", 1)
-                    output_sink(name, _decode_subprocess_text(line + b"\n"))
+                    if output_sink(name, _decode_subprocess_text(line + b"\n")):
+                        _mark_activity()
             if pending and output_sink is not None:
-                output_sink(name, _decode_subprocess_text(pending))
+                if output_sink(name, _decode_subprocess_text(pending)):
+                    _mark_activity()
         except BaseException as exc:  # pragma: no cover - defensive bridge for OS process edge cases.
             captured[f"{name}_error"] = exc
 

@@ -2721,6 +2721,37 @@ def test_agent_run_harness_times_out_when_process_goes_idle(tmp_path):
     assert "too late" not in raw_output
 
 
+def test_agent_run_harness_does_not_count_hidden_runtime_noise_as_progress(tmp_path):
+    """A provider reconnect/noise stream must not keep a user-visible run alive forever."""
+    from app.services.agent_run_harness import AgentRunHarness
+
+    artifact_dir = tmp_path / "agent"
+    script_path = tmp_path / "noisy_agent.py"
+    script_path.write_text(
+        "import sys, time\n"
+        "sys.stdin.read()\n"
+        "for _ in range(30):\n"
+        "    print('WARN failed to load models cache from /tmp/runtime-codex-home/models_cache.json: Operation not permitted', flush=True)\n"
+        "    time.sleep(0.05)\n",
+        encoding="utf-8",
+    )
+    harness = AgentRunHarness(artifact_dir)
+    run = harness.create_run(
+        provider="local-python",
+        command=[sys.executable, str(script_path)],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "wf"},
+        task_bundle={"task_id": "noisy-agent"},
+        run_id="run_noisy_agent",
+    )
+
+    result = harness.execute_run(run.run_id, timeout_sec=2, idle_timeout_sec=0.2)
+
+    assert result.status == "timeout"
+    assert result.timed_out is True
+    assert "idle" in result.error
+
+
 def test_workbench_task_run_store_loads_and_lists_prepared_runs(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import (
