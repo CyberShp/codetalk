@@ -5584,6 +5584,17 @@ def _normalize_black_box_source_anchor_claims(rendered: Any) -> Any:
         claim["type"] = "source_anchor"
         claim["statement"] = quote
         row["technical_claims"] = [claim]
+        declared = [
+            str(item).strip()
+            for item in row.get("source_or_test_evidence") or []
+            if str(item).strip()
+        ]
+        for item in evidence:
+            path = str(item.get("path") or "").strip()
+            evidence_id = str(item.get("evidence_id") or "").strip()
+            if path and not any(path in value for value in declared):
+                declared.append(f"{path} ({evidence_id})" if evidence_id else path)
+        row["source_or_test_evidence"] = declared
     return rendered
 
 

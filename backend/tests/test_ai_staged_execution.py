@@ -4399,6 +4399,19 @@ def test_structured_output_removes_unverified_bare_source_filename():
     assert result["failure_diagnostics"] == ["check 已验证源码片段 then lib/iscsi/iscsi.c"]
 
 
+def test_black_box_anchor_is_declared_as_row_evidence():
+    rows = [{
+        "source_or_test_evidence": ["test/iscsi_tgt/login.sh (TEST-01)"],
+        "technical_claims": [{
+            "claim_id": "TC-1",
+            "evidence": [{"evidence_id": "SRC-01:L10", "path": "lib/iscsi/iscsi.c", "quote": "return 0;"}],
+        }],
+    }]
+    result = _normalize_black_box_source_anchor_claims(rows)
+    assert result[0]["technical_claims"][0]["type"] == "source_anchor"
+    assert "lib/iscsi/iscsi.c (SRC-01:L10)" in result[0]["source_or_test_evidence"]
+
+
 def test_markdown_canonicalizes_stale_prefix_to_unique_verified_repo_path():
     content = "`src/fabrics.c:1567-1585` handles connect cleanup."
     source_pack = {
