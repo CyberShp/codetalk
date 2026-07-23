@@ -289,7 +289,9 @@ async def materialize_behavior_claim_validation(
                 "stage_id": "behavior_claim_validation",
                 "status": "completed",
                 "claim_count": len(request_payload.get("claims") or []),
-                "model": str(settings.behavior_claim_audit_model or ""),
+                "model": str(
+                    (existing.get("validator") or {}).get("model") or ""
+                ),
                 "user_message": "已复用与当前断言绑定一致的独立源码事实核验",
             },
         )
@@ -417,7 +419,7 @@ async def materialize_behavior_claim_validation(
                 "stage_id": "behavior_claim_validation",
                 "status": "completed",
                 "claim_count": reused_claim_count,
-                "model": str(settings.behavior_claim_audit_model or ""),
+                "model": str(validator.get("model") or ""),
                 "user_message": "已复用与当前断言绑定一致的独立源码事实核验",
             },
         )
@@ -478,7 +480,7 @@ async def materialize_behavior_claim_validation(
             "stage_id": "behavior_claim_validation",
             "status": "running",
             "claim_count": len(pending_claims),
-            "model": str(settings.behavior_claim_audit_model or ""),
+            "model": str(validator.get("model") or ""),
             "user_message": (
                 f"已复用 {reused_claim_count} 条绑定未变的判断，正在核验 "
                 f"{len(pending_claims)} 条变更事实"
@@ -540,7 +542,7 @@ async def materialize_behavior_claim_validation(
                         "claim_count": len(pending_claims),
                         "pending_batch_count": len(pending),
                         "elapsed_ms": round((now - started) * 1000, 1),
-                        "model": str(settings.behavior_claim_audit_model or ""),
+                        "model": str(validator.get("model") or ""),
                         "user_message": (
                             "事实核验仍在进行，"
                             f"剩余 {len(pending)} 个审计批次"
@@ -641,7 +643,7 @@ async def materialize_behavior_claim_validation(
                 else "partial"
             ),
             "claim_count": len(result.get("claims") or []),
-            "model": str(settings.behavior_claim_audit_model or ""),
+            "model": str(validator.get("model") or ""),
             "duration_ms": result.get("duration_ms"),
             "user_message": (
                 "独立源码事实核验完成"
