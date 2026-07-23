@@ -1671,6 +1671,25 @@ def test_contradicted_sfmea_claim_deletes_explicit_safe_path_correction():
     assert patch == [{"sfmea_id": "SFMEA-02", "_delete": True}]
 
 
+def test_row_source_claim_contradiction_uses_the_same_sfmea_tombstone_path():
+    previous = [{"sfmea_id": "SFMEA-03", "failure_mode": "invented leak"}]
+    feedback = {
+        "issues": [{
+            "artifact": "sfmea.json",
+            "row_id": "SFMEA-03",
+            "code": "row_source_claim_contradicted",
+        }]
+    }
+
+    patch = _apply_sfmea_nonrisk_deletion_tombstones(
+        [{"sfmea_id": "SFMEA-03", "failure_mode": "still invented"}],
+        quality_feedback=feedback,
+        base_items=previous,
+    )
+
+    assert patch == [{"sfmea_id": "SFMEA-03", "_delete": True}]
+
+
 def test_quality_repair_row_ids_extracts_row_from_derived_claim_id():
     feedback = {
         "issues": [

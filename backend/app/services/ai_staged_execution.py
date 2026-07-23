@@ -5973,7 +5973,13 @@ def _regular_stage_prompt(
         rules.append(
             "- 性能判定必须依据同环境样本的标准差、方差、置信区间或历史波动推导；禁止直接写固定百分比，数据不足时标为待采样并给出统计采样方法。"
         )
-    if "behavior_claim_contradicted" in quality_issue_codes:
+    if quality_issue_codes.intersection(
+        {
+            "behavior_claim_contradicted",
+            "source_claim_contradicted",
+            "row_source_claim_contradicted",
+        }
+    ):
         rules.extend(
             [
                 "- 独立审计器判定为 contradicted 的语句必须从对应字段中删除或按审计给出的源码真值重写；保留该行未被否定的字段，不能通过删除整行规避修复。不能仅添加“待验证”、‘可能’或括号说明后继续保留相反结论。",
@@ -5981,7 +5987,13 @@ def _regular_stage_prompt(
                 "- 场景前提本身与源码相反时，必须重构为同一测试维度下真实可执行的场景；不得把不可能的操作继续放在 steps、expected_result 或 observability。",
             ]
         )
-    if "behavior_claim_insufficient" in quality_issue_codes:
+    if quality_issue_codes.intersection(
+        {
+            "behavior_claim_insufficient",
+            "source_claim_insufficient",
+            "row_source_claim_insufficient",
+        }
+    ):
         rules.append(
             "- 独立审计器判定为 insufficient 的实现结论必须删除，或改造成带明确操作与 oracle 的待执行测试；不得继续把它写成 expected_result、effect 或已实现行为。"
         )
@@ -7208,10 +7220,12 @@ def _apply_sfmea_nonrisk_deletion_tombstones(
     contradiction_codes = {
         "behavior_claim_contradicted",
         "source_claim_contradicted",
+        "row_source_claim_contradicted",
     }
     insufficient_codes = {
         "behavior_claim_insufficient",
         "source_claim_insufficient",
+        "row_source_claim_insufficient",
     }
     base_ids = {
         _json_array_row_id(item)

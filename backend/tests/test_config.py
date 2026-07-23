@@ -26,7 +26,7 @@ def test_staged_quality_repair_defaults_to_two_bounded_attempts(monkeypatch):
 
     configured = Settings(_env_file=None)
 
-    assert configured.staged_quality_repair_max_attempts == 1
+    assert configured.staged_quality_repair_max_attempts == 2
     assert configured.staged_workflow_timeout_seconds == 1180
     assert configured.staged_quality_repair_min_remaining_seconds == 120
     assert configured.staged_workflow_shutdown_grace_seconds == 2.0
