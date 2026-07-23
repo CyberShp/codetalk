@@ -23,7 +23,9 @@ test("basic source preset collects a separately named multiline analysis target 
   await page.getByRole("radio", { name: /基础源码报告（Codex CLI）/ }).check();
   await page.getByRole("button", { name: "保存并继续" }).click();
   await page.getByLabel("任务名称 *").fill(`V3 基础 A ${stamp}`);
-  await page.getByLabel("工作空间 *").selectOption({ label: workspaceName });
+  const workspaceSelector = page.getByLabel("工作空间 *");
+  await expect(workspaceSelector.locator("option")).toHaveCount(2);
+  await workspaceSelector.selectOption({ index: 1 });
   await page.getByRole("button", { name: "保存并继续" }).click();
 
   await expect(page.getByRole("heading", { name: "填写本次输入" })).toBeVisible();
