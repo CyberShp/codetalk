@@ -141,8 +141,9 @@ def test_basic_report_workflow_presets_have_minimal_inputs_and_one_report_contra
     assert "mcp_profile" not in source_step
     assert {"source_scope.json", "evidence_cards.json", "flow_cards.json", "sfmea.json", "black_box_cases.json"} <= set(source_step["required_artifacts"])
     assert "SPDK iSCSI login" in source_step["goal"]
-    assert "不得声称该用例可直接执行" in source_step["goal"]
-    assert "tcpdump" in source_step["goal"] and "tshark" in source_step["goal"]
+    assert "不得声称该用例已可直接执行" in source_step["goal"]
+    assert "受控 harness 设计契约" in source_step["goal"]
+    assert "可执行流量构造只能在被明确批准的后续测试活动中生成" in source_step["goal"]
     assert "Git revision" in source_step["goal"]
     assert "iscsi_set_options -c" in source_step["goal"]
     assert "Occurrence" in source_step["goal"]
