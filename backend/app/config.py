@@ -174,6 +174,13 @@ class Settings(BaseSettings):
         ge=0,
         le=1200,
     )
+    # External CLI Agents receive the same bounded, artifact-scoped repair
+    # contract as the built-in staged runtime. A single turn prevents an
+    # expensive provider from silently turning quality repair into a rerun.
+    external_agent_quality_repair_enabled: bool = True
+    external_agent_quality_repair_timeout_seconds: int = Field(
+        default=300, ge=30, le=600
+    )
     staged_workflow_shutdown_grace_seconds: float = Field(
         default=2.0,
         ge=0.1,

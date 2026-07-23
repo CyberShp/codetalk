@@ -4541,6 +4541,65 @@ def test_quality_retry_restores_protected_artifacts_after_agent_overwrite(tmp_pa
     assert json.loads(protected.read_text(encoding="utf-8"))[0]["evidence_id"] == "accepted"
 
 
+def test_external_agent_quality_repair_is_artifact_scoped_and_snapshotted(
+    tmp_path,
+    monkeypatch,
+):
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    artifact_dir = tmp_path / "task" / "agent_runs" / "analyze"
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "sfmea.json").write_text("[]", encoding="utf-8")
+    (artifact_dir / "black_box_cases.json").write_text("[]", encoding="utf-8")
+    (artifact_dir / "task_bundle.json").write_text(json.dumps({
+        "required_artifacts": ["sfmea.json", "black_box_cases.json"],
+    }), encoding="utf-8")
+    (artifact_dir / "agent_run.json").write_text(json.dumps({
+        "run_id": "run-1", "turn_id": "turn_1", "provider": "local-python",
+    }), encoding="utf-8")
+
+    def fake_execute(self, session_id, **kwargs):
+        assert session_id == "run-1"
+        return SimpleNamespace(status="completed")
+
+    monkeypatch.setattr(
+        "app.services.workbench_workflow_runner.AgentHarnessFacade.execute",
+        fake_execute,
+    )
+    task_run = SimpleNamespace(
+        agent_runs=[{
+            "step_id": "analyze", "provider": "local-python",
+            "artifact_dir": str(artifact_dir),
+        }],
+    )
+    audit = {
+        "status": "needs_rework",
+        "issues": [{
+            "artifact": "sfmea.json", "code": "non_actionable_mitigation",
+            "message": "缺少具体整改与验证动作",
+        }],
+    }
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs")._attempt_external_agent_quality_repair(
+        task_run=task_run,
+        step_results=[{
+            "step_id": "analyze", "type": "agent_task", "status": "completed",
+            "provider": "local-python", "artifact_dir": str(artifact_dir),
+        }],
+        audit=audit,
+    )
+
+    assert result["attempted"] is True
+    assert result["candidate_ready"] is True
+    assert result["repair_artifacts"] == ["sfmea.json", "black_box_cases.json"]
+    bundle = json.loads((artifact_dir / "task_bundle.json").read_text(encoding="utf-8"))
+    assert bundle["quality_retry_required_artifacts"] == ["sfmea.json", "black_box_cases.json"]
+    assert bundle["retry_quality_feedback"]["protected_artifacts"] == []
+    assert "只修改" in bundle["retry_quality_feedback"]["instruction"]
+    assert json.loads((artifact_dir / "agent_run.json").read_text())["turn_id"].startswith("quality_repair_")
+    assert result["snapshot"]["sfmea.json"] == b"[]"
+
+
 def test_quality_retry_restores_protected_artifacts_when_agent_step_raises(tmp_path, monkeypatch):
     from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
 

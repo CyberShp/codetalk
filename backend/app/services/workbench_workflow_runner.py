@@ -738,6 +738,54 @@ class WorkbenchWorkflowRunner:
             step_results=step_results,
         )
         test_activity_quality = self.audit_test_activity_quality(task_run=task_run)
+        external_repair = self._attempt_external_agent_quality_repair(
+            task_run=task_run,
+            step_results=step_results,
+            audit=test_activity_quality,
+        )
+        if external_repair.get("candidate_ready"):
+            self._materialize_final_behavior_validation(
+                task_run=task_run,
+                step_results=step_results,
+            )
+            candidate_audit = self.audit_test_activity_quality(task_run=task_run)
+            if _quality_repair_regressed(
+                before=test_activity_quality,
+                after=candidate_audit,
+            ):
+                _restore_quality_repair_artifacts(
+                    artifact_dir=Path(str(external_repair["artifact_dir"])),
+                    snapshot=external_repair["snapshot"],
+                )
+                self._materialize_final_behavior_validation(
+                    task_run=task_run,
+                    step_results=step_results,
+                )
+                test_activity_quality = self.audit_test_activity_quality(task_run=task_run)
+                external_repair["accepted"] = False
+                external_repair["reason"] = "candidate_quality_regressed"
+            else:
+                test_activity_quality = candidate_audit
+                external_repair["accepted"] = True
+            test_activity_quality["external_agent_quality_repair"] = {
+                key: value
+                for key, value in external_repair.items()
+                if key not in {"snapshot", "artifact_dir"}
+            }
+            _write_json(
+                Path(str(task_run.artifact_dir)) / "test_activity_quality_audit.json",
+                test_activity_quality,
+            )
+        elif external_repair.get("attempted"):
+            test_activity_quality["external_agent_quality_repair"] = {
+                key: value
+                for key, value in external_repair.items()
+                if key not in {"snapshot", "artifact_dir"}
+            }
+            _write_json(
+                Path(str(task_run.artifact_dir)) / "test_activity_quality_audit.json",
+                test_activity_quality,
+            )
         if _quality_allows_cache_promotion(
             str(test_activity_quality.get("status") or "")
         ):
@@ -793,6 +841,131 @@ class WorkbenchWorkflowRunner:
         )
         self._write_execution_artifact(task_run.task_run_id, result)
         return result
+
+    def _attempt_external_agent_quality_repair(
+        self,
+        *,
+        task_run: Any,
+        step_results: list[dict[str, Any]],
+        audit: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Run one artifact-scoped repair turn for a completed external Agent.
+
+        The repair receives only the quality failures and the affected output
+        contract. It never re-runs discovery and cannot replace protected
+        artifacts. The caller audits candidate bytes before accepting them.
+        """
+        if (
+            not settings.external_agent_quality_repair_enabled
+            or str(audit.get("status") or "") not in {"needs_rework", "invalid"}
+            or self._is_cancelled()
+        ):
+            return {"attempted": False}
+        agent_runs = {
+            str(item.get("step_id") or ""): item
+            for item in task_run.agent_runs
+            if isinstance(item, dict)
+        }
+        eligible = [
+            item for item in step_results
+            if isinstance(item, dict)
+            and item.get("type") == "agent_task"
+            and item.get("status") in {"completed", "needs_review"}
+            and str(item.get("provider") or "") != BUILTIN_LLM_PROVIDER_ID
+            and str(item.get("step_id") or "") in agent_runs
+        ]
+        if not eligible:
+            return {"attempted": False}
+        step_result = eligible[-1]
+        step_id = str(step_result.get("step_id") or "")
+        agent_run = agent_runs[step_id]
+        artifact_dir = Path(str(agent_run.get("artifact_dir") or step_result.get("artifact_dir") or ""))
+        bundle = _read_json(artifact_dir / "task_bundle.json")
+        run_payload = _read_json(artifact_dir / "agent_run.json")
+        if not isinstance(bundle, dict) or not isinstance(run_payload, dict):
+            return {"attempted": False}
+        required = [str(item) for item in bundle.get("required_artifacts") or [] if str(item).strip()]
+        feedback = _quality_feedback_from_audit(
+            audit,
+            required_artifacts=required,
+            quality_artifact="test_activity_quality_audit.json",
+        )
+        affected = _expand_quality_blocked_artifacts(
+            {str(item) for item in feedback.get("affected_artifacts") or []}
+        )
+        repair_artifacts = [item for item in required if Path(item).name in affected]
+        if not repair_artifacts:
+            return {"attempted": False, "reason": "no_repairable_declared_artifacts"}
+        protected = [item for item in required if item not in repair_artifacts]
+        snapshot = _snapshot_quality_repair_artifacts(
+            artifact_dir=artifact_dir,
+            artifact_names=[*repair_artifacts, *protected],
+        )
+        prior_turn = str(run_payload.get("turn_id") or "turn_1")
+        repair_dir = artifact_dir / "quality_repairs" / "attempt_1"
+        repair_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(repair_dir / "quality_audit_before.json", audit)
+        _snapshot_agent_turn_artifacts(artifact_dir, turn_id=prior_turn)
+        bundle["quality_retry_required_artifacts"] = repair_artifacts
+        bundle["retry_quality_feedback"] = {
+            **feedback,
+            "protected_artifacts": protected,
+            "instruction": (
+                "这是同一次工作流的定向质量修复。只修改 quality_retry_required_artifacts；"
+                "所有未列出文件均已通过，禁止改写。必须读取现有结构化文件并逐项修复 retry_quality_feedback。"
+            ),
+        }
+        _write_json(artifact_dir / "task_bundle.json", bundle)
+        repair_turn = f"quality_repair_{int(time.time() * 1000)}"
+        run_payload["turn_id"] = repair_turn
+        _write_json(artifact_dir / "agent_run.json", run_payload)
+        self._emit_event(
+            "quality_repair_started",
+            {
+                "step_id": step_id,
+                "provider": str(step_result.get("provider") or ""),
+                "attempt": 1,
+                "affected_artifacts": repair_artifacts,
+                "user_message": "质量门禁发现问题，正在要求执行器只修复失败交付件。",
+            },
+        )
+        execution = AgentHarnessFacade(artifact_dir).execute(
+            str(run_payload.get("run_id") or ""),
+            timeout_sec=int(settings.external_agent_quality_repair_timeout_seconds),
+            idle_timeout_sec=_effective_agent_idle_timeout_sec(
+                agent_run=agent_run, run_payload=run_payload,
+            ),
+            is_cancelled=self._is_cancelled,
+            event_sink=lambda kind, payload: self._emit_event(
+                kind, {"step_id": step_id, "repair_turn": repair_turn, **dict(payload)}
+            ),
+        )
+        _snapshot_agent_turn_artifacts(artifact_dir, turn_id=repair_turn)
+        validation = _validate_step_artifacts(artifact_dir, repair_artifacts)
+        if execution.status != "completed" or validation.status != "ok":
+            _restore_quality_repair_artifacts(artifact_dir, snapshot)
+            return {
+                "attempted": True,
+                "candidate_ready": False,
+                "accepted": False,
+                "reason": "repair_execution_or_artifact_validation_failed",
+                "repair_artifacts": repair_artifacts,
+                "execution_status": execution.status,
+                "validation_status": validation.status,
+                "artifact_dir": str(artifact_dir),
+                "snapshot": snapshot,
+            }
+        return {
+            "attempted": True,
+            "candidate_ready": True,
+            "accepted": False,
+            "reason": "candidate_pending_quality_audit",
+            "repair_artifacts": repair_artifacts,
+            "execution_status": execution.status,
+            "validation_status": validation.status,
+            "artifact_dir": str(artifact_dir),
+            "snapshot": snapshot,
+        }
 
     def _materialize_final_behavior_validation(
         self,
