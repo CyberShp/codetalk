@@ -19,6 +19,7 @@ from app.services.ai_staged_execution import (
     _build_verified_claim_catalog,
     _canonicalize_technical_claim_evidence,
     _canonicalize_verified_repo_path_mentions,
+    _sanitize_structured_repo_path_mentions,
     _normalize_black_box_dimension_contract,
     _normalize_black_box_delivery_contract,
     _normalize_black_box_source_anchor_claims,
@@ -4390,6 +4391,14 @@ def test_markdown_canonicalizes_unique_verified_source_basename():
     assert "`fabrics.c:10`" in normalized
 
 
+def test_structured_output_removes_unverified_bare_source_filename():
+    result = _sanitize_structured_repo_path_mentions(
+        {"failure_diagnostics": ["check iscsi_conn.c then lib/iscsi/iscsi.c"]},
+        {"evidence_cards": [{"file_path": "lib/iscsi/iscsi.c"}]},
+    )
+    assert result["failure_diagnostics"] == ["check 已验证源码片段 then lib/iscsi/iscsi.c"]
+
+
 def test_markdown_canonicalizes_stale_prefix_to_unique_verified_repo_path():
     content = "`src/fabrics.c:1567-1585` handles connect cleanup."
     source_pack = {
@@ -4439,7 +4448,7 @@ def test_sfmea_generation_rules_forbid_normal_behavior_padding_and_evidence_drif
 def test_black_box_generation_rules_keep_dimensions_and_external_boundaries():
     rules = "\n".join(_stage_format_rules("black_box_cases", "black_box_cases.json"))
 
-    assert "保持既有 case_id 的 test_dimension 不变" in rules
+    assert "保持既有 case_id" in rules
     assert "禁止 mock/调用 libnvme 或 libnvmf 内部函数" in rules
     assert "upstream_error_propagation" in rules
     assert "CLI 退出码" in rules

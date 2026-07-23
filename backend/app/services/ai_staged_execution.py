@@ -4188,6 +4188,7 @@ async def _execute_regular_stage(
                     claim_catalog,
                 )
                 if base_stage_id == "black_box_cases":
+                    rendered = _sanitize_structured_repo_path_mentions(rendered, source_pack)
                     rendered = _normalize_black_box_source_anchor_claims(rendered)
                     rendered, oracle_fields = _normalize_black_box_oracle_contract(
                         rendered
@@ -5262,6 +5263,29 @@ def _canonicalize_verified_repo_path_mentions(
             normalized,
         )
     return normalized
+
+
+def _sanitize_structured_repo_path_mentions(value: Any, source_pack: dict[str, Any]) -> Any:
+    """Keep JSON delivery text from turning a guessed C filename into evidence."""
+    verified_basenames = {
+        Path(str(card.get("file_path") or "")).name
+        for card in source_pack.get("evidence_cards") or []
+        if isinstance(card, dict) and str(card.get("file_path") or "").strip()
+    }
+    def visit(item: Any) -> Any:
+        if isinstance(item, dict):
+            return {key: visit(child) for key, child in item.items()}
+        if isinstance(item, list):
+            return [visit(child) for child in item]
+        if not isinstance(item, str):
+            return item
+        text = _canonicalize_verified_repo_path_mentions(item, source_pack)
+        return re.sub(
+            r"(?<![A-Za-z0-9_./-])([A-Za-z0-9_.-]+\.(?:c|cc|cpp|cxx|h|hpp))(?![A-Za-z0-9_.-])",
+            lambda match: match.group(1) if match.group(1) in verified_basenames else "已验证源码片段",
+            text,
+        )
+    return visit(value)
 
 
 def _extract_markdown_delivery_body(
