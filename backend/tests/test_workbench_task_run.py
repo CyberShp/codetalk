@@ -4154,6 +4154,44 @@ def test_builtin_llm_execution_records_prompt_and_provider_metrics(tmp_path, mon
     assert execution["metrics"]["provider_wait_ms"] >= 0
 
 
+def test_builtin_llm_execution_records_a_redacted_failure_diagnostic(tmp_path, monkeypatch):
+    import app.services.workbench_workflow_runner as runner_module
+
+    artifact_dir = tmp_path / "agent"
+    artifact_dir.mkdir()
+    (artifact_dir / "task_bundle.json").write_text(
+        json.dumps({"execution_contract": {"goal": "生成 report"}}),
+        encoding="utf-8",
+    )
+    (artifact_dir / "workflow_snapshot.json").write_text("{}", encoding="utf-8")
+    (artifact_dir / "agent_output_contract.json").write_text("{}", encoding="utf-8")
+
+    class FailingLLM:
+        async def complete(self, *_args, **_kwargs):
+            raise RuntimeError()
+
+    async def fake_factory():
+        return FailingLLM()
+
+    monkeypatch.setattr(runner_module, "create_llm_client_from_active", fake_factory)
+    result = runner_module.WorkbenchWorkflowRunner(tmp_path)._execute_builtin_llm_step(
+        step={"id": "analyze", "required_artifacts": ["report.md"]},
+        agent_run={"step_id": "analyze", "required_artifacts": ["report.md"]},
+        artifact_dir=artifact_dir,
+        run_payload={},
+        run_id="run-failure",
+        timeout_sec=60,
+    )
+
+    diagnostic = json.loads(
+        (artifact_dir / "builtin_llm_failure.json").read_text(encoding="utf-8")
+    )
+    assert result["status"] == "error"
+    assert diagnostic["exception_type"] == "RuntimeError"
+    assert diagnostic["message"] == "异常未提供文字详情。"
+    assert "RuntimeError" in result["execution"]["error"]
+
+
 def test_agent_rerun_injects_previous_evidence_validation_feedback(tmp_path):
     from app.services.workbench_workflow_runner import _inject_prior_step_context
 

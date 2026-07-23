@@ -1271,6 +1271,7 @@ class WorkbenchWorkflowRunner:
         provider_wait_ms = 0.0
         execution_timed_out = False
         quality_repair_history: list[dict[str, Any]] = []
+        staged_lifecycle_phase = "not_started"
         try:
             if str(step.get("execution_mode") or "") == "staged":
                 execution_profile = task_bundle.get("execution_profile")
@@ -1363,11 +1364,14 @@ class WorkbenchWorkflowRunner:
                 async def execute_staged_lifecycle() -> tuple[
                     dict[str, Any], dict[str, Any], list[dict[str, Any]]
                 ]:
+                    nonlocal staged_lifecycle_phase
+                    staged_lifecycle_phase = "create_primary_model_client"
                     llm = await _await_with_absolute_deadline(
                         create_llm_client_from_active(),
                         deadline=staged_lifecycle_deadline,
                     )
                     try:
+                        staged_lifecycle_phase = "create_source_analysis_model_client"
                         source_analysis_llm = await _await_with_absolute_deadline(
                             create_source_analysis_llm_client(),
                             deadline=staged_lifecycle_deadline,
@@ -1534,9 +1538,12 @@ class WorkbenchWorkflowRunner:
 
                     current_plan = staged_plan
                     try:
+                        staged_lifecycle_phase = "execute_staged_plan"
                         staged_result = await execute_staged(current_plan)
+                        staged_lifecycle_phase = "validate_behavior_claims"
                         behavior_validation = await validate_behavior_claims()
                         if (artifact_dir / "judge_report.json").is_file():
+                            staged_lifecycle_phase = "refresh_source_delivery_governance"
                             refresh_source_driven_delivery_governance(artifact_dir)
                         if (
                             behavior_validation.get("reason")
@@ -2020,7 +2027,25 @@ class WorkbenchWorkflowRunner:
             raw_output = ""
             written_artifacts = []
             status = "error"
-            error = str(exc)
+            diagnostic_message = _redact_failure_diagnostic_text(str(exc).strip())
+            exception_type = type(exc).__name__
+            _write_json(
+                artifact_dir / "builtin_llm_failure.json",
+                {
+                    "status": "error",
+                    "exception_type": exception_type,
+                    "message": diagnostic_message or "异常未提供文字详情。",
+                    "staged_lifecycle_phase": staged_lifecycle_phase,
+                },
+            )
+            error = (
+                f"{exception_type}: {diagnostic_message or '异常未提供文字详情。'}"
+                + (
+                    f"（阶段：{staged_lifecycle_phase}）"
+                    if str(step.get("execution_mode") or "") == "staged"
+                    else ""
+                )
+            )
         (artifact_dir / "raw_output.txt").write_text(raw_output, encoding="utf-8")
         validation = asdict(_validate_step_artifacts(artifact_dir, required_artifacts))
         if status == "completed" and validation["status"] != "ok":
