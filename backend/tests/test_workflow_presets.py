@@ -145,6 +145,7 @@ def test_basic_report_workflow_presets_have_minimal_inputs_and_one_report_contra
     assert "受控 harness 设计契约" in source_step["goal"]
     assert "可执行流量构造只能在被明确批准的后续测试活动中生成" in source_step["goal"]
     assert "不得自行创建 artifact manifest、claim ledger、额外报告或未声明 JSON" in source_step["goal"]
+    assert "$CODETALK_AGENT_ARTIFACT_DIR" in source_step["goal"]
     assert "Git revision" in source_step["goal"]
     assert "iscsi_set_options -c" in source_step["goal"]
     assert "Occurrence" in source_step["goal"]

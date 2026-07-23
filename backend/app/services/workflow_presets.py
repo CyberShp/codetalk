@@ -438,6 +438,8 @@ _BASIC_ISCSI_REPORT_GOAL = (
     "evidence_cards.json、flow_cards.json、sfmea.json 和 black_box_cases.json；终端输出仅用于进度。"
     "除运行时已由 CodeTalk 创建的诊断文件外，不得自行创建 artifact manifest、claim ledger、"
     "额外报告或未声明 JSON；完成这七份交付件的结构自检后必须结束，不得通过新增文件重复自检。"
+    "所有交付件必须直接写入环境变量 $CODETALK_AGENT_ARTIFACT_DIR 指向的目录；不得拼接、"
+    "复制、推导或硬编码任何 artifact 绝对路径。"
     "report.md 至少包含：分析范围与证据缺口、"
     "关键源码证据、主流程与异常/恢复流程、SFMEA、可由测试人员直接执行的黑盒测试用例。"
     "SFMEA 必须包含 failure mode、cause、effect、detection、severity、occurrence、"
