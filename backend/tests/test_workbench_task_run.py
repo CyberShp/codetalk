@@ -11,6 +11,36 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_external_agent_finalization_restores_task_owned_source_evidence_pack(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _materialize_external_agent_source_evidence_pack,
+    )
+
+    context = {
+        "repo_path": "/repo",
+        "repo_revision": "abc123",
+        "analysis_target": "iSCSI login",
+        "files": [{
+            "file_path": "lib/iscsi/login.c",
+            "classification": "source",
+            "start_line": 7,
+            "end_line": 7,
+            "excerpt": "return SPDK_SUCCESS;",
+            "symbols": ["login"],
+            "sha256": "a" * 64,
+        }],
+    }
+    task_run = SimpleNamespace(
+        artifact_dir=str(tmp_path), task_bundle={"local_source_context": context}
+    )
+
+    assert _materialize_external_agent_source_evidence_pack(task_run) is True
+    cards = json.loads((tmp_path / "evidence_cards.json").read_text(encoding="utf-8"))
+    assert cards[0]["source"] == "local-source-search"
+    assert cards[0]["excerpt"] == "return SPDK_SUCCESS;"
+    assert (tmp_path / "stages" / "source_analysis" / "source_evidence_pack.json").is_file()
+
+
 def test_source_driven_judge_blocks_delivery_and_never_reports_empty_facts_as_100(
     tmp_path,
 ):
