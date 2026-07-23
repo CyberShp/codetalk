@@ -5985,6 +5985,22 @@ def _regular_stage_prompt(
         rules.append(
             "- 独立审计器判定为 insufficient 的实现结论必须删除，或改造成带明确操作与 oracle 的待执行测试；不得继续把它写成 expected_result、effect 或已实现行为。"
         )
+    if base_stage_id == "black_box_cases":
+        if "missing_c_bit_fragmentation_case" in quality_issue_codes:
+            rules.append(
+                "- 必须新增一个独立的 C-bit 参数跨 PDU 分片黑盒用例：步骤逐字包含 C=1 中间分片、"
+                "跨 key/value 边界，以及 C=0 收尾；用抓包或 PDU 解析器验证重组后的响应。"
+            )
+        if "unsafe_hazardous_test_mapping" in quality_issue_codes:
+            rules.append(
+                "- 若映射 multiconnection.sh，前置条件必须逐字说明‘专用测试盘/隔离测试设备’，"
+                "并说明‘数据会被销毁或覆盖’；没有隔离设备时该用例必须标记 Blocked，不能执行。"
+            )
+        if "black_box_boundary_violation" in quality_issue_codes:
+            rules.append(
+                "- 黑盒步骤、预期结果和失败诊断不得出现内部函数名、直接调用、单元测试操作或源码修改；"
+                "必须改为网络请求、CLI/RPC、抓包、日志、返回码、连接状态等外部可观测操作。"
+            )
     if (
         isinstance(schema, dict)
         and int(schema.get("minItems") or 0) > 0
