@@ -2389,6 +2389,8 @@ async def test_prepare_workbench_task_run_uses_settings_agent_runtime(
     configured = snapshot["providers"][provider]
     assert configured["owner"] == "agent_runtime"
     assert configured["display_name"] == "NGA 内网 Agent"
+    assert configured["runtime_id"] == runtime["id"]
+    assert configured["runtime_provider"] == "nga"
     assert configured["command"] == ["nga", "run", "--json"]
     assert configured["capabilities"]["prompt_transport"] == "stdin"
     agent_run = json.loads(

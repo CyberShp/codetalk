@@ -2493,8 +2493,12 @@ async def _preflight_task_run_agent_runtimes(task_run_id: str) -> dict[str, Any]
         runtime_id = agent_runtime_id_from_provider(provider)
         if not runtime_id:
             continue
-        runtime = get_agent_runtime_sync(runtime_id)
-        if runtime is None or not bool(runtime.get("enabled", True)):
+        provider_snapshot = providers.get(provider)
+        runtime = _frozen_runtime_preflight_payload(
+            provider=provider,
+            provider_snapshot=provider_snapshot if isinstance(provider_snapshot, dict) else {},
+        )
+        if runtime is None:
             checks.append({
                 "provider": provider,
                 "runtime_id": runtime_id,
@@ -2525,6 +2529,42 @@ async def _preflight_task_run_agent_runtimes(task_run_id: str) -> dict[str, Any]
             "checks": checks,
         }
     return {"status": "ready", "checks": checks}
+
+
+def _frozen_runtime_preflight_payload(
+    *,
+    provider: str,
+    provider_snapshot: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Build a safe probe request from the immutable run snapshot.
+
+    Old task runs did not persist the runtime provider kind, so they retain the
+    legacy Settings fallback. New runs never reinterpret their provider kind,
+    command, args, or prompt transport after preparation.
+    """
+    runtime_id = agent_runtime_id_from_provider(provider)
+    command_parts = [
+        str(item) for item in provider_snapshot.get("command") or []
+        if str(item).strip()
+    ]
+    runtime_provider = str(provider_snapshot.get("runtime_provider") or "").strip()
+    prompt_transport = str(provider_snapshot.get("prompt_transport") or "").strip()
+    if runtime_provider and command_parts and prompt_transport:
+        return {
+            "id": str(provider_snapshot.get("runtime_id") or runtime_id),
+            "provider": runtime_provider,
+            "command": command_parts[0],
+            "args": command_parts[1:],
+            "prompt_transport": prompt_transport,
+            "enabled": True,
+            # Runtime secrets are intentionally not persisted in the task.
+            # Agent-owned credentials remain in the process environment.
+            "env": {},
+        }
+    runtime = get_agent_runtime_sync(runtime_id)
+    if runtime is None or not bool(runtime.get("enabled", True)):
+        return None
+    return runtime
 
 
 def _terminal_execution_status(result: dict[str, Any]) -> str:
@@ -6689,6 +6729,11 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
         ("agent_instructions", "agent_instructions.json", "repo-local Agent instructions"),
         ("provider_snapshot", "provider_snapshot.json", "provider capability ownership matrix"),
         ("provider_readiness", "provider_readiness.json", "provider readiness diagnostics"),
+        (
+            "provider_live_readiness",
+            "provider_live_readiness.json",
+            "runtime readiness probe recorded before execution",
+        ),
         ("agent_mcp_requests", "agent_mcp_requests.json", "Agent-owned MCP boundary"),
         (
             "context_discovery_decision",
@@ -6726,6 +6771,8 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
     agent_instruction_policy_expected = _expected_agent_instruction_policy(task_dir)
     provider_readiness = _read_json(task_dir / "provider_readiness.json")
     checks.extend(_acceptance_provider_readiness_checks(provider_readiness))
+    live_readiness = _read_json(task_dir / "provider_live_readiness.json")
+    checks.extend(_acceptance_live_provider_readiness_checks(live_readiness))
 
     execution_payload = _read_json(task_dir / "workflow_execution.json")
     workflow_execution_exists = "workflow_execution.json" in artifacts
@@ -7135,6 +7182,32 @@ def _acceptance_provider_readiness_checks(payload: Any) -> list[dict[str, Any]]:
             "reason": reason or ("" if ok else status),
         })
     return checks
+
+
+def _acceptance_live_provider_readiness_checks(payload: Any) -> list[dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return []
+    checks = payload.get("checks")
+    if not isinstance(checks, list):
+        return []
+    result: list[dict[str, Any]] = []
+    for item in checks:
+        if not isinstance(item, dict):
+            continue
+        success = bool(item.get("success"))
+        provider = str(item.get("provider") or "Agent")
+        result.append({
+            "id": f"provider_live_readiness:{provider}",
+            "status": "ok" if success else "blocked",
+            "severity": "required",
+            "relative_path": "provider_live_readiness.json",
+            "kind": "provider_live_readiness",
+            "provider": provider,
+            "runtime_id": str(item.get("runtime_id") or ""),
+            "description": "live managed Agent readiness before workflow execution",
+            "reason": "" if success else str(item.get("message") or "agent_runtime_unready"),
+        })
+    return result
 
 
 def _acceptance_workflow_output_checks(payload: Any) -> list[dict[str, Any]]:

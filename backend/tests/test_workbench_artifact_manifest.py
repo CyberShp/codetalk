@@ -39,6 +39,7 @@ def test_artifact_manifest_marks_deliverables_and_diagnostics(tmp_path):
     )
     (task_dir / "task_bundle.json").write_text("{}", encoding="utf-8")
     (task_dir / "provider_snapshot.json").write_text("{}", encoding="utf-8")
+    (task_dir / "provider_live_readiness.json").write_text("{}", encoding="utf-8")
     (task_dir / "inputs").mkdir()
     (task_dir / "inputs" / "requirements.md").write_text("req", encoding="utf-8")
 
@@ -51,6 +52,8 @@ def test_artifact_manifest_marks_deliverables_and_diagnostics(tmp_path):
     assert artifacts["steps/render_report/report.md"]["audience"] == "deliverable"
     assert artifacts["task_bundle.json"]["audience"] == "diagnostic"
     assert artifacts["provider_snapshot.json"]["audience"] == "diagnostic"
+    assert artifacts["provider_live_readiness.json"]["kind"] == "provider_live_readiness"
+    assert artifacts["provider_live_readiness.json"]["audience"] == "diagnostic"
     assert artifacts["inputs/requirements.md"]["audience"] == "input"
 
 

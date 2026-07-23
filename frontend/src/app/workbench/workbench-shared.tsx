@@ -3213,6 +3213,7 @@ export const AUDIT_ARTIFACT_KIND_ORDER = [
   "agent_instructions",
   "provider_snapshot",
   "provider_readiness",
+  "provider_live_readiness",
   "workflow_contract",
   "agent_mcp_requests",
   "context_discovery_decision",

@@ -2897,6 +2897,11 @@ def _agent_runtime_provider_snapshot_item(runtime: dict[str, Any]) -> dict[str, 
         "codetalk_callable": False,
         "agent_owned": True,
         "display_name": str(runtime.get("name") or runtime.get("id") or provider),
+        # This is deliberately capability-only. Secrets remain in the runtime
+        # configuration, while the provider kind and invocation shape are frozen
+        # so a later Settings edit cannot silently reinterpret an old task run.
+        "runtime_id": str(runtime.get("id") or ""),
+        "runtime_provider": str(runtime.get("provider") or ""),
         "command": command,
         "fallback_commands": [],
         "readonly_args": [],

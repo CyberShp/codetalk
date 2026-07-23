@@ -291,6 +291,7 @@ DIAGNOSTIC_ARTIFACT_KINDS = {
     "memory_retrieval",
     "output_schemas",
     "provider_readiness",
+    "provider_live_readiness",
     "provider_snapshot",
     "sandbox_policy",
     "semantic_import_outputs",
@@ -368,6 +369,8 @@ def workbench_artifact_kind(relative_path: str) -> str:
         return "provider_snapshot"
     if name == "provider_readiness.json":
         return "provider_readiness"
+    if name == "provider_live_readiness.json":
+        return "provider_live_readiness"
     if name == "sandbox_policy.json":
         return "sandbox_policy"
     if name == "input_snapshot.json":

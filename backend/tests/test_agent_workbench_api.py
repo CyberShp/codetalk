@@ -6672,6 +6672,7 @@ async def test_workbench_task_run_acceptance_audit_api_records_required_evidence
     checks = {item["id"]: item for item in body["checks"]}
     assert checks["task_bundle"]["status"] == "ok"
     assert checks["provider_readiness"]["status"] == "ok"
+    assert checks["provider_live_readiness"]["status"] == "ok"
     assert checks["black_box_generation_policy"]["status"] == "ok"
     assert checks["provider_readiness_agent:local-python"]["status"] == "ok"
     assert checks["agent_run:discover"]["status"] == "ok"

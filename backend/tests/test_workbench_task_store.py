@@ -781,6 +781,66 @@ async def test_background_preflight_blocks_unready_agent_before_runner_starts(tm
     assert "内网策略未批准" in blocked[-1]["payload"]["user_message"]
 
 
+@pytest.mark.asyncio
+async def test_managed_agent_preflight_uses_frozen_runtime_snapshot(tmp_path, monkeypatch):
+    from app.api import agent_workbench
+
+    task_run = SimpleNamespace(
+        artifact_dir=str(tmp_path),
+        task_bundle={
+            "provider_snapshot": {
+                "providers": {
+                    "agent-runtime:default-codex": {
+                        "runtime_id": "default-codex",
+                        "runtime_provider": "codex",
+                        "command": ["frozen-codex", "exec"],
+                        "prompt_transport": "codex_exec_json",
+                    }
+                }
+            }
+        },
+    )
+    captured: list[dict] = []
+
+    class _Store:
+        def __init__(self, *_args):
+            pass
+
+        def load(self, _task_run_id):
+            return task_run
+
+    async def probe(runtime):
+        captured.append(runtime)
+        return {"success": True, "message": "ready"}
+
+    def unexpected_legacy_lookup(*_args, **_kwargs):
+        raise AssertionError("new run snapshots must not read mutable Agent settings")
+
+    monkeypatch.setattr(agent_workbench, "WorkbenchTaskRunStore", _Store)
+    monkeypatch.setattr(agent_workbench, "probe_agent_runtime", probe)
+    monkeypatch.setattr(agent_workbench, "get_agent_runtime_sync", unexpected_legacy_lookup)
+
+    result = await agent_workbench._preflight_task_run_agent_runtimes("task_run_frozen")
+
+    assert result["status"] == "ready"
+    assert captured == [{
+        "id": "default-codex",
+        "provider": "codex",
+        "command": "frozen-codex",
+        "args": ["exec"],
+        "prompt_transport": "codex_exec_json",
+        "enabled": True,
+        "env": {},
+    }]
+    persisted = json.loads((tmp_path / "provider_live_readiness.json").read_text(encoding="utf-8"))
+    assert persisted["checks"] == [{
+        "provider": "agent-runtime:default-codex",
+        "runtime_id": "default-codex",
+        "success": True,
+        "message": "ready",
+    }]
+
+
 def test_prepared_runs_persist_task_attempt_metadata_and_legacy_defaults(tmp_path):
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer, WorkbenchTaskRunStore
     from app.services.workflow_dsl import WorkflowStore
