@@ -254,6 +254,7 @@ async def materialize_behavior_claim_validation(
     runtime_loader: Callable[[str], dict[str, Any] | None] = get_agent_runtime_sync,
     streamer: Callable[..., AsyncIterator[str]] = stream_agent_runtime,
     llm_factory: Callable[[], Any] | None = None,
+    builtin_audit_loader: Callable[[], Any] | None = None,
     on_progress: Callable[[dict[str, Any]], None] | None = None,
     timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
@@ -294,11 +295,36 @@ async def materialize_behavior_claim_validation(
         )
         return {**existing, "reused": True}
 
-    configured_runtime_id = str(settings.behavior_claim_audit_runtime_id or "auto")
     generator_key = str(generator_identity or "").strip().lower()
-    use_builtin_llm = configured_runtime_id == "auto" and "codex" in generator_key
-    runtime_id = "active-chat-model" if use_builtin_llm else (
+    generator_model = generator_key.removeprefix("builtin-llm:").strip()
+    configured_audit: tuple[Any, str, str] | None = None
+    if generator_key.startswith("builtin-llm:"):
+        try:
+            if builtin_audit_loader is None:
+                from app.llm.factory import create_behavior_claim_audit_llm_client
+
+                builtin_audit_loader = create_behavior_claim_audit_llm_client
+            loaded = builtin_audit_loader()
+            configured_audit = await loaded if inspect.isawaitable(loaded) else loaded
+        except (OSError, RuntimeError, ValueError) as exc:
+            return _write_unavailable_validation(
+                output_path=output_path,
+                request=request_payload,
+                validator={"provider": "builtin-llm", "independent": False},
+                reason=f"无法创建独立质量核验模型：{type(exc).__name__}: {exc}",
+            )
+    configured_runtime_id = str(settings.behavior_claim_audit_runtime_id or "auto")
+    use_builtin_llm = bool(configured_audit) or (
+        configured_runtime_id == "auto" and "codex" in generator_key
+    )
+    runtime_id = (
+        f"llm-config:{configured_audit[1]}"
+        if configured_audit
+        else "active-chat-model"
+        if use_builtin_llm
+        else (
         "default-codex" if configured_runtime_id == "auto" else configured_runtime_id
+        )
     )
     runtime = None if use_builtin_llm else runtime_loader(runtime_id)
     runtime_provider = str((runtime or {}).get("provider") or "").strip().lower()
@@ -310,10 +336,24 @@ async def materialize_behavior_claim_validation(
     validator = {
         "provider": "builtin-llm" if use_builtin_llm else runtime_provider,
         "runtime_id": runtime_id,
-        "model": "active-chat-model" if use_builtin_llm else str(settings.behavior_claim_audit_model or ""),
+        "model": (
+            str(configured_audit[2] or "")
+            if configured_audit
+            else "active-chat-model"
+            if use_builtin_llm
+            else str(settings.behavior_claim_audit_model or "")
+        ),
         "reasoning_effort": "provider-default" if use_builtin_llm else str(settings.behavior_claim_audit_reasoning_effort or ""),
         "generator_identity": str(generator_identity or ""),
-        "independent": bool(use_builtin_llm or (runtime_provider and runtime_provider not in generator_key)),
+        "independent": bool(
+            (
+                configured_audit
+                and bool(configured_audit[2])
+                and str(configured_audit[2]).strip().lower() != generator_model
+            )
+            or (not configured_audit and use_builtin_llm)
+            or (runtime_provider and runtime_provider not in generator_key)
+        ),
     }
     if not settings.behavior_claim_audit_enabled or (
         not use_builtin_llm and (not runtime or not runtime.get("enabled", True))
@@ -391,12 +431,15 @@ async def materialize_behavior_claim_validation(
     llm_client = None
     if use_builtin_llm:
         try:
-            if llm_factory is None:
+            if configured_audit:
+                llm_client = configured_audit[0]
+            elif llm_factory is None:
                 from app.llm.factory import create_llm_client_from_active
 
                 llm_factory = create_llm_client_from_active
-            created = llm_factory()
-            llm_client = await created if inspect.isawaitable(created) else created
+            if not configured_audit:
+                created = llm_factory()
+                llm_client = await created if inspect.isawaitable(created) else created
         except (OSError, RuntimeError, ValueError) as exc:
             return _write_unavailable_validation(
                 output_path=output_path,

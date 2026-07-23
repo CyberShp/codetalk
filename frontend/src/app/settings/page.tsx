@@ -270,6 +270,7 @@ export default function SettingsPage() {
     ssl_cert_path: "",
     active_chat_model_id: "",
     active_embedding_model_id: "",
+    behavior_claim_audit_model_id: "",
   });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -319,6 +320,7 @@ export default function SettingsPage() {
               ssl_cert_path: "",
               active_chat_model_id: "",
               active_embedding_model_id: "",
+              behavior_claim_audit_model_id: "",
             }) as GeneralSettings,
         ),
         api.settings.getAgentProviders().catch(
@@ -1222,6 +1224,40 @@ export default function SettingsPage() {
         {savingActiveModel && (
           <Loader2 size={14} className="animate-spin text-on-surface-variant shrink-0" />
         )}
+      </div>
+
+      <div className="mb-6 bg-surface rounded-xl border border-outline-variant/20 p-4">
+        <label htmlFor="behavior-claim-audit-model" className="block text-xs font-medium text-on-surface-variant mb-1.5">
+          独立质量核验模型
+        </label>
+        <select
+          id="behavior-claim-audit-model"
+          value={general.behavior_claim_audit_model_id}
+          onChange={async (event) => {
+            const previous = general;
+            const updated = { ...general, behavior_claim_audit_model_id: event.target.value };
+            setGeneral(updated);
+            try {
+              await api.settings.updateGeneral(updated);
+            } catch {
+              setGeneral(previous);
+              setError("保存独立质量核验模型失败");
+            }
+          }}
+          className="w-full px-3 py-1.5 bg-surface border border-outline-variant/30 rounded-lg text-sm text-on-surface focus:outline-none focus:border-primary/50 transition-colors"
+        >
+          <option value="">未配置（质量门禁将阻止正式交付）</option>
+          {configs
+            .filter((config) => config.is_chat_model && config.id !== general.active_chat_model_id)
+            .map((config) => (
+              <option key={config.id} value={config.id}>
+                {config.name} ({config.model})
+              </option>
+            ))}
+        </select>
+        <p className="mt-2 text-[11px] text-on-surface-variant/60">
+          用于逐条核验生成内容是否有真实源码依据。必须选择与活跃聊天模型不同的配置，避免生成与审计使用同一模型配置。
+        </p>
       </div>
 
       <div className="mb-8">

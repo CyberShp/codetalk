@@ -1431,10 +1431,14 @@ class WorkbenchWorkflowRunner:
                                     repo_path=str(
                                         scoped_execution_contract.get("repo_path") or ""
                                     ),
-                                    generator_identity=str(
-                                        getattr(llm, "model", "")
-                                        or getattr(llm, "model_name", "")
-                                        or "builtin-llm"
+                                    generator_identity=(
+                                        "builtin-llm:"
+                                        + str(
+                                            getattr(llm, "_model", "")
+                                            or getattr(llm, "model", "")
+                                            or getattr(llm, "model_name", "")
+                                            or "unknown"
+                                        )
                                     ),
                                     on_progress=lambda payload: self._emit_event(
                                         "behavior_claim_validation_progress",

@@ -79,6 +79,7 @@ class GeneralSettings(BaseModel):
     ssl_cert_path: str = ""
     active_chat_model_id: str = ""
     active_embedding_model_id: str = ""
+    behavior_claim_audit_model_id: str = ""
 
 
 class AgentProviderSettingsCustomProvider(BaseModel):
@@ -203,7 +204,8 @@ async def delete_llm_config(cfg_id: str, db: aiosqlite.Connection = Depends(get_
     # Clear any active model reference that pointed at the deleted config.
     await db.execute(
         "UPDATE settings SET value = '' "
-        "WHERE key IN ('active_chat_model_id', 'active_embedding_model_id') "
+        "WHERE key IN ('active_chat_model_id', 'active_embedding_model_id', "
+        "'behavior_claim_audit_model_id') "
         "AND value = ?",
         (cfg_id,),
     )
@@ -251,7 +253,8 @@ async def test_llm_connection(
 # --- General settings endpoints ---
 
 _GENERAL_KEYS = ("proxy_mode", "proxy_url", "ssl_cert_path",
-                 "active_chat_model_id", "active_embedding_model_id")
+                 "active_chat_model_id", "active_embedding_model_id",
+                 "behavior_claim_audit_model_id")
 
 async def _read_active_ids(db: aiosqlite.Connection) -> tuple[str, str]:
     """Return (active_chat_model_id, active_embedding_model_id) from settings table."""

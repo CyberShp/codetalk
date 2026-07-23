@@ -364,6 +364,7 @@ async def test_get_general_settings_defaults(client):
     assert data["ssl_cert_path"] == ""
     assert data["active_chat_model_id"] == ""
     assert data["active_embedding_model_id"] == ""
+    assert data["behavior_claim_audit_model_id"] == ""
 
 
 async def test_update_general_settings(client):
@@ -479,6 +480,28 @@ async def test_update_general_settings_persists_active_chat_model(client):
     assert response.json()["active_chat_model_id"] == chat_id
     persisted = await client.get("/api/settings/general")
     assert persisted.json()["active_chat_model_id"] == chat_id
+
+
+async def test_update_general_settings_persists_independent_quality_audit_model(client):
+    audit_resp = await client.post("/api/settings/llm", json=_CHAT_LLM)
+    audit_id = audit_resp.json()["id"]
+
+    response = await client.put(
+        "/api/settings/general",
+        json={
+            "proxy_mode": "none",
+            "proxy_url": "",
+            "ssl_cert_path": "",
+            "active_chat_model_id": "",
+            "active_embedding_model_id": "",
+            "behavior_claim_audit_model_id": audit_id,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["behavior_claim_audit_model_id"] == audit_id
+    persisted = await client.get("/api/settings/general")
+    assert persisted.json()["behavior_claim_audit_model_id"] == audit_id
 
 
 async def test_update_general_settings_allows_missing_active_model_reference(client):

@@ -107,6 +107,7 @@ export interface GeneralSettings {
   ssl_cert_path: string;
   active_chat_model_id: string;
   active_embedding_model_id: string;
+  behavior_claim_audit_model_id: string;
 }
 
 export type AgentRuntimePromptTransport =

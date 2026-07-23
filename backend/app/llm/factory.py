@@ -145,6 +145,32 @@ async def create_llm_client_from_active() -> BaseLLMClient:
     return await create_llm_client(row["value"])
 
 
+async def create_behavior_claim_audit_llm_client(
+) -> tuple[BaseLLMClient, str, str] | None:
+    """Create the explicitly configured, independent L2 audit model.
+
+    This intentionally does not fall back to the active generator model.  An
+    absent audit configuration is a quality-gate precondition failure, rather
+    than a reason to let the generator validate its own output.
+    """
+    async with aiosqlite.connect(settings.sqlite_db) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT value FROM settings WHERE key = 'behavior_claim_audit_model_id'"
+        ) as cur:
+            selected = await cur.fetchone()
+        config_id = str(selected["value"] or "") if selected else ""
+        if not config_id:
+            return None
+        async with db.execute(
+            "SELECT model FROM llm_configs WHERE id = ?", (config_id,)
+        ) as cur:
+            config = await cur.fetchone()
+    if not config:
+        raise ValueError("独立质量核验模型配置不存在，请在设置中重新选择")
+    return await create_llm_client(config_id), config_id, str(config["model"] or "")
+
+
 def _automatic_source_analysis_model(
     *,
     api_type: str,

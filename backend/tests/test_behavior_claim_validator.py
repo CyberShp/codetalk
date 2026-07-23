@@ -117,6 +117,58 @@ async def test_materialize_routes_codex_generation_to_active_builtin_llm(
 
 
 @pytest.mark.asyncio
+async def test_materialize_routes_builtin_generation_to_configured_independent_audit_model(
+    tmp_path, monkeypatch
+):
+    from app.config import settings
+    from app.services.behavior_claim_validator import materialize_behavior_claim_validation
+
+    monkeypatch.setattr(settings, "behavior_claim_audit_enabled", True)
+    calls = []
+
+    class FakeLLM:
+        async def complete_once(self, messages, max_tokens, temperature):
+            calls.append({"max_tokens": max_tokens, "temperature": temperature})
+            request = json.loads(
+                messages[0]["content"].split("VALIDATION_REQUEST:\n", 1)[1]
+            )
+            return LLMResponse(
+                content=json.dumps({"claims": [
+                    {
+                        "claim_id": claim["claim_id"],
+                        "binding": claim["binding"],
+                        "status": "supports",
+                        "reason": "独立模型核验通过",
+                    }
+                    for claim in request["claims"]
+                ]}),
+                model="deepseek-reasoner",
+                usage={},
+                finish_reason="stop",
+            )
+
+        async def close(self):
+            calls.append({"closed": True})
+
+    async def configured_audit_loader():
+        return FakeLLM(), "audit-config-id", "deepseek-reasoner"
+
+    result = await materialize_behavior_claim_validation(
+        artifact_dir=tmp_path / "artifacts",
+        repo_path=tmp_path,
+        generator_identity="builtin-llm:deepseek-chat",
+        request=_request(),
+        builtin_audit_loader=configured_audit_loader,
+    )
+
+    assert result["status"] == "completed"
+    assert result["validator"]["runtime_id"] == "llm-config:audit-config-id"
+    assert result["validator"]["model"] == "deepseek-reasoner"
+    assert result["validator"]["independent"] is True
+    assert calls[-1] == {"closed": True}
+
+
+@pytest.mark.asyncio
 async def test_materialize_behavior_claim_validation_emits_heartbeats_while_audit_runs(
     tmp_path, monkeypatch
 ):
