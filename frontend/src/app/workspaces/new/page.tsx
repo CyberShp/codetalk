@@ -105,11 +105,12 @@ export default function NewWorkspacePage() {
 
       <form onSubmit={handleSubmit} className="space-y-5">
         <div>
-          <label className="block text-sm font-medium text-on-surface mb-1.5">
+          <label htmlFor="workspace-name" className="block text-sm font-medium text-on-surface mb-1.5">
             工作空间名称
           </label>
           <input
             name="name"
+            id="workspace-name"
             type="text"
             placeholder="例如：项目 A 分析工作台"
             className="w-full px-4 py-2.5 bg-surface-container border border-outline-variant/30 rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 transition-colors"
@@ -117,7 +118,7 @@ export default function NewWorkspacePage() {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-on-surface mb-1.5">
+          <label htmlFor="workspace-repo-path" className="block text-sm font-medium text-on-surface mb-1.5">
             代码仓库路径
           </label>
           <div className="relative">
@@ -127,6 +128,7 @@ export default function NewWorkspacePage() {
             />
             <input
               name="repoPath"
+              id="workspace-repo-path"
               type="text"
               placeholder="本地文件夹路径，如 /home/user/project"
               className="w-full pl-10 pr-4 py-2.5 bg-surface-container border border-outline-variant/30 rounded-lg text-sm text-on-surface placeholder:text-on-surface-variant/50 focus:outline-none focus:border-primary/50 focus:ring-1 focus:ring-primary/20 transition-colors font-data"

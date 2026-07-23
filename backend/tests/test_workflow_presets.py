@@ -115,7 +115,7 @@ def test_retired_claude_basic_preset_alias_resolves_to_codex_replacement():
     assert preset["definition"]["steps"][0]["provider"] == "codex"
 
 
-def test_basic_report_workflow_presets_have_minimal_inputs_and_one_report_contract():
+def test_basic_report_workflow_presets_have_named_analysis_target_and_one_report_contract():
     from app.services.workflow_presets import active_builtin_workflow_presets
 
     by_id = {item["id"]: item for item in active_builtin_workflow_presets()}
@@ -133,14 +133,22 @@ def test_basic_report_workflow_presets_have_minimal_inputs_and_one_report_contra
             "required": True,
             "resolver": "workspace",
             "role": "SPDK 源码工作空间",
-        }
+        },
+        {
+            "id": "analysis_target",
+            "label": "分析目标",
+            "type": "long_text",
+            "required": True,
+            "resolver": "manual",
+            "role": "用户逐字要求，定义分析范围、流程、异常、资源、并发与恢复重点",
+        },
     ]
     source_step = source_only["steps"][0]
     assert source_step["type"] == "agent_task"
     assert source_step["provider"] == "codex"
     assert "mcp_profile" not in source_step
     assert {"source_scope.json", "evidence_cards.json", "flow_cards.json", "sfmea.json", "black_box_cases.json"} <= set(source_step["required_artifacts"])
-    assert "SPDK iSCSI login" in source_step["goal"]
+    assert "用户填写的“分析目标”" in source_step["goal"]
     assert "不得声称该用例已可直接执行" in source_step["goal"]
     assert "受控 harness 设计契约" in source_step["goal"]
     assert "可执行流量构造只能在被明确批准的后续测试活动中生成" in source_step["goal"]
@@ -197,9 +205,10 @@ def test_basic_report_workflow_presets_have_minimal_inputs_and_one_report_contra
     assert with_design["execution_label"] == "内置模型"
     assert [item["id"] for item in with_design["inputs"]] == [
         "repo_path",
+        "analysis_target",
         "design_doc",
     ]
-    assert with_design["inputs"][1] == {
+    assert with_design["inputs"][2] == {
         "id": "design_doc",
         "label": "开发设计文档",
         "type": "file",
@@ -214,6 +223,7 @@ def test_basic_report_workflow_presets_have_minimal_inputs_and_one_report_contra
     assert builtin_step["required_artifacts"] == source_step["required_artifacts"]
     assert builtin_step["input_ports"] == [
         {"id": "repo_path", "type": "directory", "required": True},
+        {"id": "analysis_target", "type": "long_text", "required": True},
         {"id": "design_doc", "type": "file", "required": True},
     ]
     assert {item["artifact"] for item in with_design["outputs"]} >= {"source_scope.json", "evidence_cards.json", "flow_cards.json", "sfmea.json", "black_box_cases.json", "report.md"}

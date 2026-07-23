@@ -431,7 +431,9 @@ def canonical_builtin_workflow_preset_id(preset_id: str) -> str:
 
 
 _BASIC_ISCSI_REPORT_GOAL = (
-    "针对 SPDK iSCSI login 进行源码证据驱动的测试分析。必须先读取工作空间源码，"
+    "必须以用户填写的“分析目标”为本次分析范围的最高优先级；仅在用户目标明确要求 iSCSI "
+    "login 或未提供更窄范围时，才使用本预设的 iSCSI login 方法提示。针对目标范围进行源码证据"
+    "驱动的测试分析。必须先读取工作空间源码，"
     "优先检查已有 GitNexus/CGC 产物，并核验真实文件、符号、行号和现有测试目录；"
     "如果提供开发设计文档，还必须逐条吸收其中的设计约束、外部行为与未决问题。"
     "必须交付 report.md，以及任务输出契约列出的 source_analysis.md、source_scope.json、"
@@ -543,6 +545,19 @@ def _basic_report_preset(*, include_design: bool, provider: str) -> dict[str, An
     input_ports: list[dict[str, Any]] = [
         {"id": "repo_path", "type": "directory", "required": True}
     ]
+    inputs.append(
+        {
+            "id": "analysis_target",
+            "label": "分析目标",
+            "type": "long_text",
+            "required": True,
+            "resolver": "manual",
+            "role": "用户逐字要求，定义分析范围、流程、异常、资源、并发与恢复重点",
+        }
+    )
+    input_ports.append(
+        {"id": "analysis_target", "type": "long_text", "required": True}
+    )
     if include_design:
         inputs.append(
             {
