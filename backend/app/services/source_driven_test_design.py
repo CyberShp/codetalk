@@ -634,7 +634,11 @@ def verify_technical_claims(
                 binding_evidence: list[dict[str, Any]] = []
                 for ref in refs:
                     evidence_id = str(ref.get("evidence_id") or "")
-                    card = evidence.get(evidence_id)
+                    card = _resolve_claim_evidence_card(
+                        evidence=evidence,
+                        evidence_id=evidence_id,
+                        reference=ref,
+                    )
                     expected_path = str(ref.get("path") or "")
                     quote = str(ref.get("quote") or "")
                     expected_symbol = str(ref.get("symbol") or "")
@@ -714,6 +718,44 @@ def verify_technical_claims(
         "pass_rate": round(verified * 100 / total) if total else None,
         "claims": claims,
     }
+
+
+def _resolve_claim_evidence_card(
+    *,
+    evidence: dict[str, dict[str, Any]],
+    evidence_id: str,
+    reference: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Resolve `CARD:L123` to its source card without weakening line binding.
+
+    Generated artifacts retain the exact line as part of their reference ID,
+    while deterministic evidence cards intentionally use a stable card ID.  A
+    suffix is valid only when the referenced line is inside the card's verified
+    range; the original reference ID is preserved for the L2 binding hash.
+    """
+    direct = evidence.get(evidence_id)
+    if direct is not None:
+        return direct
+    match = re.fullmatch(r"(.+):L(\d+)", evidence_id)
+    if not match:
+        return None
+    card = evidence.get(match.group(1))
+    if card is None:
+        return None
+    line = int(match.group(2))
+    start = _evidence_reference_line(str(card.get("start_line") or ""))
+    end = _evidence_reference_line(str(card.get("end_line") or ""))
+    declared = _evidence_reference_line(str(reference.get("lines") or ""))
+    if declared and declared != line:
+        return None
+    if not start or not end or not (start <= line <= end):
+        return None
+    return card
+
+
+def _evidence_reference_line(value: str) -> int:
+    match = re.search(r"\d+", value)
+    return int(match.group(0)) if match else 0
 
 
 def _claim_statement_supported_by_quote(

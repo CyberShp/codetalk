@@ -108,6 +108,67 @@ def test_claim_evidence_ledger_carries_independent_behavior_verdicts(tmp_path):
     assert ledger["claims"][0]["verification_status"] == "contradicted"
 
 
+def test_claim_ledger_resolves_line_qualified_evidence_ids_without_losing_l2_binding(tmp_path):
+    import json
+
+    from app.services.artifact_contract_v3 import materialize_claim_evidence_ledger
+    from app.services.test_activity_contract import _behavior_claim_binding
+
+    quote = "if (auth_method == NULL) {"
+    card = {
+        "evidence_id": "SRC-03",
+        "file_path": "lib/iscsi/iscsi.c",
+        "symbols": ["iscsi_op_login_rsp_handle_csg_bit"],
+        "start_line": 1929,
+        "end_line": 1947,
+        "excerpt": quote,
+        "sha256": "d" * 64,
+    }
+    evidence = [{
+        "evidence_id": "SRC-03:L1943",
+        "path": "lib/iscsi/iscsi.c",
+        "symbol": "",
+        "lines": "L1943",
+        "quote": quote,
+    }]
+    claim = {
+        "claim_id": "TC-03",
+        "type": "source_code_behavior",
+        "statement": "auth_method 为 NULL 时进入缺参错误处理。",
+        "evidence": evidence,
+    }
+    binding = _behavior_claim_binding(
+        claim_id=claim["claim_id"],
+        claim_type=claim["type"],
+        statement=claim["statement"],
+        evidence=[{**evidence[0], "sha256": card["sha256"]}],
+    )
+    (tmp_path / "evidence_cards.json").write_text(json.dumps([card]), encoding="utf-8")
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps([{"sfmea_id": "SFMEA-03", "technical_claims": [claim]}]),
+        encoding="utf-8",
+    )
+    (tmp_path / "black_box_cases.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "behavior_claim_validation.json").write_text(
+        json.dumps({"claims": [{
+            "claim_id": "TC-03",
+            "binding": binding,
+            "status": "supports",
+        }]}),
+        encoding="utf-8",
+    )
+
+    ledger = materialize_claim_evidence_ledger(tmp_path)
+
+    assert ledger["summary"] == {
+        "total": 1,
+        "verified": 1,
+        "contradicted": 0,
+        "insufficient": 0,
+    }
+    assert ledger["claims"][0]["l2_status"] == "supports"
+
+
 def test_nested_agent_artifacts_materialize_the_v3_ledger_and_rapid_contract(tmp_path):
     """Real workflow steps write under agent_runs/<step>; contracts must find them."""
     import json
