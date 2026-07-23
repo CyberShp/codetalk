@@ -1579,7 +1579,8 @@ def audit_test_activity_artifacts(
         )
         for artifact, spec in artifact_contract.items()
         if isinstance(spec, dict)
-    )
+    ) or (root / "black_box_cases.json").is_file()
+    audited_json_artifacts: set[str] = set()
     if contract.get("audit_scope_required") and not artifact_contract:
         structural_issues.append(
             _issue(
@@ -1600,6 +1601,7 @@ def audit_test_activity_artifacts(
             structural_issues.extend(
                 _audit_json_artifact(artifact=artifact, payload=payload, spec=spec, repo=repo)
             )
+            audited_json_artifacts.add(Path(str(artifact)).name)
         else:
             content = path.read_text(encoding="utf-8", errors="ignore").strip()
             if not content:
@@ -1672,6 +1674,22 @@ def audit_test_activity_artifacts(
                             }
                         ]
                     lint_warnings.extend(consistency_issues)
+    # Staged workflows commonly expose one formal Markdown report while using
+    # SFMEA and black-box JSON as the authoritative intermediate fact ledger.
+    # Those rows remain quality-critical even when they are not separate user
+    # downloads; otherwise report-only contracts lose case-level repair IDs.
+    for artifact in ("sfmea.json", "black_box_cases.json"):
+        path = root / artifact
+        if artifact in audited_json_artifacts or not path.is_file():
+            continue
+        structural_issues.extend(
+            _audit_json_artifact(
+                artifact=artifact,
+                payload=_read_json(path),
+                spec={},
+                repo=repo,
+            )
+        )
     structural_issues.extend(_audit_cross_artifact_references(
         root=root,
         declared_artifacts={str(item) for item in artifact_contract},

@@ -101,6 +101,40 @@ def test_black_box_relative_latency_threshold_requires_statistical_basis_per_cas
     ), issues
 
 
+def test_report_only_contract_still_audits_internal_structured_black_box_cases(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+
+    (tmp_path / "black_box_cases.json").write_text(
+        json.dumps(
+            [
+                {
+                    "case_id": "BB-HAZARD-02",
+                    "test_dimension": "recovery",
+                    "scenario_name": "多连接回归",
+                    "steps": "运行 test/iscsi_tgt/multiconnection/multiconnection.sh。",
+                    "expected_result": "多连接均完成。",
+                    "observability": "脚本退出码和 target 日志。",
+                    "source_evidence": ["test/iscsi_tgt/multiconnection/multiconnection.sh"],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=tmp_path,
+        contract={"artifact_contract": {}},
+        repo_path=str(tmp_path),
+    )
+
+    assert any(
+        issue["code"] == "unsafe_hazardous_test_mapping"
+        and issue.get("row_id") == "BB-HAZARD-02"
+        for issue in audit["issues"]
+    ), audit
+
+
 @pytest.mark.parametrize(
     "failure_mode,cause",
     [
