@@ -6575,6 +6575,7 @@ class TestAgentRuntimes:
         assert captured["process"].stdin.closed is True
         assert "--ignore-user-config" in captured["command"]
         assert "--ignore-rules" in captured["command"]
+        assert "--skip-git-repo-check" in captured["command"]
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group assertion")
     async def test_cancelled_runtime_probe_terminates_its_process_group(self, monkeypatch):

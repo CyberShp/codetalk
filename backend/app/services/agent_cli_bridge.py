@@ -266,6 +266,10 @@ async def _probe_codex_model_in_runtime_sandbox(
             )
             readiness_args = _ensure_flag(readiness_args, "--ignore-user-config")
             readiness_args = _ensure_flag(readiness_args, "--ignore-rules")
+            # The readiness probe intentionally runs in an isolated empty
+            # directory. Codex otherwise exits before making its minimal model
+            # request, while an actual workflow runs inside a Git workspace.
+            readiness_args = _ensure_flag(readiness_args, "--skip-git-repo-check")
             readiness_command = [command, *readiness_args]
             if sandbox.wrapper:
                 readiness_command = [*sandbox.wrapper, *readiness_command]
@@ -333,6 +337,11 @@ def _claude_readiness_result(text: str, *, returncode: int) -> dict[str, Any]:
     is_error = bool(result_payload.get("is_error")) if result_payload else True
     status = result_payload.get("api_error_status") if result_payload else None
     lower = str(text or "").lower()
+    if "not inside a trusted directory" in lower or "skip-git-repo-check" in lower:
+        return {
+            "success": False,
+            "message": "Codex 探测目录未被识别为 Git 工作区。请检查 Codex 启动参数或隔离配置。",
+        }
     if status == 403 or "api error: 403" in lower or "request not allowed" in lower:
         return {
             "success": False,
