@@ -30,14 +30,28 @@ test("V3 basic source report runs through the browser with a real Codex CLI", as
   const elapsedMs = Date.now() - startedAt;
 
   await expect(page.getByText(/交付文件|正式交付件/).first()).toBeVisible({ timeout: 30_000 });
+  const quality = page.locator(".ct-v2-run-status").filter({ hasText: "质量状态" }).locator("strong");
+  await expect(quality).toHaveText("通过");
   await page.screenshot({ path: path.join(dataDir, "v3-basic-codex-completed.png"), fullPage: false });
 
   const runRoot = path.join(dataDir, "workbench", "task_runs", runId);
   const manifestPath = path.join(runRoot, "task_artifact_manifest.json");
   expect(fs.existsSync(manifestPath)).toBeTruthy();
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8")) as { artifacts?: Array<{ name?: string; path?: string }> };
-  const artifactNames = (manifest.artifacts ?? []).map((item) => item.name ?? item.path ?? "");
-  expect(artifactNames.some((name) => /report\.md|分析报告/.test(name))).toBeTruthy();
+  const artifactNames = (manifest.artifacts ?? []).map((item) =>
+    path.basename(String(item.name ?? item.path ?? "")),
+  );
+  for (const required of [
+    "source_analysis.md",
+    "source_scope.json",
+    "evidence_cards.json",
+    "flow_cards.json",
+    "sfmea.json",
+    "black_box_cases.json",
+    "report.md",
+  ]) {
+    expect(artifactNames).toContain(required);
+  }
 
   fs.writeFileSync(
     path.join(dataDir, "v3-basic-codex-metrics.json"),
