@@ -4516,11 +4516,21 @@ def _audit_combined_professional_completeness(
             )
         )
     scale_range = r"(?:1\s*[-~至]\s*10|1\.\.10|1\b.{0,320}\b10\b)"
+    shared_scale = bool(re.search(rf"(?:评分|score).{{0,48}}{scale_range}", lower))
     has_sfmea_scale = bool(
-        re.search(rf"(?:severity|严重度).{{0,40}}{scale_range}", lower)
-        and re.search(rf"(?:occurrence|发生度).{{0,40}}{scale_range}", lower)
-        and re.search(rf"(?:detection|探测度|可探测度).{{0,40}}{scale_range}", lower)
-        and re.search(r"(?:rpn)[\s\S]{0,240}(?:优先|priority|阈值|threshold|高风险)", lower)
+        (
+            shared_scale
+            and re.search(r"(?:severity|严重度)", lower)
+            and re.search(r"(?:occurrence|发生度)", lower)
+            and re.search(r"(?:detection|探测度|可探测度)", lower)
+        )
+        or (
+            re.search(rf"(?:severity|严重度).{{0,40}}{scale_range}", lower)
+            and re.search(rf"(?:occurrence|发生度).{{0,40}}{scale_range}", lower)
+            and re.search(rf"(?:detection|探测度|可探测度).{{0,40}}{scale_range}", lower)
+        )
+    ) and bool(
+        re.search(r"(?:rpn)[\s\S]{0,240}(?:优先|priority|阈值|threshold|高风险)", lower)
     )
     if not has_sfmea_scale:
         issues.append(
@@ -5854,11 +5864,20 @@ def _combined_response_evidence_paths(content: str) -> list[str]:
         str(content or ""),
         flags=re.IGNORECASE,
     )
-    return _unique_strings(
+    normalized = _unique_strings(
         re.sub(r":L?\d+(?:-L?\d+)?$", "", path.rstrip(".,;，。；"), flags=re.IGNORECASE)
         for path in [*candidates, *_markdown_repo_paths(str(content or ""))]
         if not any(marker in path for marker in "*?[]")
     )
+    # Narrative text may mention a basename (for example, "in conn.c") after
+    # already citing `lib/iscsi/conn.c`.  Treat that prose echo as the same
+    # evidence rather than a fictitious repository-root path.
+    qualified_basenames = {Path(path).name for path in normalized if "/" in path}
+    return [
+        path
+        for path in normalized
+        if "/" in path or Path(path).name not in qualified_basenames
+    ]
 
 
 def _is_labeled_unverified_proposal(content: str, path: str) -> bool:

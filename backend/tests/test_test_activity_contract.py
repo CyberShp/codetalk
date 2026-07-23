@@ -273,6 +273,31 @@ def test_sfmea_mitigation_keeps_remediation_prefixed_addition_when_it_also_menti
     assert sfmea_mitigation_quality_gaps(mitigation) == []
 
 
+def test_combined_evidence_paths_does_not_treat_a_mentioned_basename_as_a_second_repo_path():
+    from app.services.test_activity_contract import _combined_response_evidence_paths
+
+    paths = _combined_response_evidence_paths(
+        "证据 `lib/iscsi/conn.c:147-158`。"
+        "若超时未关闭，请检查 login_timer registration in conn.c。"
+    )
+
+    assert paths == ["lib/iscsi/conn.c"]
+
+
+def test_combined_sfmea_accepts_a_shared_one_to_ten_scale_definition():
+    from app.services.test_activity_contract import _audit_combined_professional_completeness
+
+    issues = _audit_combined_professional_completeness(
+        "评分采用 1-10。Severity 表示业务影响；Occurrence 表示发生可能性；"
+        "Detection 表示失效发生前难以发现的程度。RPN=S×O×D；RPN≥200 优先处理。",
+        {},
+        include_execution=False,
+        include_consistency=False,
+    )
+
+    assert not any(issue["code"] == "missing_sfmea_scoring_scale" for issue in issues)
+
+
 def test_source_anchor_claim_is_l1_verified_only_when_statement_matches_quote():
     from app.services.test_activity_contract import _deterministic_claim_semantics
 
