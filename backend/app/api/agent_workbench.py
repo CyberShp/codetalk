@@ -26,7 +26,8 @@ from app.config import settings
 from app.services.agent_run_harness import ArtifactValidationHarness
 from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
 from app.services.agent_provider_settings import apply_persisted_agent_provider_settings
-from app.services.agent_runtimes import list_agent_runtimes_sync
+from app.services.agent_runtimes import get_agent_runtime_sync, list_agent_runtimes_sync
+from app.services.agent_cli_bridge import probe_agent_runtime
 from app.services.evidence_memory import EvidenceMemoryStore
 from app.services.external_agent_discovery import (
     external_agent_provider_capabilities,
@@ -57,6 +58,7 @@ from app.services.workbench_artifact_manifest import (
 from app.services.workbench_task_run import WorkbenchTaskRunPreparer
 from app.services.workbench_task_run import WorkbenchTaskRunStore
 from app.services.workbench_task_run import BUILTIN_LLM_PROVIDER_ID
+from app.services.workbench_task_run import agent_runtime_id_from_provider
 from app.services.workbench_task_run import _agent_runtime_provider_snapshot_item
 from app.services.workbench_task_run import _builtin_llm_provider_snapshot_item
 from app.services.workbench_task_run import build_agent_cli_provider_diagnostics
@@ -2361,6 +2363,31 @@ async def _execute_task_run_background(
                 {"status": "cancelled", "ignored_before_start": True},
             )
             return
+        readiness = await _preflight_task_run_agent_runtimes(task_run_id)
+        if readiness["status"] == "blocked":
+            message = str(readiness["message"])
+            event_store.mark_status_unless(
+                task_run_id,
+                "failed",
+                blocked_statuses={"cancelled"},
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                error=message,
+            )
+            event_store.mark_outcomes(
+                task_run_id,
+                quality_status="blocked",
+                delivery_status="none",
+            )
+            event_store.append(
+                task_run_id,
+                "provider_readiness_blocked",
+                {
+                    "status": "failed",
+                    "user_message": message,
+                    "readiness_artifact": "provider_live_readiness.json",
+                },
+            )
+            return
         started, _ = event_store.mark_status_unless(
             task_run_id,
             "running",
@@ -2445,6 +2472,59 @@ async def _execute_task_run_background(
             return
     finally:
         _ACTIVE_TASK_RUN_IDS.discard(task_run_id)
+
+
+async def _preflight_task_run_agent_runtimes(task_run_id: str) -> dict[str, Any]:
+    """Probe frozen managed runtimes before a workflow process is allowed to start.
+
+    Preparation can only establish that a command was configured.  This preflight
+    uses the same real probe exposed in Settings, records its immutable result with
+    the run, and prevents a known-unready managed Agent from producing a misleading
+    short-lived "running" task.
+    """
+    task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    providers = (
+        task_run.task_bundle.get("provider_snapshot", {}).get("providers", {})
+        if isinstance(task_run.task_bundle, dict)
+        else {}
+    )
+    checks: list[dict[str, Any]] = []
+    for provider in sorted(providers) if isinstance(providers, dict) else []:
+        runtime_id = agent_runtime_id_from_provider(provider)
+        if not runtime_id:
+            continue
+        runtime = get_agent_runtime_sync(runtime_id)
+        if runtime is None or not bool(runtime.get("enabled", True)):
+            checks.append({
+                "provider": provider,
+                "runtime_id": runtime_id,
+                "success": False,
+                "message": "所选 Agent 已不可用或被禁用，请在设置中重新启用后再运行。",
+            })
+            continue
+        result = await probe_agent_runtime(runtime)
+        checks.append({
+            "provider": provider,
+            "runtime_id": runtime_id,
+            "success": bool(result.get("success")),
+            "message": str(result.get("message") or ""),
+        })
+    payload = {
+        "schema_version": "provider-live-readiness-v1",
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "checks": checks,
+    }
+    task_dir = Path(task_run.artifact_dir)
+    _write_json(task_dir / "provider_live_readiness.json", payload)
+    failed = next((item for item in checks if not item["success"]), None)
+    if failed:
+        message = str(failed["message"] or "所选 Agent 尚未就绪。")
+        return {
+            "status": "blocked",
+            "message": f"所选 Agent 未通过启动前可用性检查：{message}",
+            "checks": checks,
+        }
+    return {"status": "ready", "checks": checks}
 
 
 def _terminal_execution_status(result: dict[str, Any]) -> str:

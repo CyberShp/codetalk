@@ -20,6 +20,68 @@ from app.services.agent_cli_bridge import (
 
 
 @pytest.mark.asyncio
+async def test_managed_agent_probe_fails_closed_before_model_request_without_certified_egress(monkeypatch):
+    from app.services import agent_cli_bridge
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"codex-cli 0.145.0", b""
+
+    called = False
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        return FakeProcess()
+
+    async def fake_model_probe(**_kwargs):
+        nonlocal called
+        called = True
+        return {"success": True, "message": "must not be reached"}
+
+    monkeypatch.setattr(agent_cli_bridge.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(agent_cli_bridge, "_probe_codex_model_in_runtime_sandbox", fake_model_probe)
+    monkeypatch.setattr(agent_cli_bridge, "agent_network_is_permitted", lambda: False)
+    monkeypatch.setattr(agent_cli_bridge.settings, "intranet_network_mode", True)
+
+    result = await agent_cli_bridge.probe_agent_runtime({
+        "provider": "codex",
+        "command": "codex",
+        "prompt_transport": "codex_exec_json",
+    })
+
+    assert result["success"] is False
+    assert "内网策略未批准 Agent 访问模型端点" in result["message"]
+    assert called is False
+
+
+@pytest.mark.asyncio
+async def test_managed_agent_run_fails_before_process_spawn_without_certified_egress(monkeypatch):
+    from app.services import agent_cli_bridge
+
+    called = False
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("process must not start")
+
+    monkeypatch.setattr(agent_cli_bridge.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    monkeypatch.setattr(agent_cli_bridge, "agent_network_is_permitted", lambda: False)
+    monkeypatch.setattr(agent_cli_bridge.settings, "intranet_network_mode", True)
+
+    with pytest.raises(agent_cli_bridge.AgentRuntimeError, match="内网策略未批准 Agent 访问模型端点"):
+        async for _ in agent_cli_bridge.stream_agent_runtime(
+            runtime={"provider": "codex", "command": "codex", "prompt_transport": "codex_exec_json"},
+            prompt="analyze source",
+            cwd=None,
+        ):
+            pass
+
+    assert called is False
+
+
+@pytest.mark.asyncio
 @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
 async def test_terminate_process_kills_a_sigterm_ignoring_descendant(tmp_path):
     child_pid_file = tmp_path / "child.pid"

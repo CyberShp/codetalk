@@ -54,7 +54,10 @@ async function ensureCodexRuntimeIsReady(page: import("@playwright/test").Page) 
   await expect(runtime).toBeVisible({ timeout: 30_000 });
   await runtime.getByRole("button", { name: "测试" }).hover();
   await runtime.getByRole("button", { name: "测试" }).click();
-  await expect(runtime).toContainText(/可用/, { timeout: 90_000 });
+  await expect(runtime).toContainText(
+    /可用：Codex 已登录，真实模型请求可用/,
+    { timeout: 90_000 },
+  );
 }
 
 async function createWorkspaceThroughUi(page: import("@playwright/test").Page, workspaceName: string) {

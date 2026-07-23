@@ -726,6 +726,61 @@ async def test_background_exception_finishes_quality_in_blocked_state(tmp_path, 
     assert failed.delivery_status == "none"
 
 
+@pytest.mark.asyncio
+async def test_background_preflight_blocks_unready_agent_before_runner_starts(tmp_path, monkeypatch):
+    from app.api import agent_workbench
+    from app.config import settings
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer, WorkbenchTaskRunStore
+    from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
+    from app.services.workflow_dsl import WorkflowStore
+
+    data_dir = tmp_path / "data"
+    run_root = data_dir / "workbench" / "task_runs"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+    workflow_store = WorkflowStore(data_dir / "workbench" / "task_workflows.db")
+    workflow_store.save_workflow(_workflow())
+    prepared = WorkbenchTaskRunPreparer(
+        artifact_root=run_root,
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="source-review",
+        workspace_id="ws-1",
+        repo_path=str(repo),
+        inputs={"target": "lib/nvmf"},
+    )
+    runner_called = False
+
+    async def blocked_preflight(task_run_id: str):
+        return {
+            "status": "blocked",
+            "message": "所选 Agent 未通过启动前可用性检查：内网策略未批准 Agent 访问模型端点。",
+        }
+
+    def should_not_run(**_kwargs):
+        nonlocal runner_called
+        runner_called = True
+        raise AssertionError("workflow runner must not be reached after a failed preflight")
+
+    monkeypatch.setattr(agent_workbench, "_preflight_task_run_agent_runtimes", blocked_preflight)
+    monkeypatch.setattr(agent_workbench, "_execute_task_run_with_closure", should_not_run)
+
+    await agent_workbench._execute_task_run_background(
+        task_run_id=prepared.task_run_id,
+        payload=agent_workbench.TaskRunExecuteRequest(),
+    )
+
+    stored = WorkbenchTaskRunStore(run_root).load(prepared.task_run_id)
+    assert runner_called is False
+    assert stored.execution_status == "failed"
+    assert stored.quality_status == "blocked"
+    events = WorkbenchTaskRunEventStore(run_root).list_after(prepared.task_run_id)
+    blocked = [item for item in events if item["event_type"] == "provider_readiness_blocked"]
+    assert blocked
+    assert "内网策略未批准" in blocked[-1]["payload"]["user_message"]
+
+
 def test_prepared_runs_persist_task_attempt_metadata_and_legacy_defaults(tmp_path):
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer, WorkbenchTaskRunStore
     from app.services.workflow_dsl import WorkflowStore

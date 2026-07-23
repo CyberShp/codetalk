@@ -89,6 +89,9 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
         stdout_text = _decode(stdout).strip() if stdout else ""
         stderr_text = _decode(stderr).strip() if stderr else ""
         if proc.returncode == 0:
+            network_block = managed_agent_network_block_message(runtime)
+            if network_block:
+                return {"success": False, "message": network_block}
             if str(runtime.get("prompt_transport") or "") == "claude_print_arg":
                 auth_result = await _probe_claude_auth_in_runtime_sandbox(
                     runtime=runtime,
@@ -388,6 +391,31 @@ def _codex_readiness_result(text: str, *, returncode: int) -> dict[str, Any]:
     return {"success": True, "message": "Codex 已登录，真实模型请求可用"}
 
 
+def managed_agent_network_block_message(runtime: dict[str, Any]) -> str:
+    """Return a shared readiness failure before a managed Agent can egress."""
+    prompt_transport = str(runtime.get("prompt_transport") or "").strip()
+    provider = str(runtime.get("provider") or "").strip().lower()
+    command_name = Path(str(runtime.get("command") or "")).name.lower()
+    managed_command_names = {
+        "codex": {"codex", "codex.exe"},
+        "claude": {"claude", "claude.exe", "ccr", "ccr.cmd"},
+        "opencode": {"opencode", "opencode.cmd", "opencode.exe"},
+        "nga": {"nga", "nga.cmd", "nga.exe"},
+    }
+    if (
+        prompt_transport not in MANAGED_PROVIDER_PROMPT_TRANSPORTS
+        or provider not in {"codex", "claude", "opencode", "nga"}
+        or command_name not in managed_command_names[provider]
+        or not settings.intranet_network_mode
+        or agent_network_is_permitted()
+    ):
+        return ""
+    return (
+        "内网策略未批准 Agent 访问模型端点：当前部署没有可审计的 Agent 出口网关。"
+        "请使用内置模型的已批准 Provider Adapter，或由部署管理员配置受控出口并完成流量捕获验收后重试。"
+    )
+
+
 async def stream_agent_runtime(
     *,
     runtime: dict[str, Any],
@@ -413,6 +441,9 @@ async def stream_agent_runtime(
     ]
     args = _runtime_args(runtime, resume_session_id=resume_session_id)
     prompt_transport = str(runtime.get("prompt_transport") or "stdin")
+    network_block = managed_agent_network_block_message(runtime)
+    if network_block:
+        raise AgentRuntimeError(network_block)
     env, owned_artifact_dir = _build_env_with_artifact_ownership(runtime)
     artifact_dir = Path(env["CODETALK_AGENT_ARTIFACT_DIR"]).expanduser().resolve()
     artifact_dir.mkdir(parents=True, exist_ok=True)
