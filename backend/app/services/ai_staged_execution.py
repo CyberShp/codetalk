@@ -3473,6 +3473,20 @@ async def _execute_regular_stage(
         if current_artifact_seed.strip() and isinstance(quality_feedback, dict)
         else None
     )
+    if (
+        current_artifact_seed.strip()
+        and isinstance(quality_feedback, dict)
+        and Path(artifact).name == "black_box_cases.json"
+        and _quality_repair_may_reassign_black_box_dimensions(quality_feedback)
+    ):
+        # A coverage finding names dimensions, not rows.  Restricting the patch
+        # to unrelated row-level findings makes it impossible to repurpose a
+        # duplicate/low-value case into the missing dimension.
+        allowed_existing_repair_row_ids = {
+            _json_array_item_identity(item)
+            for item in _json_array_items(current_artifact_seed)
+            if _json_array_item_identity(item)
+        }
     allow_new_repair_items = (
         _quality_repair_allows_new_items(
             artifact=artifact,
