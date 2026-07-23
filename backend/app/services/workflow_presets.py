@@ -436,6 +436,8 @@ _BASIC_ISCSI_REPORT_GOAL = (
     "如果提供开发设计文档，还必须逐条吸收其中的设计约束、外部行为与未决问题。"
     "必须交付 report.md，以及任务输出契约列出的 source_analysis.md、source_scope.json、"
     "evidence_cards.json、flow_cards.json、sfmea.json 和 black_box_cases.json；终端输出仅用于进度。"
+    "除运行时已由 CodeTalk 创建的诊断文件外，不得自行创建 artifact manifest、claim ledger、"
+    "额外报告或未声明 JSON；完成这七份交付件的结构自检后必须结束，不得通过新增文件重复自检。"
     "report.md 至少包含：分析范围与证据缺口、"
     "关键源码证据、主流程与异常/恢复流程、SFMEA、可由测试人员直接执行的黑盒测试用例。"
     "SFMEA 必须包含 failure mode、cause、effect、detection、severity、occurrence、"
