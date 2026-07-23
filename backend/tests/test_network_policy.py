@@ -95,6 +95,7 @@ def test_model_request_paths_are_limited_to_adapter_api_routes():
         "https://api.openai.com/v1/chat/completions"
     ).allowed
     assert policy.evaluate_model_request_url("https://api.openai.com/v1/models").allowed
+    assert policy.evaluate_model_request_url("https://api.openai.com/v1/embeddings").allowed
     denied = policy.evaluate_model_request_url("https://api.openai.com/v1/traces")
     assert denied.allowed is False
     assert denied.reason == "model_endpoint_path_forbidden"

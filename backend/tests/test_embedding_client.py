@@ -8,6 +8,12 @@ import pytest
 from app.llm.embedding_client import EmbeddingClient, _BATCH_SIZE
 
 
+@pytest.fixture(autouse=True)
+def _disable_intranet_policy_for_adapter_contract_tests(monkeypatch):
+    """These HTTP-shape tests use fake non-routable hosts, not runtime egress."""
+    monkeypatch.setattr("app.config.settings.intranet_network_mode", False)
+
+
 def _make_embedding_response(texts: list[str], dim: int = 3) -> dict:
     """Build a fake /v1/embeddings response with deterministic vectors."""
     return {
@@ -85,6 +91,25 @@ class TestClientConstruction:
 
 
 class TestEmbedBatch:
+    @pytest.mark.asyncio
+    async def test_intranet_rejects_unapproved_embedding_endpoint_before_post(self, monkeypatch):
+        from app.services.network_policy import NetworkEgressBlocked
+
+        monkeypatch.setattr("app.config.settings.intranet_network_mode", True)
+        monkeypatch.setattr("app.config.settings.intranet_allowed_hosts", [])
+        monkeypatch.setattr("app.config.settings.intranet_allowed_cidrs", [])
+        client = EmbeddingClient(
+            base_url="https://api.openai.com",
+            api_key="redacted",
+            model="test-model",
+        )
+        client._client = AsyncMock()
+
+        with pytest.raises(NetworkEgressBlocked, match="公网出口已被内网策略拒绝"):
+            await client.embed_batch(["must remain local"])
+
+        client._client.post.assert_not_called()
+
     @pytest.mark.asyncio
     async def test_empty_input(self):
         client = EmbeddingClient(

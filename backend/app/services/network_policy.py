@@ -47,6 +47,7 @@ _FORBIDDEN_AUTONOMOUS_SERVICE_SUFFIXES = (
 )
 _MODEL_API_PATH_SUFFIXES = (
     "/v1/chat/completions",
+    "/v1/embeddings",
     "/v1/messages",
     "/v1/models",
 )
