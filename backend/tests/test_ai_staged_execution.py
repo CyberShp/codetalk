@@ -37,6 +37,7 @@ from app.services.ai_staged_execution import (
     _merge_json_array_patch,
     _missing_quality_repair_row_ids,
     _quality_repair_row_ids,
+    _quality_repair_may_reassign_black_box_dimensions,
     _quality_repair_prompt_seed,
     _quality_repair_evidence_cards,
     _ISCSI_RAW_PDU_APPENDIX,
@@ -855,6 +856,7 @@ def test_canonical_claim_evidence_is_materialized_from_evidence_id():
     canonicalized = _canonicalize_technical_claim_evidence(rendered, catalog)
 
     assert canonicalized[0]["technical_claims"][0]["evidence"] == [catalog[0]]
+    assert canonicalized[0]["technical_claims"][0]["statement"] == catalog[0]["quote"]
     assert canonicalized[1]["technical_claims"][0]["evidence"] == [
         {"evidence_id": "UNKNOWN", "quote": "fake"}
     ]
@@ -1442,6 +1444,23 @@ def test_black_box_dimension_contract_keeps_gate_required_additional_case():
 
     assert [item["case_id"] for item in normalized] == ["BB-01", "BB-CBIT"]
     assert fields == []
+
+
+def test_missing_black_box_dimensions_allows_reassigning_duplicate_case_ids():
+    assert _quality_repair_may_reassign_black_box_dimensions(
+        {
+            "issues": [
+                {
+                    "code": "missing_black_box_dimensions",
+                    "artifact": "black_box_cases.json",
+                    "dimensions": ["performance"],
+                }
+            ]
+        }
+    )
+    assert not _quality_repair_may_reassign_black_box_dimensions(
+        {"issues": [{"code": "black_box_boundary_violation"}]}
+    )
 
 
 def test_quality_repair_patch_can_delete_a_disproved_sfmea_row():

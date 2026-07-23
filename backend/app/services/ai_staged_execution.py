@@ -4153,6 +4153,12 @@ async def _execute_regular_stage(
                         # A quality repair is a field patch over the accepted array.
                         # Preserve its order and untouched fields so a partial model
                         # response cannot evict rows at the output item limit.
+                        preserves_black_box_dimensions = (
+                            base_stage_id == "black_box_cases"
+                            and not _quality_repair_may_reassign_black_box_dimensions(
+                                quality_feedback or {}
+                            )
+                        )
                         rendered = _merge_json_array_patch(
                             previous_items,
                             rendered,
@@ -4160,7 +4166,7 @@ async def _execute_regular_stage(
                             allow_new_items=allow_new_repair_items,
                             immutable_fields=(
                                 {"test_dimension"}
-                                if base_stage_id == "black_box_cases"
+                                if preserves_black_box_dimensions
                                 else None
                             ),
                         )
@@ -4191,7 +4197,6 @@ async def _execute_regular_stage(
                         _normalize_black_box_dimension_contract(
                             rendered,
                             stage,
-                            preserve_additional_cases=allow_new_repair_items,
                         )
                     )
                     deterministic_repair_fields.extend(dimension_fields)
@@ -5525,6 +5530,13 @@ def _canonicalize_technical_claim_evidence(
                 )
                 if canonical:
                     evidence_items[index] = dict(canonical)
+                    # A technical claim is a traceability anchor, not a second
+                    # free-form explanation of the surrounding function.  Keep
+                    # its statement exactly bounded by the one verified source
+                    # line it cites; broader risk and test intent live in the
+                    # row's own fields.  This prevents one log line from being
+                    # presented as proof of several unquoted assignments.
+                    claim["statement"] = str(canonical.get("quote") or "")
     return rendered
 
 
@@ -5684,7 +5696,7 @@ def _normalize_black_box_dimension_contract(
     *,
     preserve_additional_cases: bool = False,
 ) -> tuple[Any, list[str]]:
-    """Keep the declared dimensions, retaining gate-required extra cases on repair."""
+    """Keep one executable case for every declared dimension."""
     if not isinstance(rendered, list):
         return rendered, []
     output_contract = (
@@ -5717,6 +5729,18 @@ def _normalize_black_box_dimension_contract(
         seen.add(dimension)
         normalized.append(item)
     return normalized, fields
+
+
+def _quality_repair_may_reassign_black_box_dimensions(
+    quality_feedback: dict[str, Any],
+) -> bool:
+    """A missing-dimension gate needs a legal way to repurpose duplicate rows."""
+
+    return any(
+        isinstance(issue, dict)
+        and str(issue.get("code") or "") == "missing_black_box_dimensions"
+        for issue in quality_feedback.get("issues") or []
+    )
 
 
 def _apply_regular_stage_output_limits(
@@ -8642,7 +8666,9 @@ def _stage_format_rules(stage_id: str, artifact: str) -> list[str]:
             "resource_pressure、timeout、performance、long_steady_state、resource_wraparound 必须填写 "
             "oracle_basis，说明阈值/时长来自源码常量、用户配置、协议规范或同环境基线；performance "
             "还必须包含预热次数、至少 30 次重复、P50/P95 和方差。\n"
-            "- 质量修复必须保持既有 case_id 的 test_dimension 不变；resource_wraparound 只能通过"
+            "- 质量修复必须保持既有 case_id；当门禁反馈缺少 test_dimension 时，必须把重复维度的"
+            "既有 case_id 重新分配为缺失维度，并完整重写该用例的场景、前置条件、步骤、预期结果、"
+            "观测点、诊断和 oracle_basis，直到十二个维度各恰好一条；resource_wraparound 只能通过"
             "公开 CLI、sysfs、配置或外部故障注入观测边界，禁止 mock/调用 libnvme 或 libnvmf 内部函数；"
             "若环境没有安全的外部边界注入能力，应把该能力写成前置条件和 Blocked 判据。"
             "upstream_error_propagation 必须从目标端、网络、配置文件或公开 CLI 注入上游错误，"

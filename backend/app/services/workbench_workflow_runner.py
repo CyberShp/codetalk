@@ -876,17 +876,11 @@ class WorkbenchWorkflowRunner:
             artifact_dir=artifact_dir,
         )
         claim_ledger = materialize_claim_evidence_ledger(artifact_dir)
-        claim_summary = dict(claim_ledger.get("summary") or {})
-        audit["claim_evidence_ledger"] = {
-            "status": str(claim_ledger.get("status") or "not_checked"),
-            "summary": claim_summary,
-        }
+        audit = _apply_claim_evidence_ledger_to_quality_audit(
+            audit=audit,
+            claim_ledger=claim_ledger,
+        )
         quality_axes = audit.get("quality_axes")
-        if isinstance(quality_axes, dict):
-            quality_axes["claim_evidence"] = {
-                "status": str(claim_ledger.get("status") or "not_checked"),
-                **claim_summary,
-            }
         execution_profile = task_run.task_bundle.get("execution_profile")
         profile_id = (
             str(execution_profile.get("id") or "rapid")
@@ -2732,10 +2726,81 @@ def _audit_staged_agent_artifacts(
         contract=scoped,
         repo_path=str(execution_contract.get("repo_path") or ""),
     )
-    return _apply_source_driven_judge_to_quality_audit(
+    audit = _apply_source_driven_judge_to_quality_audit(
         audit=audit,
         artifact_dir=artifact_dir,
     )
+    return _apply_claim_evidence_ledger_to_quality_audit(
+        audit=audit,
+        claim_ledger=materialize_claim_evidence_ledger(artifact_dir),
+    )
+
+
+def _apply_claim_evidence_ledger_to_quality_audit(
+    *,
+    audit: dict[str, Any],
+    claim_ledger: dict[str, Any],
+) -> dict[str, Any]:
+    """Make every unresolved structured claim a repairable delivery blocker."""
+
+    result = dict(audit or {})
+    claim_summary = dict(claim_ledger.get("summary") or {})
+    ledger_status = str(claim_ledger.get("status") or "not_checked")
+    result["claim_evidence_ledger"] = {
+        "status": ledger_status,
+        "summary": claim_summary,
+    }
+    quality_axes = dict(result.get("quality_axes") or {})
+    quality_axes["claim_evidence"] = {
+        "status": ledger_status,
+        **claim_summary,
+    }
+    result["quality_axes"] = quality_axes
+    if ledger_status != "blocked":
+        return result
+
+    failed_claims = [
+        item
+        for item in claim_ledger.get("claims") or []
+        if isinstance(item, dict)
+        and str(item.get("verification_status") or "") != "verified"
+    ]
+    issues = [
+        dict(item)
+        for item in result.get("issues") or []
+        if isinstance(item, dict)
+    ]
+    known = {
+        (str(item.get("code") or ""), str(item.get("field") or ""))
+        for item in issues
+    }
+    for claim in failed_claims[:50]:
+        claim_id = str(claim.get("claim_id") or "未命名断言")
+        status = str(claim.get("verification_status") or "insufficient")
+        key = ("claim_evidence_ledger_blocked", claim_id)
+        if key in known:
+            continue
+        issues.append(
+            {
+                "code": "claim_evidence_ledger_blocked",
+                "severity": "blocking",
+                "artifact": str(claim.get("artifact") or "sfmea.json"),
+                "field": claim_id,
+                "message": (
+                    f"技术断言 {claim_id} 的源码锚点未通过确定性核验（{status}）。"
+                    "请仅使用已验证证据逐字重建该断言，或移除该断言。"
+                ),
+            }
+        )
+    result.update(
+        {
+            "status": "needs_rework" if result.get("status") != "invalid" else "invalid",
+            "deliverable": False,
+            "issues": issues,
+            "issue_count": len(issues),
+        }
+    )
+    return result
 
 
 def _apply_source_driven_judge_to_quality_audit(

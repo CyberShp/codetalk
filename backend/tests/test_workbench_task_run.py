@@ -57,6 +57,40 @@ def test_source_driven_judge_blocks_delivery_and_never_reports_empty_facts_as_10
     assert result["issues"][-1]["code"] == "source_driven_coverage_judge_blocked"
 
 
+def test_claim_evidence_ledger_blocks_delivery_with_a_repairable_issue():
+    from app.services.workbench_workflow_runner import (
+        _apply_claim_evidence_ledger_to_quality_audit,
+    )
+
+    result = _apply_claim_evidence_ledger_to_quality_audit(
+        audit={
+            "status": "deliverable",
+            "deliverable": True,
+            "score": 100,
+            "issue_count": 0,
+            "issues": [],
+            "quality_axes": {},
+        },
+        claim_ledger={
+            "status": "blocked",
+            "summary": {"total": 1, "verified": 0, "contradicted": 0, "insufficient": 1},
+            "claims": [
+                {
+                    "claim_id": "TC-02",
+                    "artifact": "sfmea.json",
+                    "verification_status": "insufficient",
+                }
+            ],
+        },
+    )
+
+    assert result["status"] == "needs_rework"
+    assert result["deliverable"] is False
+    assert result["quality_axes"]["claim_evidence"]["status"] == "blocked"
+    assert result["issues"][-1]["code"] == "claim_evidence_ledger_blocked"
+    assert result["issues"][-1]["artifact"] == "sfmea.json"
+
+
 def test_source_driven_judge_is_found_in_agent_artifacts_and_promotes_four_axes(
     tmp_path,
 ):
@@ -8742,7 +8776,13 @@ def test_runner_materializes_verified_fact_ledger_with_quality_audit(tmp_path, m
 
     result = WorkbenchWorkflowRunner(tmp_path).audit_test_activity_quality(task_run=task_run)
 
-    assert result == audit
+    assert result["status"] == "needs_rework"
+    assert result["deliverable"] is False
+    assert result["issue_count"] == 2
+    assert any(
+        item["code"] == "claim_evidence_ledger_blocked"
+        for item in result["issues"]
+    )
     assert result["claim_evidence_ledger"] == {
         "status": "blocked",
         "summary": claim_ledger["summary"],
