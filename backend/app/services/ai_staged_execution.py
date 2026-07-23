@@ -3434,18 +3434,14 @@ async def _execute_regular_stage(
         artifact,
         quality_repair=bool(current_artifact_seed.strip()),
     )
-    repair_row_ids = (
+    allowed_existing_repair_row_ids = (
         _quality_repair_row_ids(
             artifact=artifact,
             quality_feedback=quality_feedback,
         )
         if current_artifact_seed.strip() and isinstance(quality_feedback, dict)
-        else set()
+        else None
     )
-    # A generic finding (for example, a destructive test mapping) has no stable
-    # row id.  The repair prompt then contains the complete artifact, so an empty
-    # set must mean "no row-level restriction", not "silently ignore every patch".
-    allowed_existing_repair_row_ids = repair_row_ids or None
     allow_new_repair_items = (
         _quality_repair_allows_new_items(
             artifact=artifact,
@@ -4350,7 +4346,19 @@ async def _execute_regular_stage(
         )
         last_error = str(exc) or exc.__class__.__name__
         finish_reason = "validation_error" if raw_content else "transport_error"
-        if policy.allow_degraded_output and output_path.is_file():
+        if (
+            current_artifact_seed.strip()
+            and artifact.endswith(".json")
+            and _is_valid_json_artifact_seed(current_artifact_seed, artifact)
+        ):
+            # A quality-repair response is a patch, not the primary artifact.
+            # If its tiny format-repair call is malformed, preserve the already
+            # materialized, schema-valid seed so the runner can report a
+            # repairable quality block instead of losing the whole workflow.
+            status = "partial"
+            rendered = _render_stage_artifact(current_artifact_seed, artifact)
+            finish_reason = "quality_repair_preserved_seed"
+        elif policy.allow_degraded_output and output_path.is_file():
             status = "partial"
             rendered = output_path.read_text(encoding="utf-8", errors="replace")
         else:
