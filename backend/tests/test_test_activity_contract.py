@@ -4084,6 +4084,31 @@ def test_iscsi_full_design_requires_chap_negatives_executable_wire_checks_and_sf
     }.issubset(issue_codes), audit
 
 
+def test_iscsi_c_bit_case_spanning_json_fields_is_not_false_missing(tmp_path):
+    from app.services.test_activity_contract import (
+        _audit_combined_professional_completeness,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整流程 SFMEA 黑盒测试设计",
+        repo_path=str(repo),
+    )
+    content = (
+        "C-bit fragmented Login Request reassembly。"
+        "步骤：发送 first Login PDU，C=1，数据段在 key/value 边界截断；"
+        "发送 second PDU，C=0，剩余参数收尾。"
+    )
+
+    issues = _audit_combined_professional_completeness(content, contract)
+
+    assert "missing_c_bit_fragmentation_case" not in {
+        issue["code"] for issue in issues
+    }
+
+
 def test_iscsi_hazardous_mapping_accepts_isolated_test_disk_with_data_loss_notice(tmp_path):
     from app.services.test_activity_contract import (
         audit_test_activity_response,

@@ -4409,10 +4409,14 @@ def _audit_combined_professional_completeness(
                 )
             )
 
+    # The JSON delivery keeps a scenario title and its wire steps in separate
+    # fields.  A short cross-field distance limit therefore produced a false
+    # "missing" result for an otherwise executable C-bit reassembly case.
     c_bit_case = bool(
         re.search(r"\bc\s*[:=]\s*1", lower)
-        and re.search(r"(?:跨|分片|fragment|split).{0,80}(?:pdu|key|value|参数)", lower)
         and re.search(r"\bc\s*[:=]\s*0", lower)
+        and re.search(r"(?:跨|分片|fragment|split|reassembly)", lower)
+        and re.search(r"(?:pdu|key|value|参数)", lower)
     )
     if not c_bit_case:
         issues.append(
