@@ -6983,11 +6983,58 @@ def _deterministic_quality_claim_repair(
     supported_codes = {
         "invalid_capture_filter",
         "black_box_test_mapping_contradiction",
+        "missing_c_bit_fragmentation_case",
     }
     if not issue_codes or not issue_codes.issubset(supported_codes):
         return repaired, []
 
     fields: list[str] = []
+
+    if (
+        "missing_c_bit_fragmentation_case" in issue_codes
+        and artifact == "black_box_cases.json"
+        and isinstance(repaired, list)
+        and repaired
+        and isinstance(repaired[0], dict)
+    ):
+        template = json.loads(json.dumps(repaired[0], ensure_ascii=False))
+        existing_ids = {
+            str(row.get("case_id") or "")
+            for row in repaired
+            if isinstance(row, dict)
+        }
+        case_id = "BBC-CBIT-FRAGMENT"
+        suffix = 2
+        while case_id in existing_ids:
+            case_id = f"BBC-CBIT-FRAGMENT-{suffix}"
+            suffix += 1
+        template.update(
+            {
+                "case_id": case_id,
+                "test_dimension": "invalid_input",
+                "scenario_name": "Login C-bit 参数跨 PDU 分片重组",
+                "preconditions": [
+                    "SPDK iSCSI target 已在隔离测试环境运行",
+                    "外部 raw-PDU harness 可通过 TCP 发送自定义 Login Request 并抓取响应",
+                ],
+                "steps": [
+                    "通过 raw-PDU harness 发送第一个 Login Request 分片，设置 C=1，并在参数 key/value 边界处分割数据",
+                    "在同一 TCP 连接发送第二个 Login Request 分片，设置 C=0 作为收尾并完成剩余参数",
+                    "抓取并解析 Login Response PDU，同时记录 target 日志和连接状态",
+                ],
+                "expected_result": "目标按重组后的完整参数处理请求；响应 PDU、返回状态和日志不得显示参数截断、错误拼接或异常退出。",
+                "observability": [
+                    "pcap 或 raw-PDU parser 中两个请求分片的 C 位和最终 Login Response",
+                    "目标日志、进程状态及连接状态",
+                ],
+                "failure_diagnostics": [
+                    "若响应拒绝、连接异常关闭或日志提示参数解析失败，保留两段请求和响应 PDU 及 target 日志用于定位。",
+                ],
+                "mapped_test_dir": "ai_suggested_unverified: 新增外部 raw-PDU C-bit 分片黑盒用例",
+            }
+        )
+        repaired.append(template)
+        fields.append("$[+].c_bit_fragmentation_case")
 
     mcs_mapping_issues = [
         item

@@ -1464,6 +1464,19 @@ def test_missing_black_box_dimensions_allows_reassigning_duplicate_case_ids():
     )
 
 
+def test_quality_repair_materializes_missing_c_bit_fragmentation_case():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{"case_id": "BC-01", "risk_ids": ["SFMEA-01"], "technical_claims": [], "source_or_test_evidence": ["lib/iscsi/param.c"]}],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{"artifact": "black_box_cases.json", "code": "missing_c_bit_fragmentation_case"}]},
+    )
+    assert len(repaired) == 2
+    assert repaired[-1]["case_id"] == "BBC-CBIT-FRAGMENT"
+    assert "C=1" in " ".join(repaired[-1]["steps"])
+    assert "C=0" in " ".join(repaired[-1]["steps"])
+    assert fields == ["$[+].c_bit_fragmentation_case"]
+
+
 def test_quality_repair_patch_can_delete_a_disproved_sfmea_row():
     previous = [
         {"sfmea_id": "SFMEA-01", "failure_mode": "verified risk"},
