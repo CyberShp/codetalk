@@ -40,4 +40,12 @@ test("basic source and design preset keeps target and uploaded design document a
   await expect(page.getByText(/开发设计文档.*本地文件/)).toBeVisible();
   await page.locator('input[type="file"]').setInputFiles(designDocument);
   await expect(page.getByText("已选择 1 个文件")).toBeVisible();
+
+  await page.getByRole("button", { name: "保存并继续" }).click();
+  await expect(page.getByRole("heading", { name: "确认执行配置" })).toBeVisible();
+  await page.getByRole("button", { name: "上一步" }).click();
+  await expect(page.getByRole("textbox", { name: "分析目标 *" })).toHaveValue(
+    "分析 SPDK iSCSI login 的流程、异常、资源、并发与恢复测试设计。",
+  );
+  await expect(page.getByText("已选择 1 个文件")).toBeVisible();
 });
