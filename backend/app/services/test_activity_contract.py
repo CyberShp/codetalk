@@ -7063,7 +7063,7 @@ _SFMEA_TEST_SCENARIO_ACTION_RE = re.compile(
 _SFMEA_TEST_ONLY_SEGMENT_RE = re.compile(
     r"(?i)^\s*(?:add|extend|run|execute|create|write)\b"
     r"(?:(?!\b(?:and|then|plus)\b).){0,80}\b(?:tests?|cases?|coverage)\b|"
-    r"^\s*(?:新增|添加|运行|执行|编写|扩展)"
+    r"^\s*(?!整改\s*:)(?:新增|添加|运行|执行|编写|扩展)"
     r"(?:(?!并|且|同时|及).){0,40}(?:测试|用例|覆盖)"
 )
 _SFMEA_OBSERVATION_CLAUSE_RE = re.compile(
@@ -7109,7 +7109,10 @@ def sfmea_mitigation_quality_gaps(mitigation: Any) -> list[str]:
                 )
     remediation_text = " ".join(remediation_clauses)
     gaps: list[str] = []
-    if not _SFMEA_REMEDIATION_ACTION_RE.search(remediation_text):
+    explicitly_labeled_remediation = bool(
+        re.search(r"整改\s*:\s*(?!.*(?:仅|只)?(?:新增|添加|编写).{0,24}(?:测试|用例|覆盖))\S+", remediation_text)
+    )
+    if not _SFMEA_REMEDIATION_ACTION_RE.search(remediation_text) and not explicitly_labeled_remediation:
         gaps.append("missing_remediation_action")
     if not _SFMEA_VERIFICATION_ACTION_RE.search(text):
         gaps.append("missing_verification_action")

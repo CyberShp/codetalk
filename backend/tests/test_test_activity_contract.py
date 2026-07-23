@@ -262,6 +262,17 @@ def test_sfmea_mitigation_accepts_explicit_chinese_remediation_and_validation(
     assert sfmea_mitigation_quality_gaps(mitigation) == []
 
 
+def test_sfmea_mitigation_keeps_remediation_prefixed_addition_when_it_also_mentions_a_test():
+    from app.services.test_activity_contract import sfmea_mitigation_quality_gaps
+
+    mitigation = (
+        "整改: 添加更具体的 status_detail 并保留现有兼容行为。"
+        "验证: 发送不含 AuthMethod 的 Login Request，确认响应 status_detail=0x07。"
+    )
+
+    assert sfmea_mitigation_quality_gaps(mitigation) == []
+
+
 def test_source_anchor_claim_is_l1_verified_only_when_statement_matches_quote():
     from app.services.test_activity_contract import _deterministic_claim_semantics
 
