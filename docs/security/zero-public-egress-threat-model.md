@@ -22,6 +22,10 @@ an approved model inference request is permitted, while the same vendor's SDK te
 tracing, update, extension marketplace, package registry, callback, or hosted-MCP request is
 not. Approval of a model host never grants those autonomous uses.
 
+Provider configuration probes use the same minimal inference route as a real task. Runtime
+must not call provider model-list or discovery endpoints merely to populate a selector; the
+operator configures an approved model identifier explicitly.
+
 ## Threats
 
 | Source | Risk | Required control |
@@ -38,7 +42,7 @@ not. Approval of a model host never grants those autonomous uses.
 1. **Application layer:** all backend outbound calls use CodeTalk's network policy client.
    It rejects every unapproved host/CIDR before connection. Model-provider requests are admitted
    only when the deployment explicitly approves the hostname and the request matches an adapter
-   API route; telemetry, package/update, hosted-trace and hosted-MCP destinations are hard-denied
+   inference API route; model discovery, telemetry, package/update, hosted-trace and hosted-MCP destinations are hard-denied
    even when a bad configuration attempts to allow-list them. It emits a redacted audit event.
 2. **Harness layer:** Agent processes receive a scrubbed environment with telemetry/update
    controls disabled and only generated, allow-listed MCP configuration. The command contract

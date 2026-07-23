@@ -75,13 +75,11 @@ async def test_stream_complete_never_mixes_reasoning_content_into_user_answer():
     assert "".join(chunks) == "# iSCSI Login 报告\n正文。"
 
 
-async def test_health_check_falls_back_to_real_chat_when_models_probe_is_rejected():
+async def test_health_check_uses_only_the_configured_inference_route():
     requests: list[tuple[str, str]] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
         requests.append((request.method, request.url.path))
-        if request.url.path == "/v1/models":
-            return httpx.Response(401, json={"error": "models endpoint unavailable"})
         assert request.url.path == "/v1/chat/completions"
         payload = __import__("json").loads(request.content)
         assert payload["model"] == "deepseek-chat"
@@ -112,9 +110,8 @@ async def test_health_check_falls_back_to_real_chat_when_models_probe_is_rejecte
         await client.close()
 
     assert success is True
-    assert message == "连接成功（聊天接口已验证）"
+    assert message == "连接成功（已验证实际推理接口）"
     assert requests == [
-        ("GET", "/v1/models"),
         ("POST", "/v1/chat/completions"),
     ]
 

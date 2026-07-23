@@ -262,20 +262,16 @@ class OpenAICompatClient(BaseLLMClient):
         )
 
     async def health_check(self) -> tuple[bool, str]:
-        """Verify the configured endpoint, falling back to the actual chat API."""
+        """Verify the exact inference route used by an actual run.
+
+        Runtime health checks deliberately avoid provider model discovery. A model
+        list is metadata traffic, not required to run the user-selected model,
+        and would expand the approved egress surface in intranet deployments.
+        """
         try:
             headers: dict[str, str] = {"Content-Type": "application/json"}
             if self._api_key:
                 headers["Authorization"] = f"Bearer {self._api_key}"
-            url = f"{self._base_url}/v1/models"
-            self._require_approved_model_endpoint(url)
-            resp = await self._client.get(url, headers=headers, timeout=60)
-            if resp.status_code < 400:
-                return True, "连接成功"
-
-            # Some OpenAI-compatible providers reject model listing even when
-            # the configured model is authorized. Verify the same endpoint
-            # used by real runs before reporting a false authentication error.
             chat_url = f"{self._base_url}/v1/chat/completions"
             self._require_approved_model_endpoint(chat_url)
             chat_resp = await self._client.post(
@@ -290,7 +286,7 @@ class OpenAICompatClient(BaseLLMClient):
                 timeout=60,
             )
             if chat_resp.status_code < 400:
-                return True, "连接成功（聊天接口已验证）"
+                return True, "连接成功（已验证实际推理接口）"
             if chat_resp.status_code < 500:
                 return False, f"服务可达，但聊天接口认证或配置失败 (HTTP {chat_resp.status_code})"
             return False, f"聊天接口服务端错误 (HTTP {chat_resp.status_code})"
