@@ -2598,6 +2598,57 @@ async def test_combined_report_is_deterministically_rendered_from_validated_stag
     assert "lib/iscsi/iscsi.c" in report
 
 
+def test_refresh_deterministic_combined_report_rebuilds_from_current_json_artifacts(tmp_path):
+    from app.services.ai_staged_execution import refresh_deterministic_combined_report
+
+    source_stage = tmp_path / "stages" / "source_analysis"
+    source_stage.mkdir(parents=True)
+    (source_stage / "source_evidence_pack.json").write_text(
+        json.dumps(
+            {
+                "repo_revision": "abc1234",
+                "evidence_cards": [
+                    {
+                        "file_path": "lib/iscsi/iscsi.c",
+                        "start_line": 10,
+                        "end_line": 12,
+                        "symbols": ["login"],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "business_flow.md").write_text("登录主流程。\n", encoding="utf-8")
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps(
+            [{"sfmea_id": "SFMEA-02", "failure_mode": "保留风险"}],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "black_box_cases.json").write_text(
+        json.dumps(
+            [{"case_id": "BB-02", "scenario_name": "保留用例"}],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    refreshed = refresh_deterministic_combined_report(
+        artifact_dir=tmp_path,
+        plan={"target": "iSCSI 登录测试"},
+        output_contract={"min_sfmea_rows": 1, "min_black_box_cases": 1},
+    )
+
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert refreshed["artifact"] == "report.md"
+    assert "SFMEA-02" in report
+    assert "BB-02" in report
+    assert "SFMEA-01" not in report
+
+
 def test_combined_report_preserves_sfmea_ids_for_quality_repair_targeting():
     from app.services.ai_staged_execution import _render_deterministic_combined_report
     from app.services.test_activity_contract import _audit_combined_report_consistency

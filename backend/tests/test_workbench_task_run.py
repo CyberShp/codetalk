@@ -5444,6 +5444,63 @@ def test_quality_repair_keeps_a_blocked_candidate_with_far_fewer_issues():
     assert _quality_repair_regressed(before=before, after=after) is False
 
 
+def test_final_contradiction_tombstones_remove_only_proven_contradicted_rows(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _apply_final_contradiction_tombstones,
+    )
+
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps(
+            [
+                {"sfmea_id": "SFMEA-01", "failure_mode": "contradicted"},
+                {"sfmea_id": "SFMEA-02", "failure_mode": "insufficient"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "black_box_cases.json").write_text(
+        json.dumps(
+            [
+                {"case_id": "BB-01", "scenario_name": "contradicted"},
+                {"case_id": "BB-02", "scenario_name": "insufficient"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    changed = _apply_final_contradiction_tombstones(
+        artifact_dir=tmp_path,
+        audit={
+            "issues": [
+                {
+                    "code": "source_claim_contradicted",
+                    "artifact": "sfmea.json",
+                    "row_id": "SFMEA-01",
+                },
+                {
+                    "code": "row_source_claim_contradicted",
+                    "artifact": "black_box_cases.json",
+                    "row_id": "BB-01",
+                },
+                {
+                    "code": "row_source_claim_insufficient",
+                    "artifact": "sfmea.json",
+                    "row_id": "SFMEA-02",
+                },
+            ]
+        },
+    )
+
+    assert changed == {
+        "sfmea.json": ["SFMEA-01"],
+        "black_box_cases.json": ["BB-01"],
+    }
+    assert [row["sfmea_id"] for row in json.loads((tmp_path / "sfmea.json").read_text())] == ["SFMEA-02"]
+    assert [row["case_id"] for row in json.loads((tmp_path / "black_box_cases.json").read_text())] == ["BB-02"]
+
+
 def test_quality_repair_salvages_only_rows_with_fewer_issues():
     from app.services.workbench_workflow_runner import (
         _merge_non_regressing_json_rows,

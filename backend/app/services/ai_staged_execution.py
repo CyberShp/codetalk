@@ -2452,45 +2452,21 @@ async def _execute_combined_report_stage(
             "user_message": "正在汇总已通过校验的流程、SFMEA 和黑盒用例",
         },
     )
-    source_pack = _read_json_file(
-        artifact_dir / "stages" / "source_analysis" / "source_evidence_pack.json"
-    )
-    flow_path = completed.get("business_flow") or artifact_dir / "business_flow.md"
-    flow = (
-        Path(flow_path).read_text(encoding="utf-8", errors="replace")
-        if Path(flow_path).is_file()
-        else ""
-    )
-    sfmea = _read_json_file(artifact_dir / "sfmea.json", default=[])
-    black_box_cases = _read_json_file(
-        artifact_dir / "black_box_cases.json", default=[]
-    )
-    report = _render_deterministic_combined_report(
-        plan=plan,
-        source_pack=source_pack,
-        business_flow=flow,
-        sfmea=sfmea if isinstance(sfmea, list) else [],
-        black_box_cases=(
-            black_box_cases if isinstance(black_box_cases, list) else []
-        ),
-    )
     output_contract = (
         stage.get("output_contract")
         if isinstance(stage.get("output_contract"), dict)
         else {}
     )
-    report, removed_unverified_paths = _finalize_combined_markdown_report(
-        content=report,
-        source_pack=source_pack,
+    refreshed = refresh_deterministic_combined_report(
+        artifact_dir=artifact_dir,
+        plan=plan,
+        artifact=artifact,
         output_contract=output_contract,
-        extract_delivery_body=False,
+        business_flow_path=completed.get("business_flow"),
     )
-    _write_text(output_path, report)
-    harness_validation = (
-        _materialize_and_validate_raw_pdu_harness(artifact_dir)
-        if _is_iscsi_login_report(plan)
-        else {}
-    )
+    report = str(refreshed["content"])
+    removed_unverified_paths = list(refreshed["removed_unverified_paths"])
+    harness_validation = dict(refreshed["harness_validation"])
     duration_ms = round((time.monotonic() - started) * 1000, 1)
     result = {
         "stage_id": stage_id,
@@ -2523,6 +2499,61 @@ async def _execute_combined_report_stage(
     }
     _write_json(stage_dir / "stage_result.json", result)
     return result
+
+
+def refresh_deterministic_combined_report(
+    *,
+    artifact_dir: str | Path,
+    plan: dict[str, Any],
+    artifact: str = "report.md",
+    output_contract: dict[str, Any] | None = None,
+    business_flow_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Rebuild the formal report from the current validated JSON artifacts.
+
+    Quality repair may replace or tombstone individual SFMEA/test-case rows
+    after the first report materialization. The formal report must be rebuilt
+    from those final rows, never left as an attractive but stale snapshot.
+    """
+    root = Path(artifact_dir)
+    source_pack = _read_json_file(
+        root / "stages" / "source_analysis" / "source_evidence_pack.json"
+    )
+    flow_path = Path(business_flow_path) if business_flow_path else root / "business_flow.md"
+    flow = (
+        flow_path.read_text(encoding="utf-8", errors="replace")
+        if flow_path.is_file()
+        else ""
+    )
+    sfmea = _read_json_file(root / "sfmea.json", default=[])
+    black_box_cases = _read_json_file(root / "black_box_cases.json", default=[])
+    report = _render_deterministic_combined_report(
+        plan=plan,
+        source_pack=source_pack,
+        business_flow=flow,
+        sfmea=sfmea if isinstance(sfmea, list) else [],
+        black_box_cases=(black_box_cases if isinstance(black_box_cases, list) else []),
+    )
+    report, removed_unverified_paths = _finalize_combined_markdown_report(
+        content=report,
+        source_pack=source_pack,
+        output_contract=output_contract or {},
+        extract_delivery_body=False,
+    )
+    output_path = root / artifact
+    _write_text(output_path, report)
+    harness_validation = (
+        _materialize_and_validate_raw_pdu_harness(root)
+        if _is_iscsi_login_report(plan)
+        else {}
+    )
+    return {
+        "artifact": artifact,
+        "content": report,
+        "removed_unverified_paths": removed_unverified_paths,
+        "harness_validation": harness_validation,
+        "output_path": str(output_path),
+    }
 
 
 def _render_deterministic_combined_report(

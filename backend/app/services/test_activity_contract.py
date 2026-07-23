@@ -1571,6 +1571,15 @@ def audit_test_activity_artifacts(
     lint_warnings: list[dict[str, Any]] = []
     execution_checks_applicable = False
     artifact_contract = contract.get("artifact_contract") or {}
+    structured_black_box_declared = any(
+        str(artifact).endswith(".json")
+        and (
+            "black_box" in Path(str(artifact)).stem.lower()
+            or int((spec or {}).get("min_black_box_cases") or 0) > 0
+        )
+        for artifact, spec in artifact_contract.items()
+        if isinstance(spec, dict)
+    )
     if contract.get("audit_scope_required") and not artifact_contract:
         structural_issues.append(
             _issue(
@@ -1633,6 +1642,17 @@ def audit_test_activity_artifacts(
                     routed_structure, routed_lint, routed_executable = (
                         _partition_combined_professional_issues(professional_issues)
                     )
+                    # Structured black-box cases are the authoritative repair
+                    # surface. The report remains a presentation artifact; its
+                    # aggregate safety/performance finding has no case_id and
+                    # therefore cannot drive a safe, targeted repair.
+                    if structured_black_box_declared:
+                        routed_executable = [
+                            issue
+                            for issue in routed_executable
+                            if str(issue.get("code") or "")
+                            != "unsafe_hazardous_test_mapping"
+                        ]
                     structural_issues.extend(routed_structure)
                     lint_warnings.extend(routed_lint)
                     executable_issues.extend(routed_executable)
@@ -1640,7 +1660,18 @@ def audit_test_activity_artifacts(
                     executable_issues.extend(
                         _audit_raw_pdu_runtime_evidence(root=root, content=content)
                     )
-                    lint_warnings.extend(_audit_combined_report_consistency(content))
+                    consistency_issues = _audit_combined_report_consistency(content)
+                    if structured_black_box_declared:
+                        consistency_issues = [
+                            issue
+                            for issue in consistency_issues
+                            if str(issue.get("code") or "")
+                            not in {
+                                "ungrounded_performance_threshold",
+                                "missing_performance_statistical_basis",
+                            }
+                        ]
+                    lint_warnings.extend(consistency_issues)
     structural_issues.extend(_audit_cross_artifact_references(
         root=root,
         declared_artifacts={str(item) for item in artifact_contract},
@@ -6286,6 +6317,83 @@ def _audit_json_artifact(
             dimension = str(row.get("test_dimension") or "").strip().lower()
             if dimension:
                 observed_dimensions.add(dimension)
+            case_text = "\n".join(
+                str(row.get(field) or "")
+                for field in (
+                    "scenario_name",
+                    "preconditions",
+                    "steps",
+                    "expected_result",
+                    "oracle_basis",
+                    "observability",
+                    "failure_diagnostics",
+                    "mapped_test_dir",
+                )
+            )
+            lower_case_text = case_text.lower()
+            if "multiconnection.sh" in lower_case_text:
+                isolated_target = bool(re.search(
+                    r"(?:null|malloc)\s*bdev|专用测试盘|隔离测试(?:设备|盘)|允许列表|allowlist|disposable|isolated",
+                    lower_case_text,
+                ))
+                data_loss_warning = bool(re.search(
+                    r"数据(?:会|可|可能)?(?:被)?(?:销毁|覆盖)|数据销毁风险|随机写|破坏性|destructive|data loss",
+                    lower_case_text,
+                ))
+                if not (isolated_target and data_loss_warning):
+                    issues.append(
+                        _issue(
+                            "unsafe_hazardous_test_mapping",
+                            artifact,
+                            f"{artifact} 第 {index} 项映射 multiconnection.sh，却没有同时限定隔离测试设备和提示数据销毁风险",
+                            index=index,
+                        )
+                    )
+            login_latency_case = bool(re.search(
+                r"(?:login|登录).{0,60}(?:latency|延迟|p50|p95|p99)|(?:latency|延迟|p50|p95|p99).{0,60}(?:login|登录)",
+                lower_case_text,
+                flags=re.IGNORECASE | re.DOTALL,
+            ))
+            absolute_latency_oracle = bool(re.search(
+                r"(?:<|<=|≤|低于|不超过)\s*\d+(?:\.\d+)?\s*(?:ms|毫秒)",
+                str(row.get("expected_result") or row.get("expected") or ""),
+                flags=re.IGNORECASE,
+            ))
+            measured_threshold_basis = bool(re.search(
+                r"(?:历史基线|同环境基线|实测基线|基线测得|measured baseline|historical baseline|same[- ]environment baseline)"
+                r".{0,120}(?:样本量|sample size|硬件|hardware|commit|revision)",
+                lower_case_text,
+                flags=re.IGNORECASE | re.DOTALL,
+            ))
+            if login_latency_case and absolute_latency_oracle and not measured_threshold_basis:
+                issues.append(
+                    _issue(
+                        "ungrounded_performance_threshold",
+                        artifact,
+                        f"{artifact} 第 {index} 项给出绝对登录延迟阈值，却没有同环境实测基线、样本量和硬件/版本来源；首次运行只能采样建基线",
+                        index=index,
+                    )
+                )
+            relative_threshold = bool(re.search(
+                r"(?:相对退化|relative regression|regression).{0,80}\d+(?:\.\d+)?\s*%"
+                r"|\d+(?:\.\d+)?\s*%.{0,80}(?:相对退化|relative regression|regression)",
+                lower_case_text,
+                flags=re.IGNORECASE | re.DOTALL,
+            ))
+            statistical_basis = bool(re.search(
+                r"(?:标准差|方差|置信区间|基线波动|bootstrap|stddev|variance|confidence interval)",
+                lower_case_text,
+                flags=re.IGNORECASE,
+            ))
+            if relative_threshold and not statistical_basis:
+                issues.append(
+                    _issue(
+                        "missing_performance_statistical_basis",
+                        artifact,
+                        f"{artifact} 第 {index} 项的相对性能阈值缺少基线方差、标准差或置信区间依据",
+                        index=index,
+                    )
+                )
             for gap in black_box_case_delivery_quality_gaps(
                 row,
                 repo_path=str(repo),

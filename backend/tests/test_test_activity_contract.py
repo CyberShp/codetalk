@@ -38,6 +38,69 @@ def test_json_row_quality_issues_include_stable_row_id(tmp_path):
     assert {issue.get("row_id") for issue in indexed} == {"SFMEA-007"}
 
 
+def test_black_box_professional_safety_and_latency_issues_bind_to_case_id(tmp_path):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    rows = [
+        {
+            "case_id": "BB-HAZARD-01",
+            "test_dimension": "recovery",
+            "scenario_name": "多连接回归",
+            "steps": "运行 test/iscsi_tgt/multiconnection/multiconnection.sh。",
+            "expected_result": "多连接均完成。",
+            "observability": "脚本退出码和 target 日志。",
+            "source_evidence": ["test/iscsi_tgt/multiconnection/multiconnection.sh"],
+        },
+        {
+            "case_id": "BB-PERF-01",
+            "test_dimension": "performance",
+            "scenario_name": "Login latency p95",
+            "steps": "连续发起 Login 并记录延迟。",
+            "expected_result": "P95 < 10ms。",
+            "observability": "pcap 时间戳。",
+            "source_evidence": ["test/iscsi_tgt/iscsi_tgt.sh"],
+        },
+    ]
+
+    issues = _audit_json_artifact(
+        artifact="black_box_cases.json",
+        payload=rows,
+        spec={"required_fields": []},
+        repo=tmp_path,
+    )
+
+    bindings = {(issue["code"], issue.get("row_id")) for issue in issues}
+    assert ("unsafe_hazardous_test_mapping", "BB-HAZARD-01") in bindings
+    assert ("ungrounded_performance_threshold", "BB-PERF-01") in bindings
+
+
+def test_black_box_relative_latency_threshold_requires_statistical_basis_per_case(tmp_path):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    issues = _audit_json_artifact(
+        artifact="black_box_cases.json",
+        payload=[
+            {
+                "case_id": "BB-PERF-02",
+                "test_dimension": "performance",
+                "scenario_name": "Login relative regression",
+                "steps": "采集登录时延。",
+                "expected_result": "相对退化不得超过 10%。",
+                "observability": "pcap。",
+                "source_evidence": ["test/iscsi_tgt/iscsi_tgt.sh"],
+            }
+        ],
+        spec={"required_fields": []},
+        repo=tmp_path,
+    )
+
+    assert any(
+        issue["code"] == "missing_performance_statistical_basis"
+        and issue.get("row_id") == "BB-PERF-02"
+        for issue in issues
+    ), issues
+
+
 @pytest.mark.parametrize(
     "failure_mode,cause",
     [
@@ -2730,7 +2793,7 @@ def test_workbench_runner_marks_low_quality_test_activity_outputs_needs_rework(t
         timeout_sec=10,
     )
 
-    assert result.status == "needs_rework"
+    assert result.status == "quality_blocked"
     assert result.test_activity_quality["status"] == "needs_rework"
     assert result.test_activity_quality["deliverable"] is False
     audit_path = Path(task_run.artifact_dir) / "test_activity_quality_audit.json"

@@ -30,6 +30,7 @@ from app.services.ai_staged_execution import (
     _apply_quality_feedback_field_patches,
     build_staged_execution_plan,
     execute_staged_builtin_plan,
+    refresh_deterministic_combined_report,
 )
 from app.services.agent_run_harness import ArtifactValidationHarness
 from app.services.harness_facade import AgentHarnessFacade
@@ -430,6 +431,7 @@ class WorkbenchWorkflowRunner:
         stop_on_error: bool = True,
     ) -> WorkbenchWorkflowExecutionResult:
         task_run = self.store.load(task_run_id)
+        self._record_builtin_provider_readiness_if_applicable(task_run)
         started_at = _now()
         step_results: list[dict[str, Any]] = []
         agent_runs_by_step = {
@@ -514,6 +516,35 @@ class WorkbenchWorkflowRunner:
             task_run=task_run,
             started_at=started_at,
             step_results=step_results,
+        )
+
+    @staticmethod
+    def _record_builtin_provider_readiness_if_applicable(task_run: Any) -> None:
+        """Persist the same immutable readiness envelope for direct built-in runs.
+
+        HTTP execution writes this artifact during its live Agent preflight. A
+        direct runner invocation has no managed CLI to probe, but must still
+        leave an auditable record rather than making its acceptance result
+        depend on which entry point happened to execute the workflow.
+        """
+        path = Path(str(task_run.artifact_dir)) / "provider_live_readiness.json"
+        if path.is_file():
+            return
+        agent_runs = [item for item in task_run.agent_runs if isinstance(item, dict)]
+        if any(
+            str(item.get("provider") or "") != BUILTIN_LLM_PROVIDER_ID
+            for item in agent_runs
+        ):
+            return
+        _write_json(
+            path,
+            {
+                "schema_version": "provider-live-readiness-v1",
+                "checked_at": _now(),
+                "checks": [],
+                "execution_path": "direct_builtin_runner",
+                "reason": "没有托管 CLI Agent；内置模型在实际推理调用中验证。",
+            },
         )
 
     def _execute_compiled_plan(
@@ -1883,8 +1914,14 @@ class WorkbenchWorkflowRunner:
                                 audit=final_repair_audit,
                             )
                             if tombstoned_rows:
+                                refreshed_reports = _refresh_reports_after_tombstones(
+                                    artifact_dir=artifact_dir,
+                                    plan=current_plan,
+                                )
                                 behavior_validation = await validate_behavior_claims()
                                 final_repair_audit = await audit_staged_artifacts()
+                            else:
+                                refreshed_reports = []
                             _write_json(
                                 artifact_dir
                                 / "quality_repairs"
@@ -1895,6 +1932,7 @@ class WorkbenchWorkflowRunner:
                                 materialized_patches
                             )
                             repair_history[-1]["contradiction_tombstones"] = tombstoned_rows
+                            repair_history[-1]["refreshed_reports"] = refreshed_reports
                             repair_history[-1]["field_patch_rounds"] = patch_rounds
                             repair_history[-1]["final_status"] = str(
                                 final_repair_audit.get("status") or ""
@@ -5537,6 +5575,32 @@ def _apply_final_contradiction_tombstones(
         _write_json(path, kept)
         changed[artifact] = sorted(row_ids)
     return changed
+
+
+def _refresh_reports_after_tombstones(
+    *, artifact_dir: Path, plan: dict[str, Any]
+) -> list[str]:
+    """Re-materialize formal reports after rejected rows leave the fact ledger."""
+    refreshed: list[str] = []
+    for stage in plan.get("stages") or []:
+        if not isinstance(stage, dict):
+            continue
+        artifact = str(stage.get("artifact") or "")
+        contract = stage.get("output_contract")
+        if not (
+            artifact.endswith(".md")
+            and isinstance(contract, dict)
+            and (contract.get("min_sfmea_rows") or contract.get("min_black_box_cases"))
+        ):
+            continue
+        refresh_deterministic_combined_report(
+            artifact_dir=artifact_dir,
+            plan=plan,
+            artifact=artifact,
+            output_contract=contract,
+        )
+        refreshed.append(artifact)
+    return refreshed
 
 
 async def _converge_behavior_validation_field_patches(
