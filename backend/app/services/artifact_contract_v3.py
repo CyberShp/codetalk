@@ -142,6 +142,62 @@ def materialize_artifact_contract_v3_outputs(
     return written
 
 
+def enrich_external_agent_claim_bindings(artifact_dir: str | Path) -> dict[str, int]:
+    """Attach deterministic L1 bindings when an Agent cites evidence cards by ID.
+
+    This adapter never invents a fact: it only turns an existing row's evidence
+    card reference into a claim whose statement is the card's exact excerpt.
+    Rows without a resolvable card remain unbound and fail the quality gate.
+    """
+    root = Path(artifact_dir)
+    cards = _read_json_list(_find_artifact(root, "evidence_cards.json"))
+    by_id = {str(card.get("evidence_id") or ""): card for card in cards if str(card.get("evidence_id") or "")}
+    changed: dict[str, int] = {}
+    for artifact, row_id_key, evidence_key in (
+        ("sfmea.json", "sfmea_id", "source_evidence"),
+        ("black_box_cases.json", "case_id", "source_or_test_evidence"),
+    ):
+        path = _find_artifact(root, artifact)
+        rows = _read_json_list(path)
+        count = 0
+        for index, row in enumerate(rows, start=1):
+            if row.get("technical_claims"):
+                continue
+            references = row.get(evidence_key) or []
+            if not isinstance(references, list):
+                continue
+            card = next((
+                by_id.get(str(value).split(":", 1)[0].strip())
+                for value in references
+                if by_id.get(str(value).split(":", 1)[0].strip())
+            ), None)
+            if not isinstance(card, dict):
+                continue
+            excerpt = str(card.get("excerpt") or "").strip()
+            file_path = str(card.get("file_path") or card.get("path") or "").strip()
+            if not excerpt or not file_path:
+                continue
+            symbol = next((str(value) for value in card.get("symbols") or [] if str(value)), "")
+            row_id = str(row.get(row_id_key) or f"row-{index}")
+            row["technical_claims"] = [{
+                "claim_id": f"AUTO-{row_id}-E1",
+                "type": "source",
+                "statement": excerpt,
+                "evidence": [{
+                    "evidence_id": str(card.get("evidence_id") or ""),
+                    "path": file_path,
+                    "symbol": symbol,
+                    "lines": f"L{int(card.get('start_line') or 0)}-L{int(card.get('end_line') or 0)}",
+                    "quote": excerpt,
+                }],
+            }]
+            count += 1
+        if count:
+            _write_json(path, rows)
+            changed[artifact] = count
+    return changed
+
+
 def validate_artifact_contract_v3_outputs(
     artifact_dir: str | Path,
     *,

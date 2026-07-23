@@ -35,6 +35,7 @@ from app.services.ai_staged_execution import (
 from app.services.agent_run_harness import ArtifactValidationHarness
 from app.services.harness_facade import AgentHarnessFacade
 from app.services.artifact_contract_v3 import (
+    enrich_external_agent_claim_bindings,
     materialize_artifact_contract_v3_outputs,
     materialize_claim_evidence_ledger,
     validate_artifact_contract_v3_outputs,
@@ -690,6 +691,13 @@ class WorkbenchWorkflowRunner:
             task_run.artifact_dir,
             profile_id=profile_id,
         )
+        if any(
+            isinstance(item, dict)
+            and item.get("type") == "agent_task"
+            and str(item.get("provider") or "") != BUILTIN_LLM_PROVIDER_ID
+            for item in step_results
+        ):
+            enrich_external_agent_claim_bindings(task_run.artifact_dir)
         self._materialize_final_behavior_validation(
             task_run=task_run,
             step_results=step_results,

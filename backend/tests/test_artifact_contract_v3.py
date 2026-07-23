@@ -229,6 +229,30 @@ def test_nested_agent_artifacts_materialize_the_v3_ledger_and_rapid_contract(tmp
     assert validation["status"] == "passed"
 
 
+def test_external_agent_evidence_ids_are_deterministically_bound_to_claims(tmp_path):
+    import json
+
+    from app.services.artifact_contract_v3 import enrich_external_agent_claim_bindings
+
+    card = {
+        "evidence_id": "E-1", "file_path": "lib/iscsi/login.c",
+        "start_line": 7, "end_line": 7, "symbols": ["login"],
+        "excerpt": "return SPDK_SUCCESS;",
+    }
+    (tmp_path / "evidence_cards.json").write_text(json.dumps([card]), encoding="utf-8")
+    (tmp_path / "sfmea.json").write_text(json.dumps([{
+        "sfmea_id": "RISK-1", "source_evidence": ["E-1:7"],
+    }]), encoding="utf-8")
+    (tmp_path / "black_box_cases.json").write_text(json.dumps([{
+        "case_id": "CASE-1", "source_or_test_evidence": ["E-1"],
+    }]), encoding="utf-8")
+
+    assert enrich_external_agent_claim_bindings(tmp_path) == {
+        "sfmea.json": 1, "black_box_cases.json": 1,
+    }
+    assert json.loads((tmp_path / "sfmea.json").read_text())[0]["technical_claims"][0]["evidence"][0]["path"] == "lib/iscsi/login.c"
+
+
 def test_stage_progress_only_marks_artifacts_that_were_really_materialized(tmp_path):
     from app.services.test_activity_stage_specs import (
         project_test_activity_stage_progress,
