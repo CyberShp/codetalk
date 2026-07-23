@@ -1425,6 +1425,25 @@ def test_black_box_dimension_contract_removes_noncontract_and_duplicate_rows():
     ]
 
 
+def test_black_box_dimension_contract_keeps_gate_required_additional_case():
+    rows = [
+        {"case_id": "BB-01", "test_dimension": "invalid_input"},
+        {"case_id": "BB-CBIT", "test_dimension": "invalid_input"},
+    ]
+    stage = {
+        "output_contract": {"required_dimensions": ["invalid_input"]}
+    }
+
+    normalized, fields = _normalize_black_box_dimension_contract(
+        rows,
+        stage,
+        preserve_additional_cases=True,
+    )
+
+    assert [item["case_id"] for item in normalized] == ["BB-01", "BB-CBIT"]
+    assert fields == []
+
+
 def test_quality_repair_patch_can_delete_a_disproved_sfmea_row():
     previous = [
         {"sfmea_id": "SFMEA-01", "failure_mode": "verified risk"},

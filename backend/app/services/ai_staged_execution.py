@@ -3434,14 +3434,18 @@ async def _execute_regular_stage(
         artifact,
         quality_repair=bool(current_artifact_seed.strip()),
     )
-    allowed_existing_repair_row_ids = (
+    repair_row_ids = (
         _quality_repair_row_ids(
             artifact=artifact,
             quality_feedback=quality_feedback,
         )
         if current_artifact_seed.strip() and isinstance(quality_feedback, dict)
-        else None
+        else set()
     )
+    # A generic finding (for example, a destructive test mapping) has no stable
+    # row id.  The repair prompt then contains the complete artifact, so an empty
+    # set must mean "no row-level restriction", not "silently ignore every patch".
+    allowed_existing_repair_row_ids = repair_row_ids or None
     allow_new_repair_items = (
         _quality_repair_allows_new_items(
             artifact=artifact,
@@ -4157,7 +4161,11 @@ async def _execute_regular_stage(
                     )
                     deterministic_repair_fields.extend(oracle_fields)
                     rendered, dimension_fields = (
-                        _normalize_black_box_dimension_contract(rendered, stage)
+                        _normalize_black_box_dimension_contract(
+                            rendered,
+                            stage,
+                            preserve_additional_cases=allow_new_repair_items,
+                        )
                     )
                     deterministic_repair_fields.extend(dimension_fields)
                     rendered, delivery_fields = (
@@ -5634,8 +5642,10 @@ def _normalize_black_box_oracle_contract(
 def _normalize_black_box_dimension_contract(
     rendered: Any,
     stage: dict[str, Any],
+    *,
+    preserve_additional_cases: bool = False,
 ) -> tuple[Any, list[str]]:
-    """Keep exactly one row for each declared black-box dimension."""
+    """Keep the declared dimensions, retaining gate-required extra cases on repair."""
     if not isinstance(rendered, list):
         return rendered, []
     output_contract = (
@@ -5662,7 +5672,7 @@ def _normalize_black_box_dimension_contract(
         if dimension not in allowed:
             fields.append(f"$[{index}].test_dimension:noncontract_removed")
             continue
-        if dimension in seen:
+        if dimension in seen and not preserve_additional_cases:
             fields.append(f"$[{index}].test_dimension:duplicate_removed")
             continue
         seen.add(dimension)
