@@ -157,7 +157,7 @@ def validate_artifact_contract_v3_outputs(
     ]
     present = [
         name for name in required
-        if (root / name).is_file() and (root / name).stat().st_size > 0
+        if (path := _find_artifact(root, name)).is_file() and path.stat().st_size > 0
     ]
     missing = [name for name in required if name not in present]
     return {
@@ -174,9 +174,12 @@ def validate_artifact_contract_v3_outputs(
 def materialize_claim_evidence_ledger(artifact_dir: str | Path) -> dict[str, Any]:
     """Persist the shared L1/L2 truth source consumed by later test stages."""
     root = Path(artifact_dir)
-    evidence_cards = _read_json_list(root / "evidence_cards.json")
-    sfmea = _read_json_list(root / "sfmea.json")
-    black_box_cases = _read_json_list(root / "black_box_cases.json")
+    # Workflows materialize step-owned artifacts under agent_runs/<step>.  The
+    # V3 ledger is task-owned, so it must read the same resolved files as the
+    # artifact contract instead of silently producing an empty fact ledger.
+    evidence_cards = _read_json_list(_find_artifact(root, "evidence_cards.json"))
+    sfmea = _read_json_list(_find_artifact(root, "sfmea.json"))
+    black_box_cases = _read_json_list(_find_artifact(root, "black_box_cases.json"))
 
     # Import here to keep the contract module dependency-light during task prepare.
     from app.services.source_driven_test_design import verify_technical_claims
@@ -186,7 +189,9 @@ def materialize_claim_evidence_ledger(artifact_dir: str | Path) -> dict[str, Any
         sfmea=sfmea,
         black_box_cases=black_box_cases,
     )
-    l2_by_claim = _behavior_verdicts_by_claim(root / "behavior_claim_validation.json")
+    l2_by_claim = _behavior_verdicts_by_claim(
+        _find_artifact(root, "behavior_claim_validation.json")
+    )
     claims: list[dict[str, Any]] = []
     for raw_claim in l1.get("claims") or []:
         if not isinstance(raw_claim, dict):

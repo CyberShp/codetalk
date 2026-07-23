@@ -108,6 +108,66 @@ def test_claim_evidence_ledger_carries_independent_behavior_verdicts(tmp_path):
     assert ledger["claims"][0]["verification_status"] == "contradicted"
 
 
+def test_nested_agent_artifacts_materialize_the_v3_ledger_and_rapid_contract(tmp_path):
+    """Real workflow steps write under agent_runs/<step>; contracts must find them."""
+    import json
+
+    from app.services.artifact_contract_v3 import (
+        materialize_artifact_contract_v3_outputs,
+        materialize_claim_evidence_ledger,
+        validate_artifact_contract_v3_outputs,
+    )
+
+    agent_dir = tmp_path / "agent_runs" / "analyze"
+    agent_dir.mkdir(parents=True)
+    card = {
+        "evidence_id": "EV-NESTED-001",
+        "file_path": "lib/iscsi/login.c",
+        "symbols": ["login"],
+        "excerpt": "return SPDK_SUCCESS;",
+        "sha256": "c" * 64,
+    }
+    claim = {
+        "claim_id": "C-NESTED-001",
+        "type": "source_behavior",
+        "statement": "Login returns SPDK_SUCCESS.",
+        "evidence": [{
+            "evidence_id": "EV-NESTED-001",
+            "path": "lib/iscsi/login.c",
+            "symbol": "login",
+            "quote": "return SPDK_SUCCESS;",
+        }],
+    }
+    (agent_dir / "source_scope.json").write_text(
+        json.dumps({"analysis_target": "iSCSI login", "files": ["lib/iscsi/login.c"]}),
+        encoding="utf-8",
+    )
+    (agent_dir / "source_analysis.md").write_text(
+        "# iSCSI login source analysis\n\nVerified source evidence is available below.",
+        encoding="utf-8",
+    )
+    (agent_dir / "evidence_cards.json").write_text(json.dumps([card]), encoding="utf-8")
+    (agent_dir / "sfmea.json").write_text(
+        json.dumps([{"sfmea_id": "SFMEA-NESTED-001", "technical_claims": [claim]}]),
+        encoding="utf-8",
+    )
+    (agent_dir / "black_box_cases.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "input_consumption.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "task_artifact_manifest.json").write_text("{}", encoding="utf-8")
+
+    materialize_artifact_contract_v3_outputs(tmp_path, profile_id="rapid")
+    ledger = materialize_claim_evidence_ledger(tmp_path)
+    validation = validate_artifact_contract_v3_outputs(tmp_path, profile_id="rapid")
+
+    assert ledger["summary"] == {
+        "total": 1,
+        "verified": 1,
+        "contradicted": 0,
+        "insufficient": 0,
+    }
+    assert validation["status"] == "passed"
+
+
 def test_stage_progress_only_marks_artifacts_that_were_really_materialized(tmp_path):
     from app.services.test_activity_stage_specs import (
         project_test_activity_stage_progress,
