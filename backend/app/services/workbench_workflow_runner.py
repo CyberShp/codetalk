@@ -1878,6 +1878,13 @@ class WorkbenchWorkflowRunner:
                                 quality_repair_stop_reason = (
                                     "workflow_deadline_exceeded"
                                 )
+                            tombstoned_rows = _apply_final_contradiction_tombstones(
+                                artifact_dir=artifact_dir,
+                                audit=final_repair_audit,
+                            )
+                            if tombstoned_rows:
+                                behavior_validation = await validate_behavior_claims()
+                                final_repair_audit = await audit_staged_artifacts()
                             _write_json(
                                 artifact_dir
                                 / "quality_repairs"
@@ -1887,6 +1894,7 @@ class WorkbenchWorkflowRunner:
                             repair_history[-1]["materialized_field_patches"] = (
                                 materialized_patches
                             )
+                            repair_history[-1]["contradiction_tombstones"] = tombstoned_rows
                             repair_history[-1]["field_patch_rounds"] = patch_rounds
                             repair_history[-1]["final_status"] = str(
                                 final_repair_audit.get("status") or ""
@@ -5493,6 +5501,41 @@ def _apply_behavior_validation_field_patches(
             continue
         _write_json(path, patched)
         changed[artifact] = changed_ids
+    return changed
+
+
+def _apply_final_contradiction_tombstones(
+    *, artifact_dir: Path, audit: dict[str, Any]
+) -> dict[str, list[str]]:
+    """Remove rows independently proven to contradict their cited source.
+
+    This is intentionally narrower than a quality rewrite: insufficient evidence
+    remains blocked for a human/model repair, while a contradicted implementation
+    claim must never survive as a deliverable fact.
+    """
+    rejected: dict[str, set[str]] = {"sfmea.json": set(), "black_box_cases.json": set()}
+    for issue in audit.get("issues") or []:
+        if not isinstance(issue, dict) or str(issue.get("code") or "") not in {
+            "source_claim_contradicted", "row_source_claim_contradicted",
+        }:
+            continue
+        artifact = Path(str(issue.get("artifact") or "")).name
+        row_id = str(issue.get("row_id") or "").strip()
+        if artifact in rejected and row_id:
+            rejected[artifact].add(row_id)
+    changed: dict[str, list[str]] = {}
+    for artifact, row_ids in rejected.items():
+        if not row_ids:
+            continue
+        path = artifact_dir / artifact
+        rows = _read_json(path)
+        if not isinstance(rows, list):
+            continue
+        kept = [row for row in rows if _json_quality_row_id(row) not in row_ids]
+        if len(kept) == len(rows):
+            continue
+        _write_json(path, kept)
+        changed[artifact] = sorted(row_ids)
     return changed
 
 
