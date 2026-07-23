@@ -1,4 +1,4 @@
-"""Private-network admission control for CodeTalk runtime integrations."""
+"""Purpose-based egress admission control for CodeTalk runtime integrations."""
 
 from __future__ import annotations
 
@@ -53,7 +53,7 @@ _MODEL_API_PATH_SUFFIXES = (
 
 
 def scrub_intranet_agent_environment(environment: dict[str, str]) -> dict[str, str]:
-    """Remove inherited public-egress channels before a provider subprocess starts."""
+    """Remove inherited autonomous-egress channels before a provider subprocess starts."""
     result = {
         key: value
         for key, value in environment.items()
@@ -80,7 +80,13 @@ def _default_resolver(host: str, port: int) -> list[str]:
 
 @dataclass
 class IntranetNetworkPolicy:
-    """Default-deny policy for public endpoints in intranet deployments."""
+    """Default-deny policy for non-model runtime integrations.
+
+    Trust is not inferred from an address range: a large intranet can legitimately
+    use globally-routable-looking addresses. Model inference is authorized by the
+    explicit provider configuration plus an adapter-owned inference route; this
+    policy is for every other runtime integration, such as tool or MCP endpoints.
+    """
 
     policy_id: str
     allowed_hosts: set[str] = field(default_factory=set)
@@ -123,7 +129,7 @@ class IntranetNetworkPolicy:
         decision = self.evaluate_url(url)
         if not decision.allowed:
             raise NetworkEgressBlocked(
-                f"公网出口已被内网策略拒绝：{decision.reason}"
+                f"运行时出站策略拒绝：{decision.reason}"
             )
         return decision
 
@@ -150,7 +156,7 @@ class IntranetNetworkPolicy:
         decision = self.evaluate_model_request_url(url)
         if not decision.allowed:
             raise NetworkEgressBlocked(
-                f"公网出口已被内网策略拒绝：{decision.reason}"
+                f"运行时出站策略拒绝：{decision.reason}"
             )
         return decision
 
@@ -229,14 +235,14 @@ def require_configured_model_request_url(url: str) -> NetworkDecision:
     port = parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80)
     path = parsed.path.rstrip("/")
     if parsed.scheme not in {"http", "https"} or not host:
-        raise NetworkEgressBlocked("公网出口已被内网策略拒绝：invalid_endpoint")
+        raise NetworkEgressBlocked("运行时出站策略拒绝：invalid_endpoint")
     if _is_forbidden_autonomous_service(host):
         raise NetworkEgressBlocked(
-            "公网出口已被内网策略拒绝：autonomous_service_forbidden"
+            "运行时出站策略拒绝：autonomous_service_forbidden"
         )
     if not any(path.endswith(suffix) for suffix in _MODEL_API_PATH_SUFFIXES):
         raise NetworkEgressBlocked(
-            "公网出口已被内网策略拒绝：model_endpoint_path_forbidden"
+            "运行时出站策略拒绝：model_endpoint_path_forbidden"
         )
     return NetworkDecision(True, "configured_model_inference", host, port)
 

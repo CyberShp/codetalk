@@ -5,22 +5,26 @@ doc_kind: threat-model
 created: 2026-07-23
 ---
 
-# Controlled Egress Threat Model
+# Controlled Runtime Egress Threat Model
 
 ## Security objective
 
 When CodeTalk runs in intranet mode, product services, model clients, MCP clients, and
-spawned Agent processes must not establish a connection to an unapproved destination.
-Allowed destinations are Unix/local sockets plus deployment-approved hostnames and CIDRs.
-An enterprise hostname may legitimately resolve to a non-RFC1918 address; it is the approved
-hostname/CIDR policy, not a simplistic private-IP test, that determines admission. An explicitly
-approved model-provider endpoint is permitted through CodeTalk's provider adapter, even when it
-uses a public-looking address.
+spawned Agent processes must not establish a connection for an unapproved purpose. An enterprise
+network may legitimately use addresses that look public; CodeTalk never classifies a destination
+as safe or unsafe from its IP range. For non-model integrations, deployment-approved hostnames or
+CIDRs remain an explicit routing record. For inference, the user/deployment-configured provider
+endpoint plus the provider adapter's narrow inference route is the approval record, even when the
+endpoint resolves to a public-looking address.
 
 The product boundary is **controlled purpose-based egress**, not an IP-address heuristic:
 an approved model inference request is permitted, while the same vendor's SDK telemetry,
 tracing, update, extension marketplace, package registry, callback, or hosted-MCP request is
 not. Approval of a model host never grants those autonomous uses.
+
+Development and CI may download, inspect, pin, and compare SDKs under the team's normal approved
+network policy. The following controls apply to the deployed CodeTalk runtime, not to that
+controlled engineering work.
 
 Provider configuration probes use the same minimal inference route as a real task. Runtime
 must not call provider model-list or discovery endpoints merely to populate a selector; the

@@ -46,7 +46,7 @@ def test_intranet_policy_rejects_public_url_before_a_connection_is_attempted():
     assert decision.allowed is False
     assert decision.reason == "host_not_allowlisted"
     assert resolved is False
-    with pytest.raises(NetworkEgressBlocked, match="公网出口已被内网策略拒绝"):
+    with pytest.raises(NetworkEgressBlocked, match="运行时出站策略拒绝"):
         policy.require_url("https://example.com/secret")
 
 
@@ -154,7 +154,7 @@ def test_runtime_policy_blocks_official_model_endpoint_before_client_connection(
     monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_hosts", [])
     monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_cidrs", [])
 
-    with pytest.raises(Exception, match="公网出口已被内网策略拒绝"):
+    with pytest.raises(Exception, match="运行时出站策略拒绝"):
         require_runtime_url("https://api.openai.com/v1/chat/completions")
 
 
