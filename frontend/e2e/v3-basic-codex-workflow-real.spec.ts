@@ -79,16 +79,22 @@ async function createAndRunTaskThroughUi(
   await page.getByRole("button", { name: "保存并继续" }).click();
 
   await page.getByRole("textbox", { name: "任务名称 *" }).fill(values.taskName);
-  await page.getByLabel("工作空间 *").selectOption({ label: values.workspaceName });
+  const workspaceSelector = page.getByLabel("工作空间 *");
+  await expect(workspaceSelector.locator("option")).toHaveCount(2);
+  await workspaceSelector.selectOption({ index: 1 });
   await page.getByRole("textbox", { name: "描述" }).fill("真实 Codex CLI 的 SPDK iSCSI login 源码驱动测试交付");
   await page.getByRole("button", { name: "保存并继续" }).click();
 
   await expect(page.getByRole("heading", { name: "填写本次输入" })).toBeVisible();
-  await expect(page.getByText("无需额外输入")).toBeVisible();
+  await page.getByRole("textbox", { name: "分析目标 *" }).fill(
+    "分析 SPDK iSCSI login 流程及其异常、资源、并发与恢复测试设计。",
+  );
+  await expect(page.getByText(/用户逐字要求，定义分析范围/)).toBeVisible();
   await page.getByRole("button", { name: "保存并继续" }).click();
 
   await expect(page.getByRole("heading", { name: "确认执行配置" })).toBeVisible();
   await expect(page.getByText(/默认完整继承工作流/)).toBeVisible();
+  await expect(page.getByRole("radio", { name: /速度型/ })).toBeChecked();
   await page.getByRole("button", { name: "保存并继续" }).click();
   await expect(page.getByRole("heading", { name: "确认交付输出" })).toBeVisible();
   await page.getByRole("button", { name: "保存并继续" }).click();
