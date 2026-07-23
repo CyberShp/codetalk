@@ -11,7 +11,7 @@ test.skip(!fs.existsSync(repoPath), `SPDK repository is unavailable: ${repoPath}
 test.skip(!dataDir, "CODETALK_PLAYWRIGHT_DATA_DIR is required to retain real-run evidence");
 
 test("V3 basic source report runs through the browser with a real Codex CLI", async ({ page }) => {
-  test.setTimeout(35 * 60_000);
+  test.setTimeout(25 * 60_000);
   const stamp = Date.now();
   const workspaceName = `SPDK Codex V3 ${stamp}`;
   const taskName = `iSCSI login V3 ${stamp}`;
@@ -24,7 +24,7 @@ test("V3 basic source report runs through the browser with a real Codex CLI", as
   const startedAt = Date.now();
   const status = page.locator(".ct-v2-run-status").filter({ hasText: "执行状态" }).locator("strong");
   await expect.poll(async () => (await status.textContent())?.trim(), {
-    timeout: 30 * 60_000,
+    timeout: 20 * 60_000,
     intervals: [1000, 2000, 5000, 10_000],
   }).toMatch(/^(已完成|部分完成)$/);
   const elapsedMs = Date.now() - startedAt;
@@ -45,7 +45,7 @@ test("V3 basic source report runs through the browser with a real Codex CLI", as
     "utf8",
   );
   expect(elapsedMs).toBeGreaterThanOrEqual(60_000);
-  expect(elapsedMs).toBeLessThanOrEqual(30 * 60_000);
+  expect(elapsedMs).toBeLessThanOrEqual(20 * 60_000);
 });
 
 async function ensureCodexRuntimeIsReady(page: import("@playwright/test").Page) {
