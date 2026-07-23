@@ -152,6 +152,11 @@ def enrich_external_agent_claim_bindings(artifact_dir: str | Path) -> dict[str, 
     root = Path(artifact_dir)
     cards = _read_json_list(_find_artifact(root, "evidence_cards.json"))
     by_id = {str(card.get("evidence_id") or ""): card for card in cards if str(card.get("evidence_id") or "")}
+    by_path: dict[str, dict[str, Any]] = {}
+    for card in cards:
+        file_path = str(card.get("file_path") or card.get("path") or "").strip()
+        if file_path and file_path not in by_path:
+            by_path[file_path] = card
     changed: dict[str, int] = {}
     for artifact, row_id_key, evidence_key in (
         ("sfmea.json", "sfmea_id", "source_evidence"),
@@ -172,6 +177,9 @@ def enrich_external_agent_claim_bindings(artifact_dir: str | Path) -> dict[str, 
                 if by_id.get(str(value).split(":", 1)[0].strip())
             ), None)
             if not isinstance(card, dict):
+                declared_path = str(row.get("file_path") or row.get("path") or "").strip()
+                card = by_path.get(declared_path)
+            if not isinstance(card, dict):
                 continue
             excerpt = str(card.get("excerpt") or "").strip()
             file_path = str(card.get("file_path") or card.get("path") or "").strip()
@@ -179,12 +187,16 @@ def enrich_external_agent_claim_bindings(artifact_dir: str | Path) -> dict[str, 
                 continue
             symbol = next((str(value) for value in card.get("symbols") or [] if str(value)), "")
             row_id = str(row.get(row_id_key) or f"row-{index}")
+            evidence_id = str(card.get("evidence_id") or "")
+            if evidence_id and evidence_id not in references:
+                references.append(evidence_id)
+                row[evidence_key] = references
             row["technical_claims"] = [{
                 "claim_id": f"AUTO-{row_id}-E1",
                 "type": "source",
                 "statement": excerpt,
                 "evidence": [{
-                    "evidence_id": str(card.get("evidence_id") or ""),
+                    "evidence_id": evidence_id,
                     "path": file_path,
                     "symbol": symbol,
                     "lines": f"L{int(card.get('start_line') or 0)}-L{int(card.get('end_line') or 0)}",

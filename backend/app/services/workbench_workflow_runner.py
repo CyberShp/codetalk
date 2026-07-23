@@ -28,8 +28,10 @@ from app.llm.factory import (
 )
 from app.services.ai_staged_execution import (
     _apply_quality_feedback_field_patches,
+    build_source_evidence_pack,
     build_staged_execution_plan,
     execute_staged_builtin_plan,
+    materialize_source_evidence_pack,
     refresh_deterministic_combined_report,
 )
 from app.services.agent_run_harness import ArtifactValidationHarness
@@ -61,6 +63,28 @@ from app.services.workbench_task_run import WorkbenchTaskRunStore
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _materialize_external_agent_source_evidence_pack(task_run: Any) -> bool:
+    """Restore the task-owned deterministic source pack after an Agent run.
+
+    The provider may still retain its own cards inside ``agent_runs`` for
+    diagnostics, but only the locally read, SHA256-pinned cards may enter the
+    delivery contract or the claim validator.
+    """
+    bundle = task_run.task_bundle if isinstance(task_run.task_bundle, dict) else {}
+    context = bundle.get("local_source_context")
+    if not isinstance(context, dict) or not context.get("files"):
+        return False
+    pack = build_source_evidence_pack(context)
+    if not pack.get("evidence_cards"):
+        return False
+    root = Path(str(task_run.artifact_dir))
+    stage_dir = root / "stages" / "source_analysis"
+    stage_dir.mkdir(parents=True, exist_ok=True)
+    _write_json(stage_dir / "source_evidence_pack.json", pack)
+    materialize_source_evidence_pack(pack, root)
+    return True
 
 
 _QUALITY_ARTIFACT_DEPENDENCIES = {
@@ -687,6 +711,17 @@ class WorkbenchWorkflowRunner:
             if isinstance(execution_profile, dict)
             else "rapid"
         )
+        # External Agents may write convenient, abbreviated evidence cards. The
+        # task-owned source pack is the only evidence authority: rebuild it from
+        # the SHA256-validated local context before any delivery or quality step.
+        # This prevents an Agent's ellipsized excerpt from becoming a fact source.
+        if any(
+            isinstance(item, dict)
+            and item.get("type") == "agent_task"
+            and str(item.get("provider") or "") != BUILTIN_LLM_PROVIDER_ID
+            for item in step_results
+        ):
+            _materialize_external_agent_source_evidence_pack(task_run)
         materialize_artifact_contract_v3_outputs(
             task_run.artifact_dir,
             profile_id=profile_id,

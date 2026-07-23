@@ -32,4 +32,8 @@ that a requirement is complete; an item is only complete after its required real
 - A workflow can already carry typed ports and strict single-edge validation, so V3 extends
   that contract instead of replacing it with an untyped graph.
 - The present runtime is serial at compiled-plan level. Any durable stage runtime decision
-  must be made only after isolated offline POCs; no SDK is selected by this document.
+  must be made after isolated, reproducible SDK POCs. Those POCs may download and evaluate
+  candidate SDKs under the engineering/CI network policy. "Offline" is a deployment-runtime
+  constraint only: a shipped CodeTalk instance must not let an SDK autonomously contact a
+  vendor for updates, telemetry, traces, discovery, marketplaces, or package installation.
+  No SDK is selected by this document.

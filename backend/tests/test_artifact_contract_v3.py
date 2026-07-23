@@ -253,6 +253,33 @@ def test_external_agent_evidence_ids_are_deterministically_bound_to_claims(tmp_p
     assert json.loads((tmp_path / "sfmea.json").read_text())[0]["technical_claims"][0]["evidence"][0]["path"] == "lib/iscsi/login.c"
 
 
+def test_external_agent_legacy_evidence_id_is_rebound_to_canonical_card_by_file(tmp_path):
+    import json
+
+    from app.services.artifact_contract_v3 import enrich_external_agent_claim_bindings
+
+    canonical_card = {
+        "evidence_id": "SRC-01", "file_path": "lib/iscsi/login.c",
+        "start_line": 7, "end_line": 7, "symbols": ["login"],
+        "excerpt": "return SPDK_SUCCESS;",
+    }
+    (tmp_path / "evidence_cards.json").write_text(
+        json.dumps([canonical_card]), encoding="utf-8"
+    )
+    (tmp_path / "sfmea.json").write_text(json.dumps([{
+        "sfmea_id": "RISK-1", "file_path": "lib/iscsi/login.c",
+        "source_evidence": ["AGENT-CARD:7"],
+    }]), encoding="utf-8")
+    (tmp_path / "black_box_cases.json").write_text(json.dumps([]), encoding="utf-8")
+
+    assert enrich_external_agent_claim_bindings(tmp_path) == {"sfmea.json": 1}
+    row = json.loads((tmp_path / "sfmea.json").read_text())[0]
+    assert "SRC-01" in row["source_evidence"]
+    evidence = row["technical_claims"][0]["evidence"][0]
+    assert evidence["evidence_id"] == "SRC-01"
+    assert evidence["quote"] == "return SPDK_SUCCESS;"
+
+
 def test_stage_progress_only_marks_artifacts_that_were_really_materialized(tmp_path):
     from app.services.test_activity_stage_specs import (
         project_test_activity_stage_progress,
