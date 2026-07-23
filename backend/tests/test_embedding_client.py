@@ -8,6 +8,20 @@ import pytest
 from app.llm.embedding_client import EmbeddingClient, _BATCH_SIZE
 
 
+def test_embedding_client_accepts_a_base_url_that_already_includes_v1():
+    client = EmbeddingClient(
+        base_url="https://example.test/v1/",
+        api_key="test-key",
+        model="test-model",
+    )
+    try:
+        assert client._base_url == "https://example.test"
+    finally:
+        import asyncio
+
+        asyncio.run(client.close())
+
+
 @pytest.fixture(autouse=True)
 def _disable_intranet_policy_for_adapter_contract_tests(monkeypatch):
     """These HTTP-shape tests use fake non-routable hosts, not runtime egress."""

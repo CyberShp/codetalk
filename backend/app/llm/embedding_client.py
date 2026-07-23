@@ -8,6 +8,7 @@ import logging
 import httpx
 
 from app.llm.base import async_retry
+from app.llm.endpoint import normalize_openai_compat_base_url
 from app.services.network_policy import require_runtime_model_request_url
 
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ class EmbeddingClient:
         ssl_cert_path: str | None = None,
         force_direct: bool = False,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
+        self._base_url = normalize_openai_compat_base_url(base_url)
         self._api_key = api_key
         self._model = model
 

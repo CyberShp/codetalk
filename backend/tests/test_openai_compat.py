@@ -92,7 +92,10 @@ async def test_health_check_uses_only_the_configured_inference_route():
                     {
                         "index": 0,
                         "finish_reason": "stop",
-                        "message": {"role": "assistant", "content": "OK"},
+                        "message": {
+                            "role": "assistant",
+                            "content": "模型连接已经验证成功。",
+                        },
                     }
                 ],
             },
@@ -114,6 +117,42 @@ async def test_health_check_uses_only_the_configured_inference_route():
     assert requests == [
         ("POST", "/v1/chat/completions"),
     ]
+
+
+async def test_complete_accepts_a_base_url_that_already_includes_v1():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/chat/completions"
+        return httpx.Response(
+            200,
+            json={
+                "model": "deepseek-chat",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": "模型连接已经验证成功。",
+                        },
+                    }
+                ],
+            },
+        )
+
+    client = OpenAICompatClient(
+        "https://api.deepseek.com/v1/", "test-key", "deepseek-chat"
+    )
+    await client._client.aclose()
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    try:
+        response = await client.complete(
+            [{"role": "user", "content": "hello"}], max_tokens=8
+        )
+    finally:
+        await client.close()
+
+    assert response.content == "模型连接已经验证成功。"
 
 
 async def test_factory_managed_client_checks_each_model_request_before_transport(monkeypatch):

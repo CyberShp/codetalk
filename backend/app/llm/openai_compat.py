@@ -17,6 +17,7 @@ from app.llm.base import (
     async_retry,
     current_finish_reason,
 )
+from app.llm.endpoint import normalize_openai_compat_base_url
 from app.services.network_policy import require_runtime_model_request_url
 
 logger = logging.getLogger(__name__)
@@ -64,7 +65,7 @@ class OpenAICompatClient(BaseLLMClient):
         force_direct: bool = False,
         enforce_network_policy: bool = False,
     ) -> None:
-        self._base_url = base_url.rstrip("/")
+        self._base_url = normalize_openai_compat_base_url(base_url)
         self._api_key = api_key
         self._model = model
         self._enforce_network_policy = enforce_network_policy
