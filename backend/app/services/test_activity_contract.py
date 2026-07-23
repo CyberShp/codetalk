@@ -1906,6 +1906,11 @@ def _audit_structured_fact_claims(
             if path in verified_files
         ]
         for literal_index, (literal, uncertain) in enumerate(log_literals, start=1):
+            # A delivery may name an unverified log only as an observation gap.
+            # That is deliberately not a claim that the source emits the literal,
+            # so it belongs in the report but must not poison the fact ledger.
+            if uncertain:
+                continue
             matches = [
                 metadata
                 for metadata in candidate_files
@@ -2827,10 +2832,14 @@ def _extract_exact_log_literals(text: str) -> list[tuple[str, bool]]:
             or re.fullmatch(r"0x[0-9a-fA-F]+", literal)
         ):
             continue
+        # Only treat an uncertainty marker attached to this literal as a gap.
+        # A separate speculative phrase elsewhere in the field must not make a
+        # verified log literal disappear from the fact ledger.
+        uncertainty_context = f"{before[-32:]} {after[:48]}"
         uncertain = bool(
             re.search(
-                r"\bmay\b|\bmight\b|可能|或许|待验证",
-                local_context,
+                r"待验证|需核验|尚未确认|\bunverified\b",
+                uncertainty_context,
                 flags=re.IGNORECASE,
             )
         )

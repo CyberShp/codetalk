@@ -6504,6 +6504,58 @@ def test_fact_ledger_rejects_exact_log_literal_missing_from_verified_source(tmp_
     assert issue["row_id"] == "SFMEA-005"
 
 
+def test_fact_ledger_keeps_an_explicitly_unverified_log_as_a_gap_not_a_claim(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+    from app.services.workflow_presets import SFMEA_SCHEMA
+
+    repo = tmp_path / "repo"
+    source = repo / "lib" / "iscsi" / "conn.c"
+    source.parent.mkdir(parents=True)
+    source.write_text('SPDK_ERRLOG("auth failed\\n");\n', encoding="utf-8")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "evidence_cards.json").write_text(
+        json.dumps(
+            [{
+                "evidence_id": "SRC-001",
+                "file_path": "lib/iscsi/conn.c",
+                "start_line": 1,
+                "end_line": 1,
+                "excerpt": 'SPDK_ERRLOG("auth failed\\n");',
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "symbols": ["login_timeout"],
+            }]
+        ),
+        encoding="utf-8",
+    )
+    (artifacts / "sfmea.json").write_text(
+        json.dumps([{
+            "sfmea_id": "SFMEA-007",
+            "failure_mode": "Login timeout",
+            "cause": "Initiator stops responding.",
+            "effect": "Connection closes.",
+            "detection": "日志可见 'login timed out'（待验证：需从完整源码确认）。",
+            "severity": 6,
+            "occurrence": 2,
+            "detection_score": 2,
+            "rpn": 24,
+            "mitigation": "Observe timeout handling.",
+            "source_evidence": ["lib/iscsi/conn.c::login_timeout"],
+            "test_mapping": "待新增 timeout test",
+        }]),
+        encoding="utf-8",
+    )
+
+    result = audit_test_activity_artifacts(
+        artifact_dir=artifacts,
+        contract={"artifact_contract": {"sfmea.json": {"schema": SFMEA_SCHEMA}}},
+        repo_path=str(repo),
+    )
+
+    assert not any(claim.get("type") == "log_literal" for claim in result["fact_claims"])
+    assert not any(issue.get("claim_id") == "SFMEA-007:log_literal:1" for issue in result["issues"])
+
+
 def test_fact_ledger_resolves_exact_log_literal_from_verified_evidence_anchor(tmp_path):
     from app.services.test_activity_contract import audit_test_activity_artifacts
     from app.services.workflow_presets import SFMEA_SCHEMA
