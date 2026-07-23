@@ -13,6 +13,7 @@ from app.llm.base import (
     async_retry,
     current_finish_reason,
 )
+from app.services.network_policy import require_runtime_model_request_url
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +32,12 @@ class AnthropicClient(BaseLLMClient):
         proxy_url: str | None = None,
         ssl_cert_path: str | None = None,
         force_direct: bool = False,
+        enforce_network_policy: bool = False,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._model = model
+        self._enforce_network_policy = enforce_network_policy
 
         verify = ssl_cert_path if ssl_cert_path else True
         pool_limits = httpx.Limits(keepalive_expiry=30)
@@ -107,6 +110,7 @@ class AnthropicClient(BaseLLMClient):
             "stream": True,
         }
         url = f"{self._base_url}/v1/messages"
+        self._require_approved_model_endpoint(url)
         logger.info("Anthropic streaming call: model=%s", self._model)
 
         async with self._client.stream("POST", url, headers=headers, json=payload) as resp:
@@ -161,6 +165,7 @@ class AnthropicClient(BaseLLMClient):
         }
 
         url = f"{self._base_url}/v1/messages"
+        self._require_approved_model_endpoint(url)
         logger.info("Anthropic API call: model=%s, max_tokens=%d", self._model, max_tokens)
 
         resp = await self._client.post(url, headers=headers, json=payload)
@@ -227,6 +232,7 @@ class AnthropicClient(BaseLLMClient):
                 "messages": [{"role": "user", "content": "hi"}],
             }
             url = f"{self._base_url}/v1/messages"
+            self._require_approved_model_endpoint(url)
             resp = await self._client.post(
                 url, headers=headers, json=payload, timeout=60
             )
@@ -242,3 +248,7 @@ class AnthropicClient(BaseLLMClient):
     async def close(self) -> None:
         """Close the underlying HTTP client."""
         await self._client.aclose()
+
+    def _require_approved_model_endpoint(self, url: str) -> None:
+        if self._enforce_network_policy:
+            require_runtime_model_request_url(url)

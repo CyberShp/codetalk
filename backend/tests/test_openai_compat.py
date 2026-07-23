@@ -117,3 +117,33 @@ async def test_health_check_falls_back_to_real_chat_when_models_probe_is_rejecte
         ("GET", "/v1/models"),
         ("POST", "/v1/chat/completions"),
     ]
+
+
+async def test_factory_managed_client_checks_each_model_request_before_transport(monkeypatch):
+    transport_called = False
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal transport_called
+        transport_called = True
+        return httpx.Response(200, json={})
+
+    client = OpenAICompatClient(
+        "https://api.deepseek.com",
+        "test-key",
+        "deepseek-chat",
+        enforce_network_policy=True,
+    )
+    await client._client.aclose()
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    monkeypatch.setattr(
+        "app.llm.openai_compat.require_runtime_model_request_url",
+        lambda _url: (_ for _ in ()).throw(ValueError("model_endpoint_path_forbidden")),
+    )
+
+    try:
+        with pytest.raises(ValueError, match="model_endpoint_path_forbidden"):
+            await client.complete([{"role": "user", "content": "hello"}], max_tokens=32)
+    finally:
+        await client.close()
+
+    assert transport_called is False

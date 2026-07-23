@@ -27,4 +27,5 @@ evidence: CodeTalk must still enforce approved private endpoints for HTTP/SDK cl
 record `network_egress_blocked` events, capture traffic for the two SPDK workflows, and
 prove deployment-approved model/MCP hostnames remain usable under the production host
 firewall policy. Those hosts may use non-RFC1918 addressing; approval is by hostname or
-explicit CIDR, while official vendor, telemetry and update domains remain hard-denied.
+explicit CIDR. An approved model API is allowed only through the adapter's declared API routes;
+telemetry, tracing, updates, package registries and hosted MCP remain hard-denied.

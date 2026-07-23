@@ -13,9 +13,10 @@ When CodeTalk runs in intranet mode, product services, model clients, MCP client
 spawned Agent processes must not establish a connection to an unapproved destination.
 Allowed destinations are Unix/local sockets plus deployment-approved hostnames and CIDRs.
 An enterprise hostname may legitimately resolve to a non-RFC1918 address; it is the approved
-hostname/CIDR policy, not a simplistic private-IP test, that determines admission. DNS,
-HTTP(S), WebSocket, package update checks, telemetry, and callback URLs are all outbound
-traffic and are denied unless explicitly allow-listed.
+hostname/CIDR policy, not a simplistic private-IP test, that determines admission. An explicitly
+approved model-provider endpoint is permitted through CodeTalk's provider adapter, even when it
+uses a public-looking address. Package update checks, telemetry, tracing, callback URLs, hosted
+MCP, and arbitrary SDK traffic remain denied; approval of a model host never grants those uses.
 
 ## Threats
 
@@ -31,9 +32,10 @@ traffic and are denied unless explicitly allow-listed.
 ## Enforcement layers
 
 1. **Application layer:** all backend outbound calls use CodeTalk's network policy client.
-   It rejects every unapproved host/CIDR before connection and hard-rejects official vendor,
-   telemetry, package/update and hosted-trace domains even when a bad configuration attempts
-   to allow-list them. It emits a redacted audit event.
+   It rejects every unapproved host/CIDR before connection. Model-provider requests are admitted
+   only when the deployment explicitly approves the hostname and the request matches an adapter
+   API route; telemetry, package/update, hosted-trace and hosted-MCP destinations are hard-denied
+   even when a bad configuration attempts to allow-list them. It emits a redacted audit event.
 2. **Harness layer:** Agent processes receive a scrubbed environment with telemetry/update
    controls disabled and only generated, allow-listed MCP configuration. The command contract
    records effective endpoint identifiers, never secrets.

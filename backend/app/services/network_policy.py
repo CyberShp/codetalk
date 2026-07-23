@@ -32,21 +32,23 @@ _INTRANET_BLOCKED_ENV_KEYS = {
 }
 
 # These are product-runtime hard denials, not user-editable configuration.
-# A company gateway must use its own approved hostname; pointing a model, trace,
-# update or package client at an official vendor hostname is never an intranet path.
-_FORBIDDEN_VENDOR_HOST_SUFFIXES = (
-    "anthropic.com",
-    "claude.ai",
-    "deepseek.com",
+# Model APIs are different: a deployment may explicitly approve a provider endpoint
+# (including one that resolves to a public-looking address). Autonomous traffic is
+# never a valid runtime dependency, even when an allow-list was misconfigured.
+_FORBIDDEN_AUTONOMOUS_SERVICE_SUFFIXES = (
     "github.com",
     "githubusercontent.com",
     "langchain.com",
     "langsmith.com",
     "npmjs.org",
-    "openai.com",
     "pypi.org",
     "sentry.io",
     "segment.io",
+)
+_MODEL_API_PATH_SUFFIXES = (
+    "/v1/chat/completions",
+    "/v1/messages",
+    "/v1/models",
 )
 
 
@@ -93,8 +95,8 @@ class IntranetNetworkPolicy:
             return NetworkDecision(False, "invalid_endpoint", host, port)
         if host in {"localhost", "localhost.localdomain"}:
             return NetworkDecision(True, "loopback_hostname", host, port)
-        if _is_forbidden_vendor_host(host):
-            return NetworkDecision(False, "vendor_endpoint_forbidden", host, port)
+        if _is_forbidden_autonomous_service(host):
+            return NetworkDecision(False, "autonomous_service_forbidden", host, port)
         try:
             address = ipaddress.ip_address(host)
         except ValueError:
@@ -125,6 +127,33 @@ class IntranetNetworkPolicy:
             )
         return decision
 
+    def evaluate_model_request_url(self, url: str) -> NetworkDecision:
+        """Admit only adapter-defined model API requests after host approval.
+
+        This keeps an approved provider host from becoming a general escape hatch
+        for tracing, telemetry, hosted MCP, update or arbitrary SDK endpoints.
+        """
+        decision = self.evaluate_url(url)
+        if not decision.allowed:
+            return decision
+        path = urlparse(str(url or "").strip()).path.rstrip("/")
+        if not any(path.endswith(suffix) for suffix in _MODEL_API_PATH_SUFFIXES):
+            return NetworkDecision(
+                False,
+                "model_endpoint_path_forbidden",
+                decision.host,
+                decision.port,
+            )
+        return decision
+
+    def require_model_request_url(self, url: str) -> NetworkDecision:
+        decision = self.evaluate_model_request_url(url)
+        if not decision.allowed:
+            raise NetworkEgressBlocked(
+                f"公网出口已被内网策略拒绝：{decision.reason}"
+            )
+        return decision
+
     def snapshot(self) -> dict[str, object]:
         return {
             "network_mode": "intranet_deny_public",
@@ -134,7 +163,7 @@ class IntranetNetworkPolicy:
             "telemetry": "disabled",
             "remote_tracing": "disabled",
             "hosted_mcp": "forbidden",
-            "external_model_api": "forbidden",
+            "external_model_api": "approved_only",
         }
 
     def _address_allowed(self, value: str | ipaddress._BaseAddress) -> bool:
@@ -144,11 +173,11 @@ class IntranetNetworkPolicy:
         return any(address in ipaddress.ip_network(cidr, strict=False) for cidr in self.allowed_cidrs)
 
 
-def _is_forbidden_vendor_host(host: str) -> bool:
+def _is_forbidden_autonomous_service(host: str) -> bool:
     normalized = host.lower().rstrip(".")
     return any(
         normalized == suffix or normalized.endswith(f".{suffix}")
-        for suffix in _FORBIDDEN_VENDOR_HOST_SUFFIXES
+        for suffix in _FORBIDDEN_AUTONOMOUS_SERVICE_SUFFIXES
     )
 
 
@@ -162,7 +191,7 @@ def runtime_network_policy() -> IntranetNetworkPolicy:
 
 
 def require_runtime_url(url: str) -> NetworkDecision:
-    """Reject a public destination before an application client can connect."""
+    """Admit a deployment-approved provider base URL before client creation."""
     if not settings.intranet_network_mode:
         parsed = urlparse(str(url or "").strip())
         return NetworkDecision(
@@ -172,6 +201,19 @@ def require_runtime_url(url: str) -> NetworkDecision:
             port=parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80),
         )
     return runtime_network_policy().require_url(url)
+
+
+def require_runtime_model_request_url(url: str) -> NetworkDecision:
+    """Enforce the approved model request contract immediately before I/O."""
+    if not settings.intranet_network_mode:
+        parsed = urlparse(str(url or "").strip())
+        return NetworkDecision(
+            allowed=True,
+            reason="intranet_mode_disabled",
+            host=str(parsed.hostname or "").lower().rstrip("."),
+            port=parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80),
+        )
+    return runtime_network_policy().require_model_request_url(url)
 
 
 def agent_network_is_permitted() -> bool:

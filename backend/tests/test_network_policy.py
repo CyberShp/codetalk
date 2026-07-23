@@ -65,17 +65,39 @@ def test_allowlisted_hostname_can_resolve_to_a_non_rfc1918_intranet_address():
     assert decision.reason == "approved_hostname"
 
 
-def test_vendor_and_telemetry_hosts_are_rejected_even_when_misconfigured_as_allowed():
+def test_explicitly_approved_model_host_is_allowed_but_autonomous_services_are_rejected():
     from app.services.network_policy import IntranetNetworkPolicy
 
     policy = IntranetNetworkPolicy(
         policy_id="corp-approved-v1",
-        allowed_hosts={"api.openai.com", "trace.langchain.com"},
+        allowed_hosts={"api.openai.com", "trace.langchain.com", "api.anthropic.com"},
         resolver=lambda _host, _port: ["203.0.113.18"],
     )
 
-    assert policy.evaluate_url("https://api.openai.com/v1/responses").reason == "vendor_endpoint_forbidden"
-    assert policy.evaluate_url("https://trace.langchain.com/api").reason == "vendor_endpoint_forbidden"
+    approved = policy.evaluate_url("https://api.openai.com/v1/chat/completions")
+    assert approved.allowed is True
+    assert approved.reason == "approved_hostname"
+
+    assert policy.evaluate_url("https://trace.langchain.com/api").reason == "autonomous_service_forbidden"
+    assert policy.evaluate_url("https://github.com/vendor/update").reason == "autonomous_service_forbidden"
+
+
+def test_model_request_paths_are_limited_to_adapter_api_routes():
+    from app.services.network_policy import IntranetNetworkPolicy
+
+    policy = IntranetNetworkPolicy(
+        policy_id="corp-approved-v1",
+        allowed_hosts={"api.openai.com"},
+        resolver=lambda _host, _port: ["203.0.113.18"],
+    )
+
+    assert policy.evaluate_model_request_url(
+        "https://api.openai.com/v1/chat/completions"
+    ).allowed
+    assert policy.evaluate_model_request_url("https://api.openai.com/v1/models").allowed
+    denied = policy.evaluate_model_request_url("https://api.openai.com/v1/traces")
+    assert denied.allowed is False
+    assert denied.reason == "model_endpoint_path_forbidden"
 
 
 def test_policy_snapshot_is_json_safe_and_does_not_include_runtime_resolver():
@@ -96,7 +118,7 @@ def test_policy_snapshot_is_json_safe_and_does_not_include_runtime_resolver():
         "telemetry": "disabled",
         "remote_tracing": "disabled",
         "hosted_mcp": "forbidden",
-        "external_model_api": "forbidden",
+        "external_model_api": "approved_only",
     }
 
 

@@ -36,6 +36,11 @@ def _resolve_proxy(
     force_direct=True → httpx uses trust_env=False to bypass system proxy.
     """
     ssl_cert = general.get("ssl_cert_path") or None
+    if settings.intranet_network_mode:
+        # Model requests have their own explicit endpoint admission. Do not let
+        # environment or user-configured proxies turn that narrow route into a
+        # general external transport.
+        return None, ssl_cert, True
     mode = general.get("proxy_mode", "none")
     if mode == "none":
         return None, ssl_cert, True
@@ -105,6 +110,7 @@ async def create_llm_client(
             proxy_url=proxy_url,
             ssl_cert_path=ssl_cert,
             force_direct=force_direct,
+            enforce_network_policy=True,
         )
     if api_type == "openai_compat":
         return OpenAICompatClient(
@@ -114,6 +120,7 @@ async def create_llm_client(
             proxy_url=proxy_url,
             ssl_cert_path=ssl_cert,
             force_direct=force_direct,
+            enforce_network_policy=True,
         )
 
     raise ValueError(f"未知的 api_type: {api_type}")

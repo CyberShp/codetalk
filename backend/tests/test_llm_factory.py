@@ -72,3 +72,38 @@ async def test_llm_factory_rejects_public_endpoint_in_intranet_mode(tmp_path, mo
 
     with pytest.raises(Exception, match="公网出口已被内网策略拒绝"):
         await create_llm_client("public")
+
+
+@pytest.mark.asyncio
+async def test_llm_factory_allows_an_explicitly_approved_model_endpoint(tmp_path, monkeypatch):
+    import aiosqlite
+
+    from app.llm.factory import create_llm_client
+
+    db_path = tmp_path / "codetalk.db"
+    async with aiosqlite.connect(db_path) as db:
+        await db.execute(
+            """
+            CREATE TABLE llm_configs (
+                id TEXT PRIMARY KEY, api_type TEXT NOT NULL, base_url TEXT NOT NULL,
+                api_key TEXT NOT NULL, model TEXT NOT NULL, config_json TEXT
+            )
+            """
+        )
+        await db.execute("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)")
+        await db.execute(
+            "INSERT INTO llm_configs VALUES (?, ?, ?, ?, ?, ?)",
+            ("approved", "openai_compat", "https://api.deepseek.com", "secret", "deepseek-chat", None),
+        )
+        await db.commit()
+
+    monkeypatch.setattr("app.llm.factory.settings.sqlite_db", db_path)
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_network_mode", True)
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_hosts", ["api.deepseek.com"])
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_cidrs", [])
+
+    client = await create_llm_client("approved")
+    try:
+        assert client._enforce_network_policy is True
+    finally:
+        await client.close()
