@@ -3605,6 +3605,7 @@ export function taskRunEventTypeLabel(eventType: string): string {
     step_started: "节点开始",
     step_completed: "节点完成",
     step_failed: "节点失败",
+    provider_readiness_blocked: "执行器启动前检查未通过",
     artifact_created: "产物生成",
     artifact: "产物更新",
     tool_use: "调用执行器",
@@ -3670,7 +3671,7 @@ export function taskRunEventDetail(event: WorkbenchTaskRunEvent): string {
 
 export function taskRunEventTone(eventType: string): "danger" | "success" | "primary" | "muted" {
   const normalized = eventType.trim().toLowerCase();
-  if (["step_failed", "failed", "error", "interrupted"].includes(normalized)) return "danger";
+  if (["step_failed", "failed", "error", "interrupted", "provider_readiness_blocked"].includes(normalized)) return "danger";
   if (["step_completed", "artifact_created", "artifact", "tool_result", "completed"].includes(normalized)) {
     return "success";
   }

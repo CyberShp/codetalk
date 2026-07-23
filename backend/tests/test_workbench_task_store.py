@@ -778,6 +778,7 @@ async def test_background_preflight_blocks_unready_agent_before_runner_starts(tm
     events = WorkbenchTaskRunEventStore(run_root).list_after(prepared.task_run_id)
     blocked = [item for item in events if item["event_type"] == "provider_readiness_blocked"]
     assert blocked
+    assert blocked[-1]["event_kind"] == "error"
     assert "内网策略未批准" in blocked[-1]["payload"]["user_message"]
 
 

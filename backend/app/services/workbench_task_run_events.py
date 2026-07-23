@@ -333,7 +333,7 @@ def _public_event_kind(event: dict[str, Any]) -> str:
         return "artifact"
     if event_type == "agent_output":
         return "output"
-    if event_type in {"step_failed", "node_failed", "failed", "error"}:
+    if event_type in {"step_failed", "node_failed", "failed", "error", "provider_readiness_blocked"}:
         return "error"
     if event_type in {"thinking", "reasoning", "diagnostic", "trace", "tool_use", "tool_result"}:
         return event_type

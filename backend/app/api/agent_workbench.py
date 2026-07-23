@@ -647,7 +647,13 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
     running_node = next((node for node in nodes if node.get("status_label") == "运行中"), None)
     waiting_node = next((node for node in nodes if node.get("status_label") == "等待运行"), None)
     current_node = failed_node or running_node or waiting_node or (nodes[-1] if nodes else {})
-    failure_reasons = _task_run_ui_failure_reasons(failed_node)
+    failure_reasons = _task_run_ui_failure_reasons(failed_node) if failed_node else []
+    live_readiness_failures = _task_run_ui_live_readiness_failures(task_root)
+    if status["status"] == "failed" and not failed_node:
+        failure_reasons = _dedupe_strings([
+            *live_readiness_failures,
+            *failure_reasons,
+        ])
     failed_step_result = step_results.get(str((failed_node or {}).get("id") or ""), {})
     failure_recovery = (
         failed_step_result.get("failure_recovery")
@@ -687,6 +693,7 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
             "failed_node_id": str((failed_node or {}).get("id") or ""),
             "reasons": failure_reasons,
             "can_retry": bool(failed_node),
+            "preflight_blocked": bool(live_readiness_failures),
             "user_goal_stage": str((failed_node or {}).get("label") or ""),
             "preserved_node_ids": [str(node.get("id") or "") for node in preserved_nodes],
             "preserved_node_labels": [str(node.get("label") or "") for node in preserved_nodes],
@@ -697,16 +704,24 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
             "failure_class": failure_class,
             "failure_kind": str(failure_recovery.get("failure_kind") or ""),
             "recommended_action": (
+                live_readiness_failures[0]
+                if live_readiness_failures
+                else
                 recovery_actions[0]
                 if recovery_actions
                 else "检查任务输入或工作流输出契约，保存后再创建新 Attempt。"
                 if failure_class == "configuration"
                 else "保留已完成上游结果，从失败节点创建新 Attempt 重试。"
             ),
-            "recommended_actions": recovery_actions,
+            "recommended_actions": _dedupe_strings([
+                *live_readiness_failures,
+                *recovery_actions,
+            ]),
             "actions": (
                 ["从失败节点重试", "查看内部诊断", "编辑工作流输出契约"]
                 if failed_node
+                else ["检查执行器设置", "查看内部诊断"]
+                if live_readiness_failures
                 else []
             ),
         },
@@ -1360,6 +1375,20 @@ def _task_run_ui_failure_reasons(failed_node: dict[str, Any] | None) -> list[str
         str(item) for item in failed_node.get("failure_reasons") or []
         if str(item)
     ] or ["该节点运行失败。请查看内部诊断或从失败节点重试。"]
+
+
+def _task_run_ui_live_readiness_failures(task_root: Path) -> list[str]:
+    payload = _read_json(task_root / "provider_live_readiness.json")
+    if not isinstance(payload, dict):
+        return []
+    failures = []
+    for item in payload.get("checks") or []:
+        if not isinstance(item, dict) or item.get("success") is True:
+            continue
+        message = str(item.get("message") or "").strip()
+        if message:
+            failures.append(message)
+    return _dedupe_strings(failures)
 
 
 def _task_run_ui_reason_label(reason: str) -> str:

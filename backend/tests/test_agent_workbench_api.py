@@ -3540,6 +3540,52 @@ async def test_task_run_ui_summary_prioritizes_cancelled_status_over_stale_failu
     assert "acceptance_audit" not in _public_task_run_runtime_summary(task_root)
 
 
+async def test_task_run_ui_summary_explains_agent_preflight_block_before_a_node_starts(tmp_path):
+    from types import SimpleNamespace
+
+    from app.api.agent_workbench import _build_task_run_ui_summary
+
+    task_root = tmp_path / "task_run_preflight_blocked"
+    task_root.mkdir()
+    (task_root / "task_run.json").write_text(
+        json.dumps({"status": "failed"}), encoding="utf-8"
+    )
+    (task_root / "provider_live_readiness.json").write_text(
+        json.dumps(
+            {
+                "checks": [
+                    {
+                        "provider": "agent-runtime:default-codex",
+                        "success": False,
+                        "message": "内网策略未批准 Agent 访问模型端点：请使用内置模型。",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    task_run = SimpleNamespace(
+        workflow_id="preflight_workflow",
+        workflow_snapshot={
+            "id": "preflight_workflow",
+            "name": "Preflight workflow",
+            "steps": [{"id": "analyze", "type": "agent_task"}],
+        },
+        task_bundle={"workflow_contract": {"outputs": []}},
+    )
+
+    summary = _build_task_run_ui_summary(task_run, task_root)
+
+    assert summary["status_label"] == "运行失败"
+    assert summary["failure"]["failed_node_id"] == ""
+    assert summary["failure"]["preflight_blocked"] is True
+    assert summary["failure"]["reasons"] == [
+        "内网策略未批准 Agent 访问模型端点：请使用内置模型。",
+    ]
+    assert summary["failure"]["actions"] == ["检查执行器设置", "查看内部诊断"]
+
+
 async def test_public_task_run_summary_exposes_quality_axes_without_full_claim_payload(tmp_path):
     from app.api.agent_workbench import _public_task_run_runtime_summary
 
