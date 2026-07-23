@@ -1077,12 +1077,20 @@ class WorkbenchWorkflowRunner:
             )
         ]
         validation = _validate_step_artifacts(artifact_dir, required_artifacts)
+        artifact_recovery = _artifact_recovery_after_terminal_rejection(
+            artifact_dir=artifact_dir,
+            execution=asdict(execution),
+            validation=asdict(validation),
+            required_artifacts=required_artifacts,
+        )
         status = (
             "cancelled"
             if execution.status == "cancelled"
             else
             "completed"
-            if execution.status == "completed" and validation.status == "ok"
+            if (
+                execution.status == "completed" or artifact_recovery is not None
+            ) and validation.status == "ok"
             else "invalid"
             if validation.status != "ok"
             else execution.status
@@ -1113,6 +1121,9 @@ class WorkbenchWorkflowRunner:
             "validation": asdict(validation),
             "required_artifacts": required_artifacts,
         }
+        if artifact_recovery is not None:
+            step_payload["artifact_recovery"] = artifact_recovery
+            _write_json(artifact_dir / "artifact_recovery.json", artifact_recovery)
         failure_recovery = _failure_recovery_summary(
             artifact_dir=artifact_dir,
             execution=asdict(execution),
@@ -1142,6 +1153,7 @@ class WorkbenchWorkflowRunner:
             source_slice_requests=source_slice_requests,
             injected_source_slices=injected_source_slices,
             failure_recovery=failure_recovery,
+            artifact_recovery=artifact_recovery,
         )
         step_payload["lifecycle"] = lifecycle
         _write_json(artifact_dir / "agent_run_lifecycle.json", lifecycle)
@@ -3581,6 +3593,39 @@ def _validate_step_artifacts(
     return validator.validate_required_artifacts(required_artifacts=required_artifacts)
 
 
+def _artifact_recovery_after_terminal_rejection(
+    *,
+    artifact_dir: Path,
+    execution: dict[str, Any],
+    validation: dict[str, Any],
+    required_artifacts: list[str],
+) -> dict[str, Any] | None:
+    """Preserve validated delivery when a provider rejects only its final stream."""
+    if str(execution.get("status") or "") in {"completed", "cancelled", "timeout"}:
+        return None
+    if str(validation.get("status") or "") != "ok" or not required_artifacts:
+        return None
+    raw_output = _text_tail_from_artifact(
+        artifact_dir / "raw_output.txt", max_chars=16000
+    ).lower()
+    terminal_rejection_markers = (
+        "flagged for possible cybersecurity risk",
+        "content was flagged",
+        "content policy",
+    )
+    if not any(marker in raw_output for marker in terminal_rejection_markers):
+        return None
+    return {
+        "status": "recovered",
+        "reason": "provider_terminal_policy_rejection_after_artifacts",
+        "message": "执行器在写入全部交付件后拒绝了终端摘要；已保留通过文件契约验证的交付件，仍需继续完成质量门禁。",
+        "original_execution_status": str(execution.get("status") or "error"),
+        "original_exit_code": execution.get("exit_code"),
+        "required_artifacts": list(required_artifacts),
+        "validation_status": str(validation.get("status") or ""),
+    }
+
+
 SOURCE_EXTENSIONS = frozenset({
     ".c", ".h", ".cc", ".cpp", ".hpp", ".py", ".go", ".rs", ".java",
     ".ts", ".tsx", ".js", ".jsx", ".sh", ".json",
@@ -5961,6 +6006,7 @@ def _agent_run_lifecycle_summary(
     source_slice_requests: list[dict[str, Any]],
     injected_source_slices: list[dict[str, Any]],
     failure_recovery: dict[str, Any],
+    artifact_recovery: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     stages: list[dict[str, Any]] = [
         {
@@ -6036,6 +6082,13 @@ def _agent_run_lifecycle_summary(
             "failure_kind": str(failure_recovery.get("failure_kind") or ""),
             "artifact": "failure_recovery.json",
         })
+    if artifact_recovery:
+        stages.append({
+            "stage": "artifact_recovery",
+            "status": str(artifact_recovery.get("status") or "recovered"),
+            "reason": str(artifact_recovery.get("reason") or ""),
+            "artifact": "artifact_recovery.json",
+        })
     payload: dict[str, Any] = {
         "step_id": step_id,
         "status": status,
@@ -6048,6 +6101,7 @@ def _agent_run_lifecycle_summary(
         ],
         "source_slice_request_count": len(source_slice_requests),
         "injected_source_slice_count": len(injected_source_slices),
+        "artifact_recovery": artifact_recovery or {},
         "replay_plan_artifact": (
             "agent_replay_plan.json"
             if (artifact_dir / "agent_replay_plan.json").exists()

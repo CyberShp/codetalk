@@ -2752,6 +2752,38 @@ def test_agent_run_harness_does_not_count_hidden_runtime_noise_as_progress(tmp_p
     assert "idle" in result.error
 
 
+def test_terminal_policy_rejection_recovers_only_validated_artifacts(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _artifact_recovery_after_terminal_rejection,
+    )
+
+    (tmp_path / "raw_output.txt").write_text(
+        "This content was flagged for possible cybersecurity risk.", encoding="utf-8"
+    )
+    recovered = _artifact_recovery_after_terminal_rejection(
+        artifact_dir=tmp_path,
+        execution={"status": "error", "exit_code": 1},
+        validation={"status": "ok"},
+        required_artifacts=["report.md", "sfmea.json"],
+    )
+    assert recovered is not None
+    assert recovered["status"] == "recovered"
+    assert recovered["original_exit_code"] == 1
+
+    assert _artifact_recovery_after_terminal_rejection(
+        artifact_dir=tmp_path,
+        execution={"status": "error", "exit_code": 1},
+        validation={"status": "invalid"},
+        required_artifacts=["report.md"],
+    ) is None
+    assert _artifact_recovery_after_terminal_rejection(
+        artifact_dir=tmp_path,
+        execution={"status": "error", "exit_code": 1},
+        validation={"status": "ok"},
+        required_artifacts=[],
+    ) is None
+
+
 def test_workbench_task_run_store_loads_and_lists_prepared_runs(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import (
