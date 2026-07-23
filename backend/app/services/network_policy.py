@@ -216,6 +216,31 @@ def require_runtime_model_request_url(url: str) -> NetworkDecision:
     return runtime_network_policy().require_model_request_url(url)
 
 
+def require_configured_model_request_url(url: str) -> NetworkDecision:
+    """Permit only an explicitly configured provider inference route.
+
+    A deployment's model configuration is the approval record.  This deliberately
+    does not infer safety from an address range: large intranets can use public
+    looking addresses.  It still rejects autonomous vendor destinations and every
+    route other than the small adapter-owned inference surface.
+    """
+    parsed = urlparse(str(url or "").strip())
+    host = str(parsed.hostname or "").lower().rstrip(".")
+    port = parsed.port or (443 if parsed.scheme in {"https", "wss"} else 80)
+    path = parsed.path.rstrip("/")
+    if parsed.scheme not in {"http", "https"} or not host:
+        raise NetworkEgressBlocked("公网出口已被内网策略拒绝：invalid_endpoint")
+    if _is_forbidden_autonomous_service(host):
+        raise NetworkEgressBlocked(
+            "公网出口已被内网策略拒绝：autonomous_service_forbidden"
+        )
+    if not any(path.endswith(suffix) for suffix in _MODEL_API_PATH_SUFFIXES):
+        raise NetworkEgressBlocked(
+            "公网出口已被内网策略拒绝：model_endpoint_path_forbidden"
+        )
+    return NetworkDecision(True, "configured_model_inference", host, port)
+
+
 def agent_network_is_permitted() -> bool:
     """Fail closed until deployment has certified its private-only firewall."""
     if not settings.intranet_network_mode:

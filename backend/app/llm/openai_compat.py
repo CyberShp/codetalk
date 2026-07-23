@@ -18,7 +18,10 @@ from app.llm.base import (
     current_finish_reason,
 )
 from app.llm.endpoint import normalize_openai_compat_base_url
-from app.services.network_policy import require_runtime_model_request_url
+from app.services.network_policy import (
+    require_configured_model_request_url,
+    require_runtime_model_request_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +67,13 @@ class OpenAICompatClient(BaseLLMClient):
         ssl_cert_path: str | None = None,
         force_direct: bool = False,
         enforce_network_policy: bool = False,
+        configured_model_endpoint: bool = False,
     ) -> None:
         self._base_url = normalize_openai_compat_base_url(base_url)
         self._api_key = api_key
         self._model = model
         self._enforce_network_policy = enforce_network_policy
+        self._configured_model_endpoint = configured_model_endpoint
 
         verify = ssl_cert_path if ssl_cert_path else True
         pool_limits = httpx.Limits(keepalive_expiry=30)
@@ -301,4 +306,7 @@ class OpenAICompatClient(BaseLLMClient):
 
     def _require_approved_model_endpoint(self, url: str) -> None:
         if self._enforce_network_policy:
-            require_runtime_model_request_url(url)
+            if self._configured_model_endpoint:
+                require_configured_model_request_url(url)
+            else:
+                require_runtime_model_request_url(url)

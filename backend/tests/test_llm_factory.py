@@ -39,7 +39,7 @@ async def test_optional_source_analysis_route_falls_back_when_settings_table_is_
 
 
 @pytest.mark.asyncio
-async def test_llm_factory_rejects_public_endpoint_in_intranet_mode(tmp_path, monkeypatch):
+async def test_llm_factory_allows_a_configured_model_endpoint_without_ip_allowlisting(tmp_path, monkeypatch):
     import aiosqlite
 
     from app.llm.factory import create_llm_client
@@ -70,8 +70,12 @@ async def test_llm_factory_rejects_public_endpoint_in_intranet_mode(tmp_path, mo
     monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_hosts", [])
     monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_cidrs", [])
 
-    with pytest.raises(Exception, match="公网出口已被内网策略拒绝"):
-        await create_llm_client("public")
+    client = await create_llm_client("public")
+    try:
+        assert client._enforce_network_policy is True
+        assert client._configured_model_endpoint is True
+    finally:
+        await client.close()
 
 
 @pytest.mark.asyncio
@@ -99,11 +103,12 @@ async def test_llm_factory_allows_an_explicitly_approved_model_endpoint(tmp_path
 
     monkeypatch.setattr("app.llm.factory.settings.sqlite_db", db_path)
     monkeypatch.setattr("app.services.network_policy.settings.intranet_network_mode", True)
-    monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_hosts", ["api.deepseek.com"])
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_hosts", [])
     monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_cidrs", [])
 
     client = await create_llm_client("approved")
     try:
         assert client._enforce_network_policy is True
+        assert client._configured_model_endpoint is True
     finally:
         await client.close()

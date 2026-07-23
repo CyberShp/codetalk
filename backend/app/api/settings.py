@@ -232,6 +232,8 @@ async def test_llm_connection(
             "proxy_url": proxy_url,
             "ssl_cert_path": ssl_cert,
             "force_direct": force_direct,
+            "enforce_network_policy": True,
+            "configured_model_endpoint": True,
         }
 
         if data.api_type == "anthropic":

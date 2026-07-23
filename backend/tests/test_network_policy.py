@@ -158,6 +158,27 @@ def test_runtime_policy_blocks_official_model_endpoint_before_client_connection(
         require_runtime_url("https://api.openai.com/v1/chat/completions")
 
 
+def test_configured_model_inference_does_not_use_ip_or_global_host_allowlists(monkeypatch):
+    from app.services.network_policy import (
+        NetworkEgressBlocked,
+        require_configured_model_request_url,
+    )
+
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_network_mode", True)
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_hosts", [])
+
+    decision = require_configured_model_request_url(
+        "https://api.deepseek.com/v1/chat/completions"
+    )
+    assert decision.allowed is True
+    assert decision.reason == "configured_model_inference"
+
+    with pytest.raises(NetworkEgressBlocked, match="model_endpoint_path_forbidden"):
+        require_configured_model_request_url("https://api.deepseek.com/v1/models")
+    with pytest.raises(NetworkEgressBlocked, match="autonomous_service_forbidden"):
+        require_configured_model_request_url("https://github.com/v1/chat/completions")
+
+
 def test_intranet_agent_network_fails_closed_until_deployment_policy_is_certified(monkeypatch):
     from app.services.network_policy import agent_network_is_permitted
 

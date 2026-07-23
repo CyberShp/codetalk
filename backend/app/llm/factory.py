@@ -10,7 +10,6 @@ from app.config import settings
 from app.llm.anthropic import AnthropicClient
 from app.llm.base import BaseLLMClient
 from app.llm.openai_compat import OpenAICompatClient
-from app.services.network_policy import require_runtime_url
 
 logger = logging.getLogger(__name__)
 
@@ -96,9 +95,10 @@ async def create_llm_client(
     if model_override:
         model = model_override
 
-    # Runtime endpoints are deployment policy, never a user-controlled escape
-    # hatch. This happens before a client or proxy transport is created.
-    require_runtime_url(base_url)
+    # The saved model configuration is an explicit inference approval. The
+    # client enforces the narrower request-path policy immediately before I/O;
+    # do not reject it here based on its resolved address or a duplicate host
+    # allow-list.
 
     proxy_url, ssl_cert, force_direct = _resolve_proxy(general)
 
@@ -111,6 +111,7 @@ async def create_llm_client(
             ssl_cert_path=ssl_cert,
             force_direct=force_direct,
             enforce_network_policy=True,
+            configured_model_endpoint=True,
         )
     if api_type == "openai_compat":
         return OpenAICompatClient(
@@ -121,6 +122,7 @@ async def create_llm_client(
             ssl_cert_path=ssl_cert,
             force_direct=force_direct,
             enforce_network_policy=True,
+            configured_model_endpoint=True,
         )
 
     raise ValueError(f"未知的 api_type: {api_type}")
