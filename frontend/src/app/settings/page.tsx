@@ -210,7 +210,10 @@ function AgentRuntimeCard({
   onDelete: (runtimeId: string) => void;
 }) {
   return (
-    <div className="flex flex-wrap items-center gap-3 rounded-xl border border-outline-variant/20 bg-surface px-4 py-3">
+    <div
+      data-testid={`agent-runtime-card-${runtime.id}`}
+      className="flex flex-wrap items-center gap-3 rounded-xl border border-outline-variant/20 bg-surface px-4 py-3"
+    >
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
           <strong className="text-sm text-on-surface">{runtime.name}</strong>
