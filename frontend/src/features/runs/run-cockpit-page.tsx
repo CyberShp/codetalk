@@ -185,6 +185,13 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
   const kinds = [...new Set(events.map((item) => item.event_kind).filter(Boolean))];
   const publicArtifacts = artifacts.filter((item) => item.audience !== "diagnostic");
   const deliverables = publicArtifacts.filter((item) => item.audience === "deliverable");
+  const executionProfile = run.task_bundle?.execution_profile as Record<string, unknown> | undefined;
+  const executionProfileId = typeof executionProfile?.id === "string" ? executionProfile.id : "";
+  const executionProfileLabel = typeof executionProfile?.label === "string" ? executionProfile.label : executionProfileId;
+  const profileDuration = Array.isArray(executionProfile?.expected_duration_minutes)
+    ? executionProfile.expected_duration_minutes.map((value) => Number(value)).filter(Number.isFinite)
+    : [];
+  const reusedStages = events.filter((item) => String(item.payload.kind || "") === "stage_reused").length;
 
   const cancel = async () => {
     setActionBusy(true);
@@ -243,6 +250,7 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
       <StatusBlock label="质量状态" value={taskStatusLabel(taskQualityLabels, run.quality_status || "not_checked")} tone={run.quality_status || "not_checked"} />
       <StatusBlock label="交付状态" value={taskStatusLabel(taskDeliveryLabels, run.delivery_status || "none")} tone={run.delivery_status || "none"} />
       <div className="ct-v2-run-metric"><span>耗时</span><RunDuration start={run.started_at || run.runtime?.started_at} end={run.completed_at || run.runtime?.completed_at} active={running} /></div>
+      {executionProfileId && <div className="ct-v2-run-metric"><span>执行档位</span><strong>{executionProfileLabel}</strong><small>{profileDuration.length === 2 ? `目标 ${profileDuration[0]}-${profileDuration[1]} 分钟` : "已冻结到本次运行"}{reusedStages ? ` · 已复用 ${reusedStages} 个阶段` : ""}</small></div>}
       <div className="ct-v2-run-metric"><span>当前节点</span><strong>{displayNodeName(currentNode?.label || currentNode?.id || "等待调度")}</strong></div>
       <div className="ct-v2-run-actions">
         <button type="button" disabled={actionBusy} onClick={() => void discussRun()}><MessageSquareText size={14} />围绕本次运行继续分析</button>

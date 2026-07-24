@@ -716,6 +716,68 @@ def test_prepare_freezes_selected_execution_profile_into_task_and_agent_bundles(
     assert agent_bundle["stage_specs"][-1]["stage_id"] == "publish"
 
 
+def test_workflow_execution_artifact_keeps_the_frozen_execution_profile(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "execution-profile-artifact",
+        "name": "Execution profile artifact",
+        "version": 1,
+        "execution_profiles": [
+            {
+                "id": "rapid",
+                "label": "速度型",
+                "delivery_class": "bounded_analysis",
+                "expected_duration_minutes": [10, 25],
+                "max_subagents": 1,
+            },
+            {
+                "id": "deep",
+                "label": "深度型",
+                "delivery_class": "full_test_delivery",
+                "expected_duration_minutes": [45, 90],
+                "max_subagents": 4,
+            },
+        ],
+        "default_execution_profile": "rapid",
+        "inputs": [],
+        "steps": [],
+        "outputs": [],
+    })
+    prepared = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="execution-profile-artifact",
+        workspace_id="ws-profile",
+        repo_path=str(tmp_path),
+        inputs={},
+        execution_profile_id="deep",
+    )
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        prepared.task_run_id,
+        timeout_sec=10,
+    )
+
+    assert result.execution_profile == prepared.execution_profile
+    execution = json.loads(
+        (Path(prepared.artifact_dir) / "workflow_execution.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert execution["execution_profile"] == {
+        "id": "deep",
+        "label": "深度型",
+        "delivery_class": "full_test_delivery",
+        "expected_duration_minutes": [45, 90],
+        "max_subagents": 4,
+    }
+
+
 def test_prepare_legacy_workflow_allows_the_v3_deep_execution_profile(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer
@@ -1699,6 +1761,7 @@ def test_staged_partial_result_is_not_reported_as_completed():
     from app.services.workbench_workflow_runner import (
         _execution_status,
         _overall_status,
+        _promote_staged_result_after_deliverable_quality,
         _staged_execution_timed_out,
         _staged_step_status,
     )
@@ -1722,6 +1785,20 @@ def test_staged_partial_result_is_not_reported_as_completed():
         "label": "部分完成",
     }
     assert _task_run_ui_status_label("partial") == "部分完成"
+    promoted = _promote_staged_result_after_deliverable_quality(
+        {"status": "partial", "reason": "quality_repair_seed"},
+        {"status": "deliverable", "issue_count": 0},
+    )
+    assert promoted["status"] == "completed"
+    assert promoted["quality_repaired_to_deliverable"] is True
+    assert _promote_staged_result_after_deliverable_quality(
+        {"status": "partial", "reason": "workflow_deadline_exceeded"},
+        {"status": "deliverable", "issue_count": 0},
+    )["status"] == "partial"
+    assert _promote_staged_result_after_deliverable_quality(
+        {"status": "error"},
+        {"status": "deliverable", "issue_count": 0},
+    )["status"] == "error"
 
 
 @pytest.mark.asyncio
@@ -6448,6 +6525,42 @@ def test_local_source_excerpt_end_line_matches_character_truncation():
     )
 
     assert end_line == start_line + len(excerpt.splitlines()) - 1
+
+
+def test_local_source_context_keeps_verified_branch_hints_with_enclosing_symbol(tmp_path):
+    from app.services.workbench_task_run import build_local_source_context
+
+    source = tmp_path / "lib" / "iscsi" / "login.c"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "static int append_connection(int connections, int max_connections)\n"
+        "{\n"
+        "    if (connections >= max_connections) {\n"
+        "        return -1;\n"
+        "    }\n"
+        "    /* TODO: need a mutex to protect this list. */\n"
+        "    return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    context = build_local_source_context(
+        repo_path=str(tmp_path),
+        query="iSCSI multi-connection capacity",
+        limit=1,
+        min_test_files=0,
+        evidence_hints=[{
+            "path": "lib/iscsi/login.c",
+            "term": "connections >= max_connections",
+            "label": "MCS capacity boundary",
+        }],
+    )
+
+    assert context["status"] == "ready"
+    card = context["files"][0]
+    assert card["start_line"] <= 3 <= card["end_line"]
+    assert "connections >= max_connections" in card["excerpt"]
+    assert card["symbols"] == ["append_connection"]
 
 
 def test_local_source_context_prefers_git_files_and_records_revision(tmp_path):

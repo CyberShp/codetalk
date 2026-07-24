@@ -24,6 +24,7 @@ from app.services.ai_staged_execution import (
     _normalize_black_box_delivery_contract,
     _normalize_black_box_source_anchor_claims,
     _normalize_black_box_oracle_contract,
+    _normalize_sfmea_risk_contract,
     _apply_regular_stage_output_limits,
     _apply_quality_feedback_field_patches,
     _apply_sfmea_nonrisk_deletion_tombstones,
@@ -60,7 +61,11 @@ from app.services.ai_staged_execution import (
     execute_staged_builtin_plan,
     materialize_source_evidence_pack,
 )
-from app.services.workflow_presets import EVIDENCE_CARDS_SCHEMA
+from app.services.workflow_presets import (
+    BLACK_BOX_CASES_SCHEMA,
+    EVIDENCE_CARDS_SCHEMA,
+    SFMEA_SCHEMA,
+)
 from app.services.flow_evidence import (
     build_business_flow_context,
     build_flow_evidence_pack,
@@ -125,6 +130,50 @@ def test_structured_quality_repair_routes_to_primary_reasoner(monkeypatch):
         )
         is reasoner
     )
+
+
+def test_structured_quality_repair_routes_to_independent_repair_model(monkeypatch):
+    class Client:
+        def __init__(self, model: str) -> None:
+            self._model = model
+
+    flash = Client("deepseek-v4-flash")
+    source_fast = Client("deepseek-v4-flash")
+    pro = Client("deepseek-v4-pro")
+    monkeypatch.setattr(
+        "app.services.ai_staged_execution.settings.regular_stage_quality_repair_use_primary_model",
+        True,
+    )
+
+    assert (
+        _select_regular_stage_llm(
+            flash,
+            source_fast,
+            "sfmea.json",
+            quality_repair=True,
+            quality_repair_llm=pro,
+        )
+        is pro
+    )
+
+
+def test_risk_bearing_artifacts_route_to_independent_verifier_model():
+    class Client:
+        def __init__(self, model: str) -> None:
+            self._model = model
+
+    flash = Client("deepseek-v4-flash")
+    pro = Client("deepseek-v4-pro")
+
+    assert _select_regular_stage_llm(
+        flash, flash, "sfmea.json", quality_repair_llm=pro
+    ) is pro
+    assert _select_regular_stage_llm(
+        flash, flash, "black_box_cases.json", quality_repair_llm=pro
+    ) is pro
+    assert _select_regular_stage_llm(
+        flash, flash, "business_flow.md", quality_repair_llm=pro
+    ) is flash
 
 
 def test_quality_repair_patch_reports_every_omitted_requested_row():
@@ -262,6 +311,175 @@ def test_sfmea_nonrisk_tombstone_resolves_one_based_issue_index():
     )
 
     assert result == [{"sfmea_id": "SFMEA-001", "_delete": True}]
+
+
+def test_sfmea_normalizer_replaces_test_only_or_guard_inversion_with_product_risk_candidate():
+    rendered = [
+        {
+            "sfmea_id": "SFMEA-09",
+            "failure_mode": "登录参数更新在非 Full Feature 阶段执行",
+            "cause": "风险假设：若 full_feature 标志未正确设置，参数更新可能被跳过",
+            "mechanism": "风险假设：检查 full_feature 状态",
+            "technical_claims": [
+                {
+                    "statement": "if (conn->full_feature) {",
+                    "evidence": [{"evidence_id": "SRC-01:L1119", "path": "lib/iscsi/iscsi.c", "quote": "if (conn->full_feature) {"}],
+                }
+            ],
+        },
+        {
+            "sfmea_id": "SFMEA-11",
+            "failure_mode": "登录请求 PDU 分配失败未处理",
+            "cause": "测试 helper 假设",
+            "mechanism": "风险假设：fuzz helper",
+            "technical_claims": [
+                {
+                    "statement": "req_pdu = iscsi_get_pdu(conn);",
+                    "evidence": [{"evidence_id": "SRC-TEST:L531", "path": "test/app/fuzz/iscsi.c", "quote": "req_pdu = iscsi_get_pdu(conn);"}],
+                }
+            ],
+        },
+        {
+            "sfmea_id": "SFMEA-12",
+            "failure_mode": "连接销毁时 socket 关闭顺序不当",
+            "cause": "风险假设：若 socket 未先关闭，可能处理残留数据",
+            "mechanism": "风险假设：清理连接",
+            "technical_claims": [
+                {
+                    "statement": "iscsi_poll_group_remove_conn(conn->pg, conn);",
+                    "evidence": [{"evidence_id": "SRC-06:L630", "path": "lib/iscsi/conn.c", "quote": "iscsi_poll_group_remove_conn(conn->pg, conn);"}],
+                }
+            ],
+        },
+        {
+            "sfmea_id": "SFMEA-13",
+            "failure_mode": "连接析构时未注销所有定时器",
+            "cause": "风险假设：注销未注册定时器可能导致内存泄漏",
+            "mechanism": "风险假设：注销 logout_request_timer",
+            "technical_claims": [
+                {
+                    "statement": "spdk_poller_unregister(&conn->logout_request_timer);",
+                    "evidence": [{"evidence_id": "SRC-06:L633", "path": "lib/iscsi/conn.c", "quote": "spdk_poller_unregister(&conn->logout_request_timer);"}],
+                }
+            ],
+        },
+        {
+            "sfmea_id": "SFMEA-14",
+            "failure_mode": "超过 MaxConnections 限制后仍接受新连接",
+            "cause": "风险假设：检查与连接添加不是原子操作",
+            "mechanism": "风险假设：并发登录绕过连接数限制",
+            "technical_claims": [
+                {
+                    "statement": "if (sess->connections >= sess->MaxConnections) {",
+                    "evidence": [{"evidence_id": "SRC-10:L707", "path": "lib/iscsi/iscsi.c", "quote": "if (sess->connections >= sess->MaxConnections) {"}],
+                }
+            ],
+        },
+        {
+            "sfmea_id": "SFMEA-15",
+            "failure_mode": "连接添加时未校验会话归属",
+            "cause": "风险假设：会话归属校验失败后仍继续添加连接",
+            "mechanism": "风险假设：连接添加到错误会话",
+            "technical_claims": [
+                {
+                    "statement": "return ISCSI_LOGIN_CONN_ADD_FAIL;",
+                    "evidence": [{"evidence_id": "SRC-10:L704", "path": "lib/iscsi/iscsi.c", "quote": "return ISCSI_LOGIN_CONN_ADD_FAIL;"}],
+                }
+            ],
+        },
+    ]
+    product_catalog = [
+        {
+            "evidence_id": "SRC-01:L1119",
+            "path": "lib/iscsi/iscsi.c",
+            "symbol": "",
+            "lines": "L1119",
+            "quote": "if (conn->full_feature) {",
+        },
+        {
+            "evidence_id": "SRC-10:L711",
+            "path": "lib/iscsi/iscsi.c",
+            "symbol": "",
+            "lines": "L711",
+            "quote": "return ISCSI_LOGIN_TOO_MANY_CONNECTIONS;",
+        },
+        {
+            "evidence_id": "SRC-10:L707",
+            "path": "lib/iscsi/iscsi.c",
+            "symbol": "",
+            "lines": "L707",
+            "quote": "if (sess->connections >= sess->MaxConnections) {",
+        },
+        {
+            "evidence_id": "SRC-10:L704",
+            "path": "lib/iscsi/iscsi.c",
+            "symbol": "",
+            "lines": "L704",
+            "quote": "return ISCSI_LOGIN_CONN_ADD_FAIL;",
+        },
+        {
+            "evidence_id": "SRC-06:L630",
+            "path": "lib/iscsi/conn.c",
+            "symbol": "",
+            "lines": "L630",
+            "quote": "iscsi_poll_group_remove_conn(conn->pg, conn);",
+        },
+        {
+            "evidence_id": "SRC-06:L633",
+            "path": "lib/iscsi/conn.c",
+            "symbol": "",
+            "lines": "L633",
+            "quote": "spdk_poller_unregister(&conn->logout_request_timer);",
+        },
+    ]
+
+    normalized, changed = _normalize_sfmea_risk_contract(
+        rendered,
+        product_claim_catalog=product_catalog,
+    )
+
+    assert "SFMEA-09:source_risk_candidate" in changed
+    assert "SFMEA-11:source_risk_candidate" in changed
+    assert "SFMEA-12:source_risk_candidate" in changed
+    assert "SFMEA-13:source_risk_candidate" in changed
+    assert "SFMEA-14:source_risk_candidate" in changed
+    assert "SFMEA-15:source_risk_candidate" in changed
+    assert "参数更新在非 Full Feature 阶段执行" not in normalized[0]["failure_mode"]
+    assert "错误接受" in normalized[1]["failure_mode"]
+    assert normalized[1]["technical_claims"][0]["evidence"][0]["path"] == "lib/iscsi/iscsi.c"
+    assert "残留" in normalized[2]["failure_mode"]
+    assert "并发" in normalized[3]["failure_mode"]
+    assert "错误接受" in normalized[4]["failure_mode"]
+    assert "错误返回" in normalized[5]["failure_mode"]
+    assert all(row["risk_status"] == "test_hypothesis" for row in normalized)
+
+
+def test_sfmea_normalizer_removes_unbound_exact_log_claim_from_detection():
+    rendered = [
+        {
+            "sfmea_id": "SFMEA-01",
+            "failure_mode": "登录超时导致会话不可用",
+            "detection": "检查 SPDK 日志原文“Connection is already exited”",
+            "technical_claims": [
+                {
+                    "statement": "conn->state = ISCSI_CONN_STATE_EXITING;",
+                    "evidence": [
+                        {
+                            "evidence_id": "SRC-01:L153",
+                            "path": "lib/iscsi/conn.c",
+                            "quote": "conn->state = ISCSI_CONN_STATE_EXITING;",
+                        }
+                    ],
+                }
+            ],
+        }
+    ]
+
+    normalized, changed = _normalize_sfmea_risk_contract(rendered)
+
+    assert "$[0].detection:unbound_exact_log" in changed
+    assert "Connection is already exited" not in normalized[0]["detection"]
+    assert "公开 initiator" in normalized[0]["detection"]
 from app.services.workbench_workflow_runner import (
     _build_workbench_staged_plan,
     _expand_quality_blocked_artifacts,
@@ -531,6 +749,173 @@ def test_plan_compiles_dependency_order_and_declared_outputs():
     assert source_stage["max_tokens"] == 1600
     assert source_stage["output_limits"]["max_chinese_characters"] == 1200
     assert source_stage["output_limits"]["max_evidence_anchors"] == 12
+
+
+def test_deep_profile_plan_materializes_parallel_exploration_branches():
+    """Deep runs must schedule bounded analysis work, not merely label artifacts."""
+    plan = build_staged_execution_plan(
+        contract=_contract(),
+        original_user_request="完整分析 iSCSI login 的资源、异常、并发与恢复测试设计",
+        execution_profile={
+            "id": "deep",
+            "label": "深度型",
+            "delivery_class": "full_test_delivery",
+            "max_subagents": 4,
+        },
+    )
+
+    stages = {stage["id"]: stage for stage in plan["stages"]}
+    branch_ids = {
+        "deep_entry_paths",
+        "deep_state_and_resources",
+        "deep_failures_and_recovery",
+        "deep_concurrency_and_boundaries",
+    }
+
+    assert plan["execution_profile"]["id"] == "deep"
+    assert plan["execution_profile"]["applied_subagent_count"] == 4
+    assert branch_ids.issubset(stages)
+    assert all(stages[branch_id]["depends_on"] == ["flow_outline"] for branch_id in branch_ids)
+    assert all(stages[branch_id]["support"] is True for branch_id in branch_ids)
+    assert branch_ids.issubset(stages["business_flow"]["depends_on"])
+    assert branch_ids.issubset(stages["sfmea"]["depends_on"])
+    assert branch_ids.issubset(stages["black_box_cases"]["depends_on"])
+    assert stages["source_analysis"]["output_limits"]["max_evidence_anchors"] > 12
+
+
+@pytest.mark.asyncio
+async def test_deep_profile_executes_exploration_branches_before_delivery_stages(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("app.services.ai_staged_execution.settings.llm_max_concurrency", 4)
+    llm = _StageLLM()
+    plan = build_staged_execution_plan(
+        contract=_contract(),
+        original_user_request="完整分析 iSCSI login 的资源、异常、并发与恢复测试设计",
+        execution_profile={"id": "deep", "max_subagents": 4},
+    )
+
+    result = await execute_staged_builtin_plan(
+        llm=llm,
+        plan=plan,
+        artifact_dir=tmp_path,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+    )
+
+    branch_ids = (
+        "deep_entry_paths",
+        "deep_state_and_resources",
+        "deep_failures_and_recovery",
+        "deep_concurrency_and_boundaries",
+    )
+    assert result["status"] == "completed"
+    assert all(llm.calls_by_stage.get(branch_id) == 1 for branch_id in branch_ids)
+    assert all(
+        (tmp_path / "deep_exploration" / filename).is_file()
+        for filename in (
+            "entry_paths.md",
+            "state_and_resources.md",
+            "failures_and_recovery.md",
+            "concurrency_and_boundaries.md",
+        )
+    )
+    assert json.loads(
+        (tmp_path / "stages" / "deep_entry_paths" / "stage_result.json").read_text()
+    )["subagent_role"] == "deep_entry_paths"
+
+
+@pytest.mark.asyncio
+async def test_truncated_deep_support_branch_is_preserved_without_blocking_delivery(tmp_path):
+    class TruncatedDeepBranchLLM(_StageLLM):
+        async def complete(self, messages, max_tokens=4096, temperature=0.2):
+            response = await super().complete(messages, max_tokens, temperature)
+            stage = next(
+                line.split(":", 1)[1].strip()
+                for line in messages[-1]["content"].splitlines()
+                if line.startswith("STAGE_ID:")
+            )
+            if stage == "deep_concurrency_and_boundaries":
+                return LLMResponse(
+                    content="# 并发探索\n\n- SRC-01: 已保留的并发风险摘要",
+                    model="stage-test",
+                    usage={},
+                    truncated=True,
+                    finish_reason="length",
+                )
+            return response
+
+    plan = build_staged_execution_plan(
+        contract=_contract(),
+        original_user_request="完整分析 iSCSI login 的资源、异常、并发与恢复测试设计",
+        execution_profile={"id": "deep", "max_subagents": 4},
+    )
+    result = await execute_staged_builtin_plan(
+        llm=TruncatedDeepBranchLLM(),
+        plan=plan,
+        artifact_dir=tmp_path,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+    )
+
+    branch_result = json.loads(
+        (
+            tmp_path
+            / "stages"
+            / "deep_concurrency_and_boundaries"
+            / "stage_result.json"
+        ).read_text()
+    )
+    assert result["status"] == "completed"
+    assert branch_result["status"] == "completed"
+    assert branch_result["degraded"] is True
+    assert branch_result["finish_reason"] == "truncated_support_preserved"
+    assert (tmp_path / "sfmea.json").is_file()
+    assert "达到输出上限" in (
+        tmp_path / "deep_exploration" / "concurrency_and_boundaries.md"
+    ).read_text()
+
+
+def test_deep_exploration_branch_uses_bounded_markdown_context():
+    plan = build_staged_execution_plan(
+        contract=_contract(),
+        original_user_request="分析 iSCSI login 的资源生命周期与耗尽条件",
+        execution_profile={"id": "deep", "max_subagents": 4},
+    )
+    stage = next(
+        item for item in plan["stages"]
+        if item["id"] == "deep_state_and_resources"
+    )
+    source_pack = {
+        "repo_revision": "abc123",
+        "evidence_cards": [
+            {
+                "evidence_id": f"SRC-{index:02d}",
+                "file_path": f"lib/iscsi/file_{index}.c",
+                "classification": "source",
+                "start_line": index,
+                "end_line": index + 1,
+                "symbols": [f"iscsi_symbol_{index}"],
+                "excerpt": "verified source line\n" * 400,
+            }
+            for index in range(12)
+        ],
+    }
+
+    prompt = _regular_stage_prompt(
+        plan=plan,
+        stage=stage,
+        source_pack=source_pack,
+        flow_pack={"entry_points": [{"symbol": "iscsi_login"}] * 100},
+        outline={"steps": [{"summary": "login"}] * 100},
+        completed={},
+    )
+
+    assert stage["max_tokens"] <= 900
+    assert stage["output_limits"]["max_chinese_characters"] <= 1200
+    assert len(prompt) < 16_000
+    assert "必须直接以 Markdown 标题或列表开始，不得使用 JSON" in prompt
+    assert "SRC-06" not in prompt
 
 
 def test_source_driven_v2_plan_groups_ledgers_and_mindmap_without_extra_model_calls():
@@ -838,6 +1223,55 @@ def test_regular_stage_prompt_exposes_canonical_claim_evidence_catalog(tmp_path)
     assert "VERIFIED_CLAIM_EVIDENCE_CATALOG" in prompt
     assert "SRC-01:L518" in prompt
     assert "只能逐字选择一个 evidence_id" in prompt
+
+
+def test_sfmea_prompt_excludes_test_only_claim_anchors(tmp_path):
+    source_pack = {
+        "repo_revision": "abc123",
+        "evidence_cards": [
+            {
+                "evidence_id": "SRC-01",
+                "file_path": "lib/iscsi/iscsi.c",
+                "classification": "source",
+                "start_line": 100,
+                "end_line": 100,
+                "symbols": ["iscsi_login"],
+                "excerpt": "return ISCSI_LOGIN_TOO_MANY_CONNECTIONS;",
+                "sha256": "a" * 64,
+            },
+            {
+                "evidence_id": "TEST-01",
+                "file_path": "test/app/fuzz/iscsi_fuzz/iscsi_fuzz.c",
+                "classification": "test",
+                "start_line": 20,
+                "end_line": 20,
+                "symbols": ["fuzz_login"],
+                "excerpt": "request = calloc(1, sizeof(*request));",
+                "sha256": "b" * 64,
+            },
+        ],
+    }
+    stage = {
+        "id": "sfmea",
+        "artifact": "sfmea.json",
+        "purpose": "SFMEA",
+        "depends_on": [],
+        "output_contract": {"schema": {"type": "array"}},
+    }
+
+    prompt = _regular_stage_prompt(
+        plan={"original_user_request": "分析 iSCSI login"},
+        stage=stage,
+        source_pack=source_pack,
+        flow_pack={},
+        outline={},
+        completed={},
+    )
+
+    catalog_text = prompt.split("VERIFIED_CLAIM_EVIDENCE_CATALOG:", 1)[1]
+    assert "SRC-01:L100" in catalog_text
+    assert "TEST-01:L20" not in catalog_text
+    assert "test/tests/fuzz/harness" in prompt
 
 
 def test_verified_claim_catalog_keeps_later_constants_and_log_literals():
@@ -1497,6 +1931,28 @@ def test_black_box_dimension_contract_keeps_gate_required_additional_case():
     assert fields == []
 
 
+def test_initial_black_box_generation_keeps_duplicates_for_semantic_repair():
+    rows = [
+        {"case_id": "BB-01", "test_dimension": "normal_path"},
+        {"case_id": "BB-02", "test_dimension": "invalid_input"},
+        {"case_id": "BB-03", "test_dimension": "invalid_input"},
+    ]
+    stage = {
+        "output_contract": {
+            "required_dimensions": ["normal_path", "invalid_input", "timeout"],
+        }
+    }
+
+    normalized, fields = _normalize_black_box_dimension_contract(
+        rows,
+        stage,
+        preserve_additional_cases=True,
+    )
+
+    assert [item["case_id"] for item in normalized] == ["BB-01", "BB-02", "BB-03"]
+    assert fields == []
+
+
 def test_missing_black_box_dimensions_allows_reassigning_duplicate_case_ids():
     assert _quality_repair_may_reassign_black_box_dimensions(
         {
@@ -1861,6 +2317,120 @@ def test_normalize_black_box_delivery_contract_replaces_source_mapping_and_unit_
     assert "单元测试" not in rendered[0]["steps"][0]
     assert "环境能力阻塞" in rendered[0]["steps"][0]
     assert fields == ["$[0].mapped_test_dir", "$[0].steps[0]"]
+
+
+def test_normalize_black_box_delivery_contract_removes_private_state_from_observation():
+    rendered, fields = _normalize_black_box_delivery_contract(
+        [
+            {
+                "case_id": "BB-11",
+                "scenario_name": "login state",
+                "steps": ["使用 initiator 发起登录"],
+                "observability": ["通过 RPC 检查 conn->state=FULL_FEATURE"],
+                "failure_diagnostics": ["记录 conn->state 的变化"],
+                "mapped_test_dir": "test/iscsi_tgt",
+            }
+        ]
+    )
+
+    assert rendered[0]["observability"] == [
+        "通过公开 CLI/RPC、目标日志、协议响应或 TCP 会话状态观察结果；不依赖内部结构字段。"
+    ]
+    assert rendered[0]["failure_diagnostics"] == [
+        "通过公开 CLI/RPC、目标日志、协议响应或 TCP 会话状态观察结果；不依赖内部结构字段。"
+    ]
+    assert fields == ["$[0].observability[0]", "$[0].failure_diagnostics[0]"]
+
+
+def test_normalize_sfmea_risk_contract_marks_unsupported_defect_language_as_hypothesis():
+    rendered, fields = _normalize_sfmea_risk_contract(
+        [
+            {
+                "sfmea_id": "SFMEA-01",
+                "failure_mode": "连接槽位未正确清理",
+                "mechanism": "登录路径维护会话连接计数",
+                "cause": "错误路径未递减连接计数",
+                "source_evidence": ["lib/iscsi/iscsi.c:721-722"],
+                "technical_claims": [
+                    {
+                        "statement": "sess->connections++;",
+                        "evidence": [{"path": "lib/iscsi/iscsi.c", "quote": "sess->connections++;"}],
+                    }
+                ],
+            }
+        ]
+    )
+
+    row = rendered[0]
+    assert row["risk_status"] == "test_hypothesis"
+    assert row["mechanism"].startswith("风险假设：若")
+    assert row["cause"].startswith("故障注入假设：若")
+    assert "故障注入风险假设" in row["evidence_interpretation"]
+    assert fields == [
+        "$[0].risk_status",
+        "$[0].evidence_interpretation",
+        "$[0].mechanism",
+        "$[0].cause",
+    ]
+
+
+def test_normalize_sfmea_turns_guarded_full_feature_into_a_timing_hypothesis():
+    rendered, fields = _normalize_sfmea_risk_contract(
+        [
+            {
+                "sfmea_id": "SFMEA-09",
+                "failure_mode": "登录参数更新时未校验 full_feature 状态",
+                "mechanism": "仅在 full_feature 为真时更新参数",
+                "cause": "full_feature 为假时遗漏参数更新",
+                "technical_claims": [
+                    {
+                        "statement": "if (conn->full_feature) {",
+                        "evidence": [
+                            {
+                                "path": "lib/iscsi/iscsi.c",
+                                "quote": "if (conn->full_feature) {",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+
+    row = rendered[0]
+    assert row["risk_status"] == "test_hypothesis"
+    assert row["failure_mode"] == "登录错误处理的阶段时序异常可能导致参数状态不一致"
+    assert "full_feature 状态切换交错" in row["trigger_condition"]
+    assert "guarded_full_feature_hypothesis" in fields[-1]
+
+
+def test_normalize_sfmea_turns_guarded_connection_state_into_a_concurrency_hypothesis():
+    rendered, fields = _normalize_sfmea_risk_contract(
+        [
+            {
+                "sfmea_id": "SFMEA-06",
+                "failure_mode": "登录成功回调中状态检查不充分导致重复处理",
+                "mechanism": "检查 state >= EXITING，但未检查其他中间状态",
+                "cause": "错误路径未检查状态",
+                "technical_claims": [
+                    {
+                        "statement": "if (conn->state >= ISCSI_CONN_STATE_EXITING) {",
+                        "evidence": [
+                            {
+                                "path": "lib/iscsi/iscsi.c",
+                                "quote": "if (conn->state >= ISCSI_CONN_STATE_EXITING) {",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ]
+    )
+
+    row = rendered[0]
+    assert row["failure_mode"] == "登录成功回调与连接退出并发时状态转换竞态导致重复处理"
+    assert "并发故障注入" in row["trigger_condition"]
+    assert "guarded_connection_state_hypothesis" in fields[-1]
 
 
 def test_quality_repair_evidence_cards_combine_exact_and_contextual_matches():
@@ -2607,6 +3177,39 @@ def test_combined_report_plan_runs_flow_sfmea_and_black_box_before_report():
     assert flow_stage["max_continuations"] == 1
 
 
+def test_explicit_sfmea_and_black_box_outputs_inherit_combined_report_minimums():
+    contract = {
+        "target": "iSCSI login",
+        "required_outputs": ["sfmea.json", "black_box_cases.json", "report.md"],
+        "artifact_contract": {
+            "sfmea.json": {"artifact": "sfmea.json", "schema": SFMEA_SCHEMA},
+            "black_box_cases.json": {
+                "artifact": "black_box_cases.json",
+                "schema": BLACK_BOX_CASES_SCHEMA,
+            },
+            "report.md": {
+                "artifact": "report.md",
+                "min_sfmea_rows": 12,
+                "min_black_box_cases": 12,
+            },
+        },
+    }
+
+    plan = build_staged_execution_plan(
+        contract=contract,
+        original_user_request="生成完整 iSCSI login 测试报告",
+    )
+    sfmea = next(stage for stage in plan["stages"] if stage["id"] == "sfmea")
+    cases = next(
+        stage for stage in plan["stages"] if stage["id"] == "black_box_cases"
+    )
+
+    assert sfmea["output_contract"]["schema"]["minItems"] == 12
+    assert cases["output_contract"]["schema"]["minItems"] == 12
+    assert sfmea["output_limits"]["max_items"] >= 12
+    assert cases["output_limits"]["max_items"] >= 12
+
+
 @pytest.mark.asyncio
 async def test_combined_report_is_deterministically_rendered_from_validated_stage_artifacts(
     tmp_path,
@@ -2873,6 +3476,23 @@ async def test_deterministic_combined_report_keeps_all_sections_when_flow_contai
     assert "```python" in report
     assert "bhs[5:8] = len(data).to_bytes(3, \"big\")" in report
     assert "int.from_bytes(bhs[5:8], \"big\")" in report
+
+
+def test_deterministic_combined_report_closes_unbalanced_flow_fence_before_delivery_sections():
+    from app.services.ai_staged_execution import _render_deterministic_combined_report
+    from app.services.test_activity_contract import _markdown_heading_matches
+
+    report = _render_deterministic_combined_report(
+        plan={"original_user_request": "iSCSI login 测试分析"},
+        source_pack={"repo_revision": "abc123", "evidence_cards": []},
+        business_flow="流程摘要。\n```text\n模型未闭合的流程图",
+        sfmea=[{"sfmea_id": "SFMEA-01", "failure_mode": "登录超时后连接未关闭"}],
+        black_box_cases=[{"case_id": "BB-01", "scenario_name": "登录超时"}],
+    )
+
+    visible_headings = {match.group(1) for match in _markdown_heading_matches(report)}
+    assert "SFMEA" in visible_headings
+    assert "黑盒测试用例" in visible_headings
 
 
 @pytest.mark.asyncio

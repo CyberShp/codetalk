@@ -6308,6 +6308,37 @@ def _audit_json_artifact(
                         index=index,
                     )
                 )
+            risk_status = str(row.get("risk_status") or "").strip()
+            interpretation = str(row.get("evidence_interpretation") or "").strip()
+            mechanism_text = str(row.get("mechanism") or "").strip()
+            if risk_status == "test_hypothesis":
+                hypothesis_text = " ".join((interpretation, mechanism_text, str(row.get("cause") or "")))
+                if not re.search(
+                    r"(?:风险|故障注入|失效)假设|(?:若|当).{0,80}(?:失效|未|错误|异常|超限|竞态|泄漏)",
+                    hypothesis_text,
+                    flags=re.IGNORECASE,
+                ):
+                    issues.append(
+                        _issue(
+                            "unqualified_sfmea_risk_hypothesis",
+                            artifact,
+                            f"{artifact} 第 {index} 项标记为风险假设，却没有说明需要通过故障注入验证的偏离条件",
+                            index=index,
+                            row_id=row_id,
+                        )
+                    )
+            elif risk_status == "observed_defect":
+                claims = row.get("technical_claims") or []
+                if not isinstance(claims, list) or not claims:
+                    issues.append(
+                        _issue(
+                            "observed_defect_without_direct_evidence",
+                            artifact,
+                            f"{artifact} 第 {index} 项声称已观测到缺陷，却没有提供直接技术断言证据",
+                            index=index,
+                            row_id=row_id,
+                        )
+                    )
             if re.search(
                 r"(?:片段|上下文|声明).{0,12}(?:未显示|未见|没有显示|未提供).{0,30}(?:校验|检查|清理|释放|处理)",
                 risk_text,
@@ -7301,8 +7332,9 @@ _SFMEA_FAILURE_SIGNAL_RE = re.compile(
     r"expos(?:e|ed|ure)|disclos(?:e|ed|ure)|unreachable|unavailable|"
     r"accept(?:ed|s|ance)?|mismatch|verbatim|fails?|missing|absent|incomplete|"
     r"trailing|garbage|not\s+created)\b|"
-    r"(?:失败|超时|泄漏|错误|异常|丢失|残留|竞态|死锁|阻塞|耗尽|翻转|溢出|"
-    r"绕过|未传播|不向上传播|未释放|重复释放|悬空|崩溃|降级|错误接受|错误拒绝|误报)"
+    r"(?:失败|超时|泄漏|错误|异常|丢失|残留|竞态|死锁|阻塞|耗尽|翻转|溢出|越界|"
+    r"空指针|双重(?:注销|释放)|绕过|未传播|不向上传播|未释放|未拒绝|未正确|未检查|未处理|"
+    r"未清理|未.{0,8}关闭|重复释放|悬空|崩溃|降级|错误接受|错误拒绝|误报|未记录|不可追溯)"
 )
 
 

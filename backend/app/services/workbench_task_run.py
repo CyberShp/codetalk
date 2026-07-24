@@ -914,7 +914,10 @@ def build_local_source_context(
             "sha256": sha256,
             "size_bytes": len(data),
             "line_count": _line_count_text(text),
-            "symbols": _source_symbols(excerpt)[:12],
+            "symbols": _unique_strings([
+                *_source_symbols(excerpt),
+                *_enclosing_source_symbols(text, start_line=start_line),
+            ])[:12],
             "classification": classification,
             "status": "validated_source_file",
         })
@@ -1016,7 +1019,10 @@ def _materialize_source_evidence_hints(
             "sha256": hashlib.sha256(data).hexdigest(),
             "size_bytes": len(data),
             "line_count": _line_count_text(text),
-            "symbols": _source_symbols(excerpt)[:12],
+            "symbols": _unique_strings([
+                *_source_symbols(excerpt),
+                *_enclosing_source_symbols(text, start_line=start_line),
+            ])[:12],
             "classification": _local_source_classification(rel_path),
             "status": "validated_source_file",
             "evidence_hint": True,
@@ -1136,6 +1142,49 @@ def _select_source_and_test_evidence(
             + min(16, max(0, int(item.get("behavior_score") or 0)) * 2)
         )
 
+    def risk_evidence_bonus(item: dict[str, Any]) -> int:
+        """Prefer verified implementation risk anchors over normal rejects.
+
+        A source-first test workflow needs enough evidence of lifecycle,
+        capacity, concurrency and error-propagation behavior before it can
+        request a scored SFMEA.  These terms are only a ranking signal: the
+        selected excerpt and SHA remain the sole admissible evidence.
+        """
+        text = " ".join(
+            str(item.get(key) or "")
+            for key in ("evidence_label", "matched_terms", "excerpt")
+        ).lower()
+        return 10_000 if re.search(
+            r"todo.*mutex|synchronization|capacity|connections|timeout|"
+            r"cleanup|destruct|digest error|header digest|data digest|"
+            r"reconnect|retry|resource|release|free|error completion",
+            text,
+        ) else 0
+
+    def is_risk_evidence(item: dict[str, Any]) -> bool:
+        return risk_evidence_bonus(item) > 0
+
+    # Keep a bounded set of independently verified lifecycle/capacity/error
+    # anchors when adding test files.  Without this reserve, the test-file
+    # quota can evict exactly the source slices that make a risk SFMEA
+    # defensible, leaving only normal protocol rejection behavior.
+    risk_reserve = min(8, max(0, selection_limit - min_test_files))
+
+    def replacement_index_for_test() -> int:
+        risk_count = sum(is_risk_evidence(item) for item in selected)
+        return next(
+            (
+                index
+                for index in range(len(selected) - 1, -1, -1)
+                if str(selected[index].get("classification") or "source") != "test"
+                and (
+                    not is_risk_evidence(selected[index])
+                    or risk_count > risk_reserve
+                )
+            ),
+            -1,
+        )
+
     while remaining and len(selected) < selection_limit:
         if not selected:
             candidate_index = 0
@@ -1145,6 +1194,7 @@ def _select_source_and_test_evidence(
                 key=lambda index: (
                     int(remaining[index].get("score") or 0)
                     + implementation_bonus(remaining[index])
+                    + risk_evidence_bonus(remaining[index])
                     + 8
                     * len(
                         (
@@ -1202,14 +1252,7 @@ def _select_source_and_test_evidence(
             continue
         if str(candidate.get("file_path") or "") in selected_paths:
             continue
-        replace_index = next(
-            (
-                index
-                for index in range(len(selected) - 1, -1, -1)
-                if str(selected[index].get("classification") or "source") != "test"
-            ),
-            -1,
-        )
+        replace_index = replacement_index_for_test()
         if replace_index < 0:
             break
         selected_paths.discard(str(selected[replace_index].get("file_path") or ""))
@@ -1730,7 +1773,11 @@ def _source_excerpt(
         "io": 6,
     }
     best_index = 0
-    best_score = -1
+    # A matched log/error line can receive a negative syntactic adjustment
+    # below (it is a call expression, not a definition).  It must still win
+    # over an unrelated first line; otherwise phrase hints silently collapse
+    # to line 1 and lose their source evidence.
+    best_score = -10_000
     for index, line in enumerate(lower_lines):
         matched = [token for token in tokens if _source_token_matches_line(token, line)]
         if not matched:
@@ -1805,6 +1852,18 @@ def _source_symbols(text: str) -> list[str]:
     for supplemental in supplemental_patterns:
         symbols.extend(match.group(1) for match in supplemental.finditer(text[:20000]))
     return _unique_strings(symbols)
+
+
+def _enclosing_source_symbols(text: str, *, start_line: int) -> list[str]:
+    """Return the nearest C function definition preceding a verified slice."""
+    if start_line <= 0:
+        return []
+    lines = text.splitlines()
+    end = min(len(lines), start_line)
+    start = max(0, end - 256)
+    window = "\n".join(lines[start:end])
+    symbols = _source_symbols(window)
+    return symbols[-1:] if symbols else []
 
 
 def _line_count_text(text: str) -> int:

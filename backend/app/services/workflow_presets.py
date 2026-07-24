@@ -155,6 +155,11 @@ SFMEA_SCHEMA: dict[str, Any] = {
             "module": {"type": "string"},
             "file_path": {"type": "string"},
             "failure_mode": {"type": "string"},
+            "risk_status": {
+                "type": "string",
+                "enum": ["test_hypothesis", "observed_defect"],
+            },
+            "evidence_interpretation": {"type": "string", "minLength": 1},
             "mechanism": {"type": "string", "minLength": 1},
             "trigger_condition": {"type": "string", "minLength": 1},
             "cause": {"type": "string"},
@@ -613,10 +618,14 @@ def _basic_report_preset(*, include_design: bool, provider: str) -> dict[str, An
                     # This is the speed-oriented baseline. Deep workflows may
                     # expand scope, but a basic report must leave enough time
                     # to validate and materialize its declared deliverables.
-                    "source_context_limit": 6,
-                    "source_context_min_test_files": 3,
-                    "source_analysis_max_files": 6,
-                    "source_analysis_max_evidence_anchors": 12,
+                    # Keep the rapid profile bounded, while preserving enough
+                    # independent source/test anchors to distinguish genuine
+                    # lifecycle, capacity and concurrency risks from normal
+                    # protocol rejection paths.
+                    "source_context_limit": 18,
+                    "source_context_min_test_files": 4,
+                    "source_analysis_max_files": 18,
+                    "source_analysis_max_evidence_anchors": 18,
                     "source_context_search_roots": [
                         "lib/iscsi",
                         "include/spdk",

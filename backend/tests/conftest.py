@@ -15,10 +15,17 @@ from app.database import _MIGRATIONS, _SCHEMA, get_db
 
 @pytest.fixture(autouse=True)
 def _disable_external_agent_sandbox_for_legacy_test_doubles(monkeypatch):
-    """Keep generic fake agents unconstrained; sandbox tests opt in explicitly."""
+    """Keep generic fake agents outside the intranet deployment contract.
+
+    These service tests execute local Python doubles with sandbox mode off.  That
+    is intentionally incompatible with the production intranet fail-close rule,
+    so the fixture must declare both halves of the synthetic environment.  Tests
+    for the actual intranet policy opt in by setting the mode back to ``True``.
+    """
     from app.config import settings
 
     monkeypatch.setattr(settings, "external_agent_sandbox_mode", "off")
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
     monkeypatch.setattr(settings, "behavior_claim_audit_enabled", False)
 
 

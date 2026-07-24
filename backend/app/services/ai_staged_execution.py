@@ -104,6 +104,28 @@ _SOURCE_DRIVEN_STAGE_BY_ARTIFACT = {
     for artifact in spec["artifacts"]
 }
 _SOURCE_DRIVEN_DETERMINISTIC_STAGES = frozenset(_SOURCE_DRIVEN_STAGE_GROUPS)
+_DEEP_EXPLORATION_BRANCHES = (
+    (
+        "deep_entry_paths",
+        "deep_exploration/entry_paths.md",
+        "入口、调用路径与外部触发探索",
+    ),
+    (
+        "deep_state_and_resources",
+        "deep_exploration/state_and_resources.md",
+        "状态转换、资源生命周期与耗尽条件探索",
+    ),
+    (
+        "deep_failures_and_recovery",
+        "deep_exploration/failures_and_recovery.md",
+        "异常传播、超时、取消、断连与恢复探索",
+    ),
+    (
+        "deep_concurrency_and_boundaries",
+        "deep_exploration/concurrency_and_boundaries.md",
+        "并发交错、边界、翻转与长期稳定性探索",
+    ),
+)
 _PROVIDER_CAPACITY_LOCK = threading.Lock()
 _PROVIDER_CAPACITY: tuple[int, "_ProcessProviderCapacity"] | None = None
 
@@ -1612,7 +1634,13 @@ def build_staged_execution_plan(
     *,
     contract: dict[str, Any],
     original_user_request: str,
+    execution_profile: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    profile = _staged_execution_profile(execution_profile)
+    source_output_limits = {
+        "max_chinese_characters": profile["source_analysis_max_chinese_characters"],
+        "max_evidence_anchors": profile["source_analysis_max_evidence_anchors"],
+    }
     outputs = [
         str(value).strip()
         for value in contract.get("required_outputs") or []
@@ -1643,11 +1671,8 @@ def build_staged_execution_plan(
             "depends_on": [],
             "purpose": "读取源码、测试目录和输入材料，形成紧凑、可验证的证据索引",
             "support": True,
-            "max_tokens": settings.source_analysis_max_tokens,
-            "output_limits": {
-                "max_chinese_characters": settings.source_analysis_max_chinese_characters,
-                "max_evidence_anchors": settings.source_analysis_max_evidence_anchors,
-            },
+            "max_tokens": profile["source_analysis_max_tokens"],
+            "output_limits": source_output_limits,
         }
     ]
     requested: list[tuple[int, str, str, list[str]]] = []
@@ -1742,18 +1767,26 @@ def build_staged_execution_plan(
         ]
         raw_contract = artifact_contract.get(artifact)
         output_contract = dict(raw_contract) if isinstance(raw_contract, dict) else {"artifact": artifact}
-        if output_index < 0 and artifact == "sfmea.json" and combined_report_contract:
-            schema = json.loads(json.dumps(SFMEA_SCHEMA))
-            schema["minItems"] = int(combined_report_contract.get("min_sfmea_rows") or 1)
-            _require_technical_claims(schema)
-            output_contract = {"artifact": artifact, "schema": schema}
-        elif output_index < 0 and artifact == "black_box_cases.json" and combined_report_contract:
-            schema = json.loads(json.dumps(BLACK_BOX_CASES_SCHEMA))
-            schema["minItems"] = int(
-                combined_report_contract.get("min_black_box_cases") or 1
+        if base_stage_id == "sfmea" and combined_report_contract:
+            schema = json.loads(
+                json.dumps(output_contract.get("schema") or SFMEA_SCHEMA)
+            )
+            schema["minItems"] = max(
+                int(schema.get("minItems") or 0),
+                int(combined_report_contract.get("min_sfmea_rows") or 1),
             )
             _require_technical_claims(schema)
-            output_contract = {"artifact": artifact, "schema": schema}
+            output_contract["schema"] = schema
+        elif base_stage_id == "black_box_cases" and combined_report_contract:
+            schema = json.loads(
+                json.dumps(output_contract.get("schema") or BLACK_BOX_CASES_SCHEMA)
+            )
+            schema["minItems"] = max(
+                int(schema.get("minItems") or 0),
+                int(combined_report_contract.get("min_black_box_cases") or 1),
+            )
+            _require_technical_claims(schema)
+            output_contract["schema"] = schema
         output_contract["artifact"] = artifact
         if output_contract.get("schema") is None:
             output_contract.pop("schema", None)
@@ -1775,6 +1808,18 @@ def build_staged_execution_plan(
             )
             or 0
         )
+        if combined_report_contract and base_stage_id in {"sfmea", "black_box_cases"}:
+            declared_minimum_items = max(
+                declared_minimum_items,
+                int(
+                    combined_report_contract.get(
+                        "min_sfmea_rows"
+                        if base_stage_id == "sfmea"
+                        else "min_black_box_cases"
+                    )
+                    or 0
+                ),
+            )
         if declared_minimum_items and base_stage_id in {"sfmea", "black_box_cases"}:
             stage_limits = {
                 "max_tokens": max(
@@ -1786,27 +1831,6 @@ def build_staged_execution_plan(
                     "max_items": max(
                         int((stage_limits.get("output_limits") or {}).get("max_items") or 0),
                         declared_minimum_items,
-                    ),
-                },
-            }
-        if output_index < 0 and base_stage_id in {"sfmea", "black_box_cases"} and combined_report_contract:
-            minimum_items = int(
-                combined_report_contract.get(
-                    "min_sfmea_rows" if base_stage_id == "sfmea" else "min_black_box_cases"
-                )
-                or 0
-            )
-            stage_limits = {
-                "max_tokens": (
-                    settings.black_box_cases_max_tokens
-                    if base_stage_id == "black_box_cases"
-                    else 9000
-                ),
-                "output_limits": {
-                    **dict(stage_limits.get("output_limits") or {}),
-                    "max_items": max(
-                        minimum_items,
-                        12,
                     ),
                 },
             }
@@ -1850,14 +1874,125 @@ def build_staged_execution_plan(
                 **stage_limits,
             }
         )
+    _insert_deep_exploration_stages(stages=stages, profile=profile)
     return {
         "version": "ai-staged-execution-v1",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "original_user_request": str(original_user_request),
         "target": str(contract.get("target") or ""),
         "required_outputs": outputs,
+        "execution_profile": {
+            "id": profile["id"],
+            "delivery_class": profile["delivery_class"],
+            "configured_max_subagents": profile["configured_max_subagents"],
+            "applied_subagent_count": profile["applied_subagent_count"],
+            "source_analysis_limits": dict(profile["source_analysis_limits"]),
+        },
         "stages": stages,
     }
+
+
+def _staged_execution_profile(raw_profile: dict[str, Any] | None) -> dict[str, Any]:
+    """Freeze the profile knobs that change real staged execution work."""
+    raw = dict(raw_profile) if isinstance(raw_profile, dict) else {}
+    profile_id = str(raw.get("id") or "rapid").strip().lower()
+    if profile_id not in {"rapid", "deep"}:
+        profile_id = "rapid"
+    configured_max_subagents = max(0, int(raw.get("max_subagents") or 0))
+    if profile_id == "deep":
+        # Deep execution has four distinct analysis responsibilities.  The
+        # frozen profile decides how many are actually scheduled, never the UI.
+        applied_subagent_count = min(
+            len(_DEEP_EXPLORATION_BRANCHES),
+            max(2, configured_max_subagents or 2),
+        )
+        source_limits = {
+            "max_files": max(10, int(settings.source_analysis_max_files)),
+            "excerpt_chars": max(1500, int(settings.source_analysis_excerpt_chars)),
+            "max_evidence_anchors": max(
+                20, int(settings.source_analysis_max_evidence_anchors)
+            ),
+            "min_test_files": max(3, int(settings.source_analysis_min_test_files)),
+        }
+        return {
+            "id": "deep",
+            "delivery_class": str(raw.get("delivery_class") or "full_test_delivery"),
+            "configured_max_subagents": configured_max_subagents,
+            "applied_subagent_count": applied_subagent_count,
+            "source_analysis_max_tokens": max(2200, int(settings.source_analysis_max_tokens)),
+            "source_analysis_max_chinese_characters": max(
+                1800, int(settings.source_analysis_max_chinese_characters)
+            ),
+            "source_analysis_max_evidence_anchors": source_limits["max_evidence_anchors"],
+            "source_analysis_limits": source_limits,
+        }
+    source_limits = {
+        "max_files": int(settings.source_analysis_max_files),
+        "excerpt_chars": int(settings.source_analysis_excerpt_chars),
+        "max_evidence_anchors": int(settings.source_analysis_max_evidence_anchors),
+        "min_test_files": int(settings.source_analysis_min_test_files),
+    }
+    return {
+        "id": "rapid",
+        "delivery_class": str(raw.get("delivery_class") or "bounded_analysis"),
+        "configured_max_subagents": configured_max_subagents,
+        "applied_subagent_count": min(1, configured_max_subagents),
+        "source_analysis_max_tokens": int(settings.source_analysis_max_tokens),
+        "source_analysis_max_chinese_characters": int(
+            settings.source_analysis_max_chinese_characters
+        ),
+        "source_analysis_max_evidence_anchors": int(
+            settings.source_analysis_max_evidence_anchors
+        ),
+        "source_analysis_limits": source_limits,
+    }
+
+
+def _insert_deep_exploration_stages(
+    *, stages: list[dict[str, Any]], profile: dict[str, Any]
+) -> None:
+    if profile.get("id") != "deep":
+        return
+    branches = list(_DEEP_EXPLORATION_BRANCHES[: int(profile["applied_subagent_count"])])
+    branch_ids = [item[0] for item in branches]
+    branch_stages = [
+        {
+            "id": stage_id,
+            "artifact": artifact,
+            "depends_on": ["flow_outline"],
+            "purpose": purpose,
+            "support": True,
+            "subagent_role": stage_id,
+            "output_contract": {"artifact": artifact},
+            # These are bounded exploration notes, not another final report.
+            # Keep the four real branches independent and cheap enough that a
+            # verbose provider response cannot stop the delivery stages.
+            "max_tokens": 800,
+            "output_limits": {
+                "max_chinese_characters": 1100,
+                "max_evidence_anchors": 8,
+            },
+        }
+        for stage_id, artifact, purpose in branches
+    ]
+    insertion_index = next(
+        (
+            index
+            for index, stage in enumerate(stages)
+            if str(stage.get("id") or "") in {"business_flow", "sfmea", "black_box_cases"}
+        ),
+        len(stages),
+    )
+    stages[insertion_index:insertion_index] = branch_stages
+    for stage in stages:
+        if str(stage.get("id") or "") not in {
+            "business_flow",
+            "sfmea",
+            "black_box_cases",
+        }:
+            continue
+        dependencies = [str(value) for value in stage.get("depends_on") or []]
+        stage["depends_on"] = list(dict.fromkeys([*dependencies, *branch_ids]))
 
 
 def _require_technical_claims(schema: dict[str, Any]) -> None:
@@ -1912,6 +2047,7 @@ async def execute_staged_builtin_plan(
     source_analysis_limits: dict[str, Any] | None = None,
     regular_stage_cache_dir: Path | None = None,
     regular_stage_limits: dict[str, dict[str, Any]] | None = None,
+    quality_repair_llm: Any | None = None,
 ) -> dict[str, Any]:
     artifact_dir.mkdir(parents=True, exist_ok=True)
     source_context_payload = (
@@ -1987,6 +2123,7 @@ async def execute_staged_builtin_plan(
                     provider_capacity=provider_capacity,
                     regular_stage_cache_dir=regular_stage_cache_dir,
                     regular_stage_limits=regular_stage_limits,
+                    quality_repair_llm=quality_repair_llm,
                 )
                 break
             continue
@@ -2046,6 +2183,7 @@ async def execute_staged_builtin_plan(
                 provider_capacity=provider_capacity,
                 regular_stage_cache_dir=regular_stage_cache_dir,
                 regular_stage_limits=regular_stage_limits,
+                quality_repair_llm=quality_repair_llm,
             )
             break
         outcome = await _execute_regular_stage(
@@ -2063,6 +2201,7 @@ async def execute_staged_builtin_plan(
             provider_capacity=provider_capacity,
             regular_stage_cache_dir=regular_stage_cache_dir,
             regular_stage_limits=regular_stage_limits,
+            quality_repair_llm=quality_repair_llm,
         )
         output_path = Path(outcome["output_path"])
         response_model = str(outcome.get("model") or "").strip()
@@ -2187,6 +2326,7 @@ async def _execute_ready_stage_levels(
     provider_capacity: _ProcessProviderCapacity,
     regular_stage_cache_dir: Path | None,
     regular_stage_limits: dict[str, dict[str, Any]] | None,
+    quality_repair_llm: Any | None = None,
 ) -> None:
     positions = {
         str(stage.get("id") or f"stage_{index + 1}"): index
@@ -2377,6 +2517,7 @@ async def _execute_ready_stage_levels(
                     provider_capacity=provider_capacity,
                     regular_stage_cache_dir=regular_stage_cache_dir,
                     regular_stage_limits=regular_stage_limits,
+                    quality_repair_llm=quality_repair_llm,
                 )
             )
         if tasks:
@@ -2606,8 +2747,13 @@ def _render_deterministic_combined_report(
         suffix = f"；{fact}" if fact else ""
         lines.append(f"- `{anchor}` · {symbols or '未提取符号'}{suffix}")
     lines.extend(["", "## 主流程与异常/恢复流程", ""])
-    lines.append(
+    # Business-flow prose is model output.  An unclosed fenced block must not
+    # swallow the deterministic SFMEA and black-box delivery sections below.
+    flow_delivery_body = _close_unbalanced_markdown_fences(
         _demote_markdown_headings(business_flow.strip(), minimum_level=3)
+    )
+    lines.append(
+        flow_delivery_body
         or "流程阶段未形成可交付叙述，请查看 `flow_outline.json`。"
     )
     lines.extend(
@@ -2694,6 +2840,29 @@ def _demote_markdown_headings(content: str, *, minimum_level: int) -> str:
         return "#" * level + " " + match.group(2).strip()
 
     return re.sub(r"(?m)^(#{1,6})\s+(.+?)\s*$", replace, content)
+
+
+def _close_unbalanced_markdown_fences(content: str) -> str:
+    """Close a model-produced code fence before appending report sections."""
+    if not content:
+        return content
+    active: tuple[str, int] | None = None
+    opening_pattern = re.compile(r"^\s{0,3}([`~]{3,})")
+    for line in content.splitlines():
+        match = opening_pattern.match(line)
+        if match is None:
+            continue
+        fence = match.group(1)
+        if active is None:
+            active = (fence[0], len(fence))
+            continue
+        character, length = active
+        if fence[0] == character and len(fence) >= length:
+            active = None
+    if active is None:
+        return content
+    character, length = active
+    return content.rstrip() + "\n" + character * length
 
 
 def _is_iscsi_login_report(plan: dict[str, Any]) -> bool:
@@ -3388,8 +3557,20 @@ def _select_regular_stage_llm(
     artifact: str,
     *,
     quality_repair: bool = False,
+    quality_repair_llm: Any | None = None,
 ) -> Any:
-    """Route bounded structured output away from reasoning-token starvation."""
+    """Route evidence extraction fast, but keep risk-bearing artifacts on the verifier."""
+    if quality_repair and quality_repair_llm is not None:
+        return quality_repair_llm
+    if (
+        not quality_repair
+        and Path(artifact).name in {"sfmea.json", "black_box_cases.json"}
+        and quality_repair_llm is not None
+    ):
+        # SFMEA and black-box cases make technical risk assertions.  A fast
+        # source/flow model is useful for throughput, but a configured
+        # independent verifier is the primary author for these artifacts.
+        return quality_repair_llm
     if quality_repair and settings.regular_stage_quality_repair_use_primary_model:
         return llm
     if (
@@ -3451,6 +3632,7 @@ async def _execute_regular_stage(
     provider_capacity: _ProcessProviderCapacity,
     regular_stage_cache_dir: Path | None,
     regular_stage_limits: dict[str, dict[str, Any]] | None,
+    quality_repair_llm: Any | None = None,
 ) -> dict[str, Any]:
     started = time.monotonic()
     stage_id = str(stage.get("id") or "stage")
@@ -3464,6 +3646,8 @@ async def _execute_regular_stage(
     flow_pack = _read_json_file(artifact_dir / "flow_evidence_pack.json")
     outline = _read_json_file(artifact_dir / "flow_outline.json")
     claim_catalog = _build_verified_claim_catalog(source_pack)
+    if base_stage_id == "sfmea":
+        claim_catalog = _sfmea_product_claim_catalog(claim_catalog)
     legacy_prompt = _stage_prompt(
         plan=plan, stage=stage, context_prompt=context_prompt, completed=completed
     )
@@ -3493,6 +3677,7 @@ async def _execute_regular_stage(
         auxiliary_llm,
         artifact,
         quality_repair=bool(current_artifact_seed.strip()),
+        quality_repair_llm=quality_repair_llm,
     )
     allowed_existing_repair_row_ids = (
         _quality_repair_row_ids(
@@ -3681,6 +3866,8 @@ async def _execute_regular_stage(
             "total_duration_ms": duration_ms,
             "duration_ms": duration_ms,
         }
+        if stage.get("subagent_role"):
+            result["subagent_role"] = str(stage["subagent_role"])
         _write_json(stage_dir / "stage_result.json", result)
         await _emit_progress(
             on_progress,
@@ -3788,6 +3975,7 @@ async def _execute_regular_stage(
     last_error = ""
     timed_out = False
     status = "completed"
+    degraded = False
     detached_provider_tasks: list[asyncio.Task[Any]] = []
     try:
         remaining_total = max(
@@ -4060,7 +4248,37 @@ async def _execute_regular_stage(
                     raw_content = json.dumps(rendered, ensure_ascii=False)
                     finish_reason = "json_array_continuation_stop"
                 elif output_truncated:
-                    raise ValueError("provider_output_truncated")
+                    if bool(stage.get("support")) and artifact.endswith(".md"):
+                        # An exploration note is supporting context, never a
+                        # delivery gate. Preserve its evidence-bound prefix and
+                        # make the truncation visible instead of spending a
+                        # second full call that can fail the entire workflow.
+                        rendered = (
+                            raw_content.rstrip()
+                            + "\n\n> 注：本探索分支达到输出上限；已保留可用证据摘要，"
+                            "后续交付件将以已验证源码证据为准。\n"
+                        )
+                        rendered = _canonicalize_verified_repo_path_mentions(
+                            rendered, source_pack
+                        )
+                        rendered, removed_unverified_paths = (
+                            _finalize_combined_markdown_report(
+                                content=rendered,
+                                source_pack=source_pack,
+                                output_contract=(
+                                    stage.get("output_contract")
+                                    if isinstance(stage.get("output_contract"), dict)
+                                    else {}
+                                ),
+                            )
+                        )
+                        _write_text(output_path, rendered)
+                        status = "completed"
+                        degraded = True
+                        last_error = "provider_output_truncated"
+                        finish_reason = "truncated_support_preserved"
+                    else:
+                        raise ValueError("provider_output_truncated")
                 else:
                     try:
                         rendered = _render_stage_artifact(raw_content, artifact)
@@ -4230,6 +4448,12 @@ async def _execute_regular_stage(
                     rendered,
                     claim_catalog,
                 )
+                if base_stage_id == "sfmea":
+                    rendered, sfmea_contract_fields = _normalize_sfmea_risk_contract(
+                        rendered,
+                        product_claim_catalog=_sfmea_product_claim_catalog(claim_catalog),
+                    )
+                    deterministic_repair_fields.extend(sfmea_contract_fields)
                 if base_stage_id == "black_box_cases":
                     rendered = _sanitize_structured_repo_path_mentions(rendered, source_pack)
                     rendered = _normalize_black_box_source_anchor_claims(rendered)
@@ -4241,6 +4465,10 @@ async def _execute_regular_stage(
                         _normalize_black_box_dimension_contract(
                             rendered,
                             stage,
+                            # Preserve duplicate first-pass rows until the
+                            # semantic gate can request a meaningful rewrite.
+                            # Deleting them here can make minItems impossible.
+                            preserve_additional_cases=not current_artifact_seed.strip(),
                         )
                     )
                     deterministic_repair_fields.extend(dimension_fields)
@@ -4382,6 +4610,12 @@ async def _execute_regular_stage(
                     rendered,
                     claim_catalog,
                 )
+                if base_stage_id == "sfmea":
+                    rendered, sfmea_contract_fields = _normalize_sfmea_risk_contract(
+                        rendered,
+                        product_claim_catalog=_sfmea_product_claim_catalog(claim_catalog),
+                    )
+                    deterministic_repair_fields.extend(sfmea_contract_fields)
                 if base_stage_id == "black_box_cases":
                     rendered = _normalize_black_box_source_anchor_claims(rendered)
                     rendered, oracle_fields = _normalize_black_box_oracle_contract(
@@ -4389,7 +4623,11 @@ async def _execute_regular_stage(
                     )
                     deterministic_repair_fields.extend(oracle_fields)
                     rendered, dimension_fields = (
-                        _normalize_black_box_dimension_contract(rendered, stage)
+                        _normalize_black_box_dimension_contract(
+                            rendered,
+                            stage,
+                            preserve_additional_cases=not current_artifact_seed.strip(),
+                        )
                     )
                     deterministic_repair_fields.extend(dimension_fields)
                     rendered, delivery_fields = (
@@ -4497,6 +4735,7 @@ async def _execute_regular_stage(
     generation_ms = max(0.0, round(provider_wait_ms - repair_ms, 1))
     result = {
         "stage_id": stage_id,
+        "subagent_role": str(stage.get("subagent_role") or ""),
         "status": status,
         "artifact": artifact,
         "attempts": attempt_count,
@@ -4523,8 +4762,10 @@ async def _execute_regular_stage(
         "duration_ms": total_duration_ms,
         "output_tokens": BaseLLMClient.estimate_tokens(raw_content) if raw_content else 0,
         "finish_reason": finish_reason,
-        "degraded": status == "partial",
-        "degradation_reason": last_error if status == "partial" else "",
+        "degraded": degraded or status == "partial",
+        "degradation_reason": (
+            last_error if degraded or status == "partial" else ""
+        ),
         "cache_status": "miss" if cache is not None else "disabled",
         "cache_key": cache_key,
         "policy": policy.as_dict(),
@@ -5467,6 +5708,33 @@ def _build_verified_claim_catalog(
     return catalog
 
 
+def _is_test_evidence_path(path: str) -> bool:
+    """Return whether an evidence path belongs to test-only supporting code.
+
+    SFMEA may map a risk to a test, but a test, fuzz target, or harness cannot
+    establish that the product implementation itself has the asserted defect.
+    """
+    parts = [part.lower() for part in Path(str(path or "")).parts]
+    return any(
+        part in {"test", "tests", "testing", "fuzz", "fuzzer", "harness"}
+        for part in parts
+    )
+
+
+def _sfmea_product_claim_catalog(claim_catalog: list[dict[str, str]]) -> list[dict[str, str]]:
+    """Exclude test-only anchors from SFMEA technical claims.
+
+    Test evidence stays available for test mapping and coverage discussion. This
+    only narrows the model-selectable fact catalog, preventing a test helper
+    from being presented as proof of a product failure mode.
+    """
+    return [
+        item
+        for item in claim_catalog
+        if not _is_test_evidence_path(str(item.get("path") or ""))
+    ]
+
+
 def _requested_claim_evidence_matches(
     candidate: str,
     requested: set[str],
@@ -5647,6 +5915,383 @@ def _normalize_black_box_source_anchor_claims(rendered: Any) -> Any:
     return rendered
 
 
+def _source_risk_candidate_for_sfmea_row(
+    row: dict[str, Any],
+    *,
+    product_claim_catalog: list[dict[str, str]],
+    index: int,
+) -> dict[str, Any] | None:
+    """Build one bounded test hypothesis from a verified product anchor.
+
+    The model may describe how to exercise a risk, but it must not turn a
+    positive source fact (for example a guard or a cleanup call) into proof
+    that the guard is absent.  This fallback is deliberately phrased as a
+    fault-injection contract and never as an observed defect.
+    """
+    if not product_claim_catalog:
+        return None
+    by_id = {
+        str(item.get("evidence_id") or "").strip(): item
+        for item in product_claim_catalog
+        if str(item.get("evidence_id") or "").strip()
+    }
+    anchor: dict[str, str] | None = None
+    for claim in row.get("technical_claims") or []:
+        if not isinstance(claim, dict):
+            continue
+        for evidence in claim.get("evidence") or []:
+            if not isinstance(evidence, dict):
+                continue
+            anchor = by_id.get(str(evidence.get("evidence_id") or "").strip())
+            if anchor:
+                break
+        if anchor:
+            break
+    if anchor is None:
+        anchor = product_claim_catalog[index % len(product_claim_catalog)]
+
+    quote = str(anchor.get("quote") or "")
+    normalized_quote = quote.lower()
+    if "full_feature" in normalized_quote:
+        failure_mode = "登录阶段切换交错导致参数状态异常"
+        mechanism = "源码以 full_feature 作为参数更新分支条件；故障注入验证阶段切换交错时参数状态不会异常。"
+        trigger = "在登录阶段切换与参数更新交错的异常时序中。"
+    elif "conn->state" in normalized_quote or "state" in normalized_quote and "if" in normalized_quote:
+        failure_mode = "登录回调与连接退出竞态导致重复处理"
+        mechanism = "源码在回调入口检查连接状态；故障注入验证并发状态切换时不会重复处理登录结果。"
+        trigger = "在登录完成回调与连接退出状态切换并发交错时。"
+    elif "poller_register" in normalized_quote or "shutdown_timer" in normalized_quote:
+        failure_mode = "连接关闭等待超时导致资源残留"
+        mechanism = "源码注册关闭检查 poller；故障注入验证关闭等待超时后连接和关联资源不会残留。"
+        trigger = "在连接退出后关闭检查持续未满足的超时场景中。"
+    elif "poll_group_remove_conn" in normalized_quote:
+        failure_mode = "连接清理交错导致 socket 或会话资源残留"
+        mechanism = "源码从 poll group 移除连接；故障注入验证连接清理与 socket 关闭交错时不会留下残留资源或错误会话。"
+        trigger = "在连接销毁、poll group 移除和 socket 关闭交错的异常时序中。"
+    elif re.search(r"\bif\s*\(\s*rc\s*<\s*0\s*\)", normalized_quote):
+        failure_mode = "连接清理失败后恢复路径失效导致资源残留"
+        mechanism = "源码存在清理失败分支；故障注入验证该失败分支会最终收敛连接和关联资源。"
+        trigger = "在连接析构期间资源清理返回失败的异常场景中。"
+    elif "poller_unregister" in normalized_quote:
+        failure_mode = "连接析构与定时器回调并发导致资源残留或重复注销"
+        mechanism = "源码注销连接定时器；故障注入验证析构与定时器回调交错时不会留下残留资源或重复注销。"
+        trigger = "在连接析构与登录、注销或超时定时器回调并发交错时。"
+    elif "clear_all_transfer_task" in normalized_quote:
+        failure_mode = "连接析构与传输任务完成并发导致任务资源残留或重复释放"
+        mechanism = "源码清理传输任务；故障注入验证任务完成与连接析构交错时资源归属保持一致。"
+        trigger = "在传输任务完成回调与连接析构并发交错时。"
+    elif "too_many_connections" in normalized_quote or "maxconnections" in normalized_quote:
+        failure_mode = "MaxConnections 并发边界下错误接受额外连接"
+        mechanism = "源码存在连接数超限返回路径；故障注入验证并发登录竞争下超额连接不会被错误接受。"
+        trigger = "在达到 MaxConnections 后并发发起额外登录请求时。"
+    elif "recv_state" in normalized_quote or "state_error" in normalized_quote:
+        failure_mode = "PDU 错误状态与连接清理交错导致连接残留"
+        mechanism = "源码记录 PDU 接收错误状态；故障注入验证错误状态进入后连接清理不会遗漏。"
+        trigger = "在 Header 或 Data Digest 异常后立即中断连接时。"
+    elif "return" in normalized_quote:
+        failure_mode = "登录错误返回在集成路径未传播导致错误会话继续推进"
+        mechanism = "源码存在登录错误返回路径；故障注入验证调用链会将失败传播为外部可见拒绝而非继续建立会话。"
+        trigger = "在认证、协商或 PDU 解析返回失败的异常输入中。"
+    elif any(token in normalized_quote for token in ("free(", "close(", "spdk_sock_close")):
+        failure_mode = "异常清理路径顺序错误导致资源残留或重复释放"
+        mechanism = "源码包含资源释放入口；故障注入验证异常退出与清理交错时资源不会残留或重复释放。"
+        trigger = "在登录失败与连接关闭并发发生的异常清理路径中。"
+    else:
+        failure_mode = "登录异常路径处理错误导致会话状态异常"
+        mechanism = "源码锚点定义当前登录处理入口；故障注入验证异常输入或时序下不会产生错误会话状态。"
+        trigger = "在与该源码锚点关联的异常输入或异常时序中。"
+
+    path = str(anchor.get("path") or "")
+    return {
+        "failure_mode": failure_mode,
+        "risk_status": "test_hypothesis",
+        "evidence_interpretation": (
+            f"已验证源码锚点 {path} 的原文仅证明当前处理入口；"
+            "本条是待通过故障注入验证的产品风险假设，不声明已观测到缺陷。"
+        ),
+        "mechanism": f"风险假设：{mechanism}",
+        "trigger_condition": trigger,
+        "cause": f"故障注入假设：{trigger.rstrip('。')}触发处理顺序、资源或状态边界偏离。",
+        "effect": "登录请求可能被错误接受、错误拒绝、异常中止或留下残留会话。",
+        "local_effect": "目标端连接状态、协议响应和资源清理结果需要通过外部观测确认。",
+        "upstream_effect": "发起端可能收到与预期不一致的登录响应或连接关闭。",
+        "downstream_effect": "后续会话建立、重试或 I/O 准备可能异常。",
+        "final_effect": "存储服务可用性或会话一致性可能受影响。",
+        "latent": "仅在对应异常输入、资源压力或并发时序下显现。",
+        "detection": "通过公开 initiator、协议抓包、目标日志、连接状态和资源指标观察结果。",
+        "existing_controls": f"已验证源码锚点：{quote}",
+        "control_gaps": "需要覆盖该异常条件的端到端故障注入与恢复回归。",
+        "mitigation": "整改: 明确异常路径的状态、资源和错误传播契约。验证: 注入触发条件并确认协议响应、连接状态和资源指标一致。",
+        "recovery_verification": "移除故障条件后重新登录，确认目标可以建立新会话且无残留连接。",
+        "source_evidence": [path] if path else [],
+        "test_mapping": "通过公开协议客户端和隔离测试环境执行故障注入回归。",
+        "technical_claims": [
+            {
+                "claim_id": f"TC-{str(row.get('sfmea_id') or index + 1).replace('SFMEA-', '')}",
+                "type": "source_anchor",
+                "statement": quote,
+                "evidence": [dict(anchor)],
+            }
+        ],
+    }
+
+
+def _normalize_sfmea_risk_contract(
+    rendered: Any,
+    *,
+    product_claim_catalog: list[dict[str, str]] | None = None,
+) -> tuple[Any, list[str]]:
+    """Keep generated SFMEA rows honest about fact versus test hypothesis."""
+    if not isinstance(rendered, list):
+        return rendered, []
+    normalized = json.loads(json.dumps(rendered, ensure_ascii=False))
+    fields: list[str] = []
+    for index, row in enumerate(normalized):
+        if not isinstance(row, dict):
+            continue
+        claims = row.get("technical_claims")
+        evidence_paths = [
+            str(evidence.get("path") or "")
+            for claim in claims or []
+            if isinstance(claim, dict)
+            for evidence in claim.get("evidence") or []
+            if isinstance(evidence, dict)
+        ]
+        failure_mode_before = str(row.get("failure_mode") or "").strip()
+        risk_description = " ".join(
+            str(row.get(field) or "").strip()
+            for field in ("failure_mode", "cause", "mechanism", "trigger_condition")
+        )
+        claim_text = "\n".join(
+            " ".join(
+                [
+                    str(claim.get("statement") or ""),
+                    *(
+                        str(evidence.get("quote") or "")
+                        for evidence in claim.get("evidence") or []
+                        if isinstance(evidence, dict)
+                    ),
+                ]
+            )
+            for claim in claims or []
+            if isinstance(claim, dict)
+        )
+        has_test_only_evidence = bool(evidence_paths) and all(
+            _is_test_evidence_path(path) for path in evidence_paths
+        )
+        guard_inversion = bool(
+            re.search(r"(?:非|未).{0,18}full[_ ]?feature", failure_mode_before, re.IGNORECASE)
+            or re.search(r"full[_ ]?feature.{0,24}(?:跳过|错误|异常)", failure_mode_before, re.IGNORECASE)
+            # A quoted condition demonstrates that a control is present.  Do
+            # not let the model present that same control as evidence that a
+            # limit, rejection, cleanup, or serialization is missing.  Such
+            # scenarios remain useful, but only as fault-injection hypotheses.
+            or (
+                re.search(r"\bif\s*\(", claim_text, re.IGNORECASE)
+                and re.search(
+                    r"(?:仍.{0,12}(?:接受|继续|执行|推进|生效)|"
+                    r"未.{0,16}(?:拒绝|阻止|限制|注销|清理|释放)|"
+                    r"(?:检查|校验).{0,20}(?:非原子|无锁|失效)|绕过)",
+                    risk_description,
+                    re.IGNORECASE,
+                )
+            )
+        )
+        error_return_inversion = bool(
+            re.search(r"\breturn\s+(?:-|[A-Z][A-Z0-9_]*?(?:FAIL|ERROR|REJECT|DENY))", claim_text)
+            and re.search(
+                r"(?:未.{0,16}(?:校验|拒绝|处理|检查)|"
+                r"错误会话|仍.{0,12}(?:添加|继续|接受))",
+                risk_description,
+                re.IGNORECASE,
+            )
+        )
+        shutdown_timer_hypothesis = bool(
+            any("poller_register" in str(claim.get("statement") or "").lower() for claim in claims or [] if isinstance(claim, dict))
+            and re.search(r"(?:未完全清理|未及时清理|无法完全析构)", failure_mode_before)
+        )
+        cleanup_order_inversion = bool(
+            any(
+                re.search(r"(?:poll_group_remove_conn|if\s*\(\s*rc\s*<\s*0\s*\))", str(claim.get("statement") or ""), re.IGNORECASE)
+                for claim in claims or []
+                if isinstance(claim, dict)
+            )
+            and re.search(r"(?:顺序不当|未完全释放|未及时清理|任务未完全)", failure_mode_before)
+        )
+        lifecycle_cleanup_inversion = bool(
+            any(
+                re.search(r"(?:poller_unregister|clear_all_transfer_task)", str(claim.get("statement") or ""), re.IGNORECASE)
+                for claim in claims or []
+                if isinstance(claim, dict)
+            )
+            and re.search(r"(?:未.{0,16}(?:注销|清理|释放)|任务未完全)", failure_mode_before)
+        )
+        if product_claim_catalog and (
+            has_test_only_evidence or guard_inversion or error_return_inversion
+            or shutdown_timer_hypothesis or cleanup_order_inversion or lifecycle_cleanup_inversion
+        ):
+            candidate = _source_risk_candidate_for_sfmea_row(
+                row,
+                product_claim_catalog=product_claim_catalog,
+                index=index,
+            )
+            if candidate:
+                preserved_id = row.get("sfmea_id")
+                row.update(candidate)
+                if preserved_id:
+                    row["sfmea_id"] = preserved_id
+                fields.append(f"{preserved_id or index}:source_risk_candidate")
+                claims = row.get("technical_claims")
+        has_direct_claim = isinstance(claims, list) and any(
+            isinstance(claim, dict)
+            and str(claim.get("statement") or "").strip()
+            and isinstance(claim.get("evidence"), list)
+            and claim.get("evidence")
+            for claim in claims
+        )
+        risk_status = str(row.get("risk_status") or "").strip()
+        if risk_status not in {"test_hypothesis", "observed_defect"}:
+            # A source anchor proves the mechanism, not the absence of every
+            # safeguard around it. Generated rows are therefore hypotheses by
+            # default; a producer must explicitly provide direct defect proof to
+            # elevate one to an observed defect.
+            row["risk_status"] = "test_hypothesis"
+            fields.append(f"$[{index}].risk_status")
+        elif risk_status == "observed_defect" and not has_direct_claim:
+            row["risk_status"] = "test_hypothesis"
+            fields.append(f"$[{index}].risk_status:observed_defect_downgraded")
+
+        interpretation = str(row.get("evidence_interpretation") or "").strip()
+        if not interpretation:
+            evidence = ", ".join(
+                str(item).strip() for item in (row.get("source_evidence") or [])
+                if str(item).strip()
+            )
+            row["evidence_interpretation"] = (
+                f"源码证据{(' ' + evidence) if evidence else ''}证明当前机制与触发入口；"
+                "本条为故障注入风险假设，需以外部可观测结果验证偏离是否发生。"
+            )
+            fields.append(f"$[{index}].evidence_interpretation")
+
+        detection = str(row.get("detection") or "").strip()
+        if re.search(
+            r"(?:日志(?:原文)?|\blog\b).{0,48}[\"'“”]",
+            detection,
+            re.IGNORECASE,
+        ):
+            # A quoted log literal is a source assertion.  It must be carried
+            # by a verified technical claim rather than being improvised in a
+            # free-form detection field; otherwise the claim ledger cannot
+            # prove it.  Preserve a useful external observation instead.
+            row["detection"] = (
+                "通过公开 initiator、协议抓包、目标日志和连接状态指标观察结果；"
+                "精确日志文本须以已验证源码证据单独声明。"
+            )
+            fields.append(f"$[{index}].detection:unbound_exact_log")
+
+        if row.get("risk_status") != "test_hypothesis":
+            continue
+        # A guard present in the quoted implementation is not evidence that the
+        # guard is missing. Keep the boundary in the SFMEA, but express it as a
+        # fault-injection contract rather than the opposite of the source fact.
+        # This prevents a common model failure such as turning
+        # ``if (conn->full_feature)`` into "未校验 full_feature".
+        failure_mode = str(row.get("failure_mode") or "").strip()
+        evidence_quotes = [
+            str(evidence.get("quote") or "").strip()
+            for claim in claims or []
+            if isinstance(claim, dict)
+            for evidence in claim.get("evidence") or []
+            if isinstance(evidence, dict)
+        ]
+        guarded_full_feature = any(
+            re.search(r"\bif\s*\(\s*conn->full_feature\s*\)", quote)
+            for quote in evidence_quotes
+        )
+        if guarded_full_feature and re.search(
+            r"(?:未校验|未处理).{0,16}full[_ ]?feature",
+            failure_mode,
+            re.IGNORECASE,
+        ):
+            row["failure_mode"] = "登录错误处理的阶段时序异常可能导致参数状态不一致"
+            row["mechanism"] = (
+                "风险假设：源码仅在 conn->full_feature 为真时进入参数更新分支；"
+                "需通过异常时序注入验证会话阶段与参数更新契约是否一致。"
+            )
+            row["cause"] = (
+                "故障注入假设：若登录错误回调与 full_feature 状态切换交错，"
+                "参数更新时机可能与会话阶段不匹配。"
+            )
+            row["trigger_condition"] = (
+                "在登录错误回调与 full_feature 状态切换交错的故障注入场景中。"
+            )
+            row["effect"] = "参数状态异常可能导致后续会话行为不一致"
+            row["local_effect"] = "连接参数与当前会话阶段的对应关系需要验证"
+            row["downstream_effect"] = "后续恢复或重试可能观察到与预期不一致的会话结果"
+            row["final_effect"] = "登录恢复路径的外部行为需要通过回归用例确认"
+            row["latent"] = "仅在登录错误与阶段切换交错的异常时序下显现"
+            row["detection"] = "注入登录错误并观察重新登录后的协议响应、会话建立结果与目标日志"
+            row["control_gaps"] = "需要覆盖 full_feature 状态切换与错误回调交错的外部回归场景"
+            row["mitigation"] = (
+                "整改: 明确登录错误处理与 full_feature 状态切换的参数更新契约。"
+                "验证: 注入交错时序并确认重新登录后协议响应和会话状态一致。"
+            )
+            row["recovery_verification"] = (
+                "触发交错时序后重新登录，确认会话建立结果、协议响应和目标日志一致。"
+            )
+            fields.append(f"$[{index}].guarded_full_feature_hypothesis")
+        guarded_connection_state = any(
+            re.search(r"\bif\s*\(\s*conn->state\s*(?:>=|==|!=|<|>)", quote)
+            for quote in evidence_quotes
+        )
+        if guarded_connection_state and re.search(
+            r"(?:检查不充分|未检查).{0,24}(?:状态|中间状态)|状态检查不充分",
+            failure_mode,
+            re.IGNORECASE,
+        ):
+            row["failure_mode"] = "登录成功回调与连接退出并发时状态转换竞态导致重复处理"
+            row["mechanism"] = (
+                "风险假设：源码在回调入口对 conn->state 进行退出状态保护；"
+                "需通过登录成功与连接退出交错的故障注入验证该保护在并发时序下不会重复处理。"
+            )
+            row["cause"] = (
+                "故障注入假设：若登录成功回调和连接退出状态切换交错，"
+                "状态保护与回调执行顺序可能发生竞态。"
+            )
+            row["trigger_condition"] = "在登录成功回调与连接退出状态切换交错的并发故障注入场景中。"
+            row["effect"] = "连接状态转换异常可能导致重复处理或错误会话结果"
+            row["local_effect"] = "登录完成回调与连接退出处理的执行顺序需要验证"
+            row["downstream_effect"] = "会话清理、重试或恢复结果可能与协议预期不一致"
+            row["final_effect"] = "并发登录恢复路径的外部行为需要通过回归用例确认"
+            row["latent"] = "仅在登录成功与连接退出交错的竞态窗口内显现"
+            row["detection"] = "并发注入登录成功和连接关闭，观察协议响应、会话建立结果与目标日志"
+            row["control_gaps"] = "需要覆盖登录完成回调与连接退出交错的并发时序回归"
+            row["mitigation"] = (
+                "整改: 明确登录完成回调与连接退出的状态转换同步契约。"
+                "验证: 并发注入两类事件并确认协议响应、会话状态和资源清理一致。"
+            )
+            row["recovery_verification"] = (
+                "在并发故障注入后重新登录，确认目标可建立新会话且无重复完成或残留连接。"
+            )
+            fields.append(f"$[{index}].guarded_connection_state_hypothesis")
+        mechanism = str(row.get("mechanism") or "").strip()
+        if mechanism and not re.search(r"(?:风险|故障注入|失效)假设", mechanism):
+            row["mechanism"] = f"风险假设：若{mechanism}"
+            fields.append(f"$[{index}].mechanism")
+        cause = str(row.get("cause") or "").strip()
+        if cause and not re.search(r"(?:风险|故障注入|失效)假设|^(?:若|当)", cause):
+            row["cause"] = f"故障注入假设：若{cause}"
+            fields.append(f"$[{index}].cause")
+        mitigation = str(row.get("mitigation") or "").strip()
+        if re.search(r"(?:新增|添加|编写).{0,32}(?:单元)?测试", mitigation):
+            row["mitigation"] = (
+                "整改: 在相关错误响应或异常清理路径中固化状态、资源和错误传播契约，并增加运行时断言。"
+                "验证: 注入对应异常条件，确认协议响应、连接状态和资源指标一致。"
+            )
+            fields.append(f"$[{index}].mitigation:production_action")
+    return normalized, fields
+
+
 def _normalize_black_box_delivery_contract(
     rendered: Any,
 ) -> tuple[Any, list[str]]:
@@ -5658,6 +6303,19 @@ def _normalize_black_box_delivery_contract(
     for index, row in enumerate(normalized):
         if not isinstance(row, dict):
             continue
+        for field in ("observability", "failure_diagnostics"):
+            values = row.get(field)
+            if not isinstance(values, list):
+                continue
+            for value_index, value in enumerate(values):
+                text = str(value or "")
+                if not re.search(r"\b[a-z_][a-z0-9_]*->[a-z_][a-z0-9_]*\b", text):
+                    continue
+                values[value_index] = (
+                    "通过公开 CLI/RPC、目标日志、协议响应或 TCP 会话状态观察结果；"
+                    "不依赖内部结构字段。"
+                )
+                fields.append(f"$[{index}].{field}[{value_index}]")
         mapping = str(row.get("mapped_test_dir") or "").strip()
         mapping_parts = [
             part.lower()
@@ -5858,6 +6516,13 @@ def _regular_stage_prompt(
 ) -> str:
     artifact = str(stage.get("artifact") or "")
     base_stage_id = str(stage.get("id") or "stage").split("__", 1)[0]
+    if base_stage_id in {item[0] for item in _DEEP_EXPLORATION_BRANCHES}:
+        return _deep_exploration_stage_prompt(
+            plan=plan,
+            stage=stage,
+            source_pack=source_pack,
+            outline=outline,
+        )
     compact_flow = build_business_flow_context(
         plan=plan,
         source_pack=source_pack,
@@ -6013,6 +6678,8 @@ def _regular_stage_prompt(
                 continue
             seen_claim_ids.add(evidence_id)
             claim_catalog.append(item)
+    if base_stage_id == "sfmea":
+        claim_catalog = _sfmea_product_claim_catalog(claim_catalog)
     source_bound_domain_facts = _source_bound_domain_facts(
         plan=plan,
         source_pack=source_pack,
@@ -6054,6 +6721,11 @@ def _regular_stage_prompt(
                 "- technical claim 只能逐字选择一个 evidence_id，并完整复制 VERIFIED_CLAIM_EVIDENCE_CATALOG 中对应对象；禁止填写省略号、推测、Function not inspected、No excerpt 或自造 quote。",
                 "- 没有证据支持的事实必须改写为证据缺口或测试假设，不能伪造 technical claim。",
             ]
+        )
+    if base_stage_id == "sfmea":
+        rules.append(
+            "- SFMEA 的 technical_claims 只能来自产品实现源码；test/tests/fuzz/harness 路径只可写入 "
+            "test_mapping、detection 或验证动作，绝不能作为产品 failure_mode、cause 或 observed_defect 的证据。"
         )
     if base_stage_id == "black_box_cases":
         rules.append(
@@ -7280,6 +7952,75 @@ def _regular_stage_repair_prompt(
     )
 
 
+def _deep_exploration_stage_prompt(
+    *,
+    plan: dict[str, Any],
+    stage: dict[str, Any],
+    source_pack: dict[str, Any],
+    outline: dict[str, Any],
+) -> str:
+    """Build a small, markdown-native prompt for one deep exploration branch.
+
+    A branch is supplementary evidence synthesis.  It must not inherit the
+    whole regular-stage context, because that turns four parallel notes into
+    four copies of a report-generation request and makes truncation likely.
+    """
+    cards: list[dict[str, Any]] = []
+    for card in source_pack.get("evidence_cards") or []:
+        if not isinstance(card, dict):
+            continue
+        cards.append(
+            {
+                "evidence_id": str(card.get("evidence_id") or ""),
+                "file_path": str(card.get("file_path") or ""),
+                "classification": str(card.get("classification") or ""),
+                "lines": (
+                    f"{int(card.get('start_line') or 0)}-"
+                    f"{int(card.get('end_line') or 0)}"
+                ),
+                "symbols": list(card.get("symbols") or [])[:4],
+                "excerpt": str(card.get("excerpt") or "")[:600],
+            }
+        )
+        if len(cards) == 6:
+            break
+    output_limits = stage.get("output_limits")
+    max_characters = int(
+        output_limits.get("max_chinese_characters")
+        if isinstance(output_limits, dict)
+        else 1100
+    )
+    outline_summary = json.dumps(
+        _compact_stage_value(outline), ensure_ascii=False, sort_keys=True
+    )[:1600]
+    return "\n".join(
+        [
+            f"STAGE_ID: {stage.get('id')}",
+            f"OUTPUT_ARTIFACT: {stage.get('artifact')}",
+            f"PURPOSE: {stage.get('purpose')}",
+            "ORIGINAL_USER_REQUEST:",
+            str(plan.get("original_user_request") or plan.get("target") or "")[:1200],
+            "",
+            "REPO_REVISION:",
+            str(source_pack.get("repo_revision") or ""),
+            "",
+            "FLOW_OUTLINE_SUMMARY:",
+            outline_summary,
+            "",
+            "VERIFIED_EVIDENCE:",
+            json.dumps(cards, ensure_ascii=False, indent=2),
+            "",
+            "RULES:",
+            "- 只整理当前分支职责；不要重复完整流程、SFMEA、黑盒用例或总报告。",
+            "- 只可依据 VERIFIED_EVIDENCE 说明事实；证据不足只能标记为待验证。",
+            "- 每个结论以 evidence_id 和文件行号收束，最多 8 个锚点。",
+            f"- 正文最多 {max_characters} 个中文字符，使用短标题和要点，不贴大段源码。",
+            "- 必须直接以 Markdown 标题或列表开始，不得使用 JSON、artifact 容器或 Markdown 代码围栏。",
+            "- 仅返回当前 Markdown 文件正文。",
+        ]
+    )
+
+
 def _salvage_truncated_json_array(content: str) -> list[Any]:
     text = str(content or "").strip()
     opening_fence = re.match(r"^\s*```(?:json)?\s*", text, re.IGNORECASE)
@@ -7783,7 +8524,17 @@ async def _execute_source_analysis_stage(
     provider_capacity: _ProcessProviderCapacity,
 ) -> dict[str, Any]:
     started = time.monotonic()
-    effective = _source_analysis_limits(limits)
+    profile_limits = (
+        ((plan.get("execution_profile") or {}).get("source_analysis_limits"))
+        if isinstance(plan.get("execution_profile"), dict)
+        else None
+    )
+    effective = _source_analysis_limits(
+        {
+            **(profile_limits if isinstance(profile_limits, dict) else {}),
+            **(limits if isinstance(limits, dict) else {}),
+        }
+    )
     legacy_prompt = _stage_prompt(
         plan=plan,
         stage=stage,
@@ -8824,6 +9575,10 @@ def _stage_execution_limits(stage_id: str) -> dict[str, Any]:
         "sfmea": (5500, {"max_items": 10, "max_field_characters": 180}),
         "black_box_cases": (6000, {"max_items": 12, "max_field_characters": 180}),
         "test_design_mindmap": (3500, {"max_chinese_characters": 3200}),
+        "deep_entry_paths": (2400, {"max_chinese_characters": 2200}),
+        "deep_state_and_resources": (2400, {"max_chinese_characters": 2200}),
+        "deep_failures_and_recovery": (2400, {"max_chinese_characters": 2200}),
+        "deep_concurrency_and_boundaries": (2400, {"max_chinese_characters": 2200}),
     }.get(base_stage_id)
     if limits is None:
         return {}
@@ -8858,8 +9613,15 @@ def _stage_format_rules(stage_id: str, artifact: str) -> list[str]:
             "评分依据、mitigation 和源码/测试映射；每条 mitigation 必须同时写明"
             "具体整改和可执行的测试或监控验证动作，并使用"
             "‘整改: <生产代码/配置/运行时动作>。验证: <故障注入、测试或监控动作>’结构。\n"
+            "- 每条必须填写 risk_status：自动源码分析默认使用 test_hypothesis，只有源码片段逐字证明"
+            "失效已经发生时才可使用 observed_defect。evidence_interpretation 必须说明：源码证据证明的是"
+            "哪个当前机制，以及测试要验证的是哪个故障注入假设。test_hypothesis 的 cause/mechanism 必须"
+            "明确写成‘风险假设：若…’或‘故障注入假设：…’，不得把未被证据证明的缺失、泄漏或竞态写成"
+            "当前源码缺陷。observed_defect 必须提供直接证明缺陷的逐字 technical_claims 引用。\n"
             "- technical_claims.statement 只能陈述依赖证据逐字支持的当前行为；failure_mode 和 cause "
-            "必须用‘若/当/可能’表达假设性失效。不得把风险假设写成已存在的代码缺陷，"
+            "必须以可评分的偏离形式表述，例如‘未拒绝、错误接受、未释放、重复释放、错误传播、"
+            "超限仍分配或恢复失败’。触发条件字段可以用‘若/当’表达假设性失效，但不得把‘可能无法正确’"
+            "或正常拒绝本身写成 failure_mode。不得把风险假设写成已存在的代码缺陷，"
             "除非引用片段本身能够直接证明该缺陷。不得用‘片段未显示、未见校验、未见清理’"
             "作为缺陷证据；声明文件只能证明接口，不能证明实现中的校验、并发或资源清理行为；"
             "测试辅助代码的问题不得冒充被测产品风险。正常拒绝、安全释放、返回预期错误、"
@@ -8887,7 +9649,10 @@ def _stage_format_rules(stage_id: str, artifact: str) -> list[str]:
             "公开 CLI、sysfs、配置或外部故障注入观测边界，禁止 mock/调用 libnvme 或 libnvmf 内部函数；"
             "若环境没有安全的外部边界注入能力，应把该能力写成前置条件和 Blocked 判据。"
             "upstream_error_propagation 必须从目标端、网络、配置文件或公开 CLI 注入上游错误，"
-            "并以 CLI 退出码、stdout/stderr、控制器状态或日志证明错误是否被覆盖，不得改成内部单元测试。\n"
+            "并以 CLI 退出码、stdout/stderr、控制器状态或日志证明错误是否被覆盖，不得改成内部单元测试。"
+            "observability、expected_result 和 failure_diagnostics 只能写外部可见的 CLI/RPC 响应、"
+            "协议响应字段、TCP 状态、日志、指标或抓包；不得出现 C 字段访问（例如 conn->state）、"
+            "内部函数、源码行号或私有状态。源码路径只能放在 source_or_test_evidence。\n"
             "- 如果包含 MCS/MaxConnections 容量用例，前置条件必须逐字给出 target 启动前命令 "
             "`scripts/rpc.py iscsi_set_options -c 1`；不得写成 "
             "`-c MaxConnectionsPerSession=1`，也不得用客户端连接参数代替。"
@@ -8896,6 +9661,22 @@ def _stage_format_rules(stage_id: str, artifact: str) -> list[str]:
             "- 只能根据当前已验证证据与已生成用例声明覆盖状态；仍有证据缺口、待补场景或未执行"
             "用例时，禁止写‘完整覆盖’或同义结论。环境版本、命令、服务名、日志原文和阈值必须"
             "来自输入材料、源码/文档证据或标记为待环境确认，不得自行猜测。"
+        ),
+        "deep_entry_paths": (
+            "- 只整理外部入口、触发条件、调用/流程分叉与对应证据；"
+            "每一项指出外部可观测起点、源码锚点和未覆盖缺口。"
+        ),
+        "deep_state_and_resources": (
+            "- 只整理状态转换、资源申请/释放、容量/计数器边界及不变量；"
+            "没有已验证证据时标记缺口，不得把猜测写成资源泄漏事实。"
+        ),
+        "deep_failures_and_recovery": (
+            "- 只整理失败注入点、错误传播、超时/取消/断连和恢复路径；"
+            "区分当前源码事实、待执行的测试假设和证据缺口。"
+        ),
+        "deep_concurrency_and_boundaries": (
+            "- 只整理并发交错、重复/迟到事件、数值边界、翻转和长期稳定性风险；"
+            "将每项关联为可从外部构造与观测的测试方向，不写内部调用步骤。"
         ),
         "test_design_mindmap": (
             "- 输出可直接渲染的 Markdown Mermaid mindmap；根节点使用分析对象，一级分支必须包含"

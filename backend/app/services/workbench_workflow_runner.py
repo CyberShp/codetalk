@@ -23,6 +23,7 @@ from typing import Any, Callable, Iterable
 from app.config import settings
 from app.llm.base import BaseLLMClient, current_finish_reason
 from app.llm.factory import (
+    create_quality_repair_llm_client,
     create_llm_client_from_active,
     create_source_analysis_llm_client,
 )
@@ -785,6 +786,30 @@ def _staged_step_status(current_status: str, staged_result: dict[str, Any]) -> s
     )
 
 
+def _promote_staged_result_after_deliverable_quality(
+    staged_result: dict[str, Any],
+    final_audit: dict[str, Any],
+) -> dict[str, Any]:
+    """Promote a repair-only partial result once the final audit accepts it.
+
+    A targeted repair can return ``partial`` while its deterministic patches
+    still make the saved artifact set fully deliverable.  Do not leak that
+    intermediate provider status to the task result.  Time-budget exhaustion
+    and genuine execution errors remain terminal and are never promoted.
+    """
+    if (
+        str(staged_result.get("status") or "") != "partial"
+        or str(staged_result.get("reason") or "") == "workflow_deadline_exceeded"
+        or str(final_audit.get("status") or "") != "deliverable"
+    ):
+        return staged_result
+    promoted = dict(staged_result)
+    promoted["status"] = "completed"
+    promoted["quality_repaired_to_deliverable"] = True
+    promoted.pop("reason", None)
+    return promoted
+
+
 def _staged_execution_timed_out(staged_result: dict[str, Any]) -> bool:
     return (
         str(staged_result.get("reason") or "")
@@ -809,6 +834,9 @@ class WorkbenchWorkflowExecutionResult:
     started_at: str
     completed_at: str
     execution_status: str
+    # This is copied from the prepared task bundle so execution.json remains a
+    # self-contained, auditable explanation of the selected run policy.
+    execution_profile: dict[str, Any] = field(default_factory=dict)
     context_discovery_decision: dict[str, Any] = field(default_factory=dict)
     audit_summary: dict[str, Any] = field(default_factory=dict)
     rerun_plan: dict[str, Any] = field(default_factory=dict)
@@ -1208,6 +1236,11 @@ class WorkbenchWorkflowRunner:
             started_at=started_at,
             completed_at=_now(),
             execution_status=execution_status,
+            execution_profile=(
+                dict(execution_profile)
+                if isinstance(execution_profile, dict)
+                else {}
+            ),
             context_discovery_decision=dict(
                 task_run.task_bundle.get("context_discovery_decision") or {}
             ),
@@ -1970,8 +2003,15 @@ class WorkbenchWorkflowRunner:
                             create_source_analysis_llm_client(),
                             deadline=staged_lifecycle_deadline,
                         )
+                        staged_lifecycle_phase = "create_quality_repair_model_client"
+                        quality_repair_llm = await _await_with_absolute_deadline(
+                            create_quality_repair_llm_client(),
+                            deadline=staged_lifecycle_deadline,
+                        )
                     except BaseException:
                         await _close_llm_clients(
+                            locals().get("quality_repair_llm"),
+                            locals().get("source_analysis_llm"),
                             llm,
                         )
                         raise
@@ -1995,6 +2035,7 @@ class WorkbenchWorkflowRunner:
                                 ),
                                 source_analysis_context=staged_context,
                                 source_analysis_llm=source_analysis_llm,
+                                quality_repair_llm=quality_repair_llm,
                                 source_analysis_cache_dir=(
                                     settings.data_path
                                     / "workbench"
@@ -2560,6 +2601,12 @@ class WorkbenchWorkflowRunner:
                             repair_history[-1]["final_issues"] = int(
                                 final_repair_audit.get("issue_count") or 0
                             )
+                            staged_result = (
+                                _promote_staged_result_after_deliverable_quality(
+                                    staged_result,
+                                    final_repair_audit,
+                                )
+                            )
                         if (artifact_dir / "judge_report.json").is_file():
                             refresh_source_driven_delivery_governance(artifact_dir)
                         _write_json(
@@ -2580,6 +2627,7 @@ class WorkbenchWorkflowRunner:
                         return staged_result, current_plan, repair_history
                     finally:
                         await _close_llm_clients(
+                            quality_repair_llm,
                             source_analysis_llm,
                             llm,
                         )
@@ -3636,6 +3684,11 @@ def _build_workbench_staged_plan(
             "artifact_contract": artifact_contract,
         },
         original_user_request=original_request,
+        execution_profile=(
+            dict(task_bundle.get("execution_profile") or {})
+            if isinstance(task_bundle.get("execution_profile"), dict)
+            else None
+        ),
     )
     plan["run_id"] = run_id
     plan["workflow_version"] = str(

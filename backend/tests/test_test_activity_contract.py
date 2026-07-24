@@ -322,12 +322,75 @@ def test_sfmea_failure_mode_classifier_rejects_attempt3_normal_rows(failure_mode
         "registry 清理失败仅记录 WARN，错误不向上传播，旧条目残留",
         "重复连接竞态使新 controller 泄漏并留下悬空 path",
         "长稳态运行后 16 位资源计数翻转，错误接受已耗尽的槽位",
+        "MaxConnections 超限后未拒绝新连接",
+        "CHAP 响应长度校验缺失导致缓冲区越界",
+        "连接销毁时未检查 login_timer 是否已注销",
+        "连接销毁时未清理所有定时器，回调可能访问已释放的内存",
+        "MCS 连接数超限后未立即关闭新连接",
+        "空指针检查后仍可能解引用空指针",
+        "MCS 超限连接拒绝事件未记录，攻击行为不可追溯",
     ],
 )
 def test_sfmea_failure_mode_classifier_keeps_real_product_hazards(failure_mode):
     from app.services.test_activity_contract import sfmea_failure_mode_is_risk
 
     assert sfmea_failure_mode_is_risk(failure_mode) is True
+
+
+def test_sfmea_risk_hypothesis_must_explain_the_fault_injection_condition(tmp_path):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    row = {
+        "sfmea_id": "SFMEA-001",
+        "failure_mode": "MaxConnections 超限后未拒绝新连接",
+        "risk_status": "test_hypothesis",
+        "evidence_interpretation": "源码证实存在连接数计数；测试要验证拒绝路径。",
+        "mechanism": "连接数在登录路径中递增。",
+        "cause": "连接数检查缺失。",
+        "effect": "超限连接被接受。",
+        "detection": "检查登录响应。",
+        "severity": 7,
+        "occurrence": 3,
+        "detection_score": 5,
+        "rpn": 105,
+        "mitigation": "整改: 增加上限保护。验证: 注入超过上限的并发登录。",
+        "source_evidence": ["lib/iscsi/iscsi.c:1-2"],
+        "test_mapping": "test/iscsi_tgt",
+    }
+
+    issues = _audit_json_artifact(
+        artifact="sfmea.json", payload=[row], spec={}, repo=tmp_path
+    )
+
+    assert any(issue["code"] == "unqualified_sfmea_risk_hypothesis" for issue in issues)
+
+
+def test_sfmea_risk_hypothesis_can_describe_a_testable_deviation(tmp_path):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    row = {
+        "sfmea_id": "SFMEA-001",
+        "failure_mode": "MaxConnections 超限后未拒绝新连接",
+        "risk_status": "test_hypothesis",
+        "evidence_interpretation": "源码证实登录路径维护连接计数；故障注入验证上限拒绝不变量。",
+        "mechanism": "风险假设：若上限拒绝分支失效，超过容量的连接仍可能进入会话。",
+        "cause": "故障注入假设：连接数限制未拒绝额外登录。",
+        "effect": "超限连接被接受。",
+        "detection": "检查登录响应。",
+        "severity": 7,
+        "occurrence": 3,
+        "detection_score": 5,
+        "rpn": 105,
+        "mitigation": "整改: 增加上限保护。验证: 注入超过上限的并发登录。",
+        "source_evidence": ["lib/iscsi/iscsi.c:1-2"],
+        "test_mapping": "test/iscsi_tgt",
+    }
+
+    issues = _audit_json_artifact(
+        artifact="sfmea.json", payload=[row], spec={}, repo=tmp_path
+    )
+
+    assert not any(issue["code"] == "unqualified_sfmea_risk_hypothesis" for issue in issues)
 
 
 @pytest.mark.parametrize(

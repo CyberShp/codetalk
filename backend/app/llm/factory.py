@@ -173,6 +173,30 @@ async def create_behavior_claim_audit_llm_client(
     return await create_llm_client(config_id), config_id, str(config["model"] or "")
 
 
+async def create_quality_repair_llm_client() -> BaseLLMClient | None:
+    """Create a separate client for bounded quality repairs.
+
+    The configured independent audit model is also the right default for a
+    repair that must correct a fast generator's factual overreach.  This
+    returns a fresh client because validation and repair may overlap in a
+    workflow lifecycle and must not share mutable provider state.
+    """
+    try:
+        async with aiosqlite.connect(settings.sqlite_db) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT value FROM settings WHERE key = 'behavior_claim_audit_model_id'"
+            ) as cur:
+                selected = await cur.fetchone()
+    except sqlite3.OperationalError as exc:
+        logger.warning(
+            "Quality repair model route unavailable; using primary model: %s", exc
+        )
+        return None
+    config_id = str(selected["value"] or "") if selected else ""
+    return await create_llm_client(config_id) if config_id else None
+
+
 def _automatic_source_analysis_model(
     *,
     api_type: str,
