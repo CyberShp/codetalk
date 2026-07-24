@@ -158,6 +158,17 @@ async def test_run_ui_labels_upstream_blocked_nodes_in_chinese():
     assert _task_run_ui_status_label("upstream_blocked") == "因上游门禁阻断"
 
 
+async def test_node_registry_api_returns_backend_owned_designer_metadata(workbench_client):
+    response = await workbench_client.get("/api/workbench/node-registry")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schema_version"] == 1
+    agent = next(item for item in body["nodes"] if item["kind"] == "agent")
+    assert agent["ui"]["palette_label"] == "智能体模块"
+    assert agent["default_ports"]["input_ports"][0]["id"] == "repo_path"
+
+
 class _SourceFlowStageLLM:
     async def complete(self, messages, max_tokens=4096, temperature=0.2):
         from app.llm.base import LLMResponse
@@ -1261,14 +1272,22 @@ async def test_workbench_core_workflow_readiness_api_covers_release_workflow(wor
         "validate_evidence",
         "render_report",
     ]
-    assert by_id["basic_source_report_codex"]["required_artifacts"] == [
-        "report.md"
-    ]
+    basic_required_artifacts = {
+        "source_analysis.md",
+        "source_scope.json",
+        "evidence_cards.json",
+        "flow_cards.json",
+        "sfmea.json",
+        "black_box_cases.json",
+    }
+    assert basic_required_artifacts <= set(
+        by_id["basic_source_report_codex"]["required_artifacts"]
+    )
     assert by_id["basic_source_report_codex"]["execution_subject"] == "agent"
     assert by_id["basic_source_report_codex"]["execution_label"] == "Codex CLI"
-    assert by_id["basic_source_design_report_builtin"]["required_artifacts"] == [
-        "report.md"
-    ]
+    assert basic_required_artifacts <= set(
+        by_id["basic_source_design_report_builtin"]["required_artifacts"]
+    )
     assert by_id["basic_source_design_report_builtin"]["execution_subject"] == "builtin_llm"
     assert by_id["basic_source_design_report_builtin"]["execution_label"] == "内置模型"
     for item in by_id.values():

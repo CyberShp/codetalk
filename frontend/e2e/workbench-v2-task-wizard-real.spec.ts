@@ -64,7 +64,9 @@ test("creates and restores a six-step Task with immutable execution and output o
   await page.getByLabel("任务专用输出 1 类型").selectOption("json");
   await page.getByLabel("任务专用输出 1 JSON 结构").selectOption("array");
   await page.getByRole("button", { name: "保存并继续" }).click();
-  await expect(page.getByText("任务覆盖").locator(".."), "review includes one overridden node").toContainText("1");
+  await expect(page.getByText("输入", { exact: true }).locator(".."), "review shows frozen user input").toContainText("1/1");
+  await expect(page.getByText("执行节点", { exact: true }).locator(".."), "review shows the frozen execution plan").toContainText("1");
+  await expect(page.getByText("输出", { exact: true }).locator(".."), "review shows workflow and task-specific outputs").toContainText("2");
   await page.getByRole("button", { name: "保存为就绪任务" }).click();
   await expect(page.getByText("就绪", { exact: true })).toBeVisible();
 

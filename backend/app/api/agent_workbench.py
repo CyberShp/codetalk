@@ -85,6 +85,7 @@ from app.services.workflow_presets import (
     restore_builtin_workflow_presets,
 )
 from app.services.workflow_version_store import workflow_header_status
+from app.services.workflow_node_registry import node_registry_payload
 
 router = APIRouter(prefix="/api/workbench", tags=["agent-workbench"])
 
@@ -1859,6 +1860,12 @@ async def get_workflow_capabilities() -> dict[str, Any]:
             "workflow_outputs": "collected from declared outputs and checked before acceptance",
         },
     }
+
+
+@router.get("/node-registry")
+async def get_node_registry() -> dict[str, Any]:
+    """Expose backend-owned node metadata for the workflow designer."""
+    return node_registry_payload()
 
 
 @router.get("/core-workflow-readiness")

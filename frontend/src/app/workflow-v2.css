@@ -1,3 +1,5 @@
+@import "@xyflow/react/dist/style.css";
+
 .ct-v2-library,
 .ct-v2-wizard,
 .ct-v2-designer-page {
@@ -153,6 +155,7 @@
 .ct-v2-wizard {
   display: grid;
   width: min(1280px, 100%);
+  height: calc(100vh - 48px);
   min-height: calc(100vh - 48px);
   margin: 0 auto;
   grid-template-rows: auto auto minmax(520px, 1fr) auto;
@@ -176,6 +179,8 @@
 .ct-v2-stepper li.is-done > span { border-color: #b8ddc7; background: #e9f6ee; }
 .ct-v2-wizard-body { min-height: 0; overflow: auto; background: #f6f8fa; }
 .ct-v2-wizard-body.step-5 { overflow: hidden; }
+.ct-v2-wizard-canvas { display: grid; width: 100%; height: 100%; min-width: 0; min-height: 0; grid-template-columns: minmax(0, 1fr); }
+.ct-v2-wizard-canvas.has-inspector { grid-template-columns: minmax(0, 1fr) 292px; }
 .ct-v2-form-step { width: min(930px, calc(100% - 48px)); margin: 0 auto; padding: 30px 0 40px; }
 .ct-v2-step-copy h2,
 .ct-v2-step-heading h2,
@@ -262,6 +267,13 @@
 .ct-v2-palette-item strong { display: block; font-size: 12px; }
 .ct-v2-palette-item small { display: block; overflow: hidden; max-width: 130px; margin-top: 2px; color: #7b8999; font-family: var(--font-data); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .ct-v2-canvas-stage { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
+.ct-v2-xyflow { width: 100%; height: 100%; background: #f5f8fa; }
+.ct-v2-xyflow .react-flow__pane { cursor: grab; }
+.ct-v2-xyflow .react-flow__pane.dragging { cursor: grabbing; }
+.ct-v2-xyflow .react-flow__controls { border: 1px solid #d2dce5; border-radius: 5px; box-shadow: 0 3px 10px rgba(15,23,42,.08); }
+.ct-v2-xyflow .react-flow__controls-button { border-bottom-color: #e5edf2; background: #fff; color: #526474; }
+.ct-v2-xyflow .react-flow__controls-button:hover { background: #edf6f8; color: #0e7490; }
+.ct-v2-xyflow .react-flow__node-workflowNode { width: 260px; }
 .ct-v2-canvas-toolbar { position: absolute; z-index: 12; top: 10px; right: 10px; display: flex; align-items: center; gap: 3px; border: 1px solid #d2dce5; border-radius: 6px; background: rgba(255,255,255,.94); padding: 3px; box-shadow: 0 4px 12px rgba(15,23,42,.07); }
 .ct-v2-canvas-toolbar button { display: grid; width: 28px; height: 28px; place-items: center; border: 0; border-radius: 4px; background: transparent; color: #536274; }
 .ct-v2-canvas-toolbar button:hover { background: #edf3f6; color: #0e7490; }
@@ -282,6 +294,7 @@
 .ct-v2-edge-layer g.is-selected .ct-v2-edge { stroke: #0e7490; stroke-width: 2.5; }
 .ct-v2-edge-label { fill: #536274; stroke: rgba(255,255,255,.96); stroke-width: 5px; paint-order: stroke; font-family: var(--font-data); font-size: 10px; pointer-events: none; }
 .ct-v2-workflow-node { position: absolute; min-height: 88px; border: 1px solid #cbd7e2; border-radius: 6px; background: #fff; box-shadow: 0 3px 10px rgba(15,23,42,.06); outline: none; }
+.react-flow__node-workflowNode .ct-v2-workflow-node { position: relative; width: 260px; min-height: 0; }
 .ct-v2-workflow-node:hover { border-color: #9fb3c3; }
 .ct-v2-workflow-node.is-selected,
 .ct-v2-workflow-node:focus-visible { border-color: #0e7490; box-shadow: 0 0 0 2px rgba(14,116,144,.14), 0 5px 14px rgba(15,23,42,.08); }
@@ -300,6 +313,20 @@
 .ct-v2-port:hover { border-color: #0e7490; box-shadow: 0 0 0 4px rgba(14,116,144,.12); }
 .ct-v2-port.is-input { left: -7px; }
 .ct-v2-port.is-output { right: -7px; cursor: crosshair; }
+.ct-v2-flow-ports { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; border-top: 1px solid #edf1f4; padding: 7px 10px 9px; }
+.ct-v2-flow-ports > div { display: grid; gap: 5px; min-width: 0; }
+.ct-v2-flow-ports > div:last-child { text-align: right; }
+.ct-v2-flow-port { position: relative; min-width: 0; color: #4f6071; font-family: var(--font-data); font-size: 9px; line-height: 1.15; }
+.ct-v2-flow-port span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ct-v2-flow-port small { display: block; margin-top: 1px; color: #8a98a7; font-size: 8px; }
+.ct-v2-flow-port.is-input { padding-left: 5px; }
+.ct-v2-flow-port.is-output { padding-right: 5px; }
+.react-flow__handle.ct-v2-port { top: 50%; width: 10px; height: 10px; border-width: 2px; transform: translateY(-50%); }
+.react-flow__handle.ct-v2-port.is-input { left: -16px; }
+.react-flow__handle.ct-v2-port.is-output { right: -16px; }
+.ct-v2-edge { stroke: #90a3b5; stroke-width: 1.8; }
+.ct-v2-edge.is-selected { stroke: #0e7490; stroke-width: 2.4; }
+.ct-v2-edge-label { position: absolute; max-width: 164px; overflow: hidden; border: 1px solid #d7e1e8; border-radius: 4px; background: rgba(255,255,255,.94); padding: 2px 4px; color: #56697a; font-family: var(--font-data); font-size: 8px; text-overflow: ellipsis; white-space: nowrap; pointer-events: none; }
 .ct-v2-inspector { min-height: 0; overflow: hidden; border-left: 1px solid #d8e2eb; background: #fff; }
 .ct-v2-inspector-header { display: flex; height: 58px; align-items: center; justify-content: space-between; border-bottom: 1px solid #d8e2eb; padding: 8px 12px; }
 .ct-v2-inspector-header small { display: block; color: #7b8999; font-size: 10px; }
@@ -312,6 +339,10 @@
 .ct-v2-toggle { display: flex; align-items: center; gap: 7px; margin: 8px 0; color: #4c5b6b; font-size: 12px; }
 .ct-v2-toggle input { width: 14px; height: 14px; }
 .ct-v2-inspector-note { margin: 0; color: #64748b; line-height: 1.55; }
+.ct-v2-registry-contract { display: grid; gap: 6px; margin: 9px 0 0; }
+.ct-v2-registry-contract div { display: grid; grid-template-columns: 62px minmax(0, 1fr); gap: 7px; color: #617184; font-size: 10px; }
+.ct-v2-registry-contract dt { color: #8a98a7; }
+.ct-v2-registry-contract dd { overflow: hidden; margin: 0; color: #435568; text-overflow: ellipsis; white-space: nowrap; }
 .ct-v2-port-editor { display: grid; gap: 7px; margin-top: 9px; }
 .ct-v2-port-editor-row { display: grid; grid-template-columns: minmax(0, 1fr) 82px 46px 28px; align-items: end; gap: 5px; border: 1px solid #e1e8ee; border-radius: 5px; background: #f9fbfc; padding: 7px; }
 .ct-v2-port-editor-row label { min-width: 0; }

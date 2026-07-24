@@ -210,6 +210,30 @@ export interface WorkflowCapabilities {
   skill_catalog?: WorkflowSkillCapability[];
 }
 
+export interface WorkflowNodeRegistryUi {
+  label: string;
+  palette_label: string;
+  palette_group: string;
+  description: string;
+}
+
+export interface WorkflowNodeRegistryEntry {
+  kind: WorkflowNodeKind;
+  version: number;
+  ui: WorkflowNodeRegistryUi;
+  default_ports: {
+    input_ports: WorkflowPortDefinition[];
+    output_ports: WorkflowPortDefinition[];
+  };
+  default_config: WorkflowNodeConfig;
+  config_schema: Record<string, unknown>;
+}
+
+export interface WorkflowNodeRegistry {
+  schema_version: number;
+  nodes: WorkflowNodeRegistryEntry[];
+}
+
 export interface WorkflowProviderCapability {
   provider: string;
   display_name: string;

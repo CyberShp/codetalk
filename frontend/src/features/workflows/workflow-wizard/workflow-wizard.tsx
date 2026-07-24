@@ -5,8 +5,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, ArrowRight, Check, Loader2, Plus, Send, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import { workflowsApi } from "@/lib/api/workflows";
-import type { AuthoringGraphV2, CompiledWorkflowPlan, WorkflowCapabilities, WorkflowGraphNode, WorkflowProviderCapability, WorkflowValidationResult } from "@/lib/types/workflow";
-import { createNode, createStarterGraph, safeWorkflowId, sanitizeWorkflowIdDraft } from "../workflow-graph";
+import type { AuthoringGraphV2, CompiledWorkflowPlan, WorkflowCapabilities, WorkflowGraphNode, WorkflowNodeRegistry, WorkflowProviderCapability, WorkflowValidationResult } from "@/lib/types/workflow";
+import { createNodeFromRegistry, createStarterGraph, safeWorkflowId, sanitizeWorkflowIdDraft } from "../workflow-graph";
 import { createEditorState, workflowEditorReducer } from "../state/workflow-editor-reducer";
 import { WorkflowCanvas } from "../designer/workflow-canvas";
 import { NodeInspector } from "../designer/node-inspector";
@@ -29,13 +29,14 @@ export function WorkflowWizard() {
   const [editor, dispatch] = useReducer(workflowEditorReducer, createStarterGraph("new-workflow", "新工作流"), createEditorState);
   const [capabilities, setCapabilities] = useState<WorkflowCapabilities | null>(null);
   const [providers, setProviders] = useState<WorkflowProviderCapability[]>([]);
+  const [nodeRegistry, setNodeRegistry] = useState<WorkflowNodeRegistry | null>(null);
   const [validation, setValidation] = useState<WorkflowValidationResult | null>(null);
   const [plan, setPlan] = useState<CompiledWorkflowPlan | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
-    void Promise.all([workflowsApi.capabilities(), workflowsApi.providers()]).then(([caps, providerResult]) => { setCapabilities(caps); setProviders(providerResult.providers); });
+    void Promise.all([workflowsApi.capabilities(), workflowsApi.providers(), workflowsApi.nodeRegistry()]).then(([caps, providerResult, registry]) => { setCapabilities(caps); setProviders(providerResult.providers); setNodeRegistry(registry); });
   }, []);
 
   useEffect(() => {
@@ -48,6 +49,18 @@ export function WorkflowWizard() {
       dispatch({ type: "replace", graph, markSaved: true });
     }).catch((cause) => setError(cause instanceof Error ? cause.message : "草稿恢复失败")).finally(() => setBusy(false));
   }, [versionParam, workflowParam]);
+
+  useEffect(() => {
+    if (!workflowId || !versionId || editor.revision === editor.savedRevision) return;
+    const revision = editor.revision;
+    const graph = { ...editor.present, workflow_id: workflowId, name, description };
+    const timer = window.setTimeout(() => {
+      void workflowsApi.updateDraft(workflowId, versionId, graph)
+        .then(() => dispatch({ type: "mark-saved", revision }))
+        .catch((cause) => setError(cause instanceof Error ? cause.message : "画布草稿自动保存失败"));
+    }, 650);
+    return () => window.clearTimeout(timer);
+  }, [description, editor.present, editor.revision, editor.savedRevision, name, versionId, workflowId]);
 
   const save = useCallback(async () => {
     if (!workflowId || !versionId) return;
@@ -89,10 +102,10 @@ export function WorkflowWizard() {
     <ol className="ct-v2-stepper">{steps.map((label, index) => <li key={label} className={index + 1 === step ? "is-active" : index + 1 < step ? "is-done" : ""}><span>{index + 1 < step ? <Check size={13} /> : index + 1}</span><strong>{label}</strong></li>)}</ol>
     <section className={`ct-v2-wizard-body step-${step}`}>
       {step === 1 && <BasicStep name={name} id={workflowId} description={description} template={template} onName={(value) => { setName(value); if (!workflowId) setWorkflowId(safeWorkflowId(value)); }} onId={setWorkflowId} onDescription={setDescription} onTemplate={setTemplate} />}
-      {step === 2 && <InputStep nodes={inputNodes} onUpdate={update} onAdd={() => dispatch({ type: "add-node", node: createNode("input", 80, 140 + inputNodes.length * 130) })} onRemove={(id) => dispatch({ type: "remove-node", nodeId: id })} />}
-      {step === 3 && <AgentStep nodes={agentNodes} providers={providers} capabilities={capabilities} onUpdate={update} onAdd={() => dispatch({ type: "add-node", node: createNode("agent", 380, 140 + agentNodes.length * 130) })} onRemove={(id) => dispatch({ type: "remove-node", nodeId: id })} />}
-      {step === 4 && <OutputStep nodes={outputNodes} agents={agentNodes} onUpdate={update} onAdd={() => dispatch({ type: "add-node", node: createNode("output", 720, 140 + outputNodes.length * 130) })} onRemove={(id) => dispatch({ type: "remove-node", nodeId: id })} />}
-      {step === 5 && <div className={`ct-v2-wizard-canvas ${selected ? "has-inspector" : ""}`}><WorkflowCanvas state={editor} dispatch={dispatch} />{selected && <NodeInspector node={selected} capabilities={capabilities} providers={providers} onChange={update} onClose={() => dispatch({ type: "select-node", nodeId: null })} />}</div>}
+      {step === 2 && <InputStep nodes={inputNodes} onUpdate={update} onAdd={() => addRegistryNode(nodeRegistry, "input", 80, 140 + inputNodes.length * 130, dispatch)} onRemove={(id) => dispatch({ type: "remove-node", nodeId: id })} />}
+      {step === 3 && <AgentStep nodes={agentNodes} providers={providers} capabilities={capabilities} onUpdate={update} onAdd={() => addRegistryNode(nodeRegistry, "agent", 380, 140 + agentNodes.length * 130, dispatch)} onRemove={(id) => dispatch({ type: "remove-node", nodeId: id })} />}
+      {step === 4 && <OutputStep nodes={outputNodes} agents={agentNodes} onUpdate={update} onAdd={() => addRegistryNode(nodeRegistry, "output", 720, 140 + outputNodes.length * 130, dispatch)} onRemove={(id) => dispatch({ type: "remove-node", nodeId: id })} />}
+      {step === 5 && (nodeRegistry ? <div className={`ct-v2-wizard-canvas ${selected ? "has-inspector" : ""}`}><WorkflowCanvas state={editor} dispatch={dispatch} registry={nodeRegistry} />{selected && <NodeInspector node={selected} capabilities={capabilities} providers={providers} registry={nodeRegistry} onChange={update} onClose={() => dispatch({ type: "select-node", nodeId: null })} />}</div> : <p className="ct-v2-bottom-empty">正在载入节点库…</p>)}
       {step === 6 && <ReviewStep workflowId={workflowId} versionId={versionId} graph={editor.present} validation={validation} plan={plan} busy={busy} onBeforeRun={save} onValidate={async () => { setBusy(true); try { await save(); const result = await workflowsApi.validate(workflowId, versionId); setValidation(result); } finally { setBusy(false); } }} onCompile={async () => { setBusy(true); try { await save(); const result = await workflowsApi.compile(workflowId, versionId); setValidation(result.validation_result); setPlan(result.compiled_plan); } finally { setBusy(false); } }} onPublish={async () => { setBusy(true); try { await save(); await workflowsApi.publish(workflowId, versionId); router.push(`/workflows/${encodeURIComponent(workflowId)}/versions`); } finally { setBusy(false); } }} />}
     </section>
     {error && <div className="ct-v2-notice is-error" role="alert">{error}</div>}
@@ -115,4 +128,5 @@ function StepHeading({ title, copy, onAdd, label }: { title: string; copy: strin
 function EmptyContracts({ text }: { text: string }) { return <div className="ct-v2-contract-empty">{text}</div>; }
 function CompactChecks({ title, options, selected, onChange }: { title: string; options: Array<{ id: string; label: string }>; selected: string[]; onChange: (items: string[]) => void }) { const [query, setQuery] = useState(""); const visible = options.filter((item) => `${item.label} ${item.id}`.toLowerCase().includes(query.toLowerCase())).slice(0, 16); return <fieldset className="ct-v2-compact-checks"><legend>{title}</legend>{options.length > 8 && <input aria-label={`搜索${title}`} value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`搜索 ${title}`} />}<div>{visible.map((item) => <label key={item.id}><input type="checkbox" checked={selected.includes(item.id)} onChange={() => onChange(selected.includes(item.id) ? selected.filter((id) => id !== item.id) : [...selected, item.id])} /><span>{item.label}</span></label>)}{!visible.length && <small>当前执行器没有可选项</small>}</div></fieldset>; }
 function emptyGraph(workflowId: string, name: string, description: string): AuthoringGraphV2 { return { schema_version: 2, workflow_id: workflowId, name, description, nodes: [], edges: [], settings: { stop_on_error: true, max_parallelism: 1 } }; }
+function addRegistryNode(registry: WorkflowNodeRegistry | null, kind: "input" | "agent" | "output", x: number, y: number, dispatch: React.Dispatch<Parameters<typeof workflowEditorReducer>[1]>) { const definition = registry?.nodes.find((item) => item.kind === kind); if (definition) dispatch({ type: "add-node", node: createNodeFromRegistry(definition, x, y) }); }
 function validateWizardStep(step: number, graph: AuthoringGraphV2) { if (step === 2) { const ids = graph.nodes.filter((node) => node.kind === "input").map((node) => String(node.config.contract_id || "")); if (ids.some((id) => !id) || new Set(ids).size !== ids.length) throw new Error("输入 ID 不能为空或重复"); } if (step === 3) { const agents = graph.nodes.filter((node) => node.kind === "agent"); if (!agents.length || agents.some((node) => !String(node.config.goal || "").trim())) throw new Error("至少添加一个目标完整的执行节点"); } if (step === 4 && !graph.nodes.some((node) => node.kind === "output")) throw new Error("至少定义一个输出"); }

@@ -3,6 +3,8 @@ import type {
   WorkflowGraphEdge,
   WorkflowGraphNode,
   WorkflowNodeKind,
+  WorkflowNodeConfig,
+  WorkflowNodeRegistryEntry,
   WorkflowPortDefinition,
 } from "@/lib/types/workflow";
 
@@ -145,6 +147,51 @@ export function createNode(
       failure_policy: "stop",
     },
   };
+}
+
+/**
+ * Materialize a new persisted graph node from the backend-owned registry.
+ * The registry owns defaults and port contracts; this function only assigns a
+ * graph-local identity and position.
+ */
+export function createNodeFromRegistry(
+  definition: WorkflowNodeRegistryEntry,
+  x: number,
+  y: number,
+): WorkflowGraphNode {
+  const suffix = Date.now().toString(36).slice(-5);
+  const id = safeWorkflowId(`${definition.kind}-${suffix}`);
+  const config = cloneWorkflowConfig(definition.default_config);
+
+  if (definition.kind === "input") {
+    config.contract_id = id;
+    config.label = String(config.label || definition.ui.label);
+  } else if (definition.kind === "output") {
+    config.output_id = id;
+    if (!String(config.artifact || "").trim() || config.artifact === "output.md") {
+      config.artifact = `${id}.md`;
+    }
+  } else {
+    config.step_id = id;
+    config.input_ports = clonePorts(definition.default_ports.input_ports);
+    config.output_ports = clonePorts(definition.default_ports.output_ports);
+  }
+
+  return {
+    id,
+    kind: definition.kind,
+    label: definition.ui.label,
+    position: { x: Math.max(20, x), y: Math.max(20, y) },
+    config,
+  };
+}
+
+function cloneWorkflowConfig(config: WorkflowNodeConfig): WorkflowNodeConfig {
+  return JSON.parse(JSON.stringify(config)) as WorkflowNodeConfig;
+}
+
+function clonePorts(ports: WorkflowPortDefinition[]): WorkflowPortDefinition[] {
+  return ports.map((port) => ({ ...port }));
 }
 
 export function edge(

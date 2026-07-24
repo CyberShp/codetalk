@@ -8,20 +8,11 @@ from collections import defaultdict
 from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any
 
+from app.services.workflow_node_registry import SUPPORTED_NODE_KINDS
+
 
 GRAPH_SCHEMA_VERSION = 2
 PLAN_VERSION = 1
-SUPPORTED_NODE_KINDS = frozenset({
-    "input",
-    "output",
-    "agent",
-    "semantic_retrieve",
-    "memory_retrieve",
-    "local_scope_discover",
-    "evidence_validate",
-    "report_render",
-    "artifact_export",
-})
 EXECUTION_NODE_KINDS = SUPPORTED_NODE_KINDS - {"input", "output"}
 SUPPORTED_EDGE_KINDS = frozenset({"data", "dependency"})
 SUPPORTED_RESOLVERS = frozenset({"manual", "workspace", "local", "agent_mcp"})

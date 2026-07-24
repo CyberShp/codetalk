@@ -9,6 +9,7 @@ export interface WorkflowEditorState {
   present: AuthoringGraphV2;
   future: AuthoringGraphV2[];
   selectedNodeId: string | null;
+  selectedNodeIds: string[];
   selectedEdgeId: string | null;
   revision: number;
   savedRevision: number;
@@ -24,6 +25,7 @@ export type WorkflowEditorAction =
   | { type: "add-edge"; edge: WorkflowGraphEdge }
   | { type: "remove-edge"; edgeId: string }
   | { type: "select-node"; nodeId: string | null }
+  | { type: "select-nodes"; nodeIds: string[] }
   | { type: "select-edge"; edgeId: string | null }
   | { type: "undo" }
   | { type: "redo" }
@@ -35,6 +37,7 @@ export function createEditorState(graph: AuthoringGraphV2): WorkflowEditorState 
     present: graph,
     future: [],
     selectedNodeId: null,
+    selectedNodeIds: [],
     selectedEdgeId: null,
     revision: 0,
     savedRevision: 0,
@@ -49,6 +52,16 @@ export function workflowEditorReducer(
     return {
       ...state,
       selectedNodeId: action.nodeId,
+      selectedNodeIds: action.nodeId ? [action.nodeId] : [],
+      selectedEdgeId: null,
+    };
+  }
+  if (action.type === "select-nodes") {
+    const nodeIds = Array.from(new Set(action.nodeIds));
+    return {
+      ...state,
+      selectedNodeId: nodeIds[0] ?? null,
+      selectedNodeIds: nodeIds,
       selectedEdgeId: null,
     };
   }
@@ -56,6 +69,7 @@ export function workflowEditorReducer(
     return {
       ...state,
       selectedNodeId: null,
+      selectedNodeIds: [],
       selectedEdgeId: action.edgeId,
     };
   }
@@ -137,6 +151,9 @@ export function workflowEditorReducer(
     present: next,
     future: [],
     selectedNodeId: action.type === "remove-node" ? null : state.selectedNodeId,
+    selectedNodeIds: action.type === "remove-node"
+      ? state.selectedNodeIds.filter((nodeId) => nodeId !== action.nodeId)
+      : state.selectedNodeIds,
     selectedEdgeId: action.type === "remove-edge" ? null : state.selectedEdgeId,
     revision: state.revision + 1,
   };

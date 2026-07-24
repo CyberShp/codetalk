@@ -1,208 +1,187 @@
 "use client";
 
 import {
-  Focus,
-  Minus,
-  Plus,
-  Redo2,
-  Trash2,
-  Undo2,
-} from "lucide-react";
+  Background,
+  BaseEdge,
+  Controls,
+  EdgeLabelRenderer,
+  Handle,
+  MiniMap,
+  Position,
+  ReactFlow,
+  ReactFlowProvider,
+  useEdgesState,
+  useNodesState,
+  useReactFlow,
+  getBezierPath,
+  type Connection,
+  type Edge,
+  type EdgeProps,
+  type NodeProps,
+  type OnConnect,
+  type OnConnectEnd,
+} from "@xyflow/react";
+import { Focus, Redo2, Trash2, Undo2 } from "lucide-react";
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
   useRef,
   useState,
   type Dispatch,
-  type PointerEvent as ReactPointerEvent,
 } from "react";
+
+import type {
+  WorkflowGraphNode,
+  WorkflowNodeRegistry,
+  WorkflowNodeRegistryEntry,
+} from "@/lib/types/workflow";
 import type { WorkflowEditorAction, WorkflowEditorState } from "../state/workflow-editor-reducer";
 import {
   connectionEdgeKind,
-  createNode,
-  connectionLabel,
-  edge as createEdge,
+  createNodeFromRegistry,
   inputPortDefinitions,
   nodeKindLabel,
   outputPortDefinitions,
   validateConnection,
 } from "../workflow-graph";
-import type {
-  WorkflowGraphEdge,
-  WorkflowGraphNode,
-  WorkflowNodeKind,
-} from "@/lib/types/workflow";
-
-const NODE_WIDTH = 260;
-const NODE_PORT_Y = 84;
-const NODE_PORT_GAP = 30;
-const BOARD_WIDTH = 2400;
-const BOARD_HEIGHT = 1400;
-
-const paletteKinds: WorkflowNodeKind[] = [
-  "input",
-  "agent",
-  "semantic_retrieve",
-  "memory_retrieve",
-  "local_scope_discover",
-  "evidence_validate",
-  "report_render",
-  "artifact_export",
-  "output",
-];
+import {
+  applyFlowPositions,
+  authoringGraphToFlow,
+  type WorkflowFlowEdge,
+  type WorkflowFlowNode,
+} from "../workflow-xyflow";
 
 interface Props {
   state: WorkflowEditorState;
   dispatch: Dispatch<WorkflowEditorAction>;
+  registry: WorkflowNodeRegistry;
   onSelectionChange?: (nodeId: string | null) => void;
 }
 
-interface ConnectionDraft {
-  sourceNodeId: string;
-  sourcePortId: string;
-  x: number;
-  y: number;
+export function WorkflowCanvas(props: Props) {
+  return (
+    <ReactFlowProvider>
+      <WorkflowCanvasSurface {...props} />
+    </ReactFlowProvider>
+  );
 }
 
-export function WorkflowCanvas({ state, dispatch, onSelectionChange }: Props) {
-  const boardRef = useRef<HTMLDivElement>(null);
+function WorkflowCanvasSurface({ state, dispatch, registry, onSelectionChange }: Props) {
+  const nodeTypes = useMemo(() => ({ workflowNode: WorkflowNodeCard }), []);
+  const edgeTypes = useMemo(() => ({ workflowEdge: WorkflowEdge }), []);
   const edgeSequence = useRef(0);
-  const [view, setView] = useState({ x: 36, y: 42, zoom: 1 });
-  const [connection, setConnection] = useState<ConnectionDraft | null>(null);
+  const { screenToFlowPosition, fitView } = useReactFlow<WorkflowFlowNode, WorkflowFlowEdge>();
   const [connectionError, setConnectionError] = useState("");
-  const nodesById = useMemo(
-    () => new Map(state.present.nodes.map((node) => [node.id, node])),
-    [state.present.nodes],
-  );
 
-  const selectNode = useCallback(
-    (nodeId: string | null) => {
-      dispatch({ type: "select-node", nodeId });
-      onSelectionChange?.(nodeId);
-    },
-    [dispatch, onSelectionChange],
-  );
-
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const target = event.target as HTMLElement | null;
-      if (target?.matches("input, textarea, select, [contenteditable=true]")) return;
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "z") {
-        event.preventDefault();
-        dispatch({ type: event.shiftKey ? "redo" : "undo" });
-        return;
-      }
-      if (event.key !== "Delete" && event.key !== "Backspace") return;
-      if (state.selectedNodeId) {
-        event.preventDefault();
-        dispatch({ type: "remove-node", nodeId: state.selectedNodeId });
-        selectNode(null);
-      } else if (state.selectedEdgeId) {
-        event.preventDefault();
-        dispatch({ type: "remove-edge", edgeId: state.selectedEdgeId });
-      }
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [dispatch, selectNode, state.selectedEdgeId, state.selectedNodeId]);
-
-  useEffect(() => {
-    if (!connection) return;
-    const move = (event: PointerEvent) => {
-      const point = clientToCanvas(event.clientX, event.clientY, boardRef.current, view);
-      setConnection((current) => (current ? { ...current, x: point.x, y: point.y } : null));
-    };
-    const cancel = () => setConnection(null);
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", cancel);
-    return () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", cancel);
-    };
-  }, [connection, view]);
-
-  const addNode = (kind: WorkflowNodeKind, x?: number, y?: number) => {
-    const node = createNode(
-      kind,
-      Math.max(20, x ?? 180 + state.present.nodes.length * 28),
-      Math.max(20, y ?? 120 + state.present.nodes.length * 34),
-    );
-    dispatch({ type: "add-node", node });
-    selectNode(node.id);
-  };
-
-  const fitCanvas = () => {
-    if (!state.present.nodes.length || !boardRef.current) {
-      setView({ x: 36, y: 42, zoom: 1 });
-      return;
-    }
-    const rect = boardRef.current.getBoundingClientRect();
-    const minX = Math.min(...state.present.nodes.map((node) => node.position.x));
-    const maxX = Math.max(...state.present.nodes.map((node) => node.position.x + NODE_WIDTH));
-    const minY = Math.min(...state.present.nodes.map((node) => node.position.y));
-    const maxY = Math.max(...state.present.nodes.map((node) => node.position.y + nodeHeight(node)));
-    const zoom = Math.max(0.55, Math.min(1.2, Math.min((rect.width - 96) / (maxX - minX), (rect.height - 96) / (maxY - minY))));
-    setView({
-      zoom,
-      x: (rect.width - (maxX - minX) * zoom) / 2 - minX * zoom,
-      y: (rect.height - (maxY - minY) * zoom) / 2 - minY * zoom,
-    });
-  };
-
-  const startPan = (event: ReactPointerEvent<HTMLDivElement>) => {
-    const target = event.target instanceof Element ? event.target : null;
-    if (
-      event.button !== 0 ||
-      !event.isPrimary ||
-      target?.closest(".ct-v2-workflow-node, .ct-v2-edge-hit")
-    ) return;
-    event.preventDefault();
-    selectNode(null);
-    dispatch({ type: "select-edge", edgeId: null });
-    const start = { x: event.clientX, y: event.clientY, viewX: view.x, viewY: view.y };
-    capturePointerMovement(event.currentTarget, event.pointerId, (next) => {
-      setView((current) => ({
-        ...current,
-        x: start.viewX + next.clientX - start.x,
-        y: start.viewY + next.clientY - start.y,
-      }));
-    });
-  };
-
-  const finishConnection = (targetNodeId: string, targetPortId: string) => {
-    if (!connection || connection.sourceNodeId === targetNodeId) return;
+  const isValidConnection = useCallback((connection: Connection | Edge) => {
+    const sourcePortId = handlePortId(connection.sourceHandle, "out:");
+    const targetPortId = handlePortId(connection.targetHandle, "in:");
+    if (!connection.source || !connection.target || !sourcePortId || !targetPortId) return false;
     const validation = validateConnection(
       state.present,
-      connection.sourceNodeId,
-      connection.sourcePortId,
-      targetNodeId,
+      connection.source,
+      sourcePortId,
+      connection.target,
       targetPortId,
     );
-    if (!validation.ok) {
-      setConnectionError(validation.message);
-      setConnection(null);
-      return;
-    }
-    setConnectionError("");
+    setConnectionError(validation.ok ? "" : validation.message);
+    return validation.ok;
+  }, [state.present]);
+
+  // Keep xyflow's measured node internals stable while selection lives in the
+  // editor state. Replacing controlled nodes for every selection loses those
+  // measurements and breaks the next drag gesture.
+  const flow = useMemo(() => {
+    const adapted = authoringGraphToFlow(state.present);
+    return {
+      ...adapted,
+      nodes: adapted.nodes.map((node) => ({
+        ...node,
+        data: { ...node.data, canConnect: isValidConnection },
+      })),
+    };
+  }, [isValidConnection, state.present]);
+  const [nodes, setNodes, onNodesChange] = useNodesState<WorkflowFlowNode>(flow.nodes);
+  const [edges, setEdges, onEdgesChange] = useEdgesState<WorkflowFlowEdge>(flow.edges);
+
+  useEffect(() => {
+    setNodes(flow.nodes);
+    setEdges(flow.edges);
+  }, [flow, setEdges, setNodes]);
+
+  const addNode = useCallback((definition: WorkflowNodeRegistryEntry, position?: { x: number; y: number }) => {
+    const suggestedPosition = position ?? nextAvailableNodePosition(state.present.nodes);
+    const next = createNodeFromRegistry(
+      definition,
+      suggestedPosition.x,
+      suggestedPosition.y,
+    );
+    dispatch({ type: "add-node", node: next });
+    dispatch({ type: "select-node", nodeId: next.id });
+    onSelectionChange?.(next.id);
+    window.requestAnimationFrame(() => void fitView({ padding: 0.2, duration: 180 }));
+  }, [dispatch, fitView, onSelectionChange, state.present.nodes]);
+
+  const onConnect: OnConnect = useCallback((connection) => {
+    const sourcePortId = handlePortId(connection.sourceHandle, "out:");
+    const targetPortId = handlePortId(connection.targetHandle, "in:");
+    if (!connection.source || !connection.target || !sourcePortId || !targetPortId) return;
+    const source = state.present.nodes.find((node) => node.id === connection.source);
+    const target = state.present.nodes.find((node) => node.id === connection.target);
+    if (!source || !target) return;
     edgeSequence.current += 1;
-    const id = `edge-${connection.sourceNodeId}-${targetNodeId}-${edgeSequence.current}`;
-    const sourceNode = nodesById.get(connection.sourceNodeId);
-    const targetNode = nodesById.get(targetNodeId);
-    if (!sourceNode || !targetNode) return;
     dispatch({
       type: "add-edge",
-      edge: createEdge(
-        id,
-        connectionEdgeKind(sourceNode, connection.sourcePortId, targetNode, targetPortId),
-        connection.sourceNodeId,
-        connection.sourcePortId,
-        targetNodeId,
-        targetPortId,
-      ),
+      edge: {
+        id: `edge-${source.id}-${target.id}-${edgeSequence.current}`,
+        kind: connectionEdgeKind(source, sourcePortId, target, targetPortId),
+        source: { node_id: source.id, port_id: sourcePortId },
+        target: { node_id: target.id, port_id: targetPortId },
+      },
     });
-    setConnection(null);
-  };
+    setConnectionError("");
+  }, [dispatch, state.present.nodes]);
+
+  const handleConnectEnd: OnConnectEnd = useCallback((_, connectionState) => {
+    if (connectionState.isValid || !connectionState.fromNode || !connectionState.toNode) return;
+    const sourcePortId = handlePortId(connectionState.fromHandle?.id, "out:");
+    const targetPortId = handlePortId(connectionState.toHandle?.id, "in:");
+    if (!sourcePortId || !targetPortId) return;
+    const validation = validateConnection(
+      state.present,
+      connectionState.fromNode.id,
+      sourcePortId,
+      connectionState.toNode.id,
+      targetPortId,
+    );
+    setConnectionError(validation.ok ? "该连接不可用" : validation.message);
+  }, [state.present]);
+
+  const handleSelectionChange = useCallback(({ nodes: selectedNodes, edges: selectedEdges }: {
+    nodes: WorkflowFlowNode[];
+    edges: WorkflowFlowEdge[];
+  }) => {
+    // Updating a node through the inspector briefly clears xyflow's rendered
+    // selection. Pane clicks are handled explicitly below, so do not let this
+    // renderer-only empty event close the inspector mid-edit.
+    if (selectedNodes.length === 0 && selectedEdges.length === 0 && state.selectedNodeId) return;
+    if (selectedEdges[0]) {
+      if (state.selectedEdgeId === selectedEdges[0].id && state.selectedNodeIds.length === 0) return;
+      dispatch({ type: "select-edge", edgeId: selectedEdges[0].id });
+      onSelectionChange?.(null);
+      return;
+    }
+    const nodeIds = selectedNodes.map((node) => node.id);
+    const unchanged =
+      state.selectedEdgeId === null &&
+      nodeIds.length === state.selectedNodeIds.length &&
+      nodeIds.every((nodeId, index) => nodeId === state.selectedNodeIds[index]);
+    if (unchanged) return;
+    dispatch({ type: "select-nodes", nodeIds });
+    onSelectionChange?.(nodeIds[0] ?? null);
+  }, [dispatch, onSelectionChange, state.selectedEdgeId, state.selectedNodeIds]);
 
   return (
     <div className="ct-v2-canvas-shell">
@@ -212,20 +191,24 @@ export function WorkflowCanvas({ state, dispatch, onSelectionChange }: Props) {
           <span>拖到画布，或双击添加</span>
         </div>
         <div className="ct-v2-palette-list">
-          {paletteKinds.map((kind) => (
+          {registry.nodes.map((definition) => (
             <button
-              key={kind}
+              key={definition.kind}
               type="button"
               draggable
-              onDragStart={(event) => event.dataTransfer.setData("application/x-codetalk-node", kind)}
-              onDoubleClick={() => addNode(kind)}
+              data-testid={`workflow-palette-${definition.kind}`}
+              onDragStart={(event) => {
+                event.dataTransfer.setData("application/x-codetalk-node", definition.kind);
+                event.dataTransfer.effectAllowed = "move";
+              }}
+              onDoubleClick={() => addNode(definition)}
               className="ct-v2-palette-item"
-              title={`添加${nodeKindLabel(kind)}节点`}
+              title={`添加${definition.ui.label}节点`}
             >
               <span className="ct-v2-kind-mark" aria-hidden="true" />
               <span>
-                <strong>{nodeKindLabel(kind)}</strong>
-                <small>{nodeKindDescription(kind)}</small>
+                <strong>{definition.ui.palette_label}</strong>
+                <small>{definition.ui.description}</small>
               </span>
             </button>
           ))}
@@ -233,11 +216,7 @@ export function WorkflowCanvas({ state, dispatch, onSelectionChange }: Props) {
       </aside>
 
       <section className="ct-v2-canvas-stage" aria-label="工作流画布">
-        {connectionError && (
-          <div className="ct-v2-connection-error" role="alert">
-            {connectionError}
-          </div>
-        )}
+        {connectionError && <div className="ct-v2-connection-error" role="alert">{connectionError}</div>}
         <div className="ct-v2-canvas-toolbar" aria-label="画布工具栏">
           <button type="button" onClick={() => dispatch({ type: "undo" })} disabled={!state.past.length} title="撤销">
             <Undo2 size={15} />
@@ -245,25 +224,18 @@ export function WorkflowCanvas({ state, dispatch, onSelectionChange }: Props) {
           <button type="button" onClick={() => dispatch({ type: "redo" })} disabled={!state.future.length} title="重做">
             <Redo2 size={15} />
           </button>
-          <span />
-          <button type="button" onClick={() => setView((current) => ({ ...current, zoom: Math.max(0.5, current.zoom - 0.1) }))} title="缩小">
-            <Minus size={15} />
-          </button>
-          <output>{Math.round(view.zoom * 100)}%</output>
-          <button type="button" onClick={() => setView((current) => ({ ...current, zoom: Math.min(1.5, current.zoom + 0.1) }))} title="放大">
-            <Plus size={15} />
-          </button>
-          <button type="button" onClick={fitCanvas} title="适应画布">
+          <button type="button" onClick={() => void fitView({ padding: 0.2, duration: 180 })} title="适应画布">
             <Focus size={15} />
           </button>
-          {(state.selectedNodeId || state.selectedEdgeId) && (
+          {(state.selectedNodeIds.length > 0 || state.selectedEdgeId) && (
             <button
               type="button"
               className="is-danger"
               onClick={() => {
-                if (state.selectedNodeId) dispatch({ type: "remove-node", nodeId: state.selectedNodeId });
+                state.selectedNodeIds.forEach((nodeId) => dispatch({ type: "remove-node", nodeId }));
                 if (state.selectedEdgeId) dispatch({ type: "remove-edge", edgeId: state.selectedEdgeId });
-                selectNode(null);
+                dispatch({ type: "select-node", nodeId: null });
+                onSelectionChange?.(null);
               }}
               title="删除所选"
             >
@@ -271,118 +243,72 @@ export function WorkflowCanvas({ state, dispatch, onSelectionChange }: Props) {
             </button>
           )}
         </div>
-        <div
-          ref={boardRef}
-          className="ct-v2-canvas-board"
-          tabIndex={0}
-          onPointerDown={startPan}
-          onDragOver={(event) => event.preventDefault()}
+        <ReactFlow<WorkflowFlowNode, WorkflowFlowEdge>
+          className="ct-v2-xyflow"
+          nodes={nodes}
+          edges={edges}
+          nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          onNodesChange={onNodesChange}
+          onEdgesChange={onEdgesChange}
+          onNodeDragStop={(_, node) => dispatch({ type: "move-node", nodeId: node.id, x: node.position.x, y: node.position.y })}
+          onNodesDelete={(deleted) => deleted.forEach((node) => dispatch({ type: "remove-node", nodeId: node.id }))}
+          onEdgesDelete={(deleted) => deleted.forEach((edge) => dispatch({ type: "remove-edge", edgeId: edge.id }))}
+          onEdgeClick={(_, edge) => dispatch({ type: "select-edge", edgeId: edge.id })}
+          onPaneClick={() => {
+            dispatch({ type: "select-node", nodeId: null });
+            onSelectionChange?.(null);
+          }}
+          onSelectionChange={handleSelectionChange}
+          onConnect={onConnect}
+          isValidConnection={isValidConnection}
+          onConnectStart={() => setConnectionError("")}
+          onConnectEnd={handleConnectEnd}
           onDrop={(event) => {
             event.preventDefault();
-            const kind = event.dataTransfer.getData("application/x-codetalk-node") as WorkflowNodeKind;
-            if (!paletteKinds.includes(kind)) return;
-            const point = clientToCanvas(event.clientX, event.clientY, boardRef.current, view);
-            addNode(kind, point.x, point.y);
+            const kind = event.dataTransfer.getData("application/x-codetalk-node");
+            const definition = registry.nodes.find((item) => item.kind === kind);
+            if (!definition) return;
+            addNode(definition, screenToFlowPosition({ x: event.clientX, y: event.clientY }));
           }}
+          onDragOver={(event) => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+          }}
+          onNodeDrag={(_, node) => {
+            setNodes((current) => current.map((item) => item.id === node.id ? { ...item, position: node.position } : item));
+          }}
+          multiSelectionKeyCode={["Meta", "Control"]}
+          selectionKeyCode="Shift"
+          panOnDrag
+          panOnScroll
+          zoomOnScroll
+          deleteKeyCode={["Backspace", "Delete"]}
+          fitView
+          minZoom={0.35}
+          maxZoom={1.7}
+          defaultEdgeOptions={{ type: "workflowEdge" }}
         >
-          <div
-            className="ct-v2-canvas-world"
-            style={{
-              width: BOARD_WIDTH,
-              height: BOARD_HEIGHT,
-              transform: `translate(${view.x}px, ${view.y}px) scale(${view.zoom})`,
-            }}
-          >
-            <svg className="ct-v2-edge-layer" width={BOARD_WIDTH} height={BOARD_HEIGHT} aria-hidden="true">
-              {state.present.edges.map((item) => (
-                <WorkflowEdgePath
-                  key={item.id}
-                  edge={item}
-                  nodesById={nodesById}
-                  selected={item.id === state.selectedEdgeId}
-                  onSelect={() => dispatch({ type: "select-edge", edgeId: item.id })}
-                />
-              ))}
-              {connection && (
-                <path
-                  className="ct-v2-edge is-draft"
-                  d={edgePath(
-                    portPoint(nodesById.get(connection.sourceNodeId), connection.sourcePortId, "out"),
-                    { x: connection.x, y: connection.y },
-                  )}
-                />
-              )}
-            </svg>
-            {state.present.nodes.map((node) => (
-              <WorkflowNodeCard
-                key={node.id}
-                node={node}
-                selected={node.id === state.selectedNodeId}
-                dispatch={dispatch}
-                selectNode={selectNode}
-                onStartConnection={(portId, point) =>
-                  setConnection({ sourceNodeId: node.id, sourcePortId: portId, ...point })
-                }
-                onFinishConnection={(portId) => finishConnection(node.id, portId)}
-              />
-            ))}
-          </div>
-        </div>
+          <Background gap={20} size={1} color="#cbd5df" />
+          <Controls showInteractive={false} />
+          {nodes.length > 8 && <MiniMap pannable zoomable nodeColor="#0e7490" />}
+        </ReactFlow>
       </section>
     </div>
   );
 }
 
-function WorkflowNodeCard({
-  node,
-  selected,
-  dispatch,
-  selectNode,
-  onStartConnection,
-  onFinishConnection,
-}: {
-  node: WorkflowGraphNode;
-  selected: boolean;
-  dispatch: Dispatch<WorkflowEditorAction>;
-  selectNode: (id: string | null) => void;
-  onStartConnection: (portId: string, point: { x: number; y: number }) => void;
-  onFinishConnection: (portId: string) => void;
-}) {
-  const outputs = outputPortDefinitions(node);
+const WorkflowNodeCard = memo(({ data, selected }: NodeProps<WorkflowFlowNode>) => {
+  const node = data.node;
   const inputs = inputPortDefinitions(node);
-  const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0 || !event.isPrimary) return;
-    event.preventDefault();
-    event.stopPropagation();
-    selectNode(node.id);
-    const start = { clientX: event.clientX, clientY: event.clientY, x: node.position.x, y: node.position.y };
-    capturePointerMovement(event.currentTarget, event.pointerId, (next) => {
-      dispatch({
-        type: "move-node",
-        nodeId: node.id,
-        x: Math.max(0, start.x + next.clientX - start.clientX),
-        y: Math.max(0, start.y + next.clientY - start.clientY),
-      });
-    });
-  };
+  const outputs = outputPortDefinitions(node);
   return (
     <article
       className={`ct-v2-workflow-node ${selected ? "is-selected" : ""}`}
-      style={{
-        left: node.position.x,
-        top: node.position.y,
-        width: NODE_WIDTH,
-        minHeight: nodeHeight(node),
-      }}
-      tabIndex={0}
       aria-label={`${node.label} ${nodeKindLabel(node.kind)}节点`}
-      onFocus={() => selectNode(node.id)}
-      onClick={(event) => {
-        event.stopPropagation();
-        selectNode(node.id);
-      }}
+      data-testid={`workflow-node-${node.id}`}
     >
-      <div className="ct-v2-node-drag" onPointerDown={startDrag}>
+      <div className="ct-v2-node-drag">
         <span className="ct-v2-kind-mark" aria-hidden="true" />
         <div>
           <strong>{node.label}</strong>
@@ -393,155 +319,62 @@ function WorkflowNodeCard({
         <span>{String(node.config.provider || node.config.type || node.kind)}</span>
         {node.config.required && <em>必需</em>}
       </div>
-      {inputs.map((port, index) => (
-        <div
-          key={`in-${port.id}`}
-          className="ct-v2-port-row is-input"
-          style={{ top: NODE_PORT_Y + index * NODE_PORT_GAP }}
-        >
-          <button
-            type="button"
-            className="ct-v2-port is-input"
-            aria-label={`${node.label} 输入端口 ${port.id} 类型 ${port.type}`}
-            title={`输入：${port.id} · ${port.type}`}
-            onPointerUp={(event) => {
-              event.stopPropagation();
-              onFinishConnection(port.id);
-            }}
-          />
-          <span>{port.id}<small>{port.type}</small></span>
-        </div>
-      ))}
-      {outputs.map((port, index) => (
-        <div
-          key={`out-${port.id}`}
-          className="ct-v2-port-row is-output"
-          style={{ top: NODE_PORT_Y + index * NODE_PORT_GAP }}
-        >
-          <span>{port.id}<small>{port.type}</small></span>
-          <button
-            type="button"
-            className="ct-v2-port is-output"
-            aria-label={`${node.label} 输出端口 ${port.id} 类型 ${port.type}`}
-            title={`输出：${port.id} · ${port.type}`}
-            onPointerDown={(event) => {
-              event.stopPropagation();
-              const point = portPoint(node, port.id, "out");
-              onStartConnection(port.id, point);
-            }}
-          />
-        </div>
-      ))}
+      <div className="ct-v2-flow-ports">
+        <div>{inputs.map((port) => (
+          <div className="ct-v2-flow-port is-input" key={`in-${port.id}`}>
+            <Handle className="ct-v2-port is-input" type="target" position={Position.Left} id={`in:${port.id}`} isValidConnection={data.canConnect} aria-label={`输入端口 ${port.id}，类型 ${port.type}`} title={`输入：${port.id} · ${port.type}`} />
+            <span>{port.id}<small>{port.type}</small></span>
+          </div>
+        ))}</div>
+        <div>{outputs.map((port) => (
+          <div className="ct-v2-flow-port is-output" key={`out-${port.id}`}>
+            <span>{port.id}<small>{port.type}</small></span>
+            <Handle className="ct-v2-port is-output" type="source" position={Position.Right} id={`out:${port.id}`} aria-label={`输出端口 ${port.id}，类型 ${port.type}`} title={`输出：${port.id} · ${port.type}`} />
+          </div>
+        ))}</div>
+      </div>
     </article>
   );
+});
+WorkflowNodeCard.displayName = "WorkflowNodeCard";
+
+function nextAvailableNodePosition(nodes: WorkflowGraphNode[]): { x: number; y: number } {
+  // New cards must not land beneath an existing card. The grid keeps the
+  // insertion predictable while the flow remains pannable for larger graphs.
+  const columns = [80, 400, 720];
+  const rows = [140, 390, 640, 890, 1140];
+  for (const y of rows) {
+    for (const x of columns) {
+      const isFree = nodes.every((node) =>
+        Math.abs(node.position.x - x) >= 250 || Math.abs(node.position.y - y) >= 180,
+      );
+      if (isFree) return { x, y };
+    }
+  }
+  return { x: 80 + nodes.length * 40, y: 140 + nodes.length * 210 };
 }
 
-function WorkflowEdgePath({
-  edge,
-  nodesById,
-  selected,
-  onSelect,
-}: {
-  edge: WorkflowGraphEdge;
-  nodesById: Map<string, WorkflowGraphNode>;
-  selected: boolean;
-  onSelect: () => void;
-}) {
-  const source = portPoint(nodesById.get(edge.source.node_id), edge.source.port_id, "out");
-  const target = portPoint(nodesById.get(edge.target.node_id), edge.target.port_id, "in");
-  const path = edgePath(source, target);
-  const label = connectionLabel(edge, nodesById);
-  const labelPoint = { x: (source.x + target.x) / 2, y: (source.y + target.y) / 2 - 7 };
+const WorkflowEdge = memo((props: EdgeProps<WorkflowFlowEdge>) => {
+  const [path, labelX, labelY] = getBezierPath(props);
+  const label = props.data?.label;
   return (
-    <g className={selected ? "is-selected" : ""}>
-      <path className="ct-v2-edge-hit" d={path} onPointerDown={(event) => { event.stopPropagation(); onSelect(); }} />
-      <path className={`ct-v2-edge ${edge.kind === "dependency" ? "is-dependency" : ""}`} d={path} />
-      {edge.kind === "data" && label && (
-        <text className="ct-v2-edge-label" x={labelPoint.x} y={labelPoint.y} textAnchor="middle">
-          {label}
-        </text>
+    <>
+      <BaseEdge id={props.id} path={path} className={`ct-v2-edge ${props.selected ? "is-selected" : ""}`} />
+      {label && (
+        <EdgeLabelRenderer>
+          <span
+            className="ct-v2-edge-label nodrag nopan"
+            style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY - 7}px)` }}
+          >
+            {label}
+          </span>
+        </EdgeLabelRenderer>
       )}
-    </g>
+    </>
   );
-}
+});
+WorkflowEdge.displayName = "WorkflowEdge";
 
-function portPoint(
-  node: WorkflowGraphNode | undefined,
-  portId: string,
-  side: "in" | "out",
-) {
-  if (!node) return { x: 0, y: 0 };
-  const ports = side === "in" ? inputPortDefinitions(node) : outputPortDefinitions(node);
-  const index = Math.max(0, ports.findIndex((port) => port.id === portId));
-  return {
-    x: node.position.x + (side === "out" ? NODE_WIDTH : 0),
-    y: node.position.y + NODE_PORT_Y + index * NODE_PORT_GAP + 9,
-  };
-}
-
-function nodeHeight(node: WorkflowGraphNode): number {
-  return NODE_PORT_Y + Math.max(
-    inputPortDefinitions(node).length,
-    outputPortDefinitions(node).length,
-    1,
-  ) * NODE_PORT_GAP + 12;
-}
-
-function nodeKindDescription(kind: WorkflowNodeKind): string {
-  return {
-    input: "文件、目录、链接或文字",
-    output: "报告与交付文件",
-    agent: "模型分析与文件生成",
-    semantic_retrieve: "检索历史测试知识",
-    memory_retrieve: "检索已保存证据",
-    local_scope_discover: "定位源码与测试范围",
-    evidence_validate: "校验文件、符号与行号",
-    report_render: "整理结构化报告",
-    artifact_export: "导出工作流产物",
-  }[kind];
-}
-
-function edgePath(source: { x: number; y: number }, target: { x: number; y: number }) {
-  const bend = Math.max(70, Math.abs(target.x - source.x) * 0.42);
-  return `M ${source.x} ${source.y} C ${source.x + bend} ${source.y}, ${target.x - bend} ${target.y}, ${target.x} ${target.y}`;
-}
-
-function clientToCanvas(
-  clientX: number,
-  clientY: number,
-  board: HTMLDivElement | null,
-  view: { x: number; y: number; zoom: number },
-) {
-  const rect = board?.getBoundingClientRect() ?? { left: 0, top: 0 };
-  return {
-    x: (clientX - rect.left - view.x) / view.zoom,
-    y: (clientY - rect.top - view.y) / view.zoom,
-  };
-}
-
-function capturePointerMovement(
-  element: HTMLElement,
-  pointerId: number,
-  onMove: (event: PointerEvent) => void,
-) {
-  const move = (event: PointerEvent) => {
-    if (event.pointerId === pointerId) onMove(event);
-  };
-  const cleanup = () => {
-    element.removeEventListener("pointermove", move);
-    element.removeEventListener("pointerup", stop);
-    element.removeEventListener("pointercancel", stop);
-    element.removeEventListener("lostpointercapture", stop);
-  };
-  const stop = (event: PointerEvent) => {
-    if (event.pointerId !== pointerId) return;
-    cleanup();
-    if (element.hasPointerCapture(pointerId)) element.releasePointerCapture(pointerId);
-  };
-
-  element.setPointerCapture(pointerId);
-  element.addEventListener("pointermove", move);
-  element.addEventListener("pointerup", stop);
-  element.addEventListener("pointercancel", stop);
-  element.addEventListener("lostpointercapture", stop);
+function handlePortId(value: string | null | undefined, prefix: string): string {
+  return value?.startsWith(prefix) ? value.slice(prefix.length) : "";
 }

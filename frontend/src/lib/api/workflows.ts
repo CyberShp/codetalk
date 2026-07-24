@@ -6,6 +6,7 @@ import type {
   WorkflowDetail,
   WorkflowHeader,
   WorkflowListItem,
+  WorkflowNodeRegistry,
   WorkflowProviderCapability,
   WorkflowValidationResult,
   WorkflowVersion,
@@ -87,6 +88,8 @@ export const workflowsApi = {
     ),
   capabilities: () =>
     request<WorkflowCapabilities>("/api/workbench/workflow-capabilities"),
+  nodeRegistry: () =>
+    request<WorkflowNodeRegistry>("/api/workbench/node-registry"),
   providers: () =>
     request<{ providers: WorkflowProviderCapability[] }>(
       "/api/workbench/provider-capabilities",

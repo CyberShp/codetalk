@@ -2,141 +2,130 @@ import { expect, test } from "@playwright/test";
 
 import { assertCanMutatePublicRuntime } from "../scripts/playwright-runtime-policy.mjs";
 
-const backendBase = `http://localhost:${process.env.CODETALK_BACKEND_PORT ?? "3004"}`;
-
 assertCanMutatePublicRuntime({
   env: process.env,
-  flowName: "Workflow V2 canvas real E2E",
+  flowName: "Workflow V2 xyflow browser E2E",
 });
 
-test("pans the workflow canvas by holding the left mouse button on the world background", async ({
-  page,
-  request,
-}) => {
+test("creates a workflow through the UI and uses the xyflow canvas with real mouse input", async ({ page }) => {
+  test.setTimeout(90_000);
   const stamp = Date.now();
-  const workflowId = `canvas_pan_e2e_${stamp}`;
-  const workflowName = `Canvas Pan E2E ${stamp}`;
-  const created = await request.post(`${backendBase}/api/workbench/workflows`, {
-    data: {
-      id: workflowId,
-      name: workflowName,
-      description: "真实鼠标画布平移回归",
-      authoring_graph: {
-        schema_version: 2,
-        workflow_id: workflowId,
-        name: workflowName,
-        description: "真实鼠标画布平移回归",
-        nodes: [
-          {
-            id: "target",
-            kind: "input",
-            label: "分析目标",
-            position: { x: 80, y: 80 },
-            config: {
-              contract_id: "analysis_target",
-              label: "分析目标",
-              type: "text",
-              required: true,
-              resolver: "manual",
-            },
-          },
-        ],
-        edges: [],
-        settings: { stop_on_error: true, max_parallelism: 1 },
-      },
-    },
-  });
-  expect(created.status()).toBe(201);
 
-  try {
-    await page.goto(`/workflows/${workflowId}`, { waitUntil: "domcontentloaded" });
-    const stage = page.getByRole("region", { name: "工作流画布" });
-    const board = stage.locator(".ct-v2-canvas-board");
-    const world = stage.locator(".ct-v2-canvas-world");
-    const node = stage.locator(".ct-v2-workflow-node");
-    await expect(board).toBeVisible();
+  await page.goto("/workflows/new", { waitUntil: "domcontentloaded" });
+  await page.getByPlaceholder("例如：源码流程与 SFMEA 分析").fill(`画布交互回归 ${stamp}`);
+  await page.getByRole("button", { name: "保存并继续" }).click();
+  await expect(page.getByRole("heading", { name: "定义输入" })).toBeVisible();
 
-    const nodeBefore = await node.boundingBox();
-    const handle = await node.locator(".ct-v2-node-drag").boundingBox();
-    expect(nodeBefore).not.toBeNull();
-    expect(handle).not.toBeNull();
-    if (!nodeBefore || !handle) return;
-    const worldBeforeNodeDrag = await world.getAttribute("style");
-    await page.mouse.move(handle.x + 40, handle.y + 20);
-    await page.mouse.down({ button: "left" });
-    await page.mouse.move(handle.x + 140, handle.y + 80, { steps: 8 });
-    await page.mouse.up({ button: "left" });
-    const nodeAfter = await node.boundingBox();
-    expect(nodeAfter).not.toBeNull();
-    expect((nodeAfter?.x ?? 0) - nodeBefore.x).toBeGreaterThan(70);
-    expect((nodeAfter?.y ?? 0) - nodeBefore.y).toBeGreaterThan(40);
-    expect(await world.getAttribute("style")).toBe(worldBeforeNodeDrag);
-
-    const cancelHandle = node.locator(".ct-v2-node-drag");
-    const cancelHandleBox = await cancelHandle.boundingBox();
-    expect(cancelHandleBox).not.toBeNull();
-    if (!cancelHandleBox) return;
-    await cancelHandle.evaluate((element) => {
-      const handle = element as HTMLElement;
-      handle.addEventListener(
-        "pointerdown",
-        (event) => {
-          handle.dataset.testPointerId = String(event.pointerId);
-        },
-        { once: true },
-      );
-    });
-    await page.mouse.move(cancelHandleBox.x + 40, cancelHandleBox.y + 20);
-    await page.mouse.down({ button: "left" });
-    await page.mouse.move(cancelHandleBox.x + 70, cancelHandleBox.y + 40, { steps: 3 });
-    const pointerId = Number(await cancelHandle.getAttribute("data-test-pointer-id"));
-    expect(pointerId).toBeGreaterThan(0);
-    const nodeAtCancel = await node.boundingBox();
-    expect(nodeAtCancel).not.toBeNull();
-    await cancelHandle.dispatchEvent("pointercancel", {
-      bubbles: true,
-      button: 0,
-      buttons: 0,
-      clientX: cancelHandleBox.x + 70,
-      clientY: cancelHandleBox.y + 40,
-      isPrimary: true,
-      pointerId,
-      pointerType: "mouse",
-    });
-    await page.mouse.move(cancelHandleBox.x + 170, cancelHandleBox.y + 100, { steps: 5 });
-    await page.mouse.up({ button: "left" });
-    const nodeAfterCancel = await node.boundingBox();
-    expect(nodeAfterCancel).not.toBeNull();
-    expect(nodeAfterCancel?.x).toBeCloseTo(nodeAtCancel?.x ?? 0, 0);
-    expect(nodeAfterCancel?.y).toBeCloseTo(nodeAtCancel?.y ?? 0, 0);
-
-    const boardBox = await board.boundingBox();
-    expect(boardBox).not.toBeNull();
-    if (!boardBox) return;
-    const start = {
-      x: boardBox.x + boardBox.width - 90,
-      y: boardBox.y + boardBox.height - 90,
-    };
-    const target = await page.evaluate(
-      ({ x, y }) => {
-        const element = document.elementFromPoint(x, y);
-        return {
-          insideWorld: Boolean(element?.closest(".ct-v2-canvas-world")),
-          insideNode: Boolean(element?.closest(".ct-v2-workflow-node")),
-        };
-      },
-      start,
-    );
-    expect(target).toEqual({ insideWorld: true, insideNode: false });
-
-    const before = await world.getAttribute("style");
-    await page.mouse.move(start.x, start.y);
-    await page.mouse.down({ button: "left" });
-    await page.mouse.move(start.x - 140, start.y - 70, { steps: 8 });
-    await page.mouse.up({ button: "left" });
-
-    await expect.poll(() => world.getAttribute("style")).not.toBe(before);
-  } finally {
-    await request.post(`${backendBase}/api/workbench/workflows/${workflowId}/archive`);
+  for (let step = 0; step < 3; step += 1) {
+    await page.getByRole("button", { name: "保存并继续" }).click();
   }
+  await expect(page.getByRole("region", { name: "工作流画布" })).toBeVisible();
+
+  const canvas = page.getByRole("region", { name: "工作流画布" });
+  const canvasShell = page.locator(".ct-v2-canvas-shell");
+  const flow = canvas.locator(".react-flow");
+  await expect(flow).toBeVisible();
+  await expect(canvasShell.getByTestId("workflow-palette-agent")).toBeVisible();
+
+  const canvasBox = await flow.boundingBox();
+  expect(canvasBox).not.toBeNull();
+  if (!canvasBox) return;
+  const paneStart = { x: canvasBox.x + canvasBox.width - 48, y: canvasBox.y + canvasBox.height - 48 };
+  const transformBefore = await canvas.locator(".react-flow__viewport").getAttribute("style");
+  await page.mouse.move(paneStart.x, paneStart.y);
+  await page.mouse.down({ button: "left" });
+  await page.mouse.move(paneStart.x - 120, paneStart.y - 68, { steps: 8 });
+  await page.mouse.up({ button: "left" });
+  await expect.poll(() => canvas.locator(".react-flow__viewport").getAttribute("style")).not.toBe(transformBefore);
+  // Reopen the persisted draft before the independent node gesture. This
+  // verifies both interactions through the user path without depending on a
+  // transient browser viewport from the preceding pan assertion.
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(canvas).toBeVisible();
+  await canvas.scrollIntoViewIfNeeded();
+
+  const firstNode = canvas.locator(".react-flow__node-workflowNode").first();
+  const nodeBefore = await firstNode.boundingBox();
+  expect(nodeBefore).not.toBeNull();
+  if (!nodeBefore) return;
+  const dragHandle = firstNode.locator(".ct-v2-node-drag");
+  const dragBox = await dragHandle.boundingBox();
+  expect(dragBox).not.toBeNull();
+  if (!dragBox) return;
+  await page.mouse.move(dragBox.x + 42, dragBox.y + 20);
+  await page.mouse.down({ button: "left" });
+  await page.mouse.move(dragBox.x + 118, dragBox.y + 52, { steps: 10 });
+  await page.mouse.up({ button: "left" });
+  await expect.poll(async () => (await firstNode.boundingBox())?.x ?? 0).toBeGreaterThan(nodeBefore.x + 50);
+
+  const beforeAdd = await canvas.locator(".react-flow__node-workflowNode").count();
+  await canvasShell.getByTestId("workflow-palette-input").dblclick();
+  await expect.poll(() => canvas.locator(".react-flow__node-workflowNode").count()).toBe(beforeAdd + 1);
+  const designDocNode = canvas.locator(".react-flow__node-workflowNode").last();
+  const designDocTestId = await designDocNode.locator("article").getAttribute("data-testid");
+  expect(designDocTestId).toBeTruthy();
+  const designDoc = canvas.getByTestId(designDocTestId!);
+  await designDoc.click();
+  const inspector = page.getByRole("complementary", { name: "节点属性" });
+  await expect(inspector).toBeVisible();
+  await expect(inspector.getByText("节点定义", { exact: true })).toBeVisible();
+  await inspector.getByLabel("节点名称").fill("开发设计文档");
+  await inspector.getByLabel("类型").selectOption("file");
+
+  await canvas.getByTestId("workflow-node-analyze").click();
+  await inspector.getByRole("button", { name: "增加输入端口" }).click();
+  const thirdPortName = inspector.getByLabel("输入端口 3 名称");
+  await thirdPortName.fill("design_doc");
+  await thirdPortName.press("Enter");
+  await inspector.getByLabel("输入端口 3 类型").selectOption("file");
+  await expect(canvas.getByLabel("输入端口 design_doc，类型 file")).toBeVisible();
+  await page.waitForTimeout(900);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(canvas).toBeVisible();
+  await expect(canvas.getByLabel("输入端口 design_doc，类型 file")).toBeVisible();
+  await canvas.scrollIntoViewIfNeeded();
+  await canvas.getByTitle("适应画布").click();
+  await page.waitForTimeout(250);
+
+  await drag(
+    page,
+    designDoc.getByLabel("输出端口 value，类型 file"),
+    canvas.getByTestId("workflow-node-analyze").getByLabel("输入端口 design_doc，类型 file"),
+  );
+  await expect(canvas.getByText("开发设计文档 · file → design_doc · file", { exact: true })).toBeVisible();
+
+  await canvasShell.getByTestId("workflow-palette-agent").dblclick();
+  await expect.poll(() => canvas.locator(".react-flow__node-workflowNode").count()).toBe(beforeAdd + 2);
+  const typeProbeNode = canvas.locator(".react-flow__node-workflowNode").last();
+  await typeProbeNode.click();
+  await canvas.getByTitle("适应画布").click();
+  await page.waitForTimeout(250);
+  await drag(
+    page,
+    designDoc.getByLabel("输出端口 value，类型 file"),
+    typeProbeNode.getByLabel("输入端口 repo_path，类型 directory"),
+  );
+  await expect(canvas.locator(".ct-v2-connection-error")).toHaveText("不能连接：file 类型不能连接到 directory 输入");
+
+  await typeProbeNode.click();
+  await page.keyboard.press("Delete");
+  await expect.poll(() => canvas.locator(".react-flow__node-workflowNode").count()).toBe(beforeAdd + 1);
+  await canvas.getByTitle("撤销").click();
+  await expect.poll(() => canvas.locator(".react-flow__node-workflowNode").count()).toBe(beforeAdd + 2);
+  await canvas.getByTitle("重做").click();
+  await expect.poll(() => canvas.locator(".react-flow__node-workflowNode").count()).toBe(beforeAdd + 1);
 });
+
+async function drag(page: import("@playwright/test").Page, source: import("@playwright/test").Locator, target: import("@playwright/test").Locator) {
+  await expect(source).toBeVisible();
+  await expect(target).toBeVisible();
+  const sourceBox = await source.boundingBox();
+  const targetBox = await target.boundingBox();
+  expect(sourceBox).not.toBeNull();
+  expect(targetBox).not.toBeNull();
+  if (!sourceBox || !targetBox) return;
+  await page.mouse.move(sourceBox.x + sourceBox.width / 2, sourceBox.y + sourceBox.height / 2);
+  await page.mouse.down({ button: "left" });
+  await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 12 });
+  await page.mouse.up({ button: "left" });
+}

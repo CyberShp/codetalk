@@ -9,8 +9,10 @@ import {
   FlaskConical,
   Loader2,
   Play,
+  Redo2,
   Save,
   Send,
+  Undo2,
 } from "lucide-react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { workflowsApi } from "@/lib/api/workflows";
@@ -19,6 +21,7 @@ import type {
   CompiledWorkflowPlan,
   WorkflowCapabilities,
   WorkflowGraphNode,
+  WorkflowNodeRegistry,
   WorkflowProviderCapability,
   WorkflowValidationResult,
   WorkflowVersion,
@@ -37,6 +40,7 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
   const [version, setVersion] = useState<WorkflowVersion | null>(null);
   const [capabilities, setCapabilities] = useState<WorkflowCapabilities | null>(null);
   const [providers, setProviders] = useState<WorkflowProviderCapability[]>([]);
+  const [nodeRegistry, setNodeRegistry] = useState<WorkflowNodeRegistry | null>(null);
   const [needsDraft, setNeedsDraft] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -45,13 +49,15 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
     setLoading(true);
     setError("");
     try {
-      const [detail, capabilityResult, providerResult] = await Promise.all([
+      const [detail, capabilityResult, providerResult, registryResult] = await Promise.all([
         workflowsApi.get(workflowId),
         workflowsApi.capabilities(),
         workflowsApi.providers(),
+        workflowsApi.nodeRegistry(),
       ]);
       setCapabilities(capabilityResult);
       setProviders(providerResult.providers);
+      setNodeRegistry(registryResult);
       const draftId = detail.v2?.current_draft_version_id;
       if (!draftId) {
         setNeedsDraft(detail.v2?.published_version_id ?? "published");
@@ -98,7 +104,7 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
       </div>
     );
   }
-  if (!version || version.authoring_graph.schema_version !== 2) {
+  if (!version || !nodeRegistry || version.authoring_graph.schema_version !== 2) {
     return <WorkbenchError message="该版本是只读旧工作流，请先复制为 V2 草稿。" onRetry={load} />;
   }
   return (
@@ -108,6 +114,7 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
       version={version as WorkflowVersion & { authoring_graph: AuthoringGraphV2 }}
       capabilities={capabilities}
       providers={providers}
+      nodeRegistry={nodeRegistry}
     />
   );
 }
@@ -117,11 +124,13 @@ function LoadedWorkflowDesigner({
   version,
   capabilities,
   providers,
+  nodeRegistry,
 }: {
   workflowId: string;
   version: WorkflowVersion & { authoring_graph: AuthoringGraphV2 };
   capabilities: WorkflowCapabilities | null;
   providers: WorkflowProviderCapability[];
+  nodeRegistry: WorkflowNodeRegistry;
 }) {
   const router = useRouter();
   const [state, dispatch] = useReducer(
@@ -163,6 +172,18 @@ function LoadedWorkflowDesigner({
     window.addEventListener("beforeunload", protect);
     return () => window.removeEventListener("beforeunload", protect);
   }, [state.revision, state.savedRevision]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "z") return;
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+      event.preventDefault();
+      dispatch({ type: event.shiftKey ? "redo" : "undo" });
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const selectedNode = state.present.nodes.find((node) => node.id === state.selectedNodeId) ?? null;
   const updateNode = (node: WorkflowGraphNode, portMutation?: InputPortMutation) => {
@@ -252,6 +273,8 @@ function LoadedWorkflowDesigner({
           </span>
         </div>
         <div className="ct-v2-designer-actions">
+          <button type="button" onClick={() => dispatch({ type: "undo" })} disabled={!state.past.length} title="撤销（Ctrl/Cmd + Z)"><Undo2 size={15} />撤销</button>
+          <button type="button" onClick={() => dispatch({ type: "redo" })} disabled={!state.future.length} title="重做（Ctrl/Cmd + Shift + Z)"><Redo2 size={15} />重做</button>
           <button type="button" onClick={() => void saveNow()} title="保存草稿"><Save size={15} />保存</button>
           <button type="button" onClick={() => void runAction("validate")} disabled={Boolean(action)}>
             {action === "validate" ? <Loader2 size={15} className="animate-spin" /> : <CheckCircle2 size={15} />}验证
@@ -264,12 +287,13 @@ function LoadedWorkflowDesigner({
       {message && <div className="ct-v2-inline-message" role="status">{message}</div>}
 
       <div className={`ct-v2-designer-grid ${selectedNode ? "has-inspector" : ""}`}>
-        <WorkflowCanvas state={state} dispatch={dispatch} />
+          <WorkflowCanvas state={state} dispatch={dispatch} registry={nodeRegistry} />
         {selectedNode && (
           <NodeInspector
             node={selectedNode}
             capabilities={capabilities}
             providers={providers}
+            registry={nodeRegistry}
             onChange={updateNode}
             onClose={() => dispatch({ type: "select-node", nodeId: null })}
           />

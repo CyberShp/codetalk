@@ -137,6 +137,21 @@ def test_graph_validator_and_compiler_are_deterministic_for_shuffled_nodes():
     }
 
 
+def test_node_registry_is_the_authoritative_graph_kind_and_ui_schema_source():
+    from app.services.workflow_graph import SUPPORTED_NODE_KINDS
+    from app.services.workflow_node_registry import node_registry_payload
+
+    registry = node_registry_payload()
+
+    assert registry["schema_version"] == 1
+    assert {item["kind"] for item in registry["nodes"]} == SUPPORTED_NODE_KINDS
+    agent = next(item for item in registry["nodes"] if item["kind"] == "agent")
+    assert agent["ui"]["palette_label"] == "智能体模块"
+    assert agent["config_schema"]["input_ports"]["type"] == "port_list"
+    assert agent["default_ports"]["input_ports"]
+    assert agent["default_config"]["provider"] == "builtin-llm"
+
+
 def test_graph_compiles_declared_execution_profiles_into_immutable_contracts():
     from app.services.workflow_graph import compile_workflow_graph, validate_workflow_graph
 

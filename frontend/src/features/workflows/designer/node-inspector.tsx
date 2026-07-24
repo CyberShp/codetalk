@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import type {
   WorkflowCapabilities,
   WorkflowGraphNode,
+  WorkflowNodeRegistry,
   WorkflowPortDefinition,
   WorkflowProviderCapability,
 } from "@/lib/types/workflow";
@@ -31,6 +32,7 @@ interface Props {
   node: WorkflowGraphNode;
   capabilities: WorkflowCapabilities | null;
   providers: WorkflowProviderCapability[];
+  registry: WorkflowNodeRegistry;
   onChange: (node: WorkflowGraphNode, portMutation?: InputPortMutation) => void;
   onClose: () => void;
 }
@@ -39,7 +41,7 @@ export type InputPortMutation =
   | { kind: "rename"; oldId: string; newId: string }
   | { kind: "delete"; oldId: string };
 
-export function NodeInspector({ node, capabilities, providers, onChange, onClose }: Props) {
+export function NodeInspector({ node, capabilities, providers, registry, onChange, onClose }: Props) {
   const config = node.config;
   const updateConfig = (patch: Record<string, unknown>) =>
     onChange({ ...node, config: { ...config, ...patch } });
@@ -51,12 +53,13 @@ export function NodeInspector({ node, capabilities, providers, onChange, onClose
     [selectedProvider],
   );
   const skillOptions = capabilities?.skill_catalog ?? [];
+  const definition = registry.nodes.find((item) => item.kind === node.kind);
 
   return (
     <aside className="ct-v2-inspector" aria-label="节点属性">
       <div className="ct-v2-inspector-header">
         <div>
-          <small>{nodeKindLabel(node.kind)}节点</small>
+          <small>{definition?.ui.label ?? nodeKindLabel(node.kind)}节点</small>
           <strong>{node.label}</strong>
         </div>
         <button type="button" onClick={onClose} aria-label="关闭属性面板" title="关闭属性面板">
@@ -72,6 +75,10 @@ export function NodeInspector({ node, capabilities, providers, onChange, onClose
             <input value={node.id} readOnly aria-readonly="true" />
           </Field>
         </InspectorSection>
+
+        {definition && (
+          <RegistryContractSummary definition={definition} />
+        )}
 
         {node.kind === "input" && (
           <InspectorSection title="输入契约">
@@ -220,6 +227,21 @@ export function NodeInspector({ node, capabilities, providers, onChange, onClose
         )}
       </div>
     </aside>
+  );
+}
+
+function RegistryContractSummary({ definition }: { definition: WorkflowNodeRegistry["nodes"][number] }) {
+  const inputSummary = definition.default_ports.input_ports.map((port) => `${port.id} · ${port.type}`).join("，") || "无";
+  const outputSummary = definition.default_ports.output_ports.map((port) => `${port.id} · ${port.type}`).join("，") || "无";
+  return (
+    <InspectorSection title="节点定义">
+      <p className="ct-v2-inspector-note">{definition.ui.description}</p>
+      <dl className="ct-v2-registry-contract">
+        <div><dt>节点版本</dt><dd>v{definition.version}</dd></div>
+        <div><dt>默认输入</dt><dd>{inputSummary}</dd></div>
+        <div><dt>默认输出</dt><dd>{outputSummary}</dd></div>
+      </dl>
+    </InspectorSection>
   );
 }
 
