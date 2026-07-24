@@ -5877,7 +5877,8 @@ async def test_test_activity_explanations_do_not_trigger_full_artifact_gate():
         "补充黑盒边界条件和异常路径",
         (
             "作为独立审查员，仅基于已旁挂的交付件与源码证据，"
-            "评估这份 iSCSI Login 测试设计的 SFMEA 与黑盒边界"
+            "评估这份 iSCSI Login 测试设计的 SFMEA 与黑盒边界；"
+            "最终给出总分和三个修正建议"
         ),
     )
     for request in discussion_requests:

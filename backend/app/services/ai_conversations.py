@@ -6625,10 +6625,10 @@ def _requests_full_test_activity_delivery(text: str) -> bool:
     requested = str(text or "").lower().strip()
     if not _looks_like_test_activity_request(requested):
         return False
-    generation_markers = (
-        "生成", "输出", "产出", "创建", "制定", "编写", "写一份", "设计一套",
-        "给出", "列出", "请做", "做一次", "重做", "重新生成", "补齐", "完善",
-        "generate", "produce", "create", "write", "design", "regenerate",
+    creation_markers = (
+        "生成", "产出", "创建", "制定", "编写", "写一份", "设计一套", "请做",
+        "做一次", "重做", "重新生成", "补齐", "完善", "generate", "produce",
+        "create", "write", "design", "regenerate",
     )
     discussion_markers = (
         "解释", "为什么", "为何", "是否合理", "不合理", "评审", "审查", "点评",
@@ -6640,7 +6640,10 @@ def _requests_full_test_activity_delivery(text: str) -> bool:
         "完整", "全部", "全量", "详细", "详尽", "可下载", "下载", "文件", "交付件",
         "complete", "comprehensive", "detailed", "download", "artifact", "file",
     )
-    has_generation = any(marker in requested for marker in generation_markers)
+    # "给出总分" and "列出问题" are normal review requests.  Keep those
+    # lightweight even when the review names SFMEA or black-box deliverables;
+    # only a creation verb may demand a fresh formal delivery.
+    has_generation = any(marker in requested for marker in creation_markers)
     has_discussion = any(marker in requested for marker in discussion_markers)
     has_completeness = any(marker in requested for marker in completeness_markers)
     groups = _agent_structured_deliverable_groups(requested)
