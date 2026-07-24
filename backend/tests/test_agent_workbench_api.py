@@ -2523,7 +2523,8 @@ async def test_workbench_agent_run_harness_api(workbench_client):
     assert "secret-value" not in (root / "raw_output.txt").read_text(encoding="utf-8")
 
 
-async def test_workbench_agent_run_execute_api(workbench_client, tmp_path):
+async def test_workbench_agent_run_execute_api(workbench_client, tmp_path, monkeypatch):
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
     output_file = tmp_path / "agent-output.txt"
     script = (
         "import json, pathlib, sys; "
@@ -2587,9 +2588,10 @@ async def test_agent_mr_artifact_validation_rejects_directory(tmp_path):
     assert "mr_snapshot.json" not in result.accepted_artifacts
 
 
-async def test_workbench_task_scoped_agent_run_execute_api(workbench_client, tmp_path):
+async def test_workbench_task_scoped_agent_run_execute_api(workbench_client, tmp_path, monkeypatch):
     from app.services.agent_run_harness import AgentRunHarness
 
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
     task_run_id = "task_run_unit"
     step_id = "collect_mr"
     artifact_dir = (
