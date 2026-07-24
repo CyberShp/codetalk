@@ -554,6 +554,18 @@ def _agent_output_contract_payload(
                     "anchor and will reject a mismatched quote."
                 ),
             },
+            "completion_protocol": {
+                "owner": "codetalk_harness",
+                "instructions": (
+                    "Write every declared artifact, then immediately finish the Agent turn with a short "
+                    "completion summary. Do not run a second full-repository, full-artifact, or custom "
+                    "Python validation pass after writing files: CodeTalk owns schema validation, exact "
+                    "source re-read, claim verification, quality gates, report materialization, and any "
+                    "scoped repair. Before writing, you may make only small targeted checks needed to "
+                    "avoid malformed JSON or a missing declared artifact."
+                ),
+                "post_write_agent_work": "forbidden_except_missing_artifact_fix",
+            },
             "test_activity_writing_protocol": {
                 "sfmea": (
                     "Each mitigation must use two explicit clauses: '整改：<concrete product/config/code "

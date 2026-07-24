@@ -1015,6 +1015,9 @@ def test_external_agent_contract_requires_literal_claim_quotes_without_ellipsis(
     writing = contract["evidence_rules"]["test_activity_writing_protocol"]
     assert "test_dimension is a machine contract" in writing["black_box_cases"]
     assert writing["claim_anchor_limits"]["max_source_lines"] == 160
+    completion = contract["evidence_rules"]["completion_protocol"]
+    assert completion["owner"] == "codetalk_harness"
+    assert completion["post_write_agent_work"] == "forbidden_except_missing_artifact_fix"
 
 
 def test_agent_prompt_uses_a_bounded_source_and_quality_contract_without_losing_user_input():
