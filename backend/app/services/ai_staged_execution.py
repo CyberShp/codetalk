@@ -2290,6 +2290,14 @@ def _existing_quality_stage_result(
         return None
     if str(stage.get("id") or "") == "source_analysis":
         canonical_pack = _read_json_file(stage_dir / "source_evidence_pack.json")
+        if not _source_pack_has_evidence(canonical_pack):
+            canonical_pack = _source_pack_from_materialized_artifacts(
+                artifact_dir=artifact_dir,
+                plan=plan,
+            )
+            if _source_pack_has_evidence(canonical_pack):
+                stage_dir.mkdir(parents=True, exist_ok=True)
+                _write_json(stage_dir / "source_evidence_pack.json", canonical_pack)
         if canonical_pack:
             materialize_source_evidence_pack(canonical_pack, artifact_dir)
     result = {
@@ -2660,6 +2668,11 @@ def refresh_deterministic_combined_report(
     source_pack = _read_json_file(
         root / "stages" / "source_analysis" / "source_evidence_pack.json"
     )
+    if not _source_pack_has_evidence(source_pack):
+        source_pack = _source_pack_from_materialized_artifacts(
+            artifact_dir=root,
+            plan=plan,
+        )
     flow_path = Path(business_flow_path) if business_flow_path else root / "business_flow.md"
     flow = (
         flow_path.read_text(encoding="utf-8", errors="replace")
@@ -2694,6 +2707,31 @@ def refresh_deterministic_combined_report(
         "removed_unverified_paths": removed_unverified_paths,
         "harness_validation": harness_validation,
         "output_path": str(output_path),
+    }
+
+
+def _source_pack_has_evidence(value: Any) -> bool:
+    return bool(
+        isinstance(value, dict)
+        and isinstance(value.get("evidence_cards"), list)
+        and value.get("evidence_cards")
+    )
+
+
+def _source_pack_from_materialized_artifacts(
+    *, artifact_dir: Path, plan: dict[str, Any]
+) -> dict[str, Any]:
+    """Recover task-owned evidence when a cached source stage lacks its sidecar."""
+    cards = _read_json_file(artifact_dir / "evidence_cards.json", default=[])
+    if not isinstance(cards, list) or not cards:
+        return {}
+    source_scope = _read_json_file(artifact_dir / "source_scope.json", default={})
+    return {
+        "version": _SOURCE_EVIDENCE_PACK_VERSION,
+        "analysis_target": str(plan.get("original_user_request") or plan.get("target") or ""),
+        "repo_revision": str(plan.get("repo_revision") or ""),
+        "source_scope": source_scope if isinstance(source_scope, dict) else {},
+        "evidence_cards": cards,
     }
 
 
@@ -6160,9 +6198,22 @@ def _normalize_sfmea_risk_contract(
             )
             and re.search(r"(?:未.{0,16}(?:注销|清理|释放)|任务未完全)", failure_mode_before)
         )
+        cleanup_order_hypothesis = bool(
+            any(
+                re.search(r"(?:spdk_sock_close|\bclose\s*\(|\bfree\s*\()", str(claim.get("statement") or ""), re.IGNORECASE)
+                for claim in claims or []
+                if isinstance(claim, dict)
+            )
+            and re.search(
+                r"(?:关闭后仍|先.{0,24}再|顺序.{0,16}(?:错误|不当)|访问已关闭|重复释放|资源残留)",
+                risk_description,
+                re.IGNORECASE,
+            )
+        )
         if product_claim_catalog and (
             has_test_only_evidence or guard_inversion or error_return_inversion
             or shutdown_timer_hypothesis or cleanup_order_inversion or lifecycle_cleanup_inversion
+            or cleanup_order_hypothesis
         ):
             candidate = _source_risk_candidate_for_sfmea_row(
                 row,

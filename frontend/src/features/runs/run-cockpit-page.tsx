@@ -452,6 +452,12 @@ function pairedToolCalls(events: WorkbenchTaskRunEvent[]): PairedToolCall[] { co
 function ToolCallRow({ item }: { item: PairedToolCall }) { const source = item.use || item.result; if (!source) return null; const tool = String(source.payload.tool || source.payload.name || "工具"); const resultSummary = item.result ? eventDetail(item.result) || eventMessage(item.result) : "等待工具返回结果"; return <article className={`ct-v2-tool-call ${item.result ? "is-complete" : "is-running"}`}><header><time>{new Date(source.created_at).toLocaleTimeString("zh-CN", { hour12: false })}</time><strong>{tool}</strong><span>{item.result ? "已完成" : "调用中"}</span></header><p>{item.use ? eventMessage(item.use) : "收到工具结果"}</p><pre>{resultSummary}</pre></article>; }
 function mergeEvents(current: WorkbenchTaskRunEvent[], incoming: WorkbenchTaskRunEvent[], direction: "live" | "older" = "live") { const map = new Map(current.map((item) => [item.event_id, item])); incoming.forEach((item) => map.set(item.event_id, item)); const ordered = [...map.values()].sort((a, b) => a.event_id - b.event_id); return direction === "older" ? ordered.slice(0, MAX_LOADED_EVENTS) : ordered.slice(-MAX_LOADED_EVENTS); }
 function applyLifecycleEvents(run: PreparedWorkbenchTaskRun, events: WorkbenchTaskRunEvent[]) {
+  // The API's persisted terminal status is authoritative. A terminal run can
+  // legitimately contain a later step_failed event (for example, a quality
+  // gate that preserved deliverables as partial); letting that event overwrite
+  // the persisted partial status turns a quality diagnosis into a fake agent
+  // execution failure in the cockpit.
+  if (terminalStatuses.has(statusOf(run))) return run;
   const event = [...events].reverse().find((item) => lifecycleEventTypes.has(item.event_type));
   if (!event) return run;
   const status = lifecycleStatus(event.event_type);

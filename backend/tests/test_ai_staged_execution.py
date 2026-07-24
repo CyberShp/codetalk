@@ -3371,6 +3371,35 @@ def test_refresh_deterministic_combined_report_rebuilds_from_current_json_artifa
     assert "SFMEA-01" not in report
 
 
+def test_refresh_combined_report_uses_task_owned_cards_when_cached_sidecar_is_missing(tmp_path):
+    from app.services.ai_staged_execution import refresh_deterministic_combined_report
+
+    (tmp_path / "evidence_cards.json").write_text(
+        json.dumps([{
+            "file_path": "lib/iscsi/conn.c",
+            "start_line": 625,
+            "end_line": 645,
+            "symbols": ["_iscsi_conn_destruct"],
+            "sha256": "verified-digest",
+        }]),
+        encoding="utf-8",
+    )
+    (tmp_path / "source_scope.json").write_text(json.dumps({"scope_id": "current"}), encoding="utf-8")
+    (tmp_path / "business_flow.md").write_text("连接清理流程。\n", encoding="utf-8")
+    (tmp_path / "sfmea.json").write_text(json.dumps([{"sfmea_id": "SFMEA-01", "failure_mode": "清理风险"}]), encoding="utf-8")
+    (tmp_path / "black_box_cases.json").write_text(json.dumps([{"case_id": "BB-01", "scenario_name": "清理验证"}]), encoding="utf-8")
+
+    refresh_deterministic_combined_report(
+        artifact_dir=tmp_path,
+        plan={"target": "连接清理测试", "repo_revision": "abc1234"},
+        output_contract={"min_sfmea_rows": 1, "min_black_box_cases": 1},
+    )
+
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "本报告基于 1 张" in report
+    assert "lib/iscsi/conn.c:625-645" in report
+
+
 def test_combined_report_preserves_sfmea_ids_for_quality_repair_targeting():
     from app.services.ai_staged_execution import _render_deterministic_combined_report
     from app.services.test_activity_contract import _audit_combined_report_consistency
@@ -8611,6 +8640,37 @@ def test_reused_source_analysis_rematerializes_its_canonical_evidence_pack(tmp_p
     assert json.loads((artifact_dir / "evidence_cards.json").read_text()) == canonical_pack[
         "evidence_cards"
     ]
+
+
+def test_reused_source_analysis_rebuilds_missing_sidecar_from_task_owned_cards(tmp_path):
+    from app.services.ai_staged_execution import _existing_quality_stage_result
+
+    artifact_dir = tmp_path / "run"
+    stage_dir = artifact_dir / "stages" / "source_analysis"
+    stage_dir.mkdir(parents=True)
+    (artifact_dir / "source_analysis.md").write_text("# source\n", encoding="utf-8")
+    cards = [{
+        "evidence_id": "SRC-01",
+        "file_path": "lib/iscsi/conn.c",
+        "start_line": 625,
+        "end_line": 645,
+        "excerpt": "spdk_sock_close(&conn->sock);",
+        "symbols": ["_iscsi_conn_destruct"],
+        "sha256": "digest",
+    }]
+    (artifact_dir / "evidence_cards.json").write_text(json.dumps(cards), encoding="utf-8")
+    (artifact_dir / "source_scope.json").write_text(json.dumps({"scope_id": "current"}), encoding="utf-8")
+
+    reused = _existing_quality_stage_result(
+        plan={"quality_retry_feedback": {"issue_count": 1}, "original_user_request": "cleanup"},
+        artifact_dir=artifact_dir,
+        stage_dir=stage_dir,
+        stage={"id": "source_analysis", "artifact": "source_analysis.md"},
+    )
+
+    assert reused is not None
+    sidecar = json.loads((stage_dir / "source_evidence_pack.json").read_text())
+    assert sidecar["evidence_cards"] == cards
 
 
 @pytest.mark.asyncio
