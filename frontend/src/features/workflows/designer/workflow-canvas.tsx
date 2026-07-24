@@ -48,7 +48,6 @@ import {
   validateConnection,
 } from "../workflow-graph";
 import {
-  applyFlowPositions,
   authoringGraphToFlow,
   type WorkflowFlowEdge,
   type WorkflowFlowNode,
@@ -191,7 +190,7 @@ function WorkflowCanvasSurface({ state, dispatch, registry, onSelectionChange }:
     if (unchanged) return;
     dispatch({ type: "select-nodes", nodeIds });
     onSelectionChange?.(nodeIds[0] ?? null);
-  }, [dispatch, onSelectionChange, state.selectedEdgeId, state.selectedNodeIds]);
+  }, [dispatch, onSelectionChange, state.selectedEdgeId, state.selectedNodeId, state.selectedNodeIds]);
 
   return (
     <div className="ct-v2-canvas-shell">

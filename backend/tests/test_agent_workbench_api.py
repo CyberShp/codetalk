@@ -2989,6 +2989,8 @@ async def test_workbench_task_run_list_get_and_materialize_evidence_api(workbenc
 async def test_workbench_task_run_execute_workflow_api(workbench_client, tmp_path, monkeypatch):
     from app.config import settings
 
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
+
     script_path = tmp_path / "agent_write_result.py"
     script_path.write_text(
         "import pathlib, os\n"
@@ -3785,6 +3787,8 @@ async def test_workbench_task_run_materialize_workflow_outputs_api(
     monkeypatch,
 ):
     from app.config import settings
+
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
 
     script_path = tmp_path / "agent_write_cases.py"
     script_path.write_text(
@@ -4882,6 +4886,8 @@ async def test_workbench_imports_black_box_workflow_output_into_semantic_library
 ):
     from app.config import settings
 
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
+
     script_path = tmp_path / "agent_write_black_box_cases.py"
     script_path.write_text(
         "import json, pathlib, os\n"
@@ -5087,6 +5093,8 @@ async def test_workbench_materialize_workflow_outputs_blocks_failed_quality_gate
     monkeypatch,
 ):
     from app.config import settings
+
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
 
     script_path = tmp_path / "agent_bad_output.py"
     script_path.write_text(
@@ -5878,6 +5886,8 @@ async def test_workbench_agent_cli_workflow_materializes_auditable_memory_end_to
     monkeypatch,
 ):
     from app.config import settings
+
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
 
     source_file = tmp_path / "nof" / "nvmf_tcp" / "transport" / "tls" / "tls.c"
     source_file.parent.mkdir(parents=True)
@@ -9172,6 +9182,8 @@ async def test_workbench_task_run_acceptance_audit_flags_invalid_workflow_output
     monkeypatch,
 ):
     from app.config import settings
+
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
 
     script_path = tmp_path / "agent_bad_schema.py"
     script_path.write_text(

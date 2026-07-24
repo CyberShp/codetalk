@@ -384,6 +384,43 @@ class WorkflowVersionStore:
                 raise WorkflowVersionError(f"workflow already exists: {workflow_id}") from exc
         return self.get_workflow(workflow_id), self.get_version(version_id)
 
+    def copy_workflow_as_custom_draft(
+        self,
+        source_workflow_id: str,
+        *,
+        workflow_id: str,
+        name: str,
+        description: str | None = None,
+    ) -> tuple[WorkflowHeader, WorkflowVersion]:
+        """Create an editable V2 draft without ever making the source mutable.
+
+        Built-in workflows intentionally remain immutable.  A user who wants to
+        adapt one therefore receives a distinct custom workflow whose first
+        draft is materialized from the source's published version.
+        """
+        source = self.get_workflow(source_workflow_id)
+        source_version_id = source.published_version_id or source.current_draft_version_id
+        if not source_version_id:
+            raise WorkflowVersionError("source workflow has no version to copy")
+        source_version = self.get_version(source_version_id)
+        graph = _editable_graph_from_base(source_version, source)
+        graph["workflow_id"] = workflow_id
+        graph["name"] = name
+        graph["description"] = (
+            source.description if description is None else str(description)
+        )
+        graph["migration"] = {
+            "source": "workflow_copy",
+            "source_workflow_id": source.workflow_id,
+            "source_version_id": source_version.version_id,
+        }
+        return self.create_workflow(
+            workflow_id=workflow_id,
+            name=name,
+            description=graph["description"],
+            authoring_graph=graph,
+        )
+
     def get_workflow(self, workflow_id: str) -> WorkflowHeader:
         self.initialize_and_migrate()
         with self._connect() as db:

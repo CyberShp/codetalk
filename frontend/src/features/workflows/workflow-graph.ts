@@ -225,10 +225,7 @@ export function nodeKindLabel(kind: WorkflowNodeKind): string {
 }
 
 export function inputPortIds(node: WorkflowGraphNode): string[] {
-  if (node.kind === "output") return ["value"];
-  if (node.kind === "input") return [];
-  const ports = node.config.input_ports ?? [];
-  return ports.length ? ports.map((port) => port.id) : ["start"];
+  return inputPortDefinitions(node).map((port) => port.id);
 }
 
 export function inputPortDefinitions(node: WorkflowGraphNode): Array<{ id: string; type: string; required?: boolean; collection?: boolean }> {
@@ -236,16 +233,16 @@ export function inputPortDefinitions(node: WorkflowGraphNode): Array<{ id: strin
     return [{ id: "value", type: String(node.config.type ?? "any"), required: Boolean(node.config.required) }];
   }
   if (node.kind === "input") return [];
-  return node.config.input_ports?.length
+  const dataPorts = node.config.input_ports?.length
     ? node.config.input_ports.map((port) => ({ ...port, type: port.type || "any" }))
-    : [{ id: "start", type: "any" }];
+    : [];
+  return dataPorts.some((port) => port.id === "start")
+    ? dataPorts
+    : [...dataPorts, { id: "start", type: "control" }];
 }
 
 export function outputPortIds(node: WorkflowGraphNode): string[] {
-  if (node.kind === "input") return ["value"];
-  if (node.kind === "output") return [];
-  const ports = node.config.output_ports ?? [];
-  return ports.length ? ports.map((port) => port.id) : ["done"];
+  return outputPortDefinitions(node).map((port) => port.id);
 }
 
 export function outputPortDefinitions(node: WorkflowGraphNode): Array<{ id: string; type: string }> {
@@ -253,9 +250,12 @@ export function outputPortDefinitions(node: WorkflowGraphNode): Array<{ id: stri
     return [{ id: "value", type: String(node.config.type ?? "any") }];
   }
   if (node.kind === "output") return [];
-  return node.config.output_ports?.length
+  const dataPorts = node.config.output_ports?.length
     ? node.config.output_ports.map((port) => ({ id: port.id, type: port.type || "any" }))
-    : [{ id: "done", type: "any" }];
+    : [];
+  return dataPorts.some((port) => port.id === "done")
+    ? dataPorts
+    : [...dataPorts, { id: "done", type: "control" }];
 }
 
 export type ConnectionValidation =
@@ -268,8 +268,8 @@ export function connectionEdgeKind(
   targetNode: WorkflowGraphNode,
   targetPortId: string,
 ): WorkflowGraphEdge["kind"] {
-  const syntheticDone = !(sourceNode.config.output_ports?.length) && sourcePortId === "done";
-  const syntheticStart = !(targetNode.config.input_ports?.length) && targetPortId === "start";
+  const syntheticDone = sourcePortId === "done" && !sourceNode.config.output_ports?.some((port) => port.id === "done");
+  const syntheticStart = targetPortId === "start" && !targetNode.config.input_ports?.some((port) => port.id === "start");
   return syntheticDone && syntheticStart ? "dependency" : "data";
 }
 

@@ -53,6 +53,11 @@ export const workflowsApi = {
       method: "POST",
       body: JSON.stringify({ based_on_version_id: basedOnVersionId ?? null }),
     }),
+  copyAsCustomDraft: (workflowId: string) =>
+    request<WorkflowVersion>(`${workflowPath(workflowId)}/copy`, {
+      method: "POST",
+      body: "{}",
+    }),
   updateDraft: (
     workflowId: string,
     versionId: string,

@@ -340,6 +340,34 @@ def test_migrated_legacy_version_creates_an_editable_v2_draft(tmp_path):
     assert compiled["compiled_definition"]["steps"][0]["type"] == "agent_task"
 
 
+def test_copying_a_read_only_legacy_workflow_creates_an_editable_custom_v2_draft(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workflow_version_store import WorkflowVersionStore
+
+    db_path = tmp_path / "workflows.db"
+    source = _legacy_definition()
+    source["id"] = "builtin_source_flow"
+    source["name"] = "Built-in source flow"
+    WorkflowStore(db_path).save_workflow(source)
+    store = WorkflowVersionStore(db_path)
+    store.initialize_and_migrate()
+
+    header, draft = store.copy_workflow_as_custom_draft(
+        "builtin_source_flow",
+        workflow_id="builtin_source_flow_custom",
+        name="Built-in source flow copy",
+    )
+
+    assert header.workflow_id == "builtin_source_flow_custom"
+    assert header.current_draft_version_id == draft.version_id
+    assert draft.state == "draft"
+    assert draft.authoring_graph["schema_version"] == 2
+    assert draft.authoring_graph["workflow_id"] == "builtin_source_flow_custom"
+    assert draft.authoring_graph["name"] == "Built-in source flow copy"
+    assert draft.authoring_graph["migration"]["source"] == "workflow_copy"
+    assert store.get_workflow("builtin_source_flow").current_draft_version_id is None
+
+
 def test_workflow_draft_publish_and_immutable_version_lifecycle(tmp_path):
     from app.services.workflow_version_store import (
         PublishedWorkflowVersionError,

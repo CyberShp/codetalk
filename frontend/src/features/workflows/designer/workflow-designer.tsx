@@ -37,11 +37,13 @@ import {
 type BottomTab = "problems" | "plan" | "trial";
 
 export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
+  const router = useRouter();
   const [version, setVersion] = useState<WorkflowVersion | null>(null);
   const [capabilities, setCapabilities] = useState<WorkflowCapabilities | null>(null);
   const [providers, setProviders] = useState<WorkflowProviderCapability[]>([]);
   const [nodeRegistry, setNodeRegistry] = useState<WorkflowNodeRegistry | null>(null);
   const [needsDraft, setNeedsDraft] = useState<string | null>(null);
+  const [copySourceId, setCopySourceId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -61,12 +63,14 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
       const draftId = detail.v2?.current_draft_version_id;
       if (!draftId) {
         setNeedsDraft(detail.v2?.published_version_id ?? "published");
+        setCopySourceId(detail.v2 ? null : workflowId);
         setVersion(null);
         return;
       }
       const loaded = await workflowsApi.version(workflowId, draftId);
       setVersion(loaded);
       setNeedsDraft(null);
+      setCopySourceId(null);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "工作流加载失败");
     } finally {
@@ -82,8 +86,8 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
     return (
       <div className="ct-v2-empty-state">
         <FlaskConical size={28} />
-        <h1>已发布版本不可直接修改</h1>
-        <p>创建一个基于当前发布版本的新草稿，再进入设计器。</p>
+        <h1>{copySourceId ? "内置工作流不可直接修改" : "已发布版本不可直接修改"}</h1>
+        <p>{copySourceId ? "另存为自定义工作流后，将自动创建可编辑的 V2 草稿。" : "创建一个基于当前发布版本的新草稿，再进入设计器。"}</p>
         <div>
           <Link href="/workflows">返回工作流库</Link>
           <button
@@ -91,14 +95,20 @@ export function WorkflowDesigner({ workflowId }: { workflowId: string }) {
             onClick={async () => {
               setLoading(true);
               try {
-                await workflowsApi.createDraft(workflowId, needsDraft === "published" ? undefined : needsDraft);
+                const created = copySourceId
+                  ? await workflowsApi.copyAsCustomDraft(copySourceId)
+                  : await workflowsApi.createDraft(workflowId, needsDraft === "published" ? undefined : needsDraft);
+                if (copySourceId) {
+                  router.replace(`/workflows/${encodeURIComponent(created.workflow_id)}`);
+                  return;
+                }
                 await load();
               } catch (cause) {
-                setError(cause instanceof Error ? cause.message : "创建草稿失败");
+                setError(cause instanceof Error ? cause.message : copySourceId ? "另存为自定义工作流失败" : "创建草稿失败");
               }
             }}
           >
-            创建新草稿
+            {copySourceId ? "另存为自定义工作流" : "创建新草稿"}
           </button>
         </div>
       </div>

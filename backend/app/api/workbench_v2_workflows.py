@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
@@ -130,6 +131,28 @@ async def create_workflow_draft(
     except WorkflowVersionError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return asdict(version)
+
+
+@router.post("/workflows/{workflow_id}/copy", status_code=201)
+async def copy_workflow_as_custom_draft(workflow_id: str) -> dict[str, Any]:
+    """Copy a read-only template into a distinct editable V2 draft."""
+    _require_v2()
+    store = workflow_version_store()
+    try:
+        source = store.get_workflow(workflow_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown workflow: {workflow_id}")
+    custom_id = f"{source.workflow_id[:110]}_custom_{uuid.uuid4().hex[:8]}"
+    try:
+        _header, draft = store.copy_workflow_as_custom_draft(
+            source.workflow_id,
+            workflow_id=custom_id,
+            name=f"{source.name}（副本）",
+            description=source.description,
+        )
+    except WorkflowVersionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return asdict(draft)
 
 
 @router.get("/workflows/{workflow_id}/versions/{version_id}")

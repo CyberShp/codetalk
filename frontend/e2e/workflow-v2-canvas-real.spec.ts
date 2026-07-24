@@ -175,6 +175,22 @@ test("box-selects multiple canvas nodes and batch deletes them through the visib
   await expect.poll(() => canvas.locator(".react-flow__node-workflowNode").count()).toBe(6);
 });
 
+test("opens a legacy preset as an editable V2 draft through the browser", async ({ page }) => {
+  test.setTimeout(90_000);
+
+  await page.goto("/workflows/source_flow_sfmea_blackbox", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "内置工作流不可直接修改" })).toBeVisible();
+  await page.getByRole("button", { name: "另存为自定义工作流" }).hover();
+  await page.getByRole("button", { name: "另存为自定义工作流" }).click();
+
+  const canvas = page.getByRole("region", { name: "工作流画布" });
+  await expect(canvas).toBeVisible();
+  await expect(canvas.locator(".react-flow__node-workflowNode")).not.toHaveCount(0);
+  await canvas.locator("[data-testid='workflow-node-step_analyze_source_flow']").click();
+  await expect(page.getByRole("complementary", { name: "节点属性" })).toBeVisible();
+  await expect(page.getByLabel("分析目标")).toBeEditable();
+});
+
 async function drag(page: import("@playwright/test").Page, source: import("@playwright/test").Locator, target: import("@playwright/test").Locator) {
   await expect(source).toBeVisible();
   await expect(target).toBeVisible();

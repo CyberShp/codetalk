@@ -6,6 +6,8 @@ import {
   connectionEdgeKind,
   createStarterGraph,
   edge,
+  inputPortDefinitions,
+  outputPortDefinitions,
   validateConnection,
   validateInputPortId,
 } from "./workflow-graph.ts";
@@ -102,4 +104,14 @@ test("an explicit done output remains a data edge", () => {
   analyze.config.output_ports = [{ id: "done", type: "markdown" }];
 
   assert.equal(connectionEdgeKind(analyze, "done", report, "value"), "data");
+});
+
+test("executable nodes retain visible control ports alongside typed data ports", () => {
+  const graph = createStarterGraph("control-ports", "Control ports");
+  const analyze = graph.nodes.find((node) => node.id === "analyze");
+  assert.ok(analyze);
+
+  assert.deepEqual(inputPortDefinitions(analyze).map((port) => port.id), ["repo_path", "analysis_target", "start"]);
+  assert.deepEqual(outputPortDefinitions(analyze).map((port) => port.id), ["report", "done"]);
+  assert.equal(connectionEdgeKind(analyze, "done", analyze, "start"), "dependency");
 });
