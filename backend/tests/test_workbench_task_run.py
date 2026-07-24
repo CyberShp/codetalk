@@ -4822,6 +4822,55 @@ def test_agent_rerun_injects_previous_test_activity_quality_feedback(tmp_path):
     assert "必须逐项修正" in feedback["instruction"]
 
 
+def test_quality_revalidation_uses_parent_run_acceptance_failure_feedback(tmp_path):
+    from app.services.workbench_workflow_runner import _inject_prior_step_context
+
+    task_runs = tmp_path / "task_runs"
+    parent_run = task_runs / "task_run_parent"
+    (parent_run / "agent_runs" / "analyze").mkdir(parents=True)
+    (parent_run / "test_activity_quality_audit.json").write_text(
+        json.dumps({
+            "status": "needs_rework",
+            "deliverable": False,
+            "issues": [{
+                "artifact": "agent_runs/analyze/black_box_cases.json",
+                "code": "black_box_case_quality_failed",
+                "message": "黑盒步骤不够具体",
+            }],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (parent_run / "task_acceptance_audit.json").write_text(
+        json.dumps({
+            "checks": [{
+                "id": "black_box_case_quality:analyze:black_box_cases.json",
+                "status": "invalid",
+                "relative_path": "agent_runs/analyze/black_box_cases.json",
+                "invalid_cases": [{"case_id": "BB-09", "reasons": ["vague_steps"]}],
+            }],
+        }, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    retry_artifact_dir = task_runs / "task_run_retry" / "agent_runs" / "analyze"
+    retry_artifact_dir.mkdir(parents=True)
+    (retry_artifact_dir / "task_bundle.json").write_text(
+        json.dumps({
+            "parent_task_run_id": "task_run_parent",
+            "required_artifacts": ["source_scope.json", "black_box_cases.json", "report.md"],
+            "test_activity_contract": {"artifact_contract": {}},
+        }),
+        encoding="utf-8",
+    )
+
+    _inject_prior_step_context(artifact_dir=retry_artifact_dir, prior_step_results=[])
+
+    bundle = json.loads((retry_artifact_dir / "task_bundle.json").read_text())
+    feedback = bundle["retry_quality_feedback"]
+    assert feedback["affected_artifacts"] == ["agent_runs/analyze/black_box_cases.json"]
+    assert feedback["acceptance_failures"][0]["invalid_cases"][0]["case_id"] == "BB-09"
+    assert bundle["quality_retry_required_artifacts"] == ["black_box_cases.json", "report.md"]
+
+
 def test_quality_retry_regenerates_declared_descendants_of_failed_artifact(tmp_path):
     from app.services.workbench_workflow_runner import _inject_prior_step_context
 

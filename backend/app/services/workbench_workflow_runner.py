@@ -7425,9 +7425,23 @@ def _previous_evidence_validation_feedback(artifact_dir: Path) -> dict[str, Any]
 
 def _previous_test_activity_quality_feedback(artifact_dir: Path) -> dict[str, Any]:
     try:
-        task_dir = artifact_dir.parent.parent
+        current_task_dir = artifact_dir.parent.parent
     except IndexError:
         return {}
+    bundle = _read_json(artifact_dir / "task_bundle.json")
+    parent_run_id = (
+        str(bundle.get("parent_task_run_id") or "").strip()
+        if isinstance(bundle, dict)
+        else ""
+    )
+    # A quality revalidation attempt starts from copied artifacts. Its own
+    # directory has no failed audit yet, so follow the frozen parent run rather
+    # than mistaking the copied staged audit for a fresh green result.
+    task_dir = current_task_dir
+    if parent_run_id and parent_run_id == _safe_segment(parent_run_id):
+        parent_task_dir = current_task_dir.parent / parent_run_id
+        if parent_task_dir.is_dir():
+            task_dir = parent_task_dir
     audit_path = task_dir / "test_activity_quality_audit.json"
     payload = _read_json(audit_path)
     if not isinstance(payload, dict):
@@ -7442,7 +7456,6 @@ def _previous_test_activity_quality_feedback(artifact_dir: Path) -> dict[str, An
     ]
     if not raw_issues:
         return {}
-    bundle = _read_json(artifact_dir / "task_bundle.json")
     required_artifacts = [
         str(item)
         for item in (bundle.get("required_artifacts") if isinstance(bundle, dict) else []) or []
