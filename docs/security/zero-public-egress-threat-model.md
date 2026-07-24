@@ -36,10 +36,10 @@ operator configures an approved model identifier explicitly.
 | --- | --- | --- |
 | Backend HTTP client | A new integration calls a public URL | Central allow-list transport and tests |
 | Provider SDK | telemetry, tracing, update checks, extension discovery, or retries escape the intranet | Disable autonomous features and proxy inheritance; verify with traffic capture |
-| CLI Agent | CLI plugin or MCP config connects externally | sanitized environment, generated private-only config, OS-level egress policy |
+| CLI Agent | CLI plugin or MCP config connects externally | sanitized environment, generated approved-purpose config, OS-level egress policy |
 | MCP configuration | user-supplied endpoint bypasses product routing | validate host/IP and capability registration before process start |
 | Browser/UI | frontend fetches an accidental public asset | CSP/connect-src deployment policy and build-time URL lint |
-| Deployment | shell package updater or proxy restores egress | dedicated service account, no public DNS route, firewall audit |
+| Deployment | shell package updater or proxy restores egress | dedicated service account, approved-destination egress gateway, firewall audit |
 
 ## Enforcement layers
 
@@ -59,6 +59,20 @@ operator configures an approved model identifier explicitly.
    or proxy logs showing no vendor, telemetry, update or unapproved destination. A blocked
    connection is visible in the cockpit's
    technical diagnostics without exposing credential material.
+
+## Deployment boundary
+
+Do not infer trust from whether an address looks public or private. A corporate model gateway
+may use a globally-routable address, and an RFC1918 address can still be an unapproved service.
+Approve a named endpoint for the narrow inference route that CodeTalk owns, then enforce that
+approval at the egress gateway.
+
+CodeTalk does not ship vendor SDKs and does not perform package or CLI self-updates. It also
+strips proxy, telemetry and tracing configuration before spawning a third-party Agent CLI. Those
+controls prevent CodeTalk from initiating autonomous vendor traffic, but cannot prove that an
+opaque CLI binary has no undiscovered network behavior. When Agent network access is enabled,
+the deployment gateway must therefore enforce the destination and route allow-list; environment
+flags are a defense-in-depth control, not the final security boundary.
 
 ## Non-goals
 

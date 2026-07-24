@@ -162,7 +162,7 @@ class IntranetNetworkPolicy:
 
     def snapshot(self) -> dict[str, object]:
         return {
-            "network_mode": "intranet_deny_public",
+            "network_mode": "intranet_controlled_egress",
             "allowed_endpoint_policy_id": self.policy_id,
             "allowed_hosts": sorted(self.allowed_hosts),
             "allowed_cidrs": sorted(self.allowed_cidrs),
@@ -248,7 +248,7 @@ def require_configured_model_request_url(url: str) -> NetworkDecision:
 
 
 def agent_network_is_permitted() -> bool:
-    """Fail closed until deployment has certified its private-only firewall."""
+    """Fail closed until deployment certifies approved-purpose egress controls."""
     if not settings.intranet_network_mode:
         return bool(settings.external_agent_sandbox_allow_network)
     return bool(settings.intranet_agent_egress_enforced_by_host)

@@ -618,7 +618,7 @@ def test_prepare_workbench_task_run_freezes_workflow_and_creates_agent_run(tmp_p
 
     assert result.workflow_snapshot["version"] == 2
     assert result.task_bundle["inputs"]["mr_link"] == "https://codehub.local/project/merge_requests/1"
-    assert result.task_bundle["network_policy"]["network_mode"] == "intranet_deny_public"
+    assert result.task_bundle["network_policy"]["network_mode"] == "intranet_controlled_egress"
     assert result.agent_runs[0]["step_id"] == "collect_mr"
     assert result.agent_runs[0]["mcp_profile"] == "codehub-readonly"
 

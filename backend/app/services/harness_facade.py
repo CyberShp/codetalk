@@ -211,7 +211,7 @@ def normalize_provider_event(event_type: str, payload: dict[str, Any] | None = N
     if raw in {"artifact", "artifact_created"}:
         return HarnessEvent("artifact_created", "user", data, "已生成交付文件")
     if raw == "network_egress_blocked":
-        return HarnessEvent("network_egress_blocked", "user", data, "内网策略已阻止公网连接")
+        return HarnessEvent("network_egress_blocked", "user", data, "受控出站策略已阻止未批准连接")
     if raw in {"stdout", "activity", "agent_output", "tool_use", "tool_result", "source_read"}:
         kind: HarnessEventKind = "source_read" if raw == "source_read" else "activity"
         return HarnessEvent(kind, "summary", data, str(data.get("text") or "执行器正在处理任务"))

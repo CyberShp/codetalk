@@ -111,7 +111,7 @@ def test_policy_snapshot_is_json_safe_and_does_not_include_runtime_resolver():
     )
 
     assert policy.snapshot() == {
-        "network_mode": "intranet_deny_public",
+        "network_mode": "intranet_controlled_egress",
         "allowed_endpoint_policy_id": "corp-approved-v1",
         "allowed_hosts": ["models.corp.example"],
         "allowed_cidrs": ["10.42.0.0/16"],
