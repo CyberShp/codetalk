@@ -6835,6 +6835,11 @@ async def test_workbench_task_run_acceptance_audit_api_records_required_evidence
     assert checks["workflow_output:scope"]["status"] == "ok"
     assert checks["workflow_execution"]["status"] == "ok"
     assert checks["task_artifact_manifest"]["status"] == "ok"
+    refreshed_run = await workbench_client.get(
+        f"/api/workbench/task-runs/{task_run_id}"
+    )
+    assert refreshed_run.status_code == 200
+    assert refreshed_run.json()["quality_status"] == "passed"
     artifact = _task_run_dir(prepared.json()["task_run_id"]) / "task_acceptance_audit.json"
     assert artifact.exists()
     assert json.loads(artifact.read_text(encoding="utf-8"))["status"] == "ready"
@@ -8597,6 +8602,30 @@ async def test_workbench_task_run_acceptance_audit_rejects_duplicate_sfmea_risk_
     quality_check = checks["risk_finding_quality:hunt:risk_findings.json"]
     assert quality_check["status"] == "invalid"
     assert any("duplicate_risk_finding" in item["reasons"] for item in quality_check["invalid_findings"])
+
+
+async def test_risk_finding_duplicate_key_keeps_distinct_chinese_findings():
+    from app.api.agent_workbench import _risk_finding_duplicate_key
+
+    common = {
+        "file_path": "lib/iscsi/conn.c",
+        "severity_score": 7,
+        "occurrence_score": 2,
+        "detection_score": 5,
+    }
+    timer_race = {
+        **common,
+        "failure_mode": "连接析构与定时器回调并发导致资源残留或重复注销",
+        "cause": "连接关闭时定时器回调仍可能执行",
+    }
+    cleanup_order = {
+        **common,
+        "failure_mode": "异常清理路径顺序错误导致资源残留或重复释放",
+        "cause": "连接关闭后仍可能访问已经释放的资源",
+    }
+
+    assert _risk_finding_duplicate_key(timer_race)
+    assert _risk_finding_duplicate_key(timer_race) != _risk_finding_duplicate_key(cleanup_order)
 
 
 async def test_workbench_task_run_acceptance_audit_rejects_out_of_range_sfmea_scores(

@@ -3503,6 +3503,19 @@ async def create_task_run_acceptance_audit(task_run_id: str) -> dict[str, Any]:
             execution=reconciled_execution,
             acceptance=payload,
         )
+        run_summary = _build_task_run_ui_summary(task_run, task_dir)
+        if _is_diagnostic_trial(task_run):
+            quality_status, delivery_status = "not_checked", "none"
+        else:
+            quality_status, delivery_status = _derive_task_run_outcomes(
+                execution=reconciled_execution,
+                run_summary=run_summary,
+            )
+        WorkbenchTaskRunEventStore(_task_runs_dir()).mark_outcomes(
+            task_run_id,
+            quality_status=quality_status,
+            delivery_status=delivery_status,
+        )
     write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
     return payload
 
@@ -7784,8 +7797,10 @@ def _black_box_case_duplicate_key(case: dict[str, Any]) -> str:
             or case.get("debug_hints")
         )),
     ]
+    # Keep Unicode word characters. Test cases may be written in Chinese, and
+    # an ASCII-only scrub would collapse otherwise distinct cases.
     normalized = [
-        re.sub(r"\s+", " ", re.sub(r"[^a-z0-9/]+", " ", str(part).lower())).strip()
+        re.sub(r"\s+", " ", re.sub(r"[^\w/]+", " ", str(part).lower())).strip()
         for part in parts
     ]
     if not any(normalized):
@@ -8096,8 +8111,10 @@ def _risk_finding_duplicate_key(finding: dict[str, Any]) -> str:
         str(_sfmea_score(finding, "occurrence_score")),
         str(_safe_int(finding.get("detection_score"))),
     ]
+    # Keep Unicode word characters. An ASCII-only scrub turns distinct Chinese
+    # SFMEA rows into the same empty key and falsely blocks delivery.
     normalized = [
-        re.sub(r"\s+", " ", re.sub(r"[^a-z0-9/]+", " ", str(part).lower())).strip()
+        re.sub(r"\s+", " ", re.sub(r"[^\w/]+", " ", str(part).lower())).strip()
         for part in parts
     ]
     if not any(normalized):
