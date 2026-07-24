@@ -82,6 +82,40 @@ async def test_managed_agent_run_fails_before_process_spawn_without_certified_eg
 
 
 @pytest.mark.asyncio
+async def test_intranet_stream_requires_os_sandbox_before_starting_agent(monkeypatch, tmp_path):
+    """The AI-thread launch path must not silently opt out of OS enforcement."""
+    from app.services import agent_cli_bridge
+
+    captured: dict[str, object] = {}
+
+    def fake_prepare_agent_sandbox(*, runtime, cwd, artifact_dir):
+        captured["runtime"] = runtime
+        captured["cwd"] = cwd
+        captured["artifact_dir"] = artifact_dir
+        return type("Sandbox", (), {"wrapper": [], "status": "active"})()
+
+    monkeypatch.setattr(agent_cli_bridge, "prepare_agent_sandbox", fake_prepare_agent_sandbox)
+    monkeypatch.setattr(agent_cli_bridge.settings, "intranet_network_mode", True)
+
+    chunks: list[str] = []
+    async for chunk in agent_cli_bridge.stream_agent_runtime(
+        runtime={
+            "command": sys.executable,
+            "args": ["-c", "import sys; print(sys.stdin.read())"],
+            "prompt_transport": "stdin",
+            "output_mode": "plain",
+            "completion_mode": "process_exit",
+        },
+        prompt="检查内网 sandbox 传递",
+        cwd=str(tmp_path),
+    ):
+        chunks.append(chunk)
+
+    assert "检查内网 sandbox 传递" in "".join(chunks)
+    assert captured["runtime"]["intranet_require_os_sandbox"] is True
+
+
+@pytest.mark.asyncio
 @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
 async def test_terminate_process_kills_a_sigterm_ignoring_descendant(tmp_path):
     child_pid_file = tmp_path / "child.pid"
@@ -249,6 +283,9 @@ async def test_stream_runtime_removes_internally_owned_artifact_directory(
 
     runtime_temp_dir = tmp_path / "runtime-temp"
     monkeypatch.setattr(settings, "runtime_temp_dir", str(runtime_temp_dir))
+    # This cleanup test intentionally exercises an unsandboxed generic local
+    # command; it is not an intranet Agent execution path.
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
     output: list[str] = []
 
     async for chunk in stream_agent_runtime(

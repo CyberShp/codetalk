@@ -23,8 +23,9 @@ created: 2026-07-24
 - Claude Node POC：`/Volumes/Media/codetalk-v3-sdk-poc/claude/`；
 - 产品仓库未新增 `requirements`、`package.json` 或启动时 import；
 - Python 安装使用 `pip install --no-index --find-links ...`，没有在安装阶段访问网络；
-- 导入验证把 `socket.connect` 和 `socket.create_connection` 替换为立即抛错，随后只做
-  SDK import 与基础对象构建，不发起模型调用。
+- 导入验证把 `socket.connect` 和 `socket.create_connection` 替换为立即抛错；随后执行
+  本地确定性工作流或基础对象构建。除 OpenAI 的 loopback-only SDK 兼容性调用外，不发起
+  模型调用。
 
 ## 主包 SBOM
 
@@ -32,8 +33,8 @@ created: 2026-07-24
 | --- | --- | --- | --- | --- | --- |
 | Claude Agent SDK | `0.3.218` | `SEE LICENSE IN README.md`，需法务确认商业条款 | `e0d9154a09b0ae2c07a462db0c3bdd3e1c163d10995e05a3ab33f36c32f04fe1` | Node 模块导入成功，无网络连接 | 仅可作为 CLI/SDK Adapter 候选，不能默认随产品分发 |
 | OpenAI Agents SDK | `0.18.3` | MIT | `c6ed971fdeb34d39a9931787bd3960c1e84dc5d7345705794cc5cab8a1158d07` | `agents.Agent(...)` 创建成功，无网络连接 | 默认 tracing 必须在 Adapter 初始化前显式关闭；不得使用默认公网端点 |
-| Microsoft Agent Framework Core | `1.12.1` | MIT | `4cdd687d434af9592e42a708f5da9291fbae80b6a02b39ddc1456aa988b6941e` | `agent_framework` 导入成功，无网络连接 | 依赖 OpenTelemetry API；未配置 exporter 前仍不得进入主进程 |
-| LangGraph | `1.2.9` | MIT | `c2d98ad94333937922ba04148641c1da2bfe45b5b8e55d7b6dcb0bb2df809e76` | `langgraph` 导入成功，无网络连接 | 依赖链包含 LangSmith；必须禁用 tracing/Studio/远端服务并做流量捕获 |
+| Microsoft Agent Framework Core | `1.12.1` | MIT | `4cdd687d434af9592e42a708f5da9291fbae80b6a02b39ddc1456aa988b6941e` | 两阶段本地 `source_evidence -> publish` workflow 输出 `EVIDENCE:SPDK`，socket 拒绝下零连接 | 依赖 OpenTelemetry API；未配置 exporter 前仍不得进入主进程 |
+| LangGraph | `1.2.9` | MIT | `c2d98ad94333937922ba04148641c1da2bfe45b5b8e55d7b6dcb0bb2df809e76` | 编译本地 `StateGraph`，状态 `41 -> 42`，socket 拒绝下零连接 | 依赖链包含 LangSmith；必须禁用 tracing/Studio/远端服务并做流量捕获 |
 
 完整依赖 wheelhouse 共 64 个文件；Claude Node 依赖锁定在
 `/Volumes/Media/codetalk-v3-sdk-poc/claude/package-lock.json`。发布前应把该目录转为
@@ -56,11 +57,38 @@ import agent_framework
 Agent(name="offline-poc", instructions="Do not run.")
 print("offline imports passed")
 PY
+
+# 本地工作流 POC。脚本在产品仓库之外，socket 拒绝是代码层防线。
+/Volumes/Media/codetalk-v3-sdk-poc/venv/bin/python \
+  /Volumes/Media/codetalk-v3-sdk-poc/scripts/microsoft_workflow_offline_poc.py
+# {"outputs": ["EVIDENCE:SPDK"], "network_attempts": []}
+
+/Volumes/Media/codetalk-v3-sdk-poc/venv/bin/python \
+  /Volumes/Media/codetalk-v3-sdk-poc/scripts/langgraph_workflow_offline_poc.py
+# {"result": {"value": 42}, "network_attempts": []}
 ```
+
+## SDK Loopback 运行证据
+
+OpenAI Agents SDK `0.18.3` 已额外完成一次真实 `Runner.run()`：适配器连接一个只绑定
+`127.0.0.1` 的 OpenAI-compatible `/v1/chat/completions` fixture，显式调用
+`set_tracing_disabled(True)` 并传入 `RunConfig(tracing_disabled=True)`。结果为：
+
+```json
+{
+  "final_output": "CODETALK_LOOPBACK_OK",
+  "paths": ["/v1/chat/completions"],
+  "tracing_disabled": true
+}
+```
+
+这验证 SDK 的真实 Runner、受控 Transport 和显式禁用 tracing 可并存；它不是 CodeTalk
+业务工作流验收，也不允许以 loopback fixture 冒充内网模型或真实 SPDK 运行。
 
 ## 已确认的风险与下一门禁
 
-1. 这只证明 import 和对象创建不出网，不证明运行、trace、MCP、更新检查或子进程不出网。
+1. Microsoft 与 LangGraph 已证明本地确定性工作流运行不出网；这仍不证明模型调用、trace、
+   MCP、更新检查或子进程不出网。
 2. OpenAI Agents 默认 tracing、LangGraph 的 LangSmith 依赖、Microsoft 的 OpenTelemetry
    以及 Claude SDK 的商业条款都是 P0 选型门禁。
 3. 下一步必须在独立 Adapter 进程中，以同一 RunSnapshot 和 loopback 模型/MCP fixture

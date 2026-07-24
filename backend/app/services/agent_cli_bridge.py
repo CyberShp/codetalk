@@ -139,6 +139,7 @@ async def _probe_claude_auth_in_runtime_sandbox(
                     "sandbox_allow_network",
                     agent_network_is_permitted(),
                 ),
+                "intranet_require_os_sandbox": settings.intranet_network_mode,
                 "sandbox_write_paths": runtime.get(
                     "sandbox_write_paths",
                     settings.external_agent_sandbox_write_paths,
@@ -241,6 +242,7 @@ async def _probe_codex_model_in_runtime_sandbox(
                     "sandbox_allow_network",
                     agent_network_is_permitted(),
                 ),
+                "intranet_require_os_sandbox": settings.intranet_network_mode,
                 "sandbox_write_paths": runtime.get(
                     "sandbox_write_paths",
                     settings.external_agent_sandbox_write_paths,
@@ -514,6 +516,7 @@ async def stream_agent_runtime(
             "sandbox_allow_network",
             agent_network_is_permitted(),
         ),
+        "intranet_require_os_sandbox": settings.intranet_network_mode,
         "sandbox_write_paths": runtime.get(
             "sandbox_write_paths",
             settings.external_agent_sandbox_write_paths,

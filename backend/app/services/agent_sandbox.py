@@ -408,6 +408,17 @@ def prepare_agent_sandbox(
     mode = str(runtime.get("sandbox_mode") or "auto").strip().lower()
     if mode not in {"auto", "required", "off"}:
         raise AgentSandboxError(f"未知 Agent 隔离模式：{mode}")
+    # A deployment that permits an Agent to reach an approved model endpoint
+    # still needs an OS boundary.  Environment scrubbing and a deployment
+    # firewall are complementary controls, not a justification for an
+    # unsandboxed subprocess fallback.
+    intranet_requires_os_sandbox = bool(runtime.get("intranet_require_os_sandbox"))
+    if intranet_requires_os_sandbox and mode == "off":
+        raise AgentSandboxError(
+            "内网 Agent 运行需要 OS 隔离，不能将 sandbox_mode 设为 off。"
+        )
+    if intranet_requires_os_sandbox:
+        mode = "required"
     platform = str(platform_name or sys.platform).lower()
     artifact_dir = artifact_dir.resolve()
     artifact_dir.mkdir(parents=True, exist_ok=True)
@@ -469,7 +480,13 @@ def prepare_agent_sandbox(
                 message="已启用 macOS sandbox-exec 隔离。",
                 audit={**base_audit, "engine": "sandbox-exec", "profile": str(profile_path)},
             )
-        return _unavailable(artifact_dir, mode=mode, audit=base_audit, engine="sandbox-exec")
+        return _unavailable(
+            artifact_dir,
+            mode=mode,
+            audit=base_audit,
+            engine="sandbox-exec",
+            required_reason=("内网 Agent 运行需要 OS 隔离。" if intranet_requires_os_sandbox else ""),
+        )
     if platform.startswith("linux"):
         bwrap = which("bwrap") or which("bubblewrap")
         if bwrap:
@@ -492,12 +509,19 @@ def prepare_agent_sandbox(
                 message="已启用 Linux bubblewrap 隔离。",
                 audit={**base_audit, "engine": "bubblewrap"},
             )
-        return _unavailable(artifact_dir, mode=mode, audit=base_audit, engine="bubblewrap")
+        return _unavailable(
+            artifact_dir,
+            mode=mode,
+            audit=base_audit,
+            engine="bubblewrap",
+            required_reason=("内网 Agent 运行需要 OS 隔离。" if intranet_requires_os_sandbox else ""),
+        )
     return _unavailable(
         artifact_dir,
         mode=mode,
         audit=base_audit,
         engine="unsupported_platform",
+        required_reason=("内网 Agent 运行需要 OS 隔离。" if intranet_requires_os_sandbox else ""),
     )
 
 
@@ -507,9 +531,10 @@ def _unavailable(
     mode: str,
     audit: dict[str, Any],
     engine: str,
+    required_reason: str = "",
 ) -> AgentSandboxLaunch:
     message = (
-        f"当前系统不支持所需 Agent OS 隔离（缺少 {engine}）。"
+        f"{required_reason}当前系统不支持所需 Agent OS 隔离（缺少 {engine}）。"
         "请安装隔离工具，或由管理员将隔离模式改为 auto 后以降级模式运行。"
     )
     rejected = {**audit, "status": "rejected" if mode == "required" else "degraded", "engine": engine, "message": message}

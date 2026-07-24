@@ -118,6 +118,35 @@ def test_required_sandbox_fails_closed_when_platform_tool_is_missing(tmp_path):
         )
 
 
+def test_intranet_execution_fails_closed_when_auto_sandbox_tool_is_missing(tmp_path):
+    """A certified deployment egress policy never permits an unsandboxed Agent."""
+    with pytest.raises(AgentSandboxError, match="内网 Agent 运行需要 OS 隔离"):
+        prepare_agent_sandbox(
+            runtime={
+                "sandbox_mode": "auto",
+                "intranet_require_os_sandbox": True,
+            },
+            cwd=str(tmp_path),
+            artifact_dir=tmp_path / "artifacts",
+            platform_name="darwin",
+            which=lambda _command: None,
+        )
+
+
+def test_intranet_execution_rejects_explicitly_disabled_os_sandbox(tmp_path):
+    with pytest.raises(AgentSandboxError, match="内网 Agent 运行需要 OS 隔离"):
+        prepare_agent_sandbox(
+            runtime={
+                "sandbox_mode": "off",
+                "intranet_require_os_sandbox": True,
+            },
+            cwd=str(tmp_path),
+            artifact_dir=tmp_path / "artifacts",
+            platform_name="darwin",
+            which=lambda _command: None,
+        )
+
+
 def test_auto_sandbox_records_actionable_degraded_mode(tmp_path):
     artifact_dir = tmp_path / "artifacts"
     launch = prepare_agent_sandbox(

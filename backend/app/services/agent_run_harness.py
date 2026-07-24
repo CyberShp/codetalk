@@ -1264,6 +1264,7 @@ class AgentRunHarness:
                 runtime={
                     "sandbox_mode": settings.external_agent_sandbox_mode,
                     "sandbox_allow_network": agent_network_is_permitted(),
+                    "intranet_require_os_sandbox": settings.intranet_network_mode,
                     "sandbox_read_paths": [
                         str(path) for path in _task_run_read_roots(self.artifact_dir)
                     ] + [str(path) for path in codex_runtime_read_targets],

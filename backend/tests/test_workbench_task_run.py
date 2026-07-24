@@ -3049,8 +3049,11 @@ def test_agent_execution_input_artifact_redacts_stdin_without_changing_process_i
     assert execution_input["stdin_json_sha256"]
 
 
-def test_agent_run_harness_keeps_active_process_alive_past_idle_window(tmp_path):
+def test_agent_run_harness_keeps_active_process_alive_past_idle_window(tmp_path, monkeypatch):
     from app.services.agent_run_harness import AgentRunHarness
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
 
     artifact_dir = tmp_path / "agent"
     marker = artifact_dir / "done.txt"
@@ -3093,8 +3096,11 @@ def test_agent_run_harness_keeps_active_process_alive_past_idle_window(tmp_path)
     assert any("heartbeat 4" in payload["content"] for payload in output_events)
 
 
-def test_agent_run_harness_times_out_when_process_goes_idle(tmp_path):
+def test_agent_run_harness_times_out_when_process_goes_idle(tmp_path, monkeypatch):
     from app.services.agent_run_harness import AgentRunHarness
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
 
     artifact_dir = tmp_path / "agent"
     script_path = tmp_path / "idle_agent.py"
@@ -3126,9 +3132,12 @@ def test_agent_run_harness_times_out_when_process_goes_idle(tmp_path):
     assert "too late" not in raw_output
 
 
-def test_agent_run_harness_does_not_count_hidden_runtime_noise_as_progress(tmp_path):
+def test_agent_run_harness_does_not_count_hidden_runtime_noise_as_progress(tmp_path, monkeypatch):
     """A provider reconnect/noise stream must not keep a user-visible run alive forever."""
     from app.services.agent_run_harness import AgentRunHarness
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
 
     artifact_dir = tmp_path / "agent"
     script_path = tmp_path / "noisy_agent.py"

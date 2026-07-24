@@ -40,11 +40,16 @@ def test_agent_harness_emits_facade_fields_without_breaking_legacy_event_type():
     assert payload["harness_visibility"] == "summary"
 
 
-def test_agent_harness_facade_runs_local_adapter_and_collects_normalized_result(tmp_path):
+def test_agent_harness_facade_runs_local_adapter_and_collects_normalized_result(tmp_path, monkeypatch):
     """The workflow-facing facade, not the CLI adapter, owns the stable result shape."""
     import sys
 
+    from app.config import settings
     from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
+
+    # This is a local deterministic adapter contract test, not a deployment
+    # Agent execution. Production intranet Agent launches remain fail-closed.
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
 
     workspace = tmp_path / "repo"
     workspace.mkdir()

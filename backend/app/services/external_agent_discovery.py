@@ -926,6 +926,7 @@ def _sandbox_external_agent_argv(
         runtime={
             "sandbox_mode": settings.external_agent_sandbox_mode,
             "sandbox_allow_network": agent_network_is_permitted(),
+            "intranet_require_os_sandbox": settings.intranet_network_mode,
             "sandbox_write_paths": settings.external_agent_sandbox_write_paths,
             "sandbox_command": process_argv[0] if process_argv else "",
         },
