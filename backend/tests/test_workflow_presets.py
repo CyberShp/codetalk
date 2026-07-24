@@ -75,13 +75,12 @@ def test_sfmea_schema_requires_source_mechanism_effect_chain_controls_and_recove
     } <= required
 
 
-def test_black_box_case_schema_requires_sfmea_traceability_ids():
+def test_black_box_case_schema_keeps_explicit_optional_sfmea_traceability_ids():
     from app.services.workflow_presets import BLACK_BOX_CASES_SCHEMA
 
     assert "risk_ids" in BLACK_BOX_CASES_SCHEMA["items"]["required"]
     assert BLACK_BOX_CASES_SCHEMA["items"]["properties"]["risk_ids"] == {
         "type": "array",
-        "minItems": 1,
         "items": {"type": "string", "minLength": 1},
     }
 

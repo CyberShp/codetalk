@@ -6384,6 +6384,55 @@ def _apply_final_deterministic_quality_repairs(
         for issue in audit.get("issues") or []
         if isinstance(issue, dict)
     ]
+    # A non-risk SFMEA entry is a rejected categorisation, not an unproven fact
+    # that merits another full model turn.  Keep the underlying black-box scenario
+    # but remove its invalid risk link so the final report never presents normal
+    # error handling as a product defect.
+    rejected_sfmea_ids = {
+        str(issue.get("row_id") or "").strip()
+        for issue in issues
+        if Path(str(issue.get("artifact") or "")).name == "sfmea.json"
+        and str(issue.get("code") or "") == "non_risk_sfmea_row"
+        and str(issue.get("row_id") or "").strip()
+    }
+    if rejected_sfmea_ids:
+        sfmea_path = artifact_dir / "sfmea.json"
+        sfmea_rows = _read_json(sfmea_path)
+        if isinstance(sfmea_rows, list):
+            kept_rows = [
+                row
+                for row in sfmea_rows
+                if _json_quality_row_id(row) not in rejected_sfmea_ids
+            ]
+            if len(kept_rows) != len(sfmea_rows):
+                _write_json(sfmea_path, kept_rows)
+                changed["sfmea.json"] = sorted(rejected_sfmea_ids)
+
+        cases_path = artifact_dir / "black_box_cases.json"
+        case_rows = _read_json(cases_path)
+        if isinstance(case_rows, list):
+            updated_cases: list[Any] = []
+            updated_case_fields: list[str] = []
+            for row in case_rows:
+                if not isinstance(row, dict) or not isinstance(row.get("risk_ids"), list):
+                    updated_cases.append(row)
+                    continue
+                retained = [
+                    risk_id
+                    for risk_id in row["risk_ids"]
+                    if str(risk_id) not in rejected_sfmea_ids
+                ]
+                if retained == row["risk_ids"]:
+                    updated_cases.append(row)
+                    continue
+                updated_cases.append({**row, "risk_ids": retained})
+                row_id = _json_quality_row_id(row)
+                if row_id:
+                    updated_case_fields.append(f"{row_id}.risk_ids")
+            if updated_case_fields:
+                _write_json(cases_path, updated_cases)
+                changed["black_box_cases.json"] = updated_case_fields
+
     for artifact in ("sfmea.json", "black_box_cases.json"):
         path = artifact_dir / artifact
         payload = _read_json(path)

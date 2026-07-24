@@ -9767,7 +9767,8 @@ def _stage_format_rules(stage_id: str, artifact: str) -> list[str]:
         ),
         "black_box_cases": (
             "- 只返回黑盒用例 JSON 数组；条目数量以当前 OUTPUT_SCHEMA 和输出上限为准；"
-            "每条必须通过 risk_ids 显式引用现有 SFMEA ID，所有高 RPN 风险必须至少映射一条用例；"
+            "风险相关用例必须通过 risk_ids 显式引用现有 SFMEA ID，所有高 RPN 风险必须至少映射一条用例；"
+            "正常路径或仅用于验证正确拒绝行为的用例可使用空 risk_ids，绝不能为满足字段而伪造 SFMEA 风险；"
             "test_dimension 必须覆盖且逐字使用 "
             "normal_path、invalid_input、resource_pressure、timeout、reconnect、concurrency、"
             "recovery、performance、long_steady_state、resource_wraparound、resource_cleanup、"

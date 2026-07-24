@@ -332,6 +332,7 @@ def test_sfmea_failure_mode_classifier_rejects_attempt3_normal_rows(failure_mode
         "登录成功回调中连接已退出时静默丢弃",
         "空指针检查后仍可能解引用空指针",
         "MCS 超限连接拒绝事件未记录，攻击行为不可追溯",
+        "MaxConnections 超限后连接仍被分配",
     ],
 )
 def test_sfmea_failure_mode_classifier_keeps_real_product_hazards(failure_mode):

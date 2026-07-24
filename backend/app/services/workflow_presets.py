@@ -211,7 +211,6 @@ BLACK_BOX_CASES_SCHEMA: dict[str, Any] = {
             "case_id": {"type": "string"},
             "risk_ids": {
                 "type": "array",
-                "minItems": 1,
                 "items": {"type": "string", "minLength": 1},
             },
             "test_dimension": {"type": "string"},
