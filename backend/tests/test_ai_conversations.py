@@ -5868,6 +5868,7 @@ async def test_bound_workflow_missing_agent_artifact_fails_closed(
 async def test_test_activity_explanations_do_not_trigger_full_artifact_gate():
     from app.services.ai_conversations import (
         _agent_task_requests_downloadable_artifact,
+        _is_linked_workflow_review_turn,
         _requires_strict_test_activity_quality_gate,
     )
 
@@ -5887,6 +5888,16 @@ async def test_test_activity_explanations_do_not_trigger_full_artifact_gate():
 
     assert _agent_task_requests_downloadable_artifact("请做 iSCSI SFMEA", "请做 iSCSI SFMEA") is True
     assert _requires_strict_test_activity_quality_gate("请做 iSCSI SFMEA") is True
+
+    linked_review = {
+        "scope_type": "workbench_task_run",
+        "scope_id": "task_run_example",
+    }
+    assert _is_linked_workflow_review_turn(linked_review, discussion_requests[-1]) is True
+    assert _is_linked_workflow_review_turn(
+        linked_review,
+        "评审现有交付件后，重新生成 SFMEA 和黑盒测试用例",
+    ) is False
 
 
 async def test_bound_workflow_artifact_validation_checks_json_schema(

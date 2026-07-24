@@ -1969,12 +1969,22 @@ async def run_generation(
     )
     chunks: list[str] = []
     artifact_stream_notice_sent = False
-    wants_downloadable_artifact = _agent_task_requests_downloadable_artifact(
-        test_activity_context,
-        test_activity_context,
+    linked_review_turn = _is_linked_workflow_review_turn(
+        conversation,
+        user_message["content"],
     )
-    requires_strict_quality_gate = _requires_strict_test_activity_quality_gate(
-        test_activity_context
+    wants_downloadable_artifact = (
+        False
+        if linked_review_turn
+        else _agent_task_requests_downloadable_artifact(
+            test_activity_context,
+            test_activity_context,
+        )
+    )
+    requires_strict_quality_gate = (
+        False
+        if linked_review_turn
+        else _requires_strict_test_activity_quality_gate(test_activity_context)
     )
     requested_token_budget = (
         max(settings.ai_conversation_max_output_tokens, _TEST_ACTIVITY_OUTPUT_TOKEN_BUDGET)
@@ -6670,6 +6680,30 @@ def _requests_full_test_activity_delivery(text: str) -> bool:
 def _requires_strict_test_activity_quality_gate(user_message: str) -> bool:
     text = str(user_message or "").lower()
     return _requests_full_test_activity_delivery(text)
+
+
+def _is_linked_workflow_review_turn(
+    conversation: dict[str, Any],
+    user_message: str,
+) -> bool:
+    """Keep task-run follow-ups conversational unless a new delivery is explicit."""
+
+    if str(conversation.get("scope_type") or "") != "workbench_task_run":
+        return False
+    text = str(user_message or "").lower()
+    review_markers = (
+        "解释", "为什么", "为何", "是否合理", "不合理", "评审", "审查", "点评",
+        "评估", "评分", "核验", "复核", "验证", "风险判断", "背后的",
+        "explain", "why", "review", "evaluate", "assess", "score", "validate", "verify",
+    )
+    creation_markers = (
+        "生成", "产出", "创建", "制定", "编写", "写一份", "设计一套", "请做",
+        "做一次", "重做", "重新生成", "补齐", "完善", "generate", "produce",
+        "create", "write", "design", "regenerate",
+    )
+    return any(marker in text for marker in review_markers) and not any(
+        marker in text for marker in creation_markers
+    )
 
 
 def _agent_structured_deliverable_groups(text: str) -> set[str]:
