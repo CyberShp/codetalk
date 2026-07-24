@@ -243,13 +243,28 @@ def _output_summary_for_agent_prompt(value: Any) -> Any:
         ]
     if not isinstance(value, dict):
         return value
-    return {
+    result = {
         key: _output_summary_for_agent_prompt(item)
         if key in {"declared_outputs", "expected_output_schemas"}
         else item
         for key, item in value.items()
         if key in {"declared_outputs", "expected_output_schemas", "required_artifacts"}
     }
+    # User-selected deliverables are execution requirements, not presentation
+    # metadata. Preserve the compact, named list so every runtime receives the
+    # same requested outputs without inheriting the full workflow schema.
+    requested_outputs = value.get("user_requested_outputs")
+    if isinstance(requested_outputs, list):
+        result["user_requested_outputs"] = [
+            {
+                key: item[key]
+                for key in ("input_id", "role", "value", "items")
+                if key in item
+            }
+            for item in requested_outputs
+            if isinstance(item, dict)
+        ]
+    return result
 
 
 def _workflow_for_agent_prompt(value: Any) -> dict[str, Any]:

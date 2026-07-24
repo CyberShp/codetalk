@@ -378,6 +378,9 @@ def _public_task_run_payload(task_run: Any) -> dict[str, Any]:
     private_repo_path = payload.get("repo_path")
     task_root = Path(str(payload.get("artifact_dir") or "")).resolve()
     payload.update(_public_task_run_runtime_summary(task_root))
+    input_consumption = _load_public_input_consumption_ledger(task_root)
+    if input_consumption:
+        payload["input_consumption"] = input_consumption
     payload["run_ui_summary"] = _build_task_run_ui_summary(task_run, task_root)
     if "repo_path" in payload:
         payload["repo_path"] = _public_repo_path_label(payload.get("repo_path"))
@@ -405,6 +408,16 @@ def _public_task_run_payload(task_run: Any) -> dict[str, Any]:
             public_agent_runs.append(public_item)
         payload["agent_runs"] = public_agent_runs
     return _redact_public_repo_paths(payload, private_repo_path)
+
+
+def _load_public_input_consumption_ledger(task_root: Path) -> dict[str, Any]:
+    """Expose the task-owned consumption ledger, never a mutable agent bundle."""
+    payload = _read_json(task_root / "input_consumption.json")
+    if not isinstance(payload, dict):
+        return {}
+    if payload.get("schema_version") != "input-consumption-v2":
+        return {}
+    return payload
 
 
 def _public_task_run_runtime_summary(task_root: Path) -> dict[str, Any]:

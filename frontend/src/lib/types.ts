@@ -1056,6 +1056,24 @@ export interface PreparedWorkbenchTaskRun {
   artifact_dir: string;
   workflow_snapshot: Record<string, unknown>;
   input_snapshot: Record<string, unknown>;
+  input_consumption?: {
+    schema_version?: string;
+    inputs?: Array<{
+      input_id: string;
+      label?: string;
+      input_type?: string;
+      sha256?: string;
+      summary?: string;
+      stage_consumption?: Array<{
+        stage_id?: string;
+        status?: string;
+        consumption_mode?: string;
+        reason?: string;
+        artifact?: string;
+        claim_ids?: string[];
+      }>;
+    }>;
+  };
   task_bundle: Record<string, unknown>;
   agent_runs: PreparedAgentRun[];
   run_ui_summary?: WorkbenchRunUiSummary;

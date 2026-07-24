@@ -83,6 +83,31 @@ def _task_run_dir(task_run_id: str) -> Path:
     return settings.data_path / "workbench" / "task_runs" / task_run_id
 
 
+async def test_public_task_run_payload_loads_stage_level_input_consumption(tmp_path):
+    from app.api.agent_workbench import _load_public_input_consumption_ledger
+
+    ledger = {
+        "schema_version": "input-consumption-v2",
+        "inputs": [{
+            "input_id": "design_doc",
+            "label": "开发设计文档",
+            "input_type": "file",
+            "sha256": "a" * 64,
+            "summary": "login-design.md",
+            "stage_consumption": [{
+                "stage_id": "source_evidence",
+                "status": "consumed",
+                "artifact": "source_analysis.md",
+            }],
+        }],
+    }
+    (tmp_path / "input_consumption.json").write_text(
+        json.dumps(ledger, ensure_ascii=False), encoding="utf-8"
+    )
+
+    assert _load_public_input_consumption_ledger(tmp_path) == ledger
+
+
 @asynccontextmanager
 async def _no_lifespan(app: FastAPI):
     yield
