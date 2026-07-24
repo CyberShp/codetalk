@@ -2335,6 +2335,45 @@ def test_sfmea_interpreted_source_claim_remains_an_l2_behavior_claim():
     assert normalized[0]["technical_claims"][0]["type"] == "source"
 
 
+def test_final_materialized_sfmea_contract_rewrites_cleanup_order_to_hypothesis(tmp_path):
+    from app.services.ai_staged_execution import normalize_materialized_sfmea_risk_contract
+
+    (tmp_path / "evidence_cards.json").write_text(json.dumps([{
+        "evidence_id": "SRC-06:L631",
+        "file_path": "lib/iscsi/conn.c",
+        "start_line": 631,
+        "end_line": 631,
+        "excerpt": "spdk_sock_close(&conn->sock);",
+        "symbols": ["_iscsi_conn_destruct"],
+        "sha256": "digest",
+        "classification": "source",
+    }]), encoding="utf-8")
+    (tmp_path / "source_scope.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "sfmea.json").write_text(json.dumps([{
+        "sfmea_id": "SFMEA-12",
+        "failure_mode": "连接析构中 socket 关闭后仍访问",
+        "cause": "风险假设：若 socket 关闭后仍有数据传输任务，可能导致访问已关闭的 socket",
+        "mechanism": "风险假设：若先调用 spdk_sock_close 再调用清理任务，后者可能访问 socket",
+        "technical_claims": [{
+            "claim_id": "TC-12",
+            "type": "source",
+            "statement": "spdk_sock_close(&conn->sock);",
+            "evidence": [{"evidence_id": "SRC-06:L631", "path": "lib/iscsi/conn.c", "quote": "spdk_sock_close(&conn->sock);"}],
+        }],
+    }]), encoding="utf-8")
+
+    fields = normalize_materialized_sfmea_risk_contract(
+        artifact_dir=tmp_path,
+        plan={"original_user_request": "iSCSI login cleanup"},
+    )
+
+    row = json.loads((tmp_path / "sfmea.json").read_text())[0]
+    assert "source_risk_candidate" in fields[0]
+    assert row["risk_status"] == "test_hypothesis"
+    assert "故障注入" in row["cause"]
+    assert row["technical_claims"][0]["type"] == "source_anchor"
+
+
 def test_normalize_black_box_delivery_contract_replaces_source_mapping_and_unit_fallback():
     rendered, fields = _normalize_black_box_delivery_contract(
         [

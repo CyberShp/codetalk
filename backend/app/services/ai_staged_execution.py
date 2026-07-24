@@ -5987,6 +5987,40 @@ def _normalize_sfmea_source_anchor_claims(rendered: Any) -> Any:
     return rendered
 
 
+def normalize_materialized_sfmea_risk_contract(
+    *, artifact_dir: Path, plan: dict[str, Any]
+) -> list[str]:
+    """Apply the SFMEA fact/risk boundary to the final bytes before auditing.
+
+    Quality repair merges provider field patches after a stage has already been
+    normalized.  Re-run the deterministic boundary on the materialized JSON so
+    a provider cannot reintroduce a literal source line as an L2 claim or keep
+    a speculative cleanup order as an observed product defect.
+    """
+    path = artifact_dir / "sfmea.json"
+    rendered = _read_json_file(path, default=[])
+    if not isinstance(rendered, list):
+        return []
+    source_pack = _read_json_file(
+        artifact_dir / "stages" / "source_analysis" / "source_evidence_pack.json"
+    )
+    if not _source_pack_has_evidence(source_pack):
+        source_pack = _source_pack_from_materialized_artifacts(
+            artifact_dir=artifact_dir,
+            plan=plan,
+        )
+    catalog = _sfmea_product_claim_catalog(
+        _build_verified_claim_catalog(source_pack if isinstance(source_pack, dict) else {})
+    )
+    normalized, fields = _normalize_sfmea_risk_contract(
+        rendered,
+        product_claim_catalog=catalog,
+    )
+    if normalized != rendered:
+        _write_json(path, normalized)
+    return fields
+
+
 def _source_risk_candidate_for_sfmea_row(
     row: dict[str, Any],
     *,

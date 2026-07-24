@@ -34,6 +34,7 @@ from app.services.ai_staged_execution import (
     build_staged_execution_plan,
     execute_staged_builtin_plan,
     materialize_source_evidence_pack,
+    normalize_materialized_sfmea_risk_contract,
     refresh_deterministic_combined_report,
 )
 from app.services.agent_run_harness import ArtifactValidationHarness
@@ -2506,6 +2507,10 @@ class WorkbenchWorkflowRunner:
                                 }:
                                     break
                         if repair_history:
+                            normalize_materialized_sfmea_risk_contract(
+                                artifact_dir=artifact_dir,
+                                plan=current_plan,
+                            )
                             # Repair stages can apply deterministic field patches after
                             # their provider output. Rebind the independent verdicts to
                             # the final bytes so task-level acceptance never consumes a
