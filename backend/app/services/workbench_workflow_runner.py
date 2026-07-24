@@ -2445,6 +2445,7 @@ class WorkbenchWorkflowRunner:
                                                 "model": str(
                                                     settings.behavior_claim_audit_model or ""
                                                 ),
+                                                "reuse_source": "same_run_quality_repair_rollback",
                                                 "user_message": (
                                                     "候选修复质量回退，已恢复修复前通过绑定校验的独立事实核验"
                                                 ),

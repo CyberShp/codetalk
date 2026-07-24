@@ -3915,6 +3915,7 @@ async def _execute_regular_stage(
                 "status": "completed",
                 "artifact": artifact,
                 "cache_key": cache_key,
+                "reuse_source": "cross_run_cache",
                 "user_message": f"已复用通过校验的 {artifact}",
             },
         )
@@ -6514,6 +6515,20 @@ def _normalize_black_box_oracle_contract(
             continue
         dimension = str(row.get("test_dimension") or "").strip().lower()
         basis = str(row.get("oracle_basis") or "").strip()
+        expected_result = str(row.get("expected_result") or "").strip()
+        # A first-run performance case can establish a baseline, but cannot
+        # honestly predeclare an absolute latency pass line without a recorded
+        # same-environment measurement. Keep the test executable and make the
+        # missing baseline explicit instead of leaving a quality-loop trap.
+        if dimension == "performance" and re.search(
+            r"(?i)(?:<|<=|≤|低于|不超过)\s*\d+(?:\.\d+)?\s*(?:ms|毫秒)",
+            expected_result,
+        ):
+            row["expected_result"] = (
+                "完成预热和重复采样，记录 Login 请求至最终响应的 P50/P95、方差和失败率；"
+                "本轮仅建立同环境基线，不预设绝对通过阈值。"
+            )
+            fields.append(f"$[{index}].expected_result")
         unregistered_literal = bool(
             dimension == "performance"
             and re.search(r"(?i)\b\d+(?:\.\d+)?\s*%", basis)
@@ -8752,6 +8767,7 @@ async def _execute_source_analysis_stage(
                 "status": "completed",
                 "artifact": "source_analysis.md",
                 "cache_key": cache_key,
+                "reuse_source": "cross_run_cache",
             },
         )
         return {**result, "output_path": str(output_path)}

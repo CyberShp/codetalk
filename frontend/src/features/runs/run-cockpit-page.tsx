@@ -192,11 +192,15 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
     ? executionProfile.expected_duration_minutes.map((value) => Number(value)).filter(Number.isFinite)
     : [];
   const reuseEvents = events.filter((item) => String(item.payload.kind || "") === "stage_reused");
-  const reusedStageIds = new Set(
-    reuseEvents
+  // A stage reused during the same quality-repair pass is not a cache hit.
+  // Showing it as one makes a cold run look artificially fast.
+  const cachedReuseEvents = reuseEvents.filter((item) => String(item.payload.reuse_source || "") === "cross_run_cache");
+  const cachedStageIds = new Set(
+    cachedReuseEvents
       .map((item) => String(item.payload.stage_id || item.payload.artifact || "").trim())
       .filter(Boolean),
   );
+  const sameRunReuseEvents = reuseEvents.filter((item) => String(item.payload.reuse_source || "").trim() === "same_run_quality_accepted_artifact");
 
   const cancel = async () => {
     setActionBusy(true);
@@ -255,7 +259,7 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
       <StatusBlock label="质量状态" value={taskStatusLabel(taskQualityLabels, run.quality_status || "not_checked")} tone={run.quality_status || "not_checked"} />
       <StatusBlock label="交付状态" value={taskStatusLabel(taskDeliveryLabels, run.delivery_status || "none")} tone={run.delivery_status || "none"} />
       <div className="ct-v2-run-metric"><span>耗时</span><RunDuration start={run.started_at || run.runtime?.started_at} end={run.completed_at || run.runtime?.completed_at} active={running} /></div>
-      {executionProfileId && <div className="ct-v2-run-metric"><span>执行档位</span><strong>{executionProfileLabel}</strong><small>{profileDuration.length === 2 ? `目标 ${profileDuration[0]}-${profileDuration[1]} 分钟` : "已冻结到本次运行"}{reusedStageIds.size ? ` · 已复用 ${reusedStageIds.size} 个阶段（${reuseEvents.length} 次）` : ""}</small></div>}
+      {executionProfileId && <div className="ct-v2-run-metric"><span>执行档位</span><strong>{executionProfileLabel}</strong><small>{profileDuration.length === 2 ? `目标 ${profileDuration[0]}-${profileDuration[1]} 分钟` : "已冻结到本次运行"}{cachedStageIds.size ? ` · 跨运行缓存命中 ${cachedStageIds.size} 个阶段（${cachedReuseEvents.length} 次）` : " · 未命中跨运行缓存"}{sameRunReuseEvents.length ? ` · 本次质量修复复用 ${sameRunReuseEvents.length} 次` : ""}</small></div>}
       <div className="ct-v2-run-metric"><span>当前节点</span><strong>{displayNodeName(currentNode?.label || currentNode?.id || "等待调度")}</strong></div>
       <div className="ct-v2-run-actions">
         <button type="button" disabled={actionBusy} onClick={() => void discussRun()}><MessageSquareText size={14} />围绕本次运行继续分析</button>
@@ -380,6 +384,7 @@ function StageProgressPanel({ events, runPartial, recovered, recoveredLabel, onR
   if (!stageEvents.length) return null;
   if (!latest) return null;
   const stageId = String(latest.payload.stage_id || "business_flow");
+  const stageArtifact = String(latest.payload.artifact || "");
   const evidencePayload = [...stageEvents].reverse().find((item) => hasFlowEvidenceMetrics(item.payload))?.payload || {};
   const providerPayload = [...stageEvents].reverse().find((item) => item.payload.stage_id === stageId && item.payload.kind === "stage_provider_started")?.payload || {};
   const outputPayload = [...stageEvents].reverse().find((item) => item.payload.stage_id === stageId && Number(item.payload.output_characters || 0) > 0)?.payload || {};
@@ -391,7 +396,7 @@ function StageProgressPanel({ events, runPartial, recovered, recoveredLabel, onR
   const elapsedSeconds = first ? Math.max(0, Math.round((elapsedEnd - new Date(first.created_at).getTime()) / 1000)) : 0;
   const stateLabel = partial ? "部分完成" : completed ? "已完成" : "运行中";
   return <section className={`ct-v2-stage-progress ${partial ? "is-partial" : ""}`} aria-label="阶段执行进度">
-    <header><div><span>{recovered ? recoveredLabel : stageDisplayName(stageId)}</span><h2>{recovered ? "最终质量审计已接受保留结果" : runPartial ? "工作流已结束，当前最佳结果已保留" : eventMessage(latest)}</h2></div><em>{recovered ? "已完成（使用保留结果）" : stateLabel}</em></header>
+    <header><div><span>{recovered ? recoveredLabel : stageDisplayName(stageId, stageArtifact)}</span><h2>{recovered ? "最终质量审计已接受保留结果" : runPartial ? "工作流已结束，当前最佳结果已保留" : eventMessage(latest)}</h2></div><em>{recovered ? "已完成（使用保留结果）" : stateLabel}</em></header>
     {recovered ? <dl>
       <div><dt>最终状态</dt><dd>已完成，质量门禁已通过</dd></div>
       <div><dt>保留原因</dt><dd>中间模型输出未完整闭合，已由确定性证据和质量修复补全。</dd></div>
@@ -426,7 +431,12 @@ function RunDuration({ start, end, active }: { start?: string; end?: string; act
 
 const useStageClock = useRunClock;
 
-function stageDisplayName(value: string) { return ({ source_analysis: "源码证据", flow_evidence_pack: "调用链证据", flow_outline: "流程骨架", business_flow: "业务流程", sfmea: "SFMEA", black_box_cases: "黑盒用例", breadth_inventory: "广度盘点", developer_explanation: "开发讲解与处置", scenario_expansion: "八源场景扩展", test_design_governance: "测试设计治理", coverage_judge: "覆盖质量门禁", test_design_mindmap: "测试设计脑图", behavior_claim_validation: "独立事实核验", test_strategy: "测试策略", test_design: "测试设计" } as Record<string, string>)[value] || value; }
+function stageDisplayName(value: string, artifact = "") {
+  const known = ({ source_analysis: "源码证据", flow_evidence_pack: "调用链证据", flow_outline: "流程骨架", business_flow: "业务流程", sfmea: "SFMEA", black_box_cases: "黑盒用例", breadth_inventory: "广度盘点", developer_explanation: "开发讲解与处置", scenario_expansion: "八源场景扩展", test_design_governance: "测试设计治理", coverage_judge: "覆盖质量门禁", test_design_mindmap: "测试设计脑图", behavior_claim_validation: "独立事实核验", test_strategy: "测试策略", test_design: "测试设计" } as Record<string, string>)[value];
+  if (known) return known;
+  if (value.startsWith("artifact_")) return ({ "source_analysis.md": "源码分析摘要", "coverage_gap.md": "覆盖缺口与建议" } as Record<string, string>)[artifact] || "补充交付材料";
+  return value;
+}
 function NodeInspector({ node }: { node?: WorkbenchRunUiNodeSummary }) { return <aside className="ct-v2-node-inspector"><header><span>运行上下文</span><h2>节点详情</h2></header>{node ? <div><strong>{displayNodeName(node.label || node.id || "当前节点")}</strong><small>{displayNodeType(node.type || "agent_task")} · {node.status_label}</small><InspectorText label="节点目标" value={displayNodeGoal(node)} /><InspectorText label="为什么执行" value={node.why || "由工作流依赖关系调度"} /><InspectorGroup label="直接依赖" values={(node.dependency_labels || node.depends_on || []).map(displayNodeName)} /><InspectorInputGroup values={node.received_inputs || []} /><InspectorGroup label="Agent / Provider" values={[node.executor_label || node.provider || "系统内置"]} /><InspectorGroup label="Skills" values={(node.skills || []).map((item) => item.label || item.id)} /><InspectorGroup label="MCP" values={node.mcp_profiles || []} /><InspectorGroup label="正在调用的工具" values={node.active_tools || []} /><InspectorGroup label="已产生的输出" values={(node.outputs || []).filter((item) => item.status_label === "已生成").map((item) => item.artifact || item.id)} /><InspectorGroup label="下一节点" values={(node.next_node_labels || node.next_node_ids || []).map(displayNodeName)} /><InspectorText label="开始时间" value={formatNodeTime(node.started_at)} /><InspectorText label="节点耗时" value={formatNodeDuration(node.duration_ms)} /></div> : <p>等待调度第一个节点。</p>}</aside>; }
 function InspectorGroup({ label, values }: { label: string; values: string[] }) { return <section><h3>{label}</h3>{values.length ? values.map((item) => <span key={item}>{item}</span>) : <small>无</small>}</section>; }
 function InspectorText({ label, value }: { label: string; value: string }) { return <section><h3>{label}</h3><p>{value || "无"}</p></section>; }
@@ -495,7 +505,20 @@ function lifecycleStatus(eventType: string) {
 }
 function statusOf(run: PreparedWorkbenchTaskRun) { return String(run.execution_status || run.runtime?.status || run.status || "prepared").toLowerCase(); }
 function eventNode(item: WorkbenchTaskRunEvent) { return String(item.payload.step_id || item.payload.node_id || item.payload.node_label || ""); }
-function eventMessage(item: WorkbenchTaskRunEvent) { const message = String(item.payload.user_message || item.payload.message || eventTypeLabel(item.event_type)); return ({ "run completed": "运行已结束", "node blocked": "节点因上游门禁阻断" } as Record<string, string>)[message.toLowerCase()] || message; }
+function eventMessage(item: WorkbenchTaskRunEvent) {
+  const message = String(item.payload.user_message || item.payload.message || eventTypeLabel(item.event_type));
+  const translated = ({ "run completed": "运行已结束", "node blocked": "节点因上游门禁阻断" } as Record<string, string>)[message.toLowerCase()] || message;
+  const stageLabels: Record<string, string> = {
+    source_analysis: "源码证据",
+    flow_evidence_pack: "调用链证据",
+    flow_outline: "流程骨架",
+    business_flow: "业务流程",
+    sfmea: "SFMEA",
+    black_box_cases: "黑盒用例",
+    behavior_claim_validation: "独立事实核验",
+  };
+  return Object.entries(stageLabels).reduce((value, [stageId, label]) => value.replaceAll(stageId, label), translated);
+}
 function eventDetail(item: WorkbenchTaskRunEvent) { const value = item.payload.delta ?? item.payload.text ?? item.payload.output ?? item.payload.error ?? item.payload.detail ?? ""; return typeof value === "string" ? value : value ? JSON.stringify(value, null, 2) : ""; }
 function eventClipboardLine(item: WorkbenchTaskRunEvent) { return `[${new Date(item.created_at).toLocaleTimeString("zh-CN", { hour12: false })}] ${eventNode(item) || "系统"} ${eventMessage(item)} ${eventDetail(item)}`.trim(); }
 function eventKindLabel(kind: string) { return ({ status: "状态", done: "完成", artifact: "产物", output: "输出", error: "错误", thinking: "思考", reasoning: "推理", diagnostic: "诊断", trace: "跟踪", tool_use: "工具调用", tool_result: "工具结果" } as Record<string, string>)[kind] || kind; }

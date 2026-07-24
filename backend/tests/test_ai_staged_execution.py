@@ -1891,6 +1891,23 @@ def test_black_box_oracle_contract_removes_unregistered_fixed_thresholds():
     ]
 
 
+def test_black_box_oracle_contract_replaces_unregistered_absolute_latency_expectation():
+    rows = [
+        {
+            "case_id": "BB-08",
+            "test_dimension": "performance",
+            "expected_result": "P50 延迟 < 10ms，P95 延迟 < 20ms（待环境确认）",
+            "oracle_basis": "待同环境基线建立后确定阈值。",
+        }
+    ]
+
+    normalized, fields = _normalize_black_box_oracle_contract(rows)
+
+    assert "< 10ms" not in normalized[0]["expected_result"]
+    assert "不预设绝对通过阈值" in normalized[0]["expected_result"]
+    assert "$[0].expected_result" in fields
+
+
 def test_black_box_dimension_contract_removes_noncontract_and_duplicate_rows():
     rows = [
         {"case_id": "BB-01", "test_dimension": "normal_path"},
@@ -7402,7 +7419,11 @@ async def test_source_analysis_cache_reuses_validated_pack_without_provider_call
 
     assert first_llm.calls_by_stage["source_analysis"] == 1
     assert second_llm.calls_by_stage.get("source_analysis", 0) == 0
-    assert any(event.get("event_type") == "stage_reused" for event in reused_events)
+    assert any(
+        event.get("event_type") == "stage_reused"
+        and event.get("reuse_source") == "cross_run_cache"
+        for event in reused_events
+    )
     stage_result = json.loads(
         (second_dir / "stages" / "source_analysis" / "stage_result.json").read_text()
     )
