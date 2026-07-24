@@ -42,6 +42,10 @@ import {
 
 const tabs = ["摘要", "实时输出", "工具调用", "全部事件"] as const;
 const terminalStatuses = new Set(["completed", "partial", "success", "failed", "error", "cancelled", "interrupted"]);
+const lifecycleEventTypes = new Set([
+  "queued", "running", "step_started", "node_started", "step_completed", "node_completed",
+  "step_failed", "node_failed", "completed", "partial", "failed", "error", "cancelled", "interrupted",
+]);
 const MAX_LOADED_EVENTS = 2000;
 const EVENT_PAGE_SIZE = 1000;
 
@@ -98,7 +102,7 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
       ]);
       if (nextRun.task_id && nextRun.task_id !== taskId) throw new Error("该运行不属于当前任务");
       setTask(nextTask);
-      setRun(nextRun);
+      setRun(applyLifecycleEvents(nextRun, eventResult.items));
       setEvents((current) => mergeEvents(current, eventResult.items));
       setHasOlderEvents(Boolean(eventResult.has_older));
       setArtifacts(artifactResult.artifacts);
@@ -122,6 +126,8 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
       const item = JSON.parse(raw.data) as WorkbenchTaskRunEvent;
       lastEventId.current = Math.max(lastEventId.current, item.event_id);
       setEvents((current) => mergeEvents(current, [item]));
+      setRun((current) => current ? applyLifecycleEvents(current, [item]) : current);
+      if (lifecycleEventTypes.has(item.event_type)) void refresh(true);
     };
     const onDone = () => { stream.close(); void refresh(true); };
     stream.addEventListener("task_run_event", onEvent as EventListener);
@@ -427,6 +433,38 @@ type PairedToolCall = { id: string; use?: WorkbenchTaskRunEvent; result?: Workbe
 function pairedToolCalls(events: WorkbenchTaskRunEvent[]): PairedToolCall[] { const rows: PairedToolCall[] = []; const pending = new Map<string, PairedToolCall[]>(); for (const event of events) { const key = String(event.payload.call_id || event.payload.tool_call_id || event.payload.id || event.payload.tool || event.payload.name || "tool"); if (event.event_kind === "tool_use") { const row = { id: `tool-${event.event_id}`, use: event }; rows.push(row); const queue = pending.get(key) || []; queue.push(row); pending.set(key, queue); continue; } if (event.event_kind === "tool_result") { const row = pending.get(key)?.shift(); if (row) row.result = event; else rows.push({ id: `tool-result-${event.event_id}`, result: event }); } } return rows; }
 function ToolCallRow({ item }: { item: PairedToolCall }) { const source = item.use || item.result; if (!source) return null; const tool = String(source.payload.tool || source.payload.name || "工具"); const resultSummary = item.result ? eventDetail(item.result) || eventMessage(item.result) : "等待工具返回结果"; return <article className={`ct-v2-tool-call ${item.result ? "is-complete" : "is-running"}`}><header><time>{new Date(source.created_at).toLocaleTimeString("zh-CN", { hour12: false })}</time><strong>{tool}</strong><span>{item.result ? "已完成" : "调用中"}</span></header><p>{item.use ? eventMessage(item.use) : "收到工具结果"}</p><pre>{resultSummary}</pre></article>; }
 function mergeEvents(current: WorkbenchTaskRunEvent[], incoming: WorkbenchTaskRunEvent[], direction: "live" | "older" = "live") { const map = new Map(current.map((item) => [item.event_id, item])); incoming.forEach((item) => map.set(item.event_id, item)); const ordered = [...map.values()].sort((a, b) => a.event_id - b.event_id); return direction === "older" ? ordered.slice(0, MAX_LOADED_EVENTS) : ordered.slice(-MAX_LOADED_EVENTS); }
+function applyLifecycleEvents(run: PreparedWorkbenchTaskRun, events: WorkbenchTaskRunEvent[]) {
+  const event = [...events].reverse().find((item) => lifecycleEventTypes.has(item.event_type));
+  if (!event) return run;
+  const status = lifecycleStatus(event.event_type);
+  if (!status) return run;
+  const nodeId = eventNode(event);
+  const summary = run.run_ui_summary;
+  const nodes = summary?.nodes.map((node) => node.id === nodeId && status === "running"
+    ? { ...node, status: "running", status_label: "运行中", started_at: node.started_at || event.created_at }
+    : node);
+  const currentNode = nodes?.find((node) => node.id === nodeId) || summary?.current_node;
+  return {
+    ...run,
+    execution_status: status,
+    runtime: { ...run.runtime, status, started_at: run.runtime?.started_at || (status === "running" ? event.created_at : undefined) },
+    started_at: run.started_at || (status === "running" ? event.created_at : undefined),
+    run_ui_summary: summary ? {
+      ...summary,
+      status,
+      status_label: taskStatusLabel(taskExecutionLabels, status),
+      current_node: currentNode,
+      nodes: nodes || summary.nodes,
+    } : summary,
+  };
+}
+function lifecycleStatus(eventType: string) {
+  if (["queued"].includes(eventType)) return "queued";
+  if (["running", "step_started", "node_started", "step_completed", "node_completed"].includes(eventType)) return "running";
+  if (["completed", "partial", "failed", "error", "cancelled", "interrupted"].includes(eventType)) return eventType;
+  if (["step_failed", "node_failed"].includes(eventType)) return "failed";
+  return "";
+}
 function statusOf(run: PreparedWorkbenchTaskRun) { return String(run.execution_status || run.runtime?.status || run.status || "prepared").toLowerCase(); }
 function eventNode(item: WorkbenchTaskRunEvent) { return String(item.payload.step_id || item.payload.node_id || item.payload.node_label || ""); }
 function eventMessage(item: WorkbenchTaskRunEvent) { const message = String(item.payload.user_message || item.payload.message || eventTypeLabel(item.event_type)); return ({ "run completed": "运行已结束", "node blocked": "节点因上游门禁阻断" } as Record<string, string>)[message.toLowerCase()] || message; }

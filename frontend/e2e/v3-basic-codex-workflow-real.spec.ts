@@ -23,6 +23,7 @@ test("V3 basic source report runs through the browser with a real Codex CLI", as
 
   const startedAt = Date.now();
   const status = page.locator(".ct-v2-run-status").filter({ hasText: "执行状态" }).locator("strong");
+  await expect(status).toHaveText("运行中", { timeout: 90_000 });
   await expect.poll(async () => (await status.textContent())?.trim(), {
     timeout: 20 * 60_000,
     intervals: [1000, 2000, 5000, 10_000],

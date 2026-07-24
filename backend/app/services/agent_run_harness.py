@@ -136,7 +136,20 @@ _QUALITY_RETRY_REDUNDANT_CONTEXT_KEYS = (
 )
 
 _AGENT_PROMPT_TASK_BUNDLE_OMITTED_KEYS = frozenset(
-    (*_QUALITY_RETRY_REDUNDANT_CONTEXT_KEYS, "test_activity_contract")
+    (
+        *_QUALITY_RETRY_REDUNDANT_CONTEXT_KEYS,
+        "test_activity_contract",
+        # These are persisted for audit and system-side validation.  They are
+        # deliberately projected into the dedicated compact contracts below,
+        # rather than being handed to an Agent as duplicate prompt bulk.
+        "agent_instructions",
+        "agent_mcp_requests",
+        "artifact_contract_v3",
+        "expected_output_schemas",
+        "required_artifacts_by_step",
+        "semantic_import_outputs_by_step",
+        "stage_specs",
+    )
 )
 
 _AGENT_PROMPT_VERBATIM_TASK_BUNDLE_KEYS = frozenset({
@@ -179,6 +192,94 @@ _AGENT_PROMPT_EXECUTION_CONTRACT_KEYS = (
     "source_analysis_limits",
     "workflow",
 )
+
+_AGENT_PROMPT_MAX_SOURCE_FILES = 6
+_AGENT_PROMPT_MAX_SOURCE_EXCERPT_CHARACTERS = 1400
+_AGENT_PROMPT_MAX_PROFESSIONAL_CONSTRAINTS = 12
+_AGENT_PROMPT_MAX_WORKFLOW_STEPS = 8
+
+
+def _source_context_for_agent_prompt(source_context: Any) -> dict[str, Any]:
+    """Project verified evidence into the small analysis context an Agent needs."""
+    if not isinstance(source_context, dict):
+        return {}
+    files: list[dict[str, Any]] = []
+    for item in source_context.get("files") or []:
+        if not isinstance(item, dict) or len(files) >= _AGENT_PROMPT_MAX_SOURCE_FILES:
+            continue
+        excerpt = str(item.get("excerpt") or "")
+        files.append({
+            key: item[key]
+            for key in (
+                "file_path", "start_line", "end_line", "symbols", "matched_terms",
+                "kind", "source_kind", "sha256", "reason",
+            )
+            if key in item
+        } | {"excerpt": excerpt[:_AGENT_PROMPT_MAX_SOURCE_EXCERPT_CHARACTERS]})
+    return {
+        key: source_context[key]
+        for key in ("repo_revision", "query", "evidence_gaps", "source_scope")
+        if key in source_context
+    } | {
+        "files": files,
+        "projection": {
+            "max_files": _AGENT_PROMPT_MAX_SOURCE_FILES,
+            "max_excerpt_characters": _AGENT_PROMPT_MAX_SOURCE_EXCERPT_CHARACTERS,
+            "source_of_truth": "CodeTalk verified Source Evidence Pack",
+        },
+    }
+
+
+def _output_summary_for_agent_prompt(value: Any) -> Any:
+    if isinstance(value, list):
+        return [
+            {
+                key: item[key]
+                for key in ("id", "output_id", "artifact", "path", "type", "schema_type", "schema_required")
+                if key in item
+            }
+            for item in value
+            if isinstance(item, dict)
+        ]
+    if not isinstance(value, dict):
+        return value
+    return {
+        key: _output_summary_for_agent_prompt(item)
+        if key in {"declared_outputs", "expected_output_schemas"}
+        else item
+        for key, item in value.items()
+        if key in {"declared_outputs", "expected_output_schemas", "required_artifacts"}
+    }
+
+
+def _workflow_for_agent_prompt(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    result = {
+        key: value[key]
+        for key in ("id", "name", "version", "description", "execution_label", "execution_subject")
+        if key in value
+    }
+    result["inputs"] = [
+        {
+            key: item[key]
+            for key in ("id", "label", "role", "type", "required")
+            if key in item
+        }
+        for item in value.get("inputs") or []
+        if isinstance(item, dict)
+    ]
+    result["outputs"] = _output_summary_for_agent_prompt(value.get("outputs") or [])
+    result["steps"] = [
+        {
+            key: item[key]
+            for key in ("id", "label", "name", "type", "provider")
+            if key in item
+        }
+        for item in (value.get("steps") or [])[:_AGENT_PROMPT_MAX_WORKFLOW_STEPS]
+        if isinstance(item, dict)
+    ]
+    return result
 
 
 def _task_bundle_for_agent_prompt(task_bundle: dict[str, Any]) -> dict[str, Any]:
@@ -239,11 +340,72 @@ def _task_bundle_for_agent_prompt(task_bundle: dict[str, Any]) -> dict[str, Any]
 def _execution_contract_for_agent_prompt(
     execution_contract: dict[str, Any],
 ) -> dict[str, Any]:
-    return {
+    result = {
         key: execution_contract[key]
         for key in _AGENT_PROMPT_EXECUTION_CONTRACT_KEYS
         if key in execution_contract
+        and key not in {"source_context", "outputs", "workflow"}
     }
+    if "source_context" in execution_contract:
+        result["source_context"] = _source_context_for_agent_prompt(
+            execution_contract["source_context"]
+        )
+    if "outputs" in execution_contract:
+        result["outputs"] = _output_summary_for_agent_prompt(
+            execution_contract["outputs"]
+        )
+    if "workflow" in execution_contract:
+        result["workflow"] = _workflow_for_agent_prompt(
+            execution_contract["workflow"]
+        )
+    return result
+
+
+def _test_activity_contract_for_agent_prompt(contract: dict[str, Any]) -> dict[str, Any]:
+    """Keep quality rules system-owned while giving the Agent useful task guardrails.
+
+    Regex-based correction rules and full schemas are Validator implementation
+    details.  Sending them to the generating Agent consumes context and creates
+    a Goodhart incentive to phrase around a rule instead of grounding claims in
+    verified source evidence.
+    """
+    result = {
+        key: contract[key]
+        for key in (
+            "contract_version", "target", "required_outputs", "executor_requirements",
+            "evidence_policy", "black_box_boundary", "focus_rationale",
+        )
+        if key in contract
+    }
+    if "user_requirements" in contract:
+        result["user_requirements"] = str(contract["user_requirements"])
+    domain_profiles = contract.get("domain_profiles")
+    if isinstance(domain_profiles, list):
+        result["domain_profiles"] = [str(item) for item in domain_profiles[:12]]
+    quality_gates = contract.get("quality_gates")
+    if isinstance(quality_gates, dict):
+        result["quality_gates"] = {
+            str(key): value
+            for key, value in quality_gates.items()
+            if isinstance(value, (bool, int, float, str))
+        }
+    constraints: list[dict[str, Any]] = []
+    for item in contract.get("professional_constraints") or []:
+        if not isinstance(item, dict) or len(constraints) >= _AGENT_PROMPT_MAX_PROFESSIONAL_CONSTRAINTS:
+            continue
+        constraints.append({
+            key: item[key]
+            for key in ("id", "assertion", "evidence")
+            if key in item
+        })
+    if constraints:
+        result["professional_constraints"] = constraints
+    result["validator_ownership"] = {
+        "full_schema": "CodeTalk validator",
+        "regex_correction_rules": "CodeTalk validator",
+        "required_agent_behavior": "Use verified source evidence, distinguish facts from hypotheses, and write only declared artifacts.",
+    }
+    return result
 
 
 def _output_contract_for_agent_prompt(
@@ -757,6 +919,9 @@ class AgentRunHarness:
         compact_execution_contract = _execution_contract_for_agent_prompt(
             execution_contract
         )
+        compact_test_activity_contract = _test_activity_contract_for_agent_prompt(
+            test_activity_contract
+        )
         compact_output_contract = _output_contract_for_agent_prompt(
             agent_output_contract if isinstance(agent_output_contract, dict) else {}
         )
@@ -774,7 +939,7 @@ class AgentRunHarness:
                 else {}
             ),
             "execution_contract": compact_execution_contract,
-            "test_activity_contract": test_activity_contract,
+            "test_activity_contract": compact_test_activity_contract,
             "agent_output_contract": compact_output_contract,
             "artifact_contract": _artifact_contract_reference(
                 compact_output_contract,

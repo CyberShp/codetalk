@@ -983,6 +983,83 @@ def test_initial_agent_prompt_compacts_duplicate_context_without_losing_user_tex
     assert artifact_reference["required_artifacts"] == ["report.md"]
 
 
+def test_agent_prompt_uses_a_bounded_source_and_quality_contract_without_losing_user_input():
+    from app.services.agent_run_harness import (
+        _execution_contract_for_agent_prompt,
+        _task_bundle_for_agent_prompt,
+        _test_activity_contract_for_agent_prompt,
+    )
+
+    user_text = "第一行必须保留\n第二行也必须保留"
+    source_context = {
+        "repo_revision": "abc123",
+        "files": [
+            {
+                "file_path": f"lib/iscsi/file_{index}.c",
+                "start_line": 1,
+                "end_line": 300,
+                "excerpt": "源码片段" * 1000,
+                "symbols": [f"symbol_{index}"],
+                "matched_terms": ["login"],
+                "kind": "source",
+                "sha256": f"sha-{index}",
+            }
+            for index in range(12)
+        ],
+    }
+    constraints = [
+        {
+            "id": f"rule-{index}",
+            "assertion": f"第 {index} 条事实约束",
+            "evidence": ["lib/iscsi/iscsi.c::symbol"],
+            "conflict_patterns": ["x" * 5000],
+            "correction_patterns": ["y" * 5000],
+        }
+        for index in range(24)
+    ]
+    execution_contract = {
+        "goal": user_text,
+        "repo_path": "/repo/spdk",
+        "user_inputs": [{"id": "analysis_target", "value": user_text}],
+        "source_context": source_context,
+        "outputs": {"expected_output_schemas": [{"schema": {"x": "z" * 10000}}]},
+        "workflow": {"id": "source-flow", "steps": [{"huge": "q" * 10000}]},
+    }
+    activity_contract = {
+        "target": user_text,
+        "required_outputs": ["sfmea.json", "black_box_cases.json"],
+        "quality_gates": {"black_box_cases_must_not_call_internal_functions": True},
+        "professional_constraints": constraints,
+    }
+    task_bundle = {
+        "inputs": {"analysis_target": user_text},
+        "agent_instructions": {"files": [{"content": "z" * 100000}]},
+        "expected_output_schemas": [{"schema": {"x": "z" * 10000}}],
+    }
+
+    compact_execution = _execution_contract_for_agent_prompt(execution_contract)
+    compact_activity = _test_activity_contract_for_agent_prompt(activity_contract)
+    compact_bundle = _task_bundle_for_agent_prompt(task_bundle)
+    payload = json.dumps(
+        {
+            "execution_contract": compact_execution,
+            "test_activity_contract": compact_activity,
+            "task_bundle": compact_bundle,
+        },
+        ensure_ascii=False,
+    )
+
+    assert compact_execution["user_inputs"][0]["value"] == user_text
+    assert compact_bundle["inputs"]["analysis_target"] == user_text
+    assert len(compact_execution["source_context"]["files"]) == 6
+    assert all(len(item["excerpt"]) <= 1400 for item in compact_execution["source_context"]["files"])
+    assert len(compact_activity["professional_constraints"]) == 12
+    assert "conflict_patterns" not in compact_activity["professional_constraints"][0]
+    assert "agent_instructions" not in compact_bundle
+    assert "expected_output_schemas" not in compact_bundle
+    assert len(payload) < 25_000
+
+
 def test_agent_prompt_limits_unknown_extension_context_but_preserves_user_text(
     monkeypatch,
 ):
