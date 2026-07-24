@@ -192,6 +192,29 @@ def test_codex_sandbox_allows_user_skill_roots_and_symlink_targets_read_only(
     assert str((codex_home / "sessions").resolve()) in launch.audit["write_paths"]
 
 
+def test_workflow_codex_sandbox_excludes_global_agent_skill_roots(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    codex_home = home / ".codex"
+    (home / ".agents" / "skills" / "unselected").mkdir(parents=True)
+    (codex_home / "sessions").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    launch = prepare_agent_sandbox(
+        runtime={
+            "sandbox_mode": "auto",
+            "sandbox_command": "/usr/local/bin/codex",
+            "sandbox_codex_include_user_skills": False,
+        },
+        cwd=str(tmp_path / "repo"),
+        artifact_dir=tmp_path / "artifacts",
+        platform_name="darwin",
+        which=lambda command: "/usr/bin/sandbox-exec" if command == "sandbox-exec" else None,
+    )
+
+    assert str((home / ".agents" / "skills").resolve()) not in launch.audit["read_paths"]
+
+
 def test_codex_sandbox_uses_isolated_runtime_home_without_writing_real_home(
     tmp_path, monkeypatch
 ):

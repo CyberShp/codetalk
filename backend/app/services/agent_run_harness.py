@@ -1059,6 +1059,7 @@ class AgentRunHarness:
             provider=str(run_payload.get("provider") or ""),
             command=process_command,
             artifact_dir=self.artifact_dir,
+            include_user_skills=False,
         )
         if codex_runtime_home is not None:
             env_hints["CODEX_HOME"] = str(codex_runtime_home)
@@ -1223,6 +1224,7 @@ class AgentRunHarness:
                     "sandbox_write_paths": settings.external_agent_sandbox_write_paths,
                     "sandbox_command": process_command[0] if process_command else "",
                     "sandbox_codex_home": str(codex_runtime_home or ""),
+                    "sandbox_codex_include_user_skills": False,
                 },
                 cwd=cwd,
                 artifact_dir=self.artifact_dir,

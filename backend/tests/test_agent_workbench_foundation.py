@@ -1532,6 +1532,27 @@ def test_codex_runtime_home_copies_skills_and_keeps_state_in_artifacts(
     assert not (runtime_home / "skills").is_symlink()
 
 
+def test_workflow_codex_runtime_home_excludes_unselected_user_skills(tmp_path, monkeypatch):
+    from app.services.agent_run_harness import _prepare_isolated_codex_home
+
+    real_home = tmp_path / "real-codex-home"
+    (real_home / "skills" / "unselected").mkdir(parents=True)
+    (real_home / "skills" / "unselected" / "SKILL.md").write_text("unused", encoding="utf-8")
+    artifact_dir = tmp_path / "agent-run"
+    artifact_dir.mkdir()
+    monkeypatch.setenv("CODEX_HOME", str(real_home))
+
+    runtime_home, _ = _prepare_isolated_codex_home(
+        provider="agent-runtime:default-codex",
+        command=["/usr/local/bin/codex", "exec"],
+        artifact_dir=artifact_dir,
+        include_user_skills=False,
+    )
+
+    assert runtime_home is not None
+    assert not (runtime_home / "skills").exists()
+
+
 def test_codex_runtime_home_rejects_nested_skill_symlinks(tmp_path, monkeypatch):
     from app.services.agent_run_harness import _prepare_isolated_codex_home
     from app.services.agent_sandbox import AgentSandboxError

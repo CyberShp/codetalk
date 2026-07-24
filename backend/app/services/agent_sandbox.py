@@ -319,6 +319,7 @@ def prepare_isolated_codex_home(
     provider: str,
     command: list[str],
     artifact_dir: Path,
+    include_user_skills: bool = True,
 ) -> tuple[Path | None, list[Path]]:
     command_name = Path(command[0]).name.lower() if command else ""
     if "codex" not in command_name and "codex" not in provider.lower():
@@ -346,6 +347,8 @@ def prepare_isolated_codex_home(
             raise AgentSandboxError(f"Codex 状态目录越过任务边界：{state_name}")
     read_targets: list[Path] = []
     for name in ("auth.json", "config.toml", "skills"):
+        if name == "skills" and not include_user_skills:
+            continue
         source = source_home / name
         if not source.exists():
             continue
@@ -637,7 +640,9 @@ def _runtime_paths(runtime: dict[str, Any], command: str) -> tuple[list[Path], l
         add_read(codex_home)
         for state_name in ("sessions", "log", ".tmp", "tmp", "cache"):
             add_state(codex_home / state_name, boundary=codex_home)
-        user_skill_roots = [codex_home / "skills", home / ".agents" / "skills"]
+        user_skill_roots = [codex_home / "skills"]
+        if bool(runtime.get("sandbox_codex_include_user_skills", True)):
+            user_skill_roots.append(home / ".agents" / "skills")
         for skill_root in user_skill_roots:
             add_read(skill_root)
         for target in _skill_symlink_targets(user_skill_roots):
