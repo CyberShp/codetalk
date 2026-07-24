@@ -1170,6 +1170,7 @@ export interface WorkbenchRunUiNodeSummary {
   type?: string;
   status?: string;
   status_label: string;
+  recovered_from_partial?: boolean;
   provider?: string;
   executor?: string;
   executor_label?: string;

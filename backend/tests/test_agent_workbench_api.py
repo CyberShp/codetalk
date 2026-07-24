@@ -3586,6 +3586,57 @@ async def test_task_run_ui_summary_prioritizes_cancelled_status_over_stale_failu
     assert "acceptance_audit" not in _public_task_run_runtime_summary(task_root)
 
 
+async def test_task_run_ui_summary_marks_quality_recovered_partial_step_as_completed(tmp_path):
+    """A final accepted delivery must not leave the cockpit contradicting itself."""
+    from types import SimpleNamespace
+
+    from app.api.agent_workbench import _build_task_run_ui_summary
+
+    task_root = tmp_path / "task_run_quality_recovered"
+    task_root.mkdir()
+    (task_root / "task_run.json").write_text(
+        json.dumps({"status": "completed", "runtime": {"status": "completed"}}),
+        encoding="utf-8",
+    )
+    (task_root / "workflow_execution.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "quality_repaired_to_deliverable": True,
+                "recovered_partial_steps": ["analyze"],
+                "step_results": [
+                    {
+                        "step_id": "analyze",
+                        "type": "agent_task",
+                        "status": "partial",
+                        "execution": {"error": "", "timed_out": False},
+                        "validation": {"status": "ok"},
+                    }
+                ],
+                "outputs": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    task_run = SimpleNamespace(
+        workflow_id="quality_recovered_workflow",
+        workflow_snapshot={
+            "id": "quality_recovered_workflow",
+            "name": "Quality recovered workflow",
+            "steps": [{"id": "analyze", "type": "agent_task", "name": "源码测试分析"}],
+        },
+        task_bundle={"workflow_contract": {"outputs": []}},
+        input_snapshot={},
+    )
+
+    summary = _build_task_run_ui_summary(task_run, task_root)
+
+    assert summary["status"] == "completed"
+    assert summary["nodes"][0]["status"] == "completed"
+    assert summary["nodes"][0]["status_label"] == "已完成（使用保留结果）"
+    assert summary["nodes"][0]["recovered_from_partial"] is True
+
+
 async def test_task_run_ui_summary_explains_agent_preflight_block_before_a_node_starts(tmp_path):
     from types import SimpleNamespace
 

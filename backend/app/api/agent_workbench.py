@@ -639,6 +639,32 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
             else node
             for node in nodes
         ]
+    # A provider may retain a partial intermediate response while the staged
+    # runtime materializes a complete, validated delivery deterministically.
+    # Once final quality accepts that delivery, expose the recovery explicitly
+    # to users instead of showing a completed run with a contradictory node.
+    recovered_partial_steps = {
+        str(item).strip()
+        for item in execution.get("recovered_partial_steps") or []
+        if str(item).strip()
+    }
+    if (
+        execution.get("quality_repaired_to_deliverable") is True
+        and str(execution.get("status") or "") in {"completed", "ok", "ready", "success"}
+        and recovered_partial_steps
+    ):
+        nodes = [
+            {
+                **node,
+                "status": "completed",
+                "status_label": "已完成（使用保留结果）",
+                "recovered_from_partial": True,
+            }
+            if node.get("id") in recovered_partial_steps
+            and node.get("status") == "partial"
+            else node
+            for node in nodes
+        ]
     execution_metadata = _task_run_ui_workflow_execution_metadata(workflow)
     status = _task_run_ui_status(execution=execution, nodes=nodes)
     live_readiness_failures = _task_run_ui_live_readiness_failures(task_root)

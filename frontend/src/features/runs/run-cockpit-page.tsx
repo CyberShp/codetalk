@@ -361,7 +361,7 @@ function MindmapRefs({ title, values }: { title: string; values: string[] }) {
 }
 
 function StatusBlock({ label, value, tone }: { label: string; value: string; tone: string }) { return <div className="ct-v2-run-status"><span>{label}</span><strong className={`is-${tone}`}>{value}</strong></div>; }
-function RunSummary({ summary, events, failed, partial, selectedNodeId, onSelectNode, onRetry, actionBusy }: { summary: PreparedWorkbenchTaskRun["run_ui_summary"]; events: WorkbenchTaskRunEvent[]; failed: boolean; partial: boolean; selectedNodeId: string; onSelectNode: (id: string) => void; onRetry: () => void; actionBusy: boolean }) { return <div className="ct-v2-run-summary"><section><h2>{failed ? "运行在节点处停止" : partial ? "运行保留了部分结果" : "节点进度"}</h2><div className="ct-v2-node-timeline">{(summary?.nodes || []).map((node) => { const nodeName = displayNodeName(node.label || node.id); return <button type="button" key={node.id} className={`is-${node.status || "prepared"} ${selectedNodeId === node.id ? "is-selected" : ""}`} onClick={() => onSelectNode(node.id)} aria-label={`查看节点 ${nodeName}`}><span>{node.status === "completed" || node.status === "success" ? <CheckCircle2 size={15} /> : node.status === "running" ? <Loader2 className="animate-spin" size={15} /> : node.status === "failed" || node.status === "error" ? <AlertTriangle size={15} /> : <i />}</span><strong>{nodeName}</strong><small>{node.status_label}</small></button>; })}</div></section><StageProgressPanel events={events} runPartial={partial} onRetry={onRetry} busy={actionBusy} /><section><h2>最新活动</h2>{events.slice(-8).reverse().map((item) => <EventRow key={item.event_id} item={item} compact />)}</section></div>; }
+function RunSummary({ summary, events, failed, partial, selectedNodeId, onSelectNode, onRetry, actionBusy }: { summary: PreparedWorkbenchTaskRun["run_ui_summary"]; events: WorkbenchTaskRunEvent[]; failed: boolean; partial: boolean; selectedNodeId: string; onSelectNode: (id: string) => void; onRetry: () => void; actionBusy: boolean }) { const recoveredNodes = summary?.nodes.filter((node) => node.recovered_from_partial) || []; const recovered = recoveredNodes.length > 0; const recoveredLabel = recoveredNodes.map((node) => displayNodeName(node.label || node.id)).join("、"); return <div className="ct-v2-run-summary"><section><h2>{failed ? "运行在节点处停止" : partial ? "运行保留了部分结果" : "节点进度"}</h2><div className="ct-v2-node-timeline">{(summary?.nodes || []).map((node) => { const nodeName = displayNodeName(node.label || node.id); return <button type="button" key={node.id} className={`is-${node.status || "prepared"} ${selectedNodeId === node.id ? "is-selected" : ""}`} onClick={() => onSelectNode(node.id)} aria-label={`查看节点 ${nodeName}`}><span>{node.status === "completed" || node.status === "success" ? <CheckCircle2 size={15} /> : node.status === "running" ? <Loader2 className="animate-spin" size={15} /> : node.status === "failed" || node.status === "error" ? <AlertTriangle size={15} /> : <i />}</span><strong>{nodeName}</strong><small>{node.status_label}</small></button>; })}</div></section><StageProgressPanel events={events} runPartial={partial} recovered={recovered} recoveredLabel={recoveredLabel} onRetry={onRetry} busy={actionBusy} /><section><h2>最新活动</h2>{events.slice(-8).reverse().map((item) => <EventRow key={item.event_id} item={item} compact />)}</section></div>; }
 
 function hasFlowEvidenceMetrics(payload: WorkbenchTaskRunEvent["payload"]) {
   return ["entry_point_count", "call_edge_count", "test_reference_count"].some(
@@ -369,13 +369,13 @@ function hasFlowEvidenceMetrics(payload: WorkbenchTaskRunEvent["payload"]) {
   );
 }
 
-function StageProgressPanel({ events, runPartial, onRetry, busy }: { events: WorkbenchTaskRunEvent[]; runPartial: boolean; onRetry: () => void; busy: boolean }) {
+function StageProgressPanel({ events, runPartial, recovered, recoveredLabel, onRetry, busy }: { events: WorkbenchTaskRunEvent[]; runPartial: boolean; recovered: boolean; recoveredLabel: string; onRetry: () => void; busy: boolean }) {
   const stageEvents = events.filter((item) => String(item.payload.kind || "").startsWith("stage_"));
   const latest = selectStageProgressEvent(stageEvents, runPartial);
   const kind = String(latest?.payload.kind || "");
   const status = String(latest?.payload.status || "");
-  const partial = runPartial || kind === "stage_timed_out" || status === "partial";
-  const completed = kind === "stage_completed" || kind === "stage_reused" || status === "completed";
+  const partial = !recovered && (runPartial || kind === "stage_timed_out" || status === "partial");
+  const completed = recovered || kind === "stage_completed" || kind === "stage_reused" || status === "completed";
   const clockMs = useStageClock(Boolean(latest) && !partial && !completed);
   if (!stageEvents.length) return null;
   if (!latest) return null;
@@ -391,15 +391,19 @@ function StageProgressPanel({ events, runPartial, onRetry, busy }: { events: Wor
   const elapsedSeconds = first ? Math.max(0, Math.round((elapsedEnd - new Date(first.created_at).getTime()) / 1000)) : 0;
   const stateLabel = partial ? "部分完成" : completed ? "已完成" : "运行中";
   return <section className={`ct-v2-stage-progress ${partial ? "is-partial" : ""}`} aria-label="阶段执行进度">
-    <header><div><span>{stageDisplayName(stageId)}</span><h2>{runPartial ? "工作流已结束，当前最佳结果已保留" : eventMessage(latest)}</h2></div><em>{stateLabel}</em></header>
-    <dl>
+    <header><div><span>{recovered ? recoveredLabel : stageDisplayName(stageId)}</span><h2>{recovered ? "最终质量审计已接受保留结果" : runPartial ? "工作流已结束，当前最佳结果已保留" : eventMessage(latest)}</h2></div><em>{recovered ? "已完成（使用保留结果）" : stateLabel}</em></header>
+    {recovered ? <dl>
+      <div><dt>最终状态</dt><dd>已完成，质量门禁已通过</dd></div>
+      <div><dt>保留原因</dt><dd>中间模型输出未完整闭合，已由确定性证据和质量修复补全。</dd></div>
+      <div><dt>交付建议</dt><dd>可下载交付件，或围绕本次运行继续分析。</dd></div>
+    </dl> : <dl>
       <div><dt>调用链证据</dt><dd>{Number(payload.entry_point_count || 0)} 个入口 · {Number(payload.call_edge_count || 0)} 条调用边 · {Number(payload.test_reference_count || 0)} 个测试引用</dd></div>
       <div><dt>当前输出</dt><dd>{Number(payload.output_characters || 0)} 字符</dd></div>
       <div><dt>已运行</dt><dd>{elapsedSeconds} 秒</dd></div>
       <div><dt>最后活动</dt><dd>{new Date(latest.created_at).toLocaleTimeString("zh-CN", { hour12: false })}</dd></div>
       <div><dt>执行器</dt><dd>{String(payload.model || "当前内置模型")}</dd></div>
       <div><dt>尝试</dt><dd>{formatStageAttemptLabel(payload)}</dd></div>
-    </dl>
+    </dl>}
     {latestDeltaText && <pre className="ct-v2-stage-live-output" aria-label="阶段实时输出">{latestDeltaText}</pre>}
     {partial && <button type="button" disabled={busy} onClick={onRetry}><RefreshCw size={14} />继续生成 / 从本阶段重试</button>}
   </section>;
