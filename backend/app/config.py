@@ -174,10 +174,12 @@ class Settings(BaseSettings):
         ge=0,
         le=1200,
     )
-    # External CLI Agents receive the same bounded, artifact-scoped repair
-    # contract as the built-in staged runtime. A single turn prevents an
-    # expensive provider from silently turning quality repair into a rerun.
-    external_agent_quality_repair_enabled: bool = True
+    # A generic CLI Agent cannot reliably enforce an artifact-scoped repair:
+    # its native session may rediscover the repository before editing a single
+    # failed field.  Keep this opt-in until the dedicated, token-bounded repair
+    # transport is selected.  Otherwise a completed 8-20 minute run could
+    # silently become a second full Agent run.
+    external_agent_quality_repair_enabled: bool = False
     external_agent_quality_repair_timeout_seconds: int = Field(
         default=300, ge=30, le=600
     )

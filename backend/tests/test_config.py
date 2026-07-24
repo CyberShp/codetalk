@@ -32,6 +32,14 @@ def test_staged_quality_repair_defaults_to_two_bounded_attempts(monkeypatch):
     assert configured.staged_workflow_shutdown_grace_seconds == 2.0
 
 
+def test_external_cli_agent_quality_repair_is_opt_in(monkeypatch):
+    from app.config import Settings
+
+    monkeypatch.delenv("EXTERNAL_AGENT_QUALITY_REPAIR_ENABLED", raising=False)
+
+    assert Settings().external_agent_quality_repair_enabled is False
+
+
 def test_regular_stage_quality_repair_uses_primary_model_by_default(monkeypatch):
     monkeypatch.delenv("REGULAR_STAGE_QUALITY_REPAIR_USE_PRIMARY_MODEL", raising=False)
 

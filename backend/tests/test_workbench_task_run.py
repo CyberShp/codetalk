@@ -4553,6 +4553,11 @@ def test_external_agent_quality_repair_is_artifact_scoped_and_snapshotted(
 ):
     from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
 
+    monkeypatch.setattr(
+        "app.services.workbench_workflow_runner.settings.external_agent_quality_repair_enabled",
+        True,
+    )
+
     artifact_dir = tmp_path / "task" / "agent_runs" / "analyze"
     artifact_dir.mkdir(parents=True)
     (artifact_dir / "sfmea.json").write_text("[]", encoding="utf-8")
