@@ -11,7 +11,15 @@ def test_auto_source_analysis_routes_official_deepseek_reasoner_to_chat():
         api_type="openai_compat",
         base_url="https://api.deepseek.com",
         model="deepseek-reasoner",
-    ) == "deepseek-chat"
+    ) == "deepseek-v4-flash"
+
+
+def test_auto_source_analysis_routes_official_deepseek_v4_pro_to_flash():
+    assert _automatic_source_analysis_model(
+        api_type="openai_compat",
+        base_url="https://api.deepseek.com",
+        model="deepseek-v4-pro",
+    ) == "deepseek-v4-flash"
 
 
 def test_auto_source_analysis_does_not_guess_for_other_providers():

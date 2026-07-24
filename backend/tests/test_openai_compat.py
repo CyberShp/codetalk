@@ -155,6 +155,65 @@ async def test_complete_accepts_a_base_url_that_already_includes_v1():
     assert response.content == "模型连接已经验证成功。"
 
 
+@pytest.mark.parametrize("stream", [False, True])
+async def test_deepseek_v4_flash_disables_thinking_for_bounded_output(stream: bool):
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = __import__("json").loads(request.content)
+        assert payload["thinking"] == {"type": "disabled"}
+        if stream:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                text=(
+                    'data: {"choices":[{"delta":{"content":"稳定且完整的结构化输出内容"},"finish_reason":"stop"}]}\n\n'
+                    "data: [DONE]\n\n"
+                ),
+            )
+        return httpx.Response(
+            200,
+            json={
+                "model": "deepseek-v4-flash",
+                    "choices": [{"finish_reason": "stop", "message": {"content": "稳定且完整的结构化输出内容"}}],
+            },
+        )
+
+    client = OpenAICompatClient("https://api.deepseek.com", "test-key", "deepseek-v4-flash")
+    await client._client.aclose()
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        if stream:
+            result = "".join([item async for item in client.stream_complete([{"role": "user", "content": "hello"}])])
+        else:
+            result = (await client.complete([{"role": "user", "content": "hello"}])).content
+    finally:
+        await client.close()
+
+    assert result == "稳定且完整的结构化输出内容"
+
+
+async def test_deepseek_v4_pro_disables_thinking_for_bounded_output():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = __import__("json").loads(request.content)
+        assert payload["thinking"] == {"type": "disabled"}
+        return httpx.Response(
+            200,
+            json={
+                "model": "deepseek-v4-pro",
+                "choices": [{"finish_reason": "stop", "message": {"content": "深度输出保持思考模式"}}],
+            },
+        )
+
+    client = OpenAICompatClient("https://api.deepseek.com", "test-key", "deepseek-v4-pro")
+    await client._client.aclose()
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        result = await client.complete([{"role": "user", "content": "hello"}])
+    finally:
+        await client.close()
+
+    assert result.content == "深度输出保持思考模式"
+
+
 async def test_factory_managed_client_checks_each_model_request_before_transport(monkeypatch):
     transport_called = False
 

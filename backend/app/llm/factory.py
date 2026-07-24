@@ -183,9 +183,9 @@ def _automatic_source_analysis_model(
     if (
         api_type == "openai_compat"
         and normalized_url in {"https://api.deepseek.com", "https://api.deepseek.com/v1"}
-        and model.strip().lower() == "deepseek-reasoner"
+        and model.strip().lower() in {"deepseek-reasoner", "deepseek-v4-pro"}
     ):
-        return "deepseek-chat"
+        return "deepseek-v4-flash"
     return None
 
 

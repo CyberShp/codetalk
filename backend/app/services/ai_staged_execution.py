@@ -3406,6 +3406,35 @@ def _select_regular_stage_llm(
     return auxiliary_llm if "reasoner" in model else llm
 
 
+def _format_repair_token_budget(
+    *,
+    policy: StageExecutionPolicy,
+    artifact: str,
+    schema: dict[str, Any] | None,
+    validation_error: str,
+) -> int:
+    """Reserve a real reconstruction budget when a JSON array is truncated.
+
+    A 500-token syntax repair is appropriate for a malformed but complete
+    response.  It cannot close even one long SFMEA/black-box row when the
+    provider explicitly stopped at its output limit.  Keep that bounded
+    recovery distinct from a full retry: it receives only the compact repair
+    prompt and executes once.
+    """
+    if (
+        validation_error == "provider_output_truncated"
+        and artifact.endswith(".json")
+        and isinstance(schema, dict)
+        and schema.get("type") == "array"
+    ):
+        minimum_items = max(1, int(schema.get("minItems") or 0))
+        return min(
+            policy.max_tokens,
+            max(2400, min(4200, 1200 + minimum_items * 600)),
+        )
+    return policy.repair_max_tokens
+
+
 async def _execute_regular_stage(
     *,
     llm: Any,
@@ -4269,11 +4298,17 @@ async def _execute_regular_stage(
                     policy.total_timeout_seconds - (time.monotonic() - started),
                 )
                 repair_timeout = min(policy.repair_timeout_seconds, remaining_total)
+                repair_max_tokens = _format_repair_token_budget(
+                    policy=policy,
+                    artifact=artifact,
+                    schema=schema if isinstance(schema, dict) else None,
+                    validation_error=validation_error,
+                )
                 repair_started = time.monotonic()
                 repaired = await _complete_with_cancellation(
                     llm=auxiliary_llm,
                     prompt=repair_prompt,
-                    max_tokens=policy.repair_max_tokens,
+                    max_tokens=repair_max_tokens,
                     is_cancelled=is_cancelled,
                     timeout_seconds=min(
                         repair_timeout,

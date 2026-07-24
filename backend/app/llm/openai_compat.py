@@ -99,6 +99,20 @@ class OpenAICompatClient(BaseLLMClient):
                 limits=pool_limits,
             )
 
+    def _provider_request_options(self) -> dict[str, object]:
+        """Return documented V4 options for bounded workflow artifacts.
+
+        DeepSeek V4 exposes reasoning separately from final content.  The
+        staged runner needs a complete artifact value, so V4 models must not
+        consume their bounded response budget solely on provider reasoning.
+        """
+        if self._model.strip().lower() in {
+            "deepseek-v4-flash",
+            "deepseek-v4-pro",
+        }:
+            return {"thinking": {"type": "disabled"}}
+        return {}
+
     async def complete(
         self,
         messages: list[dict],
@@ -142,6 +156,7 @@ class OpenAICompatClient(BaseLLMClient):
             "messages": messages,
             "stream": True,
         }
+        payload.update(self._provider_request_options())
         url = f"{self._base_url}/v1/chat/completions"
         self._require_approved_model_endpoint(url)
         logger.info("OpenAI-compat streaming call: model=%s", self._model)
@@ -214,6 +229,7 @@ class OpenAICompatClient(BaseLLMClient):
             "temperature": temperature,
             "messages": messages,
         }
+        payload.update(self._provider_request_options())
 
         url = f"{self._base_url}/v1/chat/completions"
         self._require_approved_model_endpoint(url)

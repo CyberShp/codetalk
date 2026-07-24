@@ -36,8 +36,10 @@ test("V3 basic source plus design workflow runs through the browser with a real 
   await expect.poll(async () => (await status.textContent())?.trim(), {
     timeout: 25 * 60_000,
     intervals: [1_000, 2_000, 5_000, 10_000],
-  }).toMatch(/^(已完成|部分完成)$/);
+  }).toMatch(/^(已完成|部分完成|失败|已阻断|已取消)$/);
   const elapsedMs = Date.now() - startedAt;
+  const terminalStatus = (await status.textContent())?.trim() || "";
+  expect(terminalStatus).toMatch(/^(已完成|部分完成)$/);
 
   await expect(page.getByText(/交付文件|正式交付件/).first()).toBeVisible({ timeout: 30_000 });
   const quality = page.locator(".ct-v2-run-status").filter({ hasText: "质量状态" }).locator("strong");

@@ -6962,6 +6962,63 @@ async def test_truncated_json_stage_uses_small_repair_without_resending_full_con
 
 
 @pytest.mark.asyncio
+async def test_provider_truncated_json_array_uses_reconstruction_budget(tmp_path):
+    class RepairLLM(_StageLLM):
+        def __init__(self) -> None:
+            super().__init__()
+            self.repair_max_tokens = 0
+
+        async def complete_once(self, messages, max_tokens=4096, temperature=0.2):
+            prompt = messages[-1]["content"]
+            if "STAGE_ID: source_analysis" in prompt:
+                return await super().complete(messages, max_tokens, temperature)
+            if "SMALL_FORMAT_REPAIR" in prompt:
+                self.repair_max_tokens = max_tokens
+                return LLMResponse(
+                    content=json.dumps(
+                        [{"failure_mode": "timeout", "cause": "peer silent"}]
+                    ),
+                    model="repair",
+                    usage={},
+                    truncated=False,
+                )
+            return LLMResponse(
+                content='[{"failure_mode":"timeout"',
+                model="full",
+                usage={},
+                truncated=True,
+                finish_reason="length",
+            )
+
+    contract = _contract()
+    contract["required_outputs"] = ["sfmea.json"]
+    contract["artifact_contract"] = {
+        "sfmea.json": {
+            "artifact": "sfmea.json",
+            "schema": {
+                "type": "array",
+                "items": {"type": "object", "required": ["failure_mode", "cause"]},
+            },
+        }
+    }
+    llm = RepairLLM()
+
+    result = await execute_staged_builtin_plan(
+        llm=llm,
+        plan=build_staged_execution_plan(
+            contract=contract,
+            original_user_request="reconstruct a truncated json row",
+        ),
+        artifact_dir=tmp_path,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+    )
+
+    assert result["status"] == "completed"
+    assert llm.repair_max_tokens >= 2400
+
+
+@pytest.mark.asyncio
 async def test_truncated_json_array_keeps_closed_items_and_only_continues_missing_rows(
     tmp_path,
 ):
