@@ -264,6 +264,42 @@ def test_sfmea_error_not_propagated_remains_a_scored_failure_mode(tmp_path):
     assert not any(issue["code"] == "non_risk_sfmea_row" for issue in issues)
 
 
+def test_sfmea_accepts_passive_unrejected_failure_mode():
+    """Chinese passive voice must not turn an actual capacity failure into normal behavior."""
+    from app.services.test_activity_contract import sfmea_failure_mode_is_risk
+
+    assert sfmea_failure_mode_is_risk("非零 TSIH 多连接恢复时，连接数超限未被拒绝")
+
+
+def test_test_design_mindmap_json_accepts_nodes_graph_shape(tmp_path):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    issues = _audit_json_artifact(
+        artifact="test_design_mindmap.json",
+        payload={
+            "generation_id": "mindmap-test",
+            "nodes": [
+                {
+                    "id": "overview",
+                    "parent_id": None,
+                    "children": ["scope"],
+                    "title": "测试设计概览",
+                },
+                {
+                    "id": "scope",
+                    "parent_id": "overview",
+                    "children": [],
+                    "title": "范围与证据",
+                },
+            ],
+        },
+        spec={"required_fields": []},
+        repo=tmp_path,
+    )
+
+    assert not any(issue["code"] == "json_shape_invalid" for issue in issues), issues
+
+
 def test_sfmea_keeps_qualified_iscsi_error_code_hypothesis(tmp_path):
     """An error-code comparison is not a claim that the error path is absent."""
     from app.services.test_activity_contract import _audit_json_artifact

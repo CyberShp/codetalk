@@ -6210,7 +6210,12 @@ def _audit_json_artifact(
 ) -> list[dict[str, Any]]:
     if payload is None:
         return [_issue("invalid_json", artifact, f"{artifact} 不是有效 JSON")]
-    rows = payload if isinstance(payload, list) else payload.get("items") if isinstance(payload, dict) else None
+    # The deterministic mind-map publisher emits a graph document rather than
+    # a tabular JSON artifact. Its stable payload is ``{nodes: [...]}``.
+    if artifact == "test_design_mindmap.json" and isinstance(payload, dict):
+        rows = payload.get("nodes")
+    else:
+        rows = payload if isinstance(payload, list) else payload.get("items") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         return [_issue("json_shape_invalid", artifact, f"{artifact} 必须是数组或包含 items 数组")]
     if not rows:
@@ -7447,7 +7452,7 @@ _SFMEA_FAILURE_SIGNAL_RE = re.compile(
     r"accept(?:ed|s|ance)?|mismatch|verbatim|fails?|missing|absent|incomplete|"
     r"trailing|garbage|not\s+created)\b|"
     r"(?:失败|超时|泄漏|错误|异常|丢失|残留|竞态|死锁|阻塞|耗尽|翻转|溢出|越界|"
-    r"空指针|双重(?:注销|释放)|绕过|未传播|不向上传播|未释放|未拒绝|未正确|未检查|未处理|"
+    r"空指针|双重(?:注销|释放)|绕过|未传播|不向上传播|未释放|未(?:被)?拒绝|未正确|未检查|未处理|"
     r"未清理|未清除|未.{0,8}关闭|静默丢弃|(?:静默)?丢弃|未(?:原子)?(?:增加|递增|更新)|重复释放|悬空|崩溃|降级|错误接受|错误拒绝|误报|未记录|不可追溯)"
     r"|(?:超限|耗尽|满载).{0,16}(?:仍|继续|再次).{0,16}(?:分配|创建|接受|建立)"
 )

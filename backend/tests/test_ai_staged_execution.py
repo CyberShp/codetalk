@@ -2391,6 +2391,46 @@ def test_final_materialized_sfmea_contract_rewrites_cleanup_order_to_hypothesis(
     assert row["technical_claims"][0]["type"] == "source_anchor"
 
 
+def test_final_materialized_sfmea_contract_canonicalizes_claim_to_bound_quote(tmp_path):
+    from app.services.ai_staged_execution import normalize_materialized_sfmea_risk_contract
+
+    (tmp_path / "evidence_cards.json").write_text(json.dumps([{
+        "evidence_id": "SRC-03",
+        "file_path": "lib/iscsi/iscsi.c",
+        "start_line": 10,
+        "end_line": 14,
+        "excerpt": "if (conn == NULL) {\n\treturn -1;\n}",
+        "symbols": ["iscsi_auth_params"],
+        "sha256": "digest",
+        "classification": "source",
+    }]), encoding="utf-8")
+    (tmp_path / "source_scope.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "sfmea.json").write_text(json.dumps([{
+        "sfmea_id": "SFMEA-03",
+        "risk_status": "test_hypothesis",
+        "technical_claims": [{
+            "claim_id": "TC-03",
+            "type": "current_behavior",
+            "statement": "iscsi_auth_params 对空指针返回 -1。",
+            "evidence": [{
+                "evidence_id": "SRC-03:L10",
+                "path": "lib/iscsi/iscsi.c",
+                "lines": "L10",
+                "quote": "if (conn == NULL) {",
+            }],
+        }],
+    }]), encoding="utf-8")
+
+    normalize_materialized_sfmea_risk_contract(
+        artifact_dir=tmp_path,
+        plan={"original_user_request": "iSCSI login"},
+    )
+
+    claim = json.loads((tmp_path / "sfmea.json").read_text())[0]["technical_claims"][0]
+    assert claim["type"] == "source_anchor"
+    assert claim["statement"] == "if (conn == NULL) {"
+
+
 def test_normalize_black_box_delivery_contract_replaces_source_mapping_and_unit_fallback():
     rendered, fields = _normalize_black_box_delivery_contract(
         [

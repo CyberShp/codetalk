@@ -347,6 +347,60 @@ def test_judge_blocks_unknown_risks_and_unresolved_evidence_references():
     assert "unresolved_evidence_ref:FAKE-EVIDENCE" in issues
 
 
+def test_traceability_resolves_line_qualified_and_display_evidence_references():
+    from app.services.source_driven_test_design import build_source_driven_test_design
+
+    cases = _cases()
+    cases[0]["source_or_test_evidence"] = [
+        "SRC-001:L101",
+        "lib/iscsi/iscsi.c (SRC-001:L101)",
+    ]
+    artifacts = build_source_driven_test_design(
+        source_pack=_source_pack(),
+        flow_pack=_flow_pack(),
+        flow_outline=_outline(),
+        sfmea=_sfmea(),
+        black_box_cases=cases,
+    )
+
+    link = artifacts["traceability_matrix.json"]["links"][0]
+    assert link["verified_evidence_refs"] == cases[0]["source_or_test_evidence"]
+    assert link["unresolved_evidence_refs"] == []
+
+
+def test_final_fact_verification_accepts_l1_verified_source_anchor_without_l2(tmp_path: Path):
+    from app.services.source_driven_test_design import refresh_source_driven_delivery_governance
+
+    artifacts = _ready_judge_artifacts()
+    for name, payload in artifacts.items():
+        (tmp_path / name).write_text(json.dumps(payload), encoding="utf-8")
+    (tmp_path / "independent_fact_verification.json").write_text(
+        json.dumps({
+            "claims": [{
+                "claim_id": "SRC-CLAIM-1",
+                "type": "source_anchor",
+                "status": "verified",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    (tmp_path / "behavior_claim_validation.json").write_text(
+        json.dumps({
+            "status": "completed",
+            "validator": {"independent": True},
+            "claims": [],
+        }),
+        encoding="utf-8",
+    )
+
+    refreshed = refresh_source_driven_delivery_governance(tmp_path)
+
+    assert refreshed["axes"]["facts"]["status"] == "passed"
+    final = json.loads((tmp_path / "final_fact_verification.json").read_text())
+    assert final["claims"][0]["status"] == "verified"
+    assert final["claims"][0]["behavior_status"] == "not_required"
+
+
 def test_generic_request_connection_words_do_not_enable_finite_resource_boundaries():
     from app.services.source_driven_test_design import build_source_driven_test_design
 

@@ -486,6 +486,23 @@ def _combined_final_fact_verification(root: Path) -> dict[str, Any]:
             claim_id = str(item.get("claim_id") or "")
             binding = str(item.get("binding") or "")
             l1_status = str(item.get("status") or "insufficient")
+            claim_type = str(item.get("type") or "")
+            if l1_status == "verified" and claim_type == "source_anchor":
+                # A source anchor is a literal, SHA-bound local source quote.
+                # It has no open-world behaviour to send to L2; requiring a
+                # second verdict here converted valid provenance into a false
+                # failure whenever the independent validator correctly chose
+                # only behavioural claims.
+                claims.append(
+                    {
+                        **item,
+                        "binding_status": l1_status,
+                        "behavior_status": "not_required",
+                        "status": "verified",
+                        "validation_layer": "L1_deterministic_source_anchor",
+                    }
+                )
+                continue
             bucket = l2_by_identity.get((claim_id, binding), [])
             l2 = bucket.pop(0) if bucket else None
             if not bucket:
@@ -1778,7 +1795,11 @@ def _traceability_artifact(**context: Any) -> dict[str, Any]:
         risk_ids = _dedupe([*risk_by_case.get(case_id, []), *_strings(row.get("risk_ids"))])
         mapped_risk_ids.update(item for item in risk_ids if item in known_risk_ids)
         unknown_risk_ids.update(item for item in risk_ids if item not in known_risk_ids)
-        verified_evidence = [item for item in evidence if item in known_evidence]
+        verified_evidence = [
+            item
+            for item in evidence
+            if _is_verified_evidence_reference(item, context["evidence_index"])
+        ]
         known_case_risks = [item for item in risk_ids if item in known_risk_ids]
         if not verified_evidence and not known_case_risks:
             orphan_cases.append(case_id)
@@ -1788,7 +1809,11 @@ def _traceability_artifact(**context: Any) -> dict[str, Any]:
                 "risk_ids": risk_ids,
                 "evidence_refs": evidence,
                 "verified_evidence_refs": verified_evidence,
-                "unresolved_evidence_refs": [item for item in evidence if item not in known_evidence],
+                "unresolved_evidence_refs": [
+                    item
+                    for item in evidence
+                    if not _is_verified_evidence_reference(item, context["evidence_index"])
+                ],
             }
         )
     return {
@@ -1805,6 +1830,32 @@ def _traceability_artifact(**context: Any) -> dict[str, Any]:
             "error_propagation_chains.json",
         ],
     }
+
+
+def _is_verified_evidence_reference(
+    value: str,
+    evidence: dict[str, dict[str, Any]],
+) -> bool:
+    """Accept a stable card ID, its verified line suffix, or its display form.
+
+    A test case carries human-readable provenance such as
+    ``lib/iscsi/iscsi.c (SRC-02:L1130)``.  The line-qualified identifier still
+    needs to resolve against the immutable card range; treating it as a new
+    ID made every otherwise-valid trace look unresolved.
+    """
+    text = str(value or "").strip()
+    if text in evidence:
+        return True
+    candidates = re.findall(r"[A-Za-z][A-Za-z0-9_-]*:L\d+", text)
+    return any(
+        _resolve_claim_evidence_card(
+            evidence=evidence,
+            evidence_id=candidate,
+            reference={},
+        )
+        is not None
+        for candidate in candidates
+    )
 
 
 def _evidence_index(source_pack: dict[str, Any], flow_pack: dict[str, Any]) -> dict[str, dict[str, Any]]:
