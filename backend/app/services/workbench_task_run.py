@@ -4265,8 +4265,13 @@ def build_run_snapshot_v3(
         "provider_capability": "provider_snapshot.json",
         "provider_readiness": "provider_readiness.json",
         "quality_readiness": "quality_readiness.json",
-        "task_bundle": "task_bundle.json",
     }
+    # The root task bundle is intentionally absent.  It is a compatibility
+    # projection which receives scheduler/retry runtime state after prepare;
+    # treating it as immutable made ordinary V2 attempts fail their own guard.
+    # A compiled execution plan, in contrast, is an explicit frozen component.
+    if (artifact_dir / "compiled_plan.json").is_file():
+        component_paths["execution_plan"] = "compiled_plan.json"
     components: dict[str, dict[str, str]] = {}
     for component_id, relative_path in component_paths.items():
         path = artifact_dir / relative_path
@@ -4292,6 +4297,40 @@ def build_run_snapshot_v3(
         },
         "components": components,
     }
+
+
+def refresh_run_snapshot_v3(artifact_dir: str | Path) -> dict[str, Any]:
+    """Freeze post-prepare published-plan data before the task may execute.
+
+    V2 task creation attaches the already-published compiled graph after the
+    generic preparer has ingested inputs.  Materialize only that immutable
+    graph as its own component; scheduler/retry fields in ``task_bundle`` are
+    deliberately not part of the run-input integrity boundary.
+    """
+    root = Path(artifact_dir)
+    existing = _read_json(root / "run_snapshot_v3.json")
+    task_run = _read_json(root / "task_run.json")
+    workflow_snapshot = _read_json(root / "workflow_snapshot.json")
+    task_bundle = _read_json(root / "task_bundle.json")
+    if not isinstance(task_run, dict) or not isinstance(workflow_snapshot, dict):
+        raise RuntimeError("cannot refresh V3 run snapshot without prepared task artifacts")
+    if isinstance(task_bundle, dict) and isinstance(task_bundle.get("compiled_plan"), dict):
+        _write_json(root / "compiled_plan.json", task_bundle["compiled_plan"])
+    prior_identity = existing.get("identity") if isinstance(existing, dict) else {}
+    snapshot = build_run_snapshot_v3(
+        artifact_dir=root,
+        task_run_id=str(task_run.get("task_run_id") or ""),
+        task_id=str(task_run.get("task_id") or ""),
+        attempt_number=max(0, int(task_run.get("attempt_number") or 0)),
+        parent_task_run_id=str(task_run.get("parent_task_run_id") or ""),
+        workflow_snapshot=workflow_snapshot,
+    )
+    if isinstance(existing, dict) and str(existing.get("created_at") or ""):
+        snapshot["created_at"] = str(existing["created_at"])
+    if isinstance(prior_identity, dict) and prior_identity.get("workflow_id"):
+        snapshot["identity"]["workflow_id"] = str(prior_identity["workflow_id"])
+    _write_json(root / "run_snapshot_v3.json", snapshot)
+    return snapshot
 
 
 def validate_run_snapshot_v3(artifact_dir: str | Path) -> list[str]:

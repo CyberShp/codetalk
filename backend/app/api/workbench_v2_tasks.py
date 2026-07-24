@@ -20,6 +20,7 @@ from app.services.test_semantic_library import TestSemanticLibraryStore
 from app.services.workbench_task_run import (
     WorkbenchTaskRunPreparer,
     WorkbenchTaskRunStore,
+    refresh_run_snapshot_v3,
     resolve_execution_profile,
 )
 from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
@@ -413,6 +414,7 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
             prepared.task_bundle["retry_seed_results"] = retry_seed_results
             _seed_quality_retry_from_parent(parent_run=parent_run, prepared=prepared)
         _write_run(prepared)
+        refresh_run_snapshot_v3(prepared.artifact_dir)
         task_store().update_task(task_id, last_run_id=prepared.task_run_id)
     return _run_summary(prepared)
 

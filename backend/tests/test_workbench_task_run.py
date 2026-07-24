@@ -767,6 +767,7 @@ def test_prepare_freezes_selected_execution_profile_into_task_and_agent_bundles(
     assert run_snapshot["components"]["input_snapshot"]["path"] == "input_snapshot.json"
     assert run_snapshot["components"]["provider_capability"]["path"] == "provider_snapshot.json"
     assert run_snapshot["components"]["quality_readiness"]["path"] == "quality_readiness.json"
+    assert "task_bundle" not in run_snapshot["components"]
     assert all(
         len(component["sha256"]) == 64
         for component in run_snapshot["components"].values()
@@ -776,6 +777,46 @@ def test_prepare_freezes_selected_execution_profile_into_task_and_agent_bundles(
     )
     assert agent_bundle["execution_profile"]["max_subagents"] == 4
     assert agent_bundle["stage_specs"][-1]["stage_id"] == "publish"
+
+
+def test_refresh_run_snapshot_v3_freezes_the_compiled_execution_plan(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import (
+        WorkbenchTaskRunPreparer,
+        refresh_run_snapshot_v3,
+        validate_run_snapshot_v3,
+    )
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "snapshot-plan",
+        "name": "Snapshot plan",
+        "version": 3,
+        "inputs": [],
+        "steps": [{"id": "analyze", "type": "agent_task", "provider": "builtin-llm"}],
+        "outputs": [],
+    })
+    prepared = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="snapshot-plan",
+        workspace_id="ws1",
+        repo_path=str(tmp_path),
+        inputs={},
+    )
+    root = Path(prepared.artifact_dir)
+    compiled_plan = {"plan_version": 1, "nodes": [{"node_id": "analyze"}]}
+    prepared.task_bundle["compiled_plan"] = compiled_plan
+    (root / "task_bundle.json").write_text(
+        json.dumps(prepared.task_bundle, ensure_ascii=False), encoding="utf-8"
+    )
+
+    refreshed = refresh_run_snapshot_v3(root)
+
+    assert refreshed["components"]["execution_plan"]["path"] == "compiled_plan.json"
+    assert json.loads((root / "compiled_plan.json").read_text(encoding="utf-8")) == compiled_plan
+    assert validate_run_snapshot_v3(root) == []
 
 
 def test_run_snapshot_v3_detects_mutated_frozen_component(tmp_path):
