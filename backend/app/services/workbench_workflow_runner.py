@@ -31,6 +31,7 @@ from app.services.ai_staged_execution import (
     _deterministic_quality_claim_repair,
     _apply_quality_feedback_field_patches,
     build_source_evidence_pack,
+    build_profile_execution_evidence,
     build_staged_execution_plan,
     execute_staged_builtin_plan,
     materialize_source_evidence_pack,
@@ -838,6 +839,39 @@ def _mark_staged_workflow_deadline_exceeded(
     }
 
 
+def _profile_execution_evidence_for_quality_audit(
+    *, artifact_dir: Path, execution_profile: Any
+) -> dict[str, Any]:
+    """Apply deep-work proof only to a persisted built-in staged execution."""
+    profile = execution_profile if isinstance(execution_profile, dict) else {}
+    profile_id = str(profile.get("id") or "rapid").strip().lower()
+    if profile_id != "deep":
+        return {
+            "kind": "profile_execution_evidence",
+            "profile_id": profile_id or "rapid",
+            "status": "not_applicable",
+            "reason": "当前不是深度档。",
+        }
+    result_path = artifact_dir / "staged_execution_result.json"
+    evidence_path = artifact_dir / "profile_execution_evidence.json"
+    if not result_path.is_file():
+        return {
+            "kind": "profile_execution_evidence",
+            "profile_id": "deep",
+            "status": "not_applicable",
+            "reason": "当前执行器未使用内置 staged runtime；由其自身 Harness 证据验收。",
+        }
+    persisted = _read_json(evidence_path)
+    if isinstance(persisted, dict) and persisted.get("kind") == "profile_execution_evidence":
+        return persisted
+    evidence = build_profile_execution_evidence(
+        artifact_dir=artifact_dir,
+        execution_profile=profile,
+    )
+    _write_json(evidence_path, evidence)
+    return evidence
+
+
 @dataclass(frozen=True)
 class WorkbenchWorkflowExecutionResult:
     task_run_id: str
@@ -1562,6 +1596,11 @@ class WorkbenchWorkflowRunner:
             profile_id=profile_id,
         )
         audit["stage_contract"] = stage_contract_validation
+        profile_execution_evidence = _profile_execution_evidence_for_quality_audit(
+            artifact_dir=artifact_dir,
+            execution_profile=execution_profile,
+        )
+        audit["profile_execution_evidence"] = profile_execution_evidence
         if isinstance(quality_axes, dict):
             quality_axes["artifact_contract"] = {
                 "status": artifact_contract_validation["status"],
@@ -1572,6 +1611,11 @@ class WorkbenchWorkflowRunner:
                 "status": stage_contract_validation["status"],
                 "required": len(stage_contract_validation["required_stage_ids"]),
                 "incomplete": len(stage_contract_validation["incomplete_stages"]),
+            }
+            quality_axes["profile_execution"] = {
+                "status": profile_execution_evidence["status"],
+                "provider_calls": profile_execution_evidence.get("provider_call_count", 0),
+                "output_tokens": profile_execution_evidence.get("output_tokens", 0),
             }
         if artifact_contract_validation["status"] == "blocked":
             issues = audit.get("issues")
@@ -1609,6 +1653,23 @@ class WorkbenchWorkflowRunner:
                         if isinstance(item, dict)
                     ),
                     "details": incomplete,
+                }
+            )
+            audit["issue_count"] = len(issues)
+            audit["deliverable"] = False
+            audit["status"] = "needs_rework"
+        if profile_execution_evidence["status"] == "blocked":
+            issues = audit.get("issues")
+            if not isinstance(issues, list):
+                issues = []
+                audit["issues"] = issues
+            issues.append(
+                {
+                    "code": "deep_profile_execution_evidence_incomplete",
+                    "severity": "error",
+                    "artifact": "profile_execution_evidence.json",
+                    "message": str(profile_execution_evidence.get("reason") or "深度档模型工作量证据不足。"),
+                    "details": profile_execution_evidence,
                 }
             )
             audit["issue_count"] = len(issues)

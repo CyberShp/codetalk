@@ -11,6 +11,38 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_deep_quality_evidence_uses_persisted_staged_execution_metrics(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _profile_execution_evidence_for_quality_audit,
+    )
+
+    (tmp_path / "staged_execution_result.json").write_text("{}", encoding="utf-8")
+    for stage_id in ("deep_entry_paths", "deep_state_and_resources", "black_box_cases"):
+        stage_dir = tmp_path / "stages" / stage_id
+        stage_dir.mkdir(parents=True)
+        (stage_dir / "stage_result.json").write_text(
+            json.dumps(
+                {
+                    "stage_id": stage_id,
+                    "status": "completed",
+                    "provider_call_count": 1,
+                    "output_tokens": 100,
+                    "provider_wait_ms": 250.0,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+    evidence = _profile_execution_evidence_for_quality_audit(
+        artifact_dir=tmp_path,
+        execution_profile={"id": "deep", "applied_subagent_count": 2},
+    )
+
+    assert evidence["status"] == "passed"
+    assert evidence["provider_call_count"] == 3
+    assert json.loads((tmp_path / "profile_execution_evidence.json").read_text())["status"] == "passed"
+
+
 def test_external_agent_finalization_restores_task_owned_source_evidence_pack(tmp_path):
     from app.services.workbench_workflow_runner import (
         _materialize_external_agent_source_evidence_pack,

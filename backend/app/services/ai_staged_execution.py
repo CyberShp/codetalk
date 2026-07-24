@@ -2277,8 +2277,112 @@ async def execute_staged_builtin_plan(
         "manifest": "artifact_manifest.json",
         "models": sorted(models),
     }
+    execution["profile_execution_evidence"] = build_profile_execution_evidence(
+        artifact_dir=artifact_dir,
+        execution_profile=(
+            plan.get("execution_profile")
+            if isinstance(plan.get("execution_profile"), dict)
+            else {}
+        ),
+    )
     _write_json(artifact_dir / "staged_execution_result.json", execution)
+    _write_json(
+        artifact_dir / "profile_execution_evidence.json",
+        execution["profile_execution_evidence"],
+    )
     return {**execution, "artifact_manifest": manifest}
+
+
+def build_profile_execution_evidence(
+    *, artifact_dir: Path, execution_profile: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Summarize actual provider work without treating reuse as new analysis."""
+    profile = execution_profile if isinstance(execution_profile, dict) else {}
+    profile_id = str(profile.get("id") or "rapid").strip().lower()
+    stage_results: dict[str, dict[str, Any]] = {}
+    for stage_dir in (artifact_dir / "stages").glob("*"):
+        if not stage_dir.is_dir():
+            continue
+        result = _read_json_file(stage_dir / "stage_result.json")
+        stage_id = str(result.get("stage_id") or stage_dir.name)
+        if stage_id:
+            stage_results[stage_id] = result
+    if profile_id != "deep":
+        return {
+            "kind": "profile_execution_evidence",
+            "profile_id": profile_id or "rapid",
+            "status": "not_applicable",
+            "reason": "仅深度档要求独立的模型工作量证明。",
+        }
+    branch_ids = [
+        stage_id
+        for stage_id, _artifact, _purpose in _DEEP_EXPLORATION_BRANCHES[
+            : max(0, int(profile.get("applied_subagent_count") or 0))
+        ]
+    ]
+    branch_metrics = {
+        stage_id: _provider_work_metrics(stage_results.get(stage_id) or {})
+        for stage_id in branch_ids
+    }
+    branch_calls = sum(
+        int(metrics["provider_call_count"])
+        for metrics in branch_metrics.values()
+    )
+    all_metrics = [_provider_work_metrics(item) for item in stage_results.values()]
+    provider_call_count = sum(int(item["provider_call_count"]) for item in all_metrics)
+    output_tokens = sum(int(item["output_tokens"]) for item in all_metrics)
+    provider_wait_ms = round(sum(float(item["provider_wait_ms"]) for item in all_metrics), 1)
+    required_branch_calls = len(branch_ids)
+    required_delivery_calls = 1 if branch_ids else 0
+    delivery_metrics = _provider_work_metrics(stage_results.get("black_box_cases") or {})
+    missing_branches = [
+        stage_id
+        for stage_id, metrics in branch_metrics.items()
+        if int(metrics["provider_call_count"]) < 1
+    ]
+    missing_delivery_work = (
+        required_delivery_calls > 0
+        and int(delivery_metrics["provider_call_count"]) < required_delivery_calls
+    )
+    status = "passed" if not missing_branches and not missing_delivery_work else "blocked"
+    return {
+        "kind": "profile_execution_evidence",
+        "profile_id": "deep",
+        "status": status,
+        "required_branch_provider_calls": required_branch_calls,
+        "observed_branch_provider_calls": branch_calls,
+        "required_delivery_provider_calls": required_delivery_calls,
+        "observed_delivery_provider_calls": int(delivery_metrics["provider_call_count"]),
+        "missing_branch_provider_work": missing_branches,
+        "missing_delivery_provider_work": missing_delivery_work,
+        "provider_call_count": provider_call_count,
+        "output_tokens": output_tokens,
+        "provider_wait_ms": provider_wait_ms,
+        "reused_stage_count": sum(bool(item.get("reused")) for item in stage_results.values()),
+        "reason": (
+            "深度档已保留各独立探索分支和黑盒交付阶段的真实模型工作指标。"
+            if status == "passed"
+            else "深度档缺少已冻结的独立探索或黑盒交付模型工作，不能以复用结果冒充深度执行。"
+        ),
+    }
+
+
+def _provider_work_metrics(result: dict[str, Any]) -> dict[str, float | int]:
+    prior = result.get("prior_execution_metrics")
+    prior = prior if isinstance(prior, dict) else {}
+
+    def number(key: str) -> float:
+        value = result.get(key, prior.get(key, 0))
+        try:
+            return float(value or 0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    return {
+        "provider_call_count": int(number("provider_call_count")),
+        "output_tokens": int(number("output_tokens")),
+        "provider_wait_ms": number("provider_wait_ms"),
+    }
 
 
 def _existing_quality_stage_result(
@@ -2337,19 +2441,51 @@ def _existing_quality_stage_result(
                 _write_json(stage_dir / "source_evidence_pack.json", canonical_pack)
         if canonical_pack:
             materialize_source_evidence_pack(canonical_pack, artifact_dir)
+    prior_result = _read_json_file(stage_dir / "stage_result.json")
+    prior_metrics = {
+        key: prior_result.get(key)
+        for key in (
+            "attempt_count",
+            "provider_call_count",
+            "provider_wait_ms",
+            "queue_wait_ms",
+            "output_tokens",
+            "time_to_first_token_ms",
+            "generation_ms",
+            "validation_ms",
+            "total_duration_ms",
+            "finish_reason",
+            "model",
+        )
+        if prior_result.get(key) not in (None, "")
+    }
     result = {
         "stage_id": str(stage.get("id") or ""),
         "status": "completed",
         "artifact": artifact,
-        "attempts": 0,
-        "attempt_count": 0,
+        "attempts": int(prior_result.get("attempts") or 0),
+        "attempt_count": int(prior_result.get("attempt_count") or 0),
         "repair_attempt_count": 0,
         "reused": True,
         "reuse_source": "same_run_quality_accepted_artifact",
         "size_bytes": output_path.stat().st_size,
-        "model": "",
+        "model": str(prior_result.get("model") or ""),
+        "prior_execution_metrics": prior_metrics,
         "output_path": str(output_path),
     }
+    for key in (
+        "provider_call_count",
+        "provider_wait_ms",
+        "queue_wait_ms",
+        "output_tokens",
+        "time_to_first_token_ms",
+        "generation_ms",
+        "validation_ms",
+        "total_duration_ms",
+        "finish_reason",
+    ):
+        if key in prior_metrics:
+            result[key] = prior_metrics[key]
     stage_dir.mkdir(parents=True, exist_ok=True)
     _write_json(stage_dir / "stage_result.json", result)
     return result

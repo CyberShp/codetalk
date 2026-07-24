@@ -40,6 +40,7 @@ from app.services.ai_staged_execution import (
     _merge_json_array_patch,
     _missing_quality_repair_row_ids,
     _existing_quality_stage_result,
+    build_profile_execution_evidence,
     _quality_repair_row_ids,
     _quality_repair_may_reassign_black_box_dimensions,
     _quality_repair_prompt_seed,
@@ -831,6 +832,63 @@ def test_quality_reuse_rejects_partial_multi_artifact_stage(tmp_path):
     )
 
     assert reused is None
+
+
+def test_quality_reuse_preserves_prior_provider_metrics_for_auditable_depth(tmp_path):
+    artifact = tmp_path / "black_box_cases.json"
+    artifact.write_text("[]", encoding="utf-8")
+    stage_dir = tmp_path / "stages" / "black_box_cases"
+    stage_dir.mkdir(parents=True)
+    (stage_dir / "stage_result.json").write_text(
+        json.dumps(
+            {
+                "stage_id": "black_box_cases",
+                "status": "completed",
+                "attempt_count": 1,
+                "provider_call_count": 1,
+                "provider_wait_ms": 3210.5,
+                "output_tokens": 456,
+                "model": "deepseek-v4-pro",
+                "finish_reason": "stop",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    reused = _existing_quality_stage_result(
+        plan={"quality_retry_feedback": {"issues": []}},
+        artifact_dir=tmp_path,
+        stage_dir=stage_dir,
+        stage={"id": "black_box_cases", "artifact": "black_box_cases.json"},
+    )
+
+    assert reused is not None
+    assert reused["reused"] is True
+    assert reused["provider_call_count"] == 1
+    assert reused["output_tokens"] == 456
+    assert reused["prior_execution_metrics"]["provider_wait_ms"] == 3210.5
+
+
+def test_deep_profile_evidence_rejects_reuse_without_prior_branch_provider_work(tmp_path):
+    for stage_id in ("deep_entry_paths", "deep_state_and_resources", "black_box_cases"):
+        stage_dir = tmp_path / "stages" / stage_id
+        stage_dir.mkdir(parents=True)
+        (stage_dir / "stage_result.json").write_text(
+            json.dumps({"stage_id": stage_id, "status": "completed", "reused": True}),
+            encoding="utf-8",
+        )
+
+    evidence = build_profile_execution_evidence(
+        artifact_dir=tmp_path,
+        execution_profile={"id": "deep", "applied_subagent_count": 2},
+    )
+
+    assert evidence["status"] == "blocked"
+    assert evidence["missing_branch_provider_work"] == [
+        "deep_entry_paths",
+        "deep_state_and_resources",
+    ]
+    assert evidence["missing_delivery_provider_work"] is True
 
 
 def test_quality_reuse_always_rebuilds_derived_judge(tmp_path):
