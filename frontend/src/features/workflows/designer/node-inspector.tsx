@@ -178,7 +178,10 @@ function RegistryConfigFields({
         }
         if (type === "port_list") {
           const direction = key === "output_ports" ? "output" : "input";
-          return <PortListEditor key={key} direction={direction} ports={portList(config[key])} typeOptions={capabilities?.input_types ?? ["text", "file", "directory", "mr_link"]} onChange={(ports, mutation) => {
+          const typeOptions = direction === "output"
+            ? Array.from(new Set([...(capabilities?.output_types ?? ["markdown", "json", "test_cases"]), "structured_json", "artifact_ref"]))
+            : capabilities?.input_types ?? ["text", "file", "directory", "mr_link"];
+          return <PortListEditor key={key} direction={direction} ports={portList(config[key])} typeOptions={typeOptions} onChange={(ports, mutation) => {
             if (mutation) onPortMutation(key, ports, mutation);
             else onChange({ [key]: ports });
           }} />;
@@ -252,7 +255,7 @@ function PortListEditor({
     const current = ports[index];
     if (!current) return;
     const candidate = (draftIds[index] ?? current.id).trim();
-    const error = validateInputPortId(candidate, ports, index);
+    const error = validateInputPortId(candidate, ports, index, direction === "input" ? "输入" : "输出");
     setIdErrors((items) => ({ ...items, [index]: error }));
     if (error || candidate === current.id) return;
     update(index, { id: candidate }, { direction, kind: "rename", oldId: current.id, newId: candidate });
@@ -276,7 +279,7 @@ function PortListEditor({
                 setDraftIds((items) => ({ ...items, [index]: value }));
                 setIdErrors((items) => ({
                   ...items,
-                  [index]: validateInputPortId(value, ports, index),
+                  [index]: validateInputPortId(value, ports, index, direction === "input" ? "输入" : "输出"),
                 }));
               }}
               onBlur={() => commitId(index)}

@@ -79,10 +79,17 @@ test("creates a workflow through the UI and uses the xyflow canvas with real mou
   await thirdPortName.press("Enter");
   await inspector.getByLabel("输入端口 3 类型").selectOption("file");
   await expect(canvas.getByLabel("输入端口 design_doc，类型 file")).toBeVisible();
+
+  await inspector.getByRole("button", { name: "增加输出端口" }).click();
+  await inspector.getByLabel("输出端口 2 名称").fill("analysis_json");
+  await inspector.getByLabel("输出端口 2 名称").press("Enter");
+  await inspector.getByLabel("输出端口 2 类型").selectOption("structured_json");
+  await expect(canvas.getByLabel("输出端口 analysis_json，类型 structured_json")).toBeVisible();
   await page.waitForTimeout(900);
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(canvas).toBeVisible();
   await expect(canvas.getByLabel("输入端口 design_doc，类型 file")).toBeVisible();
+  await expect(canvas.getByLabel("输出端口 analysis_json，类型 structured_json")).toBeVisible();
   await canvas.scrollIntoViewIfNeeded();
   await canvas.getByTitle("适应画布").click();
   await page.waitForTimeout(250);
