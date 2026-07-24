@@ -4052,6 +4052,41 @@ def test_deterministic_quality_claim_repair_normalizes_invalid_tcpdump_filter():
     assert fields == ["$[0].detection"]
 
 
+def test_deterministic_quality_claim_repair_materializes_audited_iscsi_vague_steps():
+    payload = [
+        {
+            "case_id": "BB-09",
+            "scenario_name": "长时间保持 iSCSI 登录状态",
+            "test_dimension": "long_steady_state",
+            "source_or_test_evidence": ["lib/iscsi/conn.c"],
+            "steps": ["保持会话空闲 1 小时", "执行 IO 操作"],
+        }
+    ]
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="black_box_cases.json",
+        quality_feedback={
+            "issues": [
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "black_box_case_quality_failed",
+                    "invalid_cases": [
+                        {"case_id": "BB-09", "reasons": ["vague_steps"]}
+                    ],
+                }
+            ]
+        },
+    )
+
+    assert fields == ["$[0].steps"]
+    assert "iscsiadm -m session" in repaired[0]["steps"][0]
+    assert "fio" in repaired[0]["steps"][-1]
+    from app.services.test_activity_contract import black_box_steps_are_actionable
+
+    assert black_box_steps_are_actionable(repaired[0]["steps"])
+
+
 def test_deterministic_quality_claim_repair_enforces_mcs_raw_pdu_contract():
     payload = [
         {

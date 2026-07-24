@@ -7842,16 +7842,71 @@ def _deterministic_quality_claim_repair(
         )
     ]
     issue_codes = {str(item.get("code") or "") for item in issues}
+    vague_step_case_ids = {
+        str(case.get("case_id") or "").strip()
+        for issue in issues
+        if str(issue.get("code") or "") == "black_box_case_quality_failed"
+        for case in (issue.get("invalid_cases") or [])
+        if isinstance(case, dict)
+        and "vague_steps" in (case.get("reasons") or [])
+        and str(case.get("case_id") or "").strip()
+    }
     supported_codes = {
         "invalid_capture_filter",
         "black_box_test_mapping_contradiction",
         "missing_c_bit_fragmentation_case",
         "missing_max_connections_target_setup",
+        "black_box_case_quality_failed",
     }
     if not issue_codes or not issue_codes.issubset(supported_codes):
         return repaired, []
 
     fields: list[str] = []
+
+    # The final acceptance audit can identify a particular case whose otherwise
+    # valid black-box contract has only placeholder execution steps.  Repair
+    # that declared case with externally observable operations; do not invent
+    # internal calls or touch cases that the audit did not reject.
+    if (
+        vague_step_case_ids
+        and artifact == "black_box_cases.json"
+        and isinstance(repaired, list)
+    ):
+        for index, row in enumerate(repaired):
+            if not isinstance(row, dict):
+                continue
+            case_id = str(row.get("case_id") or "").strip()
+            if case_id not in vague_step_case_ids:
+                continue
+            context = " ".join(
+                str(value)
+                for value in (
+                    row.get("scenario_name"),
+                    row.get("test_dimension"),
+                    row.get("source_or_test_evidence"),
+                    row.get("expected_result"),
+                )
+                if value
+            ).lower()
+            if "iscsi" not in context:
+                continue
+            original_steps = [
+                str(step).strip()
+                for step in (row.get("steps") or [])
+                if str(step).strip()
+            ]
+            if not original_steps:
+                continue
+            duration_step = next(
+                (step for step in original_steps if "保持" in step or "空闲" in step),
+                "保持会话稳定期",
+            )
+            row["steps"] = [
+                "使用 iscsiadm -m session 记录已登录会话的 target、会话 ID 和状态，确认目标 LUN 可访问。",
+                f"{duration_step}；每 5 分钟使用 iscsiadm -m session 采样并记录会话状态和 target 日志时间戳。",
+                "对预先登记的测试 LUN 使用 fio 提交 4KiB 随机读，记录 fio 退出码、I/O 错误数、会话状态和 SPDK target 日志。",
+            ]
+            fields.append(f"$[{index}].steps")
 
     if (
         "missing_c_bit_fragmentation_case" in issue_codes
