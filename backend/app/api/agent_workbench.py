@@ -2460,6 +2460,39 @@ async def _execute_task_run_background(
             "completed" if status == "completed" else "partial" if status == "partial" else "step_failed",
             {"status": status},
         )
+    except asyncio.CancelledError:
+        # A task cancellation can arrive while the blocking workflow thread is
+        # still unwinding. Persist a visible terminal state before preserving
+        # cancellation semantics for the caller or service shutdown path.
+        try:
+            updated, _ = event_store.mark_status_unless(
+                task_run_id,
+                "interrupted",
+                blocked_statuses={"cancelled"},
+                completed_at=datetime.now(timezone.utc).isoformat(),
+                error="后台执行在完成前被中断；已保留诊断和已生成的文件。",
+            )
+            if updated:
+                event_store.mark_outcomes(
+                    task_run_id,
+                    quality_status="blocked",
+                    delivery_status="none",
+                )
+            event_store.append(
+                task_run_id,
+                "interrupted" if updated else "cancelled",
+                {
+                    "status": "interrupted" if updated else "cancelled",
+                    "user_message": (
+                        "后台执行被中断；已保留诊断和已生成的文件，可从中断节点重试。"
+                        if updated
+                        else "已取消本次工作流运行。"
+                    ),
+                },
+            )
+        except KeyError:
+            pass
+        raise
     except Exception as exc:  # pragma: no cover - defensive path is covered through API state.
         redacted = redact_agent_diagnostic_text(str(exc))
         try:

@@ -1,3 +1,4 @@
+import asyncio
 import json
 import sqlite3
 from types import SimpleNamespace
@@ -724,6 +725,56 @@ async def test_background_exception_finishes_quality_in_blocked_state(tmp_path, 
     assert failed.execution_status == "failed"
     assert failed.quality_status == "blocked"
     assert failed.delivery_status == "none"
+
+
+@pytest.mark.asyncio
+async def test_background_cancellation_never_leaves_task_run_stuck_running(tmp_path, monkeypatch):
+    from app.api import agent_workbench
+    from app.config import settings
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer, WorkbenchTaskRunStore
+    from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
+    from app.services.workflow_dsl import WorkflowStore
+
+    data_dir = tmp_path / "data"
+    run_root = data_dir / "workbench" / "task_runs"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+    workflow_store = WorkflowStore(data_dir / "workbench" / "task_workflows.db")
+    workflow_store.save_workflow(_workflow())
+    prepared = WorkbenchTaskRunPreparer(
+        artifact_root=run_root,
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="source-review",
+        workspace_id="ws-1",
+        repo_path=str(repo),
+        inputs={"target": "lib/nvmf"},
+    )
+
+    async def cancelled_to_thread(*_args, **_kwargs):
+        raise asyncio.CancelledError()
+
+    async def ready_preflight(_task_run_id):
+        return {"status": "ok", "message": ""}
+
+    monkeypatch.setattr(
+        agent_workbench,
+        "_preflight_task_run_agent_runtimes",
+        ready_preflight,
+    )
+    monkeypatch.setattr(agent_workbench.asyncio, "to_thread", cancelled_to_thread)
+    with pytest.raises(asyncio.CancelledError):
+        await agent_workbench._execute_task_run_background(
+            task_run_id=prepared.task_run_id,
+            payload=agent_workbench.TaskRunExecuteRequest(),
+        )
+
+    event_store = WorkbenchTaskRunEventStore(run_root)
+    assert event_store.current_status(prepared.task_run_id) == "interrupted"
+    interrupted = WorkbenchTaskRunStore(run_root).load(prepared.task_run_id)
+    assert interrupted.quality_status == "blocked"
+    assert interrupted.delivery_status == "none"
 
 
 @pytest.mark.asyncio
