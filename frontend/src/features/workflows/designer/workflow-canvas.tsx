@@ -260,7 +260,28 @@ function WorkflowCanvasSurface({ state, dispatch, registry, onSelectionChange }:
           edgeTypes={edgeTypes}
           onNodesChange={onNodesChange}
           onEdgesChange={onEdgesChange}
-          onNodeDragStop={(_, node) => dispatch({ type: "move-node", nodeId: node.id, x: node.position.x, y: node.position.y })}
+          onNodeDragStop={(_, node) => {
+            const dragged = state.present.nodes.find((item) => item.id === node.id);
+            const selectedIds = state.selectedNodeIds.includes(node.id) && state.selectedNodeIds.length > 1
+              ? state.selectedNodeIds
+              : [node.id];
+            if (!dragged || selectedIds.length === 1) {
+              dispatch({ type: "move-node", nodeId: node.id, x: node.position.x, y: node.position.y });
+              return;
+            }
+            const deltaX = node.position.x - dragged.position.x;
+            const deltaY = node.position.y - dragged.position.y;
+            dispatch({
+              type: "move-nodes",
+              positions: state.present.nodes
+                .filter((item) => selectedIds.includes(item.id))
+                .map((item) => ({
+                  nodeId: item.id,
+                  x: item.position.x + deltaX,
+                  y: item.position.y + deltaY,
+                })),
+            });
+          }}
           onNodesDelete={(deleted) => deleted.forEach((node) => dispatch({ type: "remove-node", nodeId: node.id }))}
           onEdgesDelete={(deleted) => deleted.forEach((edge) => dispatch({ type: "remove-edge", edgeId: edge.id }))}
           onEdgeClick={(_, edge) => dispatch({ type: "select-edge", edgeId: edge.id })}
@@ -285,7 +306,24 @@ function WorkflowCanvasSurface({ state, dispatch, registry, onSelectionChange }:
             event.dataTransfer.dropEffect = "move";
           }}
           onNodeDrag={(_, node) => {
-            setNodes((current) => current.map((item) => item.id === node.id ? { ...item, position: node.position } : item));
+            const dragged = state.present.nodes.find((item) => item.id === node.id);
+            const selectedIds = state.selectedNodeIds.includes(node.id) && state.selectedNodeIds.length > 1
+              ? state.selectedNodeIds
+              : [node.id];
+            if (!dragged || selectedIds.length === 1) {
+              setNodes((current) => current.map((item) => item.id === node.id ? { ...item, position: node.position } : item));
+              return;
+            }
+            const deltaX = node.position.x - dragged.position.x;
+            const deltaY = node.position.y - dragged.position.y;
+            setNodes((current) => current.map((item) => {
+              const original = state.present.nodes.find((candidate) => candidate.id === item.id);
+              if (!original || !selectedIds.includes(item.id)) return item;
+              return {
+                ...item,
+                position: { x: original.position.x + deltaX, y: original.position.y + deltaY },
+              };
+            }));
           }}
           multiSelectionKeyCode={["Meta", "Control"]}
           selectionKeyCode="Shift"

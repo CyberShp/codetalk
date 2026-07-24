@@ -20,6 +20,7 @@ export type WorkflowEditorAction =
   | { type: "update-node"; node: WorkflowGraphNode }
   | { type: "update-node-with-edges"; node: WorkflowGraphNode; edges: WorkflowGraphEdge[] }
   | { type: "move-node"; nodeId: string; x: number; y: number }
+  | { type: "move-nodes"; positions: Array<{ nodeId: string; x: number; y: number }> }
   | { type: "add-node"; node: WorkflowGraphNode }
   | { type: "remove-node"; nodeId: string }
   | { type: "add-edge"; edge: WorkflowGraphEdge }
@@ -127,6 +128,15 @@ export function workflowEditorReducer(
           ? { ...node, position: { x: action.x, y: action.y } }
           : node,
       ),
+    };
+  } else if (action.type === "move-nodes") {
+    const positions = new Map(action.positions.map((position) => [position.nodeId, position]));
+    next = {
+      ...next,
+      nodes: next.nodes.map((node) => {
+        const position = positions.get(node.id);
+        return position ? { ...node, position: { x: position.x, y: position.y } } : node;
+      }),
     };
   } else if (action.type === "add-node") {
     next = { ...next, nodes: [...next.nodes, action.node] };

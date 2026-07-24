@@ -174,6 +174,22 @@ test("box-selects multiple canvas nodes and batch deletes them through the visib
   await page.keyboard.up("Shift");
 
   await expect(canvas.getByTitle("删除所选")).toBeVisible();
+  const semanticBeforeMove = await semantic.boundingBox();
+  const memoryBeforeMove = await memory.boundingBox();
+  expect(semanticBeforeMove).not.toBeNull();
+  expect(memoryBeforeMove).not.toBeNull();
+  if (!semanticBeforeMove || !memoryBeforeMove) return;
+  const multiDragHandle = semantic.locator(".ct-v2-node-drag");
+  const multiDragBox = await multiDragHandle.boundingBox();
+  expect(multiDragBox).not.toBeNull();
+  if (!multiDragBox) return;
+  await page.mouse.move(multiDragBox.x + 38, multiDragBox.y + 18);
+  await page.mouse.down({ button: "left" });
+  await page.mouse.move(multiDragBox.x + 110, multiDragBox.y + 54, { steps: 10 });
+  await page.mouse.up({ button: "left" });
+  await expect.poll(async () => (await semantic.boundingBox())?.x ?? 0).toBeGreaterThan(semanticBeforeMove.x + 35);
+  await expect.poll(async () => (await memory.boundingBox())?.x ?? 0).toBeGreaterThan(memoryBeforeMove.x + 35);
+
   await canvas.getByTitle("删除所选").click();
   await expect.poll(() => canvas.locator(".react-flow__node-workflowNode").count()).toBe(4);
   await canvas.getByTitle("撤销").click();

@@ -29,3 +29,24 @@ test("undo restores a deleted node together with every connected edge", () => {
   assert.equal(restored.present.edges.some((edge) => edge.target.node_id === "analyze"), true);
   assert.equal(restored.present.edges.some((edge) => edge.source.node_id === "analyze"), true);
 });
+
+test("moves a selected node group in one undoable graph revision", () => {
+  const initial = createEditorState(createStarterGraph("batch-move", "Batch move"));
+  const moved = workflowEditorReducer(initial, {
+    type: "move-nodes",
+    positions: [
+      { nodeId: "repo", x: 180, y: 120 },
+      { nodeId: "analysis_target", x: 180, y: 330 },
+    ],
+  });
+
+  assert.deepEqual(
+    moved.present.nodes
+      .filter((node) => node.id === "repo" || node.id === "analysis_target")
+      .map((node) => [node.id, node.position.x, node.position.y]),
+    [["repo", 180, 120], ["analysis_target", 180, 330]],
+  );
+  assert.equal(moved.past.length, 1);
+  const restored = workflowEditorReducer(moved, { type: "undo" });
+  assert.deepEqual(restored.present, initial.present);
+});
