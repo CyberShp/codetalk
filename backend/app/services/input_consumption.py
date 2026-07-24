@@ -5,20 +5,68 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from pathlib import Path
 from typing import Any
 
 
-def build_input_consumption_ledger(*, input_snapshot: dict[str, Any], stage_specs: list[dict[str, Any]]) -> dict[str, Any]:
+_RUNTIME_STAGE_ALIASES = {
+    "source_analysis": "source_evidence",
+    "breadth_inventory": "breadth_inventory",
+    "flow_evidence_pack": "flow_modeling",
+    "flow_outline": "flow_modeling",
+    "business_flow": "flow_modeling",
+    "developer_explanation": "flow_modeling",
+    "scenario_expansion": "scenario_expansion",
+    "sfmea": "sfmea",
+    "black_box_cases": "black_box_design",
+    "test_design_governance": "black_box_design",
+    "coverage_judge": "independent_judge",
+    "behavior_claim_validation": "independent_judge",
+    "test_design_mindmap": "publish",
+    "publish": "publish",
+}
+
+
+def build_input_consumption_ledger(
+    *,
+    input_snapshot: dict[str, Any],
+    stage_specs: list[dict[str, Any]],
+    input_definitions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Freeze named inputs and the stage-level evidence of their use.
+
+    ``consumed_by_stages`` remains for legacy consumers.  The V2 records are
+    intentionally initialized as ``planned``; a runtime event is the only
+    thing allowed to promote an input to ``consumed`` or ``reused``.
+    """
     stages = [str(item.get("stage_id") or "") for item in stage_specs if str(item.get("stage_id") or "")]
+    definitions = {
+        str(item.get("id") or ""): item
+        for item in input_definitions or []
+        if isinstance(item, dict) and str(item.get("id") or "")
+    }
     return {
-        "schema_version": "input-consumption-v1",
+        "schema_version": "input-consumption-v2",
         "inputs": [
             {
                 "input_id": str(input_id),
+                "label": _input_label(input_id, definitions.get(str(input_id))),
+                "input_type": _input_type(value, definitions.get(str(input_id))),
                 "sha256": _input_hash(value),
                 "summary": _summary(value),
                 "consumed_by_stages": stages,
                 "consumption_mode": "frozen_task_bundle",
+                "stage_consumption": [
+                    {
+                        "stage_id": stage_id,
+                        "status": "planned",
+                        "consumption_mode": "frozen_task_bundle",
+                        "reason": "等待阶段接收冻结输入",
+                        "artifact": "",
+                        "claim_ids": [],
+                    }
+                    for stage_id in stages
+                ],
             }
             for input_id, value in input_snapshot.items()
         ],
@@ -41,6 +89,61 @@ def scope_input_consumption_ledger(
     }
 
 
+def record_input_consumption_event(
+    path: str | Path,
+    *,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Promote planned input records only when an actual stage reports activity."""
+    ledger_path = Path(path)
+    try:
+        ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(ledger, dict) or ledger.get("schema_version") != "input-consumption-v2":
+        return ledger if isinstance(ledger, dict) else {}
+    raw_stage_id = str(payload.get("stage_id") or "").strip()
+    stage_id = _RUNTIME_STAGE_ALIASES.get(raw_stage_id, raw_stage_id)
+    if not stage_id:
+        return ledger
+    raw_status = str(payload.get("status") or "").lower()
+    is_reused = bool(payload.get("reused")) or str(payload.get("event_type") or "") == "stage_reused"
+    if is_reused:
+        status, mode, reason = "reused", "validated_stage_cache", "已复用通过校验的阶段结果"
+    elif raw_status in {"running", "started", "completed", "partial"}:
+        status, mode, reason = "consumed", "staged_context", "阶段已接收冻结输入"
+    elif raw_status in {"failed", "error", "invalid", "blocked", "cancelled", "canceled"}:
+        status, mode, reason = "attempted", "staged_context", "阶段开始后未完成，输入可能已被部分消费"
+    else:
+        return ledger
+    artifact = str(payload.get("artifact") or "")
+    changed = False
+    for input_record in ledger.get("inputs") or []:
+        if not isinstance(input_record, dict):
+            continue
+        for record in input_record.get("stage_consumption") or []:
+            if not isinstance(record, dict) or record.get("stage_id") != stage_id:
+                continue
+            if record.get("status") == "reused" and status == "consumed":
+                continue
+            record.update({
+                "status": status,
+                "consumption_mode": mode,
+                "reason": reason,
+                "artifact": artifact,
+                "claim_ids": [
+                    str(value) for value in payload.get("claim_ids") or [] if str(value)
+                ],
+            })
+            changed = True
+    if changed:
+        ledger_path.write_text(
+            json.dumps(ledger, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+    return ledger
+
+
 def _input_hash(value: Any) -> str:
     if isinstance(value, dict) and str(value.get("sha256") or ""):
         return str(value["sha256"])
@@ -53,3 +156,16 @@ def _summary(value: Any) -> str:
     if isinstance(value, dict):
         return str(value.get("original_name") or value.get("original_path") or value.get("kind") or "结构化输入")[:240]
     return str(value)[:240]
+
+
+def _input_label(input_id: Any, definition: dict[str, Any] | None) -> str:
+    return str((definition or {}).get("label") or input_id)
+
+
+def _input_type(value: Any, definition: dict[str, Any] | None) -> str:
+    configured = str((definition or {}).get("type") or "").strip()
+    if configured:
+        return configured
+    if isinstance(value, dict):
+        return str(value.get("kind") or "structured")
+    return "text"

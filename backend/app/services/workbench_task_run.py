@@ -213,6 +213,10 @@ class WorkbenchTaskRunPreparer:
         )
         input_consumption = build_input_consumption_ledger(
             input_snapshot=input_snapshot,
+            input_definitions=[
+                item for item in workflow_snapshot.get("inputs") or []
+                if isinstance(item, dict)
+            ],
             stage_specs=stage_specs,
         )
         context_bundle = build_workbench_context_bundle(

@@ -611,15 +611,19 @@ def test_prepare_scopes_each_agent_bundle_to_its_declared_input_bindings(tmp_pat
     assert agent_bundle["inputs"] == {
         "analysis_target": "NVMe/TCP TLS handshake"
     }
-    assert agent_bundle["input_consumption"]["inputs"] == [
-        {
-            "input_id": "analysis_target",
-            "sha256": agent_bundle["input_consumption"]["inputs"][0]["sha256"],
-            "summary": "NVMe/TCP TLS handshake",
-            "consumed_by_stages": agent_bundle["input_consumption"]["inputs"][0]["consumed_by_stages"],
-            "consumption_mode": "frozen_task_bundle",
-        }
-    ]
+    scoped_consumption = agent_bundle["input_consumption"]["inputs"]
+    assert [item["input_id"] for item in scoped_consumption] == ["analysis_target"]
+    assert scoped_consumption[0]["label"] == "analysis_target"
+    assert scoped_consumption[0]["input_type"] == "free_text"
+    assert scoped_consumption[0]["summary"] == "NVMe/TCP TLS handshake"
+    assert scoped_consumption[0]["stage_consumption"][0] == {
+        "stage_id": "input_scope",
+        "status": "planned",
+        "consumption_mode": "frozen_task_bundle",
+        "reason": "等待阶段接收冻结输入",
+        "artifact": "",
+        "claim_ids": [],
+    }
     assert "THIS MUST NOT REACH THE AGENT" not in json.dumps(agent_bundle)
 
 

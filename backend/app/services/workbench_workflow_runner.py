@@ -59,6 +59,7 @@ from app.services.test_activity_stage_specs import (
     TestActivityStageProgressTracker,
     project_test_activity_stage_progress,
 )
+from app.services.input_consumption import record_input_consumption_event
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_task_run import BUILTIN_LLM_PROVIDER_ID
 from app.services.workbench_task_run import WorkbenchTaskRunStore, validate_run_snapshot_v3
@@ -1964,6 +1965,10 @@ class WorkbenchWorkflowRunner:
 
                 def emit_stage_progress(payload: dict[str, Any]) -> None:
                     live_stage_progress.update(payload)
+                    record_input_consumption_event(
+                        task_root / "input_consumption.json",
+                        payload=payload,
+                    )
                     public_metrics = {
                         key: payload.get(key)
                         for key in (
