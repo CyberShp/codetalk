@@ -61,7 +61,7 @@ from app.services.test_activity_stage_specs import (
 )
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_task_run import BUILTIN_LLM_PROVIDER_ID
-from app.services.workbench_task_run import WorkbenchTaskRunStore
+from app.services.workbench_task_run import WorkbenchTaskRunStore, validate_run_snapshot_v3
 
 
 def _now() -> str:
@@ -873,6 +873,23 @@ class WorkbenchWorkflowRunner:
         stop_on_error: bool = True,
     ) -> WorkbenchWorkflowExecutionResult:
         task_run = self.store.load(task_run_id)
+        # A V3 preparer records the immutable component index before the first
+        # provider is launched.  Refuse a changed input/profile/policy rather
+        # than executing a task that no longer matches the user's reviewed run.
+        if isinstance(task_run.task_bundle, dict) and task_run.task_bundle.get("run_snapshot_path"):
+            snapshot_errors = validate_run_snapshot_v3(task_run.artifact_dir)
+            if snapshot_errors:
+                started_at = _now()
+                return self._finalize_execution(
+                    task_run=task_run,
+                    started_at=started_at,
+                    step_results=[{
+                        "step_id": "run_snapshot",
+                        "type": "run_snapshot",
+                        "status": "invalid",
+                        "error": "; ".join(snapshot_errors),
+                    }],
+                )
         self._record_builtin_provider_readiness_if_applicable(task_run)
         started_at = _now()
         step_results: list[dict[str, Any]] = []

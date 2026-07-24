@@ -403,6 +403,10 @@ class WorkbenchTaskRunPreparer:
             "degraded_retrieval": context_artifacts["degraded_retrieval"],
             "black_box_generation_policy": black_box_generation_policy,
             "test_activity_contract": test_activity_contract,
+            # The canonical V3 snapshot is materialized after every frozen
+            # component is written.  Child harness envelopes receive the
+            # stable path, never a mutable in-memory copy of the run state.
+            "run_snapshot_path": "run_snapshot_v3.json",
             "required_artifacts_by_step": required_artifacts_by_step,
             "output_schemas_by_step": output_schemas_by_step,
             "semantic_import_outputs_by_step": semantic_import_outputs_by_step,
@@ -623,6 +627,17 @@ class WorkbenchTaskRunPreparer:
         _write_json(artifact_dir / "black_box_generation_policy.json", black_box_generation_policy)
         _write_json(artifact_dir / "test_activity_contract.json", test_activity_contract)
         _write_json(artifact_dir / "task_bundle.json", task_bundle)
+        _write_json(
+            artifact_dir / "run_snapshot_v3.json",
+            build_run_snapshot_v3(
+                artifact_dir=artifact_dir,
+                task_run_id=task_run_id,
+                task_id=str(task_id or ""),
+                attempt_number=max(0, int(attempt_number)),
+                parent_task_run_id=str(parent_task_run_id or ""),
+                workflow_snapshot=workflow_snapshot,
+            ),
+        )
         write_task_artifact_manifest(artifact_dir, task_run_id=task_run_id)
         return result
 
@@ -4219,6 +4234,97 @@ def _agent_instruction_policy() -> dict[str, Any]:
 
 def _write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def build_run_snapshot_v3(
+    *,
+    artifact_dir: Path,
+    task_run_id: str,
+    task_id: str,
+    attempt_number: int,
+    parent_task_run_id: str,
+    workflow_snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Create the immutable, task-owned V3 run contract.
+
+    Individual component files remain materialized so the cockpit, harness and
+    support tooling can consume them without parsing a monolith.  This schema
+    is the one authoritative index: every immutable input to a run is named
+    here and pinned to the bytes that were actually written before execution.
+    Runtime status, retries and generated output deliberately stay outside it.
+    """
+    component_paths = {
+        "workflow_definition": "workflow_snapshot.json",
+        "input_snapshot": "input_snapshot.json",
+        "input_consumption": "input_consumption.json",
+        "execution_profile": "execution_profile.json",
+        "network_policy": "network_policy.json",
+        "stage_specs": "stage_specs.json",
+        "artifact_contract": "artifact_contract_v3.json",
+        "workflow_contract": "workflow_contract.json",
+        "provider_capability": "provider_snapshot.json",
+        "provider_readiness": "provider_readiness.json",
+        "quality_readiness": "quality_readiness.json",
+        "task_bundle": "task_bundle.json",
+    }
+    components: dict[str, dict[str, str]] = {}
+    for component_id, relative_path in component_paths.items():
+        path = artifact_dir / relative_path
+        if not path.is_file():
+            raise RuntimeError(
+                f"cannot freeze run snapshot; missing component: {relative_path}"
+            )
+        components[component_id] = {
+            "path": relative_path,
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+    return {
+        "schema_version": 3,
+        "snapshot_kind": "codetalk_run_snapshot",
+        "created_at": _now(),
+        "identity": {
+            "task_run_id": task_run_id,
+            "task_id": task_id,
+            "attempt_number": attempt_number,
+            "parent_task_run_id": parent_task_run_id,
+            "workflow_id": str(workflow_snapshot.get("id") or ""),
+            "workflow_version": workflow_snapshot.get("version"),
+        },
+        "components": components,
+    }
+
+
+def validate_run_snapshot_v3(artifact_dir: str | Path) -> list[str]:
+    """Verify that a prepared V3 run still refers to the frozen component bytes."""
+    root = Path(artifact_dir)
+    snapshot = _read_json(root / "run_snapshot_v3.json")
+    if not isinstance(snapshot, dict):
+        return ["运行快照缺失或无法读取：run_snapshot_v3.json"]
+    if snapshot.get("schema_version") != 3 or snapshot.get("snapshot_kind") != "codetalk_run_snapshot":
+        return ["运行快照版本不受支持：run_snapshot_v3.json"]
+    components = snapshot.get("components")
+    if not isinstance(components, dict) or not components:
+        return ["运行快照未声明冻结组件：run_snapshot_v3.json"]
+    errors: list[str] = []
+    for component_id, descriptor in components.items():
+        if not isinstance(descriptor, dict):
+            errors.append(f"运行快照组件定义无效：{component_id}")
+            continue
+        relative_path = str(descriptor.get("path") or "").strip().replace("\\", "/")
+        expected_sha256 = str(descriptor.get("sha256") or "").strip().lower()
+        path = root / relative_path
+        if (
+            not relative_path
+            or Path(relative_path).is_absolute()
+            or ".." in Path(relative_path).parts
+            or not path.is_file()
+        ):
+            errors.append(f"运行快照组件缺失：{component_id}（{relative_path or '未知路径'}）")
+            continue
+        actual_sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        if len(expected_sha256) != 64 or actual_sha256 != expected_sha256:
+            errors.append(f"运行快照组件校验失败：{component_id}（{relative_path}）")
+    return errors
 
 
 def _read_json(path: Path) -> Any:

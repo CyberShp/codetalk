@@ -13,7 +13,7 @@ that a requirement is complete; an item is only complete after its required real
 | Product contract | Current owner / evidence | Gap to V3 | Next verification |
 | --- | --- | --- | --- |
 | WorkflowVersion | `WorkflowVersionStore`, published definitions and compiled plans | Published definitions are immutable, but the Version/RunSnapshot boundary still has more than one serialized representation | Contract fixture with version/hash assertions |
-| RunSnapshot | `WorkbenchTaskRunPreparer`, `task_bundle.json` | Inputs, execution profile, network policy, StageSpec and Artifact Contract are now frozen; capability and Quality snapshots need a single explicit schema | RunSnapshot V3 schema test |
+| RunSnapshot | `WorkbenchTaskRunPreparer`, `run_snapshot_v3.json` | V3 now provides one immutable component index for workflow/input/profile/network/stage/artifact/capability/readiness/quality bytes, verified before execution. Existing task-bundle consumers remain as compatibility projections. | Browser run showing the V3 snapshot in diagnostics and a final release fixture |
 | InputBinding | `workflow_graph.py`, input ingest and scoped Agent bundles | Strict data edges and Agent-scoped input ledgers exist; named per-stage consumption is still incomplete | Multi-input E2E with document consumption ledger |
 | Provider execution | `AgentRunHarness`, CLI bridge and built-in model paths | Lifecycle events now have a normalized vocabulary, but the Facade is not yet the sole durable provider adapter boundary | Adapter conformance fixtures for Codex and built-in model |
 | Readiness | external provider discovery | Probe and execution are not yet proven to use one immutable capability snapshot | shared-probe integration test |

@@ -751,11 +751,105 @@ def test_prepare_freezes_selected_execution_profile_into_task_and_agent_bundles(
     assert prepared.task_bundle["input_consumption"]["inputs"][0]["input_id"] == "analysis_target"
     root = Path(prepared.artifact_dir)
     assert json.loads((root / "execution_profile.json").read_text(encoding="utf-8"))["id"] == "deep"
+    run_snapshot = json.loads((root / "run_snapshot_v3.json").read_text(encoding="utf-8"))
+    assert run_snapshot["schema_version"] == 3
+    assert run_snapshot["snapshot_kind"] == "codetalk_run_snapshot"
+    assert run_snapshot["identity"] == {
+        "task_run_id": prepared.task_run_id,
+        "task_id": "",
+        "attempt_number": 0,
+        "parent_task_run_id": "",
+        "workflow_id": "profiled-analysis",
+        "workflow_version": 1,
+    }
+    assert run_snapshot["components"]["workflow_definition"]["path"] == "workflow_snapshot.json"
+    assert run_snapshot["components"]["execution_profile"]["path"] == "execution_profile.json"
+    assert run_snapshot["components"]["input_snapshot"]["path"] == "input_snapshot.json"
+    assert run_snapshot["components"]["provider_capability"]["path"] == "provider_snapshot.json"
+    assert run_snapshot["components"]["quality_readiness"]["path"] == "quality_readiness.json"
+    assert all(
+        len(component["sha256"]) == 64
+        for component in run_snapshot["components"].values()
+    )
     agent_bundle = json.loads(
         (root / "agent_runs" / "analyze" / "task_bundle.json").read_text(encoding="utf-8")
     )
     assert agent_bundle["execution_profile"]["max_subagents"] == 4
     assert agent_bundle["stage_specs"][-1]["stage_id"] == "publish"
+
+
+def test_run_snapshot_v3_detects_mutated_frozen_component(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import (
+        WorkbenchTaskRunPreparer,
+        validate_run_snapshot_v3,
+    )
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "snapshot-integrity",
+        "name": "Snapshot integrity",
+        "version": 7,
+        "inputs": [{"id": "analysis_target", "type": "free_text"}],
+        "steps": [],
+        "outputs": [],
+    })
+    prepared = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="snapshot-integrity",
+        workspace_id="ws1",
+        repo_path=str(tmp_path),
+        inputs={"analysis_target": "iSCSI login"},
+    )
+    root = Path(prepared.artifact_dir)
+
+    assert validate_run_snapshot_v3(root) == []
+    (root / "execution_profile.json").write_text("{}", encoding="utf-8")
+
+    assert validate_run_snapshot_v3(root) == [
+        "运行快照组件校验失败：execution_profile（execution_profile.json）"
+    ]
+
+
+def test_runner_refuses_a_prepared_run_when_frozen_snapshot_is_mutated(tmp_path):
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "snapshot-runner-guard",
+        "name": "Snapshot runner guard",
+        "version": 1,
+        "inputs": [],
+        "steps": [{"id": "render", "type": "report_render"}],
+        "outputs": [],
+    })
+    prepared = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="snapshot-runner-guard",
+        workspace_id="ws1",
+        repo_path=str(tmp_path),
+        inputs={},
+    )
+    root = Path(prepared.artifact_dir)
+    (root / "network_policy.json").write_text("{}", encoding="utf-8")
+
+    result = WorkbenchWorkflowRunner(tmp_path / "task_runs").execute_task_run(
+        prepared.task_run_id
+    )
+
+    assert result.status == "invalid"
+    assert result.step_results == [{
+        "step_id": "run_snapshot",
+        "type": "run_snapshot",
+        "status": "invalid",
+        "error": "运行快照组件校验失败：network_policy（network_policy.json）",
+    }]
 
 
 def test_workflow_execution_artifact_keeps_the_frozen_execution_profile(tmp_path):
