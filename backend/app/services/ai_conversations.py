@@ -6632,8 +6632,9 @@ def _requests_full_test_activity_delivery(text: str) -> bool:
     )
     discussion_markers = (
         "解释", "为什么", "为何", "是否合理", "不合理", "评审", "审查", "点评",
-        "风险判断", "背后的", "这个", "这份", "这条", "补充", "再补", "几个",
-        "explain", "why", "review", "comment on", "discuss",
+        "评估", "评分", "核验", "复核", "验证", "风险判断", "背后的", "这个", "这份",
+        "这条", "补充", "再补", "几个", "explain", "why", "review", "evaluate",
+        "assess", "score", "validate", "verify", "comment on", "discuss",
     )
     completeness_markers = (
         "完整", "全部", "全量", "详细", "详尽", "可下载", "下载", "文件", "交付件",
@@ -6650,7 +6651,11 @@ def _requests_full_test_activity_delivery(text: str) -> bool:
             "test strategy", "test plan", "coverage report", "risk report",
         )
     )
-    if has_discussion and not (has_generation or has_completeness):
+    # A thread can be bound to formal workflow deliverables.  References to
+    # those files are evidence for a review, not a request to regenerate every
+    # required artifact.  Only an explicit generation verb may promote that
+    # review into a new full test-activity delivery.
+    if has_discussion and not has_generation:
         return False
     if has_completeness and (groups or broader_deliverable):
         return True

@@ -5875,6 +5875,10 @@ async def test_test_activity_explanations_do_not_trigger_full_artifact_gate():
         "解释这个测试设计背后的风险判断",
         "这个测试用例为什么不合理？",
         "补充黑盒边界条件和异常路径",
+        (
+            "作为独立审查员，仅基于已旁挂的交付件与源码证据，"
+            "评估这份 iSCSI Login 测试设计的 SFMEA 与黑盒边界"
+        ),
     )
     for request in discussion_requests:
         assert _agent_task_requests_downloadable_artifact(request, request) is False
