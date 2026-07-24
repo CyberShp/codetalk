@@ -17,7 +17,11 @@ from app.config import settings
 from app.services.evidence_memory import EvidenceMemoryStore
 from app.services.ai_workbench_links import AIWorkbenchLinkStore
 from app.services.test_semantic_library import TestSemanticLibraryStore
-from app.services.workbench_task_run import WorkbenchTaskRunPreparer, WorkbenchTaskRunStore
+from app.services.workbench_task_run import (
+    WorkbenchTaskRunPreparer,
+    WorkbenchTaskRunStore,
+    resolve_execution_profile,
+)
 from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
 from app.services.workbench_task_store import WorkbenchTask, WorkbenchTaskStore
 from app.services.workbench_task_compile import TaskConfigurationError, compile_task_configuration
@@ -820,14 +824,12 @@ def _validate_execution_profile(definition: dict[str, Any], profile_id: str) -> 
     selected = str(profile_id or "").strip()
     if not selected:
         return
-    profiles = definition.get("execution_profiles") or []
-    known = {
-        str(item.get("id") or "").strip()
-        for item in profiles
-        if isinstance(item, dict)
-    }
-    if selected not in known:
-        raise HTTPException(status_code=422, detail=f"执行档位不存在：{selected}")
+    try:
+        # Keep validation exactly aligned with the run preparer. Older
+        # published versions intentionally fall back to compatibility profiles.
+        resolve_execution_profile(definition, execution_profile_id=selected)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 def _is_workspace_input_definition(item: dict[str, Any]) -> bool:
