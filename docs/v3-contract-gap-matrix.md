@@ -14,7 +14,7 @@ that a requirement is complete; an item is only complete after its required real
 | --- | --- | --- | --- |
 | WorkflowVersion | `WorkflowVersionStore`, published definitions and compiled plans | Published definitions are immutable, but the Version/RunSnapshot boundary still has more than one serialized representation | Contract fixture with version/hash assertions |
 | RunSnapshot | `WorkbenchTaskRunPreparer`, `run_snapshot_v3.json` | V3 now provides one immutable component index for workflow/input/profile/network/stage/artifact/capability/readiness/quality bytes, verified before execution. Existing task-bundle consumers remain as compatibility projections. | Browser run showing the V3 snapshot in diagnostics and a final release fixture |
-| InputBinding | `workflow_graph.py`, input ingest and scoped Agent bundles | Strict data edges and Agent-scoped input ledgers exist; named per-stage consumption is still incomplete | Multi-input E2E with document consumption ledger |
+| InputBinding | `workflow_graph.py`, input ingest, `input_consumption.py` and scoped Agent bundles | Strict data edges and Agent-scoped ledgers now record named input, user label, type, content hash, stage status/mode and produced artifact. External Agent runtimes still need to emit equivalent consumption events rather than relying on staged builtin events. | External-Agent multi-input E2E with document/MR consumption ledger |
 | Provider execution | `AgentRunHarness`, CLI bridge and built-in model paths | Lifecycle events now have a normalized vocabulary, but the Facade is not yet the sole durable provider adapter boundary | Adapter conformance fixtures for Codex and built-in model |
 | Readiness | external provider discovery | Probe and execution are not yet proven to use one immutable capability snapshot | shared-probe integration test |
 | Test activity skills | staged execution plus `test_activity_contract.py` | Nine StageSpecs are frozen, but staged runtime execution does not yet project all progress, gates and local recovery through this one registry | StageSpec registry and per-stage artifact/gate tests |
@@ -24,6 +24,14 @@ that a requirement is complete; an item is only complete after its required real
 | Cockpit / AI thread | `run-cockpit-page.tsx`, AI artifact references | Both consume task artifacts, but profile/status semantics and bounded presentation need V3 review | browser E2E, narrow-screen screenshots |
 
 ## Confirmed baseline observations
+
+- Chromium Attempt 5 for the SPDK iSCSI deep workflow expanded the cockpit's
+  `输入消费记录（3 项）` panel and showed the user label, type and six concrete
+  stage artifacts for the analysis target, design document and source workspace.
+  The recorded evidence is under
+  `/Volumes/Media/codetalk-e2e-artifacts/v3-deepseek-flash-pro-risk-evidence-20260724/`.
+  It proves the builtin staged path; it must not be generalized to external
+  Agent consumption until that runtime emits the same event contract.
 
 - Existing legacy presets did not declare execution profiles. The task wizard consequently
   hid policy selection until compatibility defaults were added. This is covered by the
