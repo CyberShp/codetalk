@@ -424,6 +424,51 @@ def test_traceability_resolves_human_readable_path_ranges_only_inside_verified_c
     ]
 
 
+def test_traceability_accepts_display_path_only_when_same_case_has_verified_claim():
+    from app.services.source_driven_test_design import build_source_driven_test_design
+
+    cases = _cases()
+    cases[0]["risk_ids"] = []
+    cases[0]["source_or_test_evidence"] = ["lib/iscsi/iscsi.c"]
+    cases[0]["technical_claims"] = [{
+        "claim_id": "TC-001",
+        "type": "source_anchor",
+        "statement": "if (conn->state == EXITING) return;",
+        "evidence": [{
+            "evidence_id": "SRC-001:L101",
+            "path": "lib/iscsi/iscsi.c",
+            "lines": "L101",
+            "quote": "if (conn->state == EXITING) return;",
+            "symbol": "iscsi_pdu_payload_op_login",
+        }],
+    }]
+
+    artifacts = build_source_driven_test_design(
+        source_pack=_source_pack(),
+        flow_pack=_flow_pack(),
+        flow_outline=_outline(),
+        sfmea=_sfmea(),
+        black_box_cases=cases,
+    )
+
+    link = artifacts["traceability_matrix.json"]["links"][0]
+    assert link["verified_evidence_refs"] == ["lib/iscsi/iscsi.c", "SRC-001:L101"]
+    assert link["unresolved_evidence_refs"] == []
+    assert artifacts["traceability_matrix.json"]["orphan_case_ids"] == []
+
+    cases[0]["technical_claims"][0]["evidence"][0]["quote"] = "fabricated quote"
+    invalid = build_source_driven_test_design(
+        source_pack=_source_pack(),
+        flow_pack=_flow_pack(),
+        flow_outline=_outline(),
+        sfmea=_sfmea(),
+        black_box_cases=cases,
+    )
+    assert invalid["traceability_matrix.json"]["links"][0]["unresolved_evidence_refs"] == [
+        "lib/iscsi/iscsi.c"
+    ]
+
+
 def test_final_fact_verification_accepts_l1_verified_source_anchor_without_l2(tmp_path: Path):
     from app.services.source_driven_test_design import refresh_source_driven_delivery_governance
 

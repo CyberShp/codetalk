@@ -1849,6 +1849,14 @@ def _traceability_artifact(**context: Any) -> dict[str, Any]:
     for row in cases:
         case_id = str(row.get("case_id") or "")
         evidence = _strings(row.get("source_or_test_evidence"))
+        # A black-box case keeps short file paths for a tester to read, while
+        # its technical claims carry the line-qualified, quote-checked source
+        # anchors.  A short path must never pass on its own; it is accepted
+        # only when a verified claim in this same case proves that exact path.
+        claim_evidence, claim_backed_paths = _verified_case_claim_evidence(
+            row,
+            context["evidence_index"],
+        )
         risk_ids = _dedupe([*risk_by_case.get(case_id, []), *_strings(row.get("risk_ids"))])
         mapped_risk_ids.update(item for item in risk_ids if item in known_risk_ids)
         unknown_risk_ids.update(item for item in risk_ids if item not in known_risk_ids)
@@ -1856,7 +1864,9 @@ def _traceability_artifact(**context: Any) -> dict[str, Any]:
             item
             for item in evidence
             if _is_verified_evidence_reference(item, context["evidence_index"])
+            or item in claim_backed_paths
         ]
+        verified_evidence = _dedupe([*verified_evidence, *claim_evidence])
         known_case_risks = [item for item in risk_ids if item in known_risk_ids]
         if not verified_evidence and not known_case_risks:
             orphan_cases.append(case_id)
@@ -1870,6 +1880,7 @@ def _traceability_artifact(**context: Any) -> dict[str, Any]:
                     item
                     for item in evidence
                     if not _is_verified_evidence_reference(item, context["evidence_index"])
+                    and item not in claim_backed_paths
                 ],
             }
         )
@@ -1887,6 +1898,49 @@ def _traceability_artifact(**context: Any) -> dict[str, Any]:
             "error_propagation_chains.json",
         ],
     }
+
+
+def _verified_case_claim_evidence(
+    row: dict[str, Any],
+    evidence: dict[str, dict[str, Any]],
+) -> tuple[list[str], set[str]]:
+    """Return exact claim anchors and display paths they strictly validate."""
+
+    references: list[str] = []
+    backed_paths: set[str] = set()
+    for claim in row.get("technical_claims") or []:
+        if not isinstance(claim, dict):
+            continue
+        for reference in claim.get("evidence") or []:
+            if not isinstance(reference, dict):
+                continue
+            evidence_id = str(reference.get("evidence_id") or "")
+            card = _resolve_claim_evidence_card(
+                evidence=evidence,
+                evidence_id=evidence_id,
+                reference=reference,
+            )
+            path = str(reference.get("path") or "")
+            quote = str(reference.get("quote") or "")
+            symbol = str(reference.get("symbol") or "")
+            if (
+                card is None
+                or not path
+                or path != str(card.get("file_path") or "")
+                or not quote
+                or quote not in str(card.get("excerpt") or "")
+                or (symbol and symbol not in _strings(card.get("symbols")))
+            ):
+                continue
+            references.append(evidence_id or _claim_evidence_location(reference))
+            backed_paths.add(path)
+    return _dedupe(references), backed_paths
+
+
+def _claim_evidence_location(reference: dict[str, Any]) -> str:
+    path = str(reference.get("path") or "")
+    lines = str(reference.get("lines") or "").lstrip("L")
+    return f"{path}:{lines}" if path and lines else path
 
 
 def _is_verified_evidence_reference(
