@@ -6506,6 +6506,37 @@ def test_final_deterministic_quality_repair_preserves_test_hypothesis_and_normal
     assert json.loads((tmp_path / "black_box_cases.json").read_text())[0]["risk_ids"] == ["SFMEA_02"]
 
 
+def test_final_deterministic_quality_repair_replaces_invalid_markdown_evidence_with_gap(
+    tmp_path,
+):
+    from app.services.workbench_workflow_runner import (
+        _apply_final_deterministic_quality_repairs,
+    )
+
+    (tmp_path / "report.md").write_text(
+        "| PDU buffer | `iscsi_get_pdu` | `fuzz_iscsi.c:531` |\n",
+        encoding="utf-8",
+    )
+
+    changed = _apply_final_deterministic_quality_repairs(
+        artifact_dir=tmp_path,
+        audit={
+            "issues": [
+                {
+                    "artifact": "report.md",
+                    "code": "evidence_path_not_found",
+                    "message": "证据路径不存在: fuzz_iscsi.c:531",
+                }
+            ]
+        },
+    )
+
+    assert changed == {"report.md": ["fuzz_iscsi.c:531"]}
+    assert (tmp_path / "report.md").read_text(encoding="utf-8") == (
+        "| PDU buffer | `iscsi_get_pdu` | `待补充验证的源码定位` |\n"
+    )
+
+
 def test_quality_repair_salvages_only_rows_with_fewer_issues():
     from app.services.workbench_workflow_runner import (
         _merge_non_regressing_json_rows,

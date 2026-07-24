@@ -264,6 +264,37 @@ def test_sfmea_error_not_propagated_remains_a_scored_failure_mode(tmp_path):
     assert not any(issue["code"] == "non_risk_sfmea_row" for issue in issues)
 
 
+def test_sfmea_explicit_qualified_test_hypothesis_is_a_scored_risk_candidate(tmp_path):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    row = {
+        "sfmea_id": "SFMEA-CHAP-01",
+        "risk_status": "test_hypothesis",
+        "failure_mode": "认证参数解析未对连接字段加锁导致并发数据损坏",
+        "cause": "风险假设：若并发登录 PDU 处理同一连接，CHAP 握手数据可能被交错修改",
+        "effect": "合法 initiator 被拒绝或非法 initiator 通过认证",
+        "mechanism": "风险假设：若并发调用修改同一 conn，认证数据可能损坏",
+        "evidence_interpretation": "待验证：源码入口只证明解析路径，需通过并发故障注入确认。",
+        "detection": "认证日志与协议抓包",
+        "severity": 8,
+        "occurrence": 2,
+        "detection_score": 8,
+        "rpn": 128,
+        "mitigation": "整改: 明确并发所有权。验证: 并发 CHAP 登录压力测试。",
+        "source_evidence": ["lib/iscsi/iscsi.c:773"],
+        "test_mapping": "test/iscsi_tgt/chap",
+    }
+
+    issues = _audit_json_artifact(
+        artifact="sfmea.json",
+        payload=[row],
+        spec={"required_fields": []},
+        repo=tmp_path,
+    )
+
+    assert not any(issue["code"] == "non_risk_sfmea_row" for issue in issues)
+
+
 def test_sfmea_accepts_passive_unrejected_failure_mode():
     """Chinese passive voice must not turn an actual capacity failure into normal behavior."""
     from app.services.test_activity_contract import sfmea_failure_mode_is_risk

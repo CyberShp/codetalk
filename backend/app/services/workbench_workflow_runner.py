@@ -6483,6 +6483,35 @@ def _apply_final_deterministic_quality_repairs(
             continue
         _write_json(path, repaired)
         changed[artifact] = fields
+
+    # A report may repeat a provider-produced source reference that the
+    # deterministic audit has proved does not exist.  Do not invent a
+    # replacement path and do not keep an invalid citation just because the
+    # prose itself is otherwise useful.  Replace only the audited literal with
+    # an explicit evidence gap; a later run can fill it from verified evidence.
+    for issue in issues:
+        if str(issue.get("code") or "") != "evidence_path_not_found":
+            continue
+        artifact = Path(str(issue.get("artifact") or "")).name
+        if not artifact.endswith(".md"):
+            continue
+        match = re.search(
+            r"证据路径不存在:\s*(.+)$", str(issue.get("message") or "")
+        )
+        invalid_reference = str(match.group(1) if match else "").strip()
+        if not invalid_reference:
+            continue
+        path = artifact_dir / artifact
+        if not path.is_file():
+            continue
+        content = path.read_text(encoding="utf-8", errors="replace")
+        if invalid_reference not in content:
+            continue
+        path.write_text(
+            content.replace(invalid_reference, "待补充验证的源码定位"),
+            encoding="utf-8",
+        )
+        changed.setdefault(artifact, []).append(invalid_reference)
     return changed
 
 

@@ -6315,8 +6315,9 @@ def _audit_json_artifact(
                     flags=re.IGNORECASE,
                 )
             )
-            if not sfmea_failure_mode_is_risk(row.get("failure_mode")) or (
-                re.search(
+            if not explicit_test_hypothesis and (
+                not sfmea_failure_mode_is_risk(row.get("failure_mode"))
+                or re.search(
                 r"(?:当前|该)?源码.{0,8}不支持.{0,20}(?:failure\s*mode|失效|风险)"
                 r"|待验证\s*[:：]"
                 r"|无法从.{0,40}(?:推导|证明|确认)"
@@ -6329,7 +6330,6 @@ def _audit_json_artifact(
                 risk_text,
                 flags=re.IGNORECASE,
                 )
-                and not explicit_test_hypothesis
             ):
                 issues.append(
                     _issue(
