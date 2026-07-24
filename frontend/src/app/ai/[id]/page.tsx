@@ -27,7 +27,7 @@ import {
   User,
 } from "lucide-react";
 import { api, currentApiBase } from "@/lib/api";
-import type { AgentRuntime, AIContextReference, AIConversation, AIConversationRun, AIMessage, AIRunEvent, Workspace } from "@/lib/types";
+import type { AgentRuntime, AIContextReference, AIConversation, AIConversationRun, AIMessage, AIRunEvent, WorkbenchTaskArtifact, Workspace } from "@/lib/types";
 import MarkdownRenderer from "@/components/ui/MarkdownRenderer";
 
 const QUICK_ACTIONS = [
@@ -544,7 +544,7 @@ function CurrentRunPanel({ diagnostics, processEvents, run, running, referenceCo
         <div><span>耗时</span><strong>{agentRunElapsedLabel(run)}</strong></div>
         <div><span>当前动作</span><strong>{currentAction}</strong></div>
         <div><span>证据</span><strong>{evidenceCount} 条</strong></div>
-        <div><span>产物</span><strong>{artifactCount} 个</strong></div>
+        <div><span>本轮产物</span><strong>{artifactCount} 个</strong></div>
       </div>
       {running && <button type="button" className="ct-ai-run-stop" onClick={onCancel} disabled={cancelling}><Square size={14} />{cancelling ? "正在停止" : "停止"}</button>}
     </section>
@@ -853,6 +853,7 @@ export default function AIThreadPage() {
   const [streamingContent, setStreamingContent] = useState("");
   const [streamingDiagnostics, setStreamingDiagnostics] = useState<string[]>([]);
   const [streamingProcessEvents, setStreamingProcessEvents] = useState<AIRunEvent[]>([]);
+  const [linkedArtifacts, setLinkedArtifacts] = useState<WorkbenchTaskArtifact[]>([]);
   const [contextOpen, setContextOpen] = useState(true);
   const [railProjectQuery, setRailProjectQuery] = useState("");
   const [railThreadQuery, setRailThreadQuery] = useState("");
@@ -955,6 +956,27 @@ export default function AIThreadPage() {
   const linkedTaskRunId =
     typeof conversation?.initial_context?.task_run_id === "string" ? conversation.initial_context.task_run_id : "";
   const linkedAttempt = displayText(conversation?.initial_context?.attempt_number) || "1";
+
+  useEffect(() => {
+    let active = true;
+    if (!linkedTaskRunId) {
+      setLinkedArtifacts([]);
+      return () => {
+        active = false;
+      };
+    }
+    void api.workbench.taskRuns.artifacts(linkedTaskRunId)
+      .then((manifest) => {
+        if (!active) return;
+        setLinkedArtifacts(manifest.artifacts.filter((artifact) => artifact.audience === "deliverable"));
+      })
+      .catch(() => {
+        if (active) setLinkedArtifacts([]);
+      });
+    return () => {
+      active = false;
+    };
+  }, [linkedTaskRunId]);
   const runsById = useMemo(() => new Map(runs.map((run) => [run.id, run])), [runs]);
   const displayedLatestRun = latestRun?.id ? runsById.get(latestRun.id) ?? latestRun : null;
   const threadNavigationBusy =
@@ -1664,20 +1686,46 @@ export default function AIThreadPage() {
             </div>
           )}
           {linkedTaskRunId && (
-            <section className="ct-codex-ai__linked-run" aria-label="关联任务运行">
-              <div>
-                <span>关联任务</span>
-                <strong>{selectedWorkflowName || "工作流"} · Attempt {linkedAttempt}</strong>
-                <small>
-                  执行 {displayText(conversation?.initial_context?.execution_status) || "未记录"} ·
-                  质量 {displayText(conversation?.initial_context?.quality_status) || "未记录"} ·
-                  交付 {displayText(conversation?.initial_context?.delivery_status) || "未记录"}
-                </small>
-              </div>
-              <Link href={`/tasks/${encodeURIComponent(linkedTaskId)}/runs/${encodeURIComponent(linkedTaskRunId)}`}>
-                打开运行驾驶舱
-              </Link>
-            </section>
+            <>
+              <section className="ct-codex-ai__linked-run" aria-label="关联任务运行">
+                <div>
+                  <span>关联任务</span>
+                  <strong>{selectedWorkflowName || "工作流"} · Attempt {linkedAttempt}</strong>
+                  <small>
+                    执行 {displayText(conversation?.initial_context?.execution_status) || "未记录"} ·
+                    质量 {displayText(conversation?.initial_context?.quality_status) || "未记录"} ·
+                    交付 {displayText(conversation?.initial_context?.delivery_status) || "未记录"}
+                  </small>
+                </div>
+                <Link href={`/tasks/${encodeURIComponent(linkedTaskId)}/runs/${encodeURIComponent(linkedTaskRunId)}`}>
+                  打开运行驾驶舱
+                </Link>
+              </section>
+              {linkedArtifacts.length > 0 && (
+                <section className="ct-codex-ai__linked-artifacts" aria-label="关联任务交付件">
+                  <div>
+                    <span>已旁挂交付件</span>
+                    <strong>{linkedArtifacts.length} 个文件</strong>
+                  </div>
+                  <div className="ct-codex-ai__linked-artifact-list">
+                    {linkedArtifacts.slice(0, 6).map((artifact) => {
+                      const artifactPath = artifact.relative_path || artifact.path;
+                      const downloadPath = artifactPath.split("/").map(encodeURIComponent).join("/");
+                      return (
+                        <a
+                          key={artifactPath}
+                          href={`${currentApiBase()}/api/workbench/task-runs/${encodeURIComponent(linkedTaskRunId)}/artifacts/download/${downloadPath}`}
+                        >
+                          <FileText size={13} />
+                          {artifactPath.split("/").at(-1)}
+                        </a>
+                      );
+                    })}
+                    {linkedArtifacts.length > 6 && <small>另有 {linkedArtifacts.length - 6} 个交付件</small>}
+                  </div>
+                </section>
+              )}
+            </>
           )}
         </div>
 

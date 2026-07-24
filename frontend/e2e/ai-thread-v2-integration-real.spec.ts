@@ -162,6 +162,7 @@ test("runs the AI thread to frozen Task, cockpit, artifact, and follow-up loop",
   expect(followupConversationId).not.toBe(sourceConversationId);
   await expect(page.getByRole("region", { name: "关联任务运行" })).toContainText("Attempt 1");
   await expect(page.getByRole("link", { name: "打开运行驾驶舱" })).toHaveAttribute("href", `/tasks/${taskId}/runs/${runId}`);
+  await expect(page.getByRole("region", { name: "关联任务交付件" })).toContainText("result.json");
   await page.getByLabel("当前 AI 执行器").selectOption(runtime.id);
   const followup = "读取本次运行的公开产物，说明是否拿到了 result.json，并给出下一步复测建议。";
   await page.getByLabel("AI 线程消息").fill(followup);

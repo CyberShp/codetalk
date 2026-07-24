@@ -2448,6 +2448,48 @@ body:has(.ct-modal-backdrop) .ct-ai-dock-wrap {
 .ct-codex-ai__linked-run strong { color: #172033; font-size: 14px; }
 .ct-codex-ai__linked-run a { flex: 0 0 auto; color: #0369a1; font-size: 13px; font-weight: 700; }
 
+.ct-codex-ai__linked-artifacts {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border-top: 1px solid #e2e8f0;
+  background: #ffffff;
+  padding: 8px 16px;
+}
+
+.ct-codex-ai__linked-artifacts > div:first-child {
+  display: grid;
+  flex: 0 0 auto;
+  gap: 1px;
+}
+
+.ct-codex-ai__linked-artifacts span,
+.ct-codex-ai__linked-artifacts small { color: #64748b; font-size: 12px; }
+.ct-codex-ai__linked-artifacts strong { color: #172033; font-size: 13px; }
+
+.ct-codex-ai__linked-artifact-list {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 8px;
+}
+
+.ct-codex-ai__linked-artifact-list a {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  color: #0369a1;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+@media (max-width: 760px) {
+  .ct-codex-ai__linked-artifacts { align-items: flex-start; flex-direction: column; gap: 6px; }
+}
+
 .ct-codex-message {
   display: flex;
   gap: 10px;
