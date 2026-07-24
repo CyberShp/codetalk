@@ -1261,6 +1261,14 @@ class WorkbenchWorkflowRunner:
                 Path(str(task_run.artifact_dir)) / "test_activity_quality_audit.json",
                 test_activity_quality,
             )
+        # Quality repair can replace the canonical stage JSON after the first
+        # delivery rendering above. Re-materialize the user-facing Markdown
+        # from the final canonical bytes so the download never preserves a
+        # pre-repair statement that the quality gate has already downgraded.
+        materialize_artifact_contract_v3_outputs(
+            task_run.artifact_dir,
+            profile_id=profile_id,
+        )
         if _quality_allows_cache_promotion(
             str(test_activity_quality.get("status") or "")
         ):

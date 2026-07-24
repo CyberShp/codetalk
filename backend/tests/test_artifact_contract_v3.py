@@ -396,6 +396,56 @@ def test_deep_contract_materializes_named_deliverables_only_from_real_stage_outp
     assert "iSCSI login" in (tmp_path / "完整分析报告.md").read_text(encoding="utf-8")
 
 
+def test_deep_contract_keeps_sfmea_hypotheses_distinct_from_observed_defects(tmp_path):
+    import json
+
+    from app.services.artifact_contract_v3 import materialize_artifact_contract_v3_outputs
+
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps(
+            [
+                {
+                    "sfmea_id": "SFMEA-01",
+                    "failure_mode": "登录超时后的连接清理延迟",
+                    "risk_status": "test_hypothesis",
+                    "evidence_interpretation": "源码仅证明状态切换；是否延迟回收须通过故障注入验证。",
+                    "cause": "故障注入假设：poller 未及时处理 EXITING 状态。",
+                    "effect": "潜在连接资源残留。",
+                    "source_evidence": ["SRC-02"],
+                    "technical_claims": [
+                        {
+                            "statement": "conn->state = ISCSI_CONN_STATE_EXITING;",
+                            "evidence": [
+                                {
+                                    "evidence_id": "SRC-02:L153",
+                                    "path": "lib/iscsi/conn.c",
+                                    "lines": "L153",
+                                    "quote": "conn->state = ISCSI_CONN_STATE_EXITING;",
+                                }
+                            ],
+                        }
+                    ],
+                    "mitigation": "注入登录超时并观测连接数回落。",
+                    "test_mapping": "使用公开 initiator 制造登录超时。",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    written = materialize_artifact_contract_v3_outputs(tmp_path, profile_id="deep")
+
+    content = (tmp_path / "风险点与SFMEA.md").read_text(encoding="utf-8")
+    assert "风险假设，待故障注入验证" in content
+    assert "不是已观测缺陷" in content
+    assert "conn->state = ISCSI_CONN_STATE_EXITING;" in content
+    assert "lib/iscsi/conn.c:L153" in content
+    assert "若该假设发生的潜在影响：潜在连接资源残留。" in content
+    assert "SFMEA-01" in content
+    assert "风险点与SFMEA.md" in written
+
+
 def test_deep_contract_validation_blocks_missing_named_deliverables(tmp_path):
     from app.services.artifact_contract_v3 import (
         validate_artifact_contract_v3_outputs,

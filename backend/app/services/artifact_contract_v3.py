@@ -517,10 +517,76 @@ def _flow_lines(flow_cards: list[dict[str, Any]]) -> list[str]:
 
 
 def _sfmea_lines(rows: list[dict[str, Any]]) -> list[str]:
-    return [
-        f"- **{item.get('failure_mode') or item.get('title') or item.get('sfmea_id') or '风险项'}**：{item.get('effect') or item.get('description') or '详见 JSON 交付件'}"
-        for item in rows[:50]
+    lines = [
+        "本文件由 `sfmea.json` 确定性生成。每项先区分已验证的源码事实与待执行测试验证的风险假设；"
+        "风险假设不是已观测缺陷。",
     ]
+    for index, item in enumerate(rows[:50], start=1):
+        risk_id = str(
+            item.get("sfmea_id") or item.get("risk_id") or item.get("id") or f"SFMEA-{index:02d}"
+        ).strip()
+        title = str(
+            item.get("failure_mode") or item.get("title") or "未命名风险项"
+        ).strip()
+        is_hypothesis = str(item.get("risk_status") or "test_hypothesis") != "observed_defect"
+        lines.extend([f"\n## {risk_id} · {title}", ""])
+        if is_hypothesis:
+            lines.append("- 风险状态：风险假设，待故障注入验证（不是已观测缺陷）。")
+        else:
+            lines.append("- 风险状态：已观测缺陷；仍须以本项已绑定的源码证据复核。")
+        facts = _sfmea_verified_fact_lines(item)
+        if facts:
+            lines.extend(["- 已验证源码事实：", *facts])
+        else:
+            lines.append("- 已验证源码事实：未形成可展示的逐字源码锚点，不能据此确认产品事实。")
+        interpretation = str(item.get("evidence_interpretation") or "").strip()
+        if interpretation:
+            lines.append(f"- 证据解释：{interpretation}")
+        cause = str(item.get("cause") or item.get("mechanism") or "待补充").strip()
+        lines.append(
+            f"- {'待验证的偏离条件' if is_hypothesis else '缺陷触发条件'}：{cause}"
+        )
+        effect = str(item.get("effect") or item.get("description") or "待补充").strip()
+        lines.append(
+            f"- {'若该假设发生的潜在影响' if is_hypothesis else '已观测影响'}：{effect}"
+        )
+        lines.append(f"- 验证/缓解：{_artifact_value(item.get('mitigation'))}")
+        mapping = _artifact_value(item.get("test_mapping"))
+        if mapping != "待补充":
+            lines.append(f"- 测试映射：{mapping}")
+        evidence = _artifact_value(item.get("source_evidence"))
+        if evidence != "待补充":
+            lines.append(f"- 证据卡引用：{evidence}")
+    return lines
+
+
+def _sfmea_verified_fact_lines(item: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    for claim in item.get("technical_claims") or []:
+        if not isinstance(claim, dict):
+            continue
+        statement = str(claim.get("statement") or "").strip()
+        for evidence in claim.get("evidence") or []:
+            if not isinstance(evidence, dict):
+                continue
+            path = str(evidence.get("path") or "").strip()
+            location = str(evidence.get("lines") or "").strip()
+            anchor = f"{path}:{location}" if path and location else path or location
+            quote = str(evidence.get("quote") or statement).strip()
+            if anchor or quote:
+                lines.append(
+                    f"  - `{anchor or '未定位源码'}`：`{quote or '未提取原文'}`"
+                )
+    return list(dict.fromkeys(lines))
+
+
+def _artifact_value(value: Any) -> str:
+    if isinstance(value, list):
+        rendered = "；".join(str(item).strip() for item in value if str(item).strip())
+        return rendered or "待补充"
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return str(value or "待补充").strip()
 
 
 def _case_lines(rows: list[dict[str, Any]]) -> list[str]:
