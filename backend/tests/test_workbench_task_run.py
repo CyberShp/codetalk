@@ -98,6 +98,46 @@ def test_external_agent_claims_rebind_after_task_owned_source_pack_replaces_agen
     }
 
 
+def test_external_agent_selected_anchor_is_locally_revalidated_into_task_pack(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _materialize_external_agent_source_evidence_pack,
+    )
+
+    repo = tmp_path / "repo"
+    source = repo / "lib" / "iscsi" / "login.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int login(void) {\n  return 0;\n}\n", encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    task_run = SimpleNamespace(
+        artifact_dir=str(tmp_path / "task"),
+        task_bundle={"local_source_context": {
+            "repo_path": str(repo),
+            "repo_revision": "abc123",
+            "analysis_target": "iSCSI login",
+            "source_analysis_max_evidence_anchors": 4,
+            "files": [{
+                "file_path": "lib/iscsi/login.c", "classification": "source",
+                "start_line": 1, "end_line": 1, "excerpt": "int login(void) {",
+                "symbols": ["login"], "sha256": digest,
+            }],
+        }},
+    )
+    agent_dir = Path(task_run.artifact_dir) / "agent_runs" / "analyze"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "evidence_cards.json").write_text(json.dumps([{
+        "evidence_id": "EV-LOGIN", "file_path": "lib/iscsi/login.c",
+        "start_line": 2, "end_line": 2, "excerpt": "fabricated",
+        "symbols": ["login"], "sha256": digest,
+    }]), encoding="utf-8")
+
+    assert _materialize_external_agent_source_evidence_pack(task_run) is True
+
+    cards = json.loads((Path(task_run.artifact_dir) / "evidence_cards.json").read_text())
+    assert cards[0]["evidence_id"] == "SRC-01"
+    assert cards[0]["excerpt"] == "  return 0;"
+    assert cards[0]["validation_status"] == "revalidated_agent_selected_anchor"
+
+
 def test_source_driven_judge_blocks_delivery_and_never_reports_empty_facts_as_100(
     tmp_path,
 ):

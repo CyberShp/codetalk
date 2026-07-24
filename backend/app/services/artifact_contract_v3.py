@@ -295,18 +295,31 @@ def _canonical_card_for_reference(
 ) -> dict[str, Any] | None:
     evidence_id = str(reference.get("evidence_id") or "").split(":", 1)[0].strip()
     if evidence_id and evidence_id in by_id:
-        return by_id[evidence_id]
+        direct = by_id[evidence_id]
+        if _card_matches_reference(direct, reference):
+            return direct
     expected_path = str(reference.get("path") or "").strip()
     if expected_path:
         start, end = _reference_line_range(reference.get("lines"))
         for card in cards:
             if str(card.get("file_path") or card.get("path") or "") != expected_path:
                 continue
-            card_start = int(card.get("start_line") or 0)
-            card_end = int(card.get("end_line") or 0)
-            if not start or (card_start <= start and end <= card_end):
+            if _card_matches_reference(card, reference):
                 return card
     return fallback_card
+
+
+def _card_matches_reference(card: dict[str, Any], reference: dict[str, Any]) -> bool:
+    expected_path = str(reference.get("path") or "").strip()
+    card_path = str(card.get("file_path") or card.get("path") or "").strip()
+    if expected_path and expected_path != card_path:
+        return False
+    start, end = _reference_line_range(reference.get("lines"))
+    if not start:
+        return True
+    card_start = int(card.get("start_line") or 0)
+    card_end = int(card.get("end_line") or 0)
+    return card_start <= start and end <= card_end
 
 
 def _reference_line_range(value: Any) -> tuple[int, int]:

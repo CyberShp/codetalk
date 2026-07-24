@@ -76,6 +76,17 @@ def _materialize_external_agent_source_evidence_pack(task_run: Any) -> bool:
     context = bundle.get("local_source_context")
     if not isinstance(context, dict) or not context.get("files"):
         return False
+    # An external Agent may discover a narrow, relevant anchor after the
+    # preparer selected its initial evidence pack.  Do not trust the Agent's
+    # card bytes or IDs; re-read each proposed location locally and retain it
+    # only when its repository-relative path, SHA256, range and symbol check
+    # all succeed.  This keeps L1 authoritative without artificially limiting
+    # a real analysis to the first six prompt slices.
+    context = dict(context)
+    context["files"] = _external_agent_evidence_context_files(
+        task_run=task_run,
+        context=context,
+    )
     pack = build_source_evidence_pack(context)
     if not pack.get("evidence_cards"):
         return False
@@ -85,6 +96,117 @@ def _materialize_external_agent_source_evidence_pack(task_run: Any) -> bool:
     _write_json(stage_dir / "source_evidence_pack.json", pack)
     materialize_source_evidence_pack(pack, root)
     return True
+
+
+def _external_agent_evidence_context_files(
+    *,
+    task_run: Any,
+    context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    repo_value = str(context.get("repo_path") or "").strip()
+    if not repo_value:
+        return [dict(item) for item in context.get("files") or [] if isinstance(item, dict)]
+    try:
+        repo_root = Path(repo_value).resolve(strict=True)
+    except OSError:
+        return [dict(item) for item in context.get("files") or [] if isinstance(item, dict)]
+    root = Path(str(task_run.artifact_dir))
+    limit = max(1, int(context.get("source_analysis_max_evidence_anchors") or settings.source_analysis_max_evidence_anchors))
+    selected: list[dict[str, Any]] = []
+    seen: set[tuple[str, int, int]] = set()
+    for cards_path in sorted(root.glob("agent_runs/*/evidence_cards.json")):
+        payload = _read_json(cards_path)
+        if not isinstance(payload, list):
+            continue
+        for card in payload:
+            candidate = _revalidate_external_agent_evidence_card(
+                card=card,
+                repo_root=repo_root,
+            )
+            if candidate is None:
+                continue
+            key = (
+                str(candidate["file_path"]),
+                int(candidate["start_line"]),
+                int(candidate["end_line"]),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            candidate["evidence_id"] = f"SRC-{len(selected) + 1:02d}"
+            selected.append(candidate)
+            if len(selected) >= limit:
+                break
+        if len(selected) >= limit:
+            break
+    # Preserve preparation-time evidence if the Agent did not contribute a
+    # matching, locally revalidated anchor.  This also provides deterministic
+    # fallback on provider failure.
+    for item in context.get("files") or []:
+        if not isinstance(item, dict) or len(selected) >= limit:
+            continue
+        key = (
+            str(item.get("file_path") or ""),
+            int(item.get("start_line") or 0),
+            int(item.get("end_line") or 0),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        candidate = dict(item)
+        candidate["evidence_id"] = f"SRC-{len(selected) + 1:02d}"
+        selected.append(candidate)
+    return selected
+
+
+def _revalidate_external_agent_evidence_card(
+    *,
+    card: Any,
+    repo_root: Path,
+) -> dict[str, Any] | None:
+    if not isinstance(card, dict):
+        return None
+    relative = str(card.get("file_path") or "").strip()
+    if not relative or Path(relative).is_absolute():
+        return None
+    try:
+        source_path = (repo_root / relative).resolve(strict=True)
+        if not source_path.is_relative_to(repo_root) or source_path.is_dir():
+            return None
+        raw = source_path.read_bytes()
+    except OSError:
+        return None
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != str(card.get("sha256") or ""):
+        return None
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+    start = int(card.get("start_line") or 0)
+    end = int(card.get("end_line") or 0)
+    lines = text.splitlines()
+    if start < 1 or end < start or end > len(lines):
+        return None
+    excerpt = "\n".join(lines[start - 1 : end])
+    suffix = source_path.suffix.lower()
+    symbols = [str(value) for value in card.get("symbols") or [] if str(value)]
+    classification = "test" if relative.startswith("test/") else "source"
+    if suffix in {".sh", ".bash", ".zsh", ".ksh"}:
+        symbols = [Path(relative).name]
+    elif not symbols or any(symbol not in text for symbol in symbols):
+        return None
+    return {
+        "file_path": relative,
+        "classification": classification,
+        "start_line": start,
+        "end_line": end,
+        "excerpt": excerpt,
+        "symbols": symbols,
+        "matched_terms": [str(value) for value in card.get("matched_terms") or [] if str(value)],
+        "sha256": digest,
+        "validation_status": "revalidated_agent_selected_anchor",
+    }
 
 
 _QUALITY_ARTIFACT_DEPENDENCIES = {
