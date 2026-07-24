@@ -5320,6 +5320,40 @@ async def test_builtin_test_activity_rejects_truncated_provider_output(
 
 
 @pytest.mark.asyncio
+async def test_linked_workflow_review_keeps_truncated_answer_as_conversation(
+    sqlite_db,
+):
+    from app.services import ai_conversations
+    from app.services.ai_conversations import AIConversationStore
+
+    store = AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="workbench_task_run",
+        scope_id="task_run_completed",
+        workspace_id="global",
+        title="已完成交付件复核",
+        initial_context={"task_run_id": "task_run_completed"},
+    )
+    created = await store.create_user_message_and_run(
+        conversation_id=conversation["id"],
+        content="评审已旁挂交付件的 SFMEA 和黑盒边界，最终给出总分",
+        references=[],
+    )
+
+    await ai_conversations.run_generation(
+        store=store,
+        run_id=created["run"]["id"],
+        llm=TruncatedTestActivityLLM(),
+    )
+
+    run = await store.get_run(created["run"]["id"])
+    messages = await store.list_messages(conversation["id"])
+    assert run["status"] == "completed"
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert "当前可用的问答结果" in messages[-1]["content"]
+
+
+@pytest.mark.asyncio
 async def test_builtin_test_activity_rejects_shallow_completed_output(
     sqlite_db,
     tmp_path,

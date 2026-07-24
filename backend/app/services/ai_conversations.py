@@ -2220,7 +2220,7 @@ async def run_generation(
             references,
         )
         finish_reason = str(current_finish_reason.get() or "").strip().lower()
-        if finish_reason == "length":
+        if finish_reason == "length" and requires_strict_quality_gate:
             audit = {
                 "kind": "test_activity_quality_audit",
                 "source": "ai_thread_combined_markdown",
@@ -2252,6 +2252,12 @@ async def run_generation(
                 "请点击重试，或使用“代码分析 → 流程梳理 → SFMEA → 黑盒用例”工作流分步生成。",
             )
             return
+        if finish_reason == "length":
+            content = (
+                f"{content}\n\n"
+                "[模型已达到本轮输出长度上限；以上为当前可用的问答结果。"
+                "如需更完整的评审，可继续追问具体维度。]"
+            )
         bound_artifacts_materialized = False
         if _legacy_bound_workflow_artifact_mode(run):
             content, bound_artifacts_materialized = await _materialize_bound_workflow_builtin_artifacts(
