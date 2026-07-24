@@ -26,6 +26,7 @@ export interface WorkbenchTask {
   workflow_name: string;
   workflow_version_id: string;
   lifecycle_status: WorkbenchTaskLifecycle;
+  execution_profile_id: string;
   input_values: Record<string, unknown>;
   execution_overrides: Record<string, unknown>;
   output_overrides: Record<string, unknown>;

@@ -275,13 +275,13 @@ def test_task_store_migration_crud_filters_archive_and_clone(tmp_path):
     first = store.initialize_and_migrate()
     second = store.initialize_and_migrate()
 
-    assert first["schema_version"] == 1
-    assert second["schema_version"] == 1
+    assert first["schema_version"] == 2
+    assert second["schema_version"] == 2
     with sqlite3.connect(db_path) as db:
         columns = {row[1] for row in db.execute("PRAGMA table_info(workbench_tasks)")}
     assert {
         "task_id", "name", "workspace_id", "workflow_id", "workflow_version_id",
-        "lifecycle_status", "input_values_json", "execution_overrides_json",
+        "lifecycle_status", "execution_profile_id", "input_values_json", "execution_overrides_json",
         "output_overrides_json", "tags_json", "last_run_id", "archived_at",
     }.issubset(columns)
 
@@ -1123,6 +1123,7 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
                 "workflow_id": "source-review",
                 "workflow_version_id": published.version_id,
                 "lifecycle_status": "ready",
+                "execution_profile_id": "deep",
                 "input_values": {"target": "lib/nvmf"},
                 "output_overrides": {
                     "outputs": {"report": {"artifact": "task-report.md", "label": "Task report"}}
@@ -1135,10 +1136,9 @@ async def test_task_api_creates_filters_and_associates_multiple_attempts(tmp_pat
 
         compiled = await client.post(f"/api/workbench/tasks/{task_id}/compile")
 
-        first = await client.post(
-            f"/api/workbench/tasks/{task_id}/runs",
-            json={"execution_profile_id": "deep"},
-        )
+        # A new Attempt must inherit the task's selected profile when the
+        # caller does not override it. The task page follows this code path.
+        first = await client.post(f"/api/workbench/tasks/{task_id}/runs", json={})
         first_run_dir = data_dir / "workbench" / "task_runs" / first.json()["task_run_id"]
         (first_run_dir / "workflow_execution.json").write_text(
             json.dumps({

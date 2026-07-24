@@ -47,6 +47,7 @@ class TaskCreateRequest(BaseModel):
     workflow_id: str = Field(min_length=1)
     workflow_version_id: str = Field(min_length=1)
     lifecycle_status: str = "draft"
+    execution_profile_id: str = ""
     input_values: dict[str, Any] = Field(default_factory=dict)
     execution_overrides: dict[str, Any] = Field(default_factory=dict)
     output_overrides: dict[str, Any] = Field(default_factory=dict)
@@ -59,6 +60,7 @@ class TaskUpdateRequest(BaseModel):
     name: str | None = None
     description: str | None = None
     lifecycle_status: str | None = None
+    execution_profile_id: str | None = None
     input_values: dict[str, Any] | None = None
     execution_overrides: dict[str, Any] | None = None
     output_overrides: dict[str, Any] | None = None
@@ -178,6 +180,7 @@ async def create_task(payload: TaskCreateRequest) -> dict[str, Any]:
         execution_overrides=payload.execution_overrides,
         output_overrides=payload.output_overrides,
     )
+    _validate_execution_profile(version.compiled_definition or {}, payload.execution_profile_id)
     try:
         task_payload = payload.model_dump()
         task_payload["input_values"] = input_values
@@ -233,6 +236,13 @@ async def update_task(task_id: str, payload: TaskUpdateRequest) -> dict[str, Any
         )
         values = changes.get("input_values", current.input_values)
         _validate_ready_inputs(version.compiled_definition or {}, values)
+    if "execution_profile_id" in changes:
+        version = version or _published_version(
+            current.workflow_id, current.workflow_version_id
+        )
+        _validate_execution_profile(
+            version.compiled_definition or {}, changes.get("execution_profile_id") or ""
+        )
     if any(key in changes for key in {"execution_overrides", "output_overrides"}):
         version = _published_version(current.workflow_id, current.workflow_version_id)
         _effective_configuration_payload(
@@ -356,7 +366,9 @@ async def create_task_attempt(task_id: str, payload: TaskRunCreateRequest) -> di
             output_overrides = task.output_overrides
             retry_seed_results = {}
             retry_failed_node_ids = []
-            execution_profile_id = str(payload.execution_profile_id or "").strip()
+            execution_profile_id = str(
+                payload.execution_profile_id or task.execution_profile_id or ""
+            ).strip()
         if not repo_path.is_dir():
             raise HTTPException(status_code=422, detail=f"工作空间源码目录不可用：{repo_path}")
         for definition in effective_definition.get("inputs") or []:
@@ -802,6 +814,20 @@ def _validate_ready_inputs(definition: dict[str, Any], values: dict[str, Any]) -
             missing.append(str(item.get("label") or item.get("id") or "未命名输入"))
     if missing:
         raise HTTPException(status_code=422, detail=f"任务缺少必填输入：{'、'.join(missing)}")
+
+
+def _validate_execution_profile(definition: dict[str, Any], profile_id: str) -> None:
+    selected = str(profile_id or "").strip()
+    if not selected:
+        return
+    profiles = definition.get("execution_profiles") or []
+    known = {
+        str(item.get("id") or "").strip()
+        for item in profiles
+        if isinstance(item, dict)
+    }
+    if selected not in known:
+        raise HTTPException(status_code=422, detail=f"执行档位不存在：{selected}")
 
 
 def _is_workspace_input_definition(item: dict[str, Any]) -> bool:

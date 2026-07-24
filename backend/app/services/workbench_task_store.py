@@ -15,7 +15,7 @@ from app.services.workbench_sqlite_backup import ensure_workbench_migration_back
 
 
 _LOCK = threading.RLock()
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 _LIFECYCLE_STATUSES = frozenset({"draft", "ready", "archived"})
 
 
@@ -32,6 +32,7 @@ class WorkbenchTask:
     workflow_id: str
     workflow_version_id: str
     lifecycle_status: str
+    execution_profile_id: str
     input_values: dict[str, Any]
     execution_overrides: dict[str, Any]
     output_overrides: dict[str, Any]
@@ -67,6 +68,7 @@ class WorkbenchTaskStore:
                     workflow_id TEXT NOT NULL,
                     workflow_version_id TEXT NOT NULL,
                     lifecycle_status TEXT NOT NULL,
+                    execution_profile_id TEXT NOT NULL DEFAULT '',
                     input_values_json TEXT NOT NULL,
                     execution_overrides_json TEXT NOT NULL,
                     output_overrides_json TEXT NOT NULL,
@@ -85,6 +87,15 @@ class WorkbenchTaskStore:
                     ON workbench_tasks(workspace_id);
                 """
             )
+            columns = {
+                str(row["name"])
+                for row in db.execute("PRAGMA table_info(workbench_tasks)").fetchall()
+            }
+            if "execution_profile_id" not in columns:
+                db.execute(
+                    "ALTER TABLE workbench_tasks "
+                    "ADD COLUMN execution_profile_id TEXT NOT NULL DEFAULT ''"
+                )
             db.execute(
                 """
                 INSERT INTO workbench_schema_meta(component, version, updated_at)
@@ -106,6 +117,7 @@ class WorkbenchTaskStore:
         workflow_version_id: str,
         description: str = "",
         lifecycle_status: str = "draft",
+        execution_profile_id: str = "",
         input_values: dict[str, Any] | None = None,
         execution_overrides: dict[str, Any] | None = None,
         output_overrides: dict[str, Any] | None = None,
@@ -131,10 +143,10 @@ class WorkbenchTaskStore:
                 """
                 INSERT INTO workbench_tasks(
                     task_id, name, description, workspace_id, workflow_id,
-                    workflow_version_id, lifecycle_status, input_values_json,
+                    workflow_version_id, lifecycle_status, execution_profile_id, input_values_json,
                     execution_overrides_json, output_overrides_json, tags_json,
                     last_run_id, created_at, updated_at, archived_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)
                 """,
                 (
                     identifier,
@@ -144,6 +156,7 @@ class WorkbenchTaskStore:
                     str(workflow_id).strip(),
                     str(workflow_version_id).strip(),
                     lifecycle,
+                    str(execution_profile_id or "").strip(),
                     self._json_object(input_values),
                     self._json_object(execution_overrides),
                     self._json_object(output_overrides),
@@ -272,6 +285,7 @@ class WorkbenchTaskStore:
             "name": "name",
             "description": "description",
             "lifecycle_status": "lifecycle_status",
+            "execution_profile_id": "execution_profile_id",
             "input_values": "input_values_json",
             "execution_overrides": "execution_overrides_json",
             "output_overrides": "output_overrides_json",
@@ -290,6 +304,8 @@ class WorkbenchTaskStore:
                 value = str(value or "").strip()
             elif key == "lifecycle_status":
                 value = self._lifecycle(str(value))
+            elif key == "execution_profile_id":
+                value = str(value or "").strip()
             elif key in {"input_values", "execution_overrides", "output_overrides"}:
                 value = self._json_object(value)
             elif key == "tags":
@@ -334,6 +350,7 @@ class WorkbenchTaskStore:
             workflow_id=source.workflow_id,
             workflow_version_id=source.workflow_version_id,
             lifecycle_status="draft",
+            execution_profile_id=source.execution_profile_id,
             input_values=source.input_values,
             execution_overrides=source.execution_overrides,
             output_overrides=source.output_overrides,
@@ -380,6 +397,7 @@ def _task_from_row(row: sqlite3.Row) -> WorkbenchTask:
         workflow_id=str(row["workflow_id"]),
         workflow_version_id=str(row["workflow_version_id"]),
         lifecycle_status=str(row["lifecycle_status"]),
+        execution_profile_id=str(row["execution_profile_id"] or ""),
         input_values=dict(json.loads(row["input_values_json"] or "{}")),
         execution_overrides=dict(json.loads(row["execution_overrides_json"] or "{}")),
         output_overrides=dict(json.loads(row["output_overrides_json"] or "{}")),
