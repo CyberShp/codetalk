@@ -56,3 +56,57 @@ def test_input_consumption_ledger_records_named_stage_consumption_from_runtime_e
         "artifact": "source_analysis.md",
         "claim_ids": [],
     }]
+
+
+def test_external_agent_delivery_and_validated_artifact_use_shared_ledger(tmp_path):
+    from app.services.input_consumption import (
+        build_input_consumption_ledger,
+        record_external_agent_artifact_consumption,
+        record_external_agent_input_delivery,
+    )
+
+    ledger = build_input_consumption_ledger(
+        input_snapshot={"repo_path": {"kind": "directory", "sha256": "repo"}},
+        stage_specs=[
+            {"stage_id": "input_scope"},
+            {"stage_id": "source_evidence"},
+            {"stage_id": "sfmea"},
+        ],
+        input_definitions=[{"id": "repo_path", "label": "源码工作空间", "type": "directory"}],
+    )
+    path = tmp_path / "input_consumption.json"
+    path.write_text(json.dumps(ledger, ensure_ascii=False), encoding="utf-8")
+
+    record_external_agent_input_delivery(path, status="running")
+    updated = record_external_agent_artifact_consumption(
+        path,
+        artifacts=["source_scope.json", "sfmea.json"],
+    )
+
+    stages = updated["inputs"][0]["stage_consumption"]
+    assert stages == [
+        {
+            "stage_id": "input_scope",
+            "status": "consumed",
+            "consumption_mode": "agent_invocation_context",
+            "reason": "冻结输入已序列化并交付给外部 Agent",
+            "artifact": "execution_input.json",
+            "claim_ids": [],
+        },
+        {
+            "stage_id": "source_evidence",
+            "status": "consumed",
+            "consumption_mode": "agent_context_with_validated_artifact",
+            "reason": "外部 Agent 已接收冻结输入，且该阶段交付件已通过文件契约验证",
+            "artifact": "source_scope.json",
+            "claim_ids": [],
+        },
+        {
+            "stage_id": "sfmea",
+            "status": "consumed",
+            "consumption_mode": "agent_context_with_validated_artifact",
+            "reason": "外部 Agent 已接收冻结输入，且该阶段交付件已通过文件契约验证",
+            "artifact": "sfmea.json",
+            "claim_ids": [],
+        },
+    ]

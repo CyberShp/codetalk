@@ -59,7 +59,11 @@ from app.services.test_activity_stage_specs import (
     TestActivityStageProgressTracker,
     project_test_activity_stage_progress,
 )
-from app.services.input_consumption import record_input_consumption_event
+from app.services.input_consumption import (
+    record_external_agent_artifact_consumption,
+    record_external_agent_input_delivery,
+    record_input_consumption_event,
+)
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_task_run import BUILTIN_LLM_PROVIDER_ID
 from app.services.workbench_task_run import WorkbenchTaskRunStore, validate_run_snapshot_v3
@@ -1690,7 +1694,18 @@ class WorkbenchWorkflowRunner:
             ],
         )
 
+        task_root = self.artifact_root / _safe_segment(
+            str((quality_retry_bundle or {}).get("task_run_id") or task_run_id)
+        )
+
         def emit_agent_event(event_type: str, event_payload: dict[str, Any]) -> None:
+            if event_type in {"artifact", "tool_use"} and str(
+                event_payload.get("artifact") or ""
+            ) in {"execution_input.json", ""}:
+                record_external_agent_input_delivery(
+                    task_root / "input_consumption.json",
+                    status="running",
+                )
             self._emit_event(
                 event_type,
                 {
@@ -1758,6 +1773,11 @@ class WorkbenchWorkflowRunner:
             )
         ]
         validation = _validate_step_artifacts(artifact_dir, required_artifacts)
+        if validation.status == "ok":
+            record_external_agent_artifact_consumption(
+                task_root / "input_consumption.json",
+                artifacts=list(validation.accepted_artifacts),
+            )
         artifact_recovery = _artifact_recovery_after_terminal_rejection(
             artifact_dir=artifact_dir,
             execution=asdict(execution),

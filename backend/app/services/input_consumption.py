@@ -26,6 +26,24 @@ _RUNTIME_STAGE_ALIASES = {
     "publish": "publish",
 }
 
+_ARTIFACT_STAGE_ALIASES = {
+    "source_analysis.md": "source_evidence",
+    "source_scope.json": "source_evidence",
+    "evidence_cards.json": "source_evidence",
+    "entrypoints.json": "breadth_inventory",
+    "flows.json": "breadth_inventory",
+    "flow_outline.json": "flow_modeling",
+    "flow_cards.json": "flow_modeling",
+    "scenario_candidates.json": "scenario_expansion",
+    "sfmea.json": "sfmea",
+    "风险点与SFMEA.md": "sfmea",
+    "black_box_cases.json": "black_box_design",
+    "黑盒测试设计.md": "black_box_design",
+    "judge_report.json": "independent_judge",
+    "claim_evidence_ledger.json": "independent_judge",
+    "task_artifact_manifest.json": "publish",
+}
+
 
 def build_input_consumption_ledger(
     *,
@@ -116,6 +134,8 @@ def record_input_consumption_event(
         status, mode, reason = "attempted", "staged_context", "阶段开始后未完成，输入可能已被部分消费"
     else:
         return ledger
+    mode = str(payload.get("consumption_mode") or mode)
+    reason = str(payload.get("reason") or reason)
     artifact = str(payload.get("artifact") or "")
     changed = False
     for input_record in ledger.get("inputs") or []:
@@ -142,6 +162,59 @@ def record_input_consumption_event(
             encoding="utf-8",
         )
     return ledger
+
+
+def record_external_agent_input_delivery(
+    path: str | Path,
+    *,
+    status: str,
+) -> dict[str, Any]:
+    """Record the one fact an external Agent contract can prove directly.
+
+    The harness serializes every frozen input into the Agent invocation.  That
+    proves delivery to the Agent context, but not semantic use in every later
+    test-design stage.  Keep that distinction explicit in the shared ledger.
+    """
+    return record_input_consumption_event(
+        path,
+        payload={
+            "stage_id": "input_scope",
+            "status": status,
+            "consumption_mode": "agent_invocation_context",
+            "reason": "冻结输入已序列化并交付给外部 Agent",
+            "artifact": "execution_input.json",
+        },
+    )
+
+
+def record_external_agent_artifact_consumption(
+    path: str | Path,
+    *,
+    artifacts: list[str],
+) -> dict[str, Any]:
+    """Attach validated Agent artifacts to their canonical test-activity stage.
+
+    This is intentionally weaker than claiming semantic per-file reasoning:
+    it records that all frozen inputs were available to the Agent and that the
+    named stage's declared artifact passed physical contract validation.
+    """
+    updated: dict[str, Any] = {}
+    for artifact in artifacts:
+        artifact_name = Path(str(artifact)).name
+        stage_id = _ARTIFACT_STAGE_ALIASES.get(artifact_name)
+        if not stage_id:
+            continue
+        updated = record_input_consumption_event(
+            path,
+            payload={
+                "stage_id": stage_id,
+                "status": "completed",
+                "artifact": str(artifact),
+                "consumption_mode": "agent_context_with_validated_artifact",
+                "reason": "外部 Agent 已接收冻结输入，且该阶段交付件已通过文件契约验证",
+            },
+        )
+    return updated
 
 
 def _input_hash(value: Any) -> str:
