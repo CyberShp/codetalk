@@ -488,6 +488,39 @@ def test_final_fact_verification_never_passes_without_independent_l2(tmp_path):
     assert result["insufficient"] >= 1
 
 
+def test_final_fact_verification_accepts_l1_only_source_anchors_when_l2_is_not_applicable(tmp_path):
+    from app.services.source_driven_test_design import _combined_final_fact_verification
+
+    (tmp_path / "independent_fact_verification.json").write_text(
+        json.dumps({
+            "status": "passed",
+            "claims": [{
+                "claim_id": "SRC-1",
+                "type": "source_anchor",
+                "status": "verified",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    (tmp_path / "behavior_claim_validation.json").write_text(
+        json.dumps({
+            "status": "not_applicable",
+            "validator": {"independent": False},
+            "candidate_count": 0,
+            "requested_count": 0,
+            "claims": [],
+        }),
+        encoding="utf-8",
+    )
+
+    result = _combined_final_fact_verification(tmp_path)
+
+    assert result["status"] == "passed"
+    assert result["behavior_validator_not_required"] is True
+    assert result["verified"] == 1
+    assert result["claims"][0]["status"] == "verified"
+
+
 def test_final_fact_verification_preserves_l1_conflicts_and_unreviewed_tail(tmp_path):
     from app.services.source_driven_test_design import _combined_final_fact_verification
 

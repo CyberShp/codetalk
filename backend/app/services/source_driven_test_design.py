@@ -330,7 +330,10 @@ def build_judge_report(
     facts_checked = (
         fact_total > 0
         and str(facts.get("status") or "") != "not_checked"
-        and facts.get("behavior_validator_independent") is True
+        and (
+            facts.get("behavior_validator_independent") is True
+            or facts.get("behavior_validator_not_required") is True
+        )
     )
     facts_score = round(fact_verified * 100 / fact_total) if facts_checked else None
     facts_status = (
@@ -467,6 +470,15 @@ def _combined_final_fact_verification(root: Path) -> dict[str, Any]:
         and isinstance(behavior.get("validator"), dict)
         and behavior["validator"].get("independent") is True
     )
+    behavior_not_required = bool(
+        isinstance(behavior, dict)
+        and str(behavior.get("status") or "") == "not_applicable"
+        and deterministic_claims
+        and all(
+            str(item.get("type") or "") == "source_anchor"
+            for item in deterministic_claims
+        )
+    )
     claims: list[dict[str, Any]] = []
     if behavior_is_independent:
         status_map = {
@@ -546,6 +558,17 @@ def _combined_final_fact_verification(root: Path) -> dict[str, Any]:
                     ),
                 }
             )
+    elif behavior_not_required:
+        claims = [
+            {
+                **item,
+                "binding_status": str(item.get("status") or "insufficient"),
+                "behavior_status": "not_required",
+                "status": str(item.get("status") or "insufficient"),
+                "validation_layer": "L1_deterministic_source_anchor",
+            }
+            for item in deterministic_claims
+        ]
     else:
         claims = [
             {
@@ -567,7 +590,7 @@ def _combined_final_fact_verification(root: Path) -> dict[str, Any]:
             "not_checked"
             if not total
             else "passed"
-            if behavior_is_independent and verified == total
+            if (behavior_is_independent or behavior_not_required) and verified == total
             else "blocked"
         ),
         "total": total,
@@ -576,6 +599,7 @@ def _combined_final_fact_verification(root: Path) -> dict[str, Any]:
         "insufficient": insufficient,
         "pass_rate": round(verified * 100 / total) if total else None,
         "behavior_validator_independent": behavior_is_independent,
+        "behavior_validator_not_required": behavior_not_required,
         "claims": claims,
     }
 
