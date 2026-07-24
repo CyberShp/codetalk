@@ -44,8 +44,9 @@ semantic events, cancel, resume where supported, collect ArtifactContract output
 return a normalized diagnostic. Provider-specific CLI or SDK details stay behind adapters.
 
 Claude Agent SDK, OpenAI Agents SDK, and Microsoft Agent Framework/LangGraph are assessed
-only through isolated offline POCs. A POC may use a local fake endpoint and fixture tool
-server, but may not become a production dependency until it proves approved-purpose transport,
+through isolated developer POCs. A developer POC may obtain a pinned SDK version through an
+approved development network and should use a local fake endpoint and fixture tool server for
+runtime-contract tests. It may not become a production dependency until it proves approved-purpose transport,
 structured events, cancellation, artifact collection, and session recovery. The current
 durable runtime remains CodeTalk's local harness until one candidate is approved in a
 separate ADR.
