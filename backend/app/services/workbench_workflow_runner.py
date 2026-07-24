@@ -7446,14 +7446,51 @@ def _previous_test_activity_quality_feedback(artifact_dir: Path) -> dict[str, An
     payload = _read_json(audit_path)
     if not isinstance(payload, dict):
         return {}
+    acceptance_payload = _read_json(task_dir / "task_acceptance_audit.json")
+    acceptance_checks = (
+        acceptance_payload.get("checks") or []
+        if isinstance(acceptance_payload, dict)
+        else []
+    )
+    all_acceptance_failures = [
+        dict(check)
+        for check in acceptance_checks
+        if isinstance(check, dict)
+        and str(check.get("status") or "") not in {"ok", "pass", "passed", "completed"}
+    ]
     status = str(payload.get("status") or "")
-    if status not in {"needs_rework", "invalid"} and payload.get("deliverable") is not False:
+    audit_failed = status in {"needs_rework", "invalid"} or payload.get("deliverable") is False
+    if not audit_failed and not all_acceptance_failures:
         return {}
     raw_issues = [
         dict(item)
         for item in payload.get("issues") or []
         if isinstance(item, dict)
     ]
+    issue_artifact_names = {
+        Path(str(item.get("artifact") or "")).name
+        for item in raw_issues
+        if str(item.get("artifact") or "").strip()
+    }
+    # Final acceptance has stronger artifact-level checks than the staged audit.
+    # Turn its failures into normal repair feedback instead of copying a known
+    # bad artifact into a 4-second no-op revalidation attempt.
+    for failure in all_acceptance_failures:
+        relative_path = str(failure.get("relative_path") or "").strip()
+        if not relative_path or Path(relative_path).name in issue_artifact_names:
+            continue
+        raw_issues.append({
+            "artifact": relative_path,
+            "code": str(failure.get("reason") or failure.get("id") or "acceptance_failed"),
+            "message": str(failure.get("description") or "最终验收未通过").strip(),
+            "acceptance_failure": True,
+            "invalid_cases": [
+                dict(item)
+                for item in failure.get("invalid_cases") or []
+                if isinstance(item, dict)
+            ][:50],
+        })
+        issue_artifact_names.add(Path(relative_path).name)
     if not raw_issues:
         return {}
     required_artifacts = [
@@ -7462,7 +7499,7 @@ def _previous_test_activity_quality_feedback(artifact_dir: Path) -> dict[str, An
         if str(item).strip()
     ]
     feedback = _quality_feedback_from_audit(
-        payload,
+        {**payload, "status": "needs_rework", "deliverable": False, "issues": raw_issues},
         required_artifacts=required_artifacts,
         quality_artifact=str(audit_path.relative_to(task_dir)),
     )
@@ -7471,29 +7508,22 @@ def _previous_test_activity_quality_feedback(artifact_dir: Path) -> dict[str, An
         str(item) for item in feedback.get("affected_artifacts") or [] if str(item).strip()
     ]
     affected_names = {Path(item).name for item in affected_artifacts}
-    acceptance_payload = _read_json(task_dir / "task_acceptance_audit.json")
     acceptance_failures = []
-    if isinstance(acceptance_payload, dict):
-        for check in acceptance_payload.get("checks") or []:
-            if not isinstance(check, dict):
-                continue
-            status_value = str(check.get("status") or "")
-            relative_path = str(check.get("relative_path") or "")
-            if status_value in {"ok", "pass", "passed", "completed"}:
-                continue
-            if affected_names and Path(relative_path).name not in affected_names:
-                continue
-            detail = dict(check)
-            for detail_key in ("invalid_findings", "invalid_cases"):
-                if isinstance(detail.get(detail_key), list):
-                    detail[detail_key] = [
-                        dict(item)
-                        for item in detail[detail_key]
-                        if isinstance(item, dict)
-                    ][:50]
-            acceptance_failures.append(detail)
-            if len(acceptance_failures) >= 20:
-                break
+    for check in all_acceptance_failures:
+        relative_path = str(check.get("relative_path") or "")
+        if affected_names and Path(relative_path).name not in affected_names:
+            continue
+        detail = dict(check)
+        for detail_key in ("invalid_findings", "invalid_cases"):
+            if isinstance(detail.get(detail_key), list):
+                detail[detail_key] = [
+                    dict(item)
+                    for item in detail[detail_key]
+                    if isinstance(item, dict)
+                ][:50]
+        acceptance_failures.append(detail)
+        if len(acceptance_failures) >= 20:
+            break
     feedback.update({
         "total_issue_count": len(raw_issues),
         "issues_truncated": len(raw_issues) > len(issues),
