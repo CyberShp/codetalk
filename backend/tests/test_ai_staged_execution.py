@@ -833,6 +833,16 @@ def test_quality_reuse_rejects_partial_multi_artifact_stage(tmp_path):
     assert reused is None
 
 
+def test_quality_reuse_always_rebuilds_derived_judge(tmp_path):
+    (tmp_path / "judge_report.json").write_text("{}", encoding="utf-8")
+    reused = _existing_quality_stage_result(
+        plan={"quality_retry_feedback": {"issues": []}}, artifact_dir=tmp_path,
+        stage_dir=tmp_path / "stages" / "coverage_judge",
+        stage={"id": "coverage_judge", "artifact": "judge_report.json"},
+    )
+    assert reused is None
+
+
 @pytest.mark.asyncio
 async def test_deep_profile_executes_exploration_branches_before_delivery_stages(
     tmp_path, monkeypatch

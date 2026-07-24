@@ -2295,6 +2295,11 @@ def _existing_quality_stage_result(
     artifact = str(stage.get("artifact") or "").strip()
     if not artifact:
         return None
+    # The judge and its mind-map are derived views over every preceding
+    # artifact.  A quality retry may deterministically rebuild those inputs,
+    # so reusing a prior verdict would preserve a stale block or false pass.
+    if str(stage.get("id") or "") in {"coverage_judge", "test_design_mindmap"}:
+        return None
     bypass = {
         str(value).strip()
         for value in plan.get("cache_bypass_artifacts") or []
