@@ -469,6 +469,31 @@ def test_traceability_accepts_display_path_only_when_same_case_has_verified_clai
     ]
 
 
+def test_delivery_refresh_rebuilds_traceability_from_normalized_final_artifacts(tmp_path: Path):
+    from app.services.source_driven_test_design import (
+        build_source_driven_test_design,
+        refresh_source_driven_delivery_governance,
+    )
+
+    cases = _cases()
+    cases[0]["source_or_test_evidence"] = ["lib/iscsi/iscsi.c"]
+    cases[0]["technical_claims"] = [{
+        "claim_id": "TC-001", "type": "source_anchor",
+        "statement": "if (conn->state == EXITING) return;",
+        "evidence": [{"evidence_id": "SRC-001:L101", "path": "lib/iscsi/iscsi.c", "lines": "L101", "quote": "if (conn->state == EXITING) return;", "symbol": "iscsi_pdu_payload_op_login"}],
+    }]
+    artifacts = build_source_driven_test_design(
+        source_pack=_source_pack(), flow_pack=_flow_pack(), flow_outline=_outline(),
+        sfmea=_sfmea(), black_box_cases=cases,
+    )
+    for name, payload in artifacts.items():
+        (tmp_path / name).write_text(json.dumps(payload), encoding="utf-8")
+    (tmp_path / "black_box_cases.json").write_text(json.dumps(cases), encoding="utf-8")
+    (tmp_path / "evidence_cards.json").write_text(json.dumps(_source_pack()["evidence_cards"]), encoding="utf-8")
+    judge = refresh_source_driven_delivery_governance(tmp_path)
+    assert judge["axes"]["coverage_disposition"]["status"] != "blocked"
+
+
 def test_final_fact_verification_accepts_l1_verified_source_anchor_without_l2(tmp_path: Path):
     from app.services.source_driven_test_design import refresh_source_driven_delivery_governance
 

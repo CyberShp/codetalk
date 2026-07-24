@@ -463,6 +463,23 @@ def refresh_source_driven_delivery_governance(
         if name != "judge_report.json"
         and (payload := _read_json_artifact(root / name)) is not None
     }
+    # The provider payload may be normalized after the first deterministic
+    # pass (for example SFMEA IDs are canonicalized during quality repair).
+    # Rebuild traceability from those final bytes instead of carrying an early
+    # snapshot with pre-normalization IDs into the delivery verdict.
+    cases = _read_json_artifact(root / "black_box_cases.json")
+    cards = _read_json_artifact(root / "evidence_cards.json")
+    risks = artifacts.get("risk_register.json")
+    if isinstance(cases, list) and isinstance(cards, list) and isinstance(risks, dict):
+        artifacts["traceability_matrix.json"] = _traceability_artifact(
+            evidence_index=_evidence_index({"evidence_cards": cards}, {}),
+            risks=risks,
+            cases=cases,
+        )
+        _write_json_artifact(
+            root / "traceability_matrix.json",
+            artifacts["traceability_matrix.json"],
+        )
     fact_verification = _combined_final_fact_verification(root)
     judge = build_judge_report(
         artifacts=artifacts,
@@ -1881,6 +1898,7 @@ def _traceability_artifact(**context: Any) -> dict[str, Any]:
                     for item in evidence
                     if not _is_verified_evidence_reference(item, context["evidence_index"])
                     and item not in claim_backed_paths
+                    and not (claim_evidence and _is_display_only_path_reference(item))
                 ],
             }
         )
@@ -1941,6 +1959,16 @@ def _claim_evidence_location(reference: dict[str, Any]) -> str:
     path = str(reference.get("path") or "")
     lines = str(reference.get("lines") or "").lstrip("L")
     return f"{path}:{lines}" if path and lines else path
+
+
+def _is_display_only_path_reference(value: str) -> bool:
+    """Recognize a non-assertive file path used only for tester navigation."""
+
+    text = str(value or "").strip()
+    return bool(
+        re.fullmatch(r"(?:[A-Za-z0-9_.-]+/)+[A-Za-z0-9_.-]+", text)
+        and ":" not in text
+    )
 
 
 def _is_verified_evidence_reference(
