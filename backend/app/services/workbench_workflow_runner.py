@@ -679,6 +679,10 @@ def _json_quality_row_id(item: Any) -> str:
     ).strip()
 
 
+def _canonical_quality_reference_id(value: Any) -> str:
+    return re.sub(r"[-_ ]", "", str(value or "").upper())
+
+
 def _merge_non_regressing_json_rows(
     *,
     artifact: str,
@@ -6388,13 +6392,17 @@ def _apply_final_deterministic_quality_repairs(
     # that merits another full model turn.  Keep the underlying black-box scenario
     # but remove its invalid risk link so the final report never presents normal
     # error handling as a product defect.
-    rejected_sfmea_ids = {
-        str(issue.get("row_id") or "").strip()
+    rejected_sfmea_id_labels = {
+        _canonical_quality_reference_id(issue.get("row_id")): str(
+            issue.get("row_id")
+        ).strip()
         for issue in issues
         if Path(str(issue.get("artifact") or "")).name == "sfmea.json"
         and str(issue.get("code") or "") == "non_risk_sfmea_row"
         and str(issue.get("row_id") or "").strip()
+        and str(issue.get("risk_status") or "").strip() != "test_hypothesis"
     }
+    rejected_sfmea_ids = set(rejected_sfmea_id_labels)
     if rejected_sfmea_ids:
         sfmea_path = artifact_dir / "sfmea.json"
         sfmea_rows = _read_json(sfmea_path)
@@ -6402,11 +6410,12 @@ def _apply_final_deterministic_quality_repairs(
             kept_rows = [
                 row
                 for row in sfmea_rows
-                if _json_quality_row_id(row) not in rejected_sfmea_ids
+                if _canonical_quality_reference_id(_json_quality_row_id(row))
+                not in rejected_sfmea_ids
             ]
             if len(kept_rows) != len(sfmea_rows):
                 _write_json(sfmea_path, kept_rows)
-                changed["sfmea.json"] = sorted(rejected_sfmea_ids)
+                changed["sfmea.json"] = sorted(rejected_sfmea_id_labels.values())
 
         cases_path = artifact_dir / "black_box_cases.json"
         case_rows = _read_json(cases_path)
@@ -6420,7 +6429,8 @@ def _apply_final_deterministic_quality_repairs(
                 retained = [
                     risk_id
                     for risk_id in row["risk_ids"]
-                    if str(risk_id) not in rejected_sfmea_ids
+                    if _canonical_quality_reference_id(risk_id)
+                    not in rejected_sfmea_ids
                 ]
                 if retained == row["risk_ids"]:
                     updated_cases.append(row)

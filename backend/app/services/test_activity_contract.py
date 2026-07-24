@@ -6283,11 +6283,17 @@ def _audit_json_artifact(
         if artifact == "sfmea.json":
             issues.extend(_audit_sfmea_scores(row, artifact=artifact, index=index))
             issues.extend(_audit_sfmea_mitigation(row, artifact=artifact, index=index))
+            risk_status = str(row.get("risk_status") or "").strip()
             risk_text = " ".join(
                 str(row.get(field) or "")
                 for field in ("failure_mode", "cause", "effect")
             )
-            if not sfmea_failure_mode_is_risk(row.get("failure_mode")) or re.search(
+            # A qualified test hypothesis is deliberately not an observed defect,
+            # but it is still a scored risk candidate.  Do not turn its explicit
+            # "待验证" wording into a deletion instruction for finalization.
+            hypothesis_marker_only = bool(re.search(r"待验证\s*[:：]", risk_text))
+            if not sfmea_failure_mode_is_risk(row.get("failure_mode")) or (
+                re.search(
                 r"(?:当前|该)?源码.{0,8}不支持.{0,20}(?:failure\s*mode|失效|风险)"
                 r"|待验证\s*[:：]"
                 r"|无法从.{0,40}(?:推导|证明|确认)"
@@ -6299,6 +6305,8 @@ def _audit_json_artifact(
                 r"|(?:不存在|没有).{0,24}(?:use-after-free|泄漏|崩溃|失效|缺陷|错误|使用该指针)",
                 risk_text,
                 flags=re.IGNORECASE,
+                )
+                and not (risk_status == "test_hypothesis" and hypothesis_marker_only)
             ):
                 issues.append(
                     _issue(
@@ -6306,9 +6314,10 @@ def _audit_json_artifact(
                         artifact,
                         f"{artifact} 第 {index} 项描述的是被否定或待验证的假设，不是可评分失效模式",
                         index=index,
+                        row_id=row_id,
+                        risk_status=risk_status,
                     )
                 )
-            risk_status = str(row.get("risk_status") or "").strip()
             interpretation = str(row.get("evidence_interpretation") or "").strip()
             mechanism_text = str(row.get("mechanism") or "").strip()
             if risk_status == "test_hypothesis":
@@ -6696,6 +6705,50 @@ def _canonical_black_box_case_id(value: str) -> str:
     return re.sub(r"[-_ ]", "", str(value or "").upper())
 
 
+def _canonical_sfmea_id(value: str) -> str:
+    return re.sub(r"[-_ ]", "", str(value or "").upper())
+
+
+def _black_box_case_allows_empty_risk_ids(row: dict[str, Any]) -> bool:
+    """Permit unlinked cases only for explicitly normal or correct-rejection paths.
+
+    An empty risk link is not a generic escape hatch.  It is useful after a
+    validator proves that a generated SFMEA entry actually described normal
+    behaviour, but timeout, recovery, capacity and concurrency scenarios still
+    need a real risk ledger entry.
+    """
+    text = "\n".join(
+        part
+        for field in (
+            "test_dimension",
+            "scenario_name",
+            "preconditions",
+            "steps",
+            "expected_result",
+            "oracle_basis",
+            "observability",
+            "failure_diagnostics",
+        )
+        for part in _flatten_text(row.get(field))
+    ).lower()
+    risk_markers = (
+        r"超时|timeout|重连|reconnect|恢复|recovery|并发|concurren|竞态|race|"
+        r"耗尽|泄漏|资源不足|资源.*满|资源.*超限|容量.*超限|故障注入|异常传播|"
+        r"崩溃|挂起|死锁|数据损坏|丢失|失效|翻转|wraparound"
+    )
+    if re.search(risk_markers, text, flags=re.IGNORECASE):
+        return False
+    return bool(
+        re.search(
+            r"正常(?:路径|流程|登录|请求|行为)|成功路径|"
+            r"正确拒绝|预期拒绝|应当拒绝|非法(?:输入|请求).{0,40}(?:拒绝|返回(?:错误|失败))|"
+            r"返回(?:参数错误|错误码|失败码)|拒绝(?:非法|无效)",
+            text,
+            flags=re.IGNORECASE,
+        )
+    )
+
+
 def _audit_cross_artifact_references(
     *,
     root: Path,
@@ -6706,7 +6759,7 @@ def _audit_cross_artifact_references(
     sfmea_payload = _read_json(root / "sfmea.json")
     if isinstance(sfmea_payload, list):
         sfmea_ids = {
-            re.sub(r"[-_ ]", "", str(row.get("sfmea_id") or "").upper())
+            _canonical_sfmea_id(str(row.get("sfmea_id") or ""))
             for row in sfmea_payload
             if isinstance(row, dict) and str(row.get("sfmea_id") or "").strip()
         }
@@ -6719,6 +6772,49 @@ def _audit_cross_artifact_references(
         }
 
     issues: list[dict[str, Any]] = []
+    if isinstance(black_box_payload, list):
+        for index, row in enumerate(black_box_payload, start=1):
+            if not isinstance(row, dict):
+                continue
+            case_id = str(row.get("case_id") or f"row-{index}").strip()
+            risk_ids = row.get("risk_ids")
+            if not isinstance(risk_ids, list):
+                continue
+            risk_id_pairs = [
+                (str(risk_id).strip(), _canonical_sfmea_id(risk_id))
+                for risk_id in risk_ids
+                if str(risk_id or "").strip()
+            ]
+            if not risk_id_pairs:
+                if not _black_box_case_allows_empty_risk_ids(row):
+                    issues.append(
+                        _issue(
+                            "risk_case_missing_sfmea_mapping",
+                            "black_box_cases.json",
+                            f"black_box_cases.json 第 {index} 项是风险/异常测试，却没有关联 SFMEA 风险项",
+                            index=index,
+                            row_id=case_id,
+                        )
+                    )
+                continue
+            stale_risk_ids = sorted(
+                {
+                    str(risk_id)
+                    for risk_id, normalized in risk_id_pairs
+                    if normalized not in sfmea_ids
+                }
+            )
+            if stale_risk_ids:
+                issues.append(
+                    _issue(
+                        "black_box_risk_id_not_found",
+                        "black_box_cases.json",
+                        f"black_box_cases.json 第 {index} 项引用了不存在的 SFMEA 风险项: {', '.join(stale_risk_ids)}",
+                        index=index,
+                        row_id=case_id,
+                        risk_ids=stale_risk_ids,
+                    )
+                )
     for artifact in (
         "test_design_mindmap.md",
         "test_design.md",

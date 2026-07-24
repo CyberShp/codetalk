@@ -397,6 +397,101 @@ def test_sfmea_risk_hypothesis_can_describe_a_testable_deviation(tmp_path):
     assert not any(issue["code"] == "unqualified_sfmea_risk_hypothesis" for issue in issues)
 
 
+def test_sfmea_qualified_test_hypothesis_is_not_downgraded_by_pending_wording(tmp_path):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    row = {
+        "sfmea_id": "SFMEA-009",
+        "failure_mode": "待验证：故障注入后超限连接仍被接受",
+        "risk_status": "test_hypothesis",
+        "evidence_interpretation": "源码显示上限检查；需要故障注入验证拒绝不变量。",
+        "mechanism": "风险假设：若上限拒绝分支失效，额外连接可能进入会话。",
+        "cause": "故障注入假设：连接数限制未拒绝额外登录。",
+        "effect": "超限连接被接受。",
+        "detection": "检查登录响应和会话计数。",
+        "severity": 7,
+        "occurrence": 3,
+        "detection_score": 5,
+        "rpn": 105,
+        "mitigation": "整改: 保持上限拒绝。验证: 注入超过上限的并发登录。",
+        "source_evidence": ["lib/iscsi/iscsi.c:1-2"],
+        "test_mapping": "test/iscsi_tgt",
+    }
+
+    issues = _audit_json_artifact(
+        artifact="sfmea.json", payload=[row], spec={}, repo=tmp_path
+    )
+
+    assert not any(issue["code"] == "non_risk_sfmea_row" for issue in issues)
+    assert not any(issue["code"] == "unqualified_sfmea_risk_hypothesis" for issue in issues)
+
+
+def test_cross_artifact_audit_requires_risk_case_to_reference_sfmea(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps([{"sfmea_id": "SFMEA-01"}]), encoding="utf-8"
+    )
+    (tmp_path / "black_box_cases.json").write_text(
+        json.dumps(
+            [{"case_id": "BB-01", "risk_ids": [], "scenario_name": "超时后重连恢复"}],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    audit = audit_test_activity_artifacts(artifact_dir=tmp_path, contract={})
+
+    assert any(
+        issue["code"] == "risk_case_missing_sfmea_mapping"
+        for issue in audit["issues"]
+    )
+
+
+def test_cross_artifact_audit_allows_unlinked_normal_or_correct_rejection_case(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps([{"sfmea_id": "SFMEA-01"}]), encoding="utf-8"
+    )
+    (tmp_path / "black_box_cases.json").write_text(
+        json.dumps(
+            [{"case_id": "BB-01", "risk_ids": [], "scenario_name": "非法登录参数被正确拒绝并返回错误码"}],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    audit = audit_test_activity_artifacts(artifact_dir=tmp_path, contract={})
+
+    assert not any(
+        issue["code"] == "risk_case_missing_sfmea_mapping"
+        for issue in audit["issues"]
+    )
+
+
+def test_cross_artifact_audit_normalizes_sfmea_reference_ids(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps([{"sfmea_id": "SFMEA-02"}]), encoding="utf-8"
+    )
+    (tmp_path / "black_box_cases.json").write_text(
+        json.dumps(
+            [{"case_id": "BB-01", "risk_ids": ["SFMEA_02"], "scenario_name": "并发资源耗尽"}],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    audit = audit_test_activity_artifacts(artifact_dir=tmp_path, contract={})
+
+    assert not any(
+        issue["code"] == "black_box_risk_id_not_found"
+        for issue in audit["issues"]
+    )
+
+
 @pytest.mark.parametrize(
     "mitigation",
     [

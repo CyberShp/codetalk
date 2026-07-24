@@ -6186,6 +6186,54 @@ def test_final_deterministic_quality_repair_removes_audited_nonrisk_sfmea_and_li
     assert json.loads((tmp_path / "black_box_cases.json").read_text())[0]["risk_ids"] == ["SFMEA-01"]
 
 
+def test_final_deterministic_quality_repair_preserves_test_hypothesis_and_normalizes_links(
+    tmp_path,
+):
+    from app.services.workbench_workflow_runner import (
+        _apply_final_deterministic_quality_repairs,
+    )
+
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps(
+            [
+                {"sfmea_id": "SFMEA-01", "failure_mode": "正常拒绝"},
+                {"sfmea_id": "SFMEA-02", "failure_mode": "待验证故障注入风险"},
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "black_box_cases.json").write_text(
+        json.dumps(
+            [{"case_id": "BB-01", "risk_ids": ["SFMEA_01", "SFMEA_02"]}],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    _apply_final_deterministic_quality_repairs(
+        artifact_dir=tmp_path,
+        audit={
+            "issues": [
+                {
+                    "artifact": "sfmea.json",
+                    "code": "non_risk_sfmea_row",
+                    "row_id": "SFMEA-01",
+                },
+                {
+                    "artifact": "sfmea.json",
+                    "code": "non_risk_sfmea_row",
+                    "row_id": "SFMEA-02",
+                    "risk_status": "test_hypothesis",
+                },
+            ]
+        },
+    )
+
+    assert [row["sfmea_id"] for row in json.loads((tmp_path / "sfmea.json").read_text())] == ["SFMEA-02"]
+    assert json.loads((tmp_path / "black_box_cases.json").read_text())[0]["risk_ids"] == ["SFMEA_02"]
+
+
 def test_quality_repair_salvages_only_rows_with_fewer_issues():
     from app.services.workbench_workflow_runner import (
         _merge_non_regressing_json_rows,
