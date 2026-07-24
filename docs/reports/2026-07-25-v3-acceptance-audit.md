@@ -41,6 +41,25 @@ scope.  `partial` and `missing` remain release blockers.
   SFMEA and black-box work.  The 32-second elapsed time included 53 targeted
   quality-repair reuses, so it validates the repaired artifact chain only; it
   is explicitly excluded from uncached rapid/deep performance reporting.
+- Browser-created DeepSeek Flash/Pro deep run:
+  `task_run_63e13b18e42a43088e97ffe2d8d049b5` completed in `3m45s` with
+  `quality_status=passed`, 24/24 verified facts and nine downloadable files.
+  It made real Flash calls for four exploration branches and real Pro calls
+  for SFMEA and black-box cases, but is **not** accepted as a deep sample:
+  every branch had been fed the first six source cards regardless of its
+  responsibility, so MCS/TSIH/Digest evidence later in the validated pack was
+  omitted from branch context.  `task_run_63e...` is retained as a regression
+  fixture, not performance or quality evidence.
+- Browser-created DeepSeek Flash/Pro deep regression after evidence-routing,
+  risk-ledger, high-RPN traceability and display-label fixes:
+  `task_run_854e47bae147418f87c740fdac823f55` completed in `3m51s` with
+  `quality_status=passed` and `delivery_status=complete`.  It verified `24/24`
+  facts, structural and executable contracts at `100%`, and a
+  `READY_WITH_WARNINGS` coverage judge (the remaining `need_verify` entries are
+  explicitly non-blocking evidence-disposition warnings).  This run used
+  Flash for source/deep-exploration stages and Pro for SFMEA/black-box stages.
+  Its duration remains cache-assisted and is not an uncached deep-performance
+  baseline.
 
 ## Acceptance Status
 
@@ -49,7 +68,7 @@ scope.  `partial` and `missing` remain release blockers.
 | Workflow domain and typed ports | verified | WorkflowVersion/RunSnapshot tests; xyflow browser regressions; `workflow_snapshot.json` | Keep migration regression in release gate. |
 | Node Registry and xyflow canvas | verified | Registry-driven inspector/browser evidence in V3 execution state; designer contract tests | Desktop and narrow-screen visual regression must be rerun at release. |
 | Harness input, readiness and events | partial | Shared readiness, input snapshot, activity-aware timeout and Harness tests | Need two live executable providers under the same approved deployment policy. |
-| Test Activity Skill Runtime | partial | Thirteen staged events, Flash/Pro routing and complete artifacts from Attempt 8 | Deep profile must complete with all gates and a separately audited sample.  Attempt 12 additionally exposed that a quality-retry snapshot can reuse most stages while retaining only the final Pro call metrics; deep work history must be preserved and independently gated before a retry can be presented as deep execution. |
+| Test Activity Skill Runtime | partial | Thirteen staged events, Flash/Pro routing and complete artifacts from Attempt 8 | Deep profile must complete with all gates and a separately audited sample. Attempt 12 additionally exposed that a quality-retry snapshot can reuse most stages while retaining only the final Pro call metrics; the latest deep browser run additionally exposed fixed-order source-card routing. Both require rerun after their respective gates are active. |
 | Artifact Contract and Claim/Evidence | verified for the DeepSeek B rapid sample | Attempt 8: six downloadable deliverables, 48/48 verified facts, `46/46` final checks and zero audit issues | Repeat against deep profile and record Markdown/JSON hash audit. |
 | Quality and targeted repair | verified for declared findings | `cf68ade7`, focused contract/task-run regressions, Attempt 8 browser completion | Independent accuracy review still must score the final deep sample. |
 | AI-thread result linkage | verified for the final quality-repair sample | Fresh browser click from Attempt 12 created `conv_fcf5cb0727f441ae81b8f83d8f6f7cf1`; the thread displayed and downloaded nine linked deliverables, and the isolated real E2E now asserts the artifact rail before follow-up | Repeat once against an uncached deep-profile deliverable during release evidence capture. |
@@ -73,6 +92,11 @@ scope.  `partial` and `missing` remain release blockers.
    inspect factual claims rather than only report formatting.
 5. Release evidence still needs the full AC matrix, final desktop/mobile screenshots,
    restart/concurrency evidence, and an updated operator manual.
+6. The legacy generic two-artifact workflow tests currently receive the full Test
+   Activity Stage Contract and become `quality_blocked` because they never request
+   the source/flow/scenario artifacts. This is a pre-existing contract-routing
+   debt, not a valid test assertion update; scope activation must be made explicit
+   before those workflows can be release evidence.
 
 ## Non-Claims
 

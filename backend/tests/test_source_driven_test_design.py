@@ -469,6 +469,49 @@ def test_traceability_accepts_display_path_only_when_same_case_has_verified_clai
     ]
 
 
+def test_traceability_accepts_card_display_label_only_with_same_card_claim():
+    from app.services.source_driven_test_design import build_source_driven_test_design
+
+    cases = _cases()
+    cases[0]["risk_ids"] = []
+    cases[0]["source_or_test_evidence"] = ["SRC-001:ISCSI_LOGIN_ACCEPT=0x00"]
+    cases[0]["technical_claims"] = [{
+        "claim_id": "TC-001",
+        "type": "source_anchor",
+        "statement": "if (conn->state == EXITING) return;",
+        "evidence": [{
+            "evidence_id": "SRC-001:L101",
+            "path": "lib/iscsi/iscsi.c",
+            "lines": "L101",
+            "quote": "if (conn->state == EXITING) return;",
+            "symbol": "iscsi_pdu_payload_op_login",
+        }],
+    }]
+
+    artifacts = build_source_driven_test_design(
+        source_pack=_source_pack(),
+        flow_pack=_flow_pack(),
+        flow_outline=_outline(),
+        sfmea=_sfmea(),
+        black_box_cases=cases,
+    )
+
+    link = artifacts["traceability_matrix.json"]["links"][0]
+    assert link["unresolved_evidence_refs"] == []
+
+    cases[0]["technical_claims"][0]["evidence"][0]["evidence_id"] = "SRC-OTHER:L101"
+    invalid = build_source_driven_test_design(
+        source_pack=_source_pack(),
+        flow_pack=_flow_pack(),
+        flow_outline=_outline(),
+        sfmea=_sfmea(),
+        black_box_cases=cases,
+    )
+    assert invalid["traceability_matrix.json"]["links"][0]["unresolved_evidence_refs"] == [
+        "SRC-001:ISCSI_LOGIN_ACCEPT=0x00"
+    ]
+
+
 def test_delivery_refresh_rebuilds_traceability_from_normalized_final_artifacts(tmp_path: Path):
     from app.services.source_driven_test_design import (
         build_source_driven_test_design,

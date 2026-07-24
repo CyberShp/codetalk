@@ -6838,6 +6838,37 @@ def _audit_cross_artifact_references(
                         risk_ids=stale_risk_ids,
                     )
                 )
+    if isinstance(sfmea_payload, list) and isinstance(black_box_payload, list):
+        mapped_risk_ids = {
+            normalized
+            for row in black_box_payload
+            if isinstance(row, dict)
+            for risk_id in (row.get("risk_ids") or [])
+            if str(risk_id or "").strip()
+            for normalized in [_canonical_sfmea_id(str(risk_id))]
+        }
+        high_risk_ids = [
+            str(row.get("sfmea_id") or "").strip()
+            for row in sfmea_payload
+            if isinstance(row, dict)
+            and str(row.get("sfmea_id") or "").strip()
+            and int(row.get("rpn") or 0) >= 200
+        ]
+        unmapped_high_risk_ids = [
+            risk_id
+            for risk_id in high_risk_ids
+            if _canonical_sfmea_id(risk_id) not in mapped_risk_ids
+        ]
+        if unmapped_high_risk_ids:
+            issues.append(
+                _issue(
+                    "high_risk_sfmea_unmapped",
+                    "black_box_cases.json",
+                    "以下高 RPN SFMEA 风险项没有关联到任何黑盒用例: "
+                    + ", ".join(unmapped_high_risk_ids),
+                    unmapped_risk_ids=unmapped_high_risk_ids,
+                )
+            )
     for artifact in (
         "test_design_mindmap.md",
         "test_design.md",

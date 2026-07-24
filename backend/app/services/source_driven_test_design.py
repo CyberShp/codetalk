@@ -1882,6 +1882,7 @@ def _traceability_artifact(**context: Any) -> dict[str, Any]:
             for item in evidence
             if _is_verified_evidence_reference(item, context["evidence_index"])
             or item in claim_backed_paths
+            or _is_claim_backed_card_display_label(item, claim_evidence)
         ]
         verified_evidence = _dedupe([*verified_evidence, *claim_evidence])
         known_case_risks = [item for item in risk_ids if item in known_risk_ids]
@@ -1898,6 +1899,7 @@ def _traceability_artifact(**context: Any) -> dict[str, Any]:
                     for item in evidence
                     if not _is_verified_evidence_reference(item, context["evidence_index"])
                     and item not in claim_backed_paths
+                    and not _is_claim_backed_card_display_label(item, claim_evidence)
                     and not (claim_evidence and _is_display_only_path_reference(item))
                 ],
             }
@@ -1916,6 +1918,21 @@ def _traceability_artifact(**context: Any) -> dict[str, Any]:
             "error_propagation_chains.json",
         ],
     }
+
+
+def _is_claim_backed_card_display_label(
+    value: str,
+    claim_evidence: list[str],
+) -> bool:
+    """Permit a human-facing card label only when its line claim is verified."""
+    match = re.fullmatch(r"([A-Za-z][A-Za-z0-9_-]*):[^\s]+", str(value or "").strip())
+    if not match:
+        return False
+    card_id = match.group(1)
+    return any(
+        reference == card_id or reference.startswith(f"{card_id}:L")
+        for reference in claim_evidence
+    )
 
 
 def _verified_case_claim_evidence(

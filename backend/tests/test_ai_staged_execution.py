@@ -33,6 +33,7 @@ from app.services.ai_staged_execution import (
     _compact_execution_input_contract,
     _deterministic_quality_claim_repair,
     _deterministic_schema_repair,
+    _deep_exploration_stage_prompt,
     _execute_source_driven_deterministic_stage,
     _finalize_combined_markdown_report,
     _regular_stage_prompt,
@@ -786,6 +787,111 @@ def test_deep_profile_plan_materializes_parallel_exploration_branches():
     assert stages["source_analysis"]["output_limits"]["max_evidence_anchors"] > 12
 
 
+def test_deep_exploration_prompt_routes_evidence_by_branch_responsibility():
+    """A deep branch must not receive the same first six cards as every peer."""
+    source_pack = {
+        "repo_revision": "abc123",
+        "evidence_cards": [
+            {
+                "evidence_id": "SRC-01",
+                "file_path": "lib/iscsi/iscsi.c",
+                "classification": "source",
+                "start_line": 100,
+                "end_line": 110,
+                "symbols": ["iscsi_auth_params"],
+                "matched_terms": ["authentication"],
+                "excerpt": "authentication parameter parsing",
+            },
+            {
+                "evidence_id": "SRC-02",
+                "file_path": "lib/iscsi/conn.c",
+                "classification": "source",
+                "start_line": 200,
+                "end_line": 210,
+                "symbols": ["login_timeout"],
+                "matched_terms": ["login timeout"],
+                "excerpt": "login timeout cleanup",
+            },
+            {
+                "evidence_id": "SRC-03",
+                "file_path": "lib/iscsi/iscsi.c",
+                "classification": "source",
+                "start_line": 700,
+                "end_line": 714,
+                "symbols": ["append_iscsi_sess"],
+                "matched_terms": ["MaxConnections", "tsih"],
+                "excerpt": "if (sess->connections >= sess->MaxConnections)",
+            },
+            {
+                "evidence_id": "SRC-04",
+                "file_path": "lib/iscsi/iscsi.c",
+                "classification": "source",
+                "start_line": 130,
+                "end_line": 135,
+                "symbols": ["iscsi_conn_login_complete"],
+                "matched_terms": ["login completion"],
+                "excerpt": "login completion callback",
+            },
+            {
+                "evidence_id": "SRC-05",
+                "file_path": "lib/iscsi/conn.c",
+                "classification": "source",
+                "start_line": 300,
+                "end_line": 305,
+                "symbols": ["iscsi_conn_destruct"],
+                "matched_terms": ["connection cleanup"],
+                "excerpt": "connection cleanup",
+            },
+            {
+                "evidence_id": "SRC-06",
+                "file_path": "test/iscsi_tgt/login.sh",
+                "classification": "test",
+                "start_line": 10,
+                "end_line": 20,
+                "symbols": ["login_test"],
+                "matched_terms": ["login"],
+                "excerpt": "basic login test",
+            },
+            {
+                "evidence_id": "SRC-07",
+                "file_path": "lib/iscsi/iscsi.c",
+                "classification": "source",
+                "start_line": 4720,
+                "end_line": 4730,
+                "symbols": ["iscsi_pdu_payload_read"],
+                "matched_terms": ["data digest error"],
+                "excerpt": "data digest error",
+            },
+            {
+                "evidence_id": "SRC-08",
+                "file_path": "lib/iscsi/iscsi.c",
+                "classification": "source",
+                "start_line": 703,
+                "end_line": 708,
+                "symbols": ["append_iscsi_sess"],
+                "matched_terms": ["TODO: need a mutex"],
+                "excerpt": "TODO: need a mutex around session append",
+            },
+        ],
+    }
+    plan = {"original_user_request": "分析 iSCSI Login 的 MCS、TSIH 和 Digest 错误"}
+    prompt = _deep_exploration_stage_prompt(
+        plan=plan,
+        stage={
+            "id": "deep_failures_and_recovery",
+            "artifact": "deep_exploration/failures.md",
+            "purpose": "异常传播、超时、取消、断连与恢复探索",
+            "output_limits": {"max_chinese_characters": 1800},
+        },
+        source_pack=source_pack,
+        outline={},
+    )
+
+    assert "SRC-07" in prompt
+    assert "data digest error" in prompt
+    assert "SRC-03" in prompt
+
+
 def test_deep_profile_requires_governed_source_driven_stage_chain_for_basic_report():
     """A combined report must not silently bypass the nine-stage activity contract."""
     plan = build_staged_execution_plan(
@@ -889,6 +995,76 @@ def test_deep_profile_evidence_rejects_reuse_without_prior_branch_provider_work(
         "deep_state_and_resources",
     ]
     assert evidence["missing_delivery_provider_work"] is True
+
+
+def test_deep_profile_evidence_rejects_branch_without_its_routed_citations(tmp_path):
+    (tmp_path / "staged_execution_plan.json").write_text(
+        json.dumps(
+            {
+                "original_user_request": "分析 iSCSI Login 的 MCS、TSIH 和 Digest 错误",
+                "execution_profile": {"id": "deep", "applied_subagent_count": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    source_stage = tmp_path / "stages" / "source_analysis"
+    source_stage.mkdir(parents=True)
+    (source_stage / "source_evidence_pack.json").write_text(
+        json.dumps(
+            {
+                "evidence_cards": [
+                    {
+                        "evidence_id": "SRC-01",
+                        "file_path": "lib/iscsi/iscsi.c",
+                        "symbols": ["iscsi_auth_params"],
+                        "excerpt": "authentication",
+                    },
+                    {
+                        "evidence_id": "SRC-02",
+                        "file_path": "lib/iscsi/iscsi.c",
+                        "symbols": ["append_iscsi_sess"],
+                        "matched_terms": ["MaxConnections", "tsih"],
+                        "excerpt": "MaxConnections tsih",
+                    },
+                    {
+                        "evidence_id": "SRC-03",
+                        "file_path": "lib/iscsi/iscsi.c",
+                        "symbols": ["iscsi_pdu_payload_read"],
+                        "matched_terms": ["data digest error"],
+                        "excerpt": "data digest error",
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    for stage_id, citations in {
+        "deep_entry_paths": "SRC-01 SRC-02",
+        # This branch gets Digest evidence but only cites unrelated Login cards.
+        "deep_state_and_resources": "SRC-01",
+        "black_box_cases": "SRC-01 SRC-02",
+    }.items():
+        stage_dir = tmp_path / "stages" / stage_id
+        stage_dir.mkdir(parents=True, exist_ok=True)
+        (stage_dir / "stage_result.json").write_text(
+            json.dumps(
+                {
+                    "stage_id": stage_id,
+                    "status": "completed",
+                    "provider_call_count": 1,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (stage_dir / "raw_output.txt").write_text(citations, encoding="utf-8")
+
+    evidence = build_profile_execution_evidence(
+        artifact_dir=tmp_path,
+        execution_profile={"id": "deep", "applied_subagent_count": 2},
+    )
+
+    assert evidence["status"] == "blocked"
+    assert evidence["under_evidenced_branches"] == ["deep_state_and_resources"]
 
 
 def test_quality_reuse_always_rebuilds_derived_judge(tmp_path):
@@ -1029,11 +1205,11 @@ def test_deep_exploration_branch_uses_bounded_markdown_context():
         completed={},
     )
 
-    assert stage["max_tokens"] <= 900
-    assert stage["output_limits"]["max_chinese_characters"] <= 1200
+    assert stage["max_tokens"] <= 1600
+    assert stage["output_limits"]["max_chinese_characters"] <= 1800
     assert len(prompt) < 16_000
     assert "必须直接以 Markdown 标题或列表开始，不得使用 JSON" in prompt
-    assert "SRC-06" not in prompt
+    assert "SRC-09" not in prompt
 
 
 def test_source_driven_v2_plan_groups_ledgers_and_mindmap_without_extra_model_calls():
@@ -1341,6 +1517,48 @@ def test_regular_stage_prompt_exposes_canonical_claim_evidence_catalog(tmp_path)
     assert "VERIFIED_CLAIM_EVIDENCE_CATALOG" in prompt
     assert "SRC-01:L518" in prompt
     assert "只能逐字选择一个 evidence_id" in prompt
+
+
+def test_black_box_prompt_exposes_only_materialized_sfmea_risk_ids(tmp_path):
+    sfmea = tmp_path / "sfmea.json"
+    sfmea.write_text(
+        json.dumps(
+            [
+                {
+                    "sfmea_id": "SFMEA-01",
+                    "failure_mode": "登录超时后的资源清理未完成",
+                    "source_evidence": ["lib/iscsi/conn.c:iscsi_conn_stop"],
+                },
+                {
+                    "sfmea_id": "SFMEA-02",
+                    "failure_mode": "Digest 错误后的连接恢复失败",
+                    "source_evidence": ["lib/iscsi/iscsi.c:iscsi_op_login_rsp_init"],
+                },
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    prompt = _regular_stage_prompt(
+        plan={"original_user_request": "分析 iSCSI login"},
+        stage={
+            "id": "black_box_cases",
+            "artifact": "black_box_cases.json",
+            "purpose": "黑盒用例",
+            "depends_on": ["sfmea"],
+            "output_contract": {"schema": {"type": "array"}},
+        },
+        source_pack={"evidence_cards": []},
+        flow_pack={},
+        outline={},
+        completed={"sfmea": sfmea},
+    )
+
+    assert "SFMEA_RISK_LEDGER" in prompt
+    assert '"sfmea_id": "SFMEA-01"' in prompt
+    assert '"sfmea_id": "SFMEA-02"' in prompt
+    assert "SFMEA-RISK-01" not in prompt
+    assert "risk_ids 只能引用 SFMEA_RISK_LEDGER 中逐字列出的 sfmea_id" in prompt
 
 
 def test_sfmea_prompt_excludes_test_only_claim_anchors(tmp_path):
@@ -2116,6 +2334,50 @@ def test_quality_repair_materializes_missing_c_bit_fragmentation_case():
     assert "C=1" in " ".join(repaired[-1]["steps"])
     assert "C=0" in " ".join(repaired[-1]["steps"])
     assert fields == ["$[+].c_bit_fragmentation_case"]
+
+
+def test_deterministic_c_bit_repair_does_not_skip_required_risk_mapping():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{"case_id": "BB-01", "risk_ids": [], "technical_claims": []}],
+        artifact="black_box_cases.json",
+        quality_feedback={
+            "issues": [
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "missing_c_bit_fragmentation_case",
+                },
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "risk_case_missing_sfmea_mapping",
+                    "row_id": "BB-01",
+                },
+            ]
+        },
+    )
+
+    assert repaired == [{"case_id": "BB-01", "risk_ids": [], "technical_claims": []}]
+    assert fields == []
+
+
+def test_high_risk_mapping_repair_can_patch_any_existing_black_box_case():
+    row_ids = _quality_repair_row_ids(
+        artifact="black_box_cases.json",
+        quality_feedback={
+            "issues": [
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "high_risk_sfmea_unmapped",
+                    "unmapped_risk_ids": ["SFMEA-04"],
+                }
+            ]
+        },
+        base_items=[
+            {"case_id": "BB-01", "risk_ids": []},
+            {"case_id": "BB-02", "risk_ids": ["SFMEA-02"]},
+        ],
+    )
+
+    assert row_ids == {"BB-01", "BB-02"}
 
 
 def test_quality_repair_patch_can_delete_a_disproved_sfmea_row():

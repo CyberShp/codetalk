@@ -594,6 +594,42 @@ def test_cross_artifact_audit_normalizes_sfmea_reference_ids(tmp_path):
     )
 
 
+def test_cross_artifact_audit_requires_each_high_rpn_sfmea_to_map_to_a_case(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps(
+            [
+                {"sfmea_id": "SFMEA-01", "rpn": 240},
+                {"sfmea_id": "SFMEA-02", "rpn": 120},
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "black_box_cases.json").write_text(
+        json.dumps(
+            [
+                {
+                    "case_id": "BB-01",
+                    "risk_ids": ["SFMEA-02"],
+                    "scenario_name": "正常登录路径",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    audit = audit_test_activity_artifacts(artifact_dir=tmp_path, contract={})
+
+    issue = next(
+        item for item in audit["issues"]
+        if item["code"] == "high_risk_sfmea_unmapped"
+    )
+    assert issue["unmapped_risk_ids"] == ["SFMEA-01"]
+    assert issue["artifact"] == "black_box_cases.json"
+
+
 def test_black_box_delivery_quality_marks_vague_steps_for_repair(tmp_path):
     from app.services.test_activity_contract import black_box_case_delivery_quality_gaps
 

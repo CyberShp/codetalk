@@ -130,6 +130,20 @@ _DEEP_EXPLORATION_BRANCHES = (
         "并发交错、边界、翻转与长期稳定性探索",
     ),
 )
+_DEEP_BRANCH_EVIDENCE_HINTS = {
+    "deep_entry_paths": (
+        "login", "auth", "chap", "session", "tsih", "isid", "cid", "entry", "request",
+    ),
+    "deep_state_and_resources": (
+        "state", "timer", "timeout", "resource", "task", "pool", "free", "maxconnections", "tsih",
+    ),
+    "deep_failures_and_recovery": (
+        "error", "failure", "digest", "timeout", "disconnect", "reconnect", "recovery", "cleanup",
+    ),
+    "deep_concurrency_and_boundaries": (
+        "mutex", "concurr", "race", "state", "maxconnections", "limit", "overflow", "counter", "boundary",
+    ),
+}
 _PROVIDER_CAPACITY_LOCK = threading.Lock()
 _PROVIDER_CAPACITY: tuple[int, "_ProcessProviderCapacity"] | None = None
 
@@ -1981,13 +1995,13 @@ def _insert_deep_exploration_stages(
             "support": True,
             "subagent_role": stage_id,
             "output_contract": {"artifact": artifact},
-            # These are bounded exploration notes, not another final report.
-            # Keep the four real branches independent and cheap enough that a
-            # verbose provider response cannot stop the delivery stages.
-            "max_tokens": 800,
+            # These are independent evidence syntheses.  Their scope is
+            # narrower than the final report, but deep delivery must leave
+            # enough room to cover a branch rather than merely name it.
+            "max_tokens": 1600,
             "output_limits": {
-                "max_chinese_characters": 1100,
-                "max_evidence_anchors": 8,
+                "max_chinese_characters": 1800,
+                "max_evidence_anchors": 12,
             },
         }
         for stage_id, artifact, purpose in branches
@@ -2344,7 +2358,43 @@ def build_profile_execution_evidence(
         required_delivery_calls > 0
         and int(delivery_metrics["provider_call_count"]) < required_delivery_calls
     )
-    status = "passed" if not missing_branches and not missing_delivery_work else "blocked"
+    plan = _read_json_file(artifact_dir / "staged_execution_plan.json")
+    source_pack = _read_json_file(
+        artifact_dir / "stages" / "source_analysis" / "source_evidence_pack.json"
+    )
+    original_request = str(plan.get("original_user_request") or plan.get("target") or "")
+    branch_citation_requirements: dict[str, dict[str, Any]] = {}
+    under_evidenced_branches: list[str] = []
+    for stage_id in branch_ids:
+        routed_cards = _select_deep_branch_evidence_cards(
+            stage_id=stage_id,
+            source_pack=source_pack,
+            original_request=original_request,
+        )
+        routed_ids = [
+            str(card.get("evidence_id") or "").strip()
+            for card in routed_cards
+            if str(card.get("evidence_id") or "").strip()
+        ]
+        required_citations = min(2, len(routed_ids))
+        raw_output = _read_text_file(
+            artifact_dir / "stages" / stage_id / "raw_output.txt"
+        )
+        cited_ids = [evidence_id for evidence_id in routed_ids if evidence_id in raw_output]
+        branch_citation_requirements[stage_id] = {
+            "routed_evidence_ids": routed_ids,
+            "required_citation_count": required_citations,
+            "cited_evidence_ids": cited_ids,
+        }
+        if required_citations and len(cited_ids) < required_citations:
+            under_evidenced_branches.append(stage_id)
+    status = (
+        "passed"
+        if not missing_branches
+        and not missing_delivery_work
+        and not under_evidenced_branches
+        else "blocked"
+    )
     return {
         "kind": "profile_execution_evidence",
         "profile_id": "deep",
@@ -2355,14 +2405,16 @@ def build_profile_execution_evidence(
         "observed_delivery_provider_calls": int(delivery_metrics["provider_call_count"]),
         "missing_branch_provider_work": missing_branches,
         "missing_delivery_provider_work": missing_delivery_work,
+        "under_evidenced_branches": under_evidenced_branches,
+        "branch_citation_requirements": branch_citation_requirements,
         "provider_call_count": provider_call_count,
         "output_tokens": output_tokens,
         "provider_wait_ms": provider_wait_ms,
         "reused_stage_count": sum(bool(item.get("reused")) for item in stage_results.values()),
         "reason": (
-            "深度档已保留各独立探索分支和黑盒交付阶段的真实模型工作指标。"
+            "深度档已保留各独立探索分支的真实模型工作与定向证据引用。"
             if status == "passed"
-            else "深度档缺少已冻结的独立探索或黑盒交付模型工作，不能以复用结果冒充深度执行。"
+            else "深度档缺少已冻结的独立探索模型工作、黑盒交付工作或分支定向证据引用，不能以复用结果冒充深度执行。"
         ),
     }
 
@@ -6817,6 +6869,38 @@ def _apply_regular_stage_output_limits(
     return rendered
 
 
+def _materialized_sfmea_risk_ledger(
+    completed: dict[str, Path],
+) -> list[dict[str, Any]]:
+    """Expose the accepted SFMEA IDs as the only legal black-box risk links."""
+    sfmea_path = completed.get("sfmea")
+    if sfmea_path is None or not sfmea_path.is_file():
+        return []
+    payload = _read_json_file(sfmea_path)
+    if not isinstance(payload, list):
+        return []
+    ledger: list[dict[str, Any]] = []
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        sfmea_id = str(row.get("sfmea_id") or "").strip()
+        if not sfmea_id:
+            continue
+        ledger.append(
+            {
+                "sfmea_id": sfmea_id,
+                "failure_mode": str(row.get("failure_mode") or "").strip()[:360],
+                "risk_status": str(row.get("risk_status") or "").strip(),
+                "source_evidence": [
+                    str(value).strip()
+                    for value in row.get("source_evidence") or []
+                    if str(value).strip()
+                ][:4],
+            }
+        )
+    return ledger[:48]
+
+
 def _regular_stage_prompt(
     *,
     plan: dict[str, Any],
@@ -6863,6 +6947,7 @@ def _regular_stage_prompt(
                 accepted_dependencies[path.name] = text[:6000]
         else:
             accepted_dependencies[path.name] = text[:6000]
+    sfmea_risk_ledger = _materialized_sfmea_risk_ledger(completed)
     context = {
         "version": "regular-stage-context-v2",
         "analysis_target": str(
@@ -7046,6 +7131,11 @@ def _regular_stage_prompt(
             "- 黑盒 expected_result、steps 和 observability 是待执行测试契约，不是当前源码事实；"
             "technical_claims 只绑定一条已验证源码锚点，系统会将 statement 固化为对应 quote。"
         )
+        if sfmea_risk_ledger:
+            rules.append(
+                "- risk_ids 只能引用 SFMEA_RISK_LEDGER 中逐字列出的 sfmea_id；"
+                "不得虚构 SFMEA-RISK-*、Risk-* 或任何未在账本中出现的 ID。"
+            )
     schema = output_contract.get("schema") if isinstance(output_contract, dict) else None
     is_array_quality_patch = bool(
         current_artifact_seed.strip()
@@ -7141,6 +7231,22 @@ def _regular_stage_prompt(
             "- 独立审计器判定为 insufficient 的实现结论必须删除，或改造成带明确操作与 oracle 的待执行测试；不得继续把它写成 expected_result、effect 或已实现行为。"
         )
     if base_stage_id == "black_box_cases":
+        unmapped_high_risk_ids = sorted(
+            {
+                str(risk_id).strip()
+                for issue in (scoped_quality_feedback or {}).get("issues") or []
+                if isinstance(issue, dict)
+                and str(issue.get("code") or "") == "high_risk_sfmea_unmapped"
+                for risk_id in issue.get("unmapped_risk_ids") or []
+                if str(risk_id).strip()
+            }
+        )
+        if unmapped_high_risk_ids:
+            rules.append(
+                "- 以下高风险必须由本次修复映射到语义匹配的现有黑盒用例 risk_ids："
+                + ", ".join(unmapped_high_risk_ids)
+                + "。不得添加虚构风险 ID，也不得用正常路径用例敷衍映射。"
+            )
         if "missing_c_bit_fragmentation_case" in quality_issue_codes:
             rules.append(
                 "- 必须新增一个独立的 C-bit 参数跨 PDU 分片黑盒用例：步骤逐字包含 C=1 中间分片、"
@@ -7240,6 +7346,14 @@ def _regular_stage_prompt(
             "",
         ]
     )
+    if base_stage_id == "black_box_cases" and sfmea_risk_ledger:
+        parts.extend(
+            [
+                "SFMEA_RISK_LEDGER:",
+                json.dumps(sfmea_risk_ledger, ensure_ascii=False, indent=2),
+                "",
+            ]
+        )
     if partial_seed:
         parts.extend(
             [
@@ -7356,6 +7470,20 @@ def _quality_repair_row_ids(
         if not isinstance(issue, dict):
             continue
         if Path(str(issue.get("artifact") or "")).name != Path(artifact).name:
+            continue
+        if (
+            Path(artifact).name == "black_box_cases.json"
+            and str(issue.get("code") or "") == "high_risk_sfmea_unmapped"
+            and base_items
+        ):
+            # The audit names an omitted risk, not the one semantically
+            # matching test case.  Let the repair model update any existing
+            # case, while the SFMEA ledger constrains the only legal ID.
+            row_ids.update(
+                row_id
+                for row_id in (_json_array_row_id(item) for item in base_items)
+                if row_id
+            )
             continue
         claim_id = str(issue.get("claim_id") or "").strip()
         if claim_id.startswith(prefix):
@@ -8038,7 +8166,18 @@ def _deterministic_quality_claim_repair(
         "missing_max_connections_target_setup",
         "black_box_case_quality_failed",
     }
-    if not issue_codes or not issue_codes.issubset(supported_codes):
+    # A C-bit case may be filled deterministically only when it is the whole
+    # unresolved contract.  If a companion issue needs a valid SFMEA mapping,
+    # the repair model must see the risk ledger and resolve both together.
+    non_deterministic_codes = issue_codes - supported_codes
+    if (
+        not issue_codes
+        or non_deterministic_codes
+        or (
+            "missing_c_bit_fragmentation_case" in issue_codes
+            and len(issue_codes) > 1
+        )
+    ):
         return repaired, []
 
     fields: list[str] = []
@@ -8335,9 +8474,11 @@ def _deep_exploration_stage_prompt(
     four copies of a report-generation request and makes truncation likely.
     """
     cards: list[dict[str, Any]] = []
-    for card in source_pack.get("evidence_cards") or []:
-        if not isinstance(card, dict):
-            continue
+    for card in _select_deep_branch_evidence_cards(
+        stage_id=str(stage.get("id") or ""),
+        source_pack=source_pack,
+        original_request=str(plan.get("original_user_request") or plan.get("target") or ""),
+    ):
         cards.append(
             {
                 "evidence_id": str(card.get("evidence_id") or ""),
@@ -8351,8 +8492,6 @@ def _deep_exploration_stage_prompt(
                 "excerpt": str(card.get("excerpt") or "")[:600],
             }
         )
-        if len(cards) == 6:
-            break
     output_limits = stage.get("output_limits")
     max_characters = int(
         output_limits.get("max_chinese_characters")
@@ -8388,6 +8527,50 @@ def _deep_exploration_stage_prompt(
             "- 仅返回当前 Markdown 文件正文。",
         ]
     )
+
+
+def _select_deep_branch_evidence_cards(
+    *,
+    stage_id: str,
+    source_pack: dict[str, Any],
+    original_request: str,
+    limit: int = 8,
+) -> list[dict[str, Any]]:
+    """Route verified evidence to the deep branch that can use it.
+
+    Deep exploration used to take the first six cards for every branch.  That
+    made source-card ordering decide whether a requested protocol concern was
+    ever shown to the relevant subagent.  Rank only already-verified cards;
+    this changes context routing, not the source-of-truth contract.
+    """
+    hints = _DEEP_BRANCH_EVIDENCE_HINTS.get(stage_id, ())
+    request = original_request.casefold()
+    ranked: list[tuple[int, int, dict[str, Any]]] = []
+    for index, raw_card in enumerate(source_pack.get("evidence_cards") or []):
+        if not isinstance(raw_card, dict):
+            continue
+        card = dict(raw_card)
+        searchable = " ".join(
+            [
+                str(card.get("file_path") or ""),
+                str(card.get("excerpt") or ""),
+                *[str(value) for value in card.get("symbols") or []],
+                *[str(value) for value in card.get("matched_terms") or []],
+            ]
+        ).casefold()
+        score = sum(12 for hint in hints if hint in searchable)
+        # Preserve explicitly named user concerns even when they are not in a
+        # static role vocabulary (for example a vendor-specific field name).
+        score += sum(
+            2
+            for token in re.findall(r"[A-Za-z][A-Za-z0-9_]{2,}", request)
+            if token.casefold() in searchable
+        )
+        if str(card.get("classification") or "").casefold() == "test":
+            score += 1
+        ranked.append((score, index, card))
+    ranked.sort(key=lambda item: (-item[0], item[1]))
+    return [card for _score, _index, card in ranked[:limit]]
 
 
 def _salvage_truncated_json_array(content: str) -> list[Any]:
@@ -9892,6 +10075,14 @@ def _read_json_file(path: Path, default: Any | None = None) -> Any:
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {} if default is None else default
+
+
+def _read_text_file(path: Path) -> str:
+    """Read optional diagnostic output without making audit recovery fatal."""
+    try:
+        return path.read_text(encoding="utf-8") if path.is_file() else ""
+    except OSError:
+        return ""
 
 
 def _write_text(path: Path, text: str) -> None:
