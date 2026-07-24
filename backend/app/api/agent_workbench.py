@@ -640,6 +640,13 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
         ]
     execution_metadata = _task_run_ui_workflow_execution_metadata(workflow)
     status = _task_run_ui_status(execution=execution, nodes=nodes)
+    live_readiness_failures = _task_run_ui_live_readiness_failures(task_root)
+    live_readiness_actions = _task_run_ui_live_readiness_actions(task_root)
+    # A preflight failure intentionally has no step result.  It must still
+    # become the primary run state; otherwise the cockpit misleadingly keeps
+    # the run in its queued layout and hides the actionable failure panel.
+    if live_readiness_failures and status["status"] not in {"cancelled", "completed"}:
+        status = {"status": "failed", "label": "运行失败"}
     failed_node = (
         None
         if status["status"] == "cancelled"
@@ -649,7 +656,6 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
     waiting_node = next((node for node in nodes if node.get("status_label") == "等待运行"), None)
     current_node = failed_node or running_node or waiting_node or (nodes[-1] if nodes else {})
     failure_reasons = _task_run_ui_failure_reasons(failed_node) if failed_node else []
-    live_readiness_failures = _task_run_ui_live_readiness_failures(task_root)
     if status["status"] == "failed" and not failed_node:
         failure_reasons = _dedupe_strings([
             *live_readiness_failures,
@@ -695,6 +701,18 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
             "reasons": failure_reasons,
             "can_retry": bool(failed_node),
             "preflight_blocked": bool(live_readiness_failures),
+            "preflight_kind": (
+                "independent_quality_audit"
+                if any(
+                    str(item.get("provider") or "") == "independent-quality-audit"
+                    and item.get("success") is not True
+                    for item in (_read_json(task_root / "provider_live_readiness.json") or {}).get("checks") or []
+                    if isinstance(item, dict)
+                )
+                else "agent_runtime"
+                if live_readiness_failures
+                else ""
+            ),
             "user_goal_stage": str((failed_node or {}).get("label") or ""),
             "preserved_node_ids": [str(node.get("id") or "") for node in preserved_nodes],
             "preserved_node_labels": [str(node.get("label") or "") for node in preserved_nodes],
@@ -705,7 +723,9 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
             "failure_class": failure_class,
             "failure_kind": str(failure_recovery.get("failure_kind") or ""),
             "recommended_action": (
-                live_readiness_failures[0]
+                live_readiness_actions[0]
+                if live_readiness_actions
+                else live_readiness_failures[0]
                 if live_readiness_failures
                 else
                 recovery_actions[0]
@@ -1390,6 +1410,17 @@ def _task_run_ui_live_readiness_failures(task_root: Path) -> list[str]:
         if message:
             failures.append(message)
     return _dedupe_strings(failures)
+
+
+def _task_run_ui_live_readiness_actions(task_root: Path) -> list[str]:
+    payload = _read_json(task_root / "provider_live_readiness.json")
+    if not isinstance(payload, dict):
+        return []
+    return _dedupe_strings(
+        str(item.get("recommended_action") or "").strip()
+        for item in payload.get("checks") or []
+        if isinstance(item, dict) and item.get("success") is not True
+    )
 
 
 def _task_run_ui_reason_label(reason: str) -> str:

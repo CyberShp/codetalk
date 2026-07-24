@@ -1124,6 +1124,7 @@ export interface WorkbenchRunUiSummary {
     reasons?: string[];
     can_retry?: boolean;
     preflight_blocked?: boolean;
+    preflight_kind?: string;
     user_goal_stage?: string;
     preserved_node_ids?: string[];
     preserved_node_labels?: string[];
