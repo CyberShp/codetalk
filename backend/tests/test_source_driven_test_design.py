@@ -347,6 +347,29 @@ def test_judge_blocks_unknown_risks_and_unresolved_evidence_references():
     assert "unresolved_evidence_ref:FAKE-EVIDENCE" in issues
 
 
+def test_judge_keeps_explicit_coverage_verification_work_as_warning():
+    from app.services.source_driven_test_design import build_judge_report
+
+    artifacts = _ready_judge_artifacts()
+    artifacts["branch_disposition.json"]["items"][0]["disposition"] = "need_verify"
+
+    report = build_judge_report(
+        artifacts=artifacts,
+        fact_verification={
+            "status": "passed",
+            "total": 1,
+            "verified": 1,
+            "behavior_validator_independent": True,
+        },
+    )
+
+    assert report["ready"] is True
+    assert report["status"] == "READY_WITH_WARNINGS"
+    coverage = report["axes"]["coverage_disposition"]
+    assert coverage["status"] == "warning"
+    assert "branch_disposition.json:FLOW-COND-001:need_verify" in coverage["warnings"]
+
+
 def test_traceability_resolves_line_qualified_and_display_evidence_references():
     from app.services.source_driven_test_design import build_source_driven_test_design
 

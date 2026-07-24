@@ -3500,7 +3500,10 @@ def _apply_source_driven_judge_to_quality_audit(
         }
     result = dict(audit or {})
     axes = dict(result.get("quality_axes") or {})
-    judge_ready = bool(judge.get("ready")) and str(judge.get("status") or "") == "READY"
+    judge_ready = bool(judge.get("ready")) and str(judge.get("status") or "") in {
+        "READY",
+        "READY_WITH_WARNINGS",
+    }
     judge_axes = dict(judge.get("axes") or {})
     structure = dict(judge_axes.get("structure") or {})
     if structure:
@@ -3545,6 +3548,7 @@ def _apply_source_driven_judge_to_quality_audit(
         ),
         "judge_status": str(judge.get("status") or "BLOCKED"),
         "blocking_reasons": list(coverage.get("issues") or []),
+        "warnings": list(coverage.get("warnings") or []),
         "axes": judge_axes,
     }
     result["quality_axes"] = axes

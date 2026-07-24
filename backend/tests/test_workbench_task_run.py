@@ -420,6 +420,48 @@ def test_source_driven_judge_blocks_delivery_and_never_reports_empty_facts_as_10
     assert result["issues"][-1]["code"] == "source_driven_coverage_judge_blocked"
 
 
+def test_source_driven_judge_preserves_deliverable_when_only_coverage_work_is_pending(
+    tmp_path,
+):
+    from app.services.workbench_workflow_runner import (
+        _apply_source_driven_judge_to_quality_audit,
+    )
+
+    (tmp_path / "judge_report.json").write_text(
+        json.dumps(
+            {
+                "status": "READY_WITH_WARNINGS",
+                "ready": True,
+                "blocking_reasons": [],
+                "warnings": ["branch_disposition.json:FLOW-COND-001:need_verify"],
+                "axes": {
+                    "structure": {"status": "passed", "score": 100, "issues": []},
+                    "facts": {"status": "passed", "score": 100, "total": 1, "verified": 1},
+                    "executability": {"status": "passed", "score": 100, "issues": []},
+                    "coverage_disposition": {
+                        "status": "warning",
+                        "score": 98,
+                        "issues": [],
+                        "warnings": ["branch_disposition.json:FLOW-COND-001:need_verify"],
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = _apply_source_driven_judge_to_quality_audit(
+        audit={"status": "deliverable", "deliverable": True, "issues": [], "quality_axes": {}},
+        artifact_dir=tmp_path,
+    )
+
+    assert result["deliverable"] is True
+    assert result["quality_axes"]["coverage_judge"]["status"] == "warning"
+    assert result["quality_axes"]["coverage_judge"]["warnings"] == [
+        "branch_disposition.json:FLOW-COND-001:need_verify"
+    ]
+
+
 def test_claim_evidence_ledger_blocks_delivery_with_a_repairable_issue():
     from app.services.workbench_workflow_runner import (
         _apply_claim_evidence_ledger_to_quality_audit,

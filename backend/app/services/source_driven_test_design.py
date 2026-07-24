@@ -285,15 +285,22 @@ def build_judge_report(
         "resource_lifecycle_disposition.json",
     )
     undisposed: list[str] = []
-    unresolved: list[str] = []
+    blocked_dispositions: list[str] = []
+    pending_verification: list[str] = []
     for name in disposition_artifacts:
         payload = artifacts.get(name)
         rows = payload.get("items") if isinstance(payload, dict) else []
         for row in rows or []:
             if not isinstance(row, dict) or str(row.get("disposition") or "") not in ALLOWED_DISPOSITIONS:
                 undisposed.append(f"{name}:{row.get('id') if isinstance(row, dict) else '?'}")
-            elif str(row.get("disposition") or "") in {"blocked", "need_verify"}:
-                unresolved.append(f"{name}:{row.get('id') or '?'}:{row.get('disposition')}")
+            elif str(row.get("disposition") or "") == "blocked":
+                blocked_dispositions.append(
+                    f"{name}:{row.get('id') or '?'}:blocked"
+                )
+            elif str(row.get("disposition") or "") == "need_verify":
+                pending_verification.append(
+                    f"{name}:{row.get('id') or '?'}:need_verify"
+                )
 
     applicability = artifacts.get("model_applicability.json")
     applicability_rows = applicability.get("items") if isinstance(applicability, dict) else []
@@ -313,6 +320,7 @@ def build_judge_report(
         if isinstance(row, dict)
     }
     incomplete_sources = []
+    pending_sources = []
     for model in _SCENARIO_SOURCE_IDS:
         applicability_row = applicability_by_id.get(model)
         source_row = scenario_source_by_id.get(model)
@@ -320,7 +328,9 @@ def build_judge_report(
             incomplete_sources.append(f"scenario_source:{model}:missing")
             continue
         if bool((applicability_row or {}).get("applicable")) and str(source_row.get("status") or "") != "expanded":
-            incomplete_sources.append(f"scenario_source:{model}:{source_row.get('status') or 'empty'}")
+            status = str(source_row.get("status") or "empty")
+            target = f"scenario_source:{model}:{status}"
+            (pending_sources if status == "need_verify" else incomplete_sources).append(target)
 
     facts = dict(fact_verification or {})
     fact_total = max(0, int(facts.get("total") or 0))
@@ -351,13 +361,14 @@ def build_judge_report(
     ]
     coverage_issues = [
         *undisposed,
-        *unresolved,
+        *blocked_dispositions,
         *incomplete_sources,
         *orphan_cases,
         *high_risk_unmapped,
         *unknown_risks,
         *unresolved_evidence,
     ]
+    coverage_warnings = [*pending_verification, *pending_sources]
     executable_rows = artifacts.get("blackbox_control_observation.json")
     executable_rows = executable_rows.get("items") if isinstance(executable_rows, dict) else []
     unexecutable = [
@@ -387,13 +398,34 @@ def build_judge_report(
             "issues": unexecutable,
         },
         "coverage_disposition": {
-            "status": "blocked" if coverage_issues else "passed",
-            "score": max(0, 100 - 10 * len(coverage_issues)),
+            "status": (
+                "blocked"
+                if coverage_issues
+                else "warning"
+                if coverage_warnings
+                else "passed"
+            ),
+            "score": (
+                max(0, 100 - 10 * len(coverage_issues))
+                if coverage_issues
+                else max(80, 100 - 2 * len(coverage_warnings))
+                if coverage_warnings
+                else 100
+            ),
             "issues": coverage_issues,
+            "warnings": coverage_warnings,
         },
     }
-    ready = all(axis["status"] == "passed" for axis in axes.values())
-    status = "READY" if ready else "BLOCKED" if any(axis["status"] in {"blocked", "not_checked"} for axis in axes.values()) else "PARTIAL"
+    ready = all(axis["status"] in {"passed", "warning"} for axis in axes.values())
+    status = (
+        "READY"
+        if ready and not coverage_warnings
+        else "READY_WITH_WARNINGS"
+        if ready
+        else "BLOCKED"
+        if any(axis["status"] in {"blocked", "not_checked"} for axis in axes.values())
+        else "PARTIAL"
+    )
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": "coverage_judge",
@@ -403,8 +435,9 @@ def build_judge_report(
         "blocking_reasons": [
             f"{name}:{axis['status']}"
             for name, axis in axes.items()
-            if axis["status"] != "passed"
+            if axis["status"] in {"blocked", "not_checked"}
         ],
+        "warnings": coverage_warnings,
         "policy": {
             "facts_zero_is_ready": False,
             "silent_omission_allowed": False,
