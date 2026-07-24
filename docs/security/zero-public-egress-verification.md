@@ -54,7 +54,30 @@ profile contains no `network-outbound` rule.
 This validates the deny-all subprocess control only. It is not yet the full AC-SEC
 evidence: CodeTalk must still enforce approved private endpoints for HTTP/SDK clients,
 record `network_egress_blocked` events, capture traffic for the two SPDK workflows, and
- prove deployment-approved model/MCP hostnames remain usable under the production approved-purpose
- egress policy. Those hosts may use non-RFC1918 addressing; approval is by hostname or
+prove deployment-approved model/MCP hostnames remain usable under the production approved-purpose
+egress policy. Those hosts may use non-RFC1918 addressing; approval is by hostname or
 explicit CIDR. An approved model API is allowed only through the adapter's declared API routes;
 telemetry, tracing, updates, package registries and hosted MCP remain hard-denied.
+
+## Deployment capture procedure
+
+`scripts/capture-intranet-egress.sh` is the required evidence collector for
+this remaining deployment gate. An administrator starts it before a tester
+uses the browser to run one approved workflow, then preserves the generated
+pcap and manifest under `/Volumes/Media/codetalk-e2e-artifacts/`.
+
+The capture records DNS and HTTPS metadata only; it does not alter the
+firewall, proxy, DNS, or CodeTalk settings. Review must correlate it with the
+service-account process list and egress-gateway log, and confirm:
+
+1. the sole permitted provider hostname and narrow API route correspond to the
+   user-triggered run ID;
+2. no SDK trace, telemetry, update, package registry, hosted MCP, or Agent
+   bypass destination appears; and
+3. a separately captured denied Agent/public-DNS probe has no successful
+   outbound connection.
+
+The current developer account cannot open macOS `/dev/bpf*` and has no
+non-interactive administrator credential, so it cannot fabricate this
+deployment-owned evidence. That limitation remains a release blocker until an
+authorized deployment capture is attached.
