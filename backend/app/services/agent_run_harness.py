@@ -2060,6 +2060,11 @@ def _explicit_agent_runtime_invocation_candidate(
         args = _codex_exec_json_args(base_args, prompt)
         if artifact_dir:
             args = _append_option_value_once(args, "--add-dir", artifact_dir)
+            # Run Codex from the writable task-artifact root.  The repository
+            # remains an explicit read-only root through CODETALK_REPO_PATH and
+            # the outer sandbox, so project-level instructions cannot lure the
+            # Agent into creating temporary generators inside user source.
+            args = _append_option_value_once(args, "--cd", artifact_dir)
         return (
             [executable, *args],
             prompt.encode("utf-8"),

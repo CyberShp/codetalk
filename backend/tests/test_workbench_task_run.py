@@ -969,6 +969,8 @@ def test_workbench_runner_auto_timeout_uses_agent_runtime_limit(tmp_path, monkey
         "--json",
         "--add-dir",
         expected_artifact_dir,
+        "--cd",
+        expected_artifact_dir,
     ]
     argv = json.loads(
         Path(
@@ -982,6 +984,8 @@ def test_workbench_runner_auto_timeout_uses_agent_runtime_limit(tmp_path, monkey
         "exec",
         "--json",
         "--add-dir",
+        expected_artifact_dir,
+        "--cd",
         expected_artifact_dir,
     ]
     stdin_payload = Path(
