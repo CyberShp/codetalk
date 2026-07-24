@@ -1877,6 +1877,10 @@ async def test_workbench_deployment_probe_can_run_task_contract_probe(
     tmp_path,
     monkeypatch,
 ):
+    # This test exercises the local scripted Artifact Contract probe, not the
+    # intranet external-Agent policy. Real intranet Agent tests must retain the
+    # OS-sandbox fail-closed default.
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
     script = tmp_path / "deployment_probe_agent.py"
     script.write_text(
         "\n".join([
@@ -1995,6 +1999,7 @@ async def test_workbench_system_audit_uses_latest_deployment_task_probe(
     tmp_path,
     monkeypatch,
 ):
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
     script = tmp_path / "audit_probe_agent.py"
     script.write_text(
         "\n".join([
@@ -2099,6 +2104,7 @@ async def test_workbench_provider_task_probe_executes_configured_provider_contra
     tmp_path,
     monkeypatch,
 ):
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
     script = tmp_path / "probe_agent.py"
     script.write_text(
         "\n".join([
@@ -2131,6 +2137,21 @@ async def test_workbench_provider_task_probe_executes_configured_provider_contra
                 "prompt_transport": "stdin",
             }
         ],
+    )
+
+    async def fake_probe(provider, repo_path=None):
+        return {
+            "provider": provider,
+            "healthy": True,
+            "status": "ok",
+            "message": "startup_probe_ok",
+            "health": {"status": "available"},
+        }
+
+    monkeypatch.setattr(
+        "app.api.agent_workbench.probe_external_agent_startup",
+        fake_probe,
+        raising=False,
     )
 
     resp = await workbench_client.post(

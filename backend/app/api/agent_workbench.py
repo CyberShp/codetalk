@@ -2002,6 +2002,10 @@ async def run_workbench_deployment_probe(payload: DeploymentProbeRequest) -> dic
                 provider,
                 repo_path=payload.repo_path,
                 timeout_sec=payload.timeout_sec,
+                startup_probe=next(
+                    (item for item in results if str(item.get("provider") or "") == provider),
+                    None,
+                ),
             )
             for provider in provider_ids
         ])
@@ -2083,10 +2087,12 @@ async def run_workbench_provider_task_probe(payload: ProviderTaskProbeRequest) -
     if not provider:
         raise HTTPException(status_code=422, detail="provider is required")
     try:
+        startup_probe = await _run_deployment_probe_provider(provider, payload.repo_path)
         return _run_provider_task_probe_core(
             provider=provider,
             repo_path=payload.repo_path,
             timeout_sec=payload.timeout_sec,
+            startup_probe=startup_probe,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
@@ -4520,12 +4526,14 @@ async def _run_deployment_task_probe_provider(
     *,
     repo_path: str,
     timeout_sec: int,
+    startup_probe: dict[str, Any] | None,
 ) -> dict[str, Any]:
     try:
         return _run_provider_task_probe_core(
             provider=provider,
             repo_path=repo_path,
             timeout_sec=timeout_sec,
+            startup_probe=startup_probe,
         )
     except Exception as exc:
         return {
@@ -4545,6 +4553,7 @@ def _run_provider_task_probe_core(
     provider: str,
     repo_path: str,
     timeout_sec: int,
+    startup_probe: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     spec = external_agent_provider_spec(provider)
     if spec is None:
@@ -4570,6 +4579,21 @@ def _run_provider_task_probe_core(
         inputs={
             "analysis_object": "codetalk provider task probe",
             "provider": provider,
+        },
+    )
+    startup = startup_probe if isinstance(startup_probe, dict) else {}
+    _write_json(
+        Path(task_run.artifact_dir) / "provider_live_readiness.json",
+        {
+            "schema_version": "provider-live-readiness-v1",
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+            "checks": [{
+                "provider": provider,
+                "runtime_id": provider,
+                "success": bool(startup.get("healthy")),
+                "message": str(startup.get("message") or "启动探测未返回结果。"),
+            }],
+            "probe_kind": "deployment_task_contract",
         },
     )
     execution = WorkbenchWorkflowRunner(_task_runs_dir()).execute_task_run(
