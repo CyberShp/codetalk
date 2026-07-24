@@ -108,7 +108,9 @@ test("runs the AI thread to frozen Task, cockpit, artifact, and follow-up loop",
   await expect(page.getByRole("textbox", { name: "result 展示名称" })).toHaveValue("测试分析交付件");
   await expect(page.getByRole("textbox", { name: "result 文件名" })).toHaveValue("result.json");
   await page.getByRole("button", { name: "保存并继续" }).click();
-  await expect(page.getByText("任务覆盖").locator("..")).toContainText("1");
+  await expect(page.getByText("输入", { exact: true }).locator("..")).toContainText("1/1");
+  await expect(page.getByText("执行节点", { exact: true }).locator("..")).toContainText("2");
+  await expect(page.getByText("输出", { exact: true }).locator("..")).toContainText("1");
 
   const saveAndRun = page.getByRole("button", { name: "保存并运行" });
   await saveAndRun.hover();
