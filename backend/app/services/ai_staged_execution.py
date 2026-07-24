@@ -5915,6 +5915,40 @@ def _normalize_black_box_source_anchor_claims(rendered: Any) -> Any:
     return rendered
 
 
+def _normalize_sfmea_source_anchor_claims(rendered: Any) -> Any:
+    """Route literal SFMEA source facts through deterministic L1 validation.
+
+    A technical claim which is exactly one already-cited source line is a
+    provenance anchor, not an open-world behaviour assertion.  The black-box
+    artifact has had this normalization since V3; applying the same narrow
+    rule to SFMEA avoids sending a literal such as ``spdk_sock_close(...)`` to
+    the independent behaviour auditor merely because a provider labelled it
+    ``source``.  Claims with any added interpretation deliberately remain on
+    the L2 path.
+    """
+    if not isinstance(rendered, list):
+        return rendered
+    for row in rendered:
+        if not isinstance(row, dict):
+            continue
+        claims = row.get("technical_claims")
+        if not isinstance(claims, list):
+            continue
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            statement = str(claim.get("statement") or "").strip()
+            quotes = {
+                str(evidence.get("quote") or "").strip()
+                for evidence in claim.get("evidence") or []
+                if isinstance(evidence, dict)
+                and str(evidence.get("quote") or "").strip()
+            }
+            if statement and statement in quotes:
+                claim["type"] = "source_anchor"
+    return rendered
+
+
 def _source_risk_candidate_for_sfmea_row(
     row: dict[str, Any],
     *,
@@ -6289,7 +6323,7 @@ def _normalize_sfmea_risk_contract(
                 "验证: 注入对应异常条件，确认协议响应、连接状态和资源指标一致。"
             )
             fields.append(f"$[{index}].mitigation:production_action")
-    return normalized, fields
+    return _normalize_sfmea_source_anchor_claims(normalized), fields
 
 
 def _normalize_black_box_delivery_contract(

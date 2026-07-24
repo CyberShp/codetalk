@@ -24,6 +24,7 @@ from app.services.ai_staged_execution import (
     _normalize_black_box_delivery_contract,
     _normalize_black_box_source_anchor_claims,
     _normalize_black_box_oracle_contract,
+    _normalize_sfmea_source_anchor_claims,
     _normalize_sfmea_risk_contract,
     _apply_regular_stage_output_limits,
     _apply_quality_feedback_field_patches,
@@ -2297,6 +2298,41 @@ def test_black_box_claim_is_normalized_to_verified_source_anchor():
     claim = normalized[0]["technical_claims"][0]
     assert claim["type"] == "source_anchor"
     assert claim["statement"] == "c = libnvme_lookup_ctrl(s, &f.ctrl_params, NULL);"
+
+
+def test_sfmea_literal_source_claim_is_normalized_to_l1_source_anchor():
+    rows = [{
+        "sfmea_id": "SFMEA-12",
+        "technical_claims": [{
+            "claim_id": "TC-12",
+            "type": "source",
+            "statement": "spdk_sock_close(&conn->sock);",
+            "evidence": [{
+                "evidence_id": "SRC-06:L631",
+                "path": "lib/iscsi/conn.c",
+                "lines": "L631",
+                "quote": "spdk_sock_close(&conn->sock);",
+            }],
+        }],
+    }]
+
+    normalized = _normalize_sfmea_source_anchor_claims(rows)
+
+    assert normalized[0]["technical_claims"][0]["type"] == "source_anchor"
+
+
+def test_sfmea_interpreted_source_claim_remains_an_l2_behavior_claim():
+    rows = [{
+        "technical_claims": [{
+            "type": "source",
+            "statement": "socket close proves all transfer tasks are safe",
+            "evidence": [{"quote": "spdk_sock_close(&conn->sock);"}],
+        }],
+    }]
+
+    normalized = _normalize_sfmea_source_anchor_claims(rows)
+
+    assert normalized[0]["technical_claims"][0]["type"] == "source"
 
 
 def test_normalize_black_box_delivery_contract_replaces_source_mapping_and_unit_fallback():
