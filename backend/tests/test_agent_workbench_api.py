@@ -2072,7 +2072,9 @@ async def test_workbench_system_audit_uses_latest_deployment_task_probe(
 async def test_workbench_task_smoke_e2e_runs_prepare_execute_acceptance(
     workbench_client,
     tmp_path,
+    monkeypatch,
 ):
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
     resp = await workbench_client.post(
         "/api/workbench/task-runs/smoke-e2e",
         json={"repo_path": str(tmp_path)},

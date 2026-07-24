@@ -3381,6 +3381,20 @@ async def run_task_smoke_e2e(payload: SmokeE2ERequest) -> dict[str, Any]:
             repo_path=str(repo),
             inputs={"analysis_object": "codetalk smoke e2e"},
         )
+        _write_json(
+            Path(task_run.artifact_dir) / "provider_live_readiness.json",
+            {
+                "schema_version": "provider-live-readiness-v1",
+                "checked_at": datetime.now(timezone.utc).isoformat(),
+                "checks": [{
+                    "provider": provider_id,
+                    "runtime_id": provider_id,
+                    "success": True,
+                    "message": "CodeTalk smoke Agent is materialized locally for this controlled task-contract check.",
+                }],
+                "probe_kind": "controlled_smoke_contract",
+            },
+        )
         execution = WorkbenchWorkflowRunner(_task_runs_dir()).execute_task_run(
             task_run.task_run_id,
             timeout_sec=payload.timeout_sec,
