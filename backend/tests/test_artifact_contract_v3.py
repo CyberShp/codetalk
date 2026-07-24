@@ -280,6 +280,51 @@ def test_external_agent_legacy_evidence_id_is_rebound_to_canonical_card_by_file(
     assert evidence["quote"] == "return SPDK_SUCCESS;"
 
 
+def test_external_agent_existing_claim_is_rebound_to_canonical_evidence(tmp_path):
+    import json
+
+    from app.services.artifact_contract_v3 import enrich_external_agent_claim_bindings
+
+    canonical_card = {
+        "evidence_id": "SRC-01", "file_path": "lib/iscsi/login.c",
+        "start_line": 7, "end_line": 9, "symbols": ["login"],
+        "excerpt": "if (invalid) { return SPDK_ERR; }",
+    }
+    (tmp_path / "evidence_cards.json").write_text(
+        json.dumps([canonical_card]), encoding="utf-8"
+    )
+    (tmp_path / "sfmea.json").write_text(json.dumps([{
+        "sfmea_id": "RISK-1",
+        "source_evidence": ["AGENT-LOGIN:7-9"],
+        "technical_claims": [{
+            "claim_id": "CLAIM-1",
+            "type": "implementation_fact",
+            "statement": "登录路径会拒绝非法输入。",
+            "evidence": [{
+                "evidence_id": "AGENT-LOGIN",
+                "path": "lib/iscsi/login.c",
+                "lines": "7-9",
+                "symbol": "login",
+                "quote": "invented quote",
+            }],
+        }],
+    }]), encoding="utf-8")
+    (tmp_path / "black_box_cases.json").write_text("[]", encoding="utf-8")
+
+    assert enrich_external_agent_claim_bindings(tmp_path) == {"sfmea.json": 1}
+
+    claim = json.loads((tmp_path / "sfmea.json").read_text())[0]["technical_claims"][0]
+    assert claim["statement"] == canonical_card["excerpt"]
+    assert claim["semantic_statement"] == "登录路径会拒绝非法输入。"
+    assert claim["evidence"] == [{
+        "evidence_id": "SRC-01",
+        "path": "lib/iscsi/login.c",
+        "lines": "L7-L9",
+        "symbol": "login",
+        "quote": canonical_card["excerpt"],
+    }]
+
+
 def test_stage_progress_only_marks_artifacts_that_were_really_materialized(tmp_path):
     from app.services.test_activity_stage_specs import (
         project_test_activity_stage_progress,

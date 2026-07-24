@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -166,11 +167,9 @@ def enrich_external_agent_claim_bindings(artifact_dir: str | Path) -> dict[str, 
         rows = _read_json_list(path)
         count = 0
         for index, row in enumerate(rows, start=1):
-            if row.get("technical_claims"):
-                continue
             references = row.get(evidence_key) or []
             if not isinstance(references, list):
-                continue
+                references = []
             card = next((
                 by_id.get(str(value).split(":", 1)[0].strip())
                 for value in references
@@ -179,6 +178,26 @@ def enrich_external_agent_claim_bindings(artifact_dir: str | Path) -> dict[str, 
             if not isinstance(card, dict):
                 declared_path = str(row.get("file_path") or row.get("path") or "").strip()
                 card = by_path.get(declared_path)
+            rebound = _rebind_external_agent_claims(
+                row=row,
+                cards=cards,
+                by_id=by_id,
+                fallback_card=card if isinstance(card, dict) else None,
+            )
+            if rebound:
+                canonical_ids = [
+                    str(ref.get("evidence_id") or "")
+                    for claim in row.get("technical_claims") or []
+                    if isinstance(claim, dict)
+                    for ref in claim.get("evidence") or []
+                    if isinstance(ref, dict) and str(ref.get("evidence_id") or "")
+                ]
+                for evidence_id in canonical_ids:
+                    if evidence_id not in references:
+                        references.append(evidence_id)
+                row[evidence_key] = references
+                count += 1
+                continue
             if not isinstance(card, dict):
                 continue
             excerpt = str(card.get("excerpt") or "").strip()
@@ -208,6 +227,93 @@ def enrich_external_agent_claim_bindings(artifact_dir: str | Path) -> dict[str, 
             _write_json(path, rows)
             changed[artifact] = count
     return changed
+
+
+def _rebind_external_agent_claims(
+    *,
+    row: dict[str, Any],
+    cards: list[dict[str, Any]],
+    by_id: dict[str, dict[str, Any]],
+    fallback_card: dict[str, Any] | None,
+) -> bool:
+    """Replace Agent-authored evidence metadata with a local verified card.
+
+    Agent output is allowed to carry a useful human explanation, but it cannot
+    become a source of truth for IDs, excerpts, symbols, or line ranges.  The
+    L1 claim is therefore normalized to the exact deterministic card excerpt;
+    the original semantic explanation remains available as ``semantic_statement``.
+    """
+    claims = row.get("technical_claims")
+    if not isinstance(claims, list) or not claims:
+        return False
+    changed = False
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        normalized: list[dict[str, Any]] = []
+        for reference in claim.get("evidence") or []:
+            if not isinstance(reference, dict):
+                continue
+            card = _canonical_card_for_reference(
+                reference=reference,
+                cards=cards,
+                by_id=by_id,
+                fallback_card=fallback_card,
+            )
+            if card is None:
+                normalized.append(reference)
+                continue
+            excerpt = str(card.get("excerpt") or "").strip()
+            file_path = str(card.get("file_path") or card.get("path") or "").strip()
+            evidence_id = str(card.get("evidence_id") or "").strip()
+            if not excerpt or not file_path or not evidence_id:
+                normalized.append(reference)
+                continue
+            symbol = next((str(value) for value in card.get("symbols") or [] if str(value)), "")
+            normalized.append({
+                "evidence_id": evidence_id,
+                "path": file_path,
+                "lines": f"L{int(card.get('start_line') or 0)}-L{int(card.get('end_line') or 0)}",
+                "symbol": symbol,
+                "quote": excerpt,
+            })
+            if str(claim.get("statement") or "") != excerpt:
+                claim.setdefault("semantic_statement", str(claim.get("statement") or ""))
+                claim["statement"] = excerpt
+            changed = True
+        if normalized:
+            claim["evidence"] = normalized
+    return changed
+
+
+def _canonical_card_for_reference(
+    *,
+    reference: dict[str, Any],
+    cards: list[dict[str, Any]],
+    by_id: dict[str, dict[str, Any]],
+    fallback_card: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    evidence_id = str(reference.get("evidence_id") or "").split(":", 1)[0].strip()
+    if evidence_id and evidence_id in by_id:
+        return by_id[evidence_id]
+    expected_path = str(reference.get("path") or "").strip()
+    if expected_path:
+        start, end = _reference_line_range(reference.get("lines"))
+        for card in cards:
+            if str(card.get("file_path") or card.get("path") or "") != expected_path:
+                continue
+            card_start = int(card.get("start_line") or 0)
+            card_end = int(card.get("end_line") or 0)
+            if not start or (card_start <= start and end <= card_end):
+                return card
+    return fallback_card
+
+
+def _reference_line_range(value: Any) -> tuple[int, int]:
+    numbers = [int(item) for item in re.findall(r"\d+", str(value or ""))]
+    if not numbers:
+        return 0, 0
+    return numbers[0], numbers[-1]
 
 
 def validate_artifact_contract_v3_outputs(

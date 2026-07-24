@@ -41,6 +41,63 @@ def test_external_agent_finalization_restores_task_owned_source_evidence_pack(tm
     assert (tmp_path / "stages" / "source_analysis" / "source_evidence_pack.json").is_file()
 
 
+def test_external_agent_claims_rebind_after_task_owned_source_pack_replaces_agent_cards(tmp_path):
+    from app.services.artifact_contract_v3 import (
+        enrich_external_agent_claim_bindings,
+        materialize_claim_evidence_ledger,
+    )
+    from app.services.workbench_workflow_runner import (
+        _materialize_external_agent_source_evidence_pack,
+    )
+
+    context = {
+        "repo_path": "/repo",
+        "repo_revision": "abc123",
+        "analysis_target": "iSCSI login",
+        "files": [{
+            "file_path": "lib/iscsi/login.c",
+            "classification": "source",
+            "start_line": 7,
+            "end_line": 9,
+            "excerpt": "if (invalid) { return SPDK_ERR; }",
+            "symbols": ["login"],
+            "sha256": "a" * 64,
+        }],
+    }
+    task_run = SimpleNamespace(
+        artifact_dir=str(tmp_path), task_bundle={"local_source_context": context}
+    )
+    agent_dir = tmp_path / "agent_runs" / "analyze"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "sfmea.json").write_text(json.dumps([{
+        "sfmea_id": "R-01",
+        "technical_claims": [{
+            "claim_id": "CL-R01",
+            "type": "implementation_fact",
+            "statement": "登录路径会拒绝非法输入。",
+            "evidence": [{
+                "evidence_id": "EV-LOGIN",
+                "path": "lib/iscsi/login.c",
+                "lines": "7-9",
+                "symbol": "login",
+                "quote": "agent paraphrase",
+            }],
+        }],
+    }]), encoding="utf-8")
+    (agent_dir / "black_box_cases.json").write_text("[]", encoding="utf-8")
+
+    assert _materialize_external_agent_source_evidence_pack(task_run) is True
+    assert enrich_external_agent_claim_bindings(tmp_path) == {"sfmea.json": 1}
+
+    ledger = materialize_claim_evidence_ledger(tmp_path)
+    assert ledger["summary"] == {
+        "total": 1,
+        "verified": 1,
+        "contradicted": 0,
+        "insufficient": 0,
+    }
+
+
 def test_source_driven_judge_blocks_delivery_and_never_reports_empty_facts_as_100(
     tmp_path,
 ):
