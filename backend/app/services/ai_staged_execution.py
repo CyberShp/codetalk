@@ -2305,6 +2305,21 @@ def _existing_quality_stage_result(
     output_path = artifact_dir / artifact
     if not output_path.is_file():
         return None
+    produced_artifacts = [
+        str(value).strip()
+        for value in stage.get("produces_artifacts") or []
+        if str(value).strip()
+    ]
+    # A source-driven stage has one anchor but frequently materializes a
+    # ledger of companion files.  Reusing only the anchor makes downstream
+    # quality look at a half-stage and is indistinguishable from skipped work.
+    # Let the deterministic producer rebuild the complete set instead.
+    if produced_artifacts and any(
+        not (artifact_dir / produced).is_file()
+        or (artifact_dir / produced).stat().st_size == 0
+        for produced in produced_artifacts
+    ):
+        return None
     if str(stage.get("id") or "") == "source_analysis":
         canonical_pack = _read_json_file(stage_dir / "source_evidence_pack.json")
         if not _source_pack_has_evidence(canonical_pack):

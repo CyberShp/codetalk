@@ -39,6 +39,7 @@ from app.services.ai_staged_execution import (
     _json_array_continuation_prompt,
     _merge_json_array_patch,
     _missing_quality_repair_row_ids,
+    _existing_quality_stage_result,
     _quality_repair_row_ids,
     _quality_repair_may_reassign_black_box_dimensions,
     _quality_repair_prompt_seed,
@@ -812,6 +813,24 @@ def test_deep_profile_requires_governed_source_driven_stage_chain_for_basic_repo
     assert stages["sfmea"]["support"] is True
     assert stages["black_box_cases"]["support"] is True
     assert stages["coverage_judge"]["support"] is True
+
+
+def test_quality_reuse_rejects_partial_multi_artifact_stage(tmp_path):
+    artifact = tmp_path / "entrypoints.json"
+    artifact.write_text("{}", encoding="utf-8")
+
+    reused = _existing_quality_stage_result(
+        plan={"quality_retry_feedback": {"issues": []}},
+        artifact_dir=tmp_path,
+        stage_dir=tmp_path / "stages" / "breadth_inventory",
+        stage={
+            "id": "breadth_inventory",
+            "artifact": "entrypoints.json",
+            "produces_artifacts": ["entrypoints.json", "flows.json"],
+        },
+    )
+
+    assert reused is None
 
 
 @pytest.mark.asyncio
