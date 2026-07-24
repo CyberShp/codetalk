@@ -10,6 +10,7 @@ import {
   Position,
   ReactFlow,
   ReactFlowProvider,
+  SelectionMode,
   useEdgesState,
   useNodesState,
   useReactFlow,
@@ -72,6 +73,7 @@ function WorkflowCanvasSurface({ state, dispatch, registry, onSelectionChange }:
   const nodeTypes = useMemo(() => ({ workflowNode: WorkflowNodeCard }), []);
   const edgeTypes = useMemo(() => ({ workflowEdge: WorkflowEdge }), []);
   const edgeSequence = useRef(0);
+  const allocatedNodesRef = useRef<WorkflowGraphNode[]>(state.present.nodes);
   const { screenToFlowPosition, fitView } = useReactFlow<WorkflowFlowNode, WorkflowFlowEdge>();
   const [connectionError, setConnectionError] = useState("");
 
@@ -111,18 +113,26 @@ function WorkflowCanvasSurface({ state, dispatch, registry, onSelectionChange }:
     setEdges(flow.edges);
   }, [flow, setEdges, setNodes]);
 
+  // Palette double-clicks can arrive before React has committed the first
+  // insertion. Reserve the position synchronously so two quick adds never
+  // stack at the same coordinates and make the lower node unreachable.
+  useEffect(() => {
+    allocatedNodesRef.current = state.present.nodes;
+  }, [state.present.nodes]);
+
   const addNode = useCallback((definition: WorkflowNodeRegistryEntry, position?: { x: number; y: number }) => {
-    const suggestedPosition = position ?? nextAvailableNodePosition(state.present.nodes);
+    const suggestedPosition = position ?? nextAvailableNodePosition(allocatedNodesRef.current);
     const next = createNodeFromRegistry(
       definition,
       suggestedPosition.x,
       suggestedPosition.y,
     );
+    allocatedNodesRef.current = [...allocatedNodesRef.current, next];
     dispatch({ type: "add-node", node: next });
     dispatch({ type: "select-node", nodeId: next.id });
     onSelectionChange?.(next.id);
     window.requestAnimationFrame(() => void fitView({ padding: 0.2, duration: 180 }));
-  }, [dispatch, fitView, onSelectionChange, state.present.nodes]);
+  }, [dispatch, fitView, onSelectionChange]);
 
   const onConnect: OnConnect = useCallback((connection) => {
     const sourcePortId = handlePortId(connection.sourceHandle, "out:");
@@ -280,6 +290,7 @@ function WorkflowCanvasSurface({ state, dispatch, registry, onSelectionChange }:
           }}
           multiSelectionKeyCode={["Meta", "Control"]}
           selectionKeyCode="Shift"
+          selectionMode={SelectionMode.Partial}
           panOnDrag
           panOnScroll
           zoomOnScroll

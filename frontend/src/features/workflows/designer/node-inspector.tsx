@@ -6,6 +6,7 @@ import type {
   WorkflowCapabilities,
   WorkflowGraphNode,
   WorkflowNodeRegistry,
+  WorkflowNodeRegistryEntry,
   WorkflowPortDefinition,
   WorkflowProviderCapability,
 } from "@/lib/types/workflow";
@@ -220,13 +221,69 @@ export function NodeInspector({ node, capabilities, providers, registry, onChang
 
         {node.kind !== "input" && node.kind !== "output" && node.kind !== "agent" && (
           <InspectorSection title="内置步骤">
-            <p className="ct-v2-inspector-note">
-              该节点由 CodeTalk 后端执行。输入和依赖通过画布连线指定，不需要填写 JSON。
-            </p>
+            <p className="ct-v2-inspector-note">输入和依赖通过画布连线指定。以下字段来自后端节点定义，无需填写 JSON。</p>
+            {definition && (
+              <RegistryConfigFields
+                definition={definition}
+                config={config}
+                onChange={updateConfig}
+              />
+            )}
           </InspectorSection>
         )}
       </div>
     </aside>
+  );
+}
+
+type RegistryField = {
+  type?: string;
+  label?: string;
+  minimum?: number;
+  options?: Array<{ value: string; label: string }>;
+};
+
+function RegistryConfigFields({
+  definition,
+  config,
+  onChange,
+}: {
+  definition: WorkflowNodeRegistryEntry;
+  config: WorkflowGraphNode["config"];
+  onChange: (patch: Record<string, unknown>) => void;
+}) {
+  const fields = Object.entries(definition.config_schema)
+    .map(([key, value]) => [key, value as RegistryField] as const)
+    .filter(([key, field]) => key !== "input_ports" && key !== "output_ports" && ["string", "integer", "boolean", "enum"].includes(field.type ?? ""));
+  if (!fields.length) return null;
+  return (
+    <div className="ct-v2-registry-fields">
+      {fields.map(([key, field]) => {
+        const label = field.label ?? key;
+        if (field.type === "boolean") {
+          return <Toggle key={key} label={label} checked={Boolean(config[key])} onChange={(checked) => onChange({ [key]: checked })} />;
+        }
+        if (field.type === "enum") {
+          return (
+            <Field key={key} label={label}>
+              <select value={String(config[key] ?? "")} onChange={(event) => onChange({ [key]: event.target.value })}>
+                {(field.options ?? []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              </select>
+            </Field>
+          );
+        }
+        return (
+          <Field key={key} label={label}>
+            <input
+              type={field.type === "integer" ? "number" : "text"}
+              min={field.minimum}
+              value={String(config[key] ?? "")}
+              onChange={(event) => onChange({ [key]: field.type === "integer" ? Number(event.target.value) : event.target.value })}
+            />
+          </Field>
+        );
+      })}
+    </div>
   );
 }
 

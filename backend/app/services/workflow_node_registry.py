@@ -54,6 +54,22 @@ _PORT_LIST_SCHEMA = {
     },
 }
 
+_BUILTIN_STEP_SCHEMA = {
+    "step_id": {"type": "string", "required": True, "label": "步骤 ID"},
+    "timeout_sec": {"type": "integer", "minimum": 30, "label": "超时（秒）"},
+    "idle_timeout_sec": {"type": "integer", "minimum": 0, "label": "无输出超时（秒）"},
+    "failure_policy": {
+        "type": "enum",
+        "label": "失败策略",
+        "options": [
+            {"value": "stop", "label": "停止工作流"},
+            {"value": "continue_independent", "label": "继续独立分支"},
+        ],
+    },
+    "input_ports": _PORT_LIST_SCHEMA,
+    "output_ports": _PORT_LIST_SCHEMA,
+}
+
 
 _NODE_REGISTRY: tuple[dict[str, Any], ...] = (
     _node(
@@ -148,7 +164,7 @@ _NODE_REGISTRY: tuple[dict[str, Any], ...] = (
             "retry_policy": {"max_attempts": 1, "backoff_seconds": 0},
             "failure_policy": "stop",
         },
-        config_schema={"input_ports": _PORT_LIST_SCHEMA, "output_ports": _PORT_LIST_SCHEMA},
+        config_schema=_BUILTIN_STEP_SCHEMA,
     ),
     _node(
         kind="memory_retrieve",
@@ -165,7 +181,7 @@ _NODE_REGISTRY: tuple[dict[str, Any], ...] = (
             "retry_policy": {"max_attempts": 1, "backoff_seconds": 0},
             "failure_policy": "stop",
         },
-        config_schema={"input_ports": _PORT_LIST_SCHEMA, "output_ports": _PORT_LIST_SCHEMA},
+        config_schema=_BUILTIN_STEP_SCHEMA,
     ),
     _node(
         kind="local_scope_discover",
@@ -182,7 +198,7 @@ _NODE_REGISTRY: tuple[dict[str, Any], ...] = (
             "retry_policy": {"max_attempts": 1, "backoff_seconds": 0},
             "failure_policy": "stop",
         },
-        config_schema={"input_ports": _PORT_LIST_SCHEMA, "output_ports": _PORT_LIST_SCHEMA},
+        config_schema=_BUILTIN_STEP_SCHEMA,
     ),
     _node(
         kind="evidence_validate",
@@ -199,7 +215,7 @@ _NODE_REGISTRY: tuple[dict[str, Any], ...] = (
             "retry_policy": {"max_attempts": 1, "backoff_seconds": 0},
             "failure_policy": "stop",
         },
-        config_schema={"input_ports": _PORT_LIST_SCHEMA, "output_ports": _PORT_LIST_SCHEMA},
+        config_schema=_BUILTIN_STEP_SCHEMA,
     ),
     _node(
         kind="report_render",
@@ -216,7 +232,7 @@ _NODE_REGISTRY: tuple[dict[str, Any], ...] = (
             "retry_policy": {"max_attempts": 1, "backoff_seconds": 0},
             "failure_policy": "stop",
         },
-        config_schema={"input_ports": _PORT_LIST_SCHEMA, "output_ports": _PORT_LIST_SCHEMA},
+        config_schema=_BUILTIN_STEP_SCHEMA,
     ),
     _node(
         kind="artifact_export",
@@ -233,7 +249,7 @@ _NODE_REGISTRY: tuple[dict[str, Any], ...] = (
             "retry_policy": {"max_attempts": 1, "backoff_seconds": 0},
             "failure_policy": "stop",
         },
-        config_schema={"input_ports": _PORT_LIST_SCHEMA, "output_ports": _PORT_LIST_SCHEMA},
+        config_schema=_BUILTIN_STEP_SCHEMA,
     ),
 )
 

@@ -116,6 +116,65 @@ test("creates a workflow through the UI and uses the xyflow canvas with real mou
   await expect.poll(() => canvas.locator(".react-flow__node-workflowNode").count()).toBe(beforeAdd + 1);
 });
 
+test("box-selects multiple canvas nodes and batch deletes them through the visible toolbar", async ({ page }) => {
+  test.setTimeout(90_000);
+  const stamp = Date.now();
+
+  await page.goto("/workflows/new", { waitUntil: "domcontentloaded" });
+  await page.getByPlaceholder("例如：源码流程与 SFMEA 分析").fill(`多选交互回归 ${stamp}`);
+  await page.getByRole("button", { name: "保存并继续" }).click();
+  for (let step = 0; step < 3; step += 1) {
+    await page.getByRole("button", { name: "保存并继续" }).click();
+  }
+
+  const canvas = page.getByRole("region", { name: "工作流画布" });
+  const flow = canvas.locator(".react-flow");
+  const palette = page.locator(".ct-v2-canvas-shell");
+  await expect(flow).toBeVisible();
+
+  await palette.getByTestId("workflow-palette-semantic_retrieve").dblclick();
+  await palette.getByTestId("workflow-palette-memory_retrieve").dblclick();
+  await expect.poll(() => canvas.locator(".react-flow__node-workflowNode").count()).toBe(6);
+  await canvas.getByTitle("适应画布").click();
+
+  const semantic = canvas.locator("[data-testid^='workflow-node-semantic_retrieve-']");
+  const memory = canvas.locator("[data-testid^='workflow-node-memory_retrieve-']");
+  await expect(semantic).toBeVisible();
+  await expect(memory).toBeVisible();
+  await semantic.click();
+  const inspector = page.getByRole("complementary", { name: "节点属性" });
+  await expect(inspector.getByLabel("节点 ID")).toHaveValue(/^semantic_retrieve-/);
+  await expect(inspector.getByLabel("步骤 ID")).toBeVisible();
+  await expect(inspector.getByRole("spinbutton", { name: "超时（秒）", exact: true })).toHaveValue("900");
+  await inspector.getByLabel("失败策略").selectOption("continue_independent");
+  await expect(inspector.getByLabel("失败策略")).toHaveValue("continue_independent");
+  await inspector.getByRole("button", { name: "关闭属性面板" }).click();
+  const semanticBox = await semantic.boundingBox();
+  const memoryBox = await memory.boundingBox();
+  expect(semanticBox).not.toBeNull();
+  expect(memoryBox).not.toBeNull();
+  if (!semanticBox || !memoryBox) return;
+
+  const startX = Math.min(semanticBox.x, memoryBox.x) - 20;
+  const startY = Math.min(semanticBox.y, memoryBox.y) - 20;
+  const endX = Math.max(semanticBox.x + semanticBox.width, memoryBox.x + memoryBox.width) + 20;
+  const endY = Math.max(semanticBox.y + semanticBox.height, memoryBox.y + memoryBox.height) + 20;
+  await page.keyboard.down("Shift");
+  await page.mouse.move(startX, startY);
+  await page.mouse.down({ button: "left" });
+  await page.mouse.move(endX, endY, { steps: 12 });
+  await page.mouse.up({ button: "left" });
+  await page.keyboard.up("Shift");
+
+  await expect(canvas.getByTitle("删除所选")).toBeVisible();
+  await canvas.getByTitle("删除所选").click();
+  await expect.poll(() => canvas.locator(".react-flow__node-workflowNode").count()).toBe(4);
+  await canvas.getByTitle("撤销").click();
+  await expect.poll(() => canvas.locator(".react-flow__node-workflowNode").count()).toBe(5);
+  await canvas.getByTitle("撤销").click();
+  await expect.poll(() => canvas.locator(".react-flow__node-workflowNode").count()).toBe(6);
+});
+
 async function drag(page: import("@playwright/test").Page, source: import("@playwright/test").Locator, target: import("@playwright/test").Locator) {
   await expect(source).toBeVisible();
   await expect(target).toBeVisible();

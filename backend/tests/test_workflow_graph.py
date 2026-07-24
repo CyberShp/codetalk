@@ -152,6 +152,17 @@ def test_node_registry_is_the_authoritative_graph_kind_and_ui_schema_source():
     assert agent["default_config"]["provider"] == "builtin-llm"
 
 
+def test_registry_describes_editable_builtin_step_fields_without_frontend_kind_branches():
+    from app.services.workflow_node_registry import node_registry_payload
+
+    registry = node_registry_payload()
+    semantic = next(item for item in registry["nodes"] if item["kind"] == "semantic_retrieve")
+
+    assert semantic["config_schema"]["step_id"]["type"] == "string"
+    assert semantic["config_schema"]["timeout_sec"]["type"] == "integer"
+    assert semantic["config_schema"]["failure_policy"]["type"] == "enum"
+
+
 def test_graph_compiles_declared_execution_profiles_into_immutable_contracts():
     from app.services.workflow_graph import compile_workflow_graph, validate_workflow_graph
 
