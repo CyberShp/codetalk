@@ -530,6 +530,59 @@ def _seed_quality_retry_from_parent(*, parent_run: Any, prepared: Any) -> None:
     audit = WorkbenchWorkflowRunner(settings.data_path / "workbench" / "task_runs").audit_test_activity_quality(
         task_run=parent_run
     )
+    parent_artifact_dir = str(getattr(parent_run, "artifact_dir", "") or "").strip()
+    parent_root = (
+        Path(parent_artifact_dir)
+        if parent_artifact_dir
+        else settings.data_path / "workbench" / "task_runs" / str(parent_run.task_run_id)
+    )
+    try:
+        acceptance = json.loads(
+            (parent_root / "task_acceptance_audit.json").read_text(encoding="utf-8")
+        )
+    except (OSError, json.JSONDecodeError):
+        acceptance = {}
+    acceptance_checks = acceptance.get("checks") or [] if isinstance(acceptance, dict) else []
+    acceptance_failures = [
+        dict(check)
+        for check in acceptance_checks
+        if isinstance(check, dict)
+        and str(check.get("status") or "") not in {"ok", "pass", "passed", "completed"}
+    ]
+    if acceptance_failures:
+        # The staged audit does not include all final artifact executability
+        # checks. A blocked final acceptance must force a generator rerun even
+        # if its earlier staged audit happened to be green.
+        issues = [
+            dict(item)
+            for item in audit.get("issues") or []
+            if isinstance(item, dict)
+        ]
+        known_artifacts = {Path(str(item.get("artifact") or "")).name for item in issues}
+        for failure in acceptance_failures:
+            relative_path = str(failure.get("relative_path") or "").strip()
+            if not relative_path or Path(relative_path).name in known_artifacts:
+                continue
+            issues.append({
+                "artifact": relative_path,
+                "code": str(failure.get("reason") or failure.get("id") or "acceptance_failed"),
+                "message": str(failure.get("description") or "最终验收未通过").strip(),
+                "acceptance_failure": True,
+                "invalid_cases": [
+                    dict(item)
+                    for item in failure.get("invalid_cases") or []
+                    if isinstance(item, dict)
+                ][:50],
+            })
+            known_artifacts.add(Path(relative_path).name)
+        audit = {
+            **audit,
+            "status": "needs_rework",
+            "deliverable": False,
+            "issue_count": len(issues),
+            "issues": issues,
+            "acceptance_failures": acceptance_failures,
+        }
     child_root = Path(str(prepared.artifact_dir)).resolve()
     (child_root / "test_activity_quality_audit.json").write_text(
         json.dumps(audit, ensure_ascii=False, indent=2, sort_keys=True),
@@ -541,7 +594,7 @@ def _seed_quality_retry_from_parent(*, parent_run: Any, prepared: Any) -> None:
         if isinstance(item, dict) and str(item.get("step_id") or "")
     }
     issue_artifacts = {
-        str(item.get("artifact") or "").strip()
+        Path(str(item.get("artifact") or "")).name
         for item in audit.get("issues") or []
         if isinstance(item, dict) and str(item.get("artifact") or "").strip()
     }
@@ -581,7 +634,7 @@ def _seed_quality_retry_from_parent(*, parent_run: Any, prepared: Any) -> None:
         for item in child_agents
         if issue_artifacts
         and issue_artifacts.intersection(
-            str(artifact) for artifact in item.get("required_artifacts") or []
+            Path(str(artifact)).name for artifact in item.get("required_artifacts") or []
         )
     ]
     if not affected_agent_ids:

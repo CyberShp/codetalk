@@ -204,6 +204,68 @@ def test_quality_blocked_parent_with_green_reaudit_reuses_agent_outputs(
     }
 
 
+def test_quality_retry_does_not_reuse_outputs_when_final_acceptance_is_invalid(
+    tmp_path,
+    monkeypatch,
+):
+    from app.api import workbench_v2_tasks
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    parent_root = tmp_path / "workbench" / "task_runs" / "task_run_parent"
+    parent_agent = parent_root / "agent_runs" / "analyze"
+    child_root = tmp_path / "child"
+    child_agent = child_root / "agent_runs" / "analyze"
+    parent_agent.mkdir(parents=True)
+    child_agent.mkdir(parents=True)
+    (parent_agent / "black_box_cases.json").write_text("[]", encoding="utf-8")
+    (parent_root / "task_acceptance_audit.json").write_text(
+        json.dumps({"checks": [{
+            "status": "invalid",
+            "reason": "black_box_case_quality_failed",
+            "relative_path": "agent_runs/analyze/black_box_cases.json",
+            "invalid_cases": [{"case_id": "BB-09", "reasons": ["vague_steps"]}],
+        }]}),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        WorkbenchWorkflowRunner,
+        "audit_test_activity_quality",
+        lambda self, *, task_run: {
+            "status": "deliverable", "deliverable": True, "issue_count": 0, "issues": []
+        },
+    )
+    parent = SimpleNamespace(
+        task_run_id="task_run_parent",
+        quality_status="blocked",
+        artifact_dir=str(parent_root),
+        agent_runs=[{
+            "step_id": "analyze",
+            "artifact_dir": str(parent_agent),
+            "required_artifacts": ["black_box_cases.json"],
+        }],
+    )
+    prepared = SimpleNamespace(
+        artifact_dir=str(child_root),
+        task_bundle={"retry_seed_results": {"analyze": {"status": "completed"}}},
+        agent_runs=[{
+            "step_id": "analyze",
+            "artifact_dir": str(child_agent),
+            "required_artifacts": ["black_box_cases.json"],
+        }],
+    )
+
+    workbench_v2_tasks._seed_quality_retry_from_parent(
+        parent_run=parent,
+        prepared=prepared,
+    )
+
+    assert prepared.task_bundle["retry_seed_results"] == {}
+    assert prepared.task_bundle["retry_source"]["mode"] == "quality_repair"
+    assert prepared.task_bundle["retry_source"]["failed_node_ids"] == ["analyze"]
+    seeded_audit = json.loads((child_root / "test_activity_quality_audit.json").read_text())
+    assert seeded_audit["issues"][0]["code"] == "black_box_case_quality_failed"
+
+
 def test_task_store_migration_crud_filters_archive_and_clone(tmp_path):
     from app.services.workbench_task_store import WorkbenchTaskStore
 
