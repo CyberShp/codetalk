@@ -7026,13 +7026,21 @@ def _deterministic_quality_claim_repair(
         item
         for item in (quality_feedback or {}).get("issues") or []
         if isinstance(item, dict)
-        and Path(str(item.get("artifact") or "")).name == Path(artifact).name
+        and (
+            Path(str(item.get("artifact") or "")).name == Path(artifact).name
+            or (
+                Path(artifact).name == "black_box_cases.json"
+                and Path(str(item.get("artifact") or "")).name == "test_design.md"
+                and str(item.get("code") or "") == "missing_max_connections_target_setup"
+            )
+        )
     ]
     issue_codes = {str(item.get("code") or "") for item in issues}
     supported_codes = {
         "invalid_capture_filter",
         "black_box_test_mapping_contradiction",
         "missing_c_bit_fragmentation_case",
+        "missing_max_connections_target_setup",
     }
     if not issue_codes or not issue_codes.issubset(supported_codes):
         return repaired, []
@@ -7084,6 +7092,61 @@ def _deterministic_quality_claim_repair(
         )
         repaired.append(template)
         fields.append("$[+].c_bit_fragmentation_case")
+
+    if (
+        "missing_max_connections_target_setup" in issue_codes
+        and artifact == "black_box_cases.json"
+        and isinstance(repaired, list)
+        and repaired
+        and isinstance(repaired[0], dict)
+    ):
+        template = json.loads(json.dumps(repaired[0], ensure_ascii=False))
+        existing_ids = {
+            str(row.get("case_id") or "")
+            for row in repaired
+            if isinstance(row, dict)
+        }
+        case_id = "BBC-MCS-CAPACITY"
+        suffix = 2
+        while case_id in existing_ids:
+            case_id = f"BBC-MCS-CAPACITY-{suffix}"
+            suffix += 1
+        template.update(
+            {
+                "case_id": case_id,
+                "test_dimension": "resource_pressure",
+                "scenario_name": "MCS 容量上限拒绝额外连接",
+                "preconditions": [
+                    "仅使用隔离测试盘并确认 target 尚未启动",
+                    "target 启动前执行 scripts/rpc.py iscsi_set_options -c 1",
+                    "raw-PDU harness 可保持首 socket 在线，并控制 ISID、non-zero TSIH 和 CID",
+                ],
+                "steps": [
+                    "通过 raw-PDU harness 建立首个 Login 连接，记录成功响应中的 non-zero TSIH 并保持首 socket 在线",
+                    "在新 TCP socket 上复用相同 ISID 与 non-zero TSIH，使用不同 CID 发送第二个 Login Request",
+                    "解析第二个 Login Response，同时保存 pcap、target 日志和首连接状态",
+                ],
+                "expected_result": (
+                    "第二个 Login 被拒绝并返回 Too Many Connections；首连接保持可用，"
+                    "target 进程不退出。"
+                ),
+                "observability": [
+                    "raw-PDU harness 解析的第二个 Login Response 状态与 status-detail",
+                    "pcap 中相同 TSIH、不同 CID 的第二个 Login 交换",
+                    "target 日志、进程状态和首连接可用性",
+                ],
+                "failure_diagnostics": [
+                    "若第二个连接成功，确认 iscsi_set_options -c 1 在 target 启动前已执行。",
+                    "若首连接断开，保留两个 socket 的 PDU、TSIH/CID 值和 target 日志。",
+                ],
+                "mapped_test_dir": (
+                    "需新增 raw-PDU MCS 黑盒用例；multiconnection.sh 仅作环境搭建参考，"
+                    "不覆盖同一 session 的 MCS。"
+                ),
+            }
+        )
+        repaired.append(template)
+        fields.append("$[+].mcs_target_setup_case")
 
     mcs_mapping_issues = [
         item

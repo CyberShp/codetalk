@@ -7,6 +7,9 @@ const enabled = process.env.CODETALK_E2E_REAL_BUILTIN_B === "1";
 const apiKey = process.env.CODETALK_E2E_LLM_API_KEY ?? "";
 const repoPath = process.env.CODETALK_E2E_REPO ?? "/Volumes/Media/dpdk/spdk";
 const dataDir = process.env.CODETALK_PLAYWRIGHT_DATA_DIR ?? "";
+const executionProfile = process.env.CODETALK_E2E_EXECUTION_PROFILE ?? "rapid";
+const profileLabel = executionProfile === "deep" ? "深度型" : "速度型";
+const profileMaximumDurationMs = executionProfile === "deep" ? 95 * 60_000 : 25 * 60_000;
 
 test.skip(!enabled, "Set CODETALK_E2E_REAL_BUILTIN_B=1 to run the real built-in model acceptance flow");
 test.skip(!apiKey, "CODETALK_E2E_LLM_API_KEY is required for the real built-in model acceptance flow");
@@ -14,7 +17,7 @@ test.skip(!fs.existsSync(repoPath), `SPDK repository is unavailable: ${repoPath}
 test.skip(!dataDir, "CODETALK_PLAYWRIGHT_DATA_DIR is required to retain real-run evidence");
 
 test("V3 basic source plus design workflow runs through the browser with a real built-in model", async ({ page }) => {
-  test.setTimeout(30 * 60_000);
+  test.setTimeout(profileMaximumDurationMs + 5 * 60_000);
   const stamp = Date.now();
   const workspaceName = `SPDK Builtin B ${stamp}`;
   const taskName = `iSCSI login Builtin B ${stamp}`;
@@ -34,7 +37,7 @@ test("V3 basic source plus design workflow runs through the browser with a real 
   const startedAt = Date.now();
   const status = page.locator(".ct-v2-run-status").filter({ hasText: "执行状态" }).locator("strong");
   await expect.poll(async () => (await status.textContent())?.trim(), {
-    timeout: 25 * 60_000,
+    timeout: profileMaximumDurationMs,
     intervals: [1_000, 2_000, 5_000, 10_000],
   }).toMatch(/^(已完成|部分完成|失败|已阻断|已取消)$/);
   const elapsedMs = Date.now() - startedAt;
@@ -63,7 +66,7 @@ test("V3 basic source plus design workflow runs through the browser with a real 
     "utf8",
   );
   expect(elapsedMs).toBeGreaterThanOrEqual(60_000);
-  expect(elapsedMs).toBeLessThanOrEqual(25 * 60_000);
+  expect(elapsedMs).toBeLessThanOrEqual(profileMaximumDurationMs);
 });
 
 async function configureBuiltInModelsThroughUi(
@@ -121,7 +124,9 @@ async function createAndRunTaskThroughUi(
   await page.locator('input[type="file"]').setInputFiles(values.designDocument);
   await page.getByRole("button", { name: "保存并继续" }).click();
   await expect(page.getByRole("heading", { name: "确认执行配置" })).toBeVisible();
-  await expect(page.getByRole("radio", { name: /速度型/ })).toBeChecked();
+  const selectedProfile = page.getByRole("radio", { name: new RegExp(profileLabel) });
+  await selectedProfile.check();
+  await expect(selectedProfile).toBeChecked();
   await page.getByRole("button", { name: "保存并继续" }).click();
   await expect(page.getByRole("heading", { name: "确认交付输出" })).toBeVisible();
   await page.getByRole("button", { name: "保存并继续" }).click();

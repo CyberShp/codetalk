@@ -3353,6 +3353,50 @@ def test_deterministic_quality_claim_repair_enforces_mcs_raw_pdu_contract():
     assert "$[0].mapped_test_dir" in fields
 
 
+def test_deterministic_quality_claim_repair_materializes_missing_mcs_target_setup_case():
+    payload = [
+        {
+            "case_id": "BB-001",
+            "scenario_name": "Normal login",
+            "technical_claims": [],
+            "source_or_test_evidence": ["lib/iscsi/iscsi.c"],
+        }
+    ]
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="black_box_cases.json",
+        quality_feedback={
+            "issues": [
+                {
+                    "artifact": "test_design.md",
+                    "code": "missing_max_connections_target_setup",
+                }
+            ]
+        },
+    )
+
+    assert len(repaired) == 2
+    case = repaired[-1]
+    assert case["case_id"] == "BBC-MCS-CAPACITY"
+    assert "scripts/rpc.py iscsi_set_options -c 1" in " ".join(case["preconditions"])
+    assert "non-zero TSIH" in " ".join(case["steps"])
+    assert "$[+].mcs_target_setup_case" in fields
+    report = _render_deterministic_combined_report(
+        plan={"original_user_request": "SPDK iSCSI Login 测试设计"},
+        source_pack={"repo_revision": "abc123", "evidence_cards": []},
+        business_flow="Login request -> response",
+        sfmea=[],
+        black_box_cases=repaired,
+    )
+    from app.services.test_activity_contract import _audit_combined_execution_contract
+
+    assert not any(
+        issue["code"] == "missing_max_connections_target_setup"
+        for issue in _audit_combined_execution_contract(report)
+    )
+
+
 def test_deterministic_iscsi_report_harness_supports_claimed_scenarios():
     from app.services.ai_staged_execution import _render_deterministic_combined_report
     from app.services.test_activity_contract import _audit_raw_pdu_scenario_capabilities
