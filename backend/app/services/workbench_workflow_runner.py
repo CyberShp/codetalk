@@ -98,6 +98,78 @@ def _materialize_external_agent_source_evidence_pack(task_run: Any) -> bool:
     return True
 
 
+def _refresh_external_agent_delivery_report(task_run: Any) -> bool:
+    """Materialize the formal report deterministically for an Agent workflow.
+
+    An external Agent owns the analytical JSON and its own narrative is kept in
+    ``agent_runs`` for traceability. The task-root report is a delivery file,
+    though, so it must use the same stable headings and verified-artifact
+    boundary as the built-in staged workflow.
+    """
+    snapshot = (
+        task_run.workflow_snapshot
+        if isinstance(getattr(task_run, "workflow_snapshot", None), dict)
+        else {}
+    )
+    if not _workflow_declares_test_activity_deliverables(snapshot):
+        return False
+    root = Path(str(task_run.artifact_dir))
+    if not _materialize_external_agent_delivery_json(root):
+        return False
+    bundle = task_run.task_bundle if isinstance(task_run.task_bundle, dict) else {}
+    context = bundle.get("local_source_context") if isinstance(bundle.get("local_source_context"), dict) else {}
+    plan = {
+        "original_user_request": str(
+            context.get("analysis_target")
+            or bundle.get("goal")
+            or bundle.get("query")
+            or "测试分析"
+        ),
+        "repo_revision": str(context.get("repo_revision") or ""),
+        "stages": [],
+    }
+    report_contract = (
+        (bundle.get("test_activity_contract") or {}).get("artifact_contract", {}).get("report.md", {})
+        if isinstance(bundle.get("test_activity_contract"), dict)
+        else {}
+    )
+    refresh_deterministic_combined_report(
+        artifact_dir=root,
+        plan=plan,
+        artifact="report.md",
+        output_contract=report_contract if isinstance(report_contract, dict) else {},
+    )
+    return True
+
+
+def _materialize_external_agent_delivery_json(root: Path) -> bool:
+    """Give the task one canonical, task-owned copy of structured delivery.
+
+    Agent run folders remain immutable run diagnostics.  The root files are the
+    validated delivery boundary consumed by reports, ledgers and downloads.
+    """
+    required = ("sfmea.json", "black_box_cases.json")
+    sources: dict[str, Path] = {}
+    for artifact in required:
+        direct = root / artifact
+        if direct.is_file():
+            sources[artifact] = direct
+            continue
+        candidates = sorted(root.glob(f"agent_runs/*/{artifact}"))
+        if not candidates:
+            return False
+        sources[artifact] = candidates[-1]
+    for artifact, source in sources.items():
+        try:
+            payload = _read_json(source)
+        except (OSError, ValueError):
+            return False
+        if not isinstance(payload, list):
+            return False
+        _write_json(root / artifact, payload)
+    return True
+
+
 def _external_agent_evidence_context_files(
     *,
     task_run: Any,
@@ -153,7 +225,9 @@ def _external_agent_evidence_context_files(
         if key in seen:
             continue
         seen.add(key)
-        candidate = dict(item)
+        candidate = _compact_task_owned_evidence_card(item, repo_root=repo_root)
+        if candidate is None:
+            continue
         candidate["evidence_id"] = f"SRC-{len(selected) + 1:02d}"
         selected.append(candidate)
     # Source-analysis prompt compaction and final claim validation have
@@ -182,6 +256,53 @@ def _external_agent_evidence_context_files(
         candidate["evidence_id"] = f"SRC-{len(selected) + 1:02d}"
         selected.append(candidate)
     return selected
+
+
+def _compact_task_owned_evidence_card(
+    item: dict[str, Any],
+    *,
+    repo_root: Path,
+) -> dict[str, Any] | None:
+    """Re-read a preparer card into a bounded symbol-adjacent source slice."""
+    relative = str(item.get("file_path") or "").strip()
+    if not relative or Path(relative).is_absolute():
+        return None
+    try:
+        source_path = (repo_root / relative).resolve(strict=True)
+        if not source_path.is_relative_to(repo_root) or source_path.is_dir():
+            return None
+        raw = source_path.read_bytes()
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    supplied_digest = str(item.get("sha256") or "").strip()
+    digest = hashlib.sha256(raw).hexdigest()
+    if supplied_digest and supplied_digest != digest:
+        return None
+    lines = text.splitlines()
+    start = max(1, int(item.get("start_line") or 1))
+    end = min(len(lines), max(start, int(item.get("end_line") or start)))
+    symbols = [str(value) for value in item.get("symbols") or [] if str(value)]
+    if end - start + 1 > 160:
+        for index in range(start - 1, end):
+            if any(re.search(rf"\b{re.escape(symbol)}\b", lines[index]) for symbol in symbols):
+                start = index + 1
+                break
+        end = min(len(lines), start + 47)
+    excerpt = "\n".join(lines[start - 1:end])
+    if not excerpt:
+        return None
+    return {
+        "file_path": relative,
+        "classification": str(item.get("classification") or ("test" if relative.startswith("test/") else "source")),
+        "start_line": start,
+        "end_line": end,
+        "excerpt": excerpt,
+        "symbols": symbols,
+        "matched_terms": [str(value) for value in item.get("matched_terms") or [] if str(value)],
+        "sha256": digest,
+        "validation_status": "revalidated_task_owned_anchor",
+    }
 
 
 def _external_agent_claim_context_candidates(
@@ -229,6 +350,11 @@ def _candidate_is_covered_by_selected(
         str(item.get("file_path") or "") == candidate_path
         and int(item.get("start_line") or 0) <= candidate_start
         and candidate_end <= int(item.get("end_line") or 0)
+        # A broad provider-selected card is useful for discovery only.  It is
+        # not a precise final anchor for an independently stated claim.
+        and int(item.get("end_line") or 0) - int(item.get("start_line") or 0) + 1
+        <= 160
+        and len(str(item.get("excerpt") or "")) <= 6000
         for item in selected
         if isinstance(item, dict)
     )
@@ -251,6 +377,8 @@ def _revalidate_external_agent_claim_reference(
     if not line_numbers:
         return None
     start, end = line_numbers[0], line_numbers[-1]
+    if end - start + 1 > 160 or len(quote) > 6000:
+        return None
     try:
         source_path = (repo_root / relative).resolve(strict=True)
         if not source_path.is_relative_to(repo_root) or source_path.is_dir():
@@ -318,6 +446,8 @@ def _revalidate_external_agent_evidence_card(
     end = int(card.get("end_line") or 0)
     lines = text.splitlines()
     if start < 1 or end < start or end > len(lines):
+        return None
+    if end - start + 1 > 160:
         return None
     excerpt = "\n".join(lines[start - 1 : end])
     suffix = source_path.suffix.lower()
@@ -986,6 +1116,7 @@ class WorkbenchWorkflowRunner:
             for item in step_results
         ):
             enrich_external_agent_claim_bindings(task_run.artifact_dir)
+            _refresh_external_agent_delivery_report(task_run)
         self._materialize_final_behavior_validation(
             task_run=task_run,
             step_results=step_results,
@@ -1094,7 +1225,6 @@ class WorkbenchWorkflowRunner:
         )
         self._write_execution_artifact(task_run.task_run_id, result)
         return result
-
     def _attempt_external_agent_quality_repair(
         self,
         *,
@@ -4146,32 +4276,51 @@ def _validate_output_schema(
 
 
 def _validate_json_schema_fragment(payload: Any, schema: dict[str, Any]) -> list[str]:
+    return _validate_json_schema_node(payload, schema, path="$")
+
+
+def _validate_json_schema_node(payload: Any, schema: dict[str, Any], *, path: str) -> list[str]:
+    """Validate the small schema subset CodeTalk emits for workflow outputs."""
     errors: list[str] = []
     expected_type = str(schema.get("type") or "").strip()
     if expected_type:
-        type_error = _json_type_error(payload, expected_type)
+        type_error = _json_type_error(payload, expected_type, path=path)
         if type_error:
             errors.append(type_error)
             return errors
+    allowed = schema.get("enum")
+    if isinstance(allowed, list) and payload not in allowed:
+        errors.append(f"{path} must be one of: {', '.join(str(item) for item in allowed)}")
+        return errors
     if isinstance(payload, dict):
         for field in schema.get("required") or []:
             field_name = str(field)
             if field_name not in payload:
-                errors.append(f"missing required field: {field_name}")
+                prefix = "" if path == "$" else f"{path} "
+                errors.append(f"{prefix}missing required field: {field_name}")
         properties = schema.get("properties") or {}
         if isinstance(properties, dict):
             for field_name, property_schema in properties.items():
                 if field_name not in payload or not isinstance(property_schema, dict):
                     continue
-                property_type = str(property_schema.get("type") or "").strip()
-                if property_type:
-                    type_error = _json_type_error(
-                        payload[field_name],
-                        property_type,
-                        path=str(field_name),
+                errors.extend(
+                    _validate_json_schema_node(
+                        payload[field_name], property_schema, path=f"{path}.{field_name}"
                     )
-                    if type_error:
-                        errors.append(type_error)
+                )
+    if isinstance(payload, list):
+        minimum = schema.get("minItems")
+        if isinstance(minimum, int) and len(payload) < minimum:
+            errors.append(f"{path} requires at least {minimum} items")
+        maximum = schema.get("maxItems")
+        if isinstance(maximum, int) and len(payload) > maximum:
+            errors.append(f"{path} allows at most {maximum} items")
+        item_schema = schema.get("items")
+        if isinstance(item_schema, dict):
+            for index, item in enumerate(payload):
+                errors.extend(
+                    _validate_json_schema_node(item, item_schema, path=f"{path}[{index}]")
+                )
     return errors
 
 
@@ -5724,6 +5873,8 @@ def _local_evidence_card(
     symbols = _extract_local_symbols(text)
     if not symbols and path.suffix.lower() in {".sh", ".bash", ".zsh", ".ksh"}:
         symbols = [path.name]
+    lines = text.splitlines()
+    excerpt_end = min(len(lines), 48)
     return {
         "evidence_id": f"local_evidence_{index:03d}",
         "kind": "source_file",
@@ -5731,7 +5882,10 @@ def _local_evidence_card(
         "symbols": symbols[:12],
         "reason": _local_evidence_reason(file_path=file_path, query=query, symbols=symbols),
         "sha256": hashlib.sha256(data).hexdigest() if data else "",
-        "line_count": len(text.splitlines()) if text else 0,
+        "line_count": len(lines),
+        "start_line": 1 if lines else 0,
+        "end_line": excerpt_end,
+        "excerpt": "\n".join(lines[:excerpt_end]),
         "source": "local-search",
     }
 

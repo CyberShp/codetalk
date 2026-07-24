@@ -261,6 +261,119 @@ def test_external_agent_claim_anchor_rejects_a_fabricated_quote(tmp_path):
     assert all(card["validation_status"] != "revalidated_agent_claim_anchor" for card in cards)
 
 
+def test_external_agent_broad_selected_card_cannot_hide_narrow_claim_anchor(tmp_path):
+    """A provider's broad discovery card is not a usable final claim anchor."""
+    from app.services.workbench_workflow_runner import (
+        _materialize_external_agent_source_evidence_pack,
+    )
+
+    repo = tmp_path / "repo"
+    source = repo / "lib" / "iscsi" / "login.c"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "int login(void) {\n"
+        + "".join(f"  int filler_{index} = {index};\n" for index in range(1, 180))
+        + "  if (invalid) {\n"
+        "    return -1;\n"
+        "  }\n"
+        "  return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    task_run = SimpleNamespace(
+        artifact_dir=str(tmp_path),
+        task_bundle={
+            "local_source_context": {
+                "repo_path": str(repo),
+                "repo_revision": "abc123",
+                "analysis_target": "login",
+                "source_analysis_max_evidence_anchors": 1,
+                "files": [{
+                    "file_path": "lib/iscsi/login.c",
+                    "classification": "source",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "excerpt": "int login(void) {",
+                    "symbols": ["login"],
+                    "sha256": digest,
+                }],
+            }
+        },
+    )
+    agent_dir = tmp_path / "agent_runs" / "analyze"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "evidence_cards.json").write_text(
+        json.dumps([
+            {
+                "file_path": "lib/iscsi/login.c",
+                "start_line": 1,
+                "end_line": 185,
+                "symbols": ["login"],
+                "sha256": digest,
+            }
+        ]),
+        encoding="utf-8",
+    )
+    claim = {
+        "claim_id": "CL-1",
+        "type": "implementation_fact",
+        "statement": "Invalid input returns an error.",
+        "evidence": [{
+            "path": "lib/iscsi/login.c",
+            "lines": "L181-L183",
+            "symbol": "login",
+            "quote": "  if (invalid) {\n    return -1;\n  }",
+        }],
+    }
+    (agent_dir / "sfmea.json").write_text(
+        json.dumps([{"technical_claims": [claim]}]), encoding="utf-8"
+    )
+    (agent_dir / "black_box_cases.json").write_text("[]", encoding="utf-8")
+
+    assert _materialize_external_agent_source_evidence_pack(task_run) is True
+    cards = json.loads((tmp_path / "evidence_cards.json").read_text(encoding="utf-8"))
+    assert (181, 183) in {
+        (card["start_line"], card["end_line"]) for card in cards
+    }
+    assert any(
+        card["validation_status"] == "revalidated_agent_claim_anchor"
+        for card in cards
+    )
+
+
+def test_external_agent_final_report_uses_deterministic_delivery_headings(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _refresh_external_agent_delivery_report,
+    )
+
+    (tmp_path / "sfmea.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "black_box_cases.json").write_text("[]", encoding="utf-8")
+    task_run = SimpleNamespace(
+        artifact_dir=str(tmp_path),
+        task_bundle={
+            "local_source_context": {
+                "analysis_target": "iSCSI login",
+                "repo_revision": "abc123",
+            }
+        },
+        workflow_snapshot={
+            "outputs": [
+                {"artifact": "sfmea.json", "type": "json", "enabled": True},
+                {"artifact": "black_box_cases.json", "type": "test_cases", "enabled": True},
+                {"artifact": "report.md", "type": "markdown", "enabled": True},
+            ],
+            "steps": [],
+        },
+    )
+
+    assert _refresh_external_agent_delivery_report(task_run) is True
+    report = (tmp_path / "report.md").read_text(encoding="utf-8")
+    assert "## 分析范围与证据缺口" in report
+    assert "## 关键源码证据" in report
+    assert "## 主流程与异常/恢复流程" in report
+
+
 def test_source_driven_judge_blocks_delivery_and_never_reports_empty_facts_as_100(
     tmp_path,
 ):

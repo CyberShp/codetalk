@@ -554,6 +554,26 @@ def _agent_output_contract_payload(
                     "anchor and will reject a mismatched quote."
                 ),
             },
+            "test_activity_writing_protocol": {
+                "sfmea": (
+                    "Each mitigation must use two explicit clauses: '整改：<concrete product/config/code "
+                    "change>; 验证：<executable test, log, metric, or monitor check>'. A test-only "
+                    "sentence is not a mitigation. Each technical claim statement is one factual sentence "
+                    "under 240 characters and is different from its source quote."
+                ),
+                "black_box_cases": (
+                    "test_dimension is a machine contract, not a display label. Use exactly one of: "
+                    "normal_path, invalid_input, resource_pressure, timeout, reconnect, concurrency, "
+                    "recovery, performance, long_steady_state, resource_wraparound, resource_cleanup, "
+                    "upstream_error_propagation. Cover every required dimension at least once; put Chinese "
+                    "explanation in scenario_name, never in test_dimension."
+                ),
+                "claim_anchor_limits": {
+                    "max_source_lines": 160,
+                    "max_quote_characters": 6000,
+                    "preferred_source_lines": 32,
+                },
+            },
             "evidence_card_symbol_validation": {
                 "code_files": "symbols must occur in executable source, not only comments or strings",
                 "shell_files": (
