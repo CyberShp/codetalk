@@ -540,6 +540,20 @@ def _agent_output_contract_payload(
             "required_artifacts_are_authoritative": True,
             "codetalk_validates_before_evidence": True,
             "unvalidated_agent_claims": "diagnostic_only",
+            "technical_claim_protocol": {
+                "literal_quote_required": True,
+                "ellipsis_forbidden": True,
+                "prefer_unindented_exact_fragment": True,
+                "instructions": (
+                    "For every technical_claims.evidence entry, provide a repo-relative path, "
+                    "an exact Lstart-Lend range, and a literal source substring contained in that "
+                    "range. Copy a short unindented token or code fragment verbatim when possible; "
+                    "do not replace whitespace, summarize, or use '...'. If no exact quote is "
+                    "available, write the item as a hypothesis or evidence gap without a "
+                    "technical_claim. CodeTalk will locally re-read and SHA256-validate every claim "
+                    "anchor and will reject a mismatched quote."
+                ),
+            },
             "evidence_card_symbol_validation": {
                 "code_files": "symbols must occur in executable source, not only comments or strings",
                 "shell_files": (

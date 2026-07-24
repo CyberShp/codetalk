@@ -138,6 +138,129 @@ def test_external_agent_selected_anchor_is_locally_revalidated_into_task_pack(tm
     assert cards[0]["validation_status"] == "revalidated_agent_selected_anchor"
 
 
+def test_external_agent_claim_anchor_is_revalidated_even_when_not_in_initial_source_pack(tmp_path):
+    """An Agent-proposed line reference is a candidate, never an unchecked fact.
+
+    The compact source prompt intentionally starts with only a few anchors.  A
+    later SFMEA or black-box claim may point at a different relevant line; the
+    final ledger must locally re-read that exact range instead of discarding a
+    valid claim merely because it was not one of the initial prompt slices.
+    """
+    from app.services.artifact_contract_v3 import (
+        enrich_external_agent_claim_bindings,
+        materialize_claim_evidence_ledger,
+    )
+    from app.services.workbench_workflow_runner import (
+        _materialize_external_agent_source_evidence_pack,
+    )
+
+    repo = tmp_path / "repo"
+    source = repo / "lib" / "iscsi" / "login.c"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "int login(void) {\n"
+        "  int status = 0;\n"
+        "  if (status != 0) {\n"
+        "    return -EINVAL;\n"
+        "  }\n"
+        "  return 0;\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    task_run = SimpleNamespace(
+        artifact_dir=str(tmp_path / "task"),
+        task_bundle={"local_source_context": {
+            "repo_path": str(repo),
+            "repo_revision": "abc123",
+            "analysis_target": "iSCSI login invalid status",
+            "source_analysis_max_evidence_anchors": 1,
+            "files": [{
+                "file_path": "lib/iscsi/login.c", "classification": "source",
+                "start_line": 1, "end_line": 1, "excerpt": "int login(void) {",
+                "symbols": ["login"], "sha256": digest,
+            }],
+        }},
+    )
+    agent_dir = Path(task_run.artifact_dir) / "agent_runs" / "analyze"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "sfmea.json").write_text(json.dumps([{
+        "sfmea_id": "R-INVALID-STATUS",
+        "technical_claims": [{
+            "claim_id": "CL-INVALID-STATUS",
+            "type": "source_behavior",
+            "statement": "状态异常时登录路径返回 EINVAL。",
+            "evidence": [{
+                "path": "lib/iscsi/login.c",
+                "lines": "L3-L4",
+                "symbol": "login",
+                "quote": "    return -EINVAL;",
+            }],
+        }],
+    }]), encoding="utf-8")
+    (agent_dir / "black_box_cases.json").write_text("[]", encoding="utf-8")
+
+    assert _materialize_external_agent_source_evidence_pack(task_run) is True
+    cards = json.loads((Path(task_run.artifact_dir) / "evidence_cards.json").read_text())
+    assert any(
+        card["start_line"] == 3
+        and card["end_line"] == 4
+        and card["excerpt"] == "  if (status != 0) {\n    return -EINVAL;"
+        and card["validation_status"] == "revalidated_agent_claim_anchor"
+        for card in cards
+    )
+
+    assert enrich_external_agent_claim_bindings(task_run.artifact_dir) == {"sfmea.json": 1}
+    ledger = materialize_claim_evidence_ledger(task_run.artifact_dir)
+    assert ledger["summary"] == {
+        "total": 1,
+        "verified": 1,
+        "contradicted": 0,
+        "insufficient": 0,
+    }
+
+
+def test_external_agent_claim_anchor_rejects_a_fabricated_quote(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _materialize_external_agent_source_evidence_pack,
+    )
+
+    repo = tmp_path / "repo"
+    source = repo / "lib" / "iscsi" / "login.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int login(void) {\n  return 0;\n}\n", encoding="utf-8")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    task_run = SimpleNamespace(
+        artifact_dir=str(tmp_path / "task"),
+        task_bundle={"local_source_context": {
+            "repo_path": str(repo), "repo_revision": "abc123",
+            "analysis_target": "iSCSI login",
+            "files": [{
+                "file_path": "lib/iscsi/login.c", "classification": "source",
+                "start_line": 1, "end_line": 1, "excerpt": "int login(void) {",
+                "symbols": ["login"], "sha256": digest,
+            }],
+        }},
+    )
+    agent_dir = Path(task_run.artifact_dir) / "agent_runs" / "analyze"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "sfmea.json").write_text(json.dumps([{
+        "sfmea_id": "R-FABRICATED",
+        "technical_claims": [{
+            "claim_id": "CL-FABRICATED", "type": "source_behavior",
+            "statement": "编造的技术事实。",
+            "evidence": [{
+                "path": "lib/iscsi/login.c", "lines": "L2",
+                "symbol": "login", "quote": "return -EIO;",
+            }],
+        }],
+    }]), encoding="utf-8")
+
+    assert _materialize_external_agent_source_evidence_pack(task_run) is True
+    cards = json.loads((Path(task_run.artifact_dir) / "evidence_cards.json").read_text())
+    assert all(card["validation_status"] != "revalidated_agent_claim_anchor" for card in cards)
+
+
 def test_source_driven_judge_blocks_delivery_and_never_reports_empty_facts_as_100(
     tmp_path,
 ):

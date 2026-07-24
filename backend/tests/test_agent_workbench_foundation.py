@@ -696,6 +696,8 @@ def test_agent_run_harness_executes_cli_with_task_bundle_and_audit_events(
             "CODETALK_AGENT_ARTIFACT_DIR": str(artifact_dir),
             "CODETALK_TEMP_DIR": str(runtime_tmp_dir),
             "GIT_CONFIG_COUNT": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
         "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_KEY_0": "core.excludesFile",
         "GIT_CONFIG_VALUE_0": "/dev/null",
@@ -981,6 +983,35 @@ def test_initial_agent_prompt_compacts_duplicate_context_without_losing_user_tex
     assert "test_activity_contract" not in compact_execution
     assert "execution_contract" not in compact_output
     assert artifact_reference["required_artifacts"] == ["report.md"]
+
+
+def test_external_agent_contract_requires_literal_claim_quotes_without_ellipsis(tmp_path):
+    from app.services.agent_run_harness import (
+        AgentRunRecord,
+        _agent_output_contract_payload,
+        _output_contract_for_agent_prompt,
+    )
+
+    contract = _agent_output_contract_payload(
+        run=AgentRunRecord(
+            run_id="run-claim-contract",
+            turn_id="turn-1",
+            provider="codex",
+            command=["codex"],
+            cwd=str(tmp_path),
+            artifact_dir=str(tmp_path / "artifacts"),
+        ),
+        task_bundle={"required_artifacts": ["sfmea.json"]},
+        workflow_snapshot={"id": "claim-contract"},
+    )
+
+    protocol = contract["evidence_rules"]["technical_claim_protocol"]
+    assert protocol["literal_quote_required"] is True
+    assert protocol["ellipsis_forbidden"] is True
+    assert protocol["prefer_unindented_exact_fragment"] is True
+    assert _output_contract_for_agent_prompt(contract)["evidence_rules"][
+        "technical_claim_protocol"
+    ] == protocol
 
 
 def test_agent_prompt_uses_a_bounded_source_and_quality_contract_without_losing_user_input():

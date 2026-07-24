@@ -156,7 +156,138 @@ def _external_agent_evidence_context_files(
         candidate = dict(item)
         candidate["evidence_id"] = f"SRC-{len(selected) + 1:02d}"
         selected.append(candidate)
+    # Source-analysis prompt compaction and final claim validation have
+    # different duties.  The first is deliberately capped to keep the model
+    # fast; the latter must be able to verify an Agent's explicit, concrete
+    # source anchor.  Expand only with locally re-read references that include
+    # a path, line range and literal quote.  This is not source rediscovery and
+    # it never accepts an Agent excerpt or SHA as authority.
+    claim_limit = max(limit, 48)
+    for candidate in _external_agent_claim_context_candidates(
+        artifact_root=root,
+        repo_root=repo_root,
+    ):
+        if len(selected) >= claim_limit:
+            break
+        if _candidate_is_covered_by_selected(candidate, selected):
+            continue
+        key = (
+            str(candidate["file_path"]),
+            int(candidate["start_line"]),
+            int(candidate["end_line"]),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        candidate["evidence_id"] = f"SRC-{len(selected) + 1:02d}"
+        selected.append(candidate)
     return selected
+
+
+def _external_agent_claim_context_candidates(
+    *,
+    artifact_root: Path,
+    repo_root: Path,
+) -> Iterable[dict[str, Any]]:
+    """Yield only exact source anchors proposed in structured Agent claims.
+
+    A provider's evidence card is useful for discovery, but an Agent can also
+    cite a concrete line range directly in SFMEA or black-box output.  That is
+    a *candidate* for CodeTalk-local validation, not an asserted fact.  Keeping
+    this extraction here lets the final ledger validate valid late discoveries
+    without broadening the source-analysis prompt or trusting provider files.
+    """
+    for artifact in ("sfmea.json", "black_box_cases.json"):
+        for path in sorted(artifact_root.glob(f"agent_runs/*/{artifact}")):
+            rows = _read_json(path)
+            if not isinstance(rows, list):
+                continue
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                for claim in row.get("technical_claims") or []:
+                    if not isinstance(claim, dict):
+                        continue
+                    for reference in claim.get("evidence") or []:
+                        candidate = _revalidate_external_agent_claim_reference(
+                            reference=reference,
+                            repo_root=repo_root,
+                            claim_type=str(claim.get("type") or ""),
+                        )
+                        if candidate is not None:
+                            yield candidate
+
+
+def _candidate_is_covered_by_selected(
+    candidate: dict[str, Any],
+    selected: Iterable[dict[str, Any]],
+) -> bool:
+    candidate_path = str(candidate.get("file_path") or "")
+    candidate_start = int(candidate.get("start_line") or 0)
+    candidate_end = int(candidate.get("end_line") or 0)
+    return any(
+        str(item.get("file_path") or "") == candidate_path
+        and int(item.get("start_line") or 0) <= candidate_start
+        and candidate_end <= int(item.get("end_line") or 0)
+        for item in selected
+        if isinstance(item, dict)
+    )
+
+
+def _revalidate_external_agent_claim_reference(
+    *,
+    reference: Any,
+    repo_root: Path,
+    claim_type: str,
+) -> dict[str, Any] | None:
+    """Create a source card only when an Agent's direct reference is exact."""
+    if not isinstance(reference, dict):
+        return None
+    relative = str(reference.get("path") or "").strip()
+    quote = str(reference.get("quote") or "")
+    if not relative or Path(relative).is_absolute() or not quote.strip():
+        return None
+    line_numbers = [int(value) for value in re.findall(r"\d+", str(reference.get("lines") or ""))]
+    if not line_numbers:
+        return None
+    start, end = line_numbers[0], line_numbers[-1]
+    try:
+        source_path = (repo_root / relative).resolve(strict=True)
+        if not source_path.is_relative_to(repo_root) or source_path.is_dir():
+            return None
+        raw = source_path.read_bytes()
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    lines = text.splitlines()
+    if start < 1 or end < start or end > len(lines):
+        return None
+    excerpt = "\n".join(lines[start - 1 : end])
+    # The literal quote must be present in precisely the declared source range.
+    # A paraphrase, an ellipsis, or a quote copied from a different line does
+    # not establish a local technical claim.
+    if quote not in excerpt:
+        return None
+    symbol = str(reference.get("symbol") or "").strip()
+    if source_path.suffix.lower() in {".sh", ".bash", ".zsh", ".ksh"}:
+        symbols = [Path(relative).name]
+    elif symbol and symbol in text:
+        symbols = [symbol]
+    elif not symbol:
+        symbols = []
+    else:
+        return None
+    return {
+        "file_path": relative,
+        "classification": "test" if relative.startswith("test/") else "source",
+        "start_line": start,
+        "end_line": end,
+        "excerpt": excerpt,
+        "symbols": symbols,
+        "matched_terms": [claim_type] if claim_type else [],
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "validation_status": "revalidated_agent_claim_anchor",
+    }
 
 
 def _revalidate_external_agent_evidence_card(
