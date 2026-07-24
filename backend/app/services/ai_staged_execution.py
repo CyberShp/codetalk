@@ -104,6 +104,10 @@ _SOURCE_DRIVEN_STAGE_BY_ARTIFACT = {
     for artifact in spec["artifacts"]
 }
 _SOURCE_DRIVEN_DETERMINISTIC_STAGES = frozenset(_SOURCE_DRIVEN_STAGE_GROUPS)
+_SOURCE_DRIVEN_STAGE_ANCHORS = tuple(
+    str(spec["anchor"])
+    for spec in _SOURCE_DRIVEN_STAGE_GROUPS.values()
+)
 _DEEP_EXPLORATION_BRANCHES = (
     (
         "deep_entry_paths",
@@ -1675,12 +1679,25 @@ def build_staged_execution_plan(
             "output_limits": source_output_limits,
         }
     ]
+    # A deep test activity is a governed test-design run, not a selection of
+    # unrelated report files.  Its evidence inventory, scenario expansion and
+    # independent judge are therefore mandatory support stages even when the
+    # user only selected a combined report as the visible deliverable.
+    # Keep these anchors out of ``required_outputs``: they are execution
+    # contract support artifacts, not surprise downloads requested by a user.
+    planning_outputs = list(outputs)
+    if profile["id"] == "deep":
+        for anchor in _SOURCE_DRIVEN_STAGE_ANCHORS:
+            if anchor not in planning_outputs:
+                planning_outputs.append(anchor)
+
     requested: list[tuple[int, str, str, list[str]]] = []
     requested_source_driven_groups: set[str] = set()
     v2_requested = any(
-        artifact in _SOURCE_DRIVEN_STAGE_BY_ARTIFACT for artifact in outputs
+        artifact in _SOURCE_DRIVEN_STAGE_BY_ARTIFACT
+        for artifact in planning_outputs
     )
-    for output_index, artifact in enumerate(outputs):
+    for output_index, artifact in enumerate(planning_outputs):
         source_driven_stage = _SOURCE_DRIVEN_STAGE_BY_ARTIFACT.get(artifact)
         if source_driven_stage:
             if source_driven_stage in requested_source_driven_groups:
@@ -1840,7 +1857,7 @@ def build_staged_execution_plan(
                 "artifact": artifact,
                 "depends_on": projected_dependencies,
                 "purpose": _stage_purpose(stage_id),
-                "support": output_index < 0,
+                "support": output_index < 0 or output_index >= len(outputs),
                 "output_contract": output_contract,
                 **(
                     {

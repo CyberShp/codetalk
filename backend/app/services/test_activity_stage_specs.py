@@ -94,6 +94,51 @@ def project_test_activity_stage_progress(
     }
 
 
+def validate_test_activity_stage_contract(
+    *, artifact_dir: str | Path, profile_id: str
+) -> dict[str, object]:
+    """Fail closed when a required test-activity stage lacks its declared files.
+
+    Progress is deliberately projected from disk instead of trusting a runner
+    event.  A stage may only pass when every artifact promised by its immutable
+    contract was actually materialized for this task.
+    """
+    progress = project_test_activity_stage_progress(
+        artifact_dir=artifact_dir,
+        profile_id=profile_id,
+    )
+    required = {
+        str(spec["stage_id"])
+        for spec in default_test_activity_stage_specs(profile_id=profile_id)
+        if bool(spec.get("required"))
+    }
+    incomplete = [
+        {
+            "stage_id": str(stage.get("stage_id") or ""),
+            "name": str(stage.get("name") or ""),
+            "status": str(stage.get("status") or "not_requested"),
+            "missing_artifacts": [
+                name
+                for name in stage.get("expected_artifacts") or []
+                if name not in (stage.get("present_artifacts") or [])
+            ],
+        }
+        for stage in progress.get("stages") or []
+        if isinstance(stage, dict)
+        and str(stage.get("stage_id") or "") in required
+        and stage.get("status") != "completed"
+    ]
+    return {
+        "kind": "test_activity_stage_contract_validation",
+        "schema_version": "test-activity-stage-contract-v1",
+        "profile_id": profile_id,
+        "status": "passed" if not incomplete else "blocked",
+        "required_stage_ids": sorted(required),
+        "incomplete_stages": incomplete,
+        "progress": progress,
+    }
+
+
 class TestActivityStageProgressTracker:
     """Materialize only the stage state the running task can honestly prove."""
 

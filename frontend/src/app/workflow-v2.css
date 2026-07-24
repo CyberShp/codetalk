@@ -740,6 +740,15 @@
 .ct-v2-stage-progress dl > div { min-width: 0; border-top: 1px solid #e4ecef; padding-top: 6px; }
 .ct-v2-stage-progress dt { color: #7a8a95; font-size: 10px; }
 .ct-v2-stage-progress dd { overflow: hidden; margin: 2px 0 0; color: #253744; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.ct-v2-stage-checklist { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px 12px; margin: 0; padding: 7px 0 0; border-top: 1px solid #e4ecef; list-style: none; }
+.ct-v2-stage-checklist li { display: grid; grid-template-columns: 8px minmax(0, 1fr); column-gap: 6px; align-items: center; min-width: 0; padding: 4px 0; }
+.ct-v2-stage-checklist li > span { width: 7px; height: 7px; border-radius: 50%; background: #c9d4da; }
+.ct-v2-stage-checklist li.is-completed > span { background: #178044; }
+.ct-v2-stage-checklist li.is-running > span { background: #2467c5; box-shadow: 0 0 0 3px #e4efff; }
+.ct-v2-stage-checklist li.is-partial > span, .ct-v2-stage-checklist li.is-awaiting_artifacts > span { background: #bd7a15; }
+.ct-v2-stage-checklist li.is-failed > span, .ct-v2-stage-checklist li.is-cancelled > span { background: #bd2626; }
+.ct-v2-stage-checklist strong { overflow: hidden; color: #314550; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.ct-v2-stage-checklist small { grid-column: 2; overflow: hidden; color: #7a8a95; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .ct-v2-stage-live-output { max-height: 9rem; margin: 0; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid #d9e2ec; background: #f8fafc; padding: 10px 12px; color: #334155; font: 12px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .ct-v2-stage-progress > button { justify-self: start; display: inline-flex; align-items: center; gap: 5px; border: 1px solid #d4b276; border-radius: 5px; background: #fff; padding: 6px 9px; color: #80510d; font-size: 11px; }
 .ct-v2-node-inspector { min-height: 0; overflow: auto; border-left: 1px solid #d7e0e6; background: #f8fafb; }
@@ -851,4 +860,5 @@
   .ct-v2-run-failure button { grid-column: 2; width: fit-content; }
   .ct-v2-run-failure dl { grid-template-columns: 1fr; gap: 6px; }
   .ct-v2-stage-progress dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ct-v2-stage-checklist { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }

@@ -58,6 +58,7 @@ from app.services.test_activity_contract import (
 from app.services.test_activity_stage_specs import (
     TestActivityStageProgressTracker,
     project_test_activity_stage_progress,
+    validate_test_activity_stage_contract,
 )
 from app.services.input_consumption import (
     record_external_agent_artifact_consumption,
@@ -1556,11 +1557,21 @@ class WorkbenchWorkflowRunner:
             else {"status": "not_enforced", "required": [], "missing_required": []}
         )
         audit["artifact_contract_v3"] = artifact_contract_validation
+        stage_contract_validation = validate_test_activity_stage_contract(
+            artifact_dir=artifact_dir,
+            profile_id=profile_id,
+        )
+        audit["stage_contract"] = stage_contract_validation
         if isinstance(quality_axes, dict):
             quality_axes["artifact_contract"] = {
                 "status": artifact_contract_validation["status"],
                 "required": len(artifact_contract_validation["required"]),
                 "missing": len(artifact_contract_validation["missing_required"]),
+            }
+            quality_axes["stage_contract"] = {
+                "status": stage_contract_validation["status"],
+                "required": len(stage_contract_validation["required_stage_ids"]),
+                "incomplete": len(stage_contract_validation["incomplete_stages"]),
             }
         if artifact_contract_validation["status"] == "blocked":
             issues = audit.get("issues")
@@ -1575,6 +1586,29 @@ class WorkbenchWorkflowRunner:
                         artifact_contract_validation["missing_required"]
                     ),
                     "message": "V3 必需正式交付件尚未全部物化，当前结果不能交付。",
+                }
+            )
+            audit["issue_count"] = len(issues)
+            audit["deliverable"] = False
+            audit["status"] = "needs_rework"
+        if stage_contract_validation["status"] == "blocked":
+            issues = audit.get("issues")
+            if not isinstance(issues, list):
+                issues = []
+                audit["issues"] = issues
+            incomplete = stage_contract_validation["incomplete_stages"]
+            issues.append(
+                {
+                    "code": "test_activity_stage_contract_incomplete",
+                    "severity": "error",
+                    "artifact": "test_activity_stage_progress.json",
+                    "message": "测试活动阶段未完成，当前结果不能交付："
+                    + "、".join(
+                        str(item.get("name") or item.get("stage_id") or "")
+                        for item in incomplete
+                        if isinstance(item, dict)
+                    ),
+                    "details": incomplete,
                 }
             )
             audit["issue_count"] = len(issues)

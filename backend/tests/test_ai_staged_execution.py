@@ -784,6 +784,36 @@ def test_deep_profile_plan_materializes_parallel_exploration_branches():
     assert stages["source_analysis"]["output_limits"]["max_evidence_anchors"] > 12
 
 
+def test_deep_profile_requires_governed_source_driven_stage_chain_for_basic_report():
+    """A combined report must not silently bypass the nine-stage activity contract."""
+    plan = build_staged_execution_plan(
+        contract={
+            "target": "iSCSI login",
+            "required_outputs": ["report.md"],
+            "artifact_contract": {"report.md": {"artifact": "report.md"}},
+        },
+        original_user_request="分析 iSCSI login 并输出测试报告",
+        execution_profile={"id": "deep", "max_subagents": 2},
+    )
+
+    stages = {stage["id"]: stage for stage in plan["stages"]}
+
+    assert plan["required_outputs"] == ["report.md"]
+    assert {
+        "breadth_inventory",
+        "developer_explanation",
+        "scenario_expansion",
+        "test_design_governance",
+        "coverage_judge",
+    }.issubset(stages)
+    assert stages["breadth_inventory"]["artifact"] == "entrypoints.json"
+    assert stages["scenario_expansion"]["artifact"] == "scenario_candidates.json"
+    assert stages["coverage_judge"]["artifact"] == "judge_report.json"
+    assert stages["sfmea"]["support"] is True
+    assert stages["black_box_cases"]["support"] is True
+    assert stages["coverage_judge"]["support"] is True
+
+
 @pytest.mark.asyncio
 async def test_deep_profile_executes_exploration_branches_before_delivery_stages(
     tmp_path, monkeypatch
