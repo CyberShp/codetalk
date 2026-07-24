@@ -809,6 +809,31 @@ def test_workflow_harness_does_not_project_claude_oauth_to_custom_wrapper(
     assert "CLAUDE_CODE_OAUTH_TOKEN" not in env
 
 
+def test_workflow_harness_adds_vetted_macos_analysis_tools_to_agent_path(
+    monkeypatch,
+):
+    """An isolated service PATH must still expose CodeTalk-approved local tools."""
+    from app.services import agent_run_harness
+
+    monkeypatch.setattr(
+        agent_run_harness,
+        "_vetted_analysis_tool_bin_paths",
+        lambda **_kwargs: ["/opt/homebrew/bin", "/usr/bin"],
+        raising=False,
+    )
+
+    environment = agent_run_harness._prepend_vetted_analysis_tool_paths(
+        {"PATH": "/usr/bin:/bin"},
+        platform_name="darwin",
+    )
+
+    assert environment["PATH"].split(os.pathsep) == [
+        "/opt/homebrew/bin",
+        "/usr/bin",
+        "/bin",
+    ]
+
+
 def test_agent_run_harness_refreshes_output_contract_for_rerun(tmp_path):
     from app.services.agent_run_harness import AgentRunHarness
 

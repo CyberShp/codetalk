@@ -1040,6 +1040,7 @@ class AgentRunHarness:
         if settings.intranet_network_mode:
             env = scrub_intranet_agent_environment(env)
         env = _prefer_native_macos_git_path(env)
+        env = _prepend_vetted_analysis_tool_paths(env)
         env["CODETALK_AGENT_ARTIFACT_DIR"] = str(self.artifact_dir.resolve())
         try:
             sandbox = prepare_agent_sandbox(
@@ -1976,6 +1977,47 @@ def _prefer_native_macos_git_path(
     path_parts = [part for part in current_path.split(os.pathsep) if part]
     if native_bin not in path_parts:
         result["PATH"] = os.pathsep.join([native_bin, *path_parts])
+    return result
+
+
+def _vetted_analysis_tool_bin_paths(
+    *,
+    platform_name: str = sys.platform,
+    exists: Callable[[Path], bool] = Path.is_dir,
+) -> list[str]:
+    """Return installation roots for CodeTalk's fixed local analysis toolchain.
+
+    Service launchers often receive a deliberately minimal PATH.  Do not inherit
+    arbitrary user bin directories just to make an Agent shell convenient: these
+    directories only cover the package-manager and OS roots where CodeTalk's
+    approved read-only analysis commands (notably ``rg`` and ``jq``) are installed.
+    """
+    platform = str(platform_name).lower()
+    if platform.startswith("darwin"):
+        candidates = (
+            Path("/opt/homebrew/bin"),
+            Path("/usr/local/bin"),
+            Path("/Library/Developer/CommandLineTools/usr/bin"),
+            Path("/usr/bin"),
+            Path("/bin"),
+        )
+    elif platform.startswith("linux"):
+        candidates = (Path("/usr/local/bin"), Path("/usr/bin"), Path("/bin"))
+    else:
+        return []
+    return [str(path) for path in candidates if exists(path)]
+
+
+def _prepend_vetted_analysis_tool_paths(
+    env: dict[str, str],
+    *,
+    platform_name: str = sys.platform,
+) -> dict[str, str]:
+    """Make the fixed local analysis toolchain visible to isolated Agent shells."""
+    result = dict(env)
+    current_parts = [part for part in str(result.get("PATH") or "").split(os.pathsep) if part]
+    prefix = _vetted_analysis_tool_bin_paths(platform_name=platform_name)
+    result["PATH"] = os.pathsep.join([*prefix, *[part for part in current_parts if part not in prefix]])
     return result
 
 
