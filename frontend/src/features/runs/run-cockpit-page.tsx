@@ -478,5 +478,9 @@ function formatNodeDuration(value?: number) { if (!value) return "尚未完成";
 function formatDuration(start?: string, end?: string, nowMs = Date.now()) { if (!start) return "—"; const milliseconds = Math.max(0, new Date(end || nowMs).getTime() - new Date(start).getTime()); const seconds = Math.floor(milliseconds / 1000); return seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`; }
 function displayNodeName(value: string) { return ({ analyze_source_flow: "源码驱动测试分析", validate_evidence: "源码证据校验", render_report: "汇总报告生成" } as Record<string, string>)[value] || value; }
 function displayNodeType(value: string) { return ({ agent_task: "智能分析", evidence_validate: "证据校验", report_render: "报告生成" } as Record<string, string>)[value] || value; }
-function displayNodeGoal(node: WorkbenchRunUiNodeSummary) { if (node.id === "analyze_source_flow") return "先检查可用的 GitNexus 和 CGC 产物，再读取本地源码与测试证据，生成代码证据、外部可观察流程、SFMEA 和可执行黑盒测试用例。"; return node.goal || "完成当前工作流阶段"; }
+function displayNodeGoal(node: WorkbenchRunUiNodeSummary) {
+  if (node.id === "analyze_source_flow") return "先检查可用的 GitNexus 和 CGC 产物，再读取本地源码与测试证据，生成代码证据、外部可观察流程、SFMEA 和可执行黑盒测试用例。";
+  const goal = String(node.goal || "完成当前工作流阶段").replace(/\s+/g, " ").trim();
+  return goal.length > 180 ? `${goal.slice(0, 180)}…` : goal;
+}
 function formatBytes(value: number) { if (value < 1024) return `${value} B`; if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`; return `${(value / 1024 / 1024).toFixed(1)} MB`; }
