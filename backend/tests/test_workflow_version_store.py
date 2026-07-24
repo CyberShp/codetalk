@@ -664,13 +664,19 @@ async def test_draft_trial_compiles_server_graph_and_prepares_real_task_run(
 
         trial = await client.post(
             f"/api/workbench/workflows/new_flow/versions/{draft_id}/test-run",
-            json={"workspace_id": "ws-1", "inputs": {}},
+            json={"workspace_id": "ws-1", "inputs": {}, "node_id": "agent"},
         )
 
     assert trial.status_code == 201
     payload = trial.json()
     assert payload["status"] == "prepared"
     assert payload["workspace_id"] == "ws-1"
+    assert payload["diagnostic"] == {
+        "kind": "node_trial",
+        "node_id": "agent",
+        "not_a_formal_delivery": True,
+    }
+    assert payload["compiled_plan"]["topological_order"] == ["agent"]
     task_run = WorkbenchTaskRunStore(
         data_dir / "workbench" / "task_runs"
     ).load(payload["task_run_id"])
@@ -679,6 +685,24 @@ async def test_draft_trial_compiles_server_graph_and_prepares_real_task_run(
     assert task_run.task_bundle["compiled_plan"]["workflow_version_id"] == draft_id
     assert task_run.workflow_snapshot["id"] == "new_flow"
     assert task_run.task_bundle["trial_run"] is True
+    assert task_run.task_bundle["diagnostic"]["not_a_formal_delivery"] is True
+
+
+@pytest.mark.asyncio
+async def test_draft_trial_can_execute_only_the_selected_graph_node_as_diagnostic(
+    tmp_path, monkeypatch
+):
+    from app.api.workbench_v2_workflows import _diagnostic_node_trial
+    from app.services.workflow_graph import compile_workflow_graph
+
+    graph = _workspace_graph()
+    compiled = compile_workflow_graph(graph, capabilities={"providers": {"builtin-llm": {"available": True, "mcp_profiles": []}}, "skills": []}, workflow_version_id="draft")
+    diagnostic = _diagnostic_node_trial(compiled, "agent")
+
+    assert diagnostic["compiled_plan"]["topological_order"] == ["agent"]
+    assert diagnostic["compiled_plan"]["nodes"][0]["depends_on"] == []
+    assert [item["id"] for item in diagnostic["compiled_definition"]["steps"]] == ["agent"]
+    assert [item["id"] for item in diagnostic["compiled_definition"]["inputs"]] == ["repo_path"]
 
 
 @pytest.mark.asyncio

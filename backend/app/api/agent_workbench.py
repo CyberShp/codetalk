@@ -2906,10 +2906,18 @@ def _execute_task_run_with_closure(
     write_task_artifact_manifest(task_dir, task_run_id=refreshed.task_run_id)
     response["acceptance_audit"] = acceptance
     run_summary = _build_task_run_ui_summary(refreshed, task_dir)
-    quality_status, delivery_status = _derive_task_run_outcomes(
-        execution=response,
-        run_summary=run_summary,
-    )
+    if _is_diagnostic_trial(refreshed):
+        # A designer node trial proves the same compiler/Harness/provider path,
+        # but it cannot certify a workflow's full delivery contract or quality.
+        # Keep its events and files inspectable without contaminating a formal
+        # attempt's status or delivery record.
+        quality_status, delivery_status = "not_checked", "none"
+        response["diagnostic_only"] = True
+    else:
+        quality_status, delivery_status = _derive_task_run_outcomes(
+            execution=response,
+            run_summary=run_summary,
+        )
     WorkbenchTaskRunEventStore(_task_runs_dir()).mark_outcomes(
         task_run_id,
         quality_status=quality_status,
@@ -2920,6 +2928,15 @@ def _execute_task_run_with_closure(
     response["delivery_status"] = refreshed.delivery_status
     response["run_ui_summary"] = _build_task_run_ui_summary(refreshed, task_dir)
     return response
+
+
+def _is_diagnostic_trial(task_run: Any) -> bool:
+    bundle = getattr(task_run, "task_bundle", None)
+    diagnostic = bundle.get("diagnostic") if isinstance(bundle, dict) else None
+    return bool(
+        isinstance(diagnostic, dict)
+        and diagnostic.get("not_a_formal_delivery") is True
+    )
 
 
 def _derive_task_run_outcomes(

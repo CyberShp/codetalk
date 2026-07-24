@@ -56,6 +56,7 @@ class WorkflowPublishRequest(BaseModel):
 class WorkflowTrialRunRequest(BaseModel):
     workspace_id: str = Field(min_length=1)
     inputs: dict[str, Any] = Field(default_factory=dict)
+    node_id: str | None = None
 
 
 def workflow_version_store() -> WorkflowVersionStore:
@@ -199,6 +200,7 @@ async def compile_workflow_version(workflow_id: str, version_id: str) -> dict[st
             validation=exc.validation,
         )
         raise HTTPException(status_code=422, detail=exc.validation)
+
     workflow_version_store().update_draft(
         version_id,
         authoring_graph=version.authoring_graph,
@@ -283,6 +285,12 @@ async def prepare_workflow_trial_run(
         )
         raise HTTPException(status_code=422, detail=exc.validation)
 
+    if payload.node_id:
+        try:
+            compiled = _diagnostic_node_trial(compiled, payload.node_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
     root = settings.data_path / "workbench"
     trial_workflow_store = WorkflowStore(root / "trial_workflows.db")
     trial_workflow_store.save_workflow(compiled["compiled_definition"])
@@ -310,6 +318,11 @@ async def prepare_workflow_trial_run(
     prepared.task_bundle["compiled_plan"] = compiled["compiled_plan"]
     prepared.task_bundle["workflow_version_id"] = version.version_id
     prepared.task_bundle["trial_run"] = True
+    prepared.task_bundle["diagnostic"] = {
+        "kind": "node_trial" if payload.node_id else "workflow_trial",
+        "node_id": payload.node_id or None,
+        "not_a_formal_delivery": True,
+    }
     task_run_file = Path(prepared.artifact_dir) / "task_run.json"
     task_run_file.write_text(
         json.dumps(asdict(prepared), ensure_ascii=False, indent=2),
@@ -329,7 +342,46 @@ async def prepare_workflow_trial_run(
         "workflow_version_id": version_id,
         "workspace_id": payload.workspace_id,
         "compiled_plan": compiled["compiled_plan"],
+        "diagnostic": prepared.task_bundle["diagnostic"],
     }
+
+
+def _diagnostic_node_trial(compiled: dict[str, Any], node_id: str) -> dict[str, Any]:
+    """Keep the public compiler contract, but execute exactly one executable node.
+
+    This is intentionally derived from the compiled graph rather than from a
+    separate trial DSL, so readiness, Harness, network policy and collection
+    use the same task-run path as a normal execution.
+    """
+    plan = dict(compiled["compiled_plan"])
+    selected = next(
+        (item for item in plan.get("nodes") or [] if str(item.get("graph_node_id")) == node_id),
+        None,
+    )
+    if not isinstance(selected, dict):
+        raise ValueError("请选择一个可执行节点后再试运行")
+    step_id = str(selected.get("node_id") or "")
+    if not step_id:
+        raise ValueError("所选节点缺少可执行步骤")
+    definition = dict(compiled["compiled_definition"])
+    definition["steps"] = [
+        item for item in definition.get("steps") or []
+        if isinstance(item, dict) and str(item.get("id") or "") == step_id
+    ]
+    if not definition["steps"]:
+        raise ValueError("所选节点不是可试运行的执行节点")
+    required_inputs = set((selected.get("resolved_input_bindings") or {}).keys())
+    definition["inputs"] = [
+        item for item in definition.get("inputs") or []
+        if isinstance(item, dict) and str(item.get("id") or "") in required_inputs
+    ]
+    definition["outputs"] = [
+        item for item in definition.get("outputs") or []
+        if isinstance(item, dict) and str(item.get("from") or item.get("source") or "") == step_id
+    ]
+    plan["nodes"] = [{**selected, "depends_on": []}]
+    plan["topological_order"] = [step_id]
+    return {**compiled, "compiled_definition": definition, "compiled_plan": plan}
 
 
 def _version_for_workflow(workflow_id: str, version_id: str):

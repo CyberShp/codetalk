@@ -252,4 +252,9 @@ export interface WorkflowTrialRunResult {
   workflow_version_id: string;
   workspace_id: string;
   compiled_plan: CompiledWorkflowPlan;
+  diagnostic: {
+    kind: "node_trial" | "workflow_trial";
+    node_id: string | null;
+    not_a_formal_delivery: true;
+  };
 }

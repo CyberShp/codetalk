@@ -533,6 +533,22 @@ def test_run_outcomes_keep_quality_and_delivery_independent():
     assert delivery_status == "partial"
 
 
+def test_node_diagnostic_trial_is_never_a_formal_delivery():
+    from app.api.agent_workbench import _is_diagnostic_trial
+
+    assert _is_diagnostic_trial(
+        SimpleNamespace(
+            task_bundle={
+                "diagnostic": {
+                    "kind": "node_trial",
+                    "not_a_formal_delivery": True,
+                }
+            }
+        )
+    )
+    assert not _is_diagnostic_trial(SimpleNamespace(task_bundle={}))
+
+
 def test_task_configuration_rejects_agent_resource_overrides_for_builtin_nodes():
     from app.services.workbench_task_compile import TaskConfigurationError, compile_task_configuration
 

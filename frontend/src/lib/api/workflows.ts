@@ -80,7 +80,7 @@ export const workflowsApi = {
   testRun: (
     workflowId: string,
     versionId: string,
-    payload: { workspace_id: string; inputs: Record<string, unknown> },
+    payload: { workspace_id: string; inputs: Record<string, unknown>; node_id?: string },
   ) =>
     request<WorkflowTrialRunResult>(
       `${workflowPath(workflowId)}/versions/${encodeURIComponent(versionId)}/test-run`,

@@ -176,6 +176,11 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
   const running = ["queued", "running", "prepared"].includes(status);
   const failed = ["failed", "error", "interrupted"].includes(status);
   const partial = status === "partial";
+  const diagnosticTrial = Boolean(
+    run.task_bundle?.diagnostic
+    && typeof run.task_bundle.diagnostic === "object"
+    && (run.task_bundle.diagnostic as { not_a_formal_delivery?: unknown }).not_a_formal_delivery === true,
+  );
   const nodeNames = [...new Set(events.map(eventNode).filter(Boolean))];
   const kinds = [...new Set(events.map((item) => item.event_kind).filter(Boolean))];
   const publicArtifacts = artifacts.filter((item) => item.audience !== "diagnostic");
@@ -233,7 +238,7 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
 
   return <main className="ct-v2-run-cockpit">
     <header className="ct-v2-run-header">
-      <div className="ct-v2-run-identity"><Link href={`/tasks/${taskId}`} aria-label="返回任务"><ArrowLeft size={16} /></Link><div><span>Attempt {run.attempt_number || 1}</span><h1>{task.name}</h1></div></div>
+      <div className="ct-v2-run-identity"><Link href={`/tasks/${taskId}`} aria-label="返回任务"><ArrowLeft size={16} /></Link><div><span>Attempt {run.attempt_number || 1}{diagnosticTrial ? " · 节点诊断运行" : ""}</span><h1>{task.name}</h1>{diagnosticTrial && <small>仅验证此节点的真实执行链，不计入正式质量与交付。</small>}</div></div>
       <StatusBlock label="执行状态" value={taskStatusLabel(taskExecutionLabels, status)} tone={status} />
       <StatusBlock label="质量状态" value={taskStatusLabel(taskQualityLabels, run.quality_status || "not_checked")} tone={run.quality_status || "not_checked"} />
       <StatusBlock label="交付状态" value={taskStatusLabel(taskDeliveryLabels, run.delivery_status || "none")} tone={run.delivery_status || "none"} />

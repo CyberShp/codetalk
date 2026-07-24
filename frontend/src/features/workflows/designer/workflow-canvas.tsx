@@ -318,6 +318,7 @@ const WorkflowNodeCard = memo(({ data, selected }: NodeProps<WorkflowFlowNode>) 
       className={`ct-v2-workflow-node ${selected ? "is-selected" : ""}`}
       aria-label={`${node.label} ${nodeKindLabel(node.kind)}节点`}
       data-testid={`workflow-node-${node.id}`}
+      tabIndex={0}
     >
       <div className="ct-v2-node-drag">
         <span className="ct-v2-kind-mark" aria-hidden="true" />

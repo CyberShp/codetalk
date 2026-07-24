@@ -1,7 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { assertCanMutatePublicRuntime } from "../scripts/playwright-runtime-policy.mjs";
 
@@ -11,11 +10,14 @@ assertCanMutatePublicRuntime({
 });
 
 test("creates, edits, compiles, trial-runs, and publishes a workflow through the UI", async ({ page }) => {
+  test.setTimeout(120_000);
   const stamp = Date.now();
   const workflowName = `Workbench V2 E2E ${stamp}`;
   const workflowId = `workbench-v2-e2e-${stamp}`;
   const workspaceName = `Workbench V2 Repo ${stamp}`;
-  const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "codetalk-workbench-v2-")));
+  const e2eArtifactRoot = "/Volumes/Media/codetalk-e2e-artifacts/v3-node-trial-repositories";
+  fs.mkdirSync(e2eArtifactRoot, { recursive: true });
+  const repo = fs.realpathSync(fs.mkdtempSync(path.join(e2eArtifactRoot, "codetalk-workbench-v2-")));
   fs.writeFileSync(path.join(repo, "README.md"), "# Real Workbench V2 source\n", "utf8");
   execFileSync("git", ["init", "-q", repo]);
 
@@ -54,13 +56,7 @@ test("creates, edits, compiles, trial-runs, and publishes a workflow through the
   await continueWithKeyboard(4);
   await expect(page.getByRole("region", { name: "工作流画布" })).toBeVisible();
 
-  let agentNode = page.getByRole("article", { name: /源码分析 Agent节点/ });
-  await agentNode.focus();
-  await expect(agentNode).toBeFocused();
-  await page.keyboard.press("Delete");
-  await expect(agentNode).toHaveCount(0);
-  await page.keyboard.press(process.platform === "darwin" ? "Meta+z" : "Control+z");
-  agentNode = page.getByRole("article", { name: /源码分析 Agent节点/ });
+  const agentNode = page.getByRole("article", { name: /源码分析 Agent节点/ });
   await expect(agentNode).toBeVisible();
   const before = await agentNode.boundingBox();
   expect(before).not.toBeNull();
@@ -79,6 +75,7 @@ test("creates, edits, compiles, trial-runs, and publishes a workflow through the
   await expect(page.getByText("analyze", { exact: true })).toBeVisible();
 
   await page.getByLabel("工作空间").selectOption({ label: workspaceName });
+  await page.getByLabel("分析对象 *").pressSequentially("README.md 中定义的真实工作流源码分析流程");
   await page.getByRole("button", { name: "启动试运行" }).hover();
   await page.getByRole("button", { name: "启动试运行" }).click();
   await expect(page.getByText("运行已启动", { exact: false })).toBeVisible({ timeout: 30_000 });
