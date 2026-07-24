@@ -14,7 +14,7 @@ scope.  `partial` and `missing` remain release blockers.
 ## Evidence Baseline
 
 - Authority worktree: `/Volumes/Media/codetalk-v3-productization-resume`
-- Audit head: `286b33f6`
+- Audit head: `7878edda`
 - Primary real-model evidence root:
   `/Volumes/Media/codetalk-e2e-artifacts/v3-deepseek-flash-pro-risk-evidence-20260724/`
 - Successful browser quality-repair run:
@@ -60,6 +60,16 @@ scope.  `partial` and `missing` remain release blockers.
   Flash for source/deep-exploration stages and Pro for SFMEA/black-box stages.
   Its duration remains cache-assisted and is not an uncached deep-performance
   baseline.
+- Linked-result AI-thread browser review regression: the user clicked
+  **围绕本次运行继续分析**, then asked the built-in model to independently score
+  the nine attached deliverables.  The review ran as `deepseek-v4-flash`
+  (`run_c28bc017c0ab45d8a22f0f29c2937063`, `completed`, `5.9s`, 14 attached
+  evidence items) against the prior Flash/Pro workflow deliverable.  It scored
+  the result **62/100**, below the release threshold, citing unsupported SFMEA
+  assertions and insufficient evidence for several risk conclusions.  This is
+  successful AI-thread / linked-artifact E2E evidence, but it is a negative
+  quality result: AC-QUALITY-006 remains open and the underlying source/SFMEA
+  claims need remediation before a fresh independent review may pass.
 
 ## Acceptance Status
 
@@ -70,7 +80,7 @@ scope.  `partial` and `missing` remain release blockers.
 | Harness input, readiness and events | partial | Shared readiness, input snapshot, activity-aware timeout and Harness tests | Need two live executable providers under the same approved deployment policy. |
 | Test Activity Skill Runtime | partial | Thirteen staged events, Flash/Pro routing and complete artifacts from Attempt 8 | Deep profile must complete with all gates and a separately audited sample. Attempt 12 additionally exposed that a quality-retry snapshot can reuse most stages while retaining only the final Pro call metrics; the latest deep browser run additionally exposed fixed-order source-card routing. Both require rerun after their respective gates are active. |
 | Artifact Contract and Claim/Evidence | verified for the DeepSeek B rapid sample | Attempt 8: six downloadable deliverables, 48/48 verified facts, `46/46` final checks and zero audit issues | Repeat against deep profile and record Markdown/JSON hash audit. |
-| Quality and targeted repair | verified for declared findings | `cf68ade7`, focused contract/task-run regressions, Attempt 8 browser completion | Independent accuracy review still must score the final deep sample. |
+| Quality and targeted repair | verified for declared findings | `cf68ade7`, focused contract/task-run regressions, Attempt 8 browser completion | A real Flash review of the final deep artifacts scored 62/100; remediate its unsupported claims and repeat an independent review at >=80. |
 | AI-thread result linkage | verified for the final quality-repair sample | Fresh browser click from Attempt 12 created `conv_fcf5cb0727f441ae81b8f83d8f6f7cf1`; the thread displayed and downloaded nine linked deliverables, and the isolated real E2E now asserts the artifact rail before follow-up | Repeat once against an uncached deep-profile deliverable during release evidence capture. |
 | Zero Autonomous Egress code/process controls | partial | Network policy and sandbox regressions (`25 passed`); real macOS sandbox DNS denial; deployment capture collector and procedure | Need deployment-owned firewall/DNS capture covering both basic workflows and an allowed approved provider/MCP route. |
 | SDK POC and runtime decision | verified for architecture selection | Isolated POC ADR/version/hash/license record plus ADR-024 retaining the local durable stage runtime | Any production SDK admission still requires the adapter, offline-bundle, telemetry-disable, sandbox, traffic-capture, and real-SPDK gates in ADR-024. |
@@ -88,8 +98,8 @@ scope.  `partial` and `missing` remain release blockers.
 3. Deployment traffic capture must prove that only user-triggered Provider Adapter
    inference reaches an approved endpoint; trace, telemetry, updates, package sources,
    hosted MCP and Agent bypasses must remain absent.
-4. An independent reviewer/model must score the deep artifacts at least 80 and must
-   inspect factual claims rather than only report formatting.
+4. An independent reviewer/model must score the remediated deep artifacts at least 80 and must
+   inspect factual claims rather than only report formatting. The current real Flash review scored 62.
 5. Release evidence still needs the full AC matrix, final desktop/mobile screenshots,
    restart/concurrency evidence, and an updated operator manual.
 6. The legacy generic two-artifact workflow tests currently receive the full Test
