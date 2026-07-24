@@ -327,6 +327,7 @@ def test_sfmea_failure_mode_classifier_rejects_attempt3_normal_rows(failure_mode
         "连接销毁时未检查 login_timer 是否已注销",
         "连接销毁时未清理所有定时器，回调可能访问已释放的内存",
         "MCS 连接数超限后未立即关闭新连接",
+        "MCS 连接数检查后未原子增加计数",
         "空指针检查后仍可能解引用空指针",
         "MCS 超限连接拒绝事件未记录，攻击行为不可追溯",
     ],

@@ -8628,6 +8628,48 @@ async def test_risk_finding_duplicate_key_keeps_distinct_chinese_findings():
     assert _risk_finding_duplicate_key(timer_race) != _risk_finding_duplicate_key(cleanup_order)
 
 
+async def test_deliverable_quality_promotes_recoverable_partial_execution():
+    from app.api.agent_workbench import _promote_partial_execution_after_deliverable_quality
+
+    execution = {
+        "status": "partial",
+        "step_results": [{
+            "step_id": "analyze",
+            "status": "partial",
+            "execution": {"error": "", "timed_out": False},
+            "validation": {"status": "ok"},
+        }],
+    }
+
+    promoted = _promote_partial_execution_after_deliverable_quality(
+        execution=execution,
+        quality={"deliverable": True},
+    )
+
+    assert promoted["status"] == "completed"
+    assert promoted["execution_status"] == "completed"
+    assert promoted["recovered_partial_steps"] == ["analyze"]
+
+
+async def test_deliverable_quality_does_not_promote_timed_out_partial_execution():
+    from app.api.agent_workbench import _promote_partial_execution_after_deliverable_quality
+
+    execution = {
+        "status": "partial",
+        "step_results": [{
+            "step_id": "analyze",
+            "status": "partial",
+            "execution": {"error": "", "timed_out": True},
+            "validation": {"status": "ok"},
+        }],
+    }
+
+    assert _promote_partial_execution_after_deliverable_quality(
+        execution=execution,
+        quality={"deliverable": True},
+    )["status"] == "partial"
+
+
 async def test_workbench_task_run_acceptance_audit_rejects_out_of_range_sfmea_scores(
     workbench_client,
     tmp_path,

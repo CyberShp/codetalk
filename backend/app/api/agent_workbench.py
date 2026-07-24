@@ -3463,6 +3463,10 @@ async def create_task_run_acceptance_audit(task_run_id: str) -> dict[str, Any]:
     execution = _read_json(execution_path)
     if quality and isinstance(execution, dict):
         execution["test_activity_quality"] = quality
+        execution = _promote_partial_execution_after_deliverable_quality(
+            execution=execution,
+            quality=quality,
+        )
         quality_base_status = str(execution.get("quality_audit_base_status") or "")
         if (
             quality.get("deliverable") is False
@@ -3503,6 +3507,21 @@ async def create_task_run_acceptance_audit(task_run_id: str) -> dict[str, Any]:
             execution=reconciled_execution,
             acceptance=payload,
         )
+        event_store = WorkbenchTaskRunEventStore(_task_runs_dir())
+        if (
+            str(reconciled_execution.get("status") or "") == "completed"
+            and event_store.current_status(task_run_id) == "partial"
+        ):
+            event_store.mark_status(task_run_id, "completed")
+            event_store.append(
+                task_run_id,
+                "completed",
+                {
+                    "status": "completed",
+                    "reconciled_from_partial": True,
+                    "user_message": "最终质量审计已接受保留的结果，运行已恢复为完成。",
+                },
+            )
         run_summary = _build_task_run_ui_summary(task_run, task_dir)
         if _is_diagnostic_trial(task_run):
             quality_status, delivery_status = "not_checked", "none"
@@ -7987,6 +8006,51 @@ def _reconcile_acceptance_quality(
     _write_json(task_dir / "test_activity_quality_audit.json", quality)
     _write_json(task_dir / "workflow_execution.json", reconciled)
     return reconciled
+
+
+def _promote_partial_execution_after_deliverable_quality(
+    *,
+    execution: dict[str, Any],
+    quality: dict[str, Any],
+) -> dict[str, Any]:
+    """Close a recoverable staged partial once its final deliverable is accepted.
+
+    A built-in model stage can intentionally retain a partial provider result
+    while deterministic repair materializes valid artifacts.  Once the final
+    quality audit accepts that artifact set, showing the whole task as failed
+    is both inaccurate and blocks users from a valid delivery.  Time-budget
+    exhaustion and real execution errors remain partial.
+    """
+    if (
+        str(execution.get("status") or "") != "partial"
+        or quality.get("deliverable") is not True
+    ):
+        return execution
+    recovered_steps: list[str] = []
+    for result in execution.get("step_results") or []:
+        if not isinstance(result, dict) or str(result.get("status") or "") != "partial":
+            continue
+        run = result.get("execution") if isinstance(result.get("execution"), dict) else {}
+        if (
+            bool(run.get("timed_out"))
+            or str(run.get("error") or "").strip()
+            or str(run.get("reason") or "") == "workflow_deadline_exceeded"
+        ):
+            return execution
+        validation = result.get("validation") if isinstance(result.get("validation"), dict) else {}
+        if str(validation.get("status") or "") not in {"ok", "passed", "completed"}:
+            return execution
+        step_id = str(result.get("step_id") or result.get("node_id") or "").strip()
+        if step_id:
+            recovered_steps.append(step_id)
+    if not recovered_steps:
+        return execution
+    promoted = dict(execution)
+    promoted["status"] = "completed"
+    promoted["execution_status"] = "completed"
+    promoted["quality_repaired_to_deliverable"] = True
+    promoted["recovered_partial_steps"] = recovered_steps
+    return promoted
 
 
 def _black_box_case_expected(case: dict[str, Any]) -> list[str]:
