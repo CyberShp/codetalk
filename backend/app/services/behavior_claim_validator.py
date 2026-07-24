@@ -7,6 +7,7 @@ import inspect
 import json
 import re
 import shutil
+import sqlite3
 import time
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable
@@ -43,6 +44,110 @@ _FIELD_PATCH_ALLOWLIST = {
         "oracle_basis",
     },
 }
+
+
+def build_behavior_claim_audit_readiness(
+    *,
+    required: bool,
+    generator_identities: list[str] | None = None,
+) -> dict[str, Any]:
+    """Check the local configuration needed for independent fact validation.
+
+    This deliberately performs no model request.  It is used both when a task
+    is prepared and immediately before it starts, so a missing audit route is
+    reported in seconds instead of after an otherwise successful Agent turn.
+    """
+    generators = [str(item or "").strip().lower() for item in generator_identities or []]
+    if not required or not settings.behavior_claim_audit_enabled:
+        return {
+            "status": "not_required",
+            "required": False,
+            "mode": "disabled" if not settings.behavior_claim_audit_enabled else "not_applicable",
+            "message": "当前工作流不要求独立源码事实核验。",
+            "recommended_action": "",
+        }
+
+    try:
+        connection = sqlite3.connect(str(settings.sqlite_db))
+        try:
+            rows = connection.execute(
+                "SELECT key, value FROM settings WHERE key IN (?, ?)",
+                ("behavior_claim_audit_model_id", "active_chat_model_id"),
+            ).fetchall()
+            values = {str(key): str(value or "") for key, value in rows}
+            audit_id = values.get("behavior_claim_audit_model_id", "").strip()
+            active_id = values.get("active_chat_model_id", "").strip()
+
+            def configured_chat_model(config_id: str) -> bool:
+                if not config_id:
+                    return False
+                row = connection.execute(
+                    "SELECT is_chat_model FROM llm_configs WHERE id = ?", (config_id,)
+                ).fetchone()
+                return bool(row and row[0])
+
+            if audit_id:
+                if configured_chat_model(audit_id):
+                    return {
+                        "status": "ready",
+                        "required": True,
+                        "mode": "configured_independent_model",
+                        "model_config_id": audit_id,
+                        "message": "独立源码事实核验模型已配置。",
+                        "recommended_action": "",
+                    }
+                return {
+                    "status": "blocked",
+                    "required": True,
+                    "mode": "invalid_independent_model",
+                    "message": "独立质量核验模型配置不存在或不是聊天模型。",
+                    "recommended_action": "请在设置中重新选择一个可用的独立质量核验模型。",
+                }
+
+            # For an external Codex run, the historical automatic route uses
+            # the active chat model as the independent auditor.  Validate that
+            # exact dependency up front rather than letting final delivery
+            # turn every unreviewed claim into 'insufficient'.
+            needs_active_chat = (
+                str(settings.behavior_claim_audit_runtime_id or "auto") == "auto"
+                and any("codex" in identity for identity in generators)
+            )
+            if needs_active_chat:
+                if configured_chat_model(active_id):
+                    return {
+                        "status": "ready",
+                        "required": True,
+                        "mode": "active_chat_model_for_codex_audit",
+                        "model_config_id": active_id,
+                        "message": "将使用当前活跃聊天模型执行独立源码事实核验。",
+                        "recommended_action": "建议在设置中单独指定独立质量核验模型，以固定审计路由。",
+                    }
+                return {
+                    "status": "blocked",
+                    "required": True,
+                    "mode": "missing_active_chat_model",
+                    "message": "本工作流需要独立源码事实核验，但未配置可用的活跃聊天模型。",
+                    "recommended_action": "请在设置中选择活跃聊天模型，或单独指定独立质量核验模型后重新启动。",
+                }
+        finally:
+            connection.close()
+    except (OSError, sqlite3.Error) as exc:
+        return {
+            "status": "blocked",
+            "required": True,
+            "mode": "configuration_store_unavailable",
+            "message": "无法读取独立质量核验配置。",
+            "recommended_action": "请确认 CodeTalk 设置数据库可访问后重试。",
+            "diagnostic": f"{type(exc).__name__}: {exc}",
+        }
+
+    return {
+        "status": "ready",
+        "required": True,
+        "mode": "agent_runtime_auditor",
+        "message": "将使用已配置的独立 Agent 审计器执行源码事实核验。",
+        "recommended_action": "",
+    }
 
 
 def build_behavior_claim_audit_prompt(request: dict[str, Any]) -> str:

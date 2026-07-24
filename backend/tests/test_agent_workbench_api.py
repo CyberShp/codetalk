@@ -3586,6 +3586,56 @@ async def test_task_run_ui_summary_explains_agent_preflight_block_before_a_node_
     assert summary["failure"]["actions"] == ["检查执行器设置", "查看内部诊断"]
 
 
+async def test_task_run_preflight_blocks_missing_independent_quality_audit(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+
+    from app.api import agent_workbench
+
+    task_root = tmp_path / "task_run_quality_preflight"
+    task_root.mkdir()
+    task_run = SimpleNamespace(
+        artifact_dir=str(task_root),
+        task_bundle={
+            "provider_snapshot": {"providers": {}},
+            "workflow_contract": {
+                "agent_steps": [{"provider": "agent-runtime:default-codex"}]
+            },
+            "test_activity_contract": {
+                "quality_gates": {"require_independent_behavior_validation": True},
+                "artifact_contract": {"sfmea.json": {}},
+            },
+        },
+    )
+    monkeypatch.setattr(
+        agent_workbench.WorkbenchTaskRunStore,
+        "load",
+        lambda _self, _task_run_id: task_run,
+    )
+    monkeypatch.setattr(
+        agent_workbench,
+        "build_behavior_claim_audit_readiness",
+        lambda **_kwargs: {
+            "status": "blocked",
+            "mode": "missing_active_chat_model",
+            "message": "本工作流需要独立源码事实核验，但未配置可用的活跃聊天模型。",
+            "recommended_action": "请在设置中选择活跃聊天模型。",
+        },
+    )
+
+    result = await agent_workbench._preflight_task_run_agent_runtimes("task-run-1")
+
+    assert result["status"] == "blocked"
+    assert result["message"] == (
+        "独立质量核验启动前检查未通过：本工作流需要独立源码事实核验，"
+        "但未配置可用的活跃聊天模型。 请在设置中选择活跃聊天模型。"
+    )
+    persisted = json.loads((task_root / "provider_live_readiness.json").read_text(encoding="utf-8"))
+    assert persisted["quality_audit"]["mode"] == "missing_active_chat_model"
+    assert persisted["checks"][-1]["provider"] == "independent-quality-audit"
+
+
 async def test_public_task_run_summary_exposes_quality_axes_without_full_claim_payload(tmp_path):
     from app.api.agent_workbench import _public_task_run_runtime_summary
 

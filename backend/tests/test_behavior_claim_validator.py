@@ -47,6 +47,60 @@ def _request():
     }
 
 
+def test_behavior_claim_audit_readiness_blocks_codex_when_active_model_is_missing(
+    tmp_path, monkeypatch
+):
+    from app.config import settings
+    from app.services.behavior_claim_validator import build_behavior_claim_audit_readiness
+
+    database = tmp_path / "settings.db"
+    connection = __import__("sqlite3").connect(database)
+    connection.executescript(
+        "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);"
+        "CREATE TABLE llm_configs (id TEXT PRIMARY KEY, is_chat_model INTEGER);"
+    )
+    connection.commit()
+    connection.close()
+    monkeypatch.setattr(settings, "sqlite_db", database)
+    monkeypatch.setattr(settings, "behavior_claim_audit_enabled", True)
+    monkeypatch.setattr(settings, "behavior_claim_audit_runtime_id", "auto")
+
+    readiness = build_behavior_claim_audit_readiness(
+        required=True,
+        generator_identities=["agent-runtime:default-codex"],
+    )
+
+    assert readiness["status"] == "blocked"
+    assert readiness["mode"] == "missing_active_chat_model"
+    assert "活跃聊天模型" in readiness["message"]
+
+
+def test_behavior_claim_audit_readiness_accepts_explicit_audit_model(tmp_path, monkeypatch):
+    from app.config import settings
+    from app.services.behavior_claim_validator import build_behavior_claim_audit_readiness
+
+    database = tmp_path / "settings.db"
+    connection = __import__("sqlite3").connect(database)
+    connection.executescript(
+        "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT);"
+        "CREATE TABLE llm_configs (id TEXT PRIMARY KEY, is_chat_model INTEGER);"
+        "INSERT INTO settings VALUES ('behavior_claim_audit_model_id', 'audit-1');"
+        "INSERT INTO llm_configs VALUES ('audit-1', 1);"
+    )
+    connection.commit()
+    connection.close()
+    monkeypatch.setattr(settings, "sqlite_db", database)
+    monkeypatch.setattr(settings, "behavior_claim_audit_enabled", True)
+
+    readiness = build_behavior_claim_audit_readiness(
+        required=True,
+        generator_identities=["agent-runtime:default-codex"],
+    )
+
+    assert readiness["status"] == "ready"
+    assert readiness["mode"] == "configured_independent_model"
+
+
 @pytest.mark.asyncio
 async def test_materialize_routes_codex_generation_to_active_builtin_llm(
     tmp_path, monkeypatch

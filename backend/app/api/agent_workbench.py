@@ -47,6 +47,7 @@ from app.services.test_activity_contract import (
     black_box_oracle_basis_quality_gaps,
     sfmea_mitigation_is_actionable,
 )
+from app.services.behavior_claim_validator import build_behavior_claim_audit_readiness
 from app.services.workbench_artifact_manifest import (
     TEXT_ARTIFACT_SUFFIXES,
     artifact_preview,
@@ -2575,19 +2576,51 @@ async def _preflight_task_run_agent_runtimes(task_run_id: str) -> dict[str, Any]
             "success": bool(result.get("success")),
             "message": str(result.get("message") or ""),
         })
+    bundle = task_run.task_bundle if isinstance(task_run.task_bundle, dict) else {}
+    activity_contract = bundle.get("test_activity_contract")
+    quality_readiness = build_behavior_claim_audit_readiness(
+        required=bool(
+            isinstance(activity_contract, dict)
+            and (activity_contract.get("quality_gates") or {}).get(
+                "require_independent_behavior_validation"
+            )
+            and activity_contract.get("artifact_contract")
+        ),
+        generator_identities=[
+            str(item.get("provider") or "")
+            for item in (bundle.get("workflow_contract") or {}).get("agent_steps") or []
+            if isinstance(item, dict)
+        ],
+    )
+    if quality_readiness.get("status") == "blocked":
+        checks.append({
+            "provider": "independent-quality-audit",
+            "runtime_id": str(quality_readiness.get("mode") or "quality-audit"),
+            "success": False,
+            "message": str(quality_readiness.get("message") or "独立质量核验尚未就绪。"),
+            "recommended_action": str(quality_readiness.get("recommended_action") or ""),
+        })
     payload = {
         "schema_version": "provider-live-readiness-v1",
         "checked_at": datetime.now(timezone.utc).isoformat(),
         "checks": checks,
+        "quality_audit": quality_readiness,
     }
     task_dir = Path(task_run.artifact_dir)
     _write_json(task_dir / "provider_live_readiness.json", payload)
     failed = next((item for item in checks if not item["success"]), None)
     if failed:
         message = str(failed["message"] or "所选 Agent 尚未就绪。")
+        recommended_action = str(failed.get("recommended_action") or "").strip()
+        prefix = (
+            "独立质量核验启动前检查未通过"
+            if str(failed.get("provider") or "") == "independent-quality-audit"
+            else "所选 Agent 未通过启动前可用性检查"
+        )
         return {
             "status": "blocked",
-            "message": f"所选 Agent 未通过启动前可用性检查：{message}",
+            "message": f"{prefix}：{message}"
+            + (f" {recommended_action}" if recommended_action else ""),
             "checks": checks,
         }
     return {"status": "ready", "checks": checks}

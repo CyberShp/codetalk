@@ -26,6 +26,7 @@ from app.services.external_agent_discovery import (
     split_agent_command,
 )
 from app.services.test_activity_contract import build_test_activity_contract
+from app.services.behavior_claim_validator import build_behavior_claim_audit_readiness
 from app.services.test_activity_stage_specs import default_test_activity_stage_specs
 from app.services.artifact_contract_v3 import default_artifact_contract_v3
 from app.services.input_consumption import (
@@ -312,14 +313,6 @@ class WorkbenchTaskRunPreparer:
             workflow_snapshot=workflow_snapshot,
             provider_override=provider_override,
         )
-        provider_readiness = build_provider_readiness_report(
-            repo_path=repo_path,
-            provider_snapshot=provider_snapshot,
-            deployment_evidence=[
-                item for item in context_bundle.get("deployment_evidence") or []
-                if isinstance(item, dict)
-            ],
-        )
         workflow_contract = build_workflow_contract(
             workflow_snapshot=workflow_snapshot,
             provider_snapshot=provider_snapshot,
@@ -357,6 +350,28 @@ class WorkbenchTaskRunPreparer:
             ),
         )
         workflow_contract["test_activity_contract"] = test_activity_contract
+        quality_readiness = build_behavior_claim_audit_readiness(
+            required=bool(
+                (test_activity_contract.get("quality_gates") or {}).get(
+                    "require_independent_behavior_validation"
+                )
+                and test_activity_contract.get("artifact_contract")
+            ),
+            generator_identities=[
+                str(item.get("provider") or "")
+                for item in workflow_contract.get("agent_steps") or []
+                if isinstance(item, dict)
+            ],
+        )
+        provider_readiness = build_provider_readiness_report(
+            repo_path=repo_path,
+            provider_snapshot=provider_snapshot,
+            deployment_evidence=[
+                item for item in context_bundle.get("deployment_evidence") or []
+                if isinstance(item, dict)
+            ],
+            quality_readiness=quality_readiness,
+        )
         task_bundle = {
             "task_run_id": task_run_id,
             "task_id": str(task_id or ""),
@@ -378,6 +393,7 @@ class WorkbenchTaskRunPreparer:
             "agent_instructions": agent_instructions,
             "provider_snapshot": provider_snapshot,
             "provider_readiness": provider_readiness,
+            "quality_readiness": quality_readiness,
             "context_discovery_decision": context_discovery_decision,
             "context_bundle": context_bundle,
             "local_source_context": local_source_context,
@@ -588,6 +604,7 @@ class WorkbenchTaskRunPreparer:
         _write_json(artifact_dir / "agent_instructions.json", agent_instructions)
         _write_json(artifact_dir / "provider_snapshot.json", provider_snapshot)
         _write_json(artifact_dir / "provider_readiness.json", provider_readiness)
+        _write_json(artifact_dir / "quality_readiness.json", quality_readiness)
         _write_json(artifact_dir / "context_discovery_decision.json", context_discovery_decision)
         _write_json(artifact_dir / "context_bundle.json", context_bundle)
         _write_json(artifact_dir / "local_source_context.json", local_source_context)
@@ -2974,6 +2991,7 @@ def build_provider_readiness_report(
     repo_path: str,
     provider_snapshot: dict[str, Any],
     deployment_evidence: list[dict[str, Any]] | None = None,
+    quality_readiness: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     repo = _repo_readiness(repo_path)
     codetalk_providers = {
@@ -2995,6 +3013,8 @@ def build_provider_readiness_report(
     warnings: list[str] = []
     if repo["status"] != "available":
         blocking_reasons.append("repo_path_missing")
+    if isinstance(quality_readiness, dict) and quality_readiness.get("status") == "blocked":
+        blocking_reasons.append("independent_quality_audit_not_ready")
     for provider, payload in codetalk_providers.items():
         if payload.get("status") in {"missing_config", "unavailable", "error"}:
             warnings.append(f"codetalk_provider_unavailable:{provider}")
@@ -3009,6 +3029,7 @@ def build_provider_readiness_report(
         "repo": repo,
         "codetalk_providers": codetalk_providers,
         "agent_cli_providers": agent_cli_providers,
+        "quality_audit": dict(quality_readiness or {}),
         "summary": {
             "status": summary_status,
             "blocking_reasons": blocking_reasons,
