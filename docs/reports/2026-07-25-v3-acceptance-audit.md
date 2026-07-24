@@ -14,7 +14,7 @@ scope.  `partial` and `missing` remain release blockers.
 ## Evidence Baseline
 
 - Authority worktree: `/Volumes/Media/codetalk-v3-productization-resume`
-- Audit head: `cf68ade7`
+- Audit head: `286b33f6`
 - Primary real-model evidence root:
   `/Volumes/Media/codetalk-e2e-artifacts/v3-deepseek-flash-pro-risk-evidence-20260724/`
 - Successful browser quality-repair run:
@@ -34,6 +34,13 @@ scope.  `partial` and `missing` remain release blockers.
   black-box stages.  The profile disclosed one cross-run cached stage and
   targeted quality reuse, so it is a valid rapid browser completion but not an
   uncached performance baseline.
+- Latest browser retry after the traceability repair:
+  `task_run_4886b27609174d1c9f2c9201683674dc` completed with
+  `quality_status=passed`, `delivery_status=complete`, and all nine stages
+  complete.  It used DeepSeek Flash for source/flow work and DeepSeek Pro for
+  SFMEA and black-box work.  The 32-second elapsed time included 53 targeted
+  quality-repair reuses, so it validates the repaired artifact chain only; it
+  is explicitly excluded from uncached rapid/deep performance reporting.
 
 ## Acceptance Status
 
@@ -46,8 +53,8 @@ scope.  `partial` and `missing` remain release blockers.
 | Artifact Contract and Claim/Evidence | verified for the DeepSeek B rapid sample | Attempt 8: six downloadable deliverables, 48/48 verified facts, `46/46` final checks and zero audit issues | Repeat against deep profile and record Markdown/JSON hash audit. |
 | Quality and targeted repair | verified for declared findings | `cf68ade7`, focused contract/task-run regressions, Attempt 8 browser completion | Independent accuracy review still must score the final deep sample. |
 | AI-thread result linkage | partial | Existing V3 AI-thread browser regression recorded in execution state | Rerun against the final deep deliverable and save fresh screenshot/trace. |
-| Zero Autonomous Egress code/process controls | partial | Network policy and sandbox regressions (`25 passed`); real macOS sandbox DNS denial | Need deployment-owned firewall/DNS capture covering both basic workflows and an allowed approved provider/MCP route. |
-| SDK POC and runtime decision | partial | Isolated POC ADR and version/hash/license record | Complete comparison matrix, select or formally retain the existing durable runner, and record the decision. |
+| Zero Autonomous Egress code/process controls | partial | Network policy and sandbox regressions (`25 passed`); real macOS sandbox DNS denial; deployment capture collector and procedure | Need deployment-owned firewall/DNS capture covering both basic workflows and an allowed approved provider/MCP route. |
+| SDK POC and runtime decision | verified for architecture selection | Isolated POC ADR/version/hash/license record plus ADR-024 retaining the local durable stage runtime | Any production SDK admission still requires the adapter, offline-bundle, telemetry-disable, sandbox, traffic-capture, and real-SPDK gates in ADR-024. |
 | E2E-A external Agent | blocked by environment, not passed | Settings-page Codex readiness correctly fail-closed without an auditable Agent egress gateway | Deployment administrator must provide approved Agent route and captured traffic; no bypass or silent builtin fallback is acceptable. |
 | E2E-B builtin model | verified for rapid/retry chain | Browser-created task, real uploaded design document, DeepSeek Flash + Pro events, six deliverables, quality pass; Attempt 8 completed in `5m02s` | Complete a fresh deep run on the same published workflow. |
 | Performance and reliability | partial | Stage metrics and cache/reuse disclosure exist | Collect five-run P50/P95 for rapid; complete deep run; test restart, concurrent tasks and long-result rendering. |
