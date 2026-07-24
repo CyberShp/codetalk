@@ -6291,13 +6291,14 @@ def _quality_repair_prompt_seed(
     seed = str(current_artifact_seed or "")
     if not seed.strip():
         return ""
+    rows = _json_array_items(seed)
     row_ids = _quality_repair_row_ids(
         artifact=artifact,
         quality_feedback=quality_feedback,
+        base_items=rows,
     )
     if not row_ids:
         return seed[:60_000]
-    rows = _json_array_items(seed)
     rows = _apply_quality_feedback_field_patches(
         rows,
         artifact=artifact,
@@ -6326,6 +6327,7 @@ def _quality_repair_row_ids(
     *,
     artifact: str,
     quality_feedback: dict[str, Any],
+    base_items: list[Any] | None = None,
 ) -> set[str]:
     row_ids: set[str] = set()
     prefix = f"ROW:{Path(artifact).name}:"
@@ -6345,6 +6347,18 @@ def _quality_repair_row_ids(
             row_id = str(issue.get(key) or "").strip()
             if row_id:
                 row_ids.add(row_id)
+        if not any(
+            str(issue.get(key) or "").strip()
+            for key in ("row_id", "case_id", "sfmea_id", "risk_id")
+        ):
+            try:
+                index = int(issue.get("index"))
+            except (TypeError, ValueError):
+                index = 0
+            if base_items and 1 <= index <= len(base_items):
+                row_id = _json_array_row_id(base_items[index - 1])
+                if row_id:
+                    row_ids.add(row_id)
     return row_ids
 
 
@@ -7420,6 +7434,13 @@ def _apply_sfmea_nonrisk_deletion_tombstones(
                 row_id = claim_id[len(prefix) :].strip()
             elif re.match(r"^SFMEA-[A-Za-z0-9_-]+:", claim_id):
                 row_id = claim_id.split(":", 1)[0]
+        if not row_id:
+            try:
+                index = int(issue.get("index"))
+            except (TypeError, ValueError):
+                index = 0
+            if 1 <= index <= len(base_items):
+                row_id = _json_array_row_id(base_items[index - 1])
         if row_id in base_ids:
             issues_by_row.setdefault(row_id, []).append(issue)
 

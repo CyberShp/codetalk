@@ -45,7 +45,7 @@ return a normalized diagnostic. Provider-specific CLI or SDK details stay behind
 
 Claude Agent SDK, OpenAI Agents SDK, and Microsoft Agent Framework/LangGraph are assessed
 only through isolated offline POCs. A POC may use a local fake endpoint and fixture tool
-server, but may not become a production dependency until it proves private-only transport,
+server, but may not become a production dependency until it proves approved-purpose transport,
 structured events, cancellation, artifact collection, and session recovery. The current
 durable runtime remains CodeTalk's local harness until one candidate is approved in a
 separate ADR.
@@ -67,4 +67,3 @@ Outputs are named, typed, versioned artifact declarations. A basic source-to-tes
 must declare at least the source-flow report, evidence cards, SFMEA, black-box cases, and
 test strategy; optional mind-map output is a first-class artifact rather than an embedded
 JSON blob. Agent prose is a readable summary, while files remain the durable deliverables.
-

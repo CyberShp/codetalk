@@ -12,7 +12,9 @@ created: 2026-07-23
 CodeTalk may download and evaluate vendor SDKs in an isolated developer POC environment.
 That development activity is not CodeTalk product runtime traffic. Production and intranet
 deployments must install only approved, pinned vendor bundles from their internal artifact
-source and must deny every public destination at runtime. The current durable runtime
+source and must deny every non-approved autonomous destination at runtime. A configured and
+deployment-approved inference endpoint is a narrow exception even when its address looks public.
+The current durable runtime
 remains CodeTalk's existing local workflow runner behind the internal Harness Facade until
 the POC comparison selects a replacement.
 

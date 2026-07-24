@@ -212,6 +212,56 @@ def test_quality_repair_prompt_seed_applies_independent_field_patch_first():
     assert prompt_seed[0]["test_mapping"] == (
         "验证注册表失败仅记录告警，连接仍返回实例。"
     )
+
+
+def test_quality_repair_prompt_seed_selects_row_referenced_only_by_one_based_index():
+    seed = json.dumps(
+        [
+            {"sfmea_id": "SFMEA-001", "failure_mode": "正常拒绝"},
+            {"sfmea_id": "SFMEA-002", "failure_mode": "已验证风险"},
+        ],
+        ensure_ascii=False,
+    )
+    feedback = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "code": "non_risk_sfmea_row",
+                "index": 1,
+            }
+        ]
+    }
+
+    prompt_seed = json.loads(
+        _quality_repair_prompt_seed(
+            current_artifact_seed=seed,
+            artifact="sfmea.json",
+            quality_feedback=feedback,
+        )
+    )
+
+    assert prompt_seed == [{"sfmea_id": "SFMEA-001", "failure_mode": "正常拒绝"}]
+
+
+def test_sfmea_nonrisk_tombstone_resolves_one_based_issue_index():
+    result = _apply_sfmea_nonrisk_deletion_tombstones(
+        [],
+        quality_feedback={
+            "issues": [
+                {
+                    "artifact": "sfmea.json",
+                    "code": "non_risk_sfmea_row",
+                    "index": 1,
+                }
+            ]
+        },
+        base_items=[
+            {"sfmea_id": "SFMEA-001", "failure_mode": "正常拒绝"},
+            {"sfmea_id": "SFMEA-002", "failure_mode": "已验证风险"},
+        ],
+    )
+
+    assert result == [{"sfmea_id": "SFMEA-001", "_delete": True}]
 from app.services.workbench_workflow_runner import (
     _build_workbench_staged_plan,
     _expand_quality_blocked_artifacts,
