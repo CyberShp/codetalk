@@ -148,6 +148,8 @@ def test_node_registry_is_the_authoritative_graph_kind_and_ui_schema_source():
     agent = next(item for item in registry["nodes"] if item["kind"] == "agent")
     assert agent["ui"]["palette_label"] == "智能体模块"
     assert agent["config_schema"]["input_ports"]["type"] == "port_list"
+    assert agent["config_schema"]["output_ports"]["type"] == "port_list"
+    assert agent["ui_schema"]["inspector"]["field_order"] == list(agent["config_schema"])
     assert agent["default_ports"]["input_ports"]
     assert agent["default_config"]["provider"] == "builtin-llm"
 

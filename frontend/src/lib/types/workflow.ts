@@ -227,6 +227,11 @@ export interface WorkflowNodeRegistryEntry {
   };
   default_config: WorkflowNodeConfig;
   config_schema: Record<string, unknown>;
+  ui_schema: {
+    inspector?: {
+      field_order?: string[];
+    };
+  };
 }
 
 export interface WorkflowNodeRegistry {

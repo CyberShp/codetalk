@@ -40,6 +40,11 @@ def _node(
         },
         "default_config": default_config or {},
         "config_schema": config_schema or {},
+        "ui_schema": {
+            "inspector": {
+                "field_order": list((config_schema or {}).keys()),
+            },
+        },
     }
 
 
@@ -88,12 +93,12 @@ _NODE_REGISTRY: tuple[dict[str, Any], ...] = (
             "role": "",
         },
         config_schema={
-            "contract_id": {"type": "string", "required": True},
-            "label": {"type": "string", "required": True},
-            "type": {"type": "port_type", "required": True},
-            "required": {"type": "boolean"},
-            "resolver": {"type": "input_resolver", "required": True},
-            "role": {"type": "string"},
+            "contract_id": {"type": "string", "required": True, "label": "输入 ID"},
+            "type": {"type": "port_type", "required": True, "label": "类型"},
+            "resolver": {"type": "input_resolver", "required": True, "label": "获取方式"},
+            "required": {"type": "boolean", "label": "必填"},
+            "global_input": {"type": "boolean", "label": "工作流全局输入"},
+            "role": {"type": "multiline", "label": "填写提示"},
         },
     ),
     _node(
@@ -111,10 +116,12 @@ _NODE_REGISTRY: tuple[dict[str, Any], ...] = (
             "required": True,
         },
         config_schema={
-            "output_id": {"type": "string", "required": True},
-            "artifact": {"type": "artifact_name", "required": True},
-            "type": {"type": "output_type", "required": True},
-            "required": {"type": "boolean"},
+            "output_id": {"type": "string", "required": True, "label": "输出 ID"},
+            "type": {"type": "output_type", "required": True, "label": "输出类型"},
+            "artifact": {"type": "artifact_name", "required": True, "label": "文件名"},
+            "required": {"type": "boolean", "label": "必需交付"},
+            "evidence_memory": {"type": "boolean", "label": "写入证据库"},
+            "semantic_import": {"type": "boolean", "label": "导入测试语义库"},
         },
     ),
     _node(
@@ -138,15 +145,17 @@ _NODE_REGISTRY: tuple[dict[str, Any], ...] = (
             "failure_policy": "stop",
         },
         config_schema={
-            "step_id": {"type": "string", "required": True},
-            "goal": {"type": "multiline", "required": True},
-            "provider": {"type": "provider", "required": True},
-            "skill_ids": {"type": "skill_multiselect"},
-            "mcp_profiles": {"type": "mcp_multiselect"},
+            "step_id": {"type": "string", "required": True, "label": "步骤 ID"},
+            "goal": {"type": "multiline", "required": True, "label": "分析目标"},
+            "provider": {"type": "provider", "required": True, "label": "执行器"},
             "input_ports": _PORT_LIST_SCHEMA,
             "output_ports": _PORT_LIST_SCHEMA,
-            "required_artifacts": {"type": "artifact_list"},
-            "timeout_sec": {"type": "integer", "minimum": 1},
+            "timeout_sec": {"type": "integer", "minimum": 30, "label": "超时（秒）"},
+            "idle_timeout_sec": {"type": "integer", "minimum": 0, "label": "无输出超时（秒）"},
+            "failure_policy": _BUILTIN_STEP_SCHEMA["failure_policy"],
+            "skill_ids": {"type": "skill_multiselect", "label": "Skills"},
+            "mcp_profiles": {"type": "mcp_multiselect", "label": "MCP"},
+            "required_artifacts": {"type": "artifact_list", "label": "必须生成的文件"},
         },
     ),
     _node(

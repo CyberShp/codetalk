@@ -26,7 +26,7 @@ import type {
   WorkflowValidationResult,
   WorkflowVersion,
 } from "@/lib/types/workflow";
-import { NodeInspector, type InputPortMutation } from "./node-inspector";
+import { NodeInspector, type PortMutation } from "./node-inspector";
 import { WorkflowCanvas } from "./workflow-canvas";
 import { TrialRunPanel } from "../trial-run-panel";
 import {
@@ -196,12 +196,15 @@ function LoadedWorkflowDesigner({
   }, []);
 
   const selectedNode = state.present.nodes.find((node) => node.id === state.selectedNodeId) ?? null;
-  const updateNode = (node: WorkflowGraphNode, portMutation?: InputPortMutation) => {
+  const updateNode = (node: WorkflowGraphNode, portMutation?: PortMutation) => {
     const edges = portMutation
       ? state.present.edges.flatMap((item) => {
-          if (item.target.node_id !== node.id || item.target.port_id !== portMutation.oldId) return [item];
+          const endpoint = portMutation.direction === "input" ? item.target : item.source;
+          if (endpoint.node_id !== node.id || endpoint.port_id !== portMutation.oldId) return [item];
           if (portMutation.kind === "delete") return [];
-          return [{ ...item, target: { ...item.target, port_id: portMutation.newId } }];
+          return [portMutation.direction === "input"
+            ? { ...item, target: { ...item.target, port_id: portMutation.newId } }
+            : { ...item, source: { ...item.source, port_id: portMutation.newId } }];
         })
       : state.present.edges;
     dispatch(portMutation

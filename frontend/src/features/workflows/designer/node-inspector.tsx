@@ -1,7 +1,7 @@
 "use client";
 
 import { Plus, Search, Trash2, X } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import type {
   WorkflowCapabilities,
   WorkflowGraphNode,
@@ -34,13 +34,13 @@ interface Props {
   capabilities: WorkflowCapabilities | null;
   providers: WorkflowProviderCapability[];
   registry: WorkflowNodeRegistry;
-  onChange: (node: WorkflowGraphNode, portMutation?: InputPortMutation) => void;
+  onChange: (node: WorkflowGraphNode, portMutation?: PortMutation) => void;
   onClose: () => void;
 }
 
-export type InputPortMutation =
-  | { kind: "rename"; oldId: string; newId: string }
-  | { kind: "delete"; oldId: string };
+export type PortMutation =
+  | { direction: "input" | "output"; kind: "rename"; oldId: string; newId: string }
+  | { direction: "input" | "output"; kind: "delete"; oldId: string };
 
 export function NodeInspector({ node, capabilities, providers, registry, onChange, onClose }: Props) {
   const config = node.config;
@@ -48,12 +48,6 @@ export function NodeInspector({ node, capabilities, providers, registry, onChang
     onChange({ ...node, config: { ...config, ...patch } });
   const updateLabel = (label: string) =>
     onChange({ ...node, label, config: { ...config, label } });
-  const selectedProvider = providers.find((item) => item.provider === config.provider);
-  const mcpOptions = useMemo(
-    () => selectedProvider?.capabilities?.mcp_profiles ?? [],
-    [selectedProvider],
-  );
-  const skillOptions = capabilities?.skill_catalog ?? [];
   const definition = registry.nodes.find((item) => item.kind === node.kind);
 
   return (
@@ -81,154 +75,20 @@ export function NodeInspector({ node, capabilities, providers, registry, onChang
           <RegistryContractSummary definition={definition} />
         )}
 
-        {node.kind === "input" && (
-          <InspectorSection title="输入契约">
-            <Field label="输入 ID">
-              <input value={String(config.contract_id ?? node.id)} onChange={(event) => updateConfig({ contract_id: event.target.value })} />
-            </Field>
-            <Field label="类型">
-              <select value={String(config.type ?? "text")} onChange={(event) => updateConfig({ type: event.target.value })}>
-                {(capabilities?.input_types ?? ["text", "file", "directory", "mr_link"]).map((item) => <option key={item}>{item}</option>)}
-              </select>
-            </Field>
-            <Field label="获取方式">
-              <select value={String(config.resolver ?? "manual")} onChange={(event) => updateConfig({ resolver: event.target.value })}>
-                {(capabilities?.input_resolvers ?? ["manual", "workspace", "local", "agent_mcp"]).map((item) => <option key={item}>{item}</option>)}
-              </select>
-            </Field>
-            <Toggle label="必填" checked={Boolean(config.required)} onChange={(checked) => updateConfig({ required: checked })} />
-            <Toggle label="工作流全局输入" checked={Boolean(config.global_input)} onChange={(checked) => updateConfig({ global_input: checked })} />
-            <Field label="填写提示">
-              <textarea rows={3} value={String(config.role ?? "")} onChange={(event) => updateConfig({ role: event.target.value })} />
-            </Field>
-          </InspectorSection>
-        )}
-
-        {node.kind === "agent" && (
-          <>
-            <InspectorSection title="输入端口">
-              <p className="ct-v2-inspector-note">
-                为源码、文档、链接等输入分别创建端口，再在画布上逐一连线。
-              </p>
-              <InputPortsEditor
-                ports={config.input_ports ?? []}
-                typeOptions={capabilities?.input_types ?? ["text", "file", "directory", "mr_link"]}
-                onChange={(input_ports, mutation) =>
-                  onChange({ ...node, config: { ...config, input_ports } }, mutation)
-                }
-              />
-            </InspectorSection>
-            <InspectorSection title="执行配置">
-              <Field label="分析目标">
-                <textarea rows={5} value={String(config.goal ?? "")} onChange={(event) => updateConfig({ goal: event.target.value })} />
-              </Field>
-              <Field label="执行器">
-                <select value={String(config.provider ?? "builtin-llm")} onChange={(event) => updateConfig({ provider: event.target.value, mcp_profiles: [] })}>
-                  {providers.map((provider) => (
-                    <option key={provider.provider} value={provider.provider}>
-                      {provider.display_name} · {provider.provider}{provider.status === "unavailable" ? "（不可用）" : ""}
-                    </option>
-                  ))}
-                </select>
-              </Field>
-              <Field label="超时（秒）">
-                <input type="number" min={30} max={7200} value={Number(config.timeout_sec ?? 900)} onChange={(event) => updateConfig({ timeout_sec: Number(event.target.value) })} />
-              </Field>
-              <Field label="无输出超时（秒）">
-                <input type="number" min={0} max={1800} value={Number(config.idle_timeout_sec ?? 120)} onChange={(event) => updateConfig({ idle_timeout_sec: Number(event.target.value) })} />
-              </Field>
-              <Field label="失败策略">
-                <select value={String(config.failure_policy ?? "stop")} onChange={(event) => updateConfig({ failure_policy: event.target.value })}>
-                  <option value="stop">停止工作流</option>
-                  <option value="continue_independent">继续独立分支</option>
-                </select>
-              </Field>
-            </InspectorSection>
-            <InspectorSection title="Skills">
-              <SearchMultiSelect
-                selected={config.skill_ids ?? []}
-                options={skillOptions.map((item) => ({ id: item.id, label: item.label, detail: item.description }))}
-                emptyText="没有匹配的 Skill"
-                onChange={(skill_ids) => updateConfig({ skill_ids })}
-              />
-            </InspectorSection>
-            <InspectorSection title="MCP">
-              <SearchMultiSelect
-                selected={config.mcp_profiles ?? []}
-                options={mcpOptions.map((id) => ({ id, label: id }))}
-                emptyText={selectedProvider ? "该执行器没有已配置 MCP" : "先选择执行器"}
-                onChange={(mcp_profiles) => updateConfig({ mcp_profiles })}
-              />
-            </InspectorSection>
-            <InspectorSection title="产物契约">
-              <Field label="必须生成的文件">
-                <textarea
-                  rows={3}
-                  value={(config.required_artifacts ?? []).join("\n")}
-                  onChange={(event) => updateConfig({ required_artifacts: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean) })}
-                  placeholder="report.md"
-                />
-              </Field>
-            </InspectorSection>
-          </>
-        )}
-
-        {node.kind === "output" && (
-          <InspectorSection title="输出契约">
-            <Field label="输出 ID">
-              <input value={String(config.output_id ?? node.id)} onChange={(event) => updateConfig({ output_id: event.target.value })} />
-            </Field>
-            <Field label="输出类型">
-              <select
-                value={String(config.type ?? "markdown")}
-                onChange={(event) => {
-                  const type = event.target.value;
-                  updateConfig(
-                    type === "test_design_mindmap"
-                      ? {
-                          type,
-                          artifact: MINDMAP_ARTIFACTS[0],
-                          companion_artifacts: MINDMAP_ARTIFACTS.slice(1),
-                          required: true,
-                        }
-                      : { type, companion_artifacts: undefined },
-                  );
-                }}
-              >
-                {(capabilities?.output_types ?? ["markdown", "json", "test_cases", "test_design_mindmap"]).map((item) => (
-                  <option key={item} value={item}>{outputTypeLabels[item] ?? item}</option>
-                ))}
-              </select>
-            </Field>
-            <Field label="文件名">
-              <input
-                value={String(config.artifact ?? "")}
-                readOnly={config.type === "test_design_mindmap"}
-                onChange={(event) => updateConfig({ artifact: event.target.value })}
-                placeholder="report.md"
-              />
-            </Field>
-            {config.type === "test_design_mindmap" && (
-              <p className="ct-v2-inspector-note">
-                仅适用于内置模型分阶段分析节点。系统会自动生成 {MINDMAP_ARTIFACTS.join("、")}，JSON 是唯一结构化事实源。
-              </p>
+        {definition && (
+          <InspectorSection title={node.kind === "agent" ? "执行配置" : node.kind === "input" ? "输入契约" : node.kind === "output" ? "输出契约" : "内置步骤"}>
+            {node.kind !== "input" && node.kind !== "output" && (
+              <p className="ct-v2-inspector-note">输入和依赖通过画布连线指定。以下字段由后端节点定义驱动，无需填写 JSON。</p>
             )}
-            <Toggle label="必需交付" checked={Boolean(config.required)} onChange={(checked) => updateConfig({ required: checked })} />
-            <Toggle label="写入证据库" checked={Boolean(config.evidence_memory)} onChange={(checked) => updateConfig({ evidence_memory: checked })} />
-            <Toggle label="导入测试语义库" checked={Boolean(config.semantic_import)} onChange={(checked) => updateConfig({ semantic_import: checked })} />
-          </InspectorSection>
-        )}
-
-        {node.kind !== "input" && node.kind !== "output" && node.kind !== "agent" && (
-          <InspectorSection title="内置步骤">
-            <p className="ct-v2-inspector-note">输入和依赖通过画布连线指定。以下字段来自后端节点定义，无需填写 JSON。</p>
-            {definition && (
-              <RegistryConfigFields
-                definition={definition}
-                config={config}
-                onChange={updateConfig}
-              />
-            )}
+            <RegistryConfigFields
+              definition={definition}
+              node={node}
+              config={config}
+              capabilities={capabilities}
+              providers={providers}
+              onChange={updateConfig}
+              onPortMutation={(key, ports, mutation) => onChange({ ...node, config: { ...config, [key]: ports } }, mutation)}
+            />
           </InspectorSection>
         )}
       </div>
@@ -245,21 +105,36 @@ type RegistryField = {
 
 function RegistryConfigFields({
   definition,
+  node,
   config,
+  capabilities,
+  providers,
   onChange,
+  onPortMutation,
 }: {
   definition: WorkflowNodeRegistryEntry;
+  node: WorkflowGraphNode;
   config: WorkflowGraphNode["config"];
+  capabilities: WorkflowCapabilities | null;
+  providers: WorkflowProviderCapability[];
   onChange: (patch: Record<string, unknown>) => void;
+  onPortMutation: (key: string, ports: WorkflowPortDefinition[], mutation: PortMutation) => void;
 }) {
+  const fieldOrder = definition.ui_schema?.inspector?.field_order ?? [];
   const fields = Object.entries(definition.config_schema)
     .map(([key, value]) => [key, value as RegistryField] as const)
-    .filter(([key, field]) => key !== "input_ports" && key !== "output_ports" && ["string", "integer", "boolean", "enum"].includes(field.type ?? ""));
+    .filter(([, field]) => Boolean(field.type))
+    .sort(([left], [right]) => {
+      const leftIndex = fieldOrder.indexOf(left);
+      const rightIndex = fieldOrder.indexOf(right);
+      return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);
+    });
   if (!fields.length) return null;
   return (
     <div className="ct-v2-registry-fields">
       {fields.map(([key, field]) => {
         const label = field.label ?? key;
+        const type = field.type ?? "string";
         if (field.type === "boolean") {
           return <Toggle key={key} label={label} checked={Boolean(config[key])} onChange={(checked) => onChange({ [key]: checked })} />;
         }
@@ -272,19 +147,66 @@ function RegistryConfigFields({
             </Field>
           );
         }
+        if (type === "multiline") {
+          return <Field key={key} label={label}><textarea rows={key === "goal" ? 5 : 3} value={String(config[key] ?? "")} onChange={(event) => onChange({ [key]: event.target.value })} /></Field>;
+        }
+        if (type === "port_type") {
+          return <Field key={key} label={label}><select value={String(config[key] ?? "text")} onChange={(event) => onChange({ [key]: event.target.value })}>{(capabilities?.input_types ?? ["text", "file", "directory", "mr_link"]).map((item) => <option key={item} value={item}>{item}</option>)}</select></Field>;
+        }
+        if (type === "input_resolver") {
+          return <Field key={key} label={label}><select value={String(config[key] ?? "manual")} onChange={(event) => onChange({ [key]: event.target.value })}>{(capabilities?.input_resolvers ?? ["manual", "workspace", "local", "agent_mcp"]).map((item) => <option key={item} value={item}>{item}</option>)}</select></Field>;
+        }
+        if (type === "output_type") {
+          return <Field key={key} label={label}><select value={String(config[key] ?? "markdown")} onChange={(event) => {
+            const outputType = event.target.value;
+            onChange(outputType === "test_design_mindmap" ? { type: outputType, artifact: MINDMAP_ARTIFACTS[0], companion_artifacts: MINDMAP_ARTIFACTS.slice(1), required: true } : { type: outputType, companion_artifacts: undefined });
+          }}>{(capabilities?.output_types ?? ["markdown", "json", "test_cases", "test_design_mindmap"]).map((item) => <option key={item} value={item}>{outputTypeLabels[item] ?? item}</option>)}</select></Field>;
+        }
+        if (type === "provider") {
+          return <Field key={key} label={label}><select value={String(config[key] ?? "builtin-llm")} onChange={(event) => onChange({ provider: event.target.value, mcp_profiles: [] })}>{providers.map((provider) => <option key={provider.provider} value={provider.provider}>{provider.display_name} · {provider.provider}{provider.status === "unavailable" ? "（不可用）" : ""}</option>)}</select></Field>;
+        }
+        if (type === "skill_multiselect") {
+          return <SearchMultiSelect key={key} selected={stringList(config[key])} options={(capabilities?.skill_catalog ?? []).map((item) => ({ id: item.id, label: item.label, detail: item.description }))} emptyText="没有匹配的 Skill" onChange={(value) => onChange({ [key]: value })} />;
+        }
+        if (type === "mcp_multiselect") {
+          const provider = providers.find((item) => item.provider === config.provider);
+          const options = provider?.capabilities?.mcp_profiles ?? [];
+          return <SearchMultiSelect key={key} selected={stringList(config[key])} options={options.map((id) => ({ id, label: id }))} emptyText={provider ? "该执行器没有已配置 MCP" : "先选择执行器"} onChange={(value) => onChange({ [key]: value })} />;
+        }
+        if (type === "artifact_list") {
+          return <Field key={key} label={label}><textarea rows={3} value={stringList(config[key]).join("\n")} onChange={(event) => onChange({ [key]: event.target.value.split("\n").map((item) => item.trim()).filter(Boolean) })} placeholder="report.md" /></Field>;
+        }
+        if (type === "port_list") {
+          const direction = key === "output_ports" ? "output" : "input";
+          return <PortListEditor key={key} direction={direction} ports={portList(config[key])} typeOptions={capabilities?.input_types ?? ["text", "file", "directory", "mr_link"]} onChange={(ports, mutation) => {
+            if (mutation) onPortMutation(key, ports, mutation);
+            else onChange({ [key]: ports });
+          }} />;
+        }
         return (
           <Field key={key} label={label}>
             <input
-              type={field.type === "integer" ? "number" : "text"}
+              type={type === "integer" ? "number" : "text"}
               min={field.minimum}
               value={String(config[key] ?? "")}
-              onChange={(event) => onChange({ [key]: field.type === "integer" ? Number(event.target.value) : event.target.value })}
+              readOnly={type === "artifact_name" && node.kind === "output" && config.type === "test_design_mindmap"}
+              onChange={(event) => onChange({ [key]: type === "integer" ? Number(event.target.value) : event.target.value })}
             />
           </Field>
         );
       })}
     </div>
   );
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.map((item) => String(item)) : [];
+}
+
+function portList(value: unknown): WorkflowPortDefinition[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is WorkflowPortDefinition => Boolean(item) && typeof item === "object")
+    : [];
 }
 
 function RegistryContractSummary({ definition }: { definition: WorkflowNodeRegistry["nodes"][number] }) {
@@ -302,26 +224,29 @@ function RegistryContractSummary({ definition }: { definition: WorkflowNodeRegis
   );
 }
 
-function InputPortsEditor({
+function PortListEditor({
+  direction,
   ports,
   typeOptions,
   onChange,
 }: {
+  direction: "input" | "output";
   ports: WorkflowPortDefinition[];
   typeOptions: string[];
-  onChange: (ports: WorkflowPortDefinition[], mutation?: InputPortMutation) => void;
+  onChange: (ports: WorkflowPortDefinition[], mutation?: PortMutation) => void;
 }) {
   const [draftIds, setDraftIds] = useState<Record<number, string>>({});
   const [idErrors, setIdErrors] = useState<Record<number, string>>({});
   const update = (
     index: number,
     patch: Partial<WorkflowPortDefinition>,
-    mutation?: InputPortMutation,
+    mutation?: PortMutation,
   ) => onChange(ports.map((port, itemIndex) => itemIndex === index ? { ...port, ...patch } : port), mutation);
   const uniqueId = () => {
     let index = ports.length + 1;
-    while (ports.some((port) => port.id === `input_${index}`)) index += 1;
-    return `input_${index}`;
+    const prefix = direction === "input" ? "input" : "output";
+    while (ports.some((port) => port.id === `${prefix}_${index}`)) index += 1;
+    return `${prefix}_${index}`;
   };
   const commitId = (index: number) => {
     const current = ports[index];
@@ -330,7 +255,7 @@ function InputPortsEditor({
     const error = validateInputPortId(candidate, ports, index);
     setIdErrors((items) => ({ ...items, [index]: error }));
     if (error || candidate === current.id) return;
-    update(index, { id: candidate }, { kind: "rename", oldId: current.id, newId: candidate });
+    update(index, { id: candidate }, { direction, kind: "rename", oldId: current.id, newId: candidate });
     setDraftIds((items) => {
       const next = { ...items };
       delete next[index];
@@ -345,7 +270,7 @@ function InputPortsEditor({
             <span>端口名称</span>
             <input
               value={draftIds[index] ?? port.id}
-              aria-label={`输入端口 ${index + 1} 名称`}
+              aria-label={`${direction === "input" ? "输入" : "输出"}端口 ${index + 1} 名称`}
               onChange={(event) => {
                 const value = event.target.value;
                 setDraftIds((items) => ({ ...items, [index]: value }));
@@ -366,7 +291,7 @@ function InputPortsEditor({
             <span>类型</span>
             <select
               value={port.type || "text"}
-              aria-label={`输入端口 ${index + 1} 类型`}
+              aria-label={`${direction === "input" ? "输入" : "输出"}端口 ${index + 1} 类型`}
               onChange={(event) => update(index, { type: event.target.value })}
             >
               {Array.from(new Set([...typeOptions, port.type || "text"])).map((type) => (
@@ -374,23 +299,19 @@ function InputPortsEditor({
               ))}
             </select>
           </label>
-          <label className="ct-v2-port-required">
-            <input
-              type="checkbox"
-              checked={Boolean(port.required)}
-              onChange={(event) => update(index, { required: event.target.checked })}
-            />
+          {direction === "input" && <label className="ct-v2-port-required">
+            <input type="checkbox" checked={Boolean(port.required)} onChange={(event) => update(index, { required: event.target.checked })} />
             <span>必填</span>
-          </label>
+          </label>}
           <button
             type="button"
             className="ct-v2-icon-danger"
-            aria-label={`删除输入端口 ${port.id}`}
-            title="删除输入端口"
+            aria-label={`删除${direction === "input" ? "输入" : "输出"}端口 ${port.id}`}
+            title={`删除${direction === "input" ? "输入" : "输出"}端口`}
             onClick={() => {
               setDraftIds({});
               setIdErrors({});
-              onChange(ports.filter((_, itemIndex) => itemIndex !== index), { kind: "delete", oldId: port.id });
+              onChange(ports.filter((_, itemIndex) => itemIndex !== index), { direction, kind: "delete", oldId: port.id });
             }}
           >
             <Trash2 size={14} />
@@ -403,7 +324,7 @@ function InputPortsEditor({
         onClick={() => onChange([...ports, { id: uniqueId(), type: "file", required: false }])}
       >
         <Plus size={14} />
-        增加输入端口
+        增加{direction === "input" ? "输入" : "输出"}端口
       </button>
     </div>
   );

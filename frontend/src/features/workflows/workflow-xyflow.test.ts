@@ -46,6 +46,7 @@ test("new nodes materialize their executable ports and config from the Node Regi
       goal: "说明该节点要完成的分析目标。",
     },
     config_schema: {},
+    ui_schema: { inspector: { field_order: [] } },
   };
 
   const node = createNodeFromRegistry(definition, 80, 120);
