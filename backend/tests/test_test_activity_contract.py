@@ -264,6 +264,41 @@ def test_sfmea_error_not_propagated_remains_a_scored_failure_mode(tmp_path):
     assert not any(issue["code"] == "non_risk_sfmea_row" for issue in issues)
 
 
+def test_sfmea_keeps_qualified_iscsi_error_code_hypothesis(tmp_path):
+    """An error-code comparison is not a claim that the error path is absent."""
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    row = {
+        "sfmea_id": "SFMEA-11",
+        "risk_status": "test_hypothesis",
+        "failure_mode": "MCS 会话查找失败后返回错误码但未记录足够信息",
+        "cause": (
+            "风险假设：若返回的错误码不足以让发起方区分“会话不存在”和"
+            "“连接添加失败”，则发起方可能采取错误的恢复策略。"
+        ),
+        "effect": "发起方重试不当，导致登录时间延长或失败。",
+        "mechanism": "风险假设：验证错误码语义不足时的恢复策略偏离。",
+        "detection": "通过协议一致性测试发送错误 TSIH，并观察响应和重试行为。",
+        "severity": 4,
+        "occurrence": 4,
+        "detection_score": 2,
+        "rpn": 32,
+        "mitigation": "整改: 补充错误语义与状态记录。验证: 注入错误 TSIH 并检查响应。",
+        "source_evidence": ["lib/iscsi/iscsi.c"],
+        "test_mapping": "test/iscsi_tgt/multiconnection/multiconnection.sh",
+    }
+
+    issues = _audit_json_artifact(
+        artifact="sfmea.json",
+        payload=[row],
+        spec={"required_fields": []},
+        repo=tmp_path,
+    )
+
+    assert not any(issue["code"] == "non_risk_sfmea_row" for issue in issues), issues
+    assert not any(issue["code"] == "unqualified_sfmea_risk_hypothesis" for issue in issues), issues
+
+
 @pytest.mark.parametrize(
     "failure_mode",
     [

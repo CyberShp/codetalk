@@ -6291,7 +6291,25 @@ def _audit_json_artifact(
             # A qualified test hypothesis is deliberately not an observed defect,
             # but it is still a scored risk candidate.  Do not turn its explicit
             # "待验证" wording into a deletion instruction for finalization.
-            hypothesis_marker_only = bool(re.search(r"待验证\s*[:：]", risk_text))
+            # A risk hypothesis is allowed to compare external error outcomes
+            # (for example, "session not found" versus "connection add failed").
+            # Do not let the generic absence/negation lint mistake that comparison
+            # for a claim that the implementation has no error path.  The separate
+            # qualification check below still rejects a bare or invented hypothesis.
+            explicit_test_hypothesis = bool(
+                risk_status == "test_hypothesis"
+                and re.search(
+                    r"(?:风险|故障注入|失效)假设\s*[:：]|待验证\s*[:：]",
+                    " ".join(
+                        (
+                            risk_text,
+                            str(row.get("mechanism") or ""),
+                            str(row.get("evidence_interpretation") or ""),
+                        )
+                    ),
+                    flags=re.IGNORECASE,
+                )
+            )
             if not sfmea_failure_mode_is_risk(row.get("failure_mode")) or (
                 re.search(
                 r"(?:当前|该)?源码.{0,8}不支持.{0,20}(?:failure\s*mode|失效|风险)"
@@ -6306,7 +6324,7 @@ def _audit_json_artifact(
                 risk_text,
                 flags=re.IGNORECASE,
                 )
-                and not (risk_status == "test_hypothesis" and hypothesis_marker_only)
+                and not explicit_test_hypothesis
             ):
                 issues.append(
                     _issue(
