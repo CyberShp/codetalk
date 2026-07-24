@@ -1022,6 +1022,11 @@ class AgentRunHarness:
             "TMP": str(runtime_tmp_dir),
             "TMPDIR": str(runtime_tmp_dir),
             "TMPPREFIX": str(runtime_tmp_dir / "zsh"),
+            # Agent-generated reports may legitimately contain Chinese evidence
+            # labels.  Keep the platform Python shim from choosing an ASCII
+            # source encoding while the sandboxed task is materializing files.
+            "PYTHONUTF8": "1",
+            "PYTHONIOENCODING": "utf-8",
         }
         env_hints.update(_agent_provider_env_hints(str(run_payload.get("provider") or "")))
         launch_command, command_resolution = _launch_command_from_provider_health(

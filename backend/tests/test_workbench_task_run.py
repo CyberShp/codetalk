@@ -960,6 +960,8 @@ def test_workbench_runner_auto_timeout_uses_agent_runtime_limit(tmp_path, monkey
     assert execution_input["timeout_sec"] == 3
     assert execution_input["idle_timeout_sec"] == 3
     assert execution_input["prompt_transport"] == "codex_exec_json"
+    assert execution_input["env_hints"]["PYTHONUTF8"] == "1"
+    assert execution_input["env_hints"]["PYTHONIOENCODING"] == "utf-8"
     expected_artifact_dir = str(
         Path(prepared.artifact_dir, "agent_runs", "agent_collect")
     )
