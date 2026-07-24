@@ -223,12 +223,12 @@ def require_runtime_model_request_url(url: str) -> NetworkDecision:
 
 
 def require_configured_model_request_url(url: str) -> NetworkDecision:
-    """Permit only an explicitly configured provider inference route.
+    """Permit an explicitly configured *and deployment-approved* inference route.
 
-    A deployment's model configuration is the approval record.  This deliberately
-    does not infer safety from an address range: large intranets can use public
-    looking addresses.  It still rejects autonomous vendor destinations and every
-    route other than the small adapter-owned inference surface.
+    A user model configuration selects a provider adapter; it is not itself an
+    egress grant. In intranet mode the deployment policy must additionally
+    approve the hostname or direct CIDR. This deliberately does not infer trust
+    from an address range: a large enterprise can use public-looking addresses.
     """
     parsed = urlparse(str(url or "").strip())
     host = str(parsed.hostname or "").lower().rstrip(".")
@@ -240,11 +240,17 @@ def require_configured_model_request_url(url: str) -> NetworkDecision:
         raise NetworkEgressBlocked(
             "运行时出站策略拒绝：autonomous_service_forbidden"
         )
+    if settings.intranet_network_mode:
+        decision = runtime_network_policy().evaluate_url(url)
+        if not decision.allowed:
+            raise NetworkEgressBlocked(
+                f"运行时出站策略拒绝：{decision.reason}"
+            )
     if not any(path.endswith(suffix) for suffix in _MODEL_API_PATH_SUFFIXES):
         raise NetworkEgressBlocked(
             "运行时出站策略拒绝：model_endpoint_path_forbidden"
         )
-    return NetworkDecision(True, "configured_model_inference", host, port)
+    return NetworkDecision(True, "configured_and_approved_model_inference", host, port)
 
 
 def agent_network_is_permitted() -> bool:

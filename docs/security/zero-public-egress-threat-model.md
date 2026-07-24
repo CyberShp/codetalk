@@ -18,7 +18,7 @@ endpoint plus the provider adapter's narrow inference route is the approval reco
 endpoint resolves to a public-looking address.
 
 The product boundary is **controlled purpose-based egress**, not an IP-address heuristic:
-an approved model inference request is permitted, while the same vendor's SDK telemetry,
+a configured *and deployment-approved* model inference request is permitted, while the same vendor's SDK telemetry,
 tracing, update, extension marketplace, package registry, callback, or hosted-MCP request is
 not. Approval of a model host never grants those autonomous uses.
 
@@ -45,7 +45,7 @@ operator configures an approved model identifier explicitly.
 
 1. **Application layer:** all backend outbound calls use CodeTalk's network policy client.
    It rejects every unapproved host/CIDR before connection. Model-provider requests are admitted
-   only when the deployment explicitly approves the hostname and the request matches an adapter
+   only when a saved provider configuration selects it, the deployment explicitly approves the hostname/CIDR, and the request matches an adapter
    inference API route; model discovery, telemetry, package/update, hosted-trace and hosted-MCP destinations are hard-denied
    even when a bad configuration attempts to allow-list them. It emits a redacted audit event.
 2. **Harness layer:** Agent processes receive a scrubbed environment with telemetry/update
@@ -64,8 +64,9 @@ operator configures an approved model identifier explicitly.
 
 Do not infer trust from whether an address looks public or private. A corporate model gateway
 may use a globally-routable address, and an RFC1918 address can still be an unapproved service.
-Approve a named endpoint for the narrow inference route that CodeTalk owns, then enforce that
-approval at the egress gateway.
+Approve a named endpoint for the narrow inference route that CodeTalk owns, then configure the
+same hostname/CIDR in CodeTalk's deployment policy and enforce it at the egress gateway. A user
+saving a provider URL cannot expand that allow-list.
 
 CodeTalk does not ship vendor SDKs and does not perform package or CLI self-updates. It also
 strips proxy, telemetry and tracing configuration before spawning a third-party Agent CLI. Those

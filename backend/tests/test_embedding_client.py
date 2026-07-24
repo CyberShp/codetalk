@@ -119,7 +119,7 @@ class TestEmbedBatch:
         )
         client._client = AsyncMock()
 
-        with pytest.raises(NetworkEgressBlocked, match="公网出口已被内网策略拒绝"):
+        with pytest.raises(NetworkEgressBlocked, match="运行时出站策略拒绝：host_not_allowlisted"):
             await client.embed_batch(["must remain local"])
 
         client._client.post.assert_not_called()
