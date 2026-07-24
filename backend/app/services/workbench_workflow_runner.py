@@ -27,6 +27,7 @@ from app.llm.factory import (
     create_source_analysis_llm_client,
 )
 from app.services.ai_staged_execution import (
+    _deterministic_quality_claim_repair,
     _apply_quality_feedback_field_patches,
     build_source_evidence_pack,
     build_staged_execution_plan,
@@ -2509,11 +2510,13 @@ class WorkbenchWorkflowRunner:
                                 quality_repair_stop_reason = (
                                     "workflow_deadline_exceeded"
                                 )
-                            tombstoned_rows = _apply_final_contradiction_tombstones(
-                                artifact_dir=artifact_dir,
-                                audit=final_repair_audit,
+                            deterministic_repairs = (
+                                _apply_final_deterministic_quality_repairs(
+                                    artifact_dir=artifact_dir,
+                                    audit=final_repair_audit,
+                                )
                             )
-                            if tombstoned_rows:
+                            if deterministic_repairs:
                                 refreshed_reports = _refresh_reports_after_tombstones(
                                     artifact_dir=artifact_dir,
                                     plan=current_plan,
@@ -2522,6 +2525,20 @@ class WorkbenchWorkflowRunner:
                                 final_repair_audit = await audit_staged_artifacts()
                             else:
                                 refreshed_reports = []
+                            tombstoned_rows = _apply_final_contradiction_tombstones(
+                                artifact_dir=artifact_dir,
+                                audit=final_repair_audit,
+                            )
+                            if tombstoned_rows:
+                                refreshed_reports = list(dict.fromkeys([
+                                    *refreshed_reports,
+                                    *_refresh_reports_after_tombstones(
+                                        artifact_dir=artifact_dir,
+                                        plan=current_plan,
+                                    ),
+                                ]))
+                                behavior_validation = await validate_behavior_claims()
+                                final_repair_audit = await audit_staged_artifacts()
                             _write_json(
                                 artifact_dir
                                 / "quality_repairs"
@@ -2532,6 +2549,9 @@ class WorkbenchWorkflowRunner:
                                 materialized_patches
                             )
                             repair_history[-1]["contradiction_tombstones"] = tombstoned_rows
+                            repair_history[-1]["deterministic_repairs"] = (
+                                deterministic_repairs
+                            )
                             repair_history[-1]["refreshed_reports"] = refreshed_reports
                             repair_history[-1]["field_patch_rounds"] = patch_rounds
                             repair_history[-1]["final_status"] = str(
@@ -6287,6 +6307,38 @@ def _apply_final_contradiction_tombstones(
             continue
         _write_json(path, kept)
         changed[artifact] = sorted(row_ids)
+    return changed
+
+
+def _apply_final_deterministic_quality_repairs(
+    *, artifact_dir: Path, audit: dict[str, Any]
+) -> dict[str, list[str]]:
+    """Apply only validator-declared, no-model repair templates at finalization.
+
+    A repair loop can discover a deterministic issue after its final model turn.
+    Closing that issue here avoids an unnecessary fourth model call while keeping
+    every unsupported or source-factual finding blocked for normal repair.
+    """
+    changed: dict[str, list[str]] = {}
+    issues = [
+        dict(issue)
+        for issue in audit.get("issues") or []
+        if isinstance(issue, dict)
+    ]
+    for artifact in ("sfmea.json", "black_box_cases.json"):
+        path = artifact_dir / artifact
+        payload = _read_json(path)
+        if not isinstance(payload, list):
+            continue
+        repaired, fields = _deterministic_quality_claim_repair(
+            payload,
+            artifact=artifact,
+            quality_feedback={"issues": issues},
+        )
+        if not fields:
+            continue
+        _write_json(path, repaired)
+        changed[artifact] = fields
     return changed
 
 

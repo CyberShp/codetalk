@@ -6006,6 +6006,49 @@ def test_final_contradiction_tombstones_remove_only_proven_contradicted_rows(tmp
     assert [row["case_id"] for row in json.loads((tmp_path / "black_box_cases.json").read_text())] == ["BB-02"]
 
 
+def test_final_deterministic_quality_repair_materializes_only_declared_c_bit_case(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _apply_final_deterministic_quality_repairs,
+    )
+
+    cases = tmp_path / "black_box_cases.json"
+    cases.write_text(
+        json.dumps(
+            [
+                {
+                    "case_id": "BB-01",
+                    "scenario_name": "正常登录",
+                    "risk_ids": ["SFMEA-01"],
+                    "technical_claims": [],
+                    "source_or_test_evidence": ["SRC-01"],
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    changed = _apply_final_deterministic_quality_repairs(
+        artifact_dir=tmp_path,
+        audit={
+            "issues": [
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "missing_c_bit_fragmentation_case",
+                },
+                {
+                    "artifact": "sfmea.json",
+                    "code": "insufficient_sfmea_rows",
+                },
+            ]
+        },
+    )
+
+    repaired = json.loads(cases.read_text(encoding="utf-8"))
+    assert changed == {"black_box_cases.json": ["$[+].c_bit_fragmentation_case"]}
+    assert [item["case_id"] for item in repaired] == ["BB-01", "BBC-CBIT-FRAGMENT"]
+
+
 def test_quality_repair_salvages_only_rows_with_fewer_issues():
     from app.services.workbench_workflow_runner import (
         _merge_non_regressing_json_rows,
