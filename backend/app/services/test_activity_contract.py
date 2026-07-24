@@ -7575,11 +7575,40 @@ _BLACK_BOX_DELIVERY_WHITE_BOX_RE = re.compile(
     r")"
 )
 
+_BLACK_BOX_ACTIONABLE_STEP_RE = re.compile(
+    r"(?i)\b("
+    r"start|stop|restart|connect|disconnect|reconnect|send|request|upload|download|import|export|"
+    r"configure|set|create|delete|run|execute|invoke\s+cli|open|close|interrupt|kill|timeout|"
+    r"failover|reset|login|logout|read|write|submit|fio|rpc|curl|nvme|iscsi|spdk|target|initiator|"
+    r"network|port|file|config|service|process|command"
+    r")\b|"
+    r"(启动|停止|重启|连接|断开|重连|发送|请求|上传|下载|导入|导出|配置|设置|创建|删除|运行命令|"
+    r"打开|关闭|中断|终止|超时|故障切换|重置|登录|读|写|提交|网络|端口|文件|服务|进程|命令|"
+    r"target|initiator|NVMe|iSCSI|RPC|fio|curl)"
+)
+_BLACK_BOX_VAGUE_STEP_RE = re.compile(
+    r"(?i)^\s*(run\s+test|execute\s+test|verify|validate|observe|check|test|"
+    r"执行测试|运行测试|验证功能|验证|观察结果|观察|检查|测试)\s*[。.!！]?\s*$"
+)
+
 
 def _is_explicit_unverified_test_mapping(value: str) -> bool:
     normalized = str(value or "").strip()
     marker = "ai_suggested_unverified"
     return normalized == marker or normalized.startswith((marker + ":", marker + "："))
+
+
+def black_box_steps_are_actionable(steps: Any) -> bool:
+    """Use the same step-quality rule during repair and final acceptance."""
+    meaningful = [item.strip() for item in _flatten_text(steps) if item.strip()]
+    if not meaningful:
+        return False
+    if any(_BLACK_BOX_ACTIONABLE_STEP_RE.search(item) for item in meaningful):
+        return True
+    return any(
+        len(item) >= 20 and not _BLACK_BOX_VAGUE_STEP_RE.match(item)
+        for item in meaningful
+    )
 
 
 def _test_mapping_values(value: Any) -> list[str]:
@@ -7635,6 +7664,8 @@ def black_box_case_delivery_quality_gaps(
     )
     mappings = _test_mapping_values(mapping)
     gaps: list[str] = []
+    if not black_box_steps_are_actionable(row.get("steps")):
+        gaps.append("vague_steps")
     if not mappings or not all(
         _is_verified_test_mapping(item, repo_path=repo_path)
         or _is_explicit_unverified_test_mapping(item)

@@ -492,6 +492,35 @@ def test_cross_artifact_audit_normalizes_sfmea_reference_ids(tmp_path):
     )
 
 
+def test_black_box_delivery_quality_marks_vague_steps_for_repair(tmp_path):
+    from app.services.test_activity_contract import black_box_case_delivery_quality_gaps
+
+    case = {
+        "mapped_test_dir": "test/iscsi_tgt",
+        "steps": ["保持会话空闲 1 小时", "执行 IO 操作"],
+    }
+
+    assert "vague_steps" in black_box_case_delivery_quality_gaps(
+        case, repo_path=str(tmp_path)
+    )
+
+
+def test_black_box_delivery_quality_accepts_concrete_external_steps(tmp_path):
+    from app.services.test_activity_contract import black_box_case_delivery_quality_gaps
+
+    case = {
+        "mapped_test_dir": "test/iscsi_tgt",
+        "steps": [
+            "使用 iscsiadm 登录 target，记录会话 ID 和连接状态。",
+            "保持会话 1 小时后使用 fio 对 LUN 提交 4KiB 随机读并记录退出码。",
+        ],
+    }
+
+    assert "vague_steps" not in black_box_case_delivery_quality_gaps(
+        case, repo_path=str(tmp_path)
+    )
+
+
 @pytest.mark.parametrize(
     "mitigation",
     [

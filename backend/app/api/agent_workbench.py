@@ -45,6 +45,7 @@ from app.services.test_activity_contract import (
     black_box_case_delivery_quality_gaps,
     black_box_expected_result_is_observable,
     black_box_oracle_basis_quality_gaps,
+    black_box_steps_are_actionable,
     sfmea_mitigation_is_actionable,
 )
 from app.services.behavior_claim_validator import build_behavior_claim_audit_readiness
@@ -7804,23 +7805,6 @@ _BLACK_BOX_EXTERNAL_PROTOCOL_FIELD_CONTEXT_RE = re.compile(
     r"(?i)\b(?:pdu|packet|frame|request|response|header|digest|opcode|flag)\b|"
     r"(?:报文|数据包|请求|响应|协议|包头|摘要|标志位)"
 )
-_BLACK_BOX_ACTIONABLE_STEP_RE = re.compile(
-    r"(?i)\b("
-    r"start|stop|restart|connect|disconnect|reconnect|send|request|upload|download|import|export|"
-    r"configure|set|create|delete|run|execute|invoke\s+cli|open|close|interrupt|kill|timeout|"
-    r"failover|reset|login|logout|read|write|submit|fio|rpc|curl|nvme|iscsi|spdk|target|initiator|"
-    r"network|port|file|config|service|process|command"
-    r")\b|"
-    r"(启动|停止|重启|连接|断开|重连|发送|请求|上传|下载|导入|导出|配置|设置|创建|删除|运行命令|"
-    r"打开|关闭|中断|终止|超时|故障切换|重置|登录|读|写|提交|网络|端口|文件|服务|进程|命令|"
-    r"target|initiator|NVMe|iSCSI|RPC|fio|curl)"
-)
-_BLACK_BOX_VAGUE_STEP_RE = re.compile(
-    r"(?i)^\s*(run\s+test|execute\s+test|verify|validate|observe|check|test|"
-    r"执行测试|运行测试|验证功能|验证|观察结果|观察|检查|测试)\s*[。.!！]?\s*$"
-)
-
-
 def _black_box_case_duplicate_key(case: dict[str, Any]) -> str:
     parts = [
         _black_box_case_test_directory(case),
@@ -8088,16 +8072,7 @@ def _black_box_case_expected(case: dict[str, Any]) -> list[str]:
 
 
 def _black_box_steps_are_actionable(steps: list[str]) -> bool:
-    meaningful = [str(item or "").strip() for item in steps if str(item or "").strip()]
-    if not meaningful:
-        return False
-    if any(_BLACK_BOX_ACTIONABLE_STEP_RE.search(item) for item in meaningful):
-        return True
-    return any(
-        len(item) >= 20
-        and not _BLACK_BOX_VAGUE_STEP_RE.match(item)
-        for item in meaningful
-    )
+    return black_box_steps_are_actionable(steps)
 
 
 def _black_box_expected_is_observable(expected: list[str]) -> bool:
