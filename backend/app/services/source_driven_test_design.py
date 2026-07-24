@@ -1904,7 +1904,7 @@ def _is_verified_evidence_reference(
     if text in evidence:
         return True
     candidates = re.findall(r"[A-Za-z][A-Za-z0-9_-]*:L\d+", text)
-    return any(
+    if any(
         _resolve_claim_evidence_card(
             evidence=evidence,
             evidence_id=candidate,
@@ -1912,6 +1912,22 @@ def _is_verified_evidence_reference(
         )
         is not None
         for candidate in candidates
+    ):
+        return True
+    # The public black-box contract accepts a human-readable source location
+    # (``path:line[-line]``) in addition to a card ID.  Resolve it only when
+    # the entire declared range is contained by one SHA256-validated card; a
+    # similarly named file or a line outside the card remains unresolved.
+    location = re.fullmatch(r"(.+?):(\d+)(?:-(\d+))?", text)
+    if not location:
+        return False
+    path = location.group(1)
+    start = int(location.group(2))
+    end = int(location.group(3) or start)
+    return any(
+        str(card.get("file_path") or card.get("path") or "") == path
+        and int(card.get("start_line") or 0) <= start <= end <= int(card.get("end_line") or 0)
+        for card in evidence.values()
     )
 
 

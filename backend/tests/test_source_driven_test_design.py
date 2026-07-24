@@ -391,6 +391,39 @@ def test_traceability_resolves_line_qualified_and_display_evidence_references():
     assert link["unresolved_evidence_refs"] == []
 
 
+def test_traceability_resolves_human_readable_path_ranges_only_inside_verified_card():
+    from app.services.source_driven_test_design import build_source_driven_test_design
+
+    cases = _cases()
+    cases[0]["source_or_test_evidence"] = [
+        "lib/iscsi/iscsi.c:101-120",
+        "test/iscsi_tgt/chap/chap.sh:1-40",
+    ]
+    artifacts = build_source_driven_test_design(
+        source_pack=_source_pack(),
+        flow_pack=_flow_pack(),
+        flow_outline=_outline(),
+        sfmea=_sfmea(),
+        black_box_cases=cases,
+    )
+
+    link = artifacts["traceability_matrix.json"]["links"][0]
+    assert link["verified_evidence_refs"] == cases[0]["source_or_test_evidence"]
+    assert link["unresolved_evidence_refs"] == []
+
+    cases[0]["source_or_test_evidence"] = ["lib/iscsi/iscsi.c:99-120"]
+    invalid = build_source_driven_test_design(
+        source_pack=_source_pack(),
+        flow_pack=_flow_pack(),
+        flow_outline=_outline(),
+        sfmea=_sfmea(),
+        black_box_cases=cases,
+    )
+    assert invalid["traceability_matrix.json"]["links"][0]["unresolved_evidence_refs"] == [
+        "lib/iscsi/iscsi.c:99-120"
+    ]
+
+
 def test_final_fact_verification_accepts_l1_verified_source_anchor_without_l2(tmp_path: Path):
     from app.services.source_driven_test_design import refresh_source_driven_delivery_governance
 
