@@ -10502,3 +10502,27 @@ def test_deterministic_quality_repair_uses_existing_recovery_verification_for_mi
     )
     assert fields == ["$[0].mitigation"]
     assert "验证: 故障注入 iscsi_parse_params 返回错误" in repaired[0]["mitigation"]
+
+
+def test_deterministic_quality_repair_distinguishes_duplicate_sfmea_mitigations():
+    shared = "整改: 明确异常路径的状态、资源和错误传播契约。验证: 注入触发条件并确认协议响应、连接状态和资源指标一致。"
+    repaired, fields = _deterministic_quality_claim_repair(
+        [
+            {"sfmea_id": "SFMEA-002", "failure_mode": "连接清理失败后资源残留", "mitigation": shared},
+            {"sfmea_id": "SFMEA-003", "failure_mode": "登录回调与连接退出竞态导致重复处理", "mitigation": shared},
+            {"sfmea_id": "SFMEA-007", "failure_mode": "登录阶段切换交错导致参数状态异常", "mitigation": shared},
+        ],
+        artifact="sfmea.json",
+        quality_feedback={"issues": [{
+            "artifact": "sfmea.json",
+            "code": "duplicate_generic_sfmea_mitigation",
+            "row_ids": ["SFMEA-002", "SFMEA-003", "SFMEA-007"],
+        }]},
+    )
+
+    mitigations = [row["mitigation"] for row in repaired]
+    assert fields == ["$[0].mitigation", "$[1].mitigation", "$[2].mitigation"]
+    assert len(set(mitigations)) == 3
+    assert "资源计数回到基线" in mitigations[0]
+    assert "只产生一次外部响应" in mitigations[1]
+    assert "阶段字段" in mitigations[2]

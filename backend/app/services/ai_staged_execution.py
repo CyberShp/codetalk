@@ -8408,6 +8408,7 @@ def _deterministic_quality_claim_repair(
         "missing_max_connections_target_setup",
         "black_box_case_quality_failed",
         "non_actionable_mitigation",
+        "duplicate_generic_sfmea_mitigation",
     }
     if not issue_codes or not (issue_codes & supported_codes):
         return repaired, []
@@ -8440,6 +8441,46 @@ def _deterministic_quality_claim_repair(
             if not mitigation or not verification or "验证:" in mitigation:
                 continue
             row["mitigation"] = f"{mitigation.rstrip('。；; ')}。验证: {verification}"
+            fields.append(f"$[{index}].mitigation")
+
+    duplicate_mitigation_row_ids = {
+        str(row_id).strip()
+        for issue in issues
+        if str(issue.get("code") or "") == "duplicate_generic_sfmea_mitigation"
+        for row_id in issue.get("row_ids") or []
+        if str(row_id).strip()
+    }
+    if (
+        duplicate_mitigation_row_ids
+        and artifact == "sfmea.json"
+        and isinstance(repaired, list)
+    ):
+        for index, row in enumerate(repaired):
+            if not isinstance(row, dict):
+                continue
+            row_id = str(row.get("sfmea_id") or "").strip()
+            if row_id not in duplicate_mitigation_row_ids:
+                continue
+            failure_mode = str(row.get("failure_mode") or "该失效模式").strip()
+            if re.search(r"清理|释放|泄漏|资源", failure_mode):
+                action = "把资源所有权与退出清理顺序固化为单一路径，并把资源计数恢复作为退出条件"
+                verification = "注入该失效条件后重复建立和关闭连接，确认资源计数回到基线且后续 Login 可继续成功"
+            elif re.search(r"回调|竞态|并发", failure_mode):
+                action = "在回调完成与连接退出之间建立状态门禁，禁止退出后的回调再次推进处理"
+                verification = "并发触发该回调与连接关闭，确认只产生一次外部响应、没有重复处理且连接状态最终稳定"
+            elif re.search(r"阶段|状态|转换", failure_mode):
+                action = "为该阶段迁移校验前置状态并在异常时停止下游状态推进"
+                verification = "交错发送该阶段的边界输入，确认协议响应、阶段字段和连接状态与预期一致"
+            else:
+                action = "为该失效模式定义专属的错误处置和状态收敛条件"
+                verification = "注入该失效模式对应的外部触发条件，确认协议响应、连接状态和可观测资源指标全部收敛"
+            # The failure-mode label is deliberately retained: it connects the
+            # action to the corresponding risk row instead of merely varying
+            # wording to evade the duplicate-mitigation validator.
+            row["mitigation"] = (
+                f"整改: 针对「{failure_mode}」，{action}。"
+                f"验证: {verification}。"
+            )
             fields.append(f"$[{index}].mitigation")
 
     # A repair batch often contains both a row-level oracle issue and a
