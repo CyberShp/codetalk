@@ -7337,6 +7337,31 @@ def test_flow_evidence_pack_classifies_returned_error_and_negative_rc_branch(tmp
     assert "return SPDK_ISCSI_LOGIN_ERROR_PARAMETER;" in error_text
 
 
+def test_flow_evidence_pack_does_not_misclassify_names_or_macros_as_error_paths():
+    source = (
+        "#define ISCSI_LOGIN_TIMEOUT 30\n"
+        "static int login_timeout(void *arg) {\n"
+        "    return 0;\n"
+        "}\n"
+    )
+    source_pack = {
+        "analysis_target": "login timeout",
+        "source_scope": {},
+        "evidence_cards": [{
+            "evidence_id": "SRC-01",
+            "classification": "source",
+            "file_path": "lib/iscsi/login.c",
+            "start_line": 1,
+            "end_line": 4,
+            "excerpt": source,
+            "symbols": ["login_timeout"],
+            "sha256": hashlib.sha256(source.encode()).hexdigest(),
+        }],
+    }
+
+    assert build_flow_evidence_pack(source_pack)["error_paths"] == []
+
+
 def test_flow_evidence_ignores_calls_inside_block_comments_and_strings(tmp_path):
     repo = tmp_path / "repo-comments"
     (repo / "lib").mkdir(parents=True)

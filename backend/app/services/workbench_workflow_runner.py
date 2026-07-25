@@ -3828,6 +3828,48 @@ def _apply_source_driven_judge_to_quality_audit(
                 "severity": "blocking",
             }
         )
+    # The judge is intentionally a compact delivery decision.  Preserve the
+    # row-level independent-audit verdicts here so a repair turn can act on
+    # the actual SFMEA/test-case row instead of repeatedly seeing only
+    # ``facts:blocked``.
+    behavior_validation = _read_json(artifact_dir / "behavior_claim_validation.json") or {}
+    known_behavior_claims = {
+        str(item.get("field") or item.get("claim_id") or "")
+        for item in issues
+        if str(item.get("code") or "").startswith("behavior_claim_")
+    }
+    for claim in behavior_validation.get("claims") or []:
+        if not isinstance(claim, dict):
+            continue
+        verdict = str(claim.get("status") or "").strip().lower()
+        if verdict not in {"contradicted", "insufficient"}:
+            continue
+        claim_id = str(claim.get("claim_id") or "").strip()
+        if not claim_id or claim_id in known_behavior_claims:
+            continue
+        artifact = "sfmea.json"
+        row_id = ""
+        match = re.match(r"^ROW:([^:]+):(.+)$", claim_id)
+        if match:
+            artifact, row_id = match.groups()
+        issue = {
+            "code": f"behavior_claim_{verdict}",
+            "severity": "blocking",
+            "artifact": artifact,
+            "row_id": row_id,
+            "field": claim_id,
+            "claim_id": claim_id,
+            "reason": str(claim.get("reason") or "独立审计未支持该技术断言。"),
+            "message": "独立源码审计未支持该交付行；必须使用已验证证据替换或移除。",
+        }
+        if verdict == "insufficient" and artifact == "sfmea.json" and row_id:
+            issue["field_patch"] = {
+                "failure_mode": (
+                    "删除该 SFMEA 行：当前已验证源码不支持该风险锚点，"
+                    "应作为证据缺口而非正式失效模式。"
+                )
+            }
+        issues.append(issue)
     result.update(
         {
             "status": "needs_rework" if result.get("status") != "invalid" else "invalid",

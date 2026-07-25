@@ -35,10 +35,20 @@ _FUNCTION_DEFINITION_PATTERN = re.compile(
     r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*[\s*]+)+"
     r"([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}]*\)\s*\{"
 )
-_ERROR_PATH_PATTERN = re.compile(
-    r"(?:\b(?:error|fail|timeout|invalid|denied|reject)\b|"
-    r"(?:^|[_\W])(?:error|fail|timeout|invalid|denied|reject)(?:$|[_\W])|"
-    r"\bif\s*\([^\n)]*(?:<\s*0|!=\s*0|==\s*NULL)\s*\))",
+_ERROR_GUARD_PATTERN = re.compile(
+    r"\bif\s*\([^\n)]*(?:<\s*0|!=\s*0|==\s*NULL|!\s*[A-Za-z_])",
+    re.IGNORECASE,
+)
+_ERROR_RETURN_PATTERN = re.compile(
+    r"\breturn\s+[^;]*(?:ERROR|FAIL|TIMEOUT|INVALID|DENIED|REJECT)",
+    re.IGNORECASE,
+)
+_ERROR_STATUS_PATTERN = re.compile(
+    r"\b(?:status_(?:class|detail)|rc)\s*=\s*[^;]*(?:ERROR|FAIL|TIMEOUT|INVALID|DENIED|REJECT)",
+    re.IGNORECASE,
+)
+_ERROR_CALLEE_PATTERN = re.compile(
+    r"\b[A-Za-z_][A-Za-z0-9_]*(?:_err|_error|_fail)[A-Za-z0-9_]*\s*\(",
     re.IGNORECASE,
 )
 
@@ -162,7 +172,10 @@ def build_flow_evidence_pack(
                         provider=provider,
                     )
                 )
-            if _ERROR_PATH_PATTERN.search(stripped):
+            if _is_executable_error_path(
+                stripped,
+                declaration_symbol=declaration_symbol,
+            ):
                 error_paths.append(
                     _line_evidence(
                         prefix="FLOW-ERROR",
@@ -957,6 +970,19 @@ def _line_evidence(
         provider=provider,
         sha256=str(card.get("sha256") or ""),
         details={"text": text[:500]},
+    )
+
+
+def _is_executable_error_path(line: str, *, declaration_symbol: str) -> bool:
+    """Keep executable failure handling, not names or preprocessor constants."""
+    if not line or line.startswith("#") or declaration_symbol:
+        return False
+    return bool(
+        _ERROR_GUARD_PATTERN.search(line)
+        or _ERROR_RETURN_PATTERN.search(line)
+        or _ERROR_STATUS_PATTERN.search(line)
+        or "SPDK_ERRLOG(" in line
+        or _ERROR_CALLEE_PATTERN.search(line)
     )
 
 

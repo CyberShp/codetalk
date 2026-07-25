@@ -452,6 +452,33 @@ def test_source_driven_judge_blocks_delivery_and_never_reports_empty_facts_as_10
     assert result["issues"][-1]["code"] == "source_driven_coverage_judge_blocked"
 
 
+def test_source_driven_judge_exposes_row_level_behavior_audit_for_repair(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _apply_source_driven_judge_to_quality_audit,
+    )
+
+    (tmp_path / "judge_report.json").write_text(json.dumps({
+        "status": "BLOCKED", "ready": False, "blocking_reasons": ["facts:blocked"], "axes": {}
+    }), encoding="utf-8")
+    (tmp_path / "behavior_claim_validation.json").write_text(json.dumps({
+        "claims": [{
+            "claim_id": "ROW:sfmea.json:SFMEA-08",
+            "status": "insufficient",
+            "reason": "给定源码不包含 Discovery 关闭路径。",
+        }]
+    }), encoding="utf-8")
+
+    result = _apply_source_driven_judge_to_quality_audit(
+        audit={"status": "deliverable", "deliverable": True, "issues": [], "quality_axes": {}},
+        artifact_dir=tmp_path,
+    )
+
+    issue = next(item for item in result["issues"] if item["code"] == "behavior_claim_insufficient")
+    assert issue["artifact"] == "sfmea.json"
+    assert issue["row_id"] == "SFMEA-08"
+    assert "删除该 SFMEA 行" in issue["field_patch"]["failure_mode"]
+
+
 def test_source_driven_judge_preserves_deliverable_when_only_coverage_work_is_pending(
     tmp_path,
 ):
