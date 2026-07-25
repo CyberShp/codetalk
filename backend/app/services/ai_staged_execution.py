@@ -8819,6 +8819,64 @@ def _deterministic_quality_claim_repair(
                 ]
             )
 
+    # A mapped SPDK script is evidence only for the behavior it actually
+    # exercises.  These two audit findings identify a narrow but recurring
+    # generator mistake: treating a reset/FIO script as relogin coverage, or
+    # a protocol conformance suite as a Login latency benchmark.  Keep the
+    # requested black-box scenarios, but make the missing harness explicit
+    # rather than presenting an unrelated existing test as proof.
+    if artifact_name == "black_box_cases.json" and isinstance(repaired, list):
+        scoped_mapping_repairs = {
+            "iscsi_reset_mapping_scope": {
+                "mapped_test_dir": (
+                    "ai_suggested_unverified: 需新增受控 logout/relogin 会话重建 harness；"
+                    "test/iscsi_tgt/reset/reset.sh 仅覆盖持续 fio 中的 sg_reset，"
+                    "不覆盖 logout/relogin。"
+                ),
+                "expected_result": (
+                    "受控断连后的新 Login 成功，公开 initiator 输出、target 日志和 TCP 会话状态"
+                    "均不显示残留会话或资源未释放；该结论由新增 logout/relogin harness 验证。"
+                ),
+            },
+            "iscsi_calsoft_mapping_scope": {
+                "mapped_test_dir": (
+                    "ai_suggested_unverified: 需新增独立 Login 延迟计时与抓包 harness；"
+                    "test/iscsi_tgt/calsoft/calsoft.py 仅为协议一致性套件入口，"
+                    "不采集 Login P50/P95。"
+                ),
+                "expected_result": (
+                    "以同环境预热和重复样本建立的独立计时基线为准，报告 Login P50/P95 和方差；"
+                    "不得从 calsoft.py 推导延迟结论。"
+                ),
+            },
+        }
+        targeted_row_ids = {
+            str(issue.get("row_id") or "").strip()
+            for issue in issues
+            if str(issue.get("code") or "") == "professional_fact_conflict"
+            and str(issue.get("constraint_id") or "") in scoped_mapping_repairs
+            and str(issue.get("row_id") or "").strip()
+        }
+        for index, row in enumerate(repaired):
+            if not isinstance(row, dict):
+                continue
+            case_id = str(row.get("case_id") or "").strip()
+            if case_id not in targeted_row_ids:
+                continue
+            matching_constraints = [
+                str(issue.get("constraint_id") or "")
+                for issue in issues
+                if str(issue.get("code") or "") == "professional_fact_conflict"
+                and str(issue.get("row_id") or "").strip() == case_id
+                and str(issue.get("constraint_id") or "") in scoped_mapping_repairs
+            ]
+            for constraint_id in matching_constraints:
+                for key, value in scoped_mapping_repairs[constraint_id].items():
+                    if row.get(key) == value:
+                        continue
+                    row[key] = value
+                    fields.append(f"$[{index}].{key}")
+
     if (
         "iscsi_duplicate_cid_not_too_many_connections" in professional_constraints
         and artifact_name == "sfmea.json"

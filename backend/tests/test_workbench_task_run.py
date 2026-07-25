@@ -5907,6 +5907,53 @@ def test_quality_feedback_routes_transient_sfmea_contract_floor_to_repair():
     assert feedback["issues"][0]["repairable"] is True
 
 
+def test_audit_contract_gap_guard_keeps_non_contract_value_errors_fatal():
+    source = (
+        Path(__file__).parents[1]
+        / "app/services/workbench_workflow_runner.py"
+    ).read_text(encoding="utf-8")
+
+    assert 'except ValueError as exc:' in source
+    assert 'if not is_contract_gap:\n                                raise' in source
+    assert '"sfmea.json: $ 项目数小于" in message' in source
+
+
+def test_staged_builtin_failure_records_a_redacted_traceback_for_root_cause_diagnosis():
+    source = (
+        Path(__file__).parents[1]
+        / "app/services/workbench_workflow_runner.py"
+    ).read_text(encoding="utf-8")
+
+    assert "traceback.format_exc()" in source
+    assert '"traceback": diagnostic_traceback' in source
+
+
+def test_staged_lifecycle_routes_only_minimum_item_contract_gaps_into_quality_repair():
+    source = (
+        Path(__file__).parents[1]
+        / "app/services/workbench_workflow_runner.py"
+    ).read_text(encoding="utf-8")
+
+    assert "async def execute_staged_with_repairable_contract_gap" in source
+    assert '"artifact_contract_repair_required"' in source
+    assert '"项目数小于" in message' in source
+    assert '"sfmea.json" in message' in source
+    assert '"black_box_cases.json" in message' in source
+
+
+def test_quality_lifecycle_uses_the_audit_as_its_only_contract_gap_refresh_owner():
+    source = (
+        Path(__file__).parents[1]
+        / "app/services/workbench_workflow_runner.py"
+    ).read_text(encoding="utf-8")
+    lifecycle_marker = "current_plan = staged_plan"
+    audit_marker = "candidate_audit = await audit_staged_artifacts()"
+    lifecycle_section = source[source.index(lifecycle_marker):source.index(audit_marker)]
+
+    assert "_refresh_source_delivery_governance_after_finalizing(" not in lifecycle_section
+    assert "audit_staged_artifacts() is the sole refresh owner" in lifecycle_section
+
+
 def test_each_quality_repair_attempt_only_bypasses_its_current_failed_artifacts():
     from app.services.workbench_workflow_runner import (
         _apply_quality_feedback_to_staged_plan,

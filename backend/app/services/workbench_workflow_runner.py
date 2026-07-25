@@ -14,6 +14,7 @@ import shutil
 import threading
 import time
 import tokenize
+import traceback
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -2292,6 +2293,29 @@ class WorkbenchWorkflowRunner:
                             on_progress=emit_stage_progress,
                         )
 
+                    async def execute_staged_with_repairable_contract_gap(
+                        plan: dict[str, Any],
+                    ) -> dict[str, Any]:
+                        """Route a post-generation delivery floor into quality repair."""
+                        try:
+                            return await execute_staged(plan)
+                        except ArtifactContractError as exc:
+                            message = _redact_failure_diagnostic_text(str(exc))
+                            if not (
+                                "项目数小于" in message
+                                and (
+                                    "sfmea.json" in message
+                                    or "black_box_cases.json" in message
+                                )
+                            ):
+                                raise
+                            return {
+                                "status": "partial",
+                                "reason": "artifact_contract_repair_required",
+                                "contract_gap": message,
+                                "models": [],
+                            }
+
                     async def validate_behavior_claims() -> dict[str, Any]:
                         if not settings.behavior_claim_audit_enabled:
                             return {}
@@ -2401,13 +2425,25 @@ class WorkbenchWorkflowRunner:
                                 ),
                                 deadline=staged_lifecycle_deadline,
                             )
-                        except ArtifactContractError as exc:
+                        except ValueError as exc:
+                            # Some test/dev reload paths can materialize the
+                            # same contract exception through a separately
+                            # loaded module object.  Match only the explicit
+                            # structured-delivery floor here; every unrelated
+                            # ValueError must retain normal failure semantics.
+                            message = _redact_failure_diagnostic_text(str(exc))
+                            is_contract_gap = (
+                                isinstance(exc, ArtifactContractError)
+                                or "sfmea.json: $ 项目数小于" in message
+                                or "black_box_cases.json: $ 项目数小于" in message
+                            )
+                            if not is_contract_gap:
+                                raise
                             # A post-validation row removal can temporarily put
                             # a structured artifact below its delivery floor.
                             # This is a repairable quality gap, not an Agent
                             # runtime crash: keep the strict contract and feed
                             # the exact artifact back into the repair loop.
-                            message = _redact_failure_diagnostic_text(str(exc))
                             artifact = (
                                 "sfmea.json"
                                 if "sfmea.json" in message
@@ -2433,20 +2469,16 @@ class WorkbenchWorkflowRunner:
                     current_plan = staged_plan
                     try:
                         staged_lifecycle_phase = "execute_staged_plan"
-                        staged_result = await execute_staged(current_plan)
+                        staged_result = await execute_staged_with_repairable_contract_gap(
+                            current_plan
+                        )
                         staged_lifecycle_phase = "validate_behavior_claims"
                         behavior_validation = await validate_behavior_claims()
-                        if (artifact_dir / "judge_report.json").is_file():
-                            staged_lifecycle_phase = "refresh_source_delivery_governance"
-                            try:
-                                _refresh_source_delivery_governance_after_finalizing(
-                                    artifact_dir=artifact_dir,
-                                    plan=current_plan,
-                                )
-                            except ArtifactContractError:
-                                # The first audit below turns this transient
-                                # contract violation into scoped repair input.
-                                pass
+                        # audit_staged_artifacts() is the sole refresh owner.
+                        # It converts a temporary post-validation contract gap
+                        # into actionable quality feedback.  A preliminary
+                        # refresh here used to surface the same condition as a
+                        # runtime failure before the repair loop could start.
                         if (
                             behavior_validation.get("reason")
                             == "workflow_deadline_exceeded"
@@ -2462,6 +2494,7 @@ class WorkbenchWorkflowRunner:
                                 1,
                                 int(settings.staged_quality_repair_max_attempts) + 1,
                             ):
+                                staged_lifecycle_phase = "audit_staged_artifacts"
                                 try:
                                     audit = await audit_staged_artifacts()
                                 except asyncio.TimeoutError:
@@ -2629,12 +2662,16 @@ class WorkbenchWorkflowRunner:
                                     artifact_names=snapshot_names,
                                 )
                                 repair_started = time.monotonic()
-                                staged_result = await execute_staged(current_plan)
-                                behavior_validation = await validate_behavior_claims()
-                                _refresh_source_delivery_governance_after_finalizing(
-                                    artifact_dir=artifact_dir,
-                                    plan=current_plan,
+                                staged_result = await execute_staged_with_repairable_contract_gap(
+                                    current_plan
                                 )
+                                behavior_validation = await validate_behavior_claims()
+                                # Do not refresh the delivery floor directly here.
+                                # Behavior validation may have removed unsupported
+                                # rows, temporarily leaving SFMEA below its strict
+                                # contract minimum.  audit_staged_artifacts() owns
+                                # that transition and turns it into scoped repair
+                                # feedback instead of crashing the whole Attempt.
                                 if (
                                     behavior_validation.get("reason")
                                     == "workflow_deadline_exceeded"
@@ -2905,10 +2942,16 @@ class WorkbenchWorkflowRunner:
                                     final_repair_audit,
                                 )
                             )
-                        _refresh_source_delivery_governance_after_finalizing(
-                            artifact_dir=artifact_dir,
-                            plan=current_plan,
-                        )
+                        try:
+                            _refresh_source_delivery_governance_after_finalizing(
+                                artifact_dir=artifact_dir,
+                                plan=current_plan,
+                            )
+                        except ArtifactContractError:
+                            # The final audit already records this as an
+                            # undeliverable quality result.  Never turn a
+                            # truthful blocked outcome into a runtime failure.
+                            pass
                         _write_json(
                             artifact_dir / "quality_repair_result.json",
                             {
@@ -2990,6 +3033,9 @@ class WorkbenchWorkflowRunner:
             status = "error"
             diagnostic_message = _redact_failure_diagnostic_text(str(exc).strip())
             exception_type = type(exc).__name__
+            diagnostic_traceback = _redact_failure_diagnostic_text(
+                traceback.format_exc()
+            )
             _write_json(
                 artifact_dir / "builtin_llm_failure.json",
                 {
@@ -2997,6 +3043,7 @@ class WorkbenchWorkflowRunner:
                     "exception_type": exception_type,
                     "message": diagnostic_message or "异常未提供文字详情。",
                     "staged_lifecycle_phase": staged_lifecycle_phase,
+                    "traceback": diagnostic_traceback,
                 },
             )
             error = (

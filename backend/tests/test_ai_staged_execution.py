@@ -11106,6 +11106,67 @@ def test_deterministic_quality_repair_corrects_unknown_key_contract_from_report_
     assert "$[0].expected_result" in fields
 
 
+def test_deterministic_quality_repair_replaces_unrelated_iscsi_test_mappings_with_explicit_harness_gaps(tmp_path):
+    from app.services.test_activity_contract import (
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        [
+            {
+                "case_id": "BB-LOGIN-007",
+                "scenario_name": "登录过程中断连后资源正确释放",
+                "expected_result": "重新登录成功，target 无状态残留",
+                "mapped_test_dir": "test/iscsi_tgt/reset/reset.sh",
+            },
+            {
+                "case_id": "BB-LOGIN-008",
+                "scenario_name": "登录延迟基准测试",
+                "expected_result": "P95 登录延迟稳定",
+                "mapped_test_dir": "test/iscsi_tgt/calsoft/calsoft.py",
+            },
+        ],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [
+            {
+                "artifact": "black_box_cases.json",
+                "code": "professional_fact_conflict",
+                "constraint_id": "iscsi_reset_mapping_scope",
+                "row_id": "BB-LOGIN-007",
+            },
+            {
+                "artifact": "black_box_cases.json",
+                "code": "professional_fact_conflict",
+                "constraint_id": "iscsi_calsoft_mapping_scope",
+                "row_id": "BB-LOGIN-008",
+            },
+        ]},
+    )
+
+    reset_case, latency_case = repaired
+    assert "ai_suggested_unverified" in reset_case["mapped_test_dir"]
+    assert "不覆盖 logout/relogin" in reset_case["mapped_test_dir"]
+    assert "ai_suggested_unverified" in latency_case["mapped_test_dir"]
+    assert "不采集 Login P50/P95" in latency_case["mapped_test_dir"]
+    assert "$[0].mapped_test_dir" in fields
+    assert "$[1].mapped_test_dir" in fields
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整灰盒测试设计",
+        repo_path=str(repo),
+    )
+    issues = _audit_professional_constraints(
+        "\n".join(json.dumps(row, ensure_ascii=False) for row in repaired),
+        contract,
+    )
+    constraint_ids = {issue.get("constraint_id") for issue in issues}
+    assert "iscsi_reset_mapping_scope" not in constraint_ids
+    assert "iscsi_calsoft_mapping_scope" not in constraint_ids
+
+
 def test_deterministic_quality_repair_separates_duplicate_cid_from_mcs_capacity():
     repaired, fields = _deterministic_quality_claim_repair(
         [{
