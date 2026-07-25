@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any
 
 
-FLOW_EVIDENCE_VERSION = "flow-evidence-pack-v3"
+# Bump when deterministic extraction semantics change so cached packs cannot
+# hide newly recognized source evidence from downstream flow quality gates.
+FLOW_EVIDENCE_VERSION = "flow-evidence-pack-v4"
 _FLOW_EVIDENCE_VERSION = FLOW_EVIDENCE_VERSION
 _FLOW_OUTLINE_VERSION = "flow-outline-v1"
 _CALL_PATTERN = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")

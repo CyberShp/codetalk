@@ -7802,7 +7802,7 @@ def test_flow_symbol_parser_accepts_split_c_definitions_but_rejects_control_macr
 
 def test_flow_evidence_version_changes_when_its_verified_edge_semantics_change():
     """A corrected deterministic artifact must not reuse the prior cache entry."""
-    assert FLOW_EVIDENCE_VERSION == "flow-evidence-pack-v3"
+    assert FLOW_EVIDENCE_VERSION == "flow-evidence-pack-v4"
 
 
 def test_flow_evidence_tracks_verified_callback_references_without_call_syntax(tmp_path):
