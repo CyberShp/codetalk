@@ -33,6 +33,12 @@ _FUNCTION_DEFINITION_PATTERN = re.compile(
     r"^\s*(?:[A-Za-z_][A-Za-z0-9_]*[\s*]+)+"
     r"([A-Za-z_][A-Za-z0-9_]*)\s*\([^;{}]*\)\s*\{"
 )
+_ERROR_PATH_PATTERN = re.compile(
+    r"(?:\b(?:error|fail|timeout|invalid|denied|reject)\b|"
+    r"(?:^|[_\W])(?:error|fail|timeout|invalid|denied|reject)(?:$|[_\W])|"
+    r"\bif\s*\([^\n)]*(?:<\s*0|!=\s*0|==\s*NULL)\s*\))",
+    re.IGNORECASE,
+)
 
 
 def build_flow_evidence_pack(
@@ -154,7 +160,7 @@ def build_flow_evidence_pack(
                         provider=provider,
                     )
                 )
-            if re.search(r"\b(error|fail|timeout|invalid|denied|reject)\b", lower):
+            if _ERROR_PATH_PATTERN.search(stripped):
                 error_paths.append(
                     _line_evidence(
                         prefix="FLOW-ERROR",

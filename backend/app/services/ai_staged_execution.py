@@ -9949,9 +9949,11 @@ def _apply_sfmea_nonrisk_deletion_tombstones(
             elif risk_claim:
                 has_verified_risk_replacement = True
                 break
+        # An insufficient review is an evidence gap, not a finding that the
+        # risk is false. Only a contradiction, or an explicit non-risk
+        # disposition, may remove a risk row.
         if has_explicit_nonrisk_replacement or (
-            codes & (contradiction_codes | insufficient_codes)
-            and not has_verified_risk_replacement
+            codes & contradiction_codes and not has_verified_risk_replacement
         ):
             deletion_ids.add(row_id)
     if not deletion_ids:

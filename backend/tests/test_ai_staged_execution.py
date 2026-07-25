@@ -7304,6 +7304,39 @@ def test_flow_evidence_pack_uses_revision_pinned_bounded_git_grep(tmp_path):
         assert all(len(item.get("sha256") or "") == 64 for item in pack[key])
 
 
+def test_flow_evidence_pack_classifies_returned_error_and_negative_rc_branch(tmp_path):
+    """C error constants and negative return guards must remain visible to flow gates."""
+    source = (
+        "int login_params(void) {\n"
+        "    int rc = parse_params();\n"
+        "    if (rc < 0) {\n"
+        "        return SPDK_ISCSI_LOGIN_ERROR_PARAMETER;\n"
+        "    }\n"
+        "    return 0;\n"
+        "}\n"
+    )
+    source_pack = {
+        "analysis_target": "iSCSI login parameter failure",
+        "source_scope": {},
+        "evidence_cards": [{
+            "evidence_id": "SRC-01",
+            "classification": "source",
+            "file_path": "lib/iscsi/login.c",
+            "start_line": 1,
+            "end_line": 7,
+            "excerpt": source,
+            "symbols": ["login_params"],
+            "sha256": hashlib.sha256(source.encode()).hexdigest(),
+        }],
+    }
+
+    pack = build_flow_evidence_pack(source_pack)
+
+    error_text = [str(item.get("text") or "") for item in pack["error_paths"]]
+    assert "if (rc < 0) {" in error_text
+    assert "return SPDK_ISCSI_LOGIN_ERROR_PARAMETER;" in error_text
+
+
 def test_flow_evidence_ignores_calls_inside_block_comments_and_strings(tmp_path):
     repo = tmp_path / "repo-comments"
     (repo / "lib").mkdir(parents=True)
