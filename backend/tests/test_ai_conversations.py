@@ -1738,6 +1738,18 @@ class TestAIConversationsAPI:
         assert "当前证据覆盖历史回答" in builtin_prompt[-2]["content"]
         assert "SRC-09" in builtin_prompt[-2]["content"]
 
+        independent_review_prompt = _build_prompt(
+            conversation,
+            messages,
+            references,
+            "你是独立质量审查员，只审阅当前旁挂交付件和已验证源码证据。",
+        )
+        assert all(
+            item["content"] != "SRC-09 不存在，无法确认。"
+            for item in independent_review_prompt
+        )
+        assert "SRC-09" in independent_review_prompt[0]["content"]
+
         agent_prompt = _build_agent_prompt(
             conversation,
             messages,
