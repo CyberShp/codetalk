@@ -180,6 +180,24 @@ Source analysis was a declared cache hit, so the 3 minutes 31 seconds elapsed
 time is functional and observability evidence only. It does not close the
 uncached deep performance acceptance criterion.
 
+### 2026-07-26 Flash/Pro rapid alignment regression
+
+Chromium started a new task from the settings page after configuring
+`deepseek-v4-flash` for generation and `deepseek-v4-pro` for independent
+quality validation. The first browser run exposed a deterministic product
+contradiction: rapid materialized `flow_cards.json`, but did not materialize
+its matching tester-facing flow Markdown while the mandatory alignment audit
+always checked that pair. The task correctly stopped at `quality=blocked`;
+no model output was silently accepted.
+
+`af83ab19` adds the missing rapid flow delivery without weakening the audit.
+The fresh isolated browser rerun `task_run_538caaaf9f6c4c62ba4b89769f4729d1`
+completed in `187500ms`, with `deliverable` quality score `100`, zero issues,
+and all evidence/flow/SFMEA/black-box alignment pairs passed. It used a real
+SPDK workspace and uploaded design document. Three targeted quality-repair
+passes occurred, so it is functional and quality evidence, not an uncached
+rapid performance baseline. Artifacts: `/Volumes/Media/codetalk-e2e-artifacts/v3-deepseek-flash-pro-20260726/run5/`.
+
 ### 2026-07-25 DeepSeek Flash/Pro Quality-Retry Regression
 
 Browser-run `task_run_2ca4eb1e31ed49baba52ed9eeed9ac09` is a real Chromium
