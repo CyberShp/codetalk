@@ -1035,6 +1035,14 @@ export interface PreparedWorkbenchTaskRun {
     deliverable?: boolean;
     score?: number;
     issue_count?: number;
+    issues?: Array<{
+      code?: string;
+      artifact?: string;
+      message?: string;
+      row_id?: string;
+      row_ids?: string[];
+    }>;
+    recommendations?: string[];
     lint_warning_count?: number;
     fact_verification?: {
       total?: number;

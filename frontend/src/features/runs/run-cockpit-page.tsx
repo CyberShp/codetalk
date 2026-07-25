@@ -457,6 +457,7 @@ function QualityPanel({ run, onRetry, busy }: { run: PreparedWorkbenchTaskRun; o
   const quality = run.test_activity_quality;
   const axes = quality?.quality_axes;
   const factSummary = quality?.fact_verification;
+  const blockers = (quality?.issues || []).slice(0, 3);
   return <section className="ct-v2-run-quality">
     <header><div><h2>质量结果</h2><strong>{taskStatusLabel(taskQualityLabels, run.quality_status || "not_checked")}</strong></div><span>{quality?.issue_count ?? 0} 个阻断项</span>{run.quality_status === "blocked" && <button type="button" disabled={busy} onClick={onRetry}><RefreshCw size={14} />{busy ? "正在启动修复" : "修复质量问题并重试"}</button>}</header>
     <div className="ct-v2-quality-axes">
@@ -465,6 +466,7 @@ function QualityPanel({ run, onRetry, busy }: { run: PreparedWorkbenchTaskRun; o
       <QualityAxis label="可执行性通过率" status={axes?.executability?.status} value={axes?.executability?.pass_rate} detail={`${axes?.executability?.issue_count ?? 0} 个执行能力问题`} />
       <QualityAxis label="覆盖处置门禁" status={axes?.coverage_judge?.status} value={axes?.coverage_judge?.score} detail={`${axes?.coverage_judge?.blocking_reasons?.length ?? 0} 个覆盖阻断项`} />
     </div>
+    {run.quality_status === "blocked" && <section className="ct-v2-quality-blockers" aria-label="质量阻断原因"><h3>质量阻断原因</h3><ul>{blockers.map((item, index) => <li key={`${item.code || "issue"}-${index}`}><strong>{item.artifact || "交付件"}</strong><span>{item.message || "质量检查发现需要修复的问题"}</span></li>)}</ul>{quality?.recommendations?.length ? <p>下一步：{quality.recommendations[0]}</p> : null}</section>}
     <p>{qualityMessage(run)}{quality?.lint_warning_count ? ` 另有 ${quality.lint_warning_count} 条结构提示，不作为事实核验结论。` : ""}</p>
   </section>;
 }

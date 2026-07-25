@@ -479,6 +479,8 @@ def _public_task_run_runtime_summary(task_root: Path) -> dict[str, Any]:
                 "deliverable",
                 "score",
                 "issue_count",
+                "issues",
+                "recommendations",
                 "lint_warning_count",
                 "fact_verification",
                 "quality_axes",

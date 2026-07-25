@@ -140,3 +140,8 @@ test("cockpit labels a node-reused quality retry instead of implying a fresh rap
   assert.match(cockpit, /基于已验收产物的质量复核/);
   assert.match(cockpit, /不计入速度型完整运行耗时/);
 });
+
+test("cockpit surfaces actionable quality blocker summaries outside technical diagnostics", () => {
+  assert.match(cockpit, /质量阻断原因/);
+  assert.match(cockpit, /quality\?\.recommendations/);
+});
