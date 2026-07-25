@@ -134,3 +134,9 @@ test("quality-blocked runs expose an in-context repair retry", () => {
   assert.match(cockpit, /修复质量问题并重试/);
   assert.match(cockpit, /createRun\(taskId, runId\)/);
 });
+
+test("cockpit labels a node-reused quality retry instead of implying a fresh rapid run", () => {
+  assert.match(cockpit, /node_reused/);
+  assert.match(cockpit, /基于已验收产物的质量复核/);
+  assert.match(cockpit, /不计入速度型完整运行耗时/);
+});

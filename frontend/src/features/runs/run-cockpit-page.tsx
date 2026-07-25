@@ -203,6 +203,10 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
       .filter(Boolean),
   );
   const sameRunReuseEvents = reuseEvents.filter((item) => String(item.payload.reuse_source || "").trim() === "same_run_quality_accepted_artifact");
+  // A retry can reuse a completed parent node without emitting the stage-level
+  // cache event. Treat this as a quality review, never as a fresh rapid run.
+  const nodeReuseEvents = events.filter((item) => item.event_type === "node_reused");
+  const qualityReviewReuse = nodeReuseEvents.length > 0 || sameRunReuseEvents.length > 0;
 
   const cancel = async () => {
     setActionBusy(true);
@@ -261,7 +265,7 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
       <StatusBlock label="质量状态" value={taskStatusLabel(taskQualityLabels, run.quality_status || "not_checked")} tone={run.quality_status || "not_checked"} />
       <StatusBlock label="交付状态" value={taskStatusLabel(taskDeliveryLabels, run.delivery_status || "none")} tone={run.delivery_status || "none"} />
       <div className="ct-v2-run-metric"><span>耗时</span><RunDuration start={run.started_at || run.runtime?.started_at} end={run.completed_at || run.runtime?.completed_at} active={running} /></div>
-      {executionProfileId && <div className="ct-v2-run-metric"><span>执行档位</span><strong>{executionProfileLabel}</strong><small>{profileDuration.length === 2 ? `目标 ${profileDuration[0]}-${profileDuration[1]} 分钟` : "已冻结到本次运行"}{cachedStageIds.size ? ` · 跨运行缓存命中 ${cachedStageIds.size} 个阶段（${cachedReuseEvents.length} 次）` : " · 未命中跨运行缓存"}{sameRunReuseEvents.length ? ` · 本次质量修复复用 ${sameRunReuseEvents.length} 次` : ""}</small></div>}
+      {executionProfileId && <div className="ct-v2-run-metric"><span>执行档位</span><strong>{executionProfileLabel}</strong><small>{qualityReviewReuse ? "基于已验收产物的质量复核，不计入速度型完整运行耗时。" : <>{profileDuration.length === 2 ? `目标 ${profileDuration[0]}-${profileDuration[1]} 分钟` : "已冻结到本次运行"}{cachedStageIds.size ? ` · 跨运行缓存命中 ${cachedStageIds.size} 个阶段（${cachedReuseEvents.length} 次）` : " · 未命中跨运行缓存"}</>}</small></div>}
       <div className="ct-v2-run-metric"><span>当前节点</span><strong>{displayNodeName(currentNode?.label || currentNode?.id || "等待调度")}</strong></div>
       <div className="ct-v2-run-actions">
         <button type="button" disabled={actionBusy} onClick={() => void discussRun()}><MessageSquareText size={14} />围绕本次运行继续分析</button>
