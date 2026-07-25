@@ -1705,7 +1705,11 @@ class TestAIConversationsAPI:
         assert "integration-agent" in prompt
 
     async def test_source_id_review_places_current_evidence_after_stale_history(self):
-        from app.services.ai_conversations import _build_agent_prompt, _build_prompt
+        from app.services.ai_conversations import (
+            _build_agent_prompt,
+            _build_prompt,
+            _deterministic_source_evidence_reply,
+        )
 
         conversation = {
             "id": "conv-source-id-precedence",
@@ -1743,6 +1747,12 @@ class TestAIConversationsAPI:
         )
         assert agent_prompt.index("历史助手回复：") < agent_prompt.index("当前证据覆盖历史回答")
         assert "config_chap_credentials_for_target" in agent_prompt
+
+        deterministic_reply = _deterministic_source_evidence_reply(references, user_message)
+        assert deterministic_reply is not None
+        assert "test/iscsi_tgt/chap/chap_common.sh" in deterministic_reply
+        assert "L82-L99" in deterministic_reply
+        assert "config_chap_credentials_for_target" in deterministic_reply
 
     async def test_agent_prompt_redacts_reference_secrets_and_absolute_paths(self):
         from app.services.ai_conversations import _build_agent_prompt

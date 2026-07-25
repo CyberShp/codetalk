@@ -2054,7 +2054,13 @@ async def run_generation(
         current_finish_reason.set(None)
         staged_artifact_root: Path | None = None
         staged_delivery_contracts: list[dict[str, Any]] | None = None
-        if staged_plan is not None:
+        deterministic_evidence_reply = _deterministic_source_evidence_reply(
+            references,
+            user_message["content"],
+        )
+        if deterministic_evidence_reply:
+            await append_delta(deterministic_evidence_reply)
+        elif staged_plan is not None:
             staged_artifact_root = ai_thread_agent_artifact_dir(
                 str(conversation["id"]), run_id
             )
@@ -4189,6 +4195,61 @@ def _source_id_evidence_override(
         "不得重复历史中的‘不存在’或‘证据不足’结论。\n"
         + "\n\n".join(matched)
     )
+
+
+def _deterministic_source_evidence_reply(
+    references: list[dict[str, Any]],
+    user_message: str,
+) -> str | None:
+    """Answer an explicit source-card lookup from verified task artifacts."""
+
+    requested_ids = sorted(
+        {
+            value.upper()
+            for value in re.findall(r"\bSRC-\d{1,4}\b", str(user_message or ""), flags=re.IGNORECASE)
+        }
+    )
+    if not requested_ids:
+        return None
+    cards_by_id: dict[str, dict[str, Any]] = {}
+    for reference in references:
+        if str(reference.get("title") or "") != "agent_runs/analyze/evidence_cards.json":
+            continue
+        try:
+            payload = json.loads(str(reference.get("excerpt") or ""))
+        except (TypeError, json.JSONDecodeError):
+            continue
+        cards = payload.get("requested_evidence_cards") if isinstance(payload, dict) else payload
+        if not isinstance(cards, list):
+            continue
+        for card in cards:
+            if not isinstance(card, dict):
+                continue
+            evidence_id = str(card.get("evidence_id") or "").upper()
+            if evidence_id in requested_ids:
+                cards_by_id[evidence_id] = card
+    if not cards_by_id:
+        return None
+    lines = ["## 证据核验结果", ""]
+    for evidence_id in requested_ids:
+        card = cards_by_id.get(evidence_id)
+        if card is None:
+            continue
+        file_path = str(card.get("file_path") or card.get("path") or "未记录")
+        start = card.get("start_line")
+        end = card.get("end_line")
+        line_range = f"L{start}-L{end}" if start and end else (f"L{start}" if start else "未记录")
+        symbols = card.get("symbols") if isinstance(card.get("symbols"), list) else []
+        symbol_text = "、".join(str(item) for item in symbols if str(item).strip()) or "未记录"
+        lines.extend(
+            [
+                f"- `{evidence_id}`",
+                f"  - 文件：`{file_path}`",
+                f"  - 行号：`{line_range}`",
+                f"  - 符号：`{symbol_text}`",
+            ]
+        )
+    return "\n".join(lines)
 
 
 def _build_prompt(
