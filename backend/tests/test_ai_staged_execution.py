@@ -6804,6 +6804,59 @@ def test_flow_evidence_pack_bounds_git_grep_to_evidence_module(tmp_path):
     assert "nvme_trace_rpc" not in callers
 
 
+def test_flow_evidence_expands_reverse_callers_and_outlines_from_verified_ingress(tmp_path):
+    repo = tmp_path / "repo-reverse-flow"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    source = (
+        "int login_complete(void) { return 0; }\n"
+        "int payload_login(void) { return login_complete(); }\n"
+        "int read_pdu(void) { return payload_login(); }\n"
+        "int incoming_pdus(void) { return read_pdu(); }\n"
+        "int portal_accept(void) { return incoming_pdus(); }\n"
+    )
+    (repo / "lib" / "iscsi" / "login.c").write_text(source, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=CodeTalk Test", "-c", "user.email=codetalk@example.invalid", "commit", "-qm", "fixture"],
+        cwd=repo,
+        check=True,
+    )
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    source_pack = {
+        "analysis_target": "iSCSI Login",
+        "repo_revision": revision,
+        "source_scope": {"repo": str(repo), "source_files": ["lib/iscsi/login.c"]},
+        "evidence_cards": [{
+            "evidence_id": "SRC-01",
+            "file_path": "lib/iscsi/login.c",
+            "classification": "source",
+            "start_line": 1,
+            "end_line": 1,
+            "excerpt": "int login_complete(void) { return 0; }\n",
+            "symbols": ["login_complete"],
+            "sha256": hashlib.sha256(source.encode()).hexdigest(),
+        }],
+    }
+
+    pack = build_flow_evidence_pack(source_pack, repo_path=str(repo), max_files=2)
+    outline = build_flow_outline(pack)
+
+    assert {
+        (edge["from_symbol"], edge["to_symbol"])
+        for edge in pack["call_edges"]
+    }.issuperset({
+        ("payload_login", "login_complete"),
+        ("read_pdu", "payload_login"),
+        ("incoming_pdus", "read_pdu"),
+        ("portal_accept", "incoming_pdus"),
+    })
+    assert outline["main_flows"][0]["root_symbol"] == "portal_accept"
+    assert [step["to_symbol"] for step in outline["main_flows"][0]["steps"]] == [
+        "incoming_pdus", "read_pdu", "payload_login", "login_complete"
+    ]
+
+
 def test_local_source_context_ignores_generic_product_terms_and_keeps_test_symbols(tmp_path):
     repo = tmp_path / "spdk"
     (repo / "lib" / "iscsi").mkdir(parents=True)

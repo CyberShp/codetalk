@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -220,7 +221,9 @@ def build_flow_evidence_pack(
             source_pack=source_pack,
             repo_path=Path(repo_path),
             revision=actual_revision,
-            max_symbols=12,
+            # Leave bounded capacity for reverse-call expansion from verified
+            # callbacks to the ingress that reaches them.
+            max_symbols=32,
             max_matches=80,
         )
         for edge in discovered["call_edges"]:
@@ -301,7 +304,36 @@ def build_flow_outline(flow_pack: dict[str, Any]) -> dict[str, Any]:
         for entry in entries
         if str(entry.get("symbol") or "")
     )
-    entry_roots = [symbol for symbol in entry_symbols if symbol in from_symbols]
+    # Evidence cards often anchor a callback or terminal handler rather than
+    # the function that receives the external event.  Follow only verified
+    # reverse edges to pick the ingress of that same connected component.
+    incoming_edges: dict[str, list[dict[str, Any]]] = {}
+    for edge in usable_edges:
+        target = str(edge.get("to_symbol") or "")
+        if target:
+            incoming_edges.setdefault(target, []).append(edge)
+
+    def verified_ingress(symbol: str) -> str:
+        current = symbol
+        visited = {current}
+        while True:
+            candidates = sorted(
+                incoming_edges.get(current) or [],
+                key=lambda item: (
+                    str(item.get("from_symbol") or ""),
+                    str(item.get("file_path") or ""),
+                    int(item.get("start_line") or 0),
+                ),
+            )
+            if not candidates:
+                return current
+            previous = str(candidates[0].get("from_symbol") or "")
+            if not previous or previous in visited:
+                return current
+            visited.add(previous)
+            current = previous
+
+    entry_roots = _dedupe(verified_ingress(symbol) for symbol in entry_symbols)
     roots = entry_roots
     used_edges: set[int] = set()
     main_flows: list[dict[str, Any]] = []
@@ -821,7 +853,22 @@ def _discover_with_git_grep(
         root = _search_root(str(file_path))
         if root:
             roots.append(root)
-    symbols = _dedupe([*declared_symbols, *called_symbols])[: max(1, max_symbols)]
+    # Start with verified card symbols, then walk a bounded reverse-call frontier.
+    # A one-hop grep can find ``payload_login -> login_complete`` but misses the
+    # verified ingress that reaches that callback through the read loop.
+    all_seed_symbols = _dedupe([*declared_symbols, *called_symbols])
+    # Reserve half of the finite search budget for verified expansion.  Feeding
+    # every evidence-card symbol into the queue first starves the callback
+    # chain discovered from the earliest, most relevant anchors.
+    seed_symbols = all_seed_symbols[: max(1, (max_symbols + 1) // 2)]
+    symbols = deque(seed_symbols)
+    queued_symbols = set(seed_symbols)
+    processed_symbols: set[str] = set()
+    project_prefixes = {
+        symbol.lstrip("_").split("_", 1)[0]
+        for symbol in all_seed_symbols
+        if "_" in symbol and not symbol.lstrip("_").isupper()
+    }
     roots = _dedupe(roots)[:12]
     if not symbols or not roots:
         return {"call_edges": [], "related_tests": []}
@@ -831,9 +878,16 @@ def _discover_with_git_grep(
     edges: list[dict[str, Any]] = []
     tests: list[dict[str, Any]] = []
     deadline = time.monotonic() + 35.0
-    for symbol in symbols:
-        if len(edges) + len(tests) >= max_matches or time.monotonic() >= deadline:
-            break
+    while (
+        symbols
+        and len(processed_symbols) < max(1, max_symbols)
+        and len(edges) + len(tests) < max_matches
+        and time.monotonic() < deadline
+    ):
+        symbol = symbols.popleft()
+        if symbol in processed_symbols:
+            continue
+        processed_symbols.add(symbol)
         command_timeout = max(0.1, min(3.0, deadline - time.monotonic()))
         try:
             result = subprocess.run(
@@ -885,6 +939,46 @@ def _discover_with_git_grep(
             if not _line_has_symbol_call(sanitized_line, symbol):
                 continue
             caller = _nearest_function_symbol(sanitized_lines, line_number)
+            if caller == symbol:
+                # A definition hit gives us an independently verified function
+                # body.  Expand only project-local callees, still under the
+                # same symbol/deadline budget, so a receive loop can reach its
+                # login handler without sweeping in libc or unrelated modules.
+                for callee, call_line in _function_local_calls(
+                    sanitized_lines,
+                    line_number=line_number,
+                    symbol=symbol,
+                ):
+                    if (
+                        callee in queued_symbols
+                        or callee in _CONTROL_WORDS
+                        or callee.isupper()
+                        or (
+                            project_prefixes
+                            and callee.lstrip("_").split("_", 1)[0]
+                            not in project_prefixes
+                        )
+                    ):
+                        continue
+                    queued_symbols.add(callee)
+                    symbols.append(callee)
+                    edges.append(
+                        _evidence_node(
+                            evidence_id="",
+                            file_path=file_path,
+                            symbol=symbol,
+                            start_line=call_line,
+                            end_line=call_line,
+                            provider="git-grep",
+                            sha256=file_sha256,
+                            details={
+                                "from_symbol": symbol,
+                                "to_symbol": callee,
+                                "matched_text": sanitized_lines[call_line - 1].strip()[:300],
+                            },
+                        )
+                    )
+                continue
             details = {
                 "from_symbol": caller or "unknown_caller",
                 "to_symbol": symbol,
@@ -916,6 +1010,12 @@ def _discover_with_git_grep(
                         details=details,
                     )
                 )
+                # The caller is a verified reverse edge, so it is safe to use
+                # as the next bounded search target.  This discovers the
+                # upstream ingress without inventing a control-flow link.
+                if caller not in queued_symbols:
+                    queued_symbols.add(caller)
+                    symbols.append(caller)
             if len(edges) + len(tests) >= max_matches:
                 break
     return {
@@ -1014,6 +1114,36 @@ def _nearest_function_symbol(lines: list[str], line_number: int) -> str:
         if symbol:
             return symbol
     return ""
+
+
+def _function_local_calls(
+    lines: list[str],
+    *,
+    line_number: int,
+    symbol: str,
+) -> list[tuple[str, int]]:
+    """Return direct calls from one verified C-like function definition."""
+    origin = min(max(0, line_number - 1), len(lines) - 1)
+    start = origin
+    for index in range(origin, max(-1, origin - 12), -1):
+        if _definition_symbol("\n".join(lines[index : index + 16])) == symbol:
+            start = index
+            break
+    calls: list[tuple[str, int]] = []
+    depth = 0
+    opened = False
+    for index in range(start, min(len(lines), start + 600)):
+        line = lines[index]
+        if "{" in line:
+            opened = True
+        if opened:
+            for callee in _CALL_PATTERN.findall(line):
+                if callee not in _CONTROL_WORDS and callee != symbol:
+                    calls.append((callee, index + 1))
+        depth += line.count("{") - line.count("}")
+        if opened and depth <= 0:
+            break
+    return calls
 
 
 def _definition_symbol(line: str) -> str:
