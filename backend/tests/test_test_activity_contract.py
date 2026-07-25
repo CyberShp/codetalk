@@ -101,6 +101,73 @@ def test_black_box_relative_latency_threshold_requires_statistical_basis_per_cas
     ), issues
 
 
+def test_quality_audit_blocks_unconnected_flow_cards_and_guessed_occurrence(tmp_path):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    flow_issues = _audit_json_artifact(
+        artifact="flow_cards.json",
+        payload={
+            "items": [{"flow_id": "FLOW-01"}],
+            "gaps": ["当前证据形成 9 个互不连通的调用分量，不能证明单一端到端业务顺序"],
+        },
+        spec={"required_fields": []},
+        repo=tmp_path,
+    )
+    sfmea_issues = _audit_json_artifact(
+        artifact="sfmea.json",
+        payload=[
+            {
+                "sfmea_id": "SFMEA-01",
+                "failure_mode": "并发登录清理风险",
+                "cause": "风险假设：回调与清理并发",
+                "effect": "连接异常关闭",
+                "detection": "并发故障注入",
+                "severity": 8,
+                "occurrence": 2,
+                "detection_score": 6,
+                "rpn": 96,
+                "risk_status": "test_hypothesis",
+                "score_explanation": "Occurrence=2(需特定时序，待采样)",
+                "mitigation": "整改: 增加状态保护。验证: 注入并发故障并观察连接关闭。",
+                "source_evidence": ["lib/iscsi/conn.c:L153"],
+                "test_mapping": "待新增并发测试",
+            }
+        ],
+        spec={"required_fields": []},
+        repo=tmp_path,
+    )
+
+    assert "flow_evidence_not_connected" in {issue["code"] for issue in flow_issues}
+    assert "sfmea_occurrence_without_data_basis" in {
+        issue["code"] for issue in sfmea_issues
+    }
+
+
+def test_quality_audit_requires_explicit_rpc_observation_field_for_full_feature(tmp_path):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    issues = _audit_json_artifact(
+        artifact="black_box_cases.json",
+        payload=[
+            {
+                "case_id": "BB-01",
+                "test_dimension": "normal_path",
+                "scenario_name": "无认证登录",
+                "steps": ["发起标准 iSCSI Login"],
+                "expected_result": "登录成功并可执行 I/O",
+                "observability": ["RPC 查询连接状态为 full_feature"],
+                "source_or_test_evidence": ["lib/iscsi/iscsi.c:L1125"],
+            }
+        ],
+        spec={"required_fields": []},
+        repo=tmp_path,
+    )
+
+    assert "black_box_rpc_observability_ambiguous" in {
+        issue["code"] for issue in issues
+    }
+
+
 def test_report_only_contract_still_audits_internal_structured_black_box_cases(tmp_path):
     from app.services.test_activity_contract import audit_test_activity_artifacts
 
@@ -131,6 +198,32 @@ def test_report_only_contract_still_audits_internal_structured_black_box_cases(t
     assert any(
         issue["code"] == "unsafe_hazardous_test_mapping"
         and issue.get("row_id") == "BB-HAZARD-02"
+        for issue in audit["issues"]
+    ), audit
+
+
+def test_report_only_contract_still_audits_internal_flow_connectivity(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+
+    (tmp_path / "flow_cards.json").write_text(
+        json.dumps(
+            {
+                "items": [{"flow_id": "FLOW-01"}],
+                "gaps": ["当前证据形成互不连通的调用分量，不能证明单一端到端业务顺序"],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=tmp_path,
+        contract={"artifact_contract": {}},
+        repo_path=str(tmp_path),
+    )
+
+    assert any(
+        issue["code"] == "flow_evidence_not_connected"
         for issue in audit["issues"]
     ), audit
 

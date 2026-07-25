@@ -1675,10 +1675,12 @@ def audit_test_activity_artifacts(
                         ]
                     lint_warnings.extend(consistency_issues)
     # Staged workflows commonly expose one formal Markdown report while using
-    # SFMEA and black-box JSON as the authoritative intermediate fact ledger.
+    # SFMEA, black-box JSON, and flow cards as the authoritative intermediate
+    # fact ledger.  A report-only contract must not bypass a known disconnected
+    # flow graph.
     # Those rows remain quality-critical even when they are not separate user
     # downloads; otherwise report-only contracts lose case-level repair IDs.
-    for artifact in ("sfmea.json", "black_box_cases.json"):
+    for artifact in ("flow_cards.json", "sfmea.json", "black_box_cases.json"):
         path = root / artifact
         if artifact in audited_json_artifacts or not path.is_file():
             continue
@@ -6221,6 +6223,23 @@ def _audit_json_artifact(
     if not rows:
         return [_issue("empty_json_items", artifact, f"{artifact} 没有任何可交付条目")]
     issues: list[dict[str, Any]] = []
+    if artifact == "flow_cards.json" and isinstance(payload, dict):
+        flow_gaps = "\n".join(
+            str(item) for item in payload.get("gaps") or [] if str(item).strip()
+        )
+        if re.search(
+            r"(?:不能证明|无法证明).{0,40}(?:端到端|完整|单一).{0,40}(?:流程|顺序|调用链)",
+            flow_gaps,
+            flags=re.IGNORECASE,
+        ):
+            issues.append(
+                _issue(
+                    "flow_evidence_not_connected",
+                    artifact,
+                    "流程证据仍是互不连通的分量，不能作为端到端业务流程交付；"
+                    "需要补充入口到终态的已验证调用链，或明确将本次交付降级为局部分量分析",
+                )
+            )
     minimum_rows = int(
         spec.get(
             "min_sfmea_rows" if artifact == "sfmea.json" else "min_black_box_cases"
@@ -6288,6 +6307,7 @@ def _audit_json_artifact(
         if artifact == "sfmea.json":
             issues.extend(_audit_sfmea_scores(row, artifact=artifact, index=index))
             issues.extend(_audit_sfmea_mitigation(row, artifact=artifact, index=index))
+            issues.extend(_audit_sfmea_occurrence_basis(row, artifact=artifact, index=index))
             risk_status = str(row.get("risk_status") or "").strip()
             risk_text = " ".join(
                 str(row.get(field) or "")
@@ -6525,6 +6545,16 @@ def _audit_json_artifact(
                     index=index,
                     test_dimension=dimension,
                 ))
+            for gap in black_box_observability_quality_gaps(row):
+                issues.append(
+                    _issue(
+                        gap,
+                        artifact,
+                        f"{artifact} 第 {index} 项的 RPC 观测点没有声明可验证的公开字段语义；"
+                        "请写出实际 RPC 方法和字段名，或改用协议响应、日志、连接结果等外部观测",
+                        index=index,
+                    )
+                )
             duplicate_reason = _black_box_duplicate_reason(
                 row,
                 seen_case_ids=seen_case_ids,
@@ -7360,6 +7390,46 @@ def _audit_sfmea_scores(
     return issues
 
 
+def _audit_sfmea_occurrence_basis(
+    row: dict[str, Any],
+    *,
+    artifact: str,
+    index: int,
+) -> list[dict[str, Any]]:
+    """Do not present a guessed occurrence score as a measured likelihood."""
+    if str(row.get("risk_status") or "").strip() != "test_hypothesis":
+        return []
+    explanation = str(row.get("score_explanation") or "")
+    occurrence = _integer_score(row.get("occurrence") or row.get("occurrence_score"))
+    data_basis = " ".join(
+        str(row.get(field) or "")
+        for field in ("occurrence_basis", "score_explanation", "evidence_interpretation")
+    )
+    has_measured_basis = bool(
+        re.search(
+            r"(?:缺陷历史|历史缺陷|协议流量分布|登录流量|测试统计|样本统计|"
+            r"observed rate|defect history|traffic distribution|test statistics)",
+            data_basis,
+            flags=re.IGNORECASE,
+        )
+    )
+    pending_sampling = bool(
+        re.search(r"(?:待采样|待统计|pending sampling|to be sampled)", explanation, re.IGNORECASE)
+    )
+    if occurrence is not None and pending_sampling and not has_measured_basis:
+        return [
+            _issue(
+                "sfmea_occurrence_without_data_basis",
+                artifact,
+                f"{artifact} 第 {index} 项把待采样风险假设赋予 Occurrence={occurrence}，"
+                "但没有缺陷历史、流量分布或测试统计依据；应先采样，或明确该项不参与可交付 RPN 排序",
+                index=index,
+                occurrence=occurrence,
+            )
+        ]
+    return []
+
+
 _SFMEA_REMEDIATION_ACTION_RE = re.compile(
     r"(?i)\b("
     r"fix|change|modify|release|reset|bound|limit|lock|retry|rollback|clean(?:up)?|reject|close|abort|"
@@ -7819,6 +7889,25 @@ def black_box_oracle_basis_quality_gaps(row: dict[str, Any]) -> list[str]:
     if dimension == "performance" and not _BLACK_BOX_PERFORMANCE_SAMPLE_RE.search(basis):
         gaps.append("missing_performance_sampling_plan")
     return gaps
+
+
+def black_box_observability_quality_gaps(row: dict[str, Any]) -> list[str]:
+    """Reject abbreviated RPC state claims that cannot be verified externally.
+
+    A public RPC is a valid black-box observation, but its method/field contract
+    still has to be named.  In particular, ``full_feature`` is a protocol phase,
+    not a self-describing RPC field value, so a case must state the actual public
+    field (for SPDK iSCSI, for example ``login_phase=full_feature_phase``).
+    """
+    observations = " ".join(_flatten_text(row.get("observability")))
+    lower = observations.lower()
+    if not re.search(r"\brpc\b|RPC|远程过程调用", observations, re.IGNORECASE):
+        return []
+    if not re.search(r"full[_ -]?feature", lower, re.IGNORECASE):
+        return []
+    if re.search(r"login[_ -]?phase\s*(?:=|为)?\s*full[_ -]?feature[_ -]?phase", lower):
+        return []
+    return ["black_box_rpc_observability_ambiguous"]
 
 
 def _unsafe_destructive_test_step(row: dict[str, Any]) -> bool:
