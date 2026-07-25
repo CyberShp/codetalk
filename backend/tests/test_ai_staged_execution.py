@@ -796,6 +796,11 @@ def test_deep_profile_plan_materializes_parallel_exploration_branches():
     assert branch_ids.issubset(stages["business_flow"]["depends_on"])
     assert branch_ids.issubset(stages["sfmea"]["depends_on"])
     assert branch_ids.issubset(stages["black_box_cases"]["depends_on"])
+    assert all(stages[branch_id]["max_tokens"] >= 6000 for branch_id in branch_ids)
+    assert all(
+        stages[branch_id]["output_limits"]["max_evidence_anchors"] >= 24
+        for branch_id in branch_ids
+    )
     assert stages["source_analysis"]["max_tokens"] == 1600
     assert stages["source_analysis"]["output_limits"]["max_evidence_anchors"] == 12
     assert plan["execution_profile"]["source_analysis_limits"]["max_files"] == 6

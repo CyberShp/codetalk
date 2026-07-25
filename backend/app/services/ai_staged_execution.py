@@ -2073,13 +2073,13 @@ def _insert_deep_exploration_stages(
             "support": True,
             "subagent_role": stage_id,
             "output_contract": {"artifact": artifact},
-            # These are independent evidence syntheses.  Their scope is
-            # narrower than the final report, but deep delivery must leave
-            # enough room to cover a branch rather than merely name it.
-            "max_tokens": 1600,
+            # These are independent evidence syntheses. Deep delivery must
+            # leave enough room for a branch-level evidence matrix, negative
+            # paths and test gaps rather than merely naming the branch.
+            "max_tokens": 6000,
             "output_limits": {
-                "max_chinese_characters": 1800,
-                "max_evidence_anchors": 12,
+                "max_chinese_characters": 6000,
+                "max_evidence_anchors": 24,
             },
         }
         for stage_id, artifact, purpose in branches
