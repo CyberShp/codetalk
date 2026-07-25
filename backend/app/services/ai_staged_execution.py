@@ -6509,10 +6509,15 @@ def normalize_materialized_sfmea_risk_contract(
             artifact_dir=artifact_dir,
             plan=plan,
         )
+    contract_plan = plan
+    if _minimum_sfmea_items_from_plan(contract_plan) <= 0:
+        staged_plan = _read_json_file(artifact_dir / "staged_execution_plan.json")
+        if isinstance(staged_plan, dict):
+            contract_plan = staged_plan
     catalog = _sfmea_product_claim_catalog(
         _build_verified_claim_catalog(source_pack if isinstance(source_pack, dict) else {})
     )
-    minimum_items = _minimum_sfmea_items_from_plan(plan)
+    minimum_items = _minimum_sfmea_items_from_plan(contract_plan)
     # The provider may accurately choose a verified source line but phrase a
     # broader behavioural conclusion around it.  Preserve that interpretation
     # in the SFMEA fields while making the technical claim itself an exact L1
