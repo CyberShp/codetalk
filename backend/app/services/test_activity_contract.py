@@ -2332,15 +2332,19 @@ def _audit_row_behavior_claims(
 def _row_behavior_statement(*, artifact: str, row: dict[str, Any]) -> str:
     fields = (
         (
+            "risk_status",
             "failure_mode",
             "cause",
             "effect",
             "detection",
             "mitigation",
             "test_mapping",
+            "evidence_interpretation",
+            "mechanism",
         )
         if artifact == "sfmea.json"
         else (
+            "case_type",
             "test_dimension",
             "scenario_name",
             "preconditions",

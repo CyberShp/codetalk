@@ -7479,17 +7479,18 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
     )
     assert {claim["claim_id"] for claim in request["claims"]} == {
         "C-BEHAVIOR-001",
+        "ROW:sfmea.json:SFMEA-001",
     }
     limited_request = build_behavior_claim_validation_request(
         artifact_dir=artifacts,
         repo_path=repo,
         max_claims=1,
     )
-    # Only explicit technical claims are sent to the independent L2 auditor;
-    # aggregate row claims are derived after those verdicts return.
-    assert limited_request["candidate_count"] == 1
+    # The row-level user-visible behavior is audited alongside the explicit
+    # claim, so a true source quote cannot hide a broader false SFMEA statement.
+    assert limited_request["candidate_count"] == 2
     assert limited_request["requested_count"] == 1
-    assert limited_request["truncated"] is False
+    assert limited_request["truncated"] is True
     assert "if (params == NULL)" in request["contexts"][0]["content"]
     checked_evidence = [{**evidence, "sha256": source_sha}]
     binding = _behavior_claim_binding(
@@ -7497,6 +7498,11 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
         claim_type="source_behavior",
         statement=statement,
         evidence=checked_evidence,
+    )
+    row_request = next(
+        item
+        for item in request["claims"]
+        if item["claim_id"] == "ROW:sfmea.json:SFMEA-001"
     )
     (artifacts / "behavior_claim_validation.json").write_text(
         json.dumps(
@@ -7514,6 +7520,12 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
                         "binding": binding,
                         "status": "supports",
                         "reason": "The referenced guard returns before dereference.",
+                    },
+                    {
+                        "claim_id": "ROW:sfmea.json:SFMEA-001",
+                        "binding": row_request["binding"],
+                        "status": "supports",
+                        "reason": "The row describes the same guarded rejection.",
                     },
                 ],
             }
@@ -7570,6 +7582,26 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
         if claim["claim_id"] == "C-BEHAVIOR-001"
     )
     assert stale_claim["status"] == "insufficient"
+
+
+def test_row_behavior_statement_keeps_sfmea_hypothesis_semantics():
+    from app.services.test_activity_contract import _row_behavior_statement
+
+    statement = json.loads(
+        _row_behavior_statement(
+            artifact="sfmea.json",
+            row={
+                "risk_status": "test_hypothesis",
+                "failure_mode": "待验证：登录异常路径状态偏离",
+                "cause": "故障注入假设：异常时序触发偏离",
+                "effect": "待验证：会话状态异常",
+                "evidence_interpretation": "源码仅证明入口；本条不是已观测缺陷。",
+            },
+        )
+    )
+
+    assert statement["risk_status"] == "test_hypothesis"
+    assert statement["evidence_interpretation"] == "源码仅证明入口；本条不是已观测缺陷。"
 
 
 def test_behavior_validation_context_honors_plain_line_ranges(tmp_path):
