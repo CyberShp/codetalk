@@ -6224,6 +6224,18 @@ def normalize_materialized_sfmea_risk_contract(
     a speculative cleanup order as an observed product defect.
     """
     path = artifact_dir / "sfmea.json"
+    if not path.is_file():
+        # Runner-level audits own the task directory, while staged agent output
+        # lives below ``agent_runs/<step>``. Resolve that canonical child before
+        # deciding there is nothing to normalize.
+        candidates = sorted(
+            (artifact_dir / "agent_runs").glob("*/sfmea.json"),
+            key=lambda candidate: candidate.stat().st_mtime,
+            reverse=True,
+        ) if (artifact_dir / "agent_runs").is_dir() else []
+        if candidates:
+            path = candidates[0]
+            artifact_dir = path.parent
     rendered = _read_json_file(path, default=[])
     if not isinstance(rendered, list):
         return []
@@ -6641,6 +6653,42 @@ def _normalize_sfmea_risk_contract(
                 "验证: 注入对应异常条件，确认协议响应、连接状态和资源指标一致。"
             )
             fields.append(f"$[{index}].mitigation:production_action")
+        occurrence_basis = str(row.get("occurrence_basis") or "").strip()
+        score_explanation = str(row.get("score_explanation") or "").strip()
+        has_measured_occurrence_basis = bool(
+            re.search(
+                r"(?:缺陷历史|历史缺陷|协议流量分布|登录流量|测试统计|样本统计|"
+                r"observed rate|defect history|traffic distribution|test statistics)",
+                " ".join((occurrence_basis, score_explanation, str(row.get("evidence_interpretation") or ""))),
+                re.IGNORECASE,
+            )
+        )
+        occurrence_value = row.get("occurrence")
+        if occurrence_value is None:
+            occurrence_value = row.get("occurrence_score")
+        if (
+            re.fullmatch(r"\s*\d+\s*", str(occurrence_value or ""))
+            and not has_measured_occurrence_basis
+            and not re.search(
+            r"(?:专家(?:工程)?评审|expert(?:\s+engineering)?\s+review)",
+            occurrence_basis,
+            re.IGNORECASE,
+            )
+        ):
+            # A source-only risk hypothesis has no defensible field frequency.
+            # Preserve the FMEA ranking as an explicitly low-confidence expert
+            # prior so test planning can proceed without presenting it as data.
+            row["occurrence_basis"] = "专家工程评审先验；无实测数据，低置信度，待采样校准。"
+            row["rpn_status"] = "provisional"
+            if "专家工程评审" not in score_explanation:
+                row["score_explanation"] = (
+                    f"{score_explanation.rstrip('。')}；" if score_explanation else ""
+                ) + "Occurrence 为专家工程评审先验，低置信度，待采样校准；RPN 仅用于测试优先级。"
+            fields.extend((
+                f"$[{index}].occurrence_basis:provisional_expert_prior",
+                f"$[{index}].rpn_status:provisional",
+                f"$[{index}].score_explanation:provisional_expert_prior",
+            ))
     normalized = _normalize_sfmea_source_anchor_claims(normalized)
     for index, row in enumerate(normalized):
         if not isinstance(row, dict):

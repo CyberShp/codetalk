@@ -143,6 +143,40 @@ def test_quality_audit_blocks_unconnected_flow_cards_and_guessed_occurrence(tmp_
     }
 
 
+def test_quality_audit_allows_transparent_provisional_hypothesis_occurrence(tmp_path):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    issues = _audit_json_artifact(
+        artifact="sfmea.json",
+        payload=[
+            {
+                "sfmea_id": "SFMEA-02",
+                "failure_mode": "并发登录清理风险",
+                "cause": "风险假设：回调与清理并发",
+                "effect": "连接异常关闭",
+                "detection": "并发故障注入",
+                "severity": 8,
+                "occurrence": 2,
+                "detection_score": 6,
+                "rpn": 96,
+                "risk_status": "test_hypothesis",
+                "occurrence_basis": "专家工程评审先验；无实测数据，待采样校准。",
+                "rpn_status": "provisional",
+                "score_explanation": "Occurrence=2（专家工程评审先验，低置信度，待采样校准）。",
+                "mitigation": "整改: 增加状态保护。验证: 注入并发故障并观察连接关闭。",
+                "source_evidence": ["lib/iscsi/conn.c:L153"],
+                "test_mapping": "待新增并发测试",
+            }
+        ],
+        spec={"required_fields": []},
+        repo=tmp_path,
+    )
+
+    assert "sfmea_occurrence_without_data_basis" not in {
+        issue["code"] for issue in issues
+    }
+
+
 def test_quality_audit_requires_explicit_rpc_observation_field_for_full_feature(tmp_path):
     from app.services.test_activity_contract import _audit_json_artifact
 

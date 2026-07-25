@@ -457,6 +457,16 @@ def refresh_source_driven_delivery_governance(
     """
 
     root = Path(artifact_dir)
+    if not (root / "evidence_cards.json").is_file():
+        # Task-level callers own the task root, while a staged agent owns the
+        # canonical source-driven artifacts below agent_runs/<step>.
+        candidates = sorted(
+            (root / "agent_runs").glob("*/evidence_cards.json"),
+            key=lambda candidate: candidate.stat().st_mtime,
+            reverse=True,
+        ) if (root / "agent_runs").is_dir() else []
+        if candidates:
+            root = candidates[0].parent
     artifacts = {
         name: payload
         for name in SOURCE_DRIVEN_V2_ARTIFACTS
@@ -505,7 +515,25 @@ def refresh_source_driven_delivery_governance(
 
 def _combined_final_fact_verification(root: Path) -> dict[str, Any]:
     deterministic_claims: list[dict[str, Any]] = []
-    deterministic = _read_json_artifact(root / "independent_fact_verification.json")
+    # Quality repair can replace individual rows after the staged L1 snapshot
+    # was written. Rebuild L1 from the delivery bytes whenever those canonical
+    # artifacts are present; otherwise a removed pre-repair claim can keep the
+    # final judge blocked forever.
+    evidence_cards = _read_json_artifact(root / "evidence_cards.json")
+    sfmea_rows = _read_json_artifact(root / "sfmea.json")
+    black_box_rows = _read_json_artifact(root / "black_box_cases.json")
+    if (
+        isinstance(evidence_cards, list)
+        and isinstance(sfmea_rows, list)
+        and isinstance(black_box_rows, list)
+    ):
+        deterministic = verify_technical_claims(
+            source_pack={"evidence_cards": evidence_cards},
+            sfmea=sfmea_rows,
+            black_box_cases=black_box_rows,
+        )
+    else:
+        deterministic = _read_json_artifact(root / "independent_fact_verification.json")
     if isinstance(deterministic, dict):
         for item in deterministic.get("claims") or []:
             if isinstance(item, dict):

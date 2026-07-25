@@ -690,6 +690,82 @@ def test_final_fact_verification_accepts_l1_only_source_anchors_when_l2_is_not_a
     assert result["claims"][0]["status"] == "verified"
 
 
+def test_final_fact_verification_rebuilds_l1_from_repaired_delivery_bytes(tmp_path):
+    """A stale pre-repair snapshot must not poison a repaired delivery."""
+    from app.services.source_driven_test_design import _combined_final_fact_verification
+
+    (tmp_path / "independent_fact_verification.json").write_text(
+        json.dumps({
+            "status": "passed",
+            "claims": [{
+                "claim_id": "STALE-REMOVED-CLAIM",
+                "type": "source",
+                "status": "verified",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    (tmp_path / "evidence_cards.json").write_text(
+        json.dumps([{
+            "evidence_id": "SRC-REPAIRED",
+            "file_path": "lib/iscsi/iscsi.c",
+            "start_line": 10,
+            "end_line": 10,
+            "excerpt": "return 0;",
+            "sha256": "a" * 64,
+        }]),
+        encoding="utf-8",
+    )
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps([{
+            "sfmea_id": "SFMEA-REPAIRED",
+            "technical_claims": [{
+                "claim_id": "CURRENT-ANCHOR",
+                "type": "source_anchor",
+                "statement": "return 0;",
+                "evidence": [{
+                    "evidence_id": "SRC-REPAIRED",
+                    "path": "lib/iscsi/iscsi.c",
+                    "quote": "return 0;",
+                }],
+            }],
+        }]),
+        encoding="utf-8",
+    )
+    (tmp_path / "black_box_cases.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "behavior_claim_validation.json").write_text(
+        json.dumps({
+            "status": "not_applicable",
+            "validator": {"independent": False},
+            "candidate_count": 0,
+            "requested_count": 0,
+            "claims": [],
+        }),
+        encoding="utf-8",
+    )
+
+    result = _combined_final_fact_verification(tmp_path)
+
+    assert result["status"] == "passed"
+    assert result["verified"] == 1
+    assert [item["claim_id"] for item in result["claims"]] == ["CURRENT-ANCHOR"]
+
+
+def test_refresh_source_delivery_governance_resolves_agent_owned_artifacts(tmp_path):
+    from app.services.source_driven_test_design import refresh_source_driven_delivery_governance
+
+    agent_dir = tmp_path / "agent_runs" / "analyze"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "evidence_cards.json").write_text("[]", encoding="utf-8")
+    (agent_dir / "sfmea.json").write_text("[]", encoding="utf-8")
+    (agent_dir / "black_box_cases.json").write_text("[]", encoding="utf-8")
+
+    refresh_source_driven_delivery_governance(tmp_path)
+
+    assert (agent_dir / "judge_report.json").is_file()
+    assert not (tmp_path / "judge_report.json").exists()
+
+
 def test_final_fact_verification_preserves_l1_conflicts_and_unreviewed_tail(tmp_path):
     from app.services.source_driven_test_design import _combined_final_fact_verification
 

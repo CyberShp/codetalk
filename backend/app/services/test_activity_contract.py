@@ -7416,7 +7416,17 @@ def _audit_sfmea_occurrence_basis(
     pending_sampling = bool(
         re.search(r"(?:待采样|待统计|pending sampling|to be sampled)", explanation, re.IGNORECASE)
     )
-    if occurrence is not None and pending_sampling and not has_measured_basis:
+    provisional_expert_basis = bool(
+        str(row.get("rpn_status") or "").strip().lower() == "provisional"
+        and re.search(r"(?:专家(?:工程)?评审|expert(?:\s+engineering)?\s+review)", data_basis, re.IGNORECASE)
+        and re.search(r"(?:低置信度|low\s+confidence)", data_basis, re.IGNORECASE)
+    )
+    if (
+        occurrence is not None
+        and pending_sampling
+        and not has_measured_basis
+        and not provisional_expert_basis
+    ):
         return [
             _issue(
                 "sfmea_occurrence_without_data_basis",

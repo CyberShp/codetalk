@@ -2311,6 +2311,17 @@ class WorkbenchWorkflowRunner:
                         return validation
 
                     async def audit_staged_artifacts() -> dict[str, Any]:
+                        # Every audit path, including an Attempt created from a
+                        # prior quality failure, must inspect the final bytes.
+                        # Otherwise a carried-forward repair plan can bypass
+                        # the deterministic SFMEA boundary normalizer and leave
+                        # stale source-driven judge data in place.
+                        normalize_materialized_sfmea_risk_contract(
+                            artifact_dir=artifact_dir,
+                            plan=current_plan,
+                        )
+                        if (artifact_dir / "judge_report.json").is_file():
+                            refresh_source_driven_delivery_governance(artifact_dir)
                         return await _run_sync_with_absolute_deadline(
                             lambda: _audit_staged_agent_artifacts(
                                 artifact_dir=artifact_dir,

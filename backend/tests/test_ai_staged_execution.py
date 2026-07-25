@@ -2907,6 +2907,51 @@ def test_normalize_sfmea_risk_contract_marks_unsupported_defect_language_as_hypo
     ]
 
 
+def test_normalize_sfmea_risk_contract_marks_unmeasured_hypothesis_rpn_provisional():
+    rendered, fields = _normalize_sfmea_risk_contract(
+        [
+            {
+                "sfmea_id": "SFMEA-PROVISIONAL-01",
+                "risk_status": "test_hypothesis",
+                "occurrence": 3,
+                "score_explanation": "Occurrence=3（需特定时序，待采样）。",
+            }
+        ]
+    )
+
+    assert rendered[0]["occurrence_basis"] == "专家工程评审先验；无实测数据，低置信度，待采样校准。"
+    assert rendered[0]["rpn_status"] == "provisional"
+    assert "专家工程评审先验" in rendered[0]["score_explanation"]
+    assert "$[0].occurrence_basis:provisional_expert_prior" in fields
+
+
+def test_materialized_sfmea_normalizer_resolves_agent_owned_artifact_from_task_root(tmp_path):
+    from app.services.ai_staged_execution import normalize_materialized_sfmea_risk_contract
+
+    agent_dir = tmp_path / "agent_runs" / "analyze"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "sfmea.json").write_text(
+        json.dumps([
+            {
+                "sfmea_id": "SFMEA-PROVISIONAL-02",
+                "risk_status": "test_hypothesis",
+                "occurrence": 2,
+                "score_explanation": "Occurrence=2（待采样）。",
+            }
+        ]),
+        encoding="utf-8",
+    )
+
+    fields = normalize_materialized_sfmea_risk_contract(
+        artifact_dir=tmp_path,
+        plan={},
+    )
+
+    persisted = json.loads((agent_dir / "sfmea.json").read_text(encoding="utf-8"))
+    assert "$[0].occurrence_basis:provisional_expert_prior" in fields
+    assert persisted[0]["rpn_status"] == "provisional"
+
+
 def test_normalize_sfmea_risk_contract_replaces_unbound_source_labels_with_claim_anchors():
     rendered, fields = _normalize_sfmea_risk_contract(
         [{
