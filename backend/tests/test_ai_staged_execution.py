@@ -4851,6 +4851,66 @@ def test_deterministic_quality_claim_repair_enforces_mcs_raw_pdu_contract():
     assert "$[0].mapped_test_dir" in fields
 
 
+def test_deterministic_quality_repair_unmaps_same_target_concurrency_from_multiconnection():
+    payload = [
+        {
+            "case_id": "BC-05",
+            "scenario_name": "同一 target 的并发 Login 请求均成功",
+            "steps": ["同时发起 4 个 iscsiadm --login 到同一 target"],
+            "mapped_test_dir": "test/iscsi_tgt/multiconnection/multiconnection.sh",
+        }
+    ]
+    feedback = {
+        "issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_multiconnection_mapping_scope",
+            "row_id": "BC-05",
+        }]
+    }
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="black_box_cases.json",
+        quality_feedback=feedback,
+    )
+
+    assert "ai_suggested_unverified" in repaired[0]["mapped_test_dir"]
+    assert "multiconnection.sh 仅作环境搭建参考" in repaired[0]["mapped_test_dir"]
+    assert repaired[0]["steps"] == payload[0]["steps"]
+    assert fields == ["$[0].mapped_test_dir"]
+
+
+def test_final_quality_repair_materializes_professional_mapping_fix(tmp_path):
+    import json
+
+    from app.services.ai_staged_execution import (
+        materialize_final_deterministic_quality_repairs,
+    )
+
+    artifact = tmp_path / "agent_runs" / "analyze" / "black_box_cases.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(json.dumps([{
+        "case_id": "BC-05",
+        "scenario_name": "同一 target 的并发 Login 请求均成功",
+        "mapped_test_dir": "test/iscsi_tgt/multiconnection/multiconnection.sh",
+    }]), encoding="utf-8")
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_multiconnection_mapping_scope",
+            "row_id": "BC-05",
+        }]},
+    )
+
+    assert changed == {"black_box_cases.json": ["$[0].mapped_test_dir"]}
+    repaired = json.loads(artifact.read_text(encoding="utf-8"))
+    assert "ai_suggested_unverified" in repaired[0]["mapped_test_dir"]
+
+
 def test_deterministic_quality_claim_repair_materializes_missing_mcs_target_setup_case():
     payload = [
         {

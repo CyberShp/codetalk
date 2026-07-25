@@ -9192,6 +9192,13 @@ def _deterministic_quality_claim_repair(
         and str(item.get("constraint_id") or "")
         == "iscsi_multiconnection_mapping_scope"
     ]
+    same_target_mapping_conflicts = [
+        item
+        for item in issues
+        if str(item.get("code") or "") == "professional_fact_conflict"
+        and str(item.get("constraint_id") or "")
+        == "iscsi_multiconnection_mapping_scope"
+    ]
     if mcs_mapping_issues and isinstance(repaired, list):
         scenario_names = {
             str(item.get("scenario") or "").strip().lower()
@@ -9246,6 +9253,41 @@ def _deterministic_quality_claim_repair(
                 )
                 fields.append(f"$[{index}].mapped_test_dir")
 
+    # A same-target concurrent Login scenario is not automatically an MCS
+    # scenario.  When the professional audit catches an over-mapping to SPDK's
+    # multi-target script, preserve the tester's external steps and only remove
+    # the false coverage claim.  A raw-PDU MCS rewrite belongs exclusively to
+    # the explicit MCS validator finding handled above.
+    if same_target_mapping_conflicts and isinstance(repaired, list):
+        scenario_names = {
+            str(item.get("scenario") or item.get("row_id") or "").strip().lower()
+            for item in same_target_mapping_conflicts
+            if str(item.get("scenario") or item.get("row_id") or "").strip()
+        }
+        for index, row in enumerate(repaired):
+            if not isinstance(row, dict):
+                continue
+            scenario_name = str(row.get("scenario_name") or "").strip().lower()
+            case_id = str(row.get("case_id") or "").strip().lower()
+            is_target = any(
+                scenario_name == expected
+                or scenario_name in expected
+                or expected in scenario_name
+                or case_id == expected
+                for expected in scenario_names
+                if (scenario_name or case_id) and expected
+            )
+            if not is_target:
+                continue
+            mapping = str(row.get("mapped_test_dir") or "")
+            if "multiconnection.sh" not in mapping.lower():
+                continue
+            row["mapped_test_dir"] = (
+                "ai_suggested_unverified: 需新增同一 Target 并发 Login 黑盒用例；"
+                "multiconnection.sh 仅作环境搭建参考，不证明同一 Target 并发覆盖"
+            )
+            fields.append(f"$[{index}].mapped_test_dir")
+
     def normalize_command(match: re.Match[str]) -> str:
         command = match.group(0)
         normalized = re.sub(
@@ -9285,6 +9327,39 @@ def _deterministic_quality_claim_repair(
 
     repaired = visit(repaired, "$")
     return repaired, fields
+
+
+def materialize_final_deterministic_quality_repairs(
+    artifact_dir: str | Path,
+    *,
+    quality_feedback: dict[str, Any],
+) -> dict[str, list[str]]:
+    """Apply safe row-level fixes discovered only by the final task audit.
+
+    Regular stages receive the quality state available at their execution time.
+    Some professional constraints are evaluated only after all artifacts are
+    assembled, so they need one deterministic, artifact-scoped return path.
+    """
+    root = Path(artifact_dir)
+    changed: dict[str, list[str]] = {}
+    for artifact in ("sfmea.json", "black_box_cases.json"):
+        direct = root / artifact
+        path = direct if direct.is_file() else next(iter(root.rglob(artifact)), direct)
+        if not path.is_file():
+            continue
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        repaired, fields = _deterministic_quality_claim_repair(
+            payload,
+            artifact=artifact,
+            quality_feedback=quality_feedback,
+        )
+        if fields:
+            _write_json(path, repaired)
+            changed[artifact] = fields
+    return changed
 
 
 def _cbit_fragmentation_claim_anchor(

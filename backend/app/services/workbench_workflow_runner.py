@@ -35,6 +35,7 @@ from app.services.ai_staged_execution import (
     build_profile_execution_evidence,
     build_staged_execution_plan,
     execute_staged_builtin_plan,
+    materialize_final_deterministic_quality_repairs,
     materialize_source_evidence_pack,
     normalize_materialized_sfmea_risk_contract,
     refresh_deterministic_combined_report,
@@ -1243,6 +1244,24 @@ class WorkbenchWorkflowRunner:
             step_results=step_results,
         )
         test_activity_quality = self.audit_test_activity_quality(task_run=task_run)
+        final_deterministic_repairs = materialize_final_deterministic_quality_repairs(
+            task_run.artifact_dir,
+            quality_feedback=test_activity_quality,
+        )
+        if final_deterministic_repairs:
+            materialize_artifact_contract_v3_outputs(
+                task_run.artifact_dir,
+                profile_id=profile_id,
+            )
+            test_activity_quality = self.audit_test_activity_quality(task_run=task_run)
+            test_activity_quality["final_deterministic_quality_repair"] = {
+                "changed_fields": final_deterministic_repairs,
+                "reason": "final_professional_audit_feedback",
+            }
+            _write_json(
+                Path(str(task_run.artifact_dir)) / "test_activity_quality_audit.json",
+                test_activity_quality,
+            )
         external_repair = self._attempt_external_agent_quality_repair(
             task_run=task_run,
             step_results=step_results,

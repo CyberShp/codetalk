@@ -211,6 +211,24 @@ repeating earlier full-review history. This establishes review-context
 isolation and evidence-card readability only; it is not a substitute for the
 required full independent-quality rubric.
 
+### 2026-07-26 Final Professional-Audit Feedback Regression
+
+Chromium started Attempt 15 (`task_run_1cdfee3be4b64fa1a9a8cae28dfd568f`)
+from the same SPDK task's `修复质量问题并重试` control after a final-audit
+mapping failure had been reproduced. The earlier attempts correctly blocked
+`BC-05`: they incorrectly used `test/iscsi_tgt/multiconnection/multiconnection.sh`
+as evidence for same-Target concurrent Login behavior. The final audit reports
+row identifiers, while the prior deterministic repair only matched a scenario
+field; it therefore could not repair this late-stage finding.
+
+The task-level repair path now consumes only final audit findings, resolves the
+named structured row, re-renders Markdown, and re-audits the canonical bytes.
+Attempt 15 completed with `quality_status=passed`, `delivery_status=complete`,
+zero blockers, and nine deliverables. The accepted `BC-05` no longer claims
+coverage from `multiconnection.sh`; it is explicitly marked as a required new
+same-Target concurrent Login black-box case. Its 1 minute 2 second duration is
+a cache-assisted quality retry, not an uncached deep-profile benchmark.
+
 The current code is **not releasable as V3**. No push to `origin/feat` and no
 goal completion is permitted until every `partial`, `blocked`, and `unverified`
 row has direct current evidence, including the deployment-owned security and
