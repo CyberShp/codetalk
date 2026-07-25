@@ -6396,9 +6396,16 @@ async def _prepare_assistant_delivery(
     source_artifact_dir: Path | None = None,
     suppress_artifact: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
-    test_activity_actions = _test_activity_task_card_actions(
-        conversation=conversation,
-        user_message=user_message,
+    # A linked task-run follow-up is an answer about existing delivery.  Its
+    # wording can mention SFMEA or black-box tests, but must not grow a new
+    # task draft affordance unless the user explicitly asks to create one.
+    test_activity_actions = (
+        []
+        if suppress_artifact
+        else _test_activity_task_card_actions(
+            conversation=conversation,
+            user_message=user_message,
+        )
     )
     actions: list[dict[str, Any]] = [*test_activity_actions, *_default_actions()]
     if suppress_artifact:

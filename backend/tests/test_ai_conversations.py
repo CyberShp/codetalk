@@ -5668,6 +5668,30 @@ async def test_downloadable_assistant_artifact_redacts_secrets_before_write(
 
 
 @pytest.mark.asyncio
+async def test_linked_workflow_review_suppresses_test_activity_draft_card():
+    from app.services import ai_conversations
+
+    visible, actions = await ai_conversations._prepare_assistant_delivery(
+        run_id="run-linked-review",
+        conversation={
+            "id": "conv-linked-review",
+            "title": "旁挂交付件审阅",
+            "scope_type": "workbench_task_run",
+            "scope_id": "task_run_example",
+        },
+        content="审阅结论：76/100，需要补齐证据。",
+        user_message=(
+            "只审阅旁挂的 SFMEA 和黑盒测试交付件并按 rubric 打分；"
+            "不要创建任务、生成文件或改写交付件。"
+        ),
+        suppress_artifact=True,
+    )
+
+    assert visible == "审阅结论：76/100，需要补齐证据。"
+    assert not any(action["id"] == "test_activity_task_card" for action in actions)
+
+
+@pytest.mark.asyncio
 async def test_downloadable_assistant_delivery_writes_manifest_and_file_actions(
     tmp_path,
     monkeypatch,
