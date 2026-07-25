@@ -2,9 +2,7 @@ import { expect, test } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 
-const rollbackBackendUrl = process.env.CODETALK_ROLLBACK_BACKEND_URL || "";
-
-test("legacy Workbench entries redirect to their V2 destinations by default", async ({ page }) => {
+test("legacy Workbench entries always redirect to the versioned destinations", async ({ page }) => {
   for (const [legacy, destination] of [
     ["/workbench", "/tasks"],
     ["/workbench/designer", "/workflows"],
@@ -13,28 +11,6 @@ test("legacy Workbench entries redirect to their V2 destinations by default", as
     await page.goto(legacy, { waitUntil: "domcontentloaded" });
     await expect(page).toHaveURL(new RegExp(`${destination.replace("/", "\\/")}$`));
   }
-});
-
-test("disabled V2 switch renders the legacy Workbench entry instead of redirecting", async ({ page }) => {
-  test.skip(!rollbackBackendUrl, "requires a dedicated backend with WORKBENCH_V2_ENABLED=false");
-  await page.addInitScript((apiBase) => {
-    window.localStorage.setItem("codetalk.apiBaseOverride", apiBase);
-  }, rollbackBackendUrl);
-
-  await page.goto("/workbench", { waitUntil: "domcontentloaded" });
-  await expect(page).toHaveURL(/\/workbench$/);
-  await expect(page.getByRole("heading", { name: "运行驾驶舱" })).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByRole("button", { name: "刷新状态" })).toBeVisible();
-
-  await page.goto("/tasks", { waitUntil: "domcontentloaded" });
-  await expect(page).toHaveURL(/\/workbench$/);
-  await expect(page.getByRole("heading", { name: "运行驾驶舱" })).toBeVisible();
-
-  await page.goto("/workflows", { waitUntil: "domcontentloaded" });
-  await expect(page).toHaveURL(/\/workbench\/designer$/);
-
-  await page.goto("/semantic-library", { waitUntil: "domcontentloaded" });
-  await expect(page).toHaveURL(/\/workbench\/semantic$/);
 });
 
 test("V2 libraries fit 1440, 1280, and 1024 without page overflow or double main scrolling", async ({ page }) => {

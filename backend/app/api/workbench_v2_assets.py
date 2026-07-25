@@ -61,8 +61,9 @@ def evidence_store() -> EvidenceMemoryStore:
 
 
 def _require_v2() -> None:
-    if not settings.workbench_v2_enabled:
-        raise HTTPException(status_code=404, detail="Workbench V2 is not enabled")
+    # Kept as a compatibility seam for callers of the versioned API. The
+    # versioned Workbench is now the only runtime and cannot be disabled.
+    return None
 
 
 def _import_dir() -> Path:

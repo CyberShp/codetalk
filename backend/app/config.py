@@ -1,6 +1,7 @@
 import os
 import tempfile
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -229,9 +230,10 @@ class Settings(BaseSettings):
     gitnexus_poll_timeout: int = 600 # max seconds to wait for GitNexus indexing
     coverage_max_upload_mb: int = 100 # max single file size for coverage upload
 
-    # Workbench V2 is the default experience. Operators can set this false for
-    # one release cycle to restore the legacy entry and API behavior.
-    workbench_v2_enabled: bool = True
+    # The versioned Workbench is the only product workflow runtime. Historical
+    # runs stay readable through compatibility endpoints, but an environment
+    # switch must not resurrect a second mutable workflow experience.
+    workbench_v2_enabled: Literal[True] = True
 
     # CORS — comma-separated origins allowed to call the API
     cors_origins: str = "http://localhost:3003,http://127.0.0.1:3003"

@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 
 def _legacy_workflow(*, name: str = "Legacy analysis") -> dict:
     return {
@@ -12,14 +14,15 @@ def _legacy_workflow(*, name: str = "Legacy analysis") -> dict:
     }
 
 
-def test_workbench_v2_feature_flag_is_on_by_default_and_env_can_restore_legacy(monkeypatch):
+def test_versioned_workbench_rejects_the_legacy_rollback_switch(monkeypatch):
     from app.config import Settings
 
     monkeypatch.delenv("WORKBENCH_V2_ENABLED", raising=False)
     assert Settings(_env_file=None).workbench_v2_enabled is True
 
     monkeypatch.setenv("WORKBENCH_V2_ENABLED", "false")
-    assert Settings(_env_file=None).workbench_v2_enabled is False
+    with pytest.raises(ValueError, match="Input should be True"):
+        Settings(_env_file=None)
 
 
 def test_legacy_workflow_store_keeps_mutable_definition_and_detached_snapshot(tmp_path):

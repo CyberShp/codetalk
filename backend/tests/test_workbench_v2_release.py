@@ -73,22 +73,15 @@ def test_backup_failure_is_fatal_and_does_not_leave_partial_file(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_release_status_exposes_only_the_v2_switch(monkeypatch):
+async def test_release_status_always_exposes_the_versioned_workbench():
     from app.api import workbench_v2_release
-    from app.config import settings
 
     app = FastAPI()
     app.include_router(workbench_v2_release.router)
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        monkeypatch.setattr(settings, "workbench_v2_enabled", True)
-        enabled = await client.get("/api/workbench/release")
-        assert enabled.status_code == 200
-        assert enabled.json() == {"workbench_v2_enabled": True}
-
-        monkeypatch.setattr(settings, "workbench_v2_enabled", False)
-        disabled = await client.get("/api/workbench/release")
-        assert disabled.status_code == 200
-        assert disabled.json() == {"workbench_v2_enabled": False}
+        response = await client.get("/api/workbench/release")
+        assert response.status_code == 200
+        assert response.json() == {"workbench_v2_enabled": True}
 
 
 @pytest.mark.asyncio
