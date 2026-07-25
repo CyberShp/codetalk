@@ -14,7 +14,7 @@ from typing import Any
 # hide newly recognized source evidence from downstream flow quality gates.
 FLOW_EVIDENCE_VERSION = "flow-evidence-pack-v4"
 _FLOW_EVIDENCE_VERSION = FLOW_EVIDENCE_VERSION
-_FLOW_OUTLINE_VERSION = "flow-outline-v1"
+_FLOW_OUTLINE_VERSION = "flow-outline-v2"
 _CALL_PATTERN = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _STATE_PATTERN = re.compile(
     r"\b([A-Za-z_][A-Za-z0-9_]*(?:state|session|conn|ctrlr|qpair|request|task|ctx)[A-Za-z0-9_]*)\b",
@@ -517,9 +517,17 @@ def build_flow_outline(flow_pack: dict[str, Any]) -> dict[str, Any]:
             )
     outline_gaps = list(flow_pack.get("evidence_gaps") or [])
     excluded_edges = len(usable_edges) - len(used_edges)
+    scope_exclusions: list[dict[str, Any]] = []
     if entry_roots and excluded_edges:
-        outline_gaps.append(
-            f"排除 {excluded_edges} 条不属于已验证入口可达分量的调用边"
+        # These edges were deliberately excluded because they cannot be
+        # reached from the verified entry. They are useful scope diagnostics,
+        # but are not a missing fact in the selected business flow.
+        scope_exclusions.append(
+            {
+                "kind": "unreachable_call_edges",
+                "count": excluded_edges,
+                "reason": "不属于已验证入口可达分量的调用边",
+            }
         )
     if entries and not entry_roots and usable_edges:
         outline_gaps.append(
@@ -555,6 +563,7 @@ def build_flow_outline(flow_pack: dict[str, Any]) -> dict[str, Any]:
         "state_transitions": list(flow_pack.get("state_transitions") or []),
         "related_tests": list(flow_pack.get("related_tests") or []),
         "evidence_ids": all_evidence_ids,
+        "scope_exclusions": scope_exclusions,
         "evidence_gaps": _dedupe(outline_gaps),
     }
 

@@ -5415,7 +5415,12 @@ def test_flow_outline_excludes_edges_not_reachable_from_verified_entries():
     assert len(outline["main_flows"]) == 1
     assert [step["to_symbol"] for step in outline["steps"]] == ["chap_negotiate"]
     assert "nvme_trace_rpc" not in json.dumps(outline["main_flows"])
-    assert any("不属于已验证入口可达分量" in gap for gap in outline["evidence_gaps"])
+    assert outline["evidence_gaps"] == []
+    assert outline["scope_exclusions"] == [{
+        "kind": "unreachable_call_edges",
+        "count": 1,
+        "reason": "不属于已验证入口可达分量的调用边",
+    }]
 
 
 def test_flow_outline_does_not_promote_arbitrary_roots_when_entry_has_no_call_edge():
