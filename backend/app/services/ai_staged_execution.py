@@ -536,6 +536,15 @@ def _expand_verified_source_anchors(
         "auth", "chap", "digest", "login", "mcs", "session", "target",
         "timeout", "tsih",
     }
+    # The iSCSI Login delivery contract always includes the continuation-bit
+    # reassembly boundary.  It is a protocol obligation rather than a user
+    # supplied keyword, so add narrowly-scoped discovery tokens only when the
+    # selected source context is already an iSCSI Login analysis.
+    token_set = set(tokens)
+    if "iscsi" in token_set and "login" in token_set:
+        tokens.extend(("cbit", "c-bit", "partial_text_parameter"))
+        protocol_priority_terms.update(("cbit", "c-bit", "partial_text_parameter"))
+    tokens = list(dict.fromkeys(tokens))
     tokens = sorted(
         tokens,
         key=lambda token: (token not in protocol_priority_terms, tokens.index(token)),
@@ -721,6 +730,19 @@ def _expand_verified_source_anchors(
                         pattern in excerpt_lower
                         for pattern in semantic_anchor_patterns
                     ),
+                    # These anchors are not decorative relevance hints.  The
+                    # iSCSI Login quality contract later requires the C-bit
+                    # reassembly path, so a compact source pack must reserve
+                    # it before filling the remaining budget with adjacent
+                    # Login helpers such as target checks or error responses.
+                    "_required_semantic_anchor": any(
+                        pattern.lower() in excerpt_lower
+                        for pattern in semantic_anchor_patterns
+                    ),
+                    "_mandatory_protocol_anchor": (
+                        "iscsi_bhs_login_get_cbit" in excerpt_lower
+                        or "partial_text_parameter" in excerpt_lower
+                    ),
                 })
 
     additional_per_path: dict[str, int] = {}
@@ -754,6 +776,8 @@ def _expand_verified_source_anchors(
             range(len(candidates)),
             key=lambda index: (
                 candidates[index]["classification"] == "source",
+                candidates[index]["_mandatory_protocol_anchor"],
+                candidates[index]["_required_semantic_anchor"],
                 candidates[index]["_semantic_anchor_value"],
                 bool(
                     set(candidates[index]["symbols"])
@@ -798,6 +822,8 @@ def _expand_verified_source_anchors(
         candidate.pop("_specialization_penalty", None)
         candidate.pop("_symbol_term_relevance", None)
         candidate.pop("_semantic_anchor_value", None)
+        candidate.pop("_required_semantic_anchor", None)
+        candidate.pop("_mandatory_protocol_anchor", None)
         candidate["evidence_id"] = f"SRC-{len(files) + 1:02d}"
         files.append(candidate)
         additional_per_path[candidate["file_path"]] = (
@@ -8530,11 +8556,9 @@ def _deterministic_quality_claim_repair(
             ]
             fields.append(f"$[{index}].steps")
 
+    cbit_mapping_required = "risk_case_missing_sfmea_mapping" in issue_codes
     cbit_mapping_missing_without_ledger = False
-    if "missing_c_bit_fragmentation_case" in issue_codes and (
-        sfmea_risk_ledger is not None
-        or "risk_case_missing_sfmea_mapping" in issue_codes
-    ):
+    if "missing_c_bit_fragmentation_case" in issue_codes and cbit_mapping_required:
         cbit_mapping_missing_without_ledger = not any(
             str(risk.get("sfmea_id") or "").strip()
             and any(
@@ -8588,6 +8612,13 @@ def _deterministic_quality_claim_repair(
             {
                 "case_id": case_id,
                 "risk_ids": [cbit_risk_id] if cbit_risk_id else [],
+                # This fallback is a test-design obligation, not evidence that
+                # the first existing case happened to prove C-bit behaviour.
+                # Copying the template's CHAP/source anchor makes the L2 judge
+                # validate an unrelated statement and can falsely legitimise a
+                # protocol scenario whose required source slice is missing.
+                "technical_claims": [],
+                "source_or_test_evidence": [],
                 "test_dimension": "invalid_input",
                 "scenario_name": "Login C-bit 参数跨 PDU 分片重组",
                 "preconditions": [

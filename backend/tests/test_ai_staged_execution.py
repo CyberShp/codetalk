@@ -2360,6 +2360,41 @@ def test_quality_repair_materializes_missing_c_bit_fragmentation_case():
     assert fields == ["$[+].c_bit_fragmentation_case"]
 
 
+def test_quality_repair_does_not_inherit_unrelated_claims_for_c_bit_case():
+    """A generated protocol scenario must never borrow another row's proof."""
+    inherited_claim = {
+        "claim_id": "TC-CHAP",
+        "type": "source_anchor",
+        "statement": "iscsi_auth_params(conn);",
+        "evidence": [{
+            "evidence_id": "SRC-CHAP:L773",
+            "path": "lib/iscsi/iscsi.c",
+            "lines": "L773",
+            "quote": "iscsi_auth_params(conn);",
+            "symbol": "iscsi_auth_params",
+        }],
+    }
+    repaired, _ = _deterministic_quality_claim_repair(
+        [{
+            "case_id": "BB-01",
+            "risk_ids": [],
+            "source_or_test_evidence": ["SRC-CHAP:L773"],
+            "technical_claims": [inherited_claim],
+        }],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "missing_c_bit_fragmentation_case",
+        }]},
+    )
+
+    cbit_case = repaired[-1]
+    assert cbit_case["case_id"] == "BBC-CBIT-FRAGMENT"
+    assert cbit_case["technical_claims"] == []
+    assert cbit_case["source_or_test_evidence"] == []
+    assert "ai_suggested_unverified" in cbit_case["mapped_test_dir"]
+
+
 def test_quality_repair_maps_generated_c_bit_case_to_matching_sfmea_ledger_item():
     repaired, _ = _deterministic_quality_claim_repair(
         [{"case_id": "BB-01", "risk_ids": [], "technical_claims": []}],
@@ -2372,6 +2407,29 @@ def test_quality_repair_maps_generated_c_bit_case_to_matching_sfmea_ledger_item(
     )
 
     assert repaired[-1]["risk_ids"] == ["SFMEA-003"]
+
+
+def test_quality_repair_materializes_c_bit_case_when_existing_ledger_has_no_matching_risk():
+    """A required protocol case must not disappear behind an unrelated SFMEA ledger."""
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{"case_id": "BB-01", "risk_ids": ["SFMEA-001"], "technical_claims": []}],
+        artifact="black_box_cases.json",
+        quality_feedback={
+            "issues": [
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "missing_c_bit_fragmentation_case",
+                }
+            ]
+        },
+        sfmea_risk_ledger=[
+            {"sfmea_id": "SFMEA-001", "failure_mode": "Login timeout cleanup"},
+        ],
+    )
+
+    assert repaired[-1]["case_id"] == "BBC-CBIT-FRAGMENT"
+    assert repaired[-1]["risk_ids"] == []
+    assert fields == ["$[+].c_bit_fragmentation_case"]
 
 
 def test_quality_repair_combines_oracle_normalization_with_c_bit_materialization():
@@ -6187,6 +6245,63 @@ def test_source_analysis_context_keeps_login_cbit_parameter_assembly_anchor(
     excerpts = "\n".join(str(item["excerpt"]) for item in compact["files"])
     assert "ISCSI_BHS_LOGIN_GET_CBIT" in excerpts
     assert "iscsi_parse_params" in excerpts
+
+
+def test_source_analysis_context_reserves_cbit_anchor_amid_login_helper_noise(tmp_path):
+    """C-bit evidence must survive a compact iSCSI Login evidence budget."""
+    source = tmp_path / "lib" / "iscsi" / "iscsi.c"
+    source.parent.mkdir(parents=True)
+    helpers = []
+    for name in ("target", "timeout", "response", "session", "digest", "auth"):
+        helpers.extend([
+            f"static int iscsi_login_{name}(int rc)",
+            "{",
+            "    if (rc < 0) return rc;",
+            "    return 0;",
+            "}",
+            "",
+        ])
+    source_text = "\n".join([
+        "static int iscsi_login_entry(void) { return 0; }",
+        "",
+        *helpers,
+        "static int iscsi_op_login_store_incoming_params(struct request *req)",
+        "{",
+        "    return iscsi_parse_params(&req->params, req->data, req->length,",
+        "        ISCSI_BHS_LOGIN_GET_CBIT(req->flags), &req->partial_parameter);",
+        "}",
+    ])
+    source.write_text(source_text, encoding="utf-8")
+    staged_context = {
+        "repo_path": str(tmp_path),
+        "source_context": {
+            "repo_path": str(tmp_path),
+            "repo_revision": "fixture",
+            "tokens": ["login", "target", "timeout", "digest", "auth"],
+            "files": [{
+                "file_path": "lib/iscsi/iscsi.c",
+                "classification": "source",
+                "start_line": 1,
+                "end_line": 1,
+                "excerpt": "static int iscsi_login_entry(void) { return 0; }",
+                "symbols": ["iscsi_login_entry"],
+                "matched_terms": ["login"],
+                "sha256": hashlib.sha256(source_text.encode()).hexdigest(),
+                "status": "validated_source_file",
+            }],
+        },
+    }
+
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "分析 iSCSI Login 认证和超时"},
+        staged_context=staged_context,
+        max_files=1,
+        excerpt_chars=500,
+        max_evidence_anchors=3,
+    )
+
+    excerpts = "\n".join(str(item["excerpt"]) for item in compact["files"])
+    assert "ISCSI_BHS_LOGIN_GET_CBIT" in excerpts
 
 
 def test_source_analysis_context_does_not_fill_anchor_budget_with_help_text(
