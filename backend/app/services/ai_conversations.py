@@ -6944,6 +6944,9 @@ def _is_linked_workflow_review_turn(
         "做一次", "重做", "重新生成", "补齐", "完善", "generate", "produce",
         "create", "write", "design", "regenerate",
     )
+    # Chinese read-only instructions commonly use both “不要创建” and the
+    # shorter “不创建”. Treat either form as a guardrail, not a request to
+    # create a new formal delivery from a linked task result.
     negative_prefix = r"(?:不要|不需要|无需|不必|不得|禁止|not\\s+)"
 
     def is_affirmative_creation(marker: str) -> bool:
@@ -6952,11 +6955,14 @@ def _is_linked_workflow_review_turn(
         # A review instruction routinely says things like "不要创建任务或改写
         # 文件".  That is a guardrail on a read-only follow-up, not a request
         # to create a new formal delivery.
-        return not bool(re.search(
-            rf"{negative_prefix}[^。；，,\\n]{{0,32}}{re.escape(marker)}",
-            text,
-            re.IGNORECASE,
-        ))
+        return not (
+            f"不{marker}" in text
+            or bool(re.search(
+                rf"{negative_prefix}[^。；，,\\n]{{0,32}}{re.escape(marker)}",
+                text,
+                re.IGNORECASE,
+            ))
+        )
 
     return not any(is_affirmative_creation(marker) for marker in creation_markers)
 
@@ -6971,6 +6977,7 @@ def _is_independent_task_review_request(
     markers = (
         "独立质量审查",
         "独立质量审阅",
+        "独立质量复核",
         "独立审查",
         "独立审阅",
         "独立复核",

@@ -6262,6 +6262,7 @@ async def test_bound_workflow_missing_agent_artifact_fails_closed(
 async def test_test_activity_explanations_do_not_trigger_full_artifact_gate():
     from app.services.ai_conversations import (
         _agent_task_requests_downloadable_artifact,
+        _is_independent_task_review_request,
         _is_linked_workflow_review_turn,
         _requires_strict_test_activity_quality_gate,
     )
@@ -6297,6 +6298,12 @@ async def test_test_activity_explanations_do_not_trigger_full_artifact_gate():
         linked_review,
         "只审阅旁挂交付件并按 rubric 打分；不要创建任务、生成文件或改写交付件。",
     ) is True
+    read_only_review = (
+        "请对本线程旁挂的完整交付件进行独立质量复核并按 rubric 打分。"
+        "只审阅，不创建任务、不改写文件。"
+    )
+    assert _is_linked_workflow_review_turn(linked_review, read_only_review) is True
+    assert _is_independent_task_review_request(linked_review, read_only_review) is True
     assert _is_linked_workflow_review_turn(
         linked_review,
         "评审现有交付件后，重新生成 SFMEA 和黑盒测试用例",
