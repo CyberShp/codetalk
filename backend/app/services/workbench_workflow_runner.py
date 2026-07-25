@@ -6616,6 +6616,10 @@ def _apply_final_deterministic_quality_repairs(
             sfmea_risk_ledger=(
                 sfmea_risk_ledger if isinstance(sfmea_risk_ledger, list) else None
             ),
+            evidence_cards=[
+                card for card in _read_json(artifact_dir / "evidence_cards.json") or []
+                if isinstance(card, dict)
+            ],
         )
         if not fields:
             continue

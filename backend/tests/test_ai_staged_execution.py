@@ -2395,6 +2395,30 @@ def test_quality_repair_does_not_inherit_unrelated_claims_for_c_bit_case():
     assert "ai_suggested_unverified" in cbit_case["mapped_test_dir"]
 
 
+def test_quality_repair_binds_c_bit_case_to_its_own_verified_anchor():
+    repaired, _ = _deterministic_quality_claim_repair(
+        [{"case_id": "BB-01", "risk_ids": [], "technical_claims": []}],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "missing_c_bit_fragmentation_case",
+        }]},
+        evidence_cards=[{
+            "evidence_id": "SRC-CBIT",
+            "file_path": "lib/iscsi/iscsi.c",
+            "start_line": 1298,
+            "end_line": 1302,
+            "excerpt": "rc = iscsi_parse_params(params, pdu->data,\n\t\t\tpdu->data_segment_len, ISCSI_BHS_LOGIN_GET_CBIT(reqh->flags),\n\t\t\t&conn->partial_text_parameter);",
+            "symbols": ["iscsi_op_login_store_incoming_params"],
+            "sha256": "a" * 64,
+        }],
+    )
+
+    claim = repaired[-1]["technical_claims"][0]
+    assert claim["evidence"][0]["evidence_id"] == "SRC-CBIT:L1299"
+    assert "CBIT" in claim["statement"]
+
+
 def test_quality_repair_maps_generated_c_bit_case_to_matching_sfmea_ledger_item():
     repaired, _ = _deterministic_quality_claim_repair(
         [{"case_id": "BB-01", "risk_ids": [], "technical_claims": []}],

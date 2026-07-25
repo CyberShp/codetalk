@@ -4117,6 +4117,10 @@ async def _execute_regular_stage(
                     quality_feedback if isinstance(quality_feedback, dict) else None
                 ),
                 sfmea_risk_ledger=_materialized_sfmea_risk_ledger(completed),
+                evidence_cards=[
+                    card for card in source_pack.get("evidence_cards") or []
+                    if isinstance(card, dict)
+                ],
             )
             if repaired_fields:
                 _write_json(output_path, repaired_payload)
@@ -8364,6 +8368,7 @@ def _deterministic_quality_claim_repair(
     artifact: str,
     quality_feedback: dict[str, Any] | None,
     sfmea_risk_ledger: list[dict[str, Any]] | None = None,
+    evidence_cards: list[dict[str, Any]] | None = None,
 ) -> tuple[Any, list[str]]:
     """Apply bounded repairs for deterministic validator findings only."""
     repaired = json.loads(json.dumps(payload, ensure_ascii=False))
@@ -8608,6 +8613,7 @@ def _deterministic_quality_claim_repair(
         while case_id in existing_ids:
             case_id = f"BBC-CBIT-FRAGMENT-{suffix}"
             suffix += 1
+        cbit_anchor = _cbit_fragmentation_claim_anchor(evidence_cards or [])
         template.update(
             {
                 "case_id": case_id,
@@ -8617,7 +8623,12 @@ def _deterministic_quality_claim_repair(
                 # Copying the template's CHAP/source anchor makes the L2 judge
                 # validate an unrelated statement and can falsely legitimise a
                 # protocol scenario whose required source slice is missing.
-                "technical_claims": [],
+                "technical_claims": ([{
+                    "claim_id": f"TC-{case_id}",
+                    "type": "source_anchor",
+                    "statement": str(cbit_anchor.get("quote") or ""),
+                    "evidence": [cbit_anchor],
+                }] if cbit_anchor else []),
                 "source_or_test_evidence": [],
                 "test_dimension": "invalid_input",
                 "scenario_name": "Login C-bit 参数跨 PDU 分片重组",
@@ -8906,6 +8917,27 @@ def _deterministic_quality_claim_repair(
 
     repaired = visit(repaired, "$")
     return repaired, fields
+
+
+def _cbit_fragmentation_claim_anchor(
+    evidence_cards: list[dict[str, Any]],
+) -> dict[str, str] | None:
+    """Select one exact C-bit reassembly line from the verified pack only."""
+    catalog = _build_verified_claim_catalog({"evidence_cards": evidence_cards})
+    preferred = (
+        "iscsi_bhs_login_get_cbit",
+        "partial_text_parameter",
+        "cbit",
+        "c bit",
+    )
+    for entry in catalog:
+        searchable = " ".join(
+            str(entry.get(key) or "")
+            for key in ("path", "symbol", "quote")
+        ).lower()
+        if any(token in searchable for token in preferred):
+            return dict(entry)
+    return None
 
 
 def _regular_stage_repair_prompt(
