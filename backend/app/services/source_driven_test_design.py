@@ -1392,6 +1392,7 @@ def _flow_cards_artifact(*, flows: dict[str, Any], flow_outline: dict[str, Any],
     branches = [dict(item) for item in flow_pack.get("conditions") or [] if isinstance(item, dict)]
     errors = [dict(item) for item in flow_pack.get("error_paths") or [] if isinstance(item, dict)]
     items = []
+    gaps = _strings(flow_outline.get("evidence_gaps"))
     for row in flows.get("items") or []:
         if not isinstance(row, dict):
             continue
@@ -1428,14 +1429,22 @@ def _flow_cards_artifact(*, flows: dict[str, Any], flow_outline: dict[str, Any],
             if isinstance(item, dict)
             and _row_related_to_flow(item, flow_evidence, flow_symbols)
         ]
+        normal_path = [str(item.get("action") or "") for item in steps]
+        abnormal_paths = [str(item.get("text") or "") for item in related_errors[:12]]
+        status = str(row.get("status") or "PARTIAL")
+        if normal_path and not abnormal_paths and status.upper() == "READY":
+            status = "PARTIAL"
+            gaps.append(
+                f"{flow_id or '未命名流程'}：已验证正常路径，但没有关联的异常路径证据，不能作为完整流程交付。"
+            )
         items.append(
             {
                 "flow_id": flow_id,
                 "title": str(row.get("name") or flow_id),
                 "purpose": "向黑盒测试人员说明该入口到响应/状态更新的已验证实现路径",
                 "trigger": str(row.get("root_symbol") or "外部请求"),
-                "normal_path": [str(item.get("action") or "") for item in steps],
-                "abnormal_paths": [str(item.get("text") or "") for item in related_errors[:12]],
+                "normal_path": normal_path,
+                "abnormal_paths": abnormal_paths,
                 "branch_refs": _strings(item.get("evidence_id") for item in related_branches[:20]),
                 "state_refs": _strings(item.get("evidence_id") for item in related_states[:20]),
                 "resource_refs": _strings(item.get("evidence_id") for item in related_cleanups[:20]),
@@ -1445,12 +1454,12 @@ def _flow_cards_artifact(*, flows: dict[str, Any], flow_outline: dict[str, Any],
                 "external_observations": ["协议响应/返回码", "连接或会话状态", "日志与指标", "恢复后重新请求结果"],
                 "evidence_refs": _strings(row.get("evidence_refs")),
                 "priority": str(row.get("priority") or "P1"),
-                "status": str(row.get("status") or "PARTIAL"),
+                "status": status,
                 "sfmea_ids": [],
                 "case_ids": [],
             }
         )
-    return _ledger("flow_cards", items, gaps=flow_outline.get("evidence_gaps"))
+    return _ledger("flow_cards", items, gaps=gaps)
 
 
 def _row_related_to_flow(

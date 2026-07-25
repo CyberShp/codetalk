@@ -328,6 +328,43 @@ def test_quality_audit_allows_explicit_local_component_flow_scope(tmp_path):
     assert "flow_evidence_not_connected" not in {issue["code"] for issue in issues}
 
 
+def test_flow_card_with_verified_normal_path_requires_explicit_abnormal_paths(tmp_path):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    issues = _audit_json_artifact(
+        artifact="flow_cards.json",
+        payload={
+            "items": [{
+                "flow_id": "FLOW-LOGIN-01",
+                "status": "READY",
+                "normal_path": ["accept Login", "complete Login"],
+                "abnormal_paths": [],
+            }],
+        },
+        spec={"required_fields": []},
+        repo=tmp_path,
+    )
+
+    assert "flow_missing_abnormal_paths" in {issue["code"] for issue in issues}
+
+
+def test_partial_flow_ledger_cannot_pass_as_complete_flow_delivery(tmp_path):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    issues = _audit_json_artifact(
+        artifact="flow_cards.json",
+        payload={
+            "status": "PARTIAL",
+            "gaps": ["FLOW-LOGIN-01：没有关联异常路径证据。"],
+            "items": [{"flow_id": "FLOW-LOGIN-01", "status": "PARTIAL"}],
+        },
+        spec={"required_fields": []},
+        repo=tmp_path,
+    )
+
+    assert "flow_incomplete_for_delivery" in {issue["code"] for issue in issues}
+
+
 @pytest.mark.parametrize(
     "failure_mode,cause",
     [

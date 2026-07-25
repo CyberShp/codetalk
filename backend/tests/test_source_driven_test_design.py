@@ -640,6 +640,24 @@ def test_flow_and_scenario_links_only_use_related_evidence():
     )
 
 
+def test_flow_card_without_related_error_evidence_is_partial_not_ready():
+    from app.services.source_driven_test_design import build_source_driven_test_design
+
+    flow = _flow_pack()
+    flow["error_paths"] = []
+    artifacts = build_source_driven_test_design(
+        source_pack=_source_pack(),
+        flow_pack=flow,
+        flow_outline=_outline(),
+        sfmea=_sfmea(),
+        black_box_cases=_cases(),
+    )
+
+    card = artifacts["flow_cards.json"]["items"][0]
+    assert card["status"] == "PARTIAL"
+    assert any("异常路径" in gap for gap in artifacts["flow_cards.json"]["gaps"])
+
+
 def test_final_fact_verification_never_passes_without_independent_l2(tmp_path):
     from app.services.source_driven_test_design import _combined_final_fact_verification
 

@@ -6368,6 +6368,18 @@ def _audit_json_artifact(
             str(payload.get("status") or "").strip() == "local_component_analysis"
             and bool(re.search(r"(?:本次|仅).{0,20}局部分量分析|local[ _-]?component", flow_gaps, re.IGNORECASE))
         )
+        if (
+            str(payload.get("status") or "").strip().upper() == "PARTIAL"
+            and not explicit_local_component_scope
+        ):
+            issues.append(
+                _issue(
+                    "flow_incomplete_for_delivery",
+                    artifact,
+                    "流程台账仍为 PARTIAL；正常流程之外的异常、状态、资源或传播路径尚缺真实证据，不能作为完整测试活动交付。",
+                    gaps=list(payload.get("gaps") or []),
+                )
+            )
         if not explicit_local_component_scope and re.search(
             r"(?:不能证明|无法证明).{0,40}(?:端到端|完整|单一).{0,40}(?:流程|顺序|调用链)",
             flow_gaps,
@@ -6381,6 +6393,27 @@ def _audit_json_artifact(
                     "需要补充入口到终态的已验证调用链，或明确将本次交付降级为局部分量分析",
                 )
             )
+        for index, flow in enumerate(rows, start=1):
+            if not isinstance(flow, dict):
+                continue
+            normal_path = flow.get("normal_path")
+            abnormal_paths = flow.get("abnormal_paths")
+            if (
+                str(flow.get("status") or "").upper() == "READY"
+                and isinstance(normal_path, list)
+                and normal_path
+                and (not isinstance(abnormal_paths, list) or not abnormal_paths)
+            ):
+                issues.append(
+                    _issue(
+                        "flow_missing_abnormal_paths",
+                        artifact,
+                        f"flow_cards.json 第 {index} 个 READY 流程已声明正常路径，却没有任何异常路径；"
+                        "应明确超时、拒绝、断连或其他已验证异常分支，或将状态降级为局部分析。",
+                        index=index,
+                        row_id=str(flow.get("flow_id") or ""),
+                    )
+                )
     minimum_rows = int(
         spec.get(
             "min_sfmea_rows" if artifact == "sfmea.json" else "min_black_box_cases"
