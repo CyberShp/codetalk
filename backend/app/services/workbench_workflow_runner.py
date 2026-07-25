@@ -3632,6 +3632,41 @@ def _workflow_scoped_test_activity_contract(
             )
             if isinstance(spec, dict):
                 scoped_artifacts[artifact] = dict(spec)
+
+    # A staged combined report is materialized from canonical SFMEA and
+    # black-box JSON.  Audit those final rows as first-class delivery inputs:
+    # otherwise a repaired report can still advertise twelve rows while the
+    # canonical files contain fewer rows or stale risk references.
+    combined_thresholds = {
+        "min_sfmea_rows": max(
+            int(spec.get("min_sfmea_rows") or 0)
+            for spec in scoped_artifacts.values()
+            if isinstance(spec, dict)
+        ),
+        "min_black_box_cases": max(
+            int(spec.get("min_black_box_cases") or 0)
+            for spec in scoped_artifacts.values()
+            if isinstance(spec, dict)
+        ),
+    }
+    if allow_flow_map_alias and any(combined_thresholds.values()):
+        for artifact, threshold_key in (
+            ("sfmea.json", "min_sfmea_rows"),
+            ("black_box_cases.json", "min_black_box_cases"),
+        ):
+            threshold = combined_thresholds[threshold_key]
+            if not threshold or artifact in scoped_artifacts:
+                continue
+            support_spec = base_artifacts.get(artifact) or ARTIFACT_TEMPLATES.get(
+                artifact, {}
+            )
+            if isinstance(support_spec, dict):
+                scoped_artifacts[artifact] = {
+                    **dict(support_spec),
+                    threshold_key: max(
+                        int(support_spec.get(threshold_key) or 0), threshold
+                    ),
+                }
     quality_gates = dict(contract.get("quality_gates") or {})
     if not settings.behavior_claim_audit_enabled:
         quality_gates["require_independent_behavior_validation"] = False

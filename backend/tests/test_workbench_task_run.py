@@ -2177,6 +2177,36 @@ def test_test_activity_audit_contract_follows_declared_workflow_artifacts():
     ]
 
 
+def test_staged_combined_report_audits_the_canonical_sfmea_and_blackbox_rows():
+    from app.services.workbench_workflow_runner import (
+        _workflow_scoped_test_activity_contract,
+    )
+
+    scoped = _workflow_scoped_test_activity_contract(
+        contract={
+            "artifact_contract": {
+                "report.md": {
+                    "min_sfmea_rows": 12,
+                    "min_black_box_cases": 12,
+                },
+                "sfmea.json": {"required_fields": ["sfmea_id"]},
+                "black_box_cases.json": {"required_fields": ["case_id"]},
+            }
+        },
+        workflow_snapshot={
+            "id": "combined-staged-test-delivery",
+            "steps": [{"id": "analyze", "execution_mode": "staged"}],
+            "outputs": [{"artifact": "report.md", "type": "combined_test_report"}],
+        },
+    )
+
+    assert scoped["artifact_contract"]["sfmea.json"]["min_sfmea_rows"] == 12
+    assert (
+        scoped["artifact_contract"]["black_box_cases.json"]["min_black_box_cases"]
+        == 12
+    )
+
+
 def test_legacy_local_source_flow_does_not_inherit_staged_flow_sections():
     from app.services.workbench_workflow_runner import (
         _workflow_scoped_test_activity_contract,
