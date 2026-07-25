@@ -3016,6 +3016,25 @@ def test_final_materialized_sfmea_contract_canonicalizes_claim_to_bound_quote(tm
     assert claim["statement"] == "if (conn == NULL) {"
 
 
+def test_final_materialized_sfmea_contract_removes_deletion_tombstones(tmp_path):
+    from app.services.ai_staged_execution import normalize_materialized_sfmea_risk_contract
+
+    (tmp_path / "evidence_cards.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "source_scope.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "sfmea.json").write_text(json.dumps([
+        {"sfmea_id": "SFMEA-01", "failure_mode": "retained risk"},
+        {"sfmea_id": "SFMEA-02", "_delete": True},
+    ]), encoding="utf-8")
+
+    normalize_materialized_sfmea_risk_contract(
+        artifact_dir=tmp_path,
+        plan={"original_user_request": "iSCSI login"},
+    )
+
+    rows = json.loads((tmp_path / "sfmea.json").read_text(encoding="utf-8"))
+    assert [row["sfmea_id"] for row in rows] == ["SFMEA-01"]
+
+
 def test_normalize_black_box_delivery_contract_replaces_source_mapping_and_unit_fallback():
     rendered, fields = _normalize_black_box_delivery_contract(
         [

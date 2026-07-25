@@ -6404,6 +6404,21 @@ def normalize_materialized_sfmea_risk_contract(
     rendered = _read_json_file(path, default=[])
     if not isinstance(rendered, list):
         return []
+    # Array patching represents removals as tombstones.  They are an internal
+    # merge protocol, never an SFMEA row, and must disappear before the final
+    # required-field contract is evaluated.
+    tombstone_ids = [
+        str(item.get("sfmea_id") or "")
+        for item in rendered
+        if isinstance(item, dict) and item.get("_delete") is True
+    ]
+    if tombstone_ids:
+        rendered = [
+            item
+            for item in rendered
+            if not (isinstance(item, dict) and item.get("_delete") is True)
+        ]
+        _write_json(path, rendered)
     source_pack = _read_json_file(
         artifact_dir / "stages" / "source_analysis" / "source_evidence_pack.json"
     )
