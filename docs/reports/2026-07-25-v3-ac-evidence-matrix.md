@@ -47,7 +47,7 @@ means that the cited current implementation and evidence cover the whole AC;
 | AC-WF-006 | verified | Published version and RunSnapshot hash regressions cover immutability. |
 | AC-WF-007 | verified | Task wizard input-contract E2E switches form fields from published workflow inputs. |
 | AC-WF-008 | verified | `@xyflow/react` is the production canvas implementation; legacy graph remains data only. |
-| AC-WF-009 | partial | Registry drives default ports and inspector field ordering. Audit the remaining specialised inspector widgets before final release. |
+| AC-WF-009 | verified | The wizard's input, Agent and output steps now render the same backend Node Registry and Node Inspector as the canvas. Chromium creates, edits, compiles, trial-runs and publishes through this path; canvas regression covers ports, type checks and persisted edits. Evidence: `/Volumes/Media/codetalk-e2e-artifacts/v3-registry-wizard-20260726/`. |
 | AC-WF-010 | verified | Chromium evidence covers box select, multi-select, batch move/delete, undo/redo and Fit View. Large-graph performance still belongs to AC-PERF-006. |
 | AC-WF-011 | verified | Legacy migration browser tests preserve node/port/edge attributes and published versions. |
 | AC-WF-012 | verified | Trial runs use the formal Compiler/Harness/Policy/Artifact route and are marked `not_a_formal_delivery`. |

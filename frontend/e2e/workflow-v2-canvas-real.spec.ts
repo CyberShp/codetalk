@@ -12,6 +12,7 @@ test("creates a workflow through the UI and uses the xyflow canvas with real mou
   const stamp = Date.now();
 
   await page.goto("/workflows/new", { waitUntil: "domcontentloaded" });
+  await expect(page.getByTestId("workflow-wizard-ready")).toHaveAttribute("data-hydrated", "true");
   await page.getByPlaceholder("例如：源码流程与 SFMEA 分析").fill(`画布交互回归 ${stamp}`);
   await page.getByRole("button", { name: "保存并继续" }).click();
   await expect(page.getByRole("heading", { name: "定义输入" })).toBeVisible();
@@ -128,6 +129,7 @@ test("box-selects multiple canvas nodes and batch deletes them through the visib
   const stamp = Date.now();
 
   await page.goto("/workflows/new", { waitUntil: "domcontentloaded" });
+  await expect(page.getByTestId("workflow-wizard-ready")).toHaveAttribute("data-hydrated", "true");
   await page.getByPlaceholder("例如：源码流程与 SFMEA 分析").fill(`多选交互回归 ${stamp}`);
   await page.getByRole("button", { name: "保存并继续" }).click();
   for (let step = 0; step < 3; step += 1) {
