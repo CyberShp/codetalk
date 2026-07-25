@@ -202,6 +202,15 @@ The final result showed the correct path, `L82-L99`, and symbol in zero seconds;
 this is a metadata lookup, not a non-cached workflow benchmark and therefore
 does not alter the performance ACs or close AC-QUALITY-006.
 
+The associated narrow independent-review Chromium check is retained as
+`attempt17-pro-isolated-short-review.png` and
+`attempt17-pro-isolated-short-review.txt`. It used the configured DeepSeek Pro
+thread route and correctly reported `SRC-09:L82` as present in the evidence
+index, then identified a bounded CHAP negative-scenario mapping risk without
+repeating earlier full-review history. This establishes review-context
+isolation and evidence-card readability only; it is not a substitute for the
+required full independent-quality rubric.
+
 The current code is **not releasable as V3**. No push to `origin/feat` and no
 goal completion is permitted until every `partial`, `blocked`, and `unverified`
 row has direct current evidence, including the deployment-owned security and
