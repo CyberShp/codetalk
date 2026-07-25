@@ -9914,3 +9914,28 @@ def test_runner_materializes_verified_fact_ledger_with_quality_audit(tmp_path, m
     assert ledger["kind"] == "verified_fact_ledger"
     assert ledger["summary"] == audit["fact_verification"]
     assert ledger["claims"] == audit["fact_claims"]
+
+
+def test_final_agent_quality_audit_tracks_authoritative_task_delivery_audit(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _synchronize_agent_final_quality_audits,
+    )
+
+    agent_dir = tmp_path / "agent_runs" / "analyze"
+    repair_dir = agent_dir / "quality_repairs"
+    repair_dir.mkdir(parents=True)
+    old_audit = {"status": "needs_rework", "score": 70, "issue_count": 2}
+    final_audit = {"status": "deliverable", "score": 100, "issue_count": 0, "deliverable": True}
+    (repair_dir / "final_quality_audit.json").write_text(
+        json.dumps(old_audit), encoding="utf-8"
+    )
+
+    _synchronize_agent_final_quality_audits(
+        task_run=SimpleNamespace(agent_runs=[{"artifact_dir": str(agent_dir)}]),
+        final_audit=final_audit,
+    )
+
+    assert json.loads((repair_dir / "final_quality_audit.json").read_text()) == final_audit
+    assert json.loads(
+        (repair_dir / "pre_delivery_materialization_quality_audit.json").read_text()
+    ) == old_audit

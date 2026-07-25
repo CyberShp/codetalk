@@ -563,6 +563,35 @@ def _quality_allows_cache_promotion(status: str) -> bool:
     return status in {"deliverable", "passed", "warning", "needs_rework"}
 
 
+def _synchronize_agent_final_quality_audits(*, task_run: Any, final_audit: dict[str, Any]) -> None:
+    """Keep each agent's advertised final audit aligned with task delivery.
+
+    Staged repair writes an intermediate audit before report materialization.
+    The task-level audit is rerun afterwards and is the delivery authority, so
+    preserve the old snapshot under an explicit historical name and replace
+    the agent-facing final pointer with the authoritative bytes.
+    """
+    if not isinstance(final_audit, dict) or not final_audit:
+        return
+    for agent_run in getattr(task_run, "agent_runs", []) or []:
+        if not isinstance(agent_run, dict):
+            continue
+        artifact_dir = Path(str(agent_run.get("artifact_dir") or ""))
+        if not artifact_dir.is_dir():
+            continue
+        repair_dir = artifact_dir / "quality_repairs"
+        final_path = repair_dir / "final_quality_audit.json"
+        if not final_path.is_file():
+            continue
+        try:
+            previous = _read_json(final_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            previous = None
+        if previous != final_audit:
+            _write_json(repair_dir / "pre_delivery_materialization_quality_audit.json", previous)
+            _write_json(final_path, final_audit)
+
+
 def _quality_repair_regressed(
     *,
     before: dict[str, Any],
@@ -1269,6 +1298,23 @@ class WorkbenchWorkflowRunner:
         materialize_artifact_contract_v3_outputs(
             task_run.artifact_dir,
             profile_id=profile_id,
+        )
+        # Markdown delivery is rendered from the repaired canonical JSON above.
+        # Re-audit those final bytes before publishing any status or cache entry;
+        # otherwise the cockpit and the repair directory can disagree.
+        final_quality_audit = self.audit_test_activity_quality(task_run=task_run)
+        if isinstance(test_activity_quality.get("external_agent_quality_repair"), dict):
+            final_quality_audit["external_agent_quality_repair"] = dict(
+                test_activity_quality["external_agent_quality_repair"]
+            )
+            _write_json(
+                Path(str(task_run.artifact_dir)) / "test_activity_quality_audit.json",
+                final_quality_audit,
+            )
+        test_activity_quality = final_quality_audit
+        _synchronize_agent_final_quality_audits(
+            task_run=task_run,
+            final_audit=test_activity_quality,
         )
         if _quality_allows_cache_promotion(
             str(test_activity_quality.get("status") or "")
