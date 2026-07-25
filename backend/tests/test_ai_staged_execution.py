@@ -7466,6 +7466,66 @@ def test_flow_evidence_prioritizes_a_verified_chain_over_unrelated_card_symbols(
     })
 
 
+def test_flow_evidence_preserves_a_verified_edge_when_the_callee_is_already_seeded(tmp_path):
+    """Queue de-duplication must not discard a separately verified call edge."""
+    repo = tmp_path / "repo-seeded-edge"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    noisy_callers = "".join(
+        f"static int\nnoise_{index:03d}(void) {{ return store_params(); }}\n"
+        for index in range(90)
+    )
+    source = noisy_callers + (
+        "static int\n"
+        "store_params(void) { return 0; }\n"
+        "static int\n"
+        "payload_login(void) { return store_params(); }\n"
+    )
+    path = repo / "lib" / "iscsi" / "login.c"
+    path.write_text(source, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=CodeTalk Test", "-c", "user.email=codetalk@example.invalid", "commit", "-qm", "fixture"],
+        cwd=repo,
+        check=True,
+    )
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    source_pack = {
+        "analysis_target": "iSCSI payload_login to store_params flow",
+        "repo_revision": revision,
+        "source_scope": {"repo": str(repo), "source_files": ["lib/iscsi/login.c"]},
+        "evidence_cards": [
+            {
+                "evidence_id": "SRC-PAYLOAD",
+                "file_path": "lib/iscsi/login.c",
+                "classification": "source",
+                "start_line": 183,
+                "end_line": 184,
+                "excerpt": "static int\npayload_login(void) {\n",
+                "symbols": ["payload_login"],
+                "sha256": hashlib.sha256(source.encode()).hexdigest(),
+            },
+            {
+                "evidence_id": "SRC-STORE",
+                "file_path": "lib/iscsi/login.c",
+                "classification": "source",
+                "start_line": 181,
+                "end_line": 182,
+                "excerpt": "static int\nstore_params(void) { return 0; }\n",
+                "symbols": ["store_params"],
+                "sha256": hashlib.sha256(source.encode()).hexdigest(),
+            },
+        ],
+    }
+
+    pack = build_flow_evidence_pack(source_pack, repo_path=str(repo), max_files=2)
+
+    assert ("payload_login", "store_params") in {
+        (edge["from_symbol"], edge["to_symbol"])
+        for edge in pack["call_edges"]
+    }
+
+
 def test_flow_symbol_parser_accepts_split_c_definitions_but_rejects_control_macros():
     assert _definition_symbol("static int\niscsi_login(void)\n{") == "iscsi_login"
     assert _definition_symbol("TAILQ_FOREACH(item, &items, link) {") == ""

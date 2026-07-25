@@ -1147,8 +1147,7 @@ def _discover_with_git_grep(
                     symbol=symbol,
                 ):
                     if (
-                        callee in queued_symbols
-                        or callee in _CONTROL_WORDS
+                        callee in _CONTROL_WORDS
                         or callee.isupper()
                         or (
                             project_prefixes
@@ -1162,11 +1161,18 @@ def _discover_with_git_grep(
                         )
                     ):
                         continue
-                    queued_symbols.add(callee)
-                    # Follow the verified chain before consuming unrelated
-                    # evidence-card seeds.  The edge below remains tied to a
-                    # concrete source line; this changes only search order.
-                    symbols.appendleft(callee)
+                    # A callee may already be a seed or a previously found
+                    # reverse caller.  That suppresses only another search,
+                    # never the source-verified edge itself.  Otherwise a
+                    # crowded seed queue can silently remove the bridge that
+                    # connects a receive path to its terminal handler.
+                    if callee not in queued_symbols:
+                        queued_symbols.add(callee)
+                        # Follow the verified chain before consuming unrelated
+                        # evidence-card seeds.  The edge below remains tied to
+                        # a concrete source line; this changes only search
+                        # order.
+                        symbols.appendleft(callee)
                     edges.append(
                         _evidence_node(
                             evidence_id="",
