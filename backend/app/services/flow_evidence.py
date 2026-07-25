@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 
-FLOW_EVIDENCE_VERSION = "flow-evidence-pack-v2"
+FLOW_EVIDENCE_VERSION = "flow-evidence-pack-v3"
 _FLOW_EVIDENCE_VERSION = FLOW_EVIDENCE_VERSION
 _FLOW_OUTLINE_VERSION = "flow-outline-v1"
 _CALL_PATTERN = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")

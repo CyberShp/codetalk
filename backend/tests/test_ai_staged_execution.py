@@ -71,6 +71,7 @@ from app.services.workflow_presets import (
     SFMEA_SCHEMA,
 )
 from app.services.flow_evidence import (
+    FLOW_EVIDENCE_VERSION,
     _definition_symbol,
     build_business_flow_context,
     build_flow_evidence_pack,
@@ -7529,6 +7530,11 @@ def test_flow_evidence_preserves_a_verified_edge_when_the_callee_is_already_seed
 def test_flow_symbol_parser_accepts_split_c_definitions_but_rejects_control_macros():
     assert _definition_symbol("static int\niscsi_login(void)\n{") == "iscsi_login"
     assert _definition_symbol("TAILQ_FOREACH(item, &items, link) {") == ""
+
+
+def test_flow_evidence_version_changes_when_its_verified_edge_semantics_change():
+    """A corrected deterministic artifact must not reuse the prior cache entry."""
+    assert FLOW_EVIDENCE_VERSION == "flow-evidence-pack-v3"
 
 
 def test_flow_evidence_tracks_verified_callback_references_without_call_syntax(tmp_path):
