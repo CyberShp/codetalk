@@ -801,9 +801,10 @@ def test_deep_profile_plan_materializes_parallel_exploration_branches():
         stages[branch_id]["output_limits"]["max_evidence_anchors"] >= 24
         for branch_id in branch_ids
     )
-    assert stages["source_analysis"]["max_tokens"] == 1600
-    assert stages["source_analysis"]["output_limits"]["max_evidence_anchors"] == 12
-    assert plan["execution_profile"]["source_analysis_limits"]["max_files"] == 6
+    assert stages["source_analysis"]["max_tokens"] >= 2400
+    assert stages["source_analysis"]["output_limits"]["max_evidence_anchors"] >= 36
+    assert plan["execution_profile"]["source_analysis_limits"]["max_files"] >= 18
+    assert plan["execution_profile"]["source_analysis_limits"]["max_evidence_anchors"] >= 36
 
 
 def test_plan_does_not_duplicate_source_evidence_pack_as_generic_artifact_stage():

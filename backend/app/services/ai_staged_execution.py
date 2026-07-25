@@ -2017,20 +2017,46 @@ def _staged_execution_profile(raw_profile: dict[str, Any] | None) -> dict[str, A
             len(_DEEP_EXPLORATION_BRANCHES),
             max(2, configured_max_subagents or 2),
         )
+        # A deep run needs a wider verified evidence inventory before its
+        # parallel risk explorations can do meaningful work.  Callers may
+        # raise these values for a governed profile, but must not silently
+        # shrink the deep baseline back to rapid-mode scope.
+        requested_source_limits = raw.get("source_analysis_limits")
+        requested_source_limits = (
+            requested_source_limits if isinstance(requested_source_limits, dict) else {}
+        )
         source_limits = {
-            "max_files": int(settings.source_analysis_max_files),
-            "excerpt_chars": int(settings.source_analysis_excerpt_chars),
-            "max_evidence_anchors": int(settings.source_analysis_max_evidence_anchors),
-            "min_test_files": int(settings.source_analysis_min_test_files),
+            "max_files": max(
+                18,
+                int(requested_source_limits.get("max_files") or 0),
+                int(settings.source_analysis_max_files),
+            ),
+            "excerpt_chars": max(
+                1800,
+                int(requested_source_limits.get("excerpt_chars") or 0),
+                int(settings.source_analysis_excerpt_chars),
+            ),
+            "max_evidence_anchors": max(
+                36,
+                int(requested_source_limits.get("max_evidence_anchors") or 0),
+                int(settings.source_analysis_max_evidence_anchors),
+            ),
+            "min_test_files": max(
+                3,
+                int(requested_source_limits.get("min_test_files") or 0),
+                int(settings.source_analysis_min_test_files),
+            ),
         }
         return {
             "id": "deep",
             "delivery_class": str(raw.get("delivery_class") or "full_test_delivery"),
             "configured_max_subagents": configured_max_subagents,
             "applied_subagent_count": applied_subagent_count,
-            "source_analysis_max_tokens": int(settings.source_analysis_max_tokens),
-            "source_analysis_max_chinese_characters": int(
-                settings.source_analysis_max_chinese_characters
+            "source_analysis_max_tokens": max(
+                2400, int(settings.source_analysis_max_tokens)
+            ),
+            "source_analysis_max_chinese_characters": max(
+                2400, int(settings.source_analysis_max_chinese_characters)
             ),
             "source_analysis_max_evidence_anchors": source_limits["max_evidence_anchors"],
             "source_analysis_limits": source_limits,
