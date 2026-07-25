@@ -114,6 +114,21 @@ means that the cited current implementation and evidence cover the whole AC;
 
 ## Release Decision
 
+### 2026-07-25 Flash/Pro Basic Workflow Regression
+
+Browser-run `task_run_b3b524bc6ad34e40bb1616b3a463c832` completed the published
+"基础源码 + 设计文档报告（内置模型）" workflow with DeepSeek Flash/Pro after
+3 minutes 41 seconds. Its final audit was `deliverable`, score `100`, with
+zero findings and all twelve required black-box dimensions present. The UI
+reported one cross-run cache hit, so this is a functional acceptance run, not
+an uncached performance sample for AC-PERF-002. Screenshot evidence is stored
+at `/Volumes/Media/codetalk-e2e-artifacts/v3-deepseek-flash-pro-risk-evidence-20260724/attempt-7-deliverable.png`.
+
+The run also exposed a follow-up consistency gap: the Source Evidence Pack
+materialized two test cards while the final report met its four-test-path
+requirement by repository-path validation. This must be reconciled before the
+stronger source-evidence provenance claim can be marked verified.
+
 The current code is **not releasable as V3**. No push to `origin/feat` and no
 goal completion is permitted until every `partial`, `blocked`, and `unverified`
 row has direct current evidence, including the deployment-owned security and
