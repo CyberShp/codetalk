@@ -2028,9 +2028,12 @@ async def run_generation(
         live_content = content
         live_kind = ""
         accumulated = "".join(chunks)
-        if _should_compact_live_thread_delta(content, accumulated) or _agent_task_requests_downloadable_artifact(
-            user_message["content"],
-            accumulated,
+        if not linked_review_turn and (
+            _should_compact_live_thread_delta(content, accumulated)
+            or _agent_task_requests_downloadable_artifact(
+                user_message["content"],
+                accumulated,
+            )
         ):
             if artifact_stream_notice_sent:
                 return

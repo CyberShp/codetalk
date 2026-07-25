@@ -5491,6 +5491,7 @@ async def test_linked_workflow_read_only_verification_does_not_create_downloadab
 
     run = await store.get_run(created["run"]["id"])
     messages = await store.list_messages(conversation["id"])
+    events = await store.list_events_for_run(conversation["id"], created["run"]["id"])
     assert run["status"] == "completed"
     assert "test_hypothesis" in messages[-1]["content"]
     assert not any(
@@ -5502,6 +5503,10 @@ async def test_linked_workflow_read_only_verification_does_not_create_downloadab
         str(action.get("id") or "") == "create_task_draft"
         for action in messages[-1].get("actions") or []
         if isinstance(action, dict)
+    )
+    assert not any(
+        str((event.get("payload") or {}).get("kind") or "") == "artifact_progress"
+        for event in events
     )
 
 
