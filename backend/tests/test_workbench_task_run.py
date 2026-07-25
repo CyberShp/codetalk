@@ -4122,6 +4122,53 @@ def test_workbench_workflow_runner_enforces_user_output_schema(
     assert "missing required field: files" in result.outputs[0]["schema_errors"]
 
 
+def test_workflow_output_collection_normalizes_repairable_json_schema_fields(tmp_path):
+    from types import SimpleNamespace
+
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    artifact_dir = tmp_path / "agent_runs" / "analyze"
+    artifact_dir.mkdir(parents=True)
+    artifact = artifact_dir / "black_box_cases.json"
+    artifact.write_text(
+        json.dumps([{"failure_diagnostics": "保留请求与响应。"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    task_run = SimpleNamespace(
+        task_run_id="task-output-normalization",
+        artifact_dir=str(tmp_path),
+    )
+    outputs = WorkbenchWorkflowRunner(tmp_path)._collect_workflow_outputs(
+        task_run=task_run,
+        workflow_snapshot={"outputs": [{
+            "id": "black_box_cases",
+            "type": "test_cases",
+            "from": "analyze",
+            "artifact": "black_box_cases.json",
+            "schema": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "failure_diagnostics": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                        }
+                    },
+                },
+            },
+        }]},
+        step_results=[{
+            "step_id": "analyze",
+            "artifact_dir": str(artifact_dir),
+            "status": "completed",
+        }],
+    )
+
+    assert outputs[0]["status"] == "ok"
+    assert json.loads(artifact.read_text(encoding="utf-8"))[0]["failure_diagnostics"] == ["保留请求与响应。"]
+
+
 def test_prepare_workbench_task_run_includes_output_schemas_in_agent_bundle(
     tmp_path,
 ):

@@ -28,6 +28,7 @@ from app.llm.factory import (
     create_source_analysis_llm_client,
 )
 from app.services.ai_staged_execution import (
+    _deterministic_schema_repair,
     _deterministic_quality_claim_repair,
     _apply_quality_feedback_field_patches,
     build_source_evidence_pack,
@@ -3328,6 +3329,19 @@ class WorkbenchWorkflowRunner:
                 outputs.append(item)
                 continue
             data = artifact_path.read_bytes()
+            output_schema = output.get("schema") or output.get("json_schema")
+            if isinstance(output_schema, dict) and artifact_path.suffix.lower() == ".json":
+                try:
+                    payload = json.loads(data.decode("utf-8"))
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    payload = None
+                if payload is not None:
+                    repaired_payload, repaired_fields = _deterministic_schema_repair(
+                        payload, output_schema
+                    )
+                    if repaired_fields:
+                        _write_json(artifact_path, repaired_payload)
+                        data = artifact_path.read_bytes()
             schema_errors = _validate_output_schema(
                 output=output,
                 data=data,
