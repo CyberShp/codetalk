@@ -3842,6 +3842,8 @@ def _apply_source_driven_judge_to_quality_audit(
         if not isinstance(claim, dict):
             continue
         verdict = str(claim.get("status") or "").strip().lower()
+        if verdict == "contradicts":
+            verdict = "contradicted"
         if verdict not in {"contradicted", "insufficient"}:
             continue
         claim_id = str(claim.get("claim_id") or "").strip()
