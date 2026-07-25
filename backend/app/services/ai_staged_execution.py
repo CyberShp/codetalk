@@ -6542,14 +6542,24 @@ def _minimum_sfmea_items_from_plan(plan: dict[str, Any]) -> int:
     stages = plan.get("stages")
     if not isinstance(stages, list):
         return 0
+    minimum = 0
     for stage in stages:
         if not isinstance(stage, dict):
             continue
         artifact = str(stage.get("artifact") or "")
         stage_id = str(stage.get("id") or stage.get("stage_id") or "")
+        contract = (
+            stage.get("output_contract")
+            if isinstance(stage.get("output_contract"), dict)
+            else {}
+        )
+        try:
+            minimum = max(minimum, int(contract.get("min_sfmea_rows") or 0))
+        except (TypeError, ValueError):
+            pass
         if artifact == "sfmea.json" or stage_id == "sfmea":
-            return _minimum_sfmea_items(stage)
-    return 0
+            minimum = max(minimum, _minimum_sfmea_items(stage))
+    return minimum
 
 
 def _source_risk_candidate_for_sfmea_row(

@@ -3056,11 +3056,18 @@ def test_final_materialized_sfmea_contract_refills_declared_floor_after_tombston
 
     normalize_materialized_sfmea_risk_contract(
         artifact_dir=tmp_path,
-        plan={"stages": [{
-            "id": "sfmea",
-            "artifact": "sfmea.json",
-            "output_contract": {"schema": {"minItems": 2}},
-        }]},
+        plan={"stages": [
+            {
+                "id": "sfmea",
+                "artifact": "sfmea.json",
+                "output_contract": {"schema": {"minItems": 1}},
+            },
+            {
+                "id": "report",
+                "artifact": "report.md",
+                "output_contract": {"min_sfmea_rows": 2},
+            },
+        ]},
     )
 
     rows = json.loads((tmp_path / "sfmea.json").read_text(encoding="utf-8"))
