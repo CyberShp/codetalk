@@ -7721,6 +7721,70 @@ def test_behavior_validation_excludes_black_box_test_contract_from_source_entail
     assert request["claims"] == []
 
 
+def test_behavior_validation_includes_row_semantics_when_claims_are_only_source_anchors(
+    tmp_path,
+):
+    from app.services.test_activity_contract import build_behavior_claim_validation_request
+
+    repo = tmp_path / "repo"
+    source = repo / "src" / "login.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int login_target(void) { return -1; }\n", encoding="utf-8")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "evidence_cards.json").write_text(
+        json.dumps(
+            [{
+                "evidence_id": "SRC-001",
+                "file_path": "src/login.c",
+                "start_line": 1,
+                "end_line": 1,
+                "excerpt": "int login_target(void) { return -1; }",
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "symbols": ["login_target"],
+            }]
+        ),
+        encoding="utf-8",
+    )
+    (artifacts / "sfmea.json").write_text(
+        json.dumps(
+            [{
+                "sfmea_id": "SFMEA-001",
+                "failure_mode": "target accepts an invalid login",
+                "cause": "missing input guard",
+                "effect": "session is created",
+                "detection": "public login response",
+                "mitigation": "reject the invalid request",
+                "test_mapping": "send malformed login request",
+                "source_evidence": ["SRC-001:L1"],
+                "technical_claims": [{
+                    "claim_id": "ANCHOR-001",
+                    "type": "source_anchor",
+                    "statement": "int login_target(void) { return -1; }",
+                    "evidence": [{
+                        "evidence_id": "SRC-001:L1",
+                        "path": "src/login.c",
+                        "symbol": "login_target",
+                        "lines": "L1",
+                        "quote": "int login_target(void) { return -1; }",
+                    }],
+                }],
+            }]
+        ),
+        encoding="utf-8",
+    )
+
+    request = build_behavior_claim_validation_request(
+        artifact_dir=artifacts,
+        repo_path=repo,
+    )
+
+    row_claim = next(item for item in request["claims"] if item["claim_id"] == "ROW:sfmea.json:SFMEA-001")
+    assert row_claim["type"] == "sfmea_row_behavior"
+    assert "target accepts an invalid login" in row_claim["statement"]
+    assert row_claim["evidence_bindings"][0]["path"] == "src/login.c"
+
+
 def test_sfmea_json_requires_twelve_risk_rows(tmp_path):
     from app.services.test_activity_contract import (
         _audit_json_artifact,
