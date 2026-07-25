@@ -5973,7 +5973,9 @@ async def _workbench_task_refs(scope_type: str, scope_id: str) -> list[ContextRe
         "workflow_execution.json",
         "artifact_manifest.json",
     ]
-    refs: list[ContextReference] = list(deliverable_refs)
+    # Fact ledgers must precede narrative deliverables: task-run reviews are
+    # otherwise truncated before they see the evidence needed to audit claims.
+    refs: list[ContextReference] = []
     for name in candidates:
         path = task_dir / name
         if not path.exists():
@@ -5991,6 +5993,7 @@ async def _workbench_task_refs(scope_type: str, scope_id: str) -> list[ContextRe
                 metadata={"task_run_id": scope_id, "path": name},
             )
         )
+    refs.extend(deliverable_refs)
     # A task-run review is explicitly about the task's delivered results.  Keep
     # every declared deliverable ahead of diagnostic metadata so an auditor is
     # never asked to judge an artifact that was silently omitted from context.
