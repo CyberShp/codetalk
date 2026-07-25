@@ -5714,6 +5714,30 @@ def test_black_box_anchor_is_declared_as_row_evidence():
     assert "lib/iscsi/iscsi.c (SRC-01:L10)" in result[0]["source_or_test_evidence"]
 
 
+def test_black_box_delivery_contract_replaces_unbound_symbol_references_with_claim_anchors():
+    rendered, fields = _normalize_black_box_delivery_contract(
+        [{
+            "case_id": "BB-ANCHOR-01",
+            "source_or_test_evidence": [
+                "lib/iscsi/iscsi.c:iscsi_conn_login_pdu_success_complete",
+                "include/spdk/iscsi_spec.h:ISCSI_LOGIN_ACCEPT",
+            ],
+            "technical_claims": [{
+                "type": "source_anchor",
+                "evidence": [{
+                    "evidence_id": "SRC-03:L1125",
+                    "path": "lib/iscsi/iscsi.c",
+                    "lines": "L1125",
+                    "quote": "iscsi_conn_login_pdu_success_complete(void *arg)",
+                }],
+            }],
+        }]
+    )
+
+    assert rendered[0]["source_or_test_evidence"] == ["SRC-03:L1125"]
+    assert fields == ["$[0].source_or_test_evidence"]
+
+
 def test_markdown_canonicalizes_stale_prefix_to_unique_verified_repo_path():
     content = "`src/fabrics.c:1567-1585` handles connect cleanup."
     source_pack = {

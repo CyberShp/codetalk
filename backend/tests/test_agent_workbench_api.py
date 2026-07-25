@@ -7171,6 +7171,21 @@ async def test_workbench_task_run_acceptance_audit_rejects_non_black_box_case_co
     assert any("white_box_boundary" in item["reasons"] for item in quality_check["invalid_cases"])
 
 
+async def test_acceptance_prefers_root_canonical_delivery_over_agent_diagnostic_copy(tmp_path):
+    from app.api.agent_workbench import _acceptance_delivery_artifact_path
+
+    agent_copy = tmp_path / "agent_runs" / "analyze" / "sfmea.json"
+    agent_copy.parent.mkdir(parents=True)
+    agent_copy.write_text("[]", encoding="utf-8")
+    canonical = tmp_path / "sfmea.json"
+    canonical.write_text("[]", encoding="utf-8")
+
+    assert _acceptance_delivery_artifact_path(
+        tmp_path,
+        "agent_runs/analyze/sfmea.json",
+    ) == "sfmea.json"
+
+
 async def test_acceptance_quality_accepts_canonical_staged_sfmea_fields(tmp_path):
     from app.api.agent_workbench import _risk_finding_quality_reasons
 

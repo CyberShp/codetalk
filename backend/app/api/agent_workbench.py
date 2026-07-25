@@ -7183,21 +7183,29 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
                 description=f"required Agent artifact for step {step_id}",
                 severity="required",
             ))
+            delivery_relative_path = _acceptance_delivery_artifact_path(
+                task_dir,
+                f"{base}/{artifact}",
+            )
             if Path(artifact).name in {"black_box_cases.json", "test_cases.json"}:
                 checks.append(_acceptance_black_box_case_quality_check(
                     check_id=f"black_box_case_quality:{step_id}:{Path(artifact).name}",
-                    relative_path=f"{base}/{artifact}",
+                    relative_path=delivery_relative_path,
                     task_dir=task_dir,
                     repo_path=str(task_run.repo_path or ""),
-                    description=f"black-box case content quality for step {step_id}",
+                    description=(
+                        f"black-box case content quality for canonical delivery from step {step_id}"
+                    ),
                 ))
             if Path(artifact).name in {"risk_findings.json", "sfmea.json"}:
                 checks.append(_acceptance_risk_finding_quality_check(
                     check_id=f"risk_finding_quality:{step_id}:{Path(artifact).name}",
-                    relative_path=f"{base}/{artifact}",
+                    relative_path=delivery_relative_path,
                     task_dir=task_dir,
                     repo_path=str(task_run.repo_path or ""),
-                    description=f"SFMEA risk finding content quality for step {step_id}",
+                    description=(
+                        f"SFMEA risk finding content quality for canonical delivery from step {step_id}"
+                    ),
                 ))
         lifecycle = _read_json(task_dir / base / "agent_run_lifecycle.json")
         turn_count = _safe_int(
@@ -7349,6 +7357,22 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
         "missing_required": missing_required,
         "missing_recommended": recommended_missing,
     }
+
+
+def _acceptance_delivery_artifact_path(task_dir: Path, relative_path: str) -> str:
+    """Resolve structured quality checks to the user-facing canonical copy.
+
+    Files below ``agent_runs`` are immutable provider diagnostics.  For a
+    declared structured delivery that has been deterministically normalized at
+    task root, acceptance must inspect that same root file the user downloads;
+    otherwise a stale provider draft can veto a corrected delivery.
+    """
+    name = Path(relative_path).name
+    if name in {"sfmea.json", "risk_findings.json", "black_box_cases.json", "test_cases.json"}:
+        canonical = task_dir / name
+        if canonical.is_file():
+            return name
+    return relative_path
 
 
 def _workflow_declares_semantic_import(workflow_snapshot: Any) -> bool:

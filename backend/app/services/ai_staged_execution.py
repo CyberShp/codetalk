@@ -6689,6 +6689,29 @@ def _normalize_black_box_delivery_contract(
                 f"ai_suggested_unverified: 为 {scenario} 新增外部黑盒测试"
             )
             fields.append(f"$[{index}].mapped_test_dir")
+
+        # `source_or_test_evidence` is consumed by the source-driven
+        # traceability gate.  A provider sometimes adds a plausible
+        # ``path:symbol`` or ``path:constant`` string next to a verified
+        # technical claim.  That string is not evidence: only the claim's
+        # canonical evidence ID has passed quote/line validation.  Once a row
+        # has a bound source-anchor claim, publish those durable IDs instead of
+        # carrying the free-form labels into the user delivery and accidentally
+        # making an otherwise grounded case fail traceability.
+        claim_anchor_refs: list[str] = []
+        for claim in row.get("technical_claims") or []:
+            if not isinstance(claim, dict) or str(claim.get("type") or "") != "source_anchor":
+                continue
+            for evidence in claim.get("evidence") or []:
+                if not isinstance(evidence, dict):
+                    continue
+                evidence_id = str(evidence.get("evidence_id") or "").strip()
+                if evidence_id and evidence_id not in claim_anchor_refs:
+                    claim_anchor_refs.append(evidence_id)
+        if claim_anchor_refs and row.get("source_or_test_evidence") != claim_anchor_refs:
+            row["source_or_test_evidence"] = claim_anchor_refs
+            fields.append(f"$[{index}].source_or_test_evidence")
+
         steps = row.get("steps")
         if not isinstance(steps, list):
             continue
