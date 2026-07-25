@@ -10665,6 +10665,53 @@ def test_first_pass_black_box_output_materializes_missing_contract_dimension():
     assert {row["test_dimension"] for row in repaired} == {"normal_path", "resource_cleanup"}
 
 
+def test_missing_black_box_contract_dimensions_include_reconnect_performance_and_steady_state():
+    from app.services.ai_staged_execution import _materialize_missing_black_box_dimensions
+
+    repaired, fields = _materialize_missing_black_box_dimensions(
+        [{
+            "case_id": "BB-01",
+            "test_dimension": "normal_path",
+            "risk_ids": ["SFMEA-001"],
+            "technical_claims": [{"claim_id": "TC-001"}],
+        }],
+        stage={"output_contract": {"required_dimensions": [
+            "normal_path", "reconnect", "performance", "long_steady_state",
+        ]}},
+        sfmea_risk_ledger=[],
+        evidence_cards=[],
+    )
+
+    by_dimension = {row["test_dimension"]: row for row in repaired}
+    assert {"reconnect", "performance", "long_steady_state"} <= set(by_dimension)
+    for dimension in ("reconnect", "performance", "long_steady_state"):
+        assert by_dimension[dimension]["observability"]
+        assert by_dimension[dimension]["oracle_basis"]
+        assert "状态" in by_dimension[dimension]["expected_result"] or "日志" in by_dimension[dimension]["expected_result"]
+    assert "$[+].reconnect_case" in fields
+    assert "$[+].performance_case" in fields
+    assert "$[+].long_steady_state_case" in fields
+
+
+def test_deterministic_quality_repair_makes_targeted_black_box_result_observable():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "case_id": "BB-LOGIN-008",
+            "expected_result": "第二次登录成功，参数协商正确",
+            "observability": ["initiator 登录输出"],
+        }],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "black_box_expected_result_ambiguous",
+            "row_id": "BB-LOGIN-008",
+        }]},
+    )
+
+    assert "Login Response" in repaired[0]["expected_result"]
+    assert "$[0].expected_result" in fields
+
+
 def test_deterministic_schema_repair_normalizes_reused_black_box_diagnostics():
     from app.services.ai_staged_execution import _deterministic_schema_repair
 

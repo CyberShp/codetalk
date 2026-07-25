@@ -8519,6 +8519,7 @@ def _deterministic_quality_claim_repair(
         "missing_black_box_dimensions",
         "missing_max_connections_target_setup",
         "black_box_case_quality_failed",
+        "black_box_expected_result_ambiguous",
         "black_box_boundary_violation",
         "non_actionable_mitigation",
         "duplicate_generic_sfmea_mitigation",
@@ -8528,6 +8529,28 @@ def _deterministic_quality_claim_repair(
         return repaired, []
 
     fields: list[str] = []
+
+    ambiguous_expected_result_ids = {
+        str(issue.get("row_id") or issue.get("case_id") or "").strip()
+        for issue in issues
+        if str(issue.get("code") or "") == "black_box_expected_result_ambiguous"
+        and str(issue.get("row_id") or issue.get("case_id") or "").strip()
+    }
+    if (
+        ambiguous_expected_result_ids
+        and artifact_name == "black_box_cases.json"
+        and isinstance(repaired, list)
+    ):
+        for index, row in enumerate(repaired):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("case_id") or "").strip() not in ambiguous_expected_result_ids:
+                continue
+            row["expected_result"] = (
+                "重新 Login 的 Login Response 返回成功状态，公开 initiator 输出与协商参数"
+                "记录一致；target 日志和 TCP 会话状态不显示残留失败会话或异常退出。"
+            )
+            fields.append(f"$[{index}].expected_result")
 
     professional_constraints = {
         str(issue.get("constraint_id") or "").strip()
@@ -9120,6 +9143,60 @@ def _deterministic_quality_claim_repair(
             }
         )
         dimension_templates = {
+            "reconnect": {
+                "scenario_name": "Login 断连后的会话恢复与重新登录",
+                "steps": [
+                    "通过公开 initiator 完成一次 Login，保存成功响应、TCP 会话状态和 target 日志。",
+                    "在隔离网络中断开该 TCP 会话，等待 target 记录断连或超时处理完成。",
+                    "恢复网络后重新建立 TCP 连接并发起合法 Login，保存新响应、连接状态和日志。",
+                ],
+                "expected_result": "断连后的旧会话状态可从公开连接状态或日志观察到结束；重连 Login 返回成功状态，target 进程持续运行且无残留会话告警。",
+                "observability": [
+                    "断连前后 initiator 返回、TCP 会话状态和 Login Response 状态",
+                    "target 日志中的断连/重连记录与进程状态",
+                ],
+                "failure_diagnostics": [
+                    "若重连失败，保留两次 Login 的请求/响应、TCP 状态、target 日志和网络中断时间线。",
+                ],
+                "oracle_basis": "判据来源：公开 Login Response、TCP 会话状态、target 日志和同一环境中的重连结果。",
+                "mapped_test_dir": "ai_suggested_unverified: 新增 Login 断连重连黑盒用例",
+            },
+            "performance": {
+                "scenario_name": "Login 建连性能基线与退化采样",
+                "steps": [
+                    "在同一提交、硬件和网络配置中完成 5 次 Login 预热并记录每次公开响应时间。",
+                    "重复至少 30 次合法 Login，保存客户端耗时、成功率、target 日志和进程状态。",
+                    "报告 P50/P95、方差和失败率，并与已登记的同环境基线比较。",
+                ],
+                "expected_result": "每次 Login 的成功/失败状态和耗时均被记录；P50/P95、方差和失败率形成可复核基线，日志与进程状态不显示资源耗尽或异常退出。",
+                "observability": [
+                    "公开 initiator 的 Login 结果、耗时和退出码",
+                    "target 日志、进程状态及环境批准的资源采样",
+                ],
+                "failure_diagnostics": [
+                    "若出现超时、失败率升高或 P95 相对基线异常，保留采样明细、网络配置、target 日志和资源快照。",
+                ],
+                "oracle_basis": "判据来源：同提交、同硬件、同网络配置的环境基线；预热 5 次后至少 30 次采样，报告 P50/P95、方差和失败率。",
+                "mapped_test_dir": "ai_suggested_unverified: 新增 Login 性能基线黑盒用例",
+            },
+            "long_steady_state": {
+                "scenario_name": "Login 长稳循环中的资源与会话稳定性",
+                "steps": [
+                    "运行前记录公开连接列表、target 进程状态和环境批准的资源基线。",
+                    "按登记的持续时长重复合法 Login、断开和重连循环，定期保存成功率、连接列表、日志和资源采样。",
+                    "结束后执行一次新的合法 Login，并比较循环前后的资源与会话状态。",
+                ],
+                "expected_result": "长稳循环期间 Login 状态、成功率、连接列表和资源采样持续可观测；结束后资源与会话回到基线范围，新的 Login 仍返回成功状态。",
+                "observability": [
+                    "每个采样窗口的 Login 成功率、响应状态和退出码",
+                    "公开连接列表、target 日志、进程状态和环境批准的资源采样",
+                ],
+                "failure_diagnostics": [
+                    "若资源持续增长、连接残留或后续 Login 失败，停止循环并保留最后成功/失败窗口的响应、资源快照和日志。",
+                ],
+                "oracle_basis": "判据来源：用户测试策略、项目 SLO 或同环境基线中登记的持续时长与资源漂移范围；未登记阈值时只报告观测值。",
+                "mapped_test_dir": "ai_suggested_unverified: 新增 Login 长稳资源黑盒用例",
+            },
             "resource_cleanup": {
                 "scenario_name": "Login 连接与 PDU 资源在失败后的清理和新建",
                 "steps": [
