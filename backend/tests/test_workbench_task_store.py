@@ -627,6 +627,51 @@ def test_run_outcomes_never_mark_quality_blocked_artifacts_as_formal_delivery():
     assert delivery_status == "none"
 
 
+def test_opening_run_reconciles_stale_blocked_delivery_status(tmp_path, monkeypatch):
+    from app.api import agent_workbench
+    from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
+    from app.services.workbench_task_run import WorkbenchTaskRunStore
+
+    monkeypatch.setattr(agent_workbench, "_task_runs_dir", lambda: tmp_path)
+    task_run_id = "task-run-stale-delivery"
+    artifact_dir = tmp_path / task_run_id
+    artifact_dir.mkdir(parents=True)
+    (artifact_dir / "task_run.json").write_text(
+        json.dumps(
+            {
+                "task_run_id": task_run_id,
+                "workflow_id": "workflow-stale-delivery",
+                "workspace_id": "workspace-stale-delivery",
+                "repo_path": str(tmp_path),
+                "artifact_dir": str(artifact_dir),
+                "workflow_snapshot": {},
+                "input_snapshot": {},
+                "task_bundle": {},
+                "execution_status": "completed",
+                "quality_status": "blocked",
+                "delivery_status": "complete",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (artifact_dir / "workflow_execution.json").write_text(
+        json.dumps({"test_activity_quality": {"deliverable": False, "issue_count": 2}}),
+        encoding="utf-8",
+    )
+    WorkbenchTaskRunEventStore(tmp_path).mark_outcomes(
+        task_run_id,
+        quality_status="blocked",
+        delivery_status="complete",
+    )
+
+    reconciled = agent_workbench._reconcile_persisted_task_run_outcomes(
+        WorkbenchTaskRunStore(tmp_path).load(task_run_id)
+    )
+
+    assert reconciled.quality_status == "blocked"
+    assert reconciled.delivery_status == "none"
+
+
 def test_node_diagnostic_trial_is_never_a_formal_delivery():
     from app.api.agent_workbench import _is_diagnostic_trial
 

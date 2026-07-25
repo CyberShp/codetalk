@@ -3035,6 +3035,36 @@ def _derive_task_run_outcomes(
     return quality_status, delivery_status
 
 
+def _reconcile_persisted_task_run_outcomes(task_run: Any) -> Any:
+    """Backfill stale status pairs when an older run is opened.
+
+    Artifact bytes remain inspectable after a quality failure, so historical
+    records created before the delivery contract tightened can otherwise show
+    the impossible pair "quality blocked / delivery complete" forever.
+    """
+    if _is_diagnostic_trial(task_run):
+        return task_run
+    task_dir = Path(task_run.artifact_dir)
+    execution = _read_json(task_dir / "workflow_execution.json")
+    if not isinstance(execution, dict):
+        return task_run
+    quality_status, delivery_status = _derive_task_run_outcomes(
+        execution=execution,
+        run_summary=_build_task_run_ui_summary(task_run, task_dir),
+    )
+    if (
+        quality_status == str(task_run.quality_status or "")
+        and delivery_status == str(task_run.delivery_status or "")
+    ):
+        return task_run
+    WorkbenchTaskRunEventStore(_task_runs_dir()).mark_outcomes(
+        task_run.task_run_id,
+        quality_status=quality_status,
+        delivery_status=delivery_status,
+    )
+    return WorkbenchTaskRunStore(_task_runs_dir()).load(task_run.task_run_id)
+
+
 def _materialize_task_run_outputs_if_available(*, task_run: Any) -> dict[str, Any]:
     task_dir = Path(task_run.artifact_dir)
     workflow_outputs_path = task_dir / "workflow_outputs.json"
@@ -3477,6 +3507,7 @@ async def get_task_run(task_run_id: str) -> dict[str, Any]:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    task_run = _reconcile_persisted_task_run_outcomes(task_run)
     return _public_task_run_payload(task_run)
 
 
