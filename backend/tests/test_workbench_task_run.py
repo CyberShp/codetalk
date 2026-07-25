@@ -6532,6 +6532,34 @@ def test_final_contradiction_tombstones_remove_only_proven_contradicted_rows(tmp
     assert [row["case_id"] for row in json.loads((tmp_path / "black_box_cases.json").read_text())] == ["BB-02"]
 
 
+def test_delivery_refresh_removes_sfmea_tombstones_before_judge_rebuild(tmp_path, monkeypatch):
+    from app.services import workbench_workflow_runner as runner
+
+    (tmp_path / "judge_report.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps([
+            {"sfmea_id": "SFMEA-01", "failure_mode": "retained risk"},
+            {"sfmea_id": "SFMEA-02", "_delete": True},
+        ]),
+        encoding="utf-8",
+    )
+    observed = {}
+
+    def refresh(root):
+        observed["rows"] = json.loads((Path(root) / "sfmea.json").read_text())
+        return {"status": "ready"}
+
+    monkeypatch.setattr(runner, "refresh_source_driven_delivery_governance", refresh)
+
+    result = runner._refresh_source_delivery_governance_after_finalizing(
+        artifact_dir=tmp_path,
+        plan={"original_user_request": "iSCSI login"},
+    )
+
+    assert result == {"status": "ready"}
+    assert [row["sfmea_id"] for row in observed["rows"]] == ["SFMEA-01"]
+
+
 def test_final_deterministic_quality_repair_materializes_only_declared_c_bit_case(tmp_path):
     from app.services.workbench_workflow_runner import (
         _apply_final_deterministic_quality_repairs,

@@ -2386,8 +2386,10 @@ class WorkbenchWorkflowRunner:
                             artifact_dir=artifact_dir,
                             plan=current_plan,
                         )
-                        if (artifact_dir / "judge_report.json").is_file():
-                            refresh_source_driven_delivery_governance(artifact_dir)
+                        _refresh_source_delivery_governance_after_finalizing(
+                            artifact_dir=artifact_dir,
+                            plan=current_plan,
+                        )
                         return await _run_sync_with_absolute_deadline(
                             lambda: _audit_staged_agent_artifacts(
                                 artifact_dir=artifact_dir,
@@ -2406,7 +2408,10 @@ class WorkbenchWorkflowRunner:
                         behavior_validation = await validate_behavior_claims()
                         if (artifact_dir / "judge_report.json").is_file():
                             staged_lifecycle_phase = "refresh_source_delivery_governance"
-                            refresh_source_driven_delivery_governance(artifact_dir)
+                            _refresh_source_delivery_governance_after_finalizing(
+                                artifact_dir=artifact_dir,
+                                plan=current_plan,
+                            )
                         if (
                             behavior_validation.get("reason")
                             == "workflow_deadline_exceeded"
@@ -2591,8 +2596,10 @@ class WorkbenchWorkflowRunner:
                                 repair_started = time.monotonic()
                                 staged_result = await execute_staged(current_plan)
                                 behavior_validation = await validate_behavior_claims()
-                                if (artifact_dir / "judge_report.json").is_file():
-                                    refresh_source_driven_delivery_governance(artifact_dir)
+                                _refresh_source_delivery_governance_after_finalizing(
+                                    artifact_dir=artifact_dir,
+                                    plan=current_plan,
+                                )
                                 if (
                                     behavior_validation.get("reason")
                                     == "workflow_deadline_exceeded"
@@ -2863,8 +2870,10 @@ class WorkbenchWorkflowRunner:
                                     final_repair_audit,
                                 )
                             )
-                        if (artifact_dir / "judge_report.json").is_file():
-                            refresh_source_driven_delivery_governance(artifact_dir)
+                        _refresh_source_delivery_governance_after_finalizing(
+                            artifact_dir=artifact_dir,
+                            plan=current_plan,
+                        )
                         _write_json(
                             artifact_dir / "quality_repair_result.json",
                             {
@@ -6828,6 +6837,24 @@ def _refresh_reports_after_tombstones(
         )
         refreshed.append(artifact)
     return refreshed
+
+
+def _refresh_source_delivery_governance_after_finalizing(
+    *, artifact_dir: Path, plan: dict[str, Any]
+) -> dict[str, Any] | None:
+    """Rebuild delivery governance from schema-safe final artifact bytes.
+
+    Array-patch tombstones are a repair transport detail. A staged execution
+    can write them before its first delivery refresh, so every refresh path
+    must materialize their removal before report or judge code reads SFMEA.
+    """
+    normalize_materialized_sfmea_risk_contract(
+        artifact_dir=artifact_dir,
+        plan=plan,
+    )
+    if not (artifact_dir / "judge_report.json").is_file():
+        return None
+    return refresh_source_driven_delivery_governance(artifact_dir)
 
 
 async def _converge_behavior_validation_field_patches(
