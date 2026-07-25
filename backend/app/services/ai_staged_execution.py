@@ -4167,6 +4167,11 @@ async def _execute_regular_stage(
                 ],
             )
             if repaired_fields:
+                # SFMEA deletion tombstones are an internal array-patch
+                # transport detail. The stage artifact is a deliverable and
+                # must never expose a partial row to its JSON contract.
+                if artifact == "sfmea.json":
+                    repaired_payload = _materialize_sfmea_tombstones(repaired_payload)
                 _write_json(output_path, repaired_payload)
                 duration_ms = round((time.monotonic() - started) * 1000, 1)
                 result = {
