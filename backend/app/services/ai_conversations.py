@@ -4286,10 +4286,10 @@ def _build_prompt(
     if quality_retry_feedback:
         history = []
     if _is_independent_task_review_request(conversation, user_message):
-        # An independent review must not inherit an earlier model's verdict.
-        # User constraints remain available, while frozen task artifacts are
-        # supplied through the current reference set.
-        history = [item for item in history if item["role"] == "user"]
+        # An independent review is a fresh assessment of frozen artifacts.
+        # Neither old model conclusions nor old user scoring instructions may
+        # expand or bias the current review scope.
+        history = []
     current = str(user_message or "").strip()
     for index in range(len(history) - 1, -1, -1):
         if history[index]["role"] == "user" and history[index]["content"].strip() == current:
@@ -4378,7 +4378,7 @@ def _build_agent_prompt(
         else _agent_prompt_history(messages, user_message, runtime)
     )
     if _is_independent_task_review_request(conversation, user_message):
-        history = [item for item in history if item.get("role") != "assistant"]
+        history = []
     for message in history:
         role = message.get("role", "user")
         content = str(message.get("content") or "")

@@ -1729,6 +1729,7 @@ class TestAIConversationsAPI:
             }
         ]
         messages = [
+            {"role": "user", "content": "请按 100 分制全量评分并逐项展开。"},
             {"role": "assistant", "content": "SRC-09 不存在，无法确认。"},
         ]
         user_message = "请核验 SRC-09 的文件路径、行号和 symbols。"
@@ -1745,7 +1746,10 @@ class TestAIConversationsAPI:
             "你是独立质量审查员，只审阅当前旁挂交付件和已验证源码证据。",
         )
         assert all(
-            item["content"] != "SRC-09 不存在，无法确认。"
+            item["content"] not in {
+                "SRC-09 不存在，无法确认。",
+                "请按 100 分制全量评分并逐项展开。",
+            }
             for item in independent_review_prompt
         )
         assert "SRC-09" in independent_review_prompt[0]["content"]
