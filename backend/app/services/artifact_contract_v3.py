@@ -9,6 +9,22 @@ from pathlib import Path
 from typing import Any
 
 
+DEVELOPER_EXPLANATION_HEADINGS = (
+    "1. 这里是干什么的",
+    "2. 外部怎么触发",
+    "3. 正常流程怎么走",
+    "4. 分支怎么进入",
+    "5. 状态怎么变化",
+    "6. 资源怎么使用和释放",
+    "7. 超时、重试、取消和恢复",
+    "8. 并发和关键时序窗口",
+    "9. 异常传播和潜伏故障",
+    "10. 风险点",
+    "11. 黑盒怎么测",
+    "12. 源码追溯和未决项",
+)
+
+
 def default_artifact_contract_v3(*, profile_id: str) -> dict[str, object]:
     if profile_id not in {"rapid", "deep"}:
         raise ValueError(f"未知执行档位：{profile_id}")
@@ -61,6 +77,13 @@ def materialize_artifact_contract_v3_outputs(
     flow_cards = _items(flow_payload)
     sfmea = _read_json_list(_find_artifact(root, "sfmea.json"))
     cases = _read_json_list(_find_artifact(root, "black_box_cases.json"))
+    branches = _items(_read_json(_find_artifact(root, "branch_disposition.json")))
+    states = _items(_read_json(_find_artifact(root, "state_transition_disposition.json")))
+    resources = _items(_read_json(_find_artifact(root, "resource_lifecycle_disposition.json")))
+    error_chains = _items(_read_json(_find_artifact(root, "error_propagation_chains.json")))
+    explanation_coverage = _read_json_object(
+        _find_artifact(root, "developer_explanation_coverage.json")
+    )
     target = str(
         scope.get("analysis_target")
         or scope.get("target")
@@ -130,13 +153,18 @@ def materialize_artifact_contract_v3_outputs(
     if evidence and flow_cards:
         _write_markdown(
             root / "开发给测试讲代码.md",
-            [
-                "# 开发给测试讲代码",
-                "\n## 源码入口与证据", *_evidence_lines(evidence),
-                "\n## 业务流程", *_flow_lines(flow_cards),
-                "\n## 测试解读",
-                "请以外部输入、状态、日志、指标和可观测结果构造测试，不把内部函数调用写入黑盒步骤。",
-            ],
+            _developer_explanation_lines(
+                target=target,
+                evidence=evidence,
+                flow_cards=flow_cards,
+                branches=branches,
+                states=states,
+                resources=resources,
+                error_chains=error_chains,
+                sfmea=sfmea,
+                cases=cases,
+                coverage=explanation_coverage,
+            ),
         )
         written.append("开发给测试讲代码.md")
         _write_markdown(
@@ -363,14 +391,25 @@ def validate_artifact_contract_v3_outputs(
         if (path := _find_artifact(root, name)).is_file() and path.stat().st_size > 0
     ]
     missing = [name for name in required if name not in present]
+    malformed: dict[str, list[str]] = {}
+    explanation = _find_artifact(root, "开发给测试讲代码.md")
+    if profile_id == "deep" and explanation.is_file():
+        absent_headings = [
+            heading
+            for heading in DEVELOPER_EXPLANATION_HEADINGS
+            if heading not in explanation.read_text(encoding="utf-8", errors="replace")
+        ]
+        if absent_headings:
+            malformed["开发给测试讲代码.md"] = absent_headings
     return {
         "kind": "artifact_contract_v3_validation",
         "schema_version": "artifact-contract-v3-validation-v1",
         "profile_id": profile_id,
-        "status": "passed" if not missing else "blocked",
+        "status": "passed" if not missing and not malformed else "blocked",
         "required": required,
         "present_required": present,
         "missing_required": missing,
+        "malformed_required": malformed,
     }
 
 
@@ -530,6 +569,178 @@ def _flow_lines(flow_cards: list[dict[str, Any]]) -> list[str]:
         detail = str(item.get("summary") or item.get("description") or "")
         result.append(f"- **{title}**{f'：{detail}' if detail else ''}")
     return result or ["- 未形成可交付的流程卡片。"]
+
+
+def _developer_explanation_lines(
+    *,
+    target: str,
+    evidence: list[dict[str, Any]],
+    flow_cards: list[dict[str, Any]],
+    branches: list[dict[str, Any]],
+    states: list[dict[str, Any]],
+    resources: list[dict[str, Any]],
+    error_chains: list[dict[str, Any]],
+    sfmea: list[dict[str, Any]],
+    cases: list[dict[str, Any]],
+    coverage: dict[str, Any],
+) -> list[str]:
+    """Render the fixed test-engineering explanation contract without inventing facts.
+
+    The source-driven stage owns discovery.  This renderer only assembles its
+    ledgers into the twelve questions a black-box tester needs answered.  A
+    missing ledger becomes an explicit verification gap rather than prose that
+    accidentally upgrades an assumption into a source fact.
+    """
+    flow = flow_cards[0] if flow_cards else {}
+    unresolved = [str(item) for item in coverage.get("uncovered_items") or [] if str(item)]
+    purpose = str(flow.get("purpose") or flow.get("summary") or "当前流程用途尚未形成可交付说明。")
+    trigger = str(flow.get("trigger") or "当前证据未直接覆盖外部触发入口，需在测试环境确认。")
+    normal_path = _string_values(flow.get("normal_path"))
+    abnormal_paths = _string_values(flow.get("abnormal_paths"))
+    concurrency = _string_values(flow.get("concurrency_windows"))
+    observations = _string_values(flow.get("external_observations"))
+
+    lines = [
+        "# 开发给测试讲代码",
+        f"\n分析对象：{target}",
+        "\n本交付件由本次已物化的证据、流程与测试台账确定性生成。"
+        "未直接被证据覆盖的内容会显式标为待验证，不作为源码事实交付。",
+        "\n## 1. 这里是干什么的",
+        f"- {purpose}",
+        "\n## 2. 外部怎么触发",
+        f"- 已识别触发点：{trigger}",
+        "- 黑盒入口应通过公开协议、CLI、配置或服务 API 构造；不要把内部函数调用写进测试步骤。",
+        "\n## 3. 正常流程怎么走",
+        *_bullet_or_gap(normal_path, "当前证据未直接覆盖完整正常路径，需补充流程证据。"),
+        "\n## 4. 分支怎么进入",
+        *_branch_lines(branches, abnormal_paths),
+        "\n## 5. 状态怎么变化",
+        *_state_lines(states),
+        "\n## 6. 资源怎么使用和释放",
+        *_resource_lines(resources),
+        "\n## 7. 超时、重试、取消和恢复",
+        *_timeout_recovery_lines(flow, error_chains),
+        "\n## 8. 并发和关键时序窗口",
+        *_bullet_or_gap(concurrency, "当前证据未直接覆盖并发窗口，需用并发压力或时序注入验证。"),
+        "\n## 9. 异常传播和潜伏故障",
+        *_error_chain_lines(error_chains),
+        "\n## 10. 风险点",
+        *_risk_lines(sfmea),
+        "\n## 11. 黑盒怎么测",
+        *_test_lines(cases, observations),
+        "\n## 12. 源码追溯和未决项",
+        "- 已验证源码证据：",
+        *_evidence_lines(evidence),
+        *_unresolved_lines(unresolved),
+    ]
+    return lines
+
+
+def _string_values(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _bullet_or_gap(values: list[str], gap: str) -> list[str]:
+    return [f"- {value}" for value in values[:12]] or [f"- {gap}"]
+
+
+def _branch_lines(branches: list[dict[str, Any]], abnormal_paths: list[str]) -> list[str]:
+    lines = _bullet_or_gap(abnormal_paths, "当前证据未直接覆盖可交付的异常路径，需补充分支场景。")
+    for item in branches[:12]:
+        condition = str(item.get("condition") or item.get("id") or "未命名分支")
+        disposition = str(item.get("disposition") or "need_verify")
+        lines.append(f"- `{condition}`：{_disposition_text(disposition, item.get('reason'))}")
+    return lines
+
+
+def _state_lines(states: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for item in states[:12]:
+        state = str(item.get("state") or item.get("id") or "未命名状态")
+        transitions = [
+            str(row.get("text") or row.get("symbol") or "").strip()
+            for row in item.get("transitions") or []
+            if isinstance(row, dict) and str(row.get("text") or row.get("symbol") or "").strip()
+        ]
+        detail = "；".join(transitions[:3]) or _disposition_text(item.get("disposition"), item.get("reason"))
+        lines.append(f"- `{state}`：{detail}")
+    return lines or ["- 当前证据未直接覆盖状态迁移，需补充状态机或运行观测。"]
+
+
+def _resource_lines(resources: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for item in resources[:12]:
+        name = str(item.get("name") or item.get("kind") or item.get("id") or "未命名资源")
+        detail = "；".join(
+            value for value in (
+                str(item.get("allocation") or "").strip(),
+                str(item.get("normal_release") or "").strip(),
+                str(item.get("abnormal_release") or "").strip(),
+                str(item.get("invariant") or "").strip(),
+            ) if value and value != "need_verify"
+        )
+        lines.append(f"- {name}：{detail or '当前证据未直接覆盖完整生命周期，需验证申请、释放、耗尽与恢复。'}")
+    return lines or ["- 当前证据未直接覆盖资源生命周期，需补充资源台账。"]
+
+
+def _timeout_recovery_lines(flow: dict[str, Any], error_chains: list[dict[str, Any]]) -> list[str]:
+    values = _string_values(flow.get("boundary_and_wrap"))
+    if error_chains:
+        values.extend(str(item.get("local_effect") or item.get("external_observation") or "").strip() for item in error_chains[:8])
+    return _bullet_or_gap(
+        [value for value in values if value],
+        "当前证据未直接覆盖超时、重试、取消和恢复的完整闭环，需以故障注入和恢复后请求验证。",
+    )
+
+
+def _error_chain_lines(error_chains: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for item in error_chains[:12]:
+        trigger = str(item.get("trigger") or item.get("source") or item.get("id") or "未命名异常")
+        effect = str(item.get("downstream_effect") or item.get("local_effect") or item.get("external_observation") or "").strip()
+        lines.append(f"- {trigger}：{effect or '待验证异常传播与外部可观测结果。'}")
+    return lines or ["- 当前证据未直接覆盖异常传播链；不要把上游异常在下游表现正常误判为正常分支。"]
+
+
+def _risk_lines(sfmea: list[dict[str, Any]]) -> list[str]:
+    lines: list[str] = []
+    for item in sfmea[:12]:
+        title = str(item.get("failure_mode") or item.get("title") or item.get("id") or "未命名风险")
+        status = str(item.get("risk_status") or "test_hypothesis")
+        lines.append(f"- {title}：{'已观测缺陷' if status == 'observed_defect' else '风险假设，须通过测试验证'}。")
+    return lines or ["- 当前证据未直接覆盖可交付风险项，需补充 SFMEA。"]
+
+
+def _test_lines(cases: list[dict[str, Any]], observations: list[str]) -> list[str]:
+    lines: list[str] = []
+    for item in cases[:12]:
+        title = str(item.get("title") or item.get("case_id") or item.get("id") or "未命名用例")
+        expected = str(item.get("expected_result") or item.get("expected") or "观察外部结果、日志和指标")
+        lines.append(f"- {title}：预期 {expected}")
+    if not lines:
+        lines.append("- 当前证据未直接覆盖可执行黑盒用例，需补充前置条件、操作、观测点和诊断线索。")
+    if observations:
+        lines.append(f"- 统一观测点：{'；'.join(observations[:8])}")
+    return lines
+
+
+def _unresolved_lines(unresolved: list[str]) -> list[str]:
+    if not unresolved:
+        return ["- 未决项：本次开发讲解台账未报告未覆盖条目。"]
+    preview = "、".join(unresolved[:20])
+    suffix = " 等" if len(unresolved) > 20 else ""
+    return [f"- 未决项：{preview}{suffix}。这些条目仍需补充证据或测试映射。"]
+
+
+def _disposition_text(disposition: Any, reason: Any) -> str:
+    text = str(reason or "").strip()
+    if text:
+        return text
+    return "已保留" if str(disposition) in {"retain", "covered_by_other", "merge_into"} else "当前证据未直接覆盖，需要验证。"
 
 
 def _sfmea_lines(rows: list[dict[str, Any]]) -> list[str]:

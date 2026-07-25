@@ -46,6 +46,7 @@ from app.services.source_driven_test_design import (
     verify_technical_claims,
 )
 from app.services.workflow_presets import BLACK_BOX_CASES_SCHEMA, SFMEA_SCHEMA
+from app.services.test_activity_contract import BLACK_BOX_REQUIRED_DIMENSIONS
 
 
 ProgressCallback = Callable[[dict[str, Any]], Awaitable[None] | None]
@@ -4854,6 +4855,19 @@ async def _execute_regular_stage(
                         )
                     )
                     deterministic_repair_fields.extend(dimension_fields)
+                    rendered, required_dimension_fields = (
+                        _materialize_missing_black_box_dimensions(
+                            rendered,
+                            stage=stage,
+                            sfmea_risk_ledger=_materialized_sfmea_risk_ledger(completed),
+                            evidence_cards=[
+                                card
+                                for card in source_pack.get("evidence_cards") or []
+                                if isinstance(card, dict)
+                            ],
+                        )
+                    )
+                    deterministic_repair_fields.extend(required_dimension_fields)
                     rendered, delivery_fields = (
                         _normalize_black_box_delivery_contract(rendered)
                     )
@@ -7109,6 +7123,53 @@ def _normalize_black_box_dimension_contract(
     return normalized, fields
 
 
+def _materialize_missing_black_box_dimensions(
+    rendered: Any,
+    *,
+    stage: dict[str, Any],
+    sfmea_risk_ledger: list[dict[str, Any]],
+    evidence_cards: list[dict[str, Any]],
+) -> tuple[Any, list[str]]:
+    """Close declared black-box dimension gaps before the final quality audit.
+
+    A missing dimension is a deterministic contract gap, not a reason to wait
+    for a later LLM repair turn.  The bounded repair helper creates only
+    external-observable, explicitly unverified cases and preserves the
+    provider's already accepted rows and technical claims.
+    """
+    if not isinstance(rendered, list) or not rendered:
+        return rendered, []
+    contract = stage.get("output_contract") if isinstance(stage.get("output_contract"), dict) else {}
+    required = {
+        str(value).strip().lower()
+        for value in contract.get("required_dimensions") or []
+        if str(value).strip()
+    }
+    present = {
+        str(row.get("test_dimension") or "").strip().lower()
+        for row in rendered
+        if isinstance(row, dict)
+    }
+    missing = sorted(required - present)
+    if not missing:
+        return rendered, []
+    return _deterministic_quality_claim_repair(
+        rendered,
+        artifact="black_box_cases.json",
+        quality_feedback={
+            "issues": [
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "missing_black_box_dimensions",
+                    "dimensions": missing,
+                }
+            ]
+        },
+        sfmea_risk_ledger=sfmea_risk_ledger,
+        evidence_cards=evidence_cards,
+    )
+
+
 def _quality_repair_may_reassign_black_box_dimensions(
     quality_feedback: dict[str, Any],
 ) -> bool:
@@ -9059,6 +9120,25 @@ def _deterministic_quality_claim_repair(
             }
         )
         dimension_templates = {
+            "resource_cleanup": {
+                "scenario_name": "Login 连接与 PDU 资源在失败后的清理和新建",
+                "steps": [
+                    "记录隔离环境中 target 的连接列表、文件描述符或等价公开资源基线，并通过公开 initiator 或 raw-PDU harness 发起 Login",
+                    "在 Login 参数解析、认证或连接阶段注入一个公开可构造失败，然后等待连接关闭或超时处理完成",
+                    "重复执行该失败-清理循环，并在最后发起一次合法 Login，保存响应、连接状态、日志和资源快照",
+                ],
+                "expected_result": "每轮失败后公开连接/会话状态回到基线；最终合法 Login 可以成功，且没有持续增长的资源、残留会话或资源耗尽。",
+                "observability": [
+                    "失败前后公开连接列表、会话状态或等价管理接口输出",
+                    "文件描述符、进程内存或环境批准的资源采样基线与循环后快照",
+                    "失败 Login 与最终合法 Login 的响应、target 日志和进程状态",
+                ],
+                "failure_diagnostics": [
+                    "保留每轮失败请求/响应、资源快照、连接状态和 target 日志；出现无法再次登录或资源持续上升时停止循环。",
+                ],
+                "oracle_basis": "判据来源：同一进程、同一环境的公开资源基线，失败后连接/会话的可观测清理状态，以及一次新的合法 Login 的结果。",
+                "mapped_test_dir": "ai_suggested_unverified: 新增 Login 失败后的资源清理黑盒用例",
+            },
             "upstream_error_propagation": {
                 "scenario_name": "上游 Login 参数解析失败的外部错误传播",
                 "steps": [
@@ -9071,6 +9151,7 @@ def _deterministic_quality_claim_repair(
                     "保留错误请求与响应 PDU、target 日志及后续合法 Login 的连接状态。",
                 ],
                 "oracle_basis": "判据来源：Login Response 的公开状态字段、TCP 连接结果、target 日志和后续合法 Login 的外部行为。",
+                "mapped_test_dir": "ai_suggested_unverified: 新增上游错误传播黑盒用例",
             },
         }
         existing_ids = {
@@ -9099,7 +9180,7 @@ def _deterministic_quality_claim_repair(
                 "observability": definition["observability"],
                 "failure_diagnostics": definition["failure_diagnostics"],
                 "oracle_basis": definition["oracle_basis"],
-                "mapped_test_dir": "ai_suggested_unverified: 需新增上游错误传播黑盒用例",
+                "mapped_test_dir": definition["mapped_test_dir"],
             })
             repaired.append(template)
             fields.append(f"$[+].{dimension}_case")
@@ -10931,7 +11012,16 @@ def _stage_execution_limits(stage_id: str) -> dict[str, Any]:
             {"max_chinese_characters": 4000},
         ),
         "sfmea": (5500, {"max_items": 10, "max_field_characters": 180}),
-        "black_box_cases": (6000, {"max_items": 12, "max_field_characters": 180}),
+        # The delivery gate requires one externally executable case for every
+        # declared dimension.  A smaller cap makes the contract impossible to
+        # satisfy even when the provider follows the prompt exactly.
+        "black_box_cases": (
+            6000,
+            {
+                "max_items": len(BLACK_BOX_REQUIRED_DIMENSIONS),
+                "max_field_characters": 180,
+            },
+        ),
         "test_design_mindmap": (3500, {"max_chinese_characters": 3200}),
         "deep_entry_paths": (2400, {"max_chinese_characters": 2200}),
         "deep_state_and_resources": (2400, {"max_chinese_characters": 2200}),

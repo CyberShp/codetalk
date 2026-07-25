@@ -414,6 +414,23 @@ def test_deep_contract_materializes_named_deliverables_only_from_real_stage_outp
 
     assert {"完整分析报告.md", "开发给测试讲代码.md", "流程状态资源与异常传播.md", "风险点与SFMEA.md", "黑盒测试设计.md"} <= set(written)
     assert "iSCSI login" in (tmp_path / "完整分析报告.md").read_text(encoding="utf-8")
+    explanation = (tmp_path / "开发给测试讲代码.md").read_text(encoding="utf-8")
+    for heading in (
+        "1. 这里是干什么的",
+        "2. 外部怎么触发",
+        "3. 正常流程怎么走",
+        "4. 分支怎么进入",
+        "5. 状态怎么变化",
+        "6. 资源怎么使用和释放",
+        "7. 超时、重试、取消和恢复",
+        "8. 并发和关键时序窗口",
+        "9. 异常传播和潜伏故障",
+        "10. 风险点",
+        "11. 黑盒怎么测",
+        "12. 源码追溯和未决项",
+    ):
+        assert heading in explanation
+    assert "当前证据未直接覆盖" in explanation
 
 
 def test_deep_contract_keeps_sfmea_hypotheses_distinct_from_observed_defects(tmp_path):
@@ -475,3 +492,22 @@ def test_deep_contract_validation_blocks_missing_named_deliverables(tmp_path):
 
     assert result["status"] == "blocked"
     assert "完整分析报告.md" in result["missing_required"]
+
+
+def test_deep_contract_validation_rejects_incomplete_developer_explanation(tmp_path):
+    from app.services.artifact_contract_v3 import (
+        default_artifact_contract_v3,
+        validate_artifact_contract_v3_outputs,
+    )
+
+    for item in default_artifact_contract_v3(profile_id="deep")["artifacts"]:
+        if item["required"]:
+            (tmp_path / item["artifact"]).write_text(
+                "{}" if item["format"] == "json" else "# placeholder\n",
+                encoding="utf-8",
+            )
+    result = validate_artifact_contract_v3_outputs(tmp_path, profile_id="deep")
+
+    assert result["status"] == "blocked"
+    assert "开发给测试讲代码.md" in result["malformed_required"]
+    assert "1. 这里是干什么的" in result["malformed_required"]["开发给测试讲代码.md"]

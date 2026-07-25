@@ -66,7 +66,7 @@ means that the cited current implementation and evidence cover the whole AC;
 | AC-HARNESS-008 | partial | Session-capability fields exist; live provider resume behavior needs evidence. |
 | AC-SKILL-001 | verified for builtin | Nine observable StageSpecs, gates and targeted repair completed in the 2026-07-25 SPDK deep run. |
 | AC-SKILL-002 | verified for builtin | Source-driven artifacts cover flows, states, resources, boundary/wrap, concurrency, recovery and propagation. |
-| AC-SKILL-003 | partial | Developer-explanation artifacts exist; a final direct twelve-section contract audit is required. |
+| AC-SKILL-003 | verified for builtin | `开发给测试讲代码.md` is deterministically rendered as the twelve required tester questions. The deep-contract validator rejects a non-empty file that omits any heading; browser-run Attempt 11 materialized all twelve sections. |
 | AC-SKILL-004 | verified | Deterministic Source Evidence Pack and bounded stage prompts prevent source rediscovery; routing regression verifies branch-specific evidence. |
 
 ## Artifacts And Quality
@@ -126,6 +126,27 @@ Both record `deliverable`, score 100 and zero issues. The preceding repair-loop
 snapshot is retained separately as
 `pre_delivery_materialization_quality_audit.json`; it is no longer presented
 as the final audit.
+
+### DeepSeek Flash/Pro black-box dimension regression (2026-07-25)
+
+Chromium started Attempt 10 (`task_run_94f9001f19c1404c9ee7fcb78c96fcac`)
+from the SPDK iSCSI task UI. It completed after roughly 3 minutes 42 seconds,
+but delivery was correctly blocked because the provider omitted the required
+`resource_cleanup` dimension. This was not a source-evidence or artifact-file
+failure: the Artifact Contract V3 validator passed and the final audit isolated
+one missing black-box dimension.
+
+The regression is now closed in two deterministic places: the black-box stage
+capacity derives from the declared required-dimension contract, and first-pass
+output is checked immediately for missing dimensions. A missing supported
+dimension is materialized as an explicitly external-observable, evidence-bound
+test hypothesis before final quality audit rather than waiting for an accidental
+later model repair. The follow-up Chromium Attempt 11
+(`task_run_bb4a68acc84b403386c8d930027bd62f`) completed with
+`quality_status=passed`; its final audit is `deliverable`, score 100, zero
+issues, and the task-level and Agent-visible final audits share SHA-256
+`b5a261d6d23f789154b4f6eab472871bedc61ced167cc163a0383f5fe4986b2f`.
+Its `开发给测试讲代码.md` contains all twelve required sections.
 
 ### 2026-07-25 Flash/Pro Basic Workflow Regression
 

@@ -65,6 +65,7 @@ from app.services.ai_staged_execution import (
     execute_staged_builtin_plan,
     materialize_source_evidence_pack,
 )
+
 from app.services.workflow_presets import (
     BLACK_BOX_CASES_SCHEMA,
     EVIDENCE_CARDS_SCHEMA,
@@ -84,6 +85,15 @@ from app.services.regular_stage_governance import (
     stage_execution_policy,
     store_regular_stage_cache,
 )
+
+
+def test_black_box_stage_capacity_covers_every_required_dimension():
+    from app.services.ai_staged_execution import _stage_execution_limits
+    from app.services.test_activity_contract import BLACK_BOX_REQUIRED_DIMENSIONS
+
+    limits = _stage_execution_limits("black_box_cases")
+
+    assert limits["output_limits"]["max_items"] >= len(BLACK_BOX_REQUIRED_DIMENSIONS)
 from app.services.workbench_task_run import build_local_source_context
 
 
@@ -10550,6 +10560,49 @@ def test_deterministic_quality_repair_restores_missing_upstream_error_dimension(
     assert restored["technical_claims"] == [{"claim_id": "TC-001"}]
     assert "错误传播" in restored["scenario_name"]
     assert isinstance(restored["failure_diagnostics"], list)
+
+
+def test_deterministic_quality_repair_restores_missing_resource_cleanup_dimension():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "case_id": "BB-01",
+            "test_dimension": "normal_path",
+            "risk_ids": ["SFMEA-001"],
+            "technical_claims": [{"claim_id": "TC-001"}],
+        }],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "missing_black_box_dimensions",
+            "dimensions": ["resource_cleanup"],
+        }]},
+    )
+
+    restored = repaired[-1]
+    assert fields == ["$[+].resource_cleanup_case"]
+    assert restored["test_dimension"] == "resource_cleanup"
+    assert restored["technical_claims"] == [{"claim_id": "TC-001"}]
+    assert "清理" in restored["scenario_name"]
+    assert "基线" in restored["expected_result"]
+
+
+def test_first_pass_black_box_output_materializes_missing_contract_dimension():
+    from app.services.ai_staged_execution import _materialize_missing_black_box_dimensions
+
+    repaired, fields = _materialize_missing_black_box_dimensions(
+        [{
+            "case_id": "BB-01",
+            "test_dimension": "normal_path",
+            "risk_ids": ["SFMEA-001"],
+            "technical_claims": [{"claim_id": "TC-001"}],
+        }],
+        stage={"output_contract": {"required_dimensions": ["normal_path", "resource_cleanup"]}},
+        sfmea_risk_ledger=[],
+        evidence_cards=[],
+    )
+
+    assert fields == ["$[+].resource_cleanup_case"]
+    assert {row["test_dimension"] for row in repaired} == {"normal_path", "resource_cleanup"}
 
 
 def test_deterministic_schema_repair_normalizes_reused_black_box_diagnostics():
