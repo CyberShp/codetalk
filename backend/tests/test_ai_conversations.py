@@ -1674,6 +1674,33 @@ class TestAIConversationsAPI:
         assert "SOURCE_FIRST_CONTRACT:" in prompt
         assert "未找到直接源码或输入材料时，必须说明未验证" in prompt
 
+    async def test_builtin_prompt_separates_source_facts_from_external_observations(self):
+        from app.services.ai_conversations import _build_prompt
+
+        prompt = _build_prompt(
+            {
+                "id": "conv-observable-evidence-boundary",
+                "title": "外部行为证据边界",
+                "scope_type": "workspace",
+                "scope_id": "ws-observable-evidence-boundary",
+                "workspace_id": "ws-observable-evidence-boundary",
+                "initial_context": {},
+            },
+            [],
+            [{
+                "source_type": "workspace_source",
+                "title": "lib/iscsi/conn.c",
+                "excerpt": "spdk_poller_unregister(&conn->login_timer);",
+                "metadata": {"path": "lib/iscsi/conn.c"},
+            }],
+            "认证失败后有哪些外部可观测行为？",
+        )
+
+        system = prompt[0]["content"]
+        assert "不得据此直接断言 TCP 状态" in system
+        assert "已验证源码事实”" in system
+        assert "待通过黑盒操作验证的预期”" in system
+
     async def test_agent_prompt_includes_public_task_deliverable_excerpt(self):
         from app.services.ai_conversations import _build_agent_prompt
 
