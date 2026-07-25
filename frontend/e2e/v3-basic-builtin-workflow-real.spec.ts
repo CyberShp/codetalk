@@ -131,6 +131,8 @@ async function createAndRunTaskThroughUi(
   await expect(page.getByRole("heading", { name: "确认交付输出" })).toBeVisible();
   await page.getByRole("button", { name: "保存并继续" }).click();
   await expect(page.getByRole("heading", { name: "检查并运行" })).toBeVisible();
+  await expect(page.getByText("执行档位", { exact: true }).locator(".."))
+    .toContainText(profileLabel);
   await page.getByRole("button", { name: "保存并运行" }).hover();
   await page.getByRole("button", { name: "保存并运行" }).click();
   await expect(page).toHaveURL(/\/tasks\/task_[^/]+\/runs\/task_run_/);

@@ -45,6 +45,11 @@ export function TaskWizard() {
   const hydratedTaskId = useRef("");
   const hydrationRequestId = useRef(0);
   const definition = (version?.compiled_definition || task?.workflow_version?.compiled_definition || {}) as Definition;
+  const versionDefaultProfile = version
+    ? ((version.compiled_definition as Definition).default_execution_profile
+      || (version.compiled_definition as Definition).execution_profiles?.[0]?.id
+      || "rapid")
+    : "";
 
   useEffect(() => { void Promise.all([workflowsApi.list(), api.workspaces.list(), workflowsApi.providers(), workflowsApi.capabilities()]).then(([workflowItems, workspaceItems, providerItems, capabilities]) => { setWorkflows(workflowItems.filter((item) => Boolean(item.v2?.published_version_id))); setWorkspaces(workspaceItems); setProviders(providerItems.providers); setSkills(capabilities.skill_catalog || []); }).catch((cause) => setError(cause instanceof Error ? cause.message : "向导数据加载失败")); }, []);
   useEffect(() => {
@@ -81,9 +86,14 @@ export function TaskWizard() {
     return () => { active = false; };
   }, [versionId, workflowId]);
   useEffect(() => {
-    const selected = definition.default_execution_profile || definition.execution_profiles?.[0]?.id || "rapid";
+    // A persisted task snapshot is authoritative.  Re-fetching its immutable
+    // WorkflowVersion while moving between wizard steps used to reset a user
+    // selection (for example deep -> rapid) back to the workflow default just
+    // before RunSnapshot creation.
+    if (task) return;
+    const selected = versionDefaultProfile || "rapid";
     if (selected) setExecutionProfileId(selected);
-  }, [version?.version_id]);
+  }, [task, version?.version_id, versionDefaultProfile]);
 
   const selectWorkflow = (id: string) => { const item = workflows.find((candidate) => candidate.id === id); const published = item?.v2?.published_version_id || ""; setWorkflowId(id); setVersionId(published); setVersion(null); if (item) setName(`${item.name} · ${new Date().toLocaleDateString("zh-CN")}`); };
   const save = async (lifecycleStatus?: "draft" | "ready") => {
