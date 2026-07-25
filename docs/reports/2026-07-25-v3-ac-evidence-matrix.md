@@ -129,6 +129,24 @@ materialized two test cards while the final report met its four-test-path
 requirement by repository-path validation. This must be reconciled before the
 stronger source-evidence provenance claim can be marked verified.
 
+### 2026-07-25 DeepSeek Flash/Pro Quality-Retry Regression
+
+Browser-run `task_run_2ca4eb1e31ed49baba52ed9eeed9ac09` is a real Chromium
+quality-retry run for a newly created SPDK iSCSI Login deep-profile task. Its
+frozen task input included the workspace, an uploaded design document, and the
+literal user analysis target. Flash performed source/flow work; Pro performed
+SFMEA, black-box and independent verification work. The final UI reported
+`completed / passed / complete`, nine deliverables, 48/48 verified facts,
+100% structure and 100% executability with zero blockers. The evidence bundle
+is `/Volumes/Media/codetalk-e2e-artifacts/v3-deepseek-flash-pro-risk-evidence-20260724/`.
+
+This proves that the repaired Artifact Contract path can normalize historical
+quality-retry artifacts before reuse and publication. It is deliberately not
+counted for AC-PERF-003: the UI records it as a 58-second quality review of
+accepted artifacts, not a fresh deep execution. It also does not close
+AC-QUALITY-006: the independent full-artifact rubric must be rerun after the
+delivery-rendering repairs and score at least 80.
+
 The current code is **not releasable as V3**. No push to `origin/feat` and no
 goal completion is permitted until every `partial`, `blocked`, and `unverified`
 row has direct current evidence, including the deployment-owned security and
