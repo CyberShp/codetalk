@@ -5696,6 +5696,15 @@ def _repair_duplicated_markdown_table_prefixes(content: str) -> str:
         expected_cells = len(_split_markdown_table_cells(lines[header_index]))
         if expected_cells < 2:
             continue
+        header_cells = _split_markdown_table_cells(lines[header_index])
+        file_column = next(
+            (index for index, value in enumerate(header_cells) if str(value).strip() == "文件"),
+            -1,
+        )
+        line_column = next(
+            (index for index, value in enumerate(header_cells) if str(value).strip() == "行号"),
+            -1,
+        )
         row_index = delimiter_index + 1
         while row_index < len(lines):
             row = lines[row_index].strip()
@@ -5722,6 +5731,29 @@ def _repair_duplicated_markdown_table_prefixes(content: str) -> str:
                     lines[row_index + 1] = ""
                     row = joined
             cells = _split_markdown_table_cells(row)
+            # Model-written flow tables frequently collapse `文件` and `行号`
+            # into one source-navigation cell.  The split is lossless only
+            # when the header explicitly declares adjacent columns and the
+            # path:line shape is unambiguous.
+            if (
+                len(cells) == expected_cells - 1
+                and file_column >= 0
+                and line_column == file_column + 1
+                and file_column < len(cells)
+            ):
+                file_and_line = cells[file_column].strip()
+                match = re.fullmatch(r"(`?)([^`|:]+):(\d+)(`?)", file_and_line)
+                if match:
+                    cells = [
+                        *cells[:file_column],
+                        f"{match.group(1)}{match.group(2)}{match.group(4)}",
+                        match.group(3),
+                        *cells[file_column + 1 :],
+                    ]
+                    indent = lines[row_index][
+                        : len(lines[row_index]) - len(lines[row_index].lstrip())
+                    ]
+                    lines[row_index] = indent + "| " + " | ".join(cells) + " |"
             if len(cells) > expected_cells:
                 first_cell = cells[0].strip()
                 for duplicate_start in range(1, len(cells) - expected_cells + 1):

@@ -4523,6 +4523,32 @@ def test_combined_report_finalizer_removes_unverified_paths_and_adds_verified_in
     assert removed == ["lib/iscsi/session.c"]
 
 
+def test_combined_report_finalizer_splits_file_line_cells_for_markdown_table():
+    content = """## 分析范围与证据缺口
+
+| 状态对象 | 文件 | 行号 | 说明 |
+|----------|------|------|------|
+| `spdk_iscsi_conn` | `lib/iscsi/conn.c:150` | 连接结构体 |
+
+## SFMEA
+| ID | 故障模式 |
+|---|---|
+| SFMEA-01 | 登录失败 |
+
+## 黑盒测试用例
+| ID | 场景 |
+|---|---|
+| BB-01 | 合法登录 |
+"""
+    finalized, _ = _finalize_combined_markdown_report(
+        content=content,
+        source_pack={"evidence_cards": [{"file_path": "lib/iscsi/conn.c", "sha256": "a" * 64}]},
+        output_contract={"min_sfmea_rows": 1, "min_black_box_cases": 1},
+    )
+
+    assert "| `spdk_iscsi_conn` | `lib/iscsi/conn.c` | 150 | 连接结构体 |" in finalized
+
+
 def test_combined_report_finalizer_removes_reasoning_before_required_h2_section():
     content = """我们需要先思考输出合同、数量门禁和如何组织报告。
 
