@@ -4110,6 +4110,21 @@ async def _execute_regular_stage(
         except (TypeError, ValueError, json.JSONDecodeError):
             current_payload = None
         if current_payload is not None:
+            seed_schema = (
+                stage.get("output_contract", {}).get("schema")
+                if isinstance(stage.get("output_contract"), dict)
+                else None
+            )
+            if isinstance(seed_schema, dict):
+                normalized_seed, normalized_seed_fields = (
+                    _deterministic_schema_repair(current_payload, seed_schema)
+                )
+                if normalized_seed_fields:
+                    current_payload = normalized_seed
+                    current_artifact_seed = _render_stage_artifact(
+                        current_payload, artifact
+                    )
+                    _write_json(output_path, current_payload)
             repaired_payload, repaired_fields = _deterministic_quality_claim_repair(
                 current_payload,
                 artifact=artifact,

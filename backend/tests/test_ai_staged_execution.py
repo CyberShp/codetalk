@@ -10550,3 +10550,25 @@ def test_deterministic_quality_repair_restores_missing_upstream_error_dimension(
     assert restored["technical_claims"] == [{"claim_id": "TC-001"}]
     assert "错误传播" in restored["scenario_name"]
     assert isinstance(restored["failure_diagnostics"], list)
+
+
+def test_deterministic_schema_repair_normalizes_reused_black_box_diagnostics():
+    from app.services.ai_staged_execution import _deterministic_schema_repair
+
+    payload = [{"failure_diagnostics": "保留请求、响应和 target 日志。"}]
+    schema = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "failure_diagnostics": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                }
+            },
+        },
+    }
+
+    repaired, fields = _deterministic_schema_repair(payload, schema)
+    assert repaired[0]["failure_diagnostics"] == ["保留请求、响应和 target 日志。"]
+    assert fields == ["$[0].failure_diagnostics"]
