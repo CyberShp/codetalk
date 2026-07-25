@@ -8376,11 +8376,40 @@ def _deterministic_quality_claim_repair(
         "missing_black_box_dimensions",
         "missing_max_connections_target_setup",
         "black_box_case_quality_failed",
+        "non_actionable_mitigation",
     }
     if not issue_codes or not (issue_codes & supported_codes):
         return repaired, []
 
     fields: list[str] = []
+
+    # The SFMEA contract requires the mitigation itself to name a verification
+    # action.  When the generator already supplied a bounded recovery check in
+    # the same row, carry that verified check into mitigation instead of asking
+    # a model to regenerate the whole row.
+    mitigation_verification_ids = {
+        str(issue.get("row_id") or "").strip()
+        for issue in issues
+        if str(issue.get("code") or "") == "non_actionable_mitigation"
+        and "missing_verification_action" in (issue.get("gaps") or [])
+        and str(issue.get("row_id") or "").strip()
+    }
+    if (
+        mitigation_verification_ids
+        and artifact == "sfmea.json"
+        and isinstance(repaired, list)
+    ):
+        for index, row in enumerate(repaired):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("sfmea_id") or "").strip() not in mitigation_verification_ids:
+                continue
+            mitigation = str(row.get("mitigation") or "").strip()
+            verification = str(row.get("recovery_verification") or "").strip()
+            if not mitigation or not verification or "验证:" in mitigation:
+                continue
+            row["mitigation"] = f"{mitigation.rstrip('。；; ')}。验证: {verification}"
+            fields.append(f"$[{index}].mitigation")
 
     # A repair batch often contains both a row-level oracle issue and a
     # missing required protocol case.  Both are deterministic transformations;
@@ -8672,6 +8701,79 @@ def _deterministic_quality_claim_repair(
         )
         repaired.append(template)
         fields.append("$[+].mcs_target_setup_case")
+
+    if (
+        "resource_wraparound" in missing_dimensions
+        and artifact == "black_box_cases.json"
+        and isinstance(repaired, list)
+        and repaired
+        and isinstance(repaired[0], dict)
+    ):
+        template = json.loads(json.dumps(repaired[0], ensure_ascii=False))
+        resource_risk_id = ""
+        best_resource_risk_score = 0
+        for risk in sfmea_risk_ledger or []:
+            if not isinstance(risk, dict):
+                continue
+            risk_id = str(risk.get("sfmea_id") or "").strip()
+            text = " ".join(
+                str(risk.get(key) or "")
+                for key in ("failure_mode", "cause", "effect", "trigger_condition")
+            ).lower()
+            score = sum(
+                term in text
+                for term in ("资源", "resource", "连接", "connection", "释放", "release")
+            )
+            if risk_id and score > best_resource_risk_score:
+                resource_risk_id = risk_id
+                best_resource_risk_score = score
+        existing_ids = {
+            str(row.get("case_id") or "")
+            for row in repaired
+            if isinstance(row, dict)
+        }
+        case_id = "BBC-RESOURCE-REUSE"
+        suffix = 2
+        while case_id in existing_ids:
+            case_id = f"BBC-RESOURCE-REUSE-{suffix}"
+            suffix += 1
+        template.update(
+            {
+                "case_id": case_id,
+                "risk_ids": [resource_risk_id] if resource_risk_id else [],
+                "test_dimension": "resource_wraparound",
+                "scenario_name": "Login 连接资源在容量边界后的回收与复用",
+                "preconditions": [
+                    "仅使用隔离测试设备，target 启动前通过公开 RPC 配置可控的最大连接数 N",
+                    "raw-PDU harness 或公开 initiator 可建立、断开并重建 Login 连接，且可采集 target 日志与连接列表",
+                ],
+                "steps": [
+                    "建立 N 条独立 Login 连接，保存每条 Login Response、连接列表和 target 进程状态作为边界快照",
+                    "按固定顺序断开其中一条连接，等待外部连接列表和日志确认该连接退出",
+                    "通过 raw-PDU harness 或公开 initiator 连续建立替代连接，重复该释放和重建循环，并在每轮保存连接列表、响应、日志和进程状态",
+                ],
+                "expected_result": (
+                    "每轮释放后都可建立一条替代连接；活动连接数不会超过配置的 N，"
+                    "target 不退出，已保留连接不被误断开。"
+                ),
+                "observability": [
+                    "公开 RPC 的连接列表或等价外部管理接口返回的活动连接数",
+                    "每次替代 Login 的响应状态、TCP 连接状态与 pcap",
+                    "target 日志、进程存活状态以及环境已登记的文件描述符或内存采样",
+                ],
+                "failure_diagnostics": [
+                    "若释放后无法建立替代连接，保留该轮前后的连接列表、Login PDU、响应和 target 日志。",
+                    "若活动连接数超过 N、既有连接被误断开或资源采样持续增长，停止循环并按环境能力标记资源回收异常。",
+                ],
+                "oracle_basis": (
+                    "判据来源：运行前通过公开 RPC 登记的最大连接数 N、公开连接列表、"
+                    "Login Response 与进程状态；不以不可见内部计数器或未验证的翻转阈值作为通过条件。"
+                ),
+                "mapped_test_dir": "ai_suggested_unverified: 新增 Login 资源回收与复用黑盒用例",
+            }
+        )
+        repaired.append(template)
+        fields.append("$[+].resource_wraparound_case")
 
     mcs_mapping_issues = [
         item

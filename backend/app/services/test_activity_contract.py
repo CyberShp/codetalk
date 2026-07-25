@@ -6292,7 +6292,14 @@ def _audit_json_artifact(
         flow_gaps = "\n".join(
             str(item) for item in payload.get("gaps") or [] if str(item).strip()
         )
-        if re.search(
+        # A deliberately scoped local-component delivery may only state the
+        # verified component boundary.  It is not an end-to-end flow, but it
+        # is a valid downgraded artifact when that scope is explicit to users.
+        explicit_local_component_scope = (
+            str(payload.get("status") or "").strip() == "local_component_analysis"
+            and bool(re.search(r"(?:本次|仅).{0,20}局部分量分析|local[ _-]?component", flow_gaps, re.IGNORECASE))
+        )
+        if not explicit_local_component_scope and re.search(
             r"(?:不能证明|无法证明).{0,40}(?:端到端|完整|单一).{0,40}(?:流程|顺序|调用链)",
             flow_gaps,
             flags=re.IGNORECASE,

@@ -262,6 +262,12 @@ def test_report_only_contract_still_audits_internal_flow_connectivity(tmp_path):
     ), audit
 
 
+def test_quality_audit_allows_explicit_local_component_flow_scope(tmp_path):
+    from app.services.test_activity_contract import _audit_json_artifact
+    issues = _audit_json_artifact(artifact="flow_cards.json", payload={"status": "local_component_analysis", "items": [{"flow_id": "FLOW-01"}], "gaps": ["当前证据形成互不连通的调用分量；本次只交付已验证的局部分量分析。"]}, spec={"required_fields": []}, repo=tmp_path)
+    assert "flow_evidence_not_connected" not in {issue["code"] for issue in issues}
+
+
 @pytest.mark.parametrize(
     "failure_mode,cause",
     [

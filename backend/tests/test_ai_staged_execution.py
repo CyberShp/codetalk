@@ -4924,6 +4924,34 @@ def test_deterministic_quality_repair_materializes_resource_pressure_from_ledger
     assert "$[+].mcs_target_setup_case" in fields
 
 
+def test_deterministic_quality_repair_materializes_resource_wraparound_case():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{"case_id": "BB-001", "risk_ids": [], "technical_claims": []}],
+        artifact="black_box_cases.json",
+        quality_feedback={
+            "issues": [
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "missing_black_box_dimensions",
+                    "dimensions": ["resource_wraparound"],
+                }
+            ]
+        },
+        sfmea_risk_ledger=[
+            {
+                "sfmea_id": "SFMEA-001",
+                "failure_mode": "Login 失败后连接资源未释放",
+            }
+        ],
+    )
+
+    case = repaired[-1]
+    assert case["test_dimension"] == "resource_wraparound"
+    assert case["risk_ids"] == ["SFMEA-001"]
+    assert "raw-PDU harness" in " ".join(case["steps"])
+    assert "$[+].resource_wraparound_case" in fields
+
+
 def test_deterministic_iscsi_report_harness_supports_claimed_scenarios():
     from app.services.ai_staged_execution import _render_deterministic_combined_report
     from app.services.test_activity_contract import _audit_raw_pdu_scenario_capabilities
@@ -10236,3 +10264,13 @@ async def test_executor_interrupts_active_provider_when_cancelled(tmp_path):
 
     assert completed_after_cancel is True
     assert provider_cancelled.is_set()
+
+
+def test_deterministic_quality_repair_uses_existing_recovery_verification_for_mitigation():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{"sfmea_id": "SFMEA-012", "mitigation": "整改: 根据解析返回值设置对应的 status_detail。", "recovery_verification": "故障注入 iscsi_parse_params 返回错误，并断言 Login Response 的 status_detail。"}],
+        artifact="sfmea.json",
+        quality_feedback={"issues": [{"artifact": "sfmea.json", "code": "non_actionable_mitigation", "row_id": "SFMEA-012", "gaps": ["missing_verification_action"]}]},
+    )
+    assert fields == ["$[0].mitigation"]
+    assert "验证: 故障注入 iscsi_parse_params 返回错误" in repaired[0]["mitigation"]
