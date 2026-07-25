@@ -699,6 +699,68 @@ def test_cross_artifact_audit_allows_unlinked_normal_or_correct_rejection_case(t
     )
 
 
+def test_cross_artifact_audit_allows_unlinked_performance_baseline_case(tmp_path):
+    """A baseline is a normal measurement, not an invented product risk."""
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps([{"sfmea_id": "SFMEA-01"}]), encoding="utf-8"
+    )
+    (tmp_path / "black_box_cases.json").write_text(
+        json.dumps(
+            [
+                {
+                    "case_id": "BB-PERF-01",
+                    "risk_ids": [],
+                    "test_dimension": "performance",
+                    "scenario_name": "连续 Login 延迟基准测试",
+                    "expected_result": "记录同环境基线，不预设绝对通过阈值。",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    audit = audit_test_activity_artifacts(artifact_dir=tmp_path, contract={})
+
+    assert not any(
+        issue["code"] == "risk_case_missing_sfmea_mapping"
+        for issue in audit["issues"]
+    )
+
+
+def test_cross_artifact_audit_allows_normal_path_with_generic_oracle_wording(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps([{"sfmea_id": "SFMEA-01"}]), encoding="utf-8"
+    )
+    (tmp_path / "black_box_cases.json").write_text(
+        json.dumps(
+            [
+                {
+                    "case_id": "BB-NORMAL-01",
+                    "risk_ids": [],
+                    "test_dimension": "normal_path",
+                    "scenario_name": "无认证正常登录进入 Full Feature Phase",
+                    "expected_result": "Login 成功，initiator 进入 Full Feature Phase。",
+                    "oracle_basis": "记录命令退出码、日志和资源状态前后差异；不预设恢复结论。",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    audit = audit_test_activity_artifacts(artifact_dir=tmp_path, contract={})
+
+    assert not any(
+        issue["code"] == "risk_case_missing_sfmea_mapping"
+        for issue in audit["issues"]
+    )
+
+
 def test_cross_artifact_audit_normalizes_sfmea_reference_ids(tmp_path):
     from app.services.test_activity_contract import audit_test_activity_artifacts
 

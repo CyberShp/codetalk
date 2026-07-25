@@ -559,6 +559,14 @@ def _expand_verified_source_anchors(
         semantic_anchor_patterns.extend((
             "iscsi_op_login_store_incoming_params",
             "iscsi_bhs_login_get_cbit",
+            # Keep the verified request-dispatch chain with the parameter
+            # assembly slices.  Otherwise a compact pack can contain the
+            # Login payload handler and its completion callback but omit the
+            # receive/dispatch edges that make the flow end-to-end.
+            "iscsi_handle_incoming_pdus",
+            "iscsi_read_pdu",
+            "iscsi_pdu_hdr_op_login",
+            "iscsi_pdu_payload_op_login",
         ))
 
     selected_by_path: dict[str, dict[str, Any]] = {}
@@ -4082,6 +4090,7 @@ async def _execute_regular_stage(
                 quality_feedback=(
                     quality_feedback if isinstance(quality_feedback, dict) else None
                 ),
+                sfmea_risk_ledger=_materialized_sfmea_risk_ledger(completed),
             )
             if repaired_fields:
                 _write_json(output_path, repaired_payload)
@@ -8328,6 +8337,7 @@ def _deterministic_quality_claim_repair(
     *,
     artifact: str,
     quality_feedback: dict[str, Any] | None,
+    sfmea_risk_ledger: list[dict[str, Any]] | None = None,
 ) -> tuple[Any, list[str]]:
     """Apply bounded repairs for deterministic validator findings only."""
     repaired = json.loads(json.dumps(payload, ensure_ascii=False))
@@ -8356,19 +8366,95 @@ def _deterministic_quality_claim_repair(
     }
     supported_codes = {
         "invalid_capture_filter",
+        "black_box_rpc_observability_ambiguous",
         "black_box_test_mapping_contradiction",
+        "unsafe_hazardous_test_mapping",
+        "missing_oracle_basis",
+        "oracle_basis_not_traceable",
+        "missing_performance_sampling_plan",
         "missing_c_bit_fragmentation_case",
+        "missing_black_box_dimensions",
         "missing_max_connections_target_setup",
         "black_box_case_quality_failed",
     }
-    non_deterministic_codes = issue_codes - supported_codes
-    if (
-        not issue_codes
-        or non_deterministic_codes
-    ):
+    if not issue_codes or not (issue_codes & supported_codes):
         return repaired, []
 
     fields: list[str] = []
+
+    # A repair batch often contains both a row-level oracle issue and a
+    # missing required protocol case.  Both are deterministic transformations;
+    # handling only one used to make the other disappear behind an early exit.
+    if (
+        artifact == "black_box_cases.json"
+        and isinstance(repaired, list)
+        and {
+            "missing_oracle_basis",
+            "oracle_basis_not_traceable",
+            "missing_performance_sampling_plan",
+        } & issue_codes
+    ):
+        repaired, oracle_fields = _normalize_black_box_oracle_contract(repaired)
+        fields.extend(oracle_fields)
+
+    if (
+        "black_box_rpc_observability_ambiguous" in issue_codes
+        and artifact == "black_box_cases.json"
+        and isinstance(repaired, list)
+    ):
+        for index, row in enumerate(repaired):
+            if not isinstance(row, dict):
+                continue
+            observations = row.get("observability")
+            if not isinstance(observations, list):
+                continue
+            normalized = []
+            changed = False
+            for observation in observations:
+                text = str(observation)
+                if (
+                    "rpc" in text.lower()
+                    and "full" in text.lower()
+                    and "login_phase" not in text.lower()
+                ):
+                    normalized.append(
+                        "执行 scripts/rpc.py iscsi_get_connections，确认 connections[].login_phase=full_feature_phase"
+                    )
+                    changed = True
+                else:
+                    normalized.append(observation)
+            if changed:
+                row["observability"] = normalized
+                fields.append(f"$[{index}].observability")
+
+    if (
+        "unsafe_hazardous_test_mapping" in issue_codes
+        and artifact == "black_box_cases.json"
+        and isinstance(repaired, list)
+    ):
+        for index, row in enumerate(repaired):
+            if not isinstance(row, dict):
+                continue
+            if "multiconnection.sh" not in str(row.get("mapped_test_dir") or "").lower():
+                continue
+            preconditions = row.get("preconditions")
+            if not isinstance(preconditions, list):
+                preconditions = []
+            if not any("隔离测试设备" in str(item) for item in preconditions):
+                row["preconditions"] = [
+                    *preconditions,
+                    "仅在专用测试盘和隔离测试设备上执行；不得使用生产数据或生产 target。",
+                ]
+                fields.append(f"$[{index}].preconditions")
+            diagnostics = row.get("failure_diagnostics")
+            if not isinstance(diagnostics, list):
+                diagnostics = []
+            if not any("数据销毁风险" in str(item) for item in diagnostics):
+                row["failure_diagnostics"] = [
+                    *diagnostics,
+                    "该映射可能创建或销毁会话；保留日志并确认数据销毁风险仅限隔离测试设备。",
+                ]
+                fields.append(f"$[{index}].failure_diagnostics")
 
     # The final acceptance audit can identify a particular case whose otherwise
     # valid black-box contract has only placeholder execution steps.  Repair
@@ -8415,14 +8501,50 @@ def _deterministic_quality_claim_repair(
             ]
             fields.append(f"$[{index}].steps")
 
+    cbit_mapping_missing_without_ledger = False
+    if {
+        "missing_c_bit_fragmentation_case",
+        "risk_case_missing_sfmea_mapping",
+    } <= issue_codes:
+        cbit_mapping_missing_without_ledger = not any(
+            str(risk.get("sfmea_id") or "").strip()
+            and any(
+                term in " ".join(
+                    str(risk.get(key) or "")
+                    for key in (
+                        "failure_mode",
+                        "cause",
+                        "effect",
+                        "trigger_condition",
+                    )
+                ).lower()
+                for term in ("c-bit", "cbit", "分片", "partial")
+            )
+            for risk in (sfmea_risk_ledger or [])
+            if isinstance(risk, dict)
+        )
+
     if (
         "missing_c_bit_fragmentation_case" in issue_codes
+        and not cbit_mapping_missing_without_ledger
         and artifact == "black_box_cases.json"
         and isinstance(repaired, list)
         and repaired
         and isinstance(repaired[0], dict)
     ):
         template = json.loads(json.dumps(repaired[0], ensure_ascii=False))
+        cbit_risk_id = ""
+        best_risk_score = 0
+        for risk in sfmea_risk_ledger or []:
+            risk_id = str(risk.get("sfmea_id") or "").strip()
+            text = " ".join(
+                str(risk.get(key) or "")
+                for key in ("failure_mode", "cause", "effect", "trigger_condition")
+            ).lower()
+            score = sum(term in text for term in ("c-bit", "cbit", "分片", "partial"))
+            if risk_id and score > best_risk_score:
+                cbit_risk_id = risk_id
+                best_risk_score = score
         existing_ids = {
             str(row.get("case_id") or "")
             for row in repaired
@@ -8436,6 +8558,7 @@ def _deterministic_quality_claim_repair(
         template.update(
             {
                 "case_id": case_id,
+                "risk_ids": [cbit_risk_id] if cbit_risk_id else [],
                 "test_dimension": "invalid_input",
                 "scenario_name": "Login C-bit 参数跨 PDU 分片重组",
                 "preconditions": [
@@ -8461,14 +8584,41 @@ def _deterministic_quality_claim_repair(
         repaired.append(template)
         fields.append("$[+].c_bit_fragmentation_case")
 
+    missing_dimensions = {
+        str(dimension).strip().lower()
+        for issue in issues
+        if str(issue.get("code") or "") == "missing_black_box_dimensions"
+        for dimension in (issue.get("dimensions") or [])
+        if str(dimension).strip()
+    }
     if (
-        "missing_max_connections_target_setup" in issue_codes
+        (
+            "missing_max_connections_target_setup" in issue_codes
+            or "resource_pressure" in missing_dimensions
+        )
         and artifact == "black_box_cases.json"
         and isinstance(repaired, list)
         and repaired
         and isinstance(repaired[0], dict)
     ):
         template = json.loads(json.dumps(repaired[0], ensure_ascii=False))
+        resource_risk_id = ""
+        best_resource_risk_score = 0
+        for risk in sfmea_risk_ledger or []:
+            if not isinstance(risk, dict):
+                continue
+            risk_id = str(risk.get("sfmea_id") or "").strip()
+            text = " ".join(
+                str(risk.get(key) or "")
+                for key in ("failure_mode", "cause", "effect", "trigger_condition")
+            ).lower()
+            score = sum(
+                term in text
+                for term in ("资源", "resource", "连接未释放", "connection", "超时", "timeout")
+            )
+            if risk_id and score > best_resource_risk_score:
+                resource_risk_id = risk_id
+                best_resource_risk_score = score
         existing_ids = {
             str(row.get("case_id") or "")
             for row in repaired
@@ -8482,6 +8632,7 @@ def _deterministic_quality_claim_repair(
         template.update(
             {
                 "case_id": case_id,
+                "risk_ids": [resource_risk_id] if resource_risk_id else [],
                 "test_dimension": "resource_pressure",
                 "scenario_name": "MCS 容量上限拒绝额外连接",
                 "preconditions": [

@@ -614,17 +614,13 @@ def _basic_report_preset(*, include_design: bool, provider: str) -> dict[str, An
                     ],
                     "input_ports": input_ports,
                     "report_sections": ["流程", "SFMEA", "黑盒测试用例"],
-                    # This is the speed-oriented baseline. Deep workflows may
-                    # expand scope, but a basic report must leave enough time
-                    # to validate and materialize its declared deliverables.
-                    # Keep the rapid profile bounded, while preserving enough
-                    # independent source/test anchors to distinguish genuine
-                    # lifecycle, capacity and concurrency risks from normal
-                    # protocol rejection paths.
-                    "source_context_limit": 18,
+                    # The formal report requires six source paths plus four
+                    # test paths.  Fewer than ten file slots makes that
+                    # contract impossible before the model starts.
+                    "source_context_limit": 10,
                     "source_context_min_test_files": 4,
-                    "source_analysis_max_files": 18,
-                    "source_analysis_max_evidence_anchors": 18,
+                    "source_analysis_max_files": 10,
+                    "source_analysis_max_evidence_anchors": 12,
                     "source_context_search_roots": [
                         "lib/iscsi",
                         "include/spdk",

@@ -6835,6 +6835,30 @@ def _black_box_case_allows_empty_risk_ids(row: dict[str, Any]) -> bool:
     behaviour, but timeout, recovery, capacity and concurrency scenarios still
     need a real risk ledger entry.
     """
+    dimension = str(row.get("test_dimension") or "").strip().lower()
+    # The generated oracle template may mention recovery and generic source
+    # state.  Those words do not turn an explicitly normal journey into a
+    # product-risk claim, so classify normal/performance baselines from their
+    # user-facing scenario contract before scanning diagnostic prose.
+    scenario_contract = "\n".join(
+        part
+        for field in ("scenario_name", "steps", "expected_result")
+        for part in _flatten_text(row.get(field))
+    ).lower()
+    if dimension == "normal_path" and re.search(
+        r"正常(?:路径|流程|登录|请求|行为)|成功路径|full[ _-]?feature",
+        scenario_contract,
+        flags=re.IGNORECASE,
+    ):
+        return True
+    if dimension == "performance":
+        performance_risk_markers = (
+            r"回归|regression|超时|timeout|耗尽|泄漏|资源不足|异常|失败|"
+            r"恢复|recovery|重连|reconnect|崩溃|挂起|死锁|数据损坏|丢失"
+        )
+        if not re.search(performance_risk_markers, scenario_contract, flags=re.IGNORECASE):
+            return True
+
     text = "\n".join(
         part
         for field in (

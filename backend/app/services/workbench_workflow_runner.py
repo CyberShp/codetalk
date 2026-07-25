@@ -6608,10 +6608,14 @@ def _apply_final_deterministic_quality_repairs(
         payload = _read_json(path)
         if not isinstance(payload, list):
             continue
+        sfmea_risk_ledger = _read_json(artifact_dir / "sfmea.json")
         repaired, fields = _deterministic_quality_claim_repair(
             payload,
             artifact=artifact,
             quality_feedback={"issues": issues},
+            sfmea_risk_ledger=(
+                sfmea_risk_ledger if isinstance(sfmea_risk_ledger, list) else None
+            ),
         )
         if not fields:
             continue

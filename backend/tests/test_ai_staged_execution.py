@@ -2359,6 +2359,75 @@ def test_quality_repair_materializes_missing_c_bit_fragmentation_case():
     assert fields == ["$[+].c_bit_fragmentation_case"]
 
 
+def test_quality_repair_maps_generated_c_bit_case_to_matching_sfmea_ledger_item():
+    repaired, _ = _deterministic_quality_claim_repair(
+        [{"case_id": "BB-01", "risk_ids": [], "technical_claims": []}],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{"artifact": "black_box_cases.json", "code": "missing_c_bit_fragmentation_case"}]},
+        sfmea_risk_ledger=[
+            {"sfmea_id": "SFMEA-001", "failure_mode": "Login 超时后连接未关闭"},
+            {"sfmea_id": "SFMEA-003", "failure_mode": "C-bit 参数跨 PDU 分片时 partial_text_parameter 未正确续接"},
+        ],
+    )
+
+    assert repaired[-1]["risk_ids"] == ["SFMEA-003"]
+
+
+def test_quality_repair_combines_oracle_normalization_with_c_bit_materialization():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [
+            {
+                "case_id": "BB-09",
+                "test_dimension": "long_steady_state",
+                "oracle_basis": "待验证假设：运行前登记观测项",
+                "risk_ids": ["SFMEA-09"],
+                "technical_claims": [],
+            }
+        ],
+        artifact="black_box_cases.json",
+        quality_feedback={
+            "issues": [
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "oracle_basis_not_traceable",
+                    "row_id": "BB-09",
+                },
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "missing_c_bit_fragmentation_case",
+                },
+            ]
+        },
+    )
+
+    assert "同环境基线" in repaired[0]["oracle_basis"]
+    assert repaired[-1]["case_id"] == "BBC-CBIT-FRAGMENT"
+    assert "$[0].oracle_basis" in fields
+    assert "$[+].c_bit_fragmentation_case" in fields
+
+
+def test_quality_repair_adds_sampling_plan_when_performance_audit_requires_it():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "case_id": "BB-PERF-01",
+            "test_dimension": "performance",
+            "oracle_basis": "判据来源：同环境基线。",
+            "risk_ids": ["SFMEA-PERF-01"],
+            "technical_claims": [],
+        }],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "missing_performance_sampling_plan",
+            "row_id": "BB-PERF-01",
+        }]},
+    )
+
+    assert "预热" in repaired[0]["oracle_basis"]
+    assert "P50/P95" in repaired[0]["oracle_basis"]
+    assert fields == ["$[0].oracle_basis"]
+
+
 def test_quality_repair_materializes_c_bit_and_mcs_cases_together():
     repaired, fields = _deterministic_quality_claim_repair(
         [{"case_id": "BB-01", "risk_ids": ["SFMEA-01"], "technical_claims": []}],
@@ -4736,6 +4805,123 @@ def test_deterministic_quality_claim_repair_materializes_missing_mcs_target_setu
         issue["code"] == "missing_max_connections_target_setup"
         for issue in _audit_combined_execution_contract(report)
     )
+
+
+def test_deterministic_quality_repair_handles_supported_findings_in_mixed_batch():
+    """An unrelated audit finding must not suppress a safe MCS repair."""
+    payload = [
+        {
+            "case_id": "BB-001",
+            "scenario_name": "Normal login",
+            "technical_claims": [],
+            "source_or_test_evidence": ["lib/iscsi/iscsi.c"],
+        }
+    ]
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="black_box_cases.json",
+        quality_feedback={
+            "issues": [
+                {
+                    "artifact": "test_design.md",
+                    "code": "missing_max_connections_target_setup",
+                },
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "black_box_rpc_observability_ambiguous",
+                },
+            ]
+        },
+    )
+
+    assert len(repaired) == 2
+    assert "scripts/rpc.py iscsi_set_options -c 1" in " ".join(
+        repaired[-1]["preconditions"]
+    )
+    assert "$[+].mcs_target_setup_case" in fields
+
+
+def test_deterministic_quality_repair_names_public_rpc_field_for_full_feature():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [
+            {
+                "case_id": "BB-001",
+                "observability": [
+                    "target 端 iscsi_get_connections RPC 返回 conn_state 为 full_feature_phase"
+                ],
+            }
+        ],
+        artifact="black_box_cases.json",
+        quality_feedback={
+            "issues": [
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "black_box_rpc_observability_ambiguous",
+                }
+            ]
+        },
+    )
+
+    assert repaired[0]["observability"] == [
+        "执行 scripts/rpc.py iscsi_get_connections，确认 connections[].login_phase=full_feature_phase"
+    ]
+    assert fields == ["$[0].observability"]
+
+
+def test_deterministic_quality_repair_marks_hazardous_mapping_as_isolated():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [
+            {
+                "case_id": "BB-001",
+                "mapped_test_dir": "test/iscsi_tgt/multiconnection/multiconnection.sh",
+                "preconditions": ["SPDK target is running"],
+                "failure_diagnostics": ["retain target logs"],
+            }
+        ],
+        artifact="black_box_cases.json",
+        quality_feedback={
+            "issues": [
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "unsafe_hazardous_test_mapping",
+                    "row_id": "BB-001",
+                }
+            ]
+        },
+    )
+
+    assert "隔离测试设备" in " ".join(repaired[0]["preconditions"])
+    assert "数据销毁风险" in " ".join(repaired[0]["failure_diagnostics"])
+    assert "$[0].preconditions" in fields
+    assert "$[0].failure_diagnostics" in fields
+
+
+def test_deterministic_quality_repair_materializes_resource_pressure_from_ledger():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{"case_id": "BB-001", "risk_ids": [], "technical_claims": []}],
+        artifact="black_box_cases.json",
+        quality_feedback={
+            "issues": [
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "missing_black_box_dimensions",
+                    "dimensions": ["resource_pressure"],
+                }
+            ]
+        },
+        sfmea_risk_ledger=[
+            {
+                "sfmea_id": "SFMEA-001",
+                "failure_mode": "Login 超时后连接未释放，残留资源",
+            }
+        ],
+    )
+
+    case = repaired[-1]
+    assert case["test_dimension"] == "resource_pressure"
+    assert case["risk_ids"] == ["SFMEA-001"]
+    assert "$[+].mcs_target_setup_case" in fields
 
 
 def test_deterministic_iscsi_report_harness_supports_claimed_scenarios():
