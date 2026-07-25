@@ -480,6 +480,18 @@ def refresh_source_driven_delivery_governance(
     # look unknown to the coverage judge solely because its display padding
     # changed (SFMEA-01 vs SFMEA-001).
     sfmea_rows = _read_json_artifact(root / "sfmea.json")
+    if isinstance(sfmea_rows, list):
+        # Array-patch tombstones are internal repair transport records, never
+        # user-facing SFMEA risks. Make the delivery boundary robust even if a
+        # caller refreshes governance before the staged normalizer runs.
+        materialized_rows = [
+            row
+            for row in sfmea_rows
+            if not (isinstance(row, dict) and row.get("_delete") is True)
+        ]
+        if len(materialized_rows) != len(sfmea_rows):
+            sfmea_rows = materialized_rows
+            _write_json_artifact(root / "sfmea.json", sfmea_rows)
     candidates = _read_json_artifact(root / "scenario_candidates.json")
     if isinstance(sfmea_rows, list) and isinstance(candidates, dict):
         artifacts["risk_register.json"] = _risk_register_artifact(

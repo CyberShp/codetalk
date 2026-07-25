@@ -22,6 +22,7 @@ from app.llm.base import BaseLLMClient, current_finish_reason
 from app.services.ai_thread_artifacts import _validate_schema, materialize_ai_thread_manifest
 from app.services.flow_evidence import (
     FLOW_EVIDENCE_VERSION,
+    FLOW_OUTLINE_VERSION,
     build_business_flow_context,
     build_flow_evidence_pack,
     build_flow_outline,
@@ -3590,7 +3591,11 @@ async def _execute_flow_deterministic_stage(
     cache_key = regular_stage_cache_key(
         stage=stage,
         plan=plan,
-        prompt=f"deterministic-flow-stage:{FLOW_EVIDENCE_VERSION}",
+        prompt=(
+            f"deterministic-flow-stage:{FLOW_EVIDENCE_VERSION}"
+            if stage_id == "flow_evidence_pack"
+            else f"deterministic-flow-stage:{FLOW_OUTLINE_VERSION}"
+        ),
         policy=policy,
         source_fingerprint=stable_payload_sha256(source_pack),
         flow_fingerprint=(

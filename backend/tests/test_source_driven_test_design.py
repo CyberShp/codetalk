@@ -537,6 +537,25 @@ def test_delivery_refresh_rebuilds_traceability_from_normalized_final_artifacts(
     assert judge["axes"]["coverage_disposition"]["status"] != "blocked"
 
 
+def test_delivery_refresh_discards_internal_sfmea_tombstones(tmp_path: Path):
+    from app.services.source_driven_test_design import (
+        refresh_source_driven_delivery_governance,
+    )
+
+    artifacts = _ready_judge_artifacts()
+    for name, payload in artifacts.items():
+        (tmp_path / name).write_text(json.dumps(payload), encoding="utf-8")
+    sfmea_path = tmp_path / "sfmea.json"
+    rows = _sfmea()
+    rows.append({"sfmea_id": "SFMEA-DELETE", "_delete": True})
+    sfmea_path.write_text(json.dumps(rows), encoding="utf-8")
+
+    refresh_source_driven_delivery_governance(tmp_path)
+
+    final_rows = json.loads(sfmea_path.read_text(encoding="utf-8"))
+    assert all(row.get("_delete") is not True for row in final_rows)
+
+
 def test_final_fact_verification_accepts_l1_verified_source_anchor_without_l2(tmp_path: Path):
     from app.services.source_driven_test_design import refresh_source_driven_delivery_governance
 

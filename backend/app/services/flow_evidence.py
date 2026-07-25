@@ -14,7 +14,8 @@ from typing import Any
 # hide newly recognized source evidence from downstream flow quality gates.
 FLOW_EVIDENCE_VERSION = "flow-evidence-pack-v4"
 _FLOW_EVIDENCE_VERSION = FLOW_EVIDENCE_VERSION
-_FLOW_OUTLINE_VERSION = "flow-outline-v2"
+FLOW_OUTLINE_VERSION = "flow-outline-v2"
+_FLOW_OUTLINE_VERSION = FLOW_OUTLINE_VERSION
 _CALL_PATTERN = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _STATE_PATTERN = re.compile(
     r"\b([A-Za-z_][A-Za-z0-9_]*(?:state|session|conn|ctrlr|qpair|request|task|ctx)[A-Za-z0-9_]*)\b",
