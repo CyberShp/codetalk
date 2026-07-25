@@ -1584,13 +1584,43 @@ def audit_test_activity_artifacts(
     ) or (root / "black_box_cases.json").is_file()
     audited_json_artifacts: set[str] = set()
 
-    def audit_structured_semantics(*, artifact: str, payload: Any) -> None:
-        """Turn JSON-only professional conflicts into fact-gate claims.
+    def record_semantic_conflicts(*, artifact: str, content: str) -> None:
+        """Turn delivery-level professional conflicts into fact-gate claims.
 
-        The user downloads structured SFMEA and black-box artifacts directly.
-        A correct Markdown summary must not be able to mask a false test-path
-        mapping in those authoritative files.
+        Markdown and JSON are both user-facing delivery surfaces. A correct
+        summary must not mask a false test-path mapping or source statement in
+        either authoritative representation.
         """
+        if not content.strip():
+            return
+        for index, issue in enumerate(
+            _audit_professional_constraints(
+                content,
+                contract,
+                source_artifact=artifact,
+                infer_structured_section=True,
+            ),
+            start=1,
+        ):
+            constraint_id = str(issue.get("constraint_id") or "semantic-mapping")
+            structured_semantic_issues.append(issue)
+            structured_semantic_claims.append(
+                {
+                    "claim_id": f"SEM-{Path(artifact).stem.upper()}-{index:03d}",
+                    "type": (
+                        "test_mapping_semantics"
+                        if "mapping" in constraint_id
+                        else "professional_semantics"
+                    ),
+                    "statement": str(issue.get("message") or "测试映射与已验证领域事实冲突"),
+                    "status": "contradicted",
+                    "source_artifact": artifact,
+                    "constraint_id": constraint_id,
+                    "evidence": list(issue.get("evidence") or []),
+                }
+            )
+
+    def audit_structured_semantics(*, artifact: str, payload: Any) -> None:
         if not isinstance(payload, (dict, list)):
             return
         rows = payload if isinstance(payload, list) else [payload]
@@ -1617,29 +1647,10 @@ def audit_test_activity_artifacts(
             }
             if ordered:
                 semantic_rows.append(json.dumps(ordered, ensure_ascii=False))
-        content = "\n".join(semantic_rows)
-        for index, issue in enumerate(
-            _audit_professional_constraints(
-                content,
-                contract,
-                source_artifact=artifact,
-                infer_structured_section=True,
-            ),
-            start=1,
-        ):
-            constraint_id = str(issue.get("constraint_id") or "semantic-mapping")
-            structured_semantic_issues.append(issue)
-            structured_semantic_claims.append(
-                {
-                    "claim_id": f"SEM-{Path(artifact).stem.upper()}-{index:03d}",
-                    "type": "test_mapping_semantics",
-                    "statement": str(issue.get("message") or "测试映射与已验证领域事实冲突"),
-                    "status": "contradicted",
-                    "source_artifact": artifact,
-                    "constraint_id": constraint_id,
-                    "evidence": list(issue.get("evidence") or []),
-                }
-            )
+        record_semantic_conflicts(
+            artifact=artifact,
+            content="\n".join(semantic_rows),
+        )
 
     if contract.get("audit_scope_required") and not artifact_contract:
         structural_issues.append(
@@ -1686,13 +1697,9 @@ def audit_test_activity_artifacts(
                     )
                 )
                 combined_report = _is_combined_test_report_spec(spec)
-                lint_warnings.extend(
-                    _audit_professional_constraints(
-                        content,
-                        contract,
-                        source_artifact=artifact,
-                        infer_structured_section=combined_report,
-                    )
+                record_semantic_conflicts(
+                    artifact=artifact,
+                    content=content,
                 )
                 if combined_report:
                     execution_checks_applicable = True

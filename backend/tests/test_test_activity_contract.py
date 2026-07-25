@@ -5072,6 +5072,43 @@ def test_artifact_audit_blocks_structured_blackbox_mapping_semantic_conflict(tmp
     ), audit
 
 
+def test_artifact_audit_blocks_markdown_professional_fact_conflict(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_artifacts,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "report.md").write_text(
+        "# Login 分析\n\n"
+        "Discovery Login 的目标信息由 iscsi_op_login_set_params 写入响应。\n",
+        encoding="utf-8",
+    )
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整灰盒黑盒测试设计",
+        repo_path=str(repo),
+    )
+    contract["artifact_contract"] = {"report.md": {"required_fields": []}}
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert audit["deliverable"] is False
+    assert audit["quality_axes"]["facts"]["status"] == "blocked"
+    assert any(
+        claim.get("type") == "professional_semantics"
+        and claim.get("constraint_id") == "iscsi_discovery_target_info_symbol"
+        and claim.get("status") == "contradicted"
+        for claim in audit["fact_claims"]
+    ), audit
+
+
 def test_iscsi_release_gate_rejects_shallow_raw_pdu_chap_and_statistical_design(tmp_path):
     from app.services.test_activity_contract import (
         audit_test_activity_response,
@@ -6654,7 +6691,7 @@ def test_combined_markdown_artifact_audit_surfaces_legacy_professional_fact_lint
     assert any(
         issue.get("code") == "professional_fact_conflict"
         and issue.get("constraint_id") == "iscsi_login_timer_after_first_pdu"
-        for issue in audit["lint_warnings"]
+        for issue in audit["issues"]
     ), audit
     assert not any(
         issue.get("code") == "missing_iscsi_professional_scenarios"
@@ -8814,14 +8851,14 @@ def test_combined_report_attributes_sfmea_fact_conflict_to_sfmea_artifact(tmp_pa
     )
     conflict = next(
         issue
-        for issue in audit["lint_warnings"]
+        for issue in audit["issues"]
         if issue.get("constraint_id") == "iscsi_csg_values"
     )
 
     assert conflict["artifact"] == "sfmea.json"
 
 
-def test_quality_audit_separates_legacy_professional_lint_from_verified_facts(tmp_path):
+def test_quality_audit_blocks_professional_fact_conflict_as_verified_fact(tmp_path):
     from app.services.test_activity_contract import audit_test_activity_artifacts
 
     artifact_dir = tmp_path / "artifacts"
@@ -8860,13 +8897,12 @@ def test_quality_audit_separates_legacy_professional_lint_from_verified_facts(tm
         repo_path=str(repo),
     )
 
-    assert not any(issue["code"] == "professional_fact_conflict" for issue in result["issues"])
     assert any(
         issue["code"] == "professional_fact_conflict"
-        for issue in result["lint_warnings"]
+        for issue in result["issues"]
     )
     assert result["quality_axes"]["structure"]["status"] == "passed"
-    assert result["quality_axes"]["facts"]["status"] == "not_checked"
+    assert result["quality_axes"]["facts"]["status"] == "blocked"
     assert result["quality_axes"]["executability"]["status"] == "not_checked"
 
 
