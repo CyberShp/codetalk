@@ -4956,6 +4956,32 @@ def test_final_quality_repair_materializes_professional_mapping_fix(tmp_path):
     assert "ai_suggested_unverified" in repaired[0]["mapped_test_dir"]
 
 
+def test_final_quality_repair_materializes_sfmea_deletions_without_tombstones(tmp_path):
+    from app.services.ai_staged_execution import (
+        materialize_final_deterministic_quality_repairs,
+    )
+
+    artifact = tmp_path / "sfmea.json"
+    artifact.write_text(json.dumps([
+        {"sfmea_id": "SFMEA-001", "failure_mode": "保留风险"},
+        {"sfmea_id": "SFMEA-002", "failure_mode": "已证伪风险"},
+    ]), encoding="utf-8")
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "sfmea.json",
+            "code": "row_source_claim_contradicted",
+            "row_id": "SFMEA-002",
+        }]},
+    )
+
+    assert changed == {"sfmea.json": ["SFMEA-002._delete"]}
+    assert json.loads(artifact.read_text(encoding="utf-8")) == [
+        {"sfmea_id": "SFMEA-001", "failure_mode": "保留风险"},
+    ]
+
+
 def test_deterministic_quality_claim_repair_materializes_missing_mcs_target_setup_case():
     payload = [
         {

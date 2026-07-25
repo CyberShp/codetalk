@@ -2559,6 +2559,8 @@ def _existing_quality_stage_result(
                 payload, schema
             )
             if repaired_fields:
+                if artifact == "sfmea.json":
+                    repaired_payload = _materialize_sfmea_tombstones(repaired_payload)
                 _write_json(output_path, repaired_payload)
                 payload = repaired_payload
             if _validate_schema(payload, schema):
@@ -9506,6 +9508,8 @@ def materialize_final_deterministic_quality_repairs(
             quality_feedback=quality_feedback,
         )
         if fields:
+            if artifact == "sfmea.json":
+                repaired = _materialize_sfmea_tombstones(repaired)
             _write_json(path, repaired)
             changed[artifact] = fields
     return changed
@@ -9989,6 +9993,17 @@ def _apply_sfmea_nonrisk_deletion_tombstones(
         if row_id in deletion_ids:
             result.append({"sfmea_id": row_id, "_delete": True})
     return result
+
+
+def _materialize_sfmea_tombstones(rendered: Any) -> Any:
+    """Turn internal SFMEA deletion patches into delivery-safe final rows."""
+    if not isinstance(rendered, list):
+        return rendered
+    return [
+        item
+        for item in rendered
+        if not (isinstance(item, dict) and item.get("_delete") is True)
+    ]
 
 
 def _json_array_row_id(item: Any) -> str:
