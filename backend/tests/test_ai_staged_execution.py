@@ -785,7 +785,29 @@ def test_deep_profile_plan_materializes_parallel_exploration_branches():
     assert branch_ids.issubset(stages["business_flow"]["depends_on"])
     assert branch_ids.issubset(stages["sfmea"]["depends_on"])
     assert branch_ids.issubset(stages["black_box_cases"]["depends_on"])
-    assert stages["source_analysis"]["output_limits"]["max_evidence_anchors"] > 12
+    assert stages["source_analysis"]["max_tokens"] == 1600
+    assert stages["source_analysis"]["output_limits"]["max_evidence_anchors"] == 12
+    assert plan["execution_profile"]["source_analysis_limits"]["max_files"] == 6
+
+
+def test_plan_does_not_duplicate_source_evidence_pack_as_generic_artifact_stage():
+    contract = _contract()
+    contract["required_outputs"] = ["source_analysis.md", *contract["required_outputs"]]
+    contract["artifact_contract"]["source_analysis.md"] = {
+        "artifact": "source_analysis.md",
+    }
+
+    plan = build_staged_execution_plan(
+        contract=contract,
+        original_user_request="仅对已验证证据做源码分析摘要",
+        execution_profile={"id": "deep", "max_subagents": 4},
+    )
+
+    source_stages = [
+        stage for stage in plan["stages"] if stage.get("artifact") == "source_analysis.md"
+    ]
+    assert [stage["id"] for stage in source_stages] == ["source_analysis"]
+    assert source_stages[0]["max_tokens"] == 1600
 
 
 def test_deep_exploration_prompt_routes_evidence_by_branch_responsibility():

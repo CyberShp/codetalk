@@ -1712,6 +1712,12 @@ def build_staged_execution_plan(
         for artifact in planning_outputs
     )
     for output_index, artifact in enumerate(planning_outputs):
+        # ``source_analysis`` materializes this evidence pack before normal
+        # artifact scheduling.  Treating the same path as a generic output
+        # creates an ``artifact_N`` duplicate stage, bypasses the compact
+        # source-only context and silently uses the primary model/token budget.
+        if artifact == "source_analysis.md":
+            continue
         source_driven_stage = _SOURCE_DRIVEN_STAGE_BY_ARTIFACT.get(artifact)
         if source_driven_stage:
             if source_driven_stage in requested_source_driven_groups:
@@ -1938,21 +1944,19 @@ def _staged_execution_profile(raw_profile: dict[str, Any] | None) -> dict[str, A
             max(2, configured_max_subagents or 2),
         )
         source_limits = {
-            "max_files": max(10, int(settings.source_analysis_max_files)),
-            "excerpt_chars": max(1500, int(settings.source_analysis_excerpt_chars)),
-            "max_evidence_anchors": max(
-                20, int(settings.source_analysis_max_evidence_anchors)
-            ),
-            "min_test_files": max(3, int(settings.source_analysis_min_test_files)),
+            "max_files": int(settings.source_analysis_max_files),
+            "excerpt_chars": int(settings.source_analysis_excerpt_chars),
+            "max_evidence_anchors": int(settings.source_analysis_max_evidence_anchors),
+            "min_test_files": int(settings.source_analysis_min_test_files),
         }
         return {
             "id": "deep",
             "delivery_class": str(raw.get("delivery_class") or "full_test_delivery"),
             "configured_max_subagents": configured_max_subagents,
             "applied_subagent_count": applied_subagent_count,
-            "source_analysis_max_tokens": max(2200, int(settings.source_analysis_max_tokens)),
-            "source_analysis_max_chinese_characters": max(
-                1800, int(settings.source_analysis_max_chinese_characters)
+            "source_analysis_max_tokens": int(settings.source_analysis_max_tokens),
+            "source_analysis_max_chinese_characters": int(
+                settings.source_analysis_max_chinese_characters
             ),
             "source_analysis_max_evidence_anchors": source_limits["max_evidence_anchors"],
             "source_analysis_limits": source_limits,
