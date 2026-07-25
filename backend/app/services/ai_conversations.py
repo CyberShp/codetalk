@@ -6191,6 +6191,9 @@ async def _workbench_task_refs(
 def _structured_delivery_review_summary(
     sfmea: Any,
     black_box_cases: Any,
+    *,
+    report_text: str = "",
+    claim_ledger: Any = None,
 ) -> dict[str, Any]:
     """Expose full row-level delivery coverage without truncating JSON bodies."""
     specs = (
@@ -6220,6 +6223,30 @@ def _structured_delivery_review_summary(
             "rows_with_missing_required": sum(bool(item["missing_required"]) for item in records),
             "rows": records,
         }
+    scoring_lines = [
+        {"line": index, "text": line.strip()}
+        for index, line in enumerate(report_text.splitlines(), start=1)
+        if "评分采用 1-10" in line or "RPN≥" in line
+    ]
+    claims = claim_ledger.get("claims") if isinstance(claim_ledger, dict) else []
+    claims = [item for item in claims if isinstance(item, dict)]
+    source_anchors = [item for item in claims if str(item.get("type") or "") == "source_anchor"]
+    behavior_claims = [item for item in claims if item not in source_anchors]
+    summary["sfmea_scoring_method"] = {
+        "present": bool(scoring_lines),
+        "report_lines": scoring_lines,
+        "rule": "评分方法在 report_lines 存在时不得声称评分标尺或 RPN 阈值缺失。",
+    }
+    summary["claim_validation_scope"] = {
+        "total_claims": len(claims),
+        "source_anchor_claims": len(source_anchors),
+        "behavior_claims_requiring_l2": len(behavior_claims),
+        "behavior_claims_l2_not_checked": sum(
+            str(item.get("l2_status") or "not_checked") == "not_checked"
+            for item in behavior_claims
+        ),
+        "rule": "source_anchor 是逐字 L1 溯源锚点，不要求 L2 行为审计；仅 behavior_claims_requiring_l2 可因 L2 未核验被扣分。",
+    }
     return summary
 
 
@@ -6231,9 +6258,16 @@ async def _workbench_task_review_integrity_refs(
     try:
         sfmea = json.loads(await _read_text(agent_dir / "sfmea.json"))
         black_box_cases = json.loads(await _read_text(agent_dir / "black_box_cases.json"))
+        report_text = await _read_text(agent_dir / "report.md")
+        claim_ledger = json.loads(await _read_text(agent_dir / "claim_evidence_ledger.json"))
     except Exception:
         return []
-    summary = _structured_delivery_review_summary(sfmea, black_box_cases)
+    summary = _structured_delivery_review_summary(
+        sfmea,
+        black_box_cases,
+        report_text=report_text,
+        claim_ledger=claim_ledger,
+    )
     return [ContextReference(
         source_type="workbench_task_artifact",
         source_id=f"{task_run_id}/independent_review_integrity.json",

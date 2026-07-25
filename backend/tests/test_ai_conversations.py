@@ -5934,11 +5934,19 @@ async def test_structured_delivery_review_summary_reports_all_rows_not_excerpt_p
             {"case_id": "BB-01", "source_or_test_evidence": ["SRC-01:L1"], "test_dimension": "timeout", "oracle_basis": "source"},
             {"case_id": "BB-02", "source_or_test_evidence": ["SRC-02:L2"], "test_dimension": "recovery", "oracle_basis": "source"},
         ],
+        report_text="评分采用 1-10：Severity 表示业务影响；RPN≥200 优先处理。",
+        claim_ledger={"claims": [
+            {"type": "source_anchor", "l2_status": "not_checked"},
+            {"type": "source_behavior", "l2_status": "supports"},
+        ]},
     )
 
     assert summary["sfmea"]["row_count"] == 2
     assert summary["sfmea"]["rows_with_missing_required"] == 0
     assert [row["id"] for row in summary["black_box_cases"]["rows"]] == ["BB-01", "BB-02"]
+    assert summary["sfmea_scoring_method"]["present"] is True
+    assert summary["claim_validation_scope"]["source_anchor_claims"] == 1
+    assert summary["claim_validation_scope"]["behavior_claims_requiring_l2"] == 1
 
 
 @pytest.mark.asyncio
