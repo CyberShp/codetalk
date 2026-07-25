@@ -6641,7 +6641,28 @@ def _normalize_sfmea_risk_contract(
                 "验证: 注入对应异常条件，确认协议响应、连接状态和资源指标一致。"
             )
             fields.append(f"$[{index}].mitigation:production_action")
-    return _normalize_sfmea_source_anchor_claims(normalized), fields
+    normalized = _normalize_sfmea_source_anchor_claims(normalized)
+    for index, row in enumerate(normalized):
+        if not isinstance(row, dict):
+            continue
+        claim_anchor_refs: list[str] = []
+        for claim in row.get("technical_claims") or []:
+            if not isinstance(claim, dict) or str(claim.get("type") or "") != "source_anchor":
+                continue
+            for evidence in claim.get("evidence") or []:
+                if not isinstance(evidence, dict):
+                    continue
+                evidence_id = str(evidence.get("evidence_id") or "").strip()
+                if evidence_id and evidence_id not in claim_anchor_refs:
+                    claim_anchor_refs.append(evidence_id)
+        # SFMEA rows share the same evidence boundary as black-box cases: a
+        # provider-authored `path:symbol` label is useful discovery context,
+        # but is not a verified source reference.  Publish only the claim
+        # anchors that have passed deterministic quote/line binding.
+        if claim_anchor_refs and row.get("source_evidence") != claim_anchor_refs:
+            row["source_evidence"] = claim_anchor_refs
+            fields.append(f"$[{index}].source_evidence")
+    return normalized, fields
 
 
 def _normalize_black_box_delivery_contract(
@@ -8189,17 +8210,10 @@ def _deterministic_quality_claim_repair(
         "missing_max_connections_target_setup",
         "black_box_case_quality_failed",
     }
-    # A C-bit case may be filled deterministically only when it is the whole
-    # unresolved contract.  If a companion issue needs a valid SFMEA mapping,
-    # the repair model must see the risk ledger and resolve both together.
     non_deterministic_codes = issue_codes - supported_codes
     if (
         not issue_codes
         or non_deterministic_codes
-        or (
-            "missing_c_bit_fragmentation_case" in issue_codes
-            and len(issue_codes) > 1
-        )
     ):
         return repaired, []
 

@@ -2336,6 +2336,27 @@ def test_quality_repair_materializes_missing_c_bit_fragmentation_case():
     assert fields == ["$[+].c_bit_fragmentation_case"]
 
 
+def test_quality_repair_materializes_c_bit_and_mcs_cases_together():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{"case_id": "BB-01", "risk_ids": ["SFMEA-01"], "technical_claims": []}],
+        artifact="black_box_cases.json",
+        quality_feedback={
+            "issues": [
+                {"artifact": "black_box_cases.json", "code": "missing_c_bit_fragmentation_case"},
+                {"artifact": "test_design.md", "code": "missing_max_connections_target_setup"},
+            ]
+        },
+    )
+
+    assert {row["case_id"] for row in repaired} == {
+        "BB-01",
+        "BBC-CBIT-FRAGMENT",
+        "BBC-MCS-CAPACITY",
+    }
+    assert "$[+].c_bit_fragmentation_case" in fields
+    assert "$[+].mcs_target_setup_case" in fields
+
+
 def test_deterministic_c_bit_repair_does_not_skip_required_risk_mapping():
     repaired, fields = _deterministic_quality_claim_repair(
         [{"case_id": "BB-01", "risk_ids": [], "technical_claims": []}],
@@ -2883,6 +2904,34 @@ def test_normalize_sfmea_risk_contract_marks_unsupported_defect_language_as_hypo
         "$[0].mechanism",
         "$[0].cause",
     ]
+
+
+def test_normalize_sfmea_risk_contract_replaces_unbound_source_labels_with_claim_anchors():
+    rendered, fields = _normalize_sfmea_risk_contract(
+        [{
+            "sfmea_id": "SFMEA-ANCHOR-01",
+            "failure_mode": "登录异常路径风险",
+            "mechanism": "连接状态在异常时序中可能交错",
+            "cause": "上游连接关闭与回调完成交错",
+            "source_evidence": [
+                "lib/iscsi/conn.c:login_timeout",
+                "lib/iscsi/iscsi.c:iscsi_conn_login_pdu_success_complete",
+            ],
+            "technical_claims": [{
+                "type": "source_anchor",
+                "statement": "conn->state = ISCSI_CONN_STATE_EXITING;",
+                "evidence": [{
+                    "evidence_id": "SRC-02:L153",
+                    "path": "lib/iscsi/conn.c",
+                    "lines": "L153",
+                    "quote": "conn->state = ISCSI_CONN_STATE_EXITING;",
+                }],
+            }],
+        }]
+    )
+
+    assert rendered[0]["source_evidence"] == ["SRC-02:L153"]
+    assert "$[0].source_evidence" in fields
 
 
 def test_normalize_sfmea_turns_guarded_full_feature_into_a_timing_hypothesis():
