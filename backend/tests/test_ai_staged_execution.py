@@ -5781,6 +5781,106 @@ def test_source_analysis_context_completes_small_c_function_instead_of_cutting_b
     assert "set_key(ctrl, ctrl_key);" in compact["files"][0]["excerpt"]
 
 
+def test_source_analysis_context_preserves_protocol_semantic_anchors_after_token_cap(
+    tmp_path,
+):
+    subsystem = tmp_path / "lib" / "iscsi" / "iscsi_subsystem.c"
+    subsystem.parent.mkdir(parents=True)
+    subsystem_text = "\n".join(
+        [
+            "static int inspect_tsih(uint16_t tsih)",
+            "{",
+            "    return tsih == 0;",
+            "}",
+            *([""] * 24),
+            "static void allocate_session_tsih(struct session *sess, int index)",
+            "{",
+            "    /* tsih 0 is reserved, so start tsih values at 1. */",
+            "    sess->tsih = index + 1;",
+            "}",
+        ]
+    )
+    subsystem.write_text(subsystem_text, encoding="utf-8")
+    login = tmp_path / "lib" / "iscsi" / "iscsi.c"
+    login_text = "\n".join(
+        [
+            "static int inspect_login_target(const char *target)",
+            "{",
+            "    return target == NULL;",
+            "}",
+            *([""] * 24),
+            "static void iscsi_op_login_rsp_init(struct response *rsph)",
+            "{",
+            "    rsph->status_detail = ISCSI_LOGIN_TARGET_REMOVED;",
+            "}",
+        ]
+    )
+    login.write_text(login_text, encoding="utf-8")
+    test_file = tmp_path / "test" / "iscsi" / "login.c"
+    test_file.parent.mkdir(parents=True)
+    test_text = "int test_login(void) { return 0; }\n"
+    test_file.write_text(test_text, encoding="utf-8")
+    noise = [f"noise_{index}" for index in range(32)]
+    staged_context = {
+        "repo_path": str(tmp_path),
+        "source_context": {
+            "repo_path": str(tmp_path),
+            "repo_revision": "fixture",
+            "tokens": [*noise, "target", "login", "tsih"],
+            "files": [
+                {
+                    "file_path": "lib/iscsi/iscsi_subsystem.c",
+                    "classification": "source",
+                    "start_line": 1,
+                    "end_line": 4,
+                    "excerpt": "\n".join(subsystem_text.splitlines()[:4]),
+                    "symbols": ["inspect_tsih"],
+                    "matched_terms": ["tsih"],
+                    "score": 100,
+                    "sha256": hashlib.sha256(subsystem_text.encode()).hexdigest(),
+                    "status": "validated_source_file",
+                },
+                {
+                    "file_path": "lib/iscsi/iscsi.c",
+                    "classification": "source",
+                    "start_line": 1,
+                    "end_line": 4,
+                    "excerpt": "\n".join(login_text.splitlines()[:4]),
+                    "symbols": ["inspect_login_target"],
+                    "matched_terms": ["target", "login"],
+                    "score": 90,
+                    "sha256": hashlib.sha256(login_text.encode()).hexdigest(),
+                    "status": "validated_source_file",
+                },
+                {
+                    "file_path": "test/iscsi/login.c",
+                    "classification": "test",
+                    "start_line": 1,
+                    "end_line": 1,
+                    "excerpt": test_text.strip(),
+                    "symbols": ["test_login"],
+                    "matched_terms": ["login"],
+                    "score": 1,
+                    "sha256": hashlib.sha256(test_text.encode()).hexdigest(),
+                    "status": "validated_source_file",
+                },
+            ],
+        },
+    }
+
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "分析 iSCSI login target TSIH 恢复"},
+        staged_context=staged_context,
+        max_files=3,
+        excerpt_chars=500,
+        max_evidence_anchors=5,
+    )
+
+    excerpts = "\n".join(str(item["excerpt"]) for item in compact["files"])
+    assert "sess->tsih = index + 1;" in excerpts
+    assert "ISCSI_LOGIN_TARGET_REMOVED" in excerpts
+
+
 def test_source_analysis_context_does_not_fill_anchor_budget_with_help_text(
     tmp_path,
 ):
