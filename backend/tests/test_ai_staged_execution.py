@@ -10637,3 +10637,51 @@ def test_deterministic_quality_repair_does_not_override_source_backed_discovery_
     assert case["expected_result"] == "Login Response 数据段包含 TargetAddress=ip:port"
     assert case["mapped_test_dir"] == "test/iscsi_tgt/chap/chap_discovery.sh"
     assert fields == []
+
+
+def test_deterministic_quality_repair_corrects_unknown_key_contract_from_report_feedback():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "case_id": "BC-UNKNOWN-01",
+            "scenario_name": "Login with Unknown Key",
+            "expected_result": "未知 key 被当作解析失败并断开连接",
+            "observability": ["target log reports parse failure"],
+            "failure_diagnostics": ["确认 Login 失败"],
+        }],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            # The combined Markdown report is the surface that caught this,
+            # but the editable source of truth is the structured case.
+            "artifact": "test_design.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_unknown_key_not_understood",
+        }]},
+    )
+
+    case = repaired[0]
+    assert "NotUnderstood" in case["expected_result"]
+    assert "不得笼统断言" in case["expected_result"]
+    assert "$[0].expected_result" in fields
+
+
+def test_deterministic_quality_repair_separates_duplicate_cid_from_mcs_capacity():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "sfmea_id": "SFMEA-DUP-CID",
+            "failure_mode": "重复 ISID/CID 连接未正确拒绝",
+            "cause": "重复 CID 会触发 Too Many Connections (0x06)",
+            "detection": "相同 ISID/CID 的第二个连接返回 Too Many Connections",
+            "mitigation": "重复 CID 时返回 Too Many Connections",
+        }],
+        artifact="sfmea.json",
+        quality_feedback={"issues": [{
+            "artifact": "test_design.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_duplicate_cid_not_too_many_connections",
+        }]},
+    )
+
+    row = repaired[0]
+    assert "MaxConnections" in row["failure_mode"]
+    assert "重复 CID" not in row["failure_mode"]
+    assert "$[0].failure_mode" in fields

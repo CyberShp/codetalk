@@ -8408,16 +8408,31 @@ def _deterministic_quality_claim_repair(
 ) -> tuple[Any, list[str]]:
     """Apply bounded repairs for deterministic validator findings only."""
     repaired = json.loads(json.dumps(payload, ensure_ascii=False))
+    artifact_name = Path(artifact).name
+    report_backed_constraint_targets = {
+        "black_box_cases.json": {"iscsi_unknown_key_not_understood"},
+        "sfmea.json": {"iscsi_duplicate_cid_not_too_many_connections"},
+    }
     issues = [
         item
         for item in (quality_feedback or {}).get("issues") or []
         if isinstance(item, dict)
         and (
-            Path(str(item.get("artifact") or "")).name == Path(artifact).name
+            Path(str(item.get("artifact") or "")).name == artifact_name
             or (
-                Path(artifact).name == "black_box_cases.json"
+                artifact_name == "black_box_cases.json"
                 and Path(str(item.get("artifact") or "")).name == "test_design.md"
                 and str(item.get("code") or "") == "missing_max_connections_target_setup"
+            )
+            # The combined report is rendered from these structured artifacts.
+            # These two constraints have deterministic source truth, so route
+            # them back to their editable source rather than asking the model
+            # to guess which row a report-level warning refers to.
+            or (
+                Path(str(item.get("artifact") or "")).suffix == ".md"
+                and str(item.get("code") or "") == "professional_fact_conflict"
+                and str(item.get("constraint_id") or "")
+                in report_backed_constraint_targets.get(artifact_name, set())
             )
         )
     ]
@@ -8445,11 +8460,93 @@ def _deterministic_quality_claim_repair(
         "black_box_case_quality_failed",
         "non_actionable_mitigation",
         "duplicate_generic_sfmea_mitigation",
+        "professional_fact_conflict",
     }
     if not issue_codes or not (issue_codes & supported_codes):
         return repaired, []
 
     fields: list[str] = []
+
+    professional_constraints = {
+        str(issue.get("constraint_id") or "").strip()
+        for issue in issues
+        if str(issue.get("code") or "") == "professional_fact_conflict"
+    }
+
+    if (
+        "iscsi_unknown_key_not_understood" in professional_constraints
+        and artifact_name == "black_box_cases.json"
+        and isinstance(repaired, list)
+    ):
+        for index, row in enumerate(repaired):
+            if not isinstance(row, dict):
+                continue
+            context = " ".join(
+                str(row.get(key) or "")
+                for key in (
+                    "scenario_name",
+                    "expected_result",
+                    "observability",
+                    "failure_diagnostics",
+                    "steps",
+                )
+            ).lower()
+            if "unknown" not in context and "未知" not in context:
+                continue
+            row["expected_result"] = (
+                "对于格式合法但 target 不支持的协商 key，Login Response 文本参数返回 "
+                "NotUnderstood；不得笼统断言该 key 导致解析失败或连接断开。"
+            )
+            row["observability"] = [
+                "Login Response 文本参数包含原 key 对应的 NotUnderstood 值",
+                "保留请求/响应 PDU 与 target 日志，区分未知合法 key 和格式非法输入",
+            ]
+            row["failure_diagnostics"] = [
+                "若未返回 NotUnderstood，保留 Login 请求/响应文本参数和 target 日志，确认输入是否为格式合法 key。",
+            ]
+            fields.extend(
+                [
+                    f"$[{index}].expected_result",
+                    f"$[{index}].observability",
+                    f"$[{index}].failure_diagnostics",
+                ]
+            )
+
+    if (
+        "iscsi_duplicate_cid_not_too_many_connections" in professional_constraints
+        and artifact_name == "sfmea.json"
+        and isinstance(repaired, list)
+    ):
+        for index, row in enumerate(repaired):
+            if not isinstance(row, dict):
+                continue
+            context = " ".join(
+                str(row.get(key) or "")
+                for key in ("failure_mode", "cause", "detection", "effect", "mitigation")
+            ).lower()
+            if not ("cid" in context and ("too many" in context or "0x06" in context)):
+                continue
+            row["failure_mode"] = "MaxConnections 容量上限未正确拒绝额外连接"
+            row["cause"] = (
+                "同一会话的活动连接数达到 MaxConnections；重复 CID 是否有独立处理"
+                "必须作为另一项待验证行为，不能用作 0x06 的既定触发条件。"
+            )
+            row["detection"] = (
+                "在 target 启动前将 MaxConnections 配置为 1，保持首连接在线后，"
+                "以相同 ISID、non-zero TSIH 和不同 CID 建立第二连接，验证返回 Too Many Connections。"
+            )
+            row["mitigation"] = (
+                "整改: 以 MaxConnections 连接计数作为容量拒绝的唯一判据。"
+                "验证: 用不同 CID 触发容量上限并确认第二连接返回 Too Many Connections，首连接保持可用。"
+            )
+            fields.extend(
+                [
+                    f"$[{index}].failure_mode",
+                    f"$[{index}].cause",
+                    f"$[{index}].detection",
+                    f"$[{index}].mitigation",
+                ]
+            )
 
     # The SFMEA contract requires the mitigation itself to name a verification
     # action.  When the generator already supplied a bounded recovery check in
