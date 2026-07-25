@@ -1861,7 +1861,7 @@ async def build_context_references(
             refs.append(item)
             seen.add(key)
 
-    task_run_refs = await _workbench_task_refs(scope_type, scope_id)
+    task_run_refs = await _workbench_task_refs(scope_type, scope_id, user_message=user_message)
     if scope_type == "workbench_task_run":
         append_refs(task_run_refs)
 
@@ -5949,7 +5949,59 @@ async def _module_refs(db: aiosqlite.Connection, scope_id: str) -> list[ContextR
     return refs
 
 
-async def _workbench_task_refs(scope_type: str, scope_id: str) -> list[ContextReference]:
+def _task_artifact_excerpt(name: str, text: str, *, user_message: str = "") -> str:
+    """Extract a requested source card before applying the normal context clip."""
+
+    if name != "agent_runs/analyze/evidence_cards.json":
+        return _clip(text)
+    requested_ids = {
+        value.upper()
+        for value in re.findall(r"\bSRC-\d{1,4}\b", str(user_message or ""), flags=re.IGNORECASE)
+    }
+    if not requested_ids:
+        return _clip(text)
+    try:
+        cards = json.loads(text)
+    except (TypeError, json.JSONDecodeError):
+        return _clip(text)
+    if not isinstance(cards, list):
+        return _clip(text)
+    matched_cards = [
+        card
+        for card in cards
+        if isinstance(card, dict)
+        and str(card.get("evidence_id") or "").upper() in requested_ids
+    ]
+    if not matched_cards:
+        return _clip(text)
+    compact_cards: list[dict[str, Any]] = []
+    for card in matched_cards:
+        compact_cards.append(
+            {
+                "evidence_id": card.get("evidence_id"),
+                "file_path": card.get("file_path") or card.get("path"),
+                "start_line": card.get("start_line"),
+                "end_line": card.get("end_line"),
+                "symbols": card.get("symbols") or [],
+                "matched_terms": card.get("matched_terms") or [],
+                "classification": card.get("classification") or card.get("kind"),
+                "excerpt": _clip(str(card.get("excerpt") or ""), 480),
+            }
+        )
+    return _clip(
+        json.dumps(
+            {"requested_evidence_cards": compact_cards},
+            ensure_ascii=False,
+        )
+    )
+
+
+async def _workbench_task_refs(
+    scope_type: str,
+    scope_id: str,
+    *,
+    user_message: str = "",
+) -> list[ContextReference]:
     if scope_type != "workbench_task_run":
         return []
     safe = scope_id.strip()
@@ -5993,7 +6045,7 @@ async def _workbench_task_refs(scope_type: str, scope_id: str) -> list[ContextRe
                     source_type="workbench_task_artifact",
                     source_id=f"{scope_id}/{name}",
                     title=name,
-                    excerpt=_clip(text),
+                    excerpt=_task_artifact_excerpt(name, text, user_message=user_message),
                     metadata={"task_run_id": scope_id, "path": name},
                 )
             )

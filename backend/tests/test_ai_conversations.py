@@ -2602,7 +2602,23 @@ class TestAIConversationsAPI:
         evidence_cards = task_dir / "agent_runs" / "analyze" / "evidence_cards.json"
         evidence_cards.parent.mkdir(parents=True, exist_ok=True)
         evidence_cards.write_text(
-            '[{"evidence_id":"SRC-01","path":"lib/iscsi/conn.c","start_line":153}]',
+            json.dumps(
+                [
+                    {
+                        "evidence_id": f"SRC-{index:02d}",
+                        "file_path": f"test/iscsi_tgt/case_{index}.sh",
+                        "start_line": index * 10,
+                        "symbols": [
+                            "config_chap_credentials_for_target"
+                            if index == 9
+                            else f"fixture_{index}"
+                        ],
+                        "excerpt": "evidence filler " * 120,
+                    }
+                    for index in range(1, 13)
+                ],
+                ensure_ascii=False,
+            ),
             encoding="utf-8",
         )
         monkeypatch.setattr(settings, "data_dir", str(data_root))
@@ -2646,6 +2662,26 @@ class TestAIConversationsAPI:
             "verified_fact_ledger.json",
             "agent_runs/analyze/evidence_cards.json",
         ]
+
+        source_id_refs = await build_context_references(
+            conversation={
+                "id": "conv-evidence-id-review",
+                "scope_type": "workbench_task_run",
+                "scope_id": task_run_id,
+                "workspace_id": "ws-complete-delivery-review",
+                "memory_namespace": "workspace:ws-complete-delivery-review",
+                "initial_context": {"workspace_id": "ws-complete-delivery-review"},
+            },
+            user_message="请核验 SRC-09 是否真实存在，并给出文件和符号。",
+            db_path=sqlite_db,
+        )
+        source_card_ref = next(
+            ref
+            for ref in source_id_refs
+            if ref.title == "agent_runs/analyze/evidence_cards.json"
+        )
+        assert "SRC-09" in source_card_ref.excerpt
+        assert "config_chap_credentials_for_target" in source_card_ref.excerpt
 
         # A failed or interrupted task may not have emitted its final audit.
         # Missing one priority artifact must not let a generic manifest evict a
