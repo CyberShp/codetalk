@@ -4160,6 +4160,37 @@ def _runtime_with_bound_workflow(
     return dict(runtime)
 
 
+def _source_id_evidence_override(
+    references: list[dict[str, Any]],
+    user_message: str,
+) -> str:
+    """Keep an explicit evidence lookup from inheriting a stale AI assertion."""
+
+    requested_ids = sorted(
+        {
+            value.upper()
+            for value in re.findall(r"\bSRC-\d{1,4}\b", str(user_message or ""), flags=re.IGNORECASE)
+        }
+    )
+    if not requested_ids:
+        return ""
+    matched: list[str] = []
+    for reference in references:
+        title = str(reference.get("title") or "")
+        excerpt = str(reference.get("excerpt") or "")
+        matched_ids = [evidence_id for evidence_id in requested_ids if evidence_id in excerpt.upper()]
+        if matched_ids:
+            matched.append(f"{title}\n{excerpt}")
+    if not matched:
+        return ""
+    return (
+        "当前证据覆盖历史回答：用户正在核验明确的 SRC 证据 ID。以下是本轮已验证的"
+        "任务产物；它优先于任何相互矛盾的历史助手结论。必须依据这里的路径、行号和符号回答，"
+        "不得重复历史中的‘不存在’或‘证据不足’结论。\n"
+        + "\n\n".join(matched)
+    )
+
+
 def _build_prompt(
     conversation: dict[str, Any],
     messages: list[dict[str, Any]],
@@ -4222,10 +4253,17 @@ def _build_prompt(
         if quality_retry_feedback
         else []
     )
+    source_id_override = _source_id_evidence_override(references, user_message)
+    override_messages = (
+        [{"role": "system", "content": source_id_override}]
+        if source_id_override
+        else []
+    )
     return [
         {"role": "system", "content": system},
         *history,
         *retry_messages,
+        *override_messages,
         {"role": "user", "content": user_message},
     ]
 
@@ -4282,6 +4320,9 @@ def _build_agent_prompt(
             lines.append("历史用户消息：")
         lines.append(content)
         lines.append("")
+    source_id_override = _source_id_evidence_override(references, user_message)
+    if source_id_override:
+        lines.extend([source_id_override, ""])
     if quality_retry_feedback:
         lines.extend([quality_retry_feedback, ""])
     if history:

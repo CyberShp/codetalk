@@ -1704,6 +1704,46 @@ class TestAIConversationsAPI:
         assert "workbench_task_deliverable · result.json" in prompt
         assert "integration-agent" in prompt
 
+    async def test_source_id_review_places_current_evidence_after_stale_history(self):
+        from app.services.ai_conversations import _build_agent_prompt, _build_prompt
+
+        conversation = {
+            "id": "conv-source-id-precedence",
+            "title": "源码证据复核",
+            "scope_type": "workbench_task_run",
+            "scope_id": "task_run_source-id-precedence",
+            "workspace_id": "ws-source-id-precedence",
+            "initial_context": {},
+        }
+        references = [
+            {
+                "source_type": "workbench_task_artifact",
+                "source_id": "task/evidence_cards.json",
+                "title": "agent_runs/analyze/evidence_cards.json",
+                "excerpt": '{"requested_evidence_cards":[{"evidence_id":"SRC-09","file_path":"test/iscsi_tgt/chap/chap_common.sh","start_line":82,"end_line":99,"symbols":["config_chap_credentials_for_target"]}]}',
+                "metadata": {},
+            }
+        ]
+        messages = [
+            {"role": "assistant", "content": "SRC-09 不存在，无法确认。"},
+        ]
+        user_message = "请核验 SRC-09 的文件路径、行号和 symbols。"
+
+        builtin_prompt = _build_prompt(conversation, messages, references, user_message)
+        assert builtin_prompt[-2]["role"] == "system"
+        assert "当前证据覆盖历史回答" in builtin_prompt[-2]["content"]
+        assert "SRC-09" in builtin_prompt[-2]["content"]
+
+        agent_prompt = _build_agent_prompt(
+            conversation,
+            messages,
+            references,
+            user_message,
+            {"id": "runtime-source-id", "name": "Runtime"},
+        )
+        assert agent_prompt.index("历史助手回复：") < agent_prompt.index("当前证据覆盖历史回答")
+        assert "config_chap_credentials_for_target" in agent_prompt
+
     async def test_agent_prompt_redacts_reference_secrets_and_absolute_paths(self):
         from app.services.ai_conversations import _build_agent_prompt
 
