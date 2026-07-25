@@ -5922,6 +5922,25 @@ async def test_linked_independent_review_uses_configured_audit_model(monkeypatch
     assert selected is audit_llm
 
 
+async def test_structured_delivery_review_summary_reports_all_rows_not_excerpt_prefix():
+    from app.services.ai_conversations import _structured_delivery_review_summary
+
+    summary = _structured_delivery_review_summary(
+        [
+            {"sfmea_id": "SFMEA-01", "source_evidence": ["SRC-01:L1"], "technical_claims": [{"claim_id": "TC-01"}]},
+            {"sfmea_id": "SFMEA-02", "source_evidence": ["SRC-02:L2"], "technical_claims": [{"claim_id": "TC-02"}]},
+        ],
+        [
+            {"case_id": "BB-01", "source_or_test_evidence": ["SRC-01:L1"], "test_dimension": "timeout", "oracle_basis": "source"},
+            {"case_id": "BB-02", "source_or_test_evidence": ["SRC-02:L2"], "test_dimension": "recovery", "oracle_basis": "source"},
+        ],
+    )
+
+    assert summary["sfmea"]["row_count"] == 2
+    assert summary["sfmea"]["rows_with_missing_required"] == 0
+    assert [row["id"] for row in summary["black_box_cases"]["rows"]] == ["BB-01", "BB-02"]
+
+
 @pytest.mark.asyncio
 async def test_downloadable_assistant_delivery_writes_manifest_and_file_actions(
     tmp_path,

@@ -6136,6 +6136,7 @@ async def _workbench_task_refs(
     if not safe or "/" in safe or "\\" in safe or ".." in safe:
         return []
     task_dir = settings.data_path / "workbench" / "task_runs" / safe
+    review_integrity_refs = await _workbench_task_review_integrity_refs(task_dir, scope_id)
     deliverable_refs = await _workbench_task_deliverable_refs(task_dir, scope_id)
     priority_candidates = [
         # Review threads have a bounded context window.  Give the reviewer
@@ -6184,7 +6185,62 @@ async def _workbench_task_refs(
     # A task-run review is explicitly about the task's delivered results. Keep
     # all deliverables directly after the four audit facts; less important run
     # metadata can consume only the remaining bounded-context slots.
-    return priority_refs + deliverable_refs + diagnostic_refs
+    return review_integrity_refs + priority_refs + deliverable_refs + diagnostic_refs
+
+
+def _structured_delivery_review_summary(
+    sfmea: Any,
+    black_box_cases: Any,
+) -> dict[str, Any]:
+    """Expose full row-level delivery coverage without truncating JSON bodies."""
+    specs = (
+        ("sfmea", sfmea, "sfmea_id", ("source_evidence", "technical_claims")),
+        ("black_box_cases", black_box_cases, "case_id", (
+            "source_or_test_evidence", "test_dimension", "oracle_basis",
+        )),
+    )
+    summary: dict[str, Any] = {"kind": "independent_review_integrity_v1"}
+    for name, payload, identifier, required in specs:
+        rows = payload if isinstance(payload, list) else []
+        records = []
+        for index, row in enumerate(rows, start=1):
+            value = row if isinstance(row, dict) else {}
+            missing = [field for field in required if not value.get(field)]
+            evidence_field = required[0]
+            evidence = value.get(evidence_field)
+            records.append({
+                "id": str(value.get(identifier) or f"row-{index}"),
+                "missing_required": missing,
+                "evidence_count": len(evidence) if isinstance(evidence, list) else 0,
+                "risk_status": str(value.get("risk_status") or ""),
+                "test_dimension": str(value.get("test_dimension") or ""),
+            })
+        summary[name] = {
+            "row_count": len(rows),
+            "rows_with_missing_required": sum(bool(item["missing_required"]) for item in records),
+            "rows": records,
+        }
+    return summary
+
+
+async def _workbench_task_review_integrity_refs(
+    task_dir: Path,
+    task_run_id: str,
+) -> list[ContextReference]:
+    agent_dir = task_dir / "agent_runs" / "analyze"
+    try:
+        sfmea = json.loads(await _read_text(agent_dir / "sfmea.json"))
+        black_box_cases = json.loads(await _read_text(agent_dir / "black_box_cases.json"))
+    except Exception:
+        return []
+    summary = _structured_delivery_review_summary(sfmea, black_box_cases)
+    return [ContextReference(
+        source_type="workbench_task_artifact",
+        source_id=f"{task_run_id}/independent_review_integrity.json",
+        title="independent_review_integrity.json",
+        excerpt=json.dumps(summary, ensure_ascii=False),
+        metadata={"task_run_id": task_run_id, "kind": "independent_review_integrity"},
+    )]
 
 
 async def _workbench_task_deliverable_refs(
