@@ -677,6 +677,28 @@ def test_flow_card_without_related_error_evidence_is_partial_not_ready():
     assert any("异常路径" in gap for gap in artifacts["flow_cards.json"]["gaps"])
 
 
+def test_flow_card_links_verified_success_error_callback_companions_in_same_file():
+    from app.services.source_driven_test_design import build_source_driven_test_design
+
+    flow = _flow_pack()
+    flow["call_edges"][0]["to_symbol"] = "iscsi_conn_login_pdu_success_complete"
+    flow["error_paths"][0]["symbol"] = "iscsi_conn_login_pdu_err_complete"
+    flow["error_paths"][0]["text"] = "Login response uses error completion callback"
+
+    artifacts = build_source_driven_test_design(
+        source_pack=_source_pack(),
+        flow_pack=flow,
+        flow_outline=_outline(),
+        sfmea=_sfmea(),
+        black_box_cases=_cases(),
+    )
+
+    card = artifacts["flow_cards.json"]["items"][0]
+    assert card["status"] == "READY"
+    assert card["error_chain_refs"] == ["FLOW-ERROR-001"]
+    assert card["abnormal_paths"] == ["Login response uses error completion callback"]
+
+
 def test_final_fact_verification_never_passes_without_independent_l2(tmp_path):
     from app.services.source_driven_test_design import _combined_final_fact_verification
 

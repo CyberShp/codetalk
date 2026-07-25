@@ -1423,6 +1423,8 @@ def _flow_cards_artifact(*, flows: dict[str, Any], flow_outline: dict[str, Any],
                 for value in (step.get("from_symbol"), step.get("to_symbol"))
                 if str(value or "")
             )
+        flow_files = _flow_evidence_files(flow_pack, flow_evidence)
+        flow_symbols.update(_flow_evidence_symbols(flow_pack, flow_evidence))
         related_branches = [
             item for item in branches
             if _row_related_to_flow(item, flow_evidence, flow_symbols)
@@ -1430,6 +1432,7 @@ def _flow_cards_artifact(*, flows: dict[str, Any], flow_outline: dict[str, Any],
         related_errors = [
             item for item in errors
             if _row_related_to_flow(item, flow_evidence, flow_symbols)
+            or _error_is_verified_flow_companion(item, flow_symbols, flow_files)
         ]
         related_states = [
             item for item in flow_pack.get("state_transitions") or []
@@ -1472,6 +1475,80 @@ def _flow_cards_artifact(*, flows: dict[str, Any], flow_outline: dict[str, Any],
             }
         )
     return _ledger("flow_cards", items, gaps=gaps)
+
+
+def _flow_evidence_files(flow_pack: dict[str, Any], evidence_ids: set[str]) -> set[str]:
+    """Resolve source files already used by a flow's verified evidence."""
+
+    files: set[str] = set()
+    for collection in (
+        "entry_points",
+        "call_edges",
+        "state_transitions",
+        "conditions",
+        "error_paths",
+        "cleanup_paths",
+        "recovery_paths",
+    ):
+        for row in flow_pack.get(collection) or []:
+            if not isinstance(row, dict):
+                continue
+            row_ids = set(_strings([row.get("id"), row.get("evidence_id"), row.get("evidence_refs")]))
+            if row_ids & evidence_ids and str(row.get("file_path") or ""):
+                files.add(str(row["file_path"]))
+    return files
+
+
+def _flow_evidence_symbols(flow_pack: dict[str, Any], evidence_ids: set[str]) -> set[str]:
+    """Include the symbols directly carried by the flow's verified evidence."""
+
+    symbols: set[str] = set()
+    for collection in ("entry_points", "call_edges", "state_transitions", "conditions"):
+        for row in flow_pack.get(collection) or []:
+            if not isinstance(row, dict):
+                continue
+            row_ids = set(_strings([row.get("id"), row.get("evidence_id"), row.get("evidence_refs")]))
+            if not row_ids & evidence_ids:
+                continue
+            symbols.update(
+                str(value)
+                for value in (row.get("symbol"), row.get("from_symbol"), row.get("to_symbol"))
+                if str(value or "")
+            )
+    return symbols
+
+
+def _error_is_verified_flow_companion(
+    row: dict[str, Any], flow_symbols: set[str], flow_files: set[str]) -> bool:
+    """Link only an explicit success/error callback pair in an already-used file.
+
+    Source extraction commonly records the success and error completion callbacks
+    as different symbols.  They are still part of one verified decision when their
+    names share the same callback family and the error callback lives in a source
+    file already traversed by the normal flow.  This deliberately avoids broad
+    same-file matching, which would make unrelated error paths look connected.
+    """
+
+    error_symbol = str(row.get("symbol") or "")
+    if not error_symbol or str(row.get("file_path") or "") not in flow_files:
+        return False
+    error_family = _completion_callback_family(error_symbol)
+    if not error_family or error_family == error_symbol:
+        return False
+    return any(
+        _completion_callback_family(symbol) == error_family and symbol != error_symbol
+        for symbol in flow_symbols
+    )
+
+
+def _completion_callback_family(symbol: str) -> str:
+    """Return a narrow success/error callback family, or the original symbol."""
+
+    return re.sub(
+        r"(?:^|_)(?:success|error|err|failure|fail)(?=_|$)",
+        "_",
+        str(symbol or "").lower(),
+    ).strip("_")
 
 
 def _row_related_to_flow(

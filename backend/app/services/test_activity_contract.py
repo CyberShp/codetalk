@@ -739,12 +739,14 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                     "lib/iscsi/iscsi.c::iscsi_op_login_response",
                 ],
                 "conflict_patterns": [
-                    r"(?:最终|final).{0,120}(?:必须|只能|固定|应|must|only|should|expected).{0,100}[\"'`]?csg[\"'`]?\s*[:=]\s*1",
-                    r"(?:必须|只能|固定|应|must|only|should|expected).{0,100}(?:最终|final).{0,120}[\"'`]?csg[\"'`]?\s*[:=]\s*1",
+                    r"(?:最终|final).{0,120}(?:必须|只能|固定|应当|应该|must|only|should|expected).{0,100}[\"'`]?csg[\"'`]?\s*[:=]\s*1",
+                    r"(?:必须|只能|固定|应当|应该|must|only|should|expected).{0,100}(?:最终|final).{0,120}[\"'`]?csg[\"'`]?\s*[:=]\s*1",
+                    r"(?:最终|final).{0,120}[\"'`]?csg[\"'`]?\s*[:=]\s*1",
                     r"(?:最终|final).{0,120}csg\s*[:=]\s*1.{0,100}(?:唯一|only)",
                 ],
                 "correction_patterns": [
                     r"csg\s*[:=]\s*0.{0,160}csg\s*[:=]\s*1.{0,100}(?:均|都|允许|合法|取决于|depending|either)",
+                    r"csg.{0,100}csg\s*[:=]\s*0.{0,100}(?:或|and|/).{0,100}csg\s*[:=]\s*1",
                     r"(?:允许|合法|either).{0,100}csg\s*[:=]\s*[01].{0,160}csg\s*[:=]\s*[01]",
                     r"(?:不能|不得|不可|not).{0,60}(?:把|treat)?\s*[`\"']?csg[`\"']?\s*[:=]\s*1.{0,100}(?:唯一|only|固定)",
                     r"(?:最终|final).{0,80}(?:不能固定|不得固定|not fixed).{0,40}[`\"']?csg\s*[:=]\s*1[`\"']?",

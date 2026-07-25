@@ -6777,6 +6777,28 @@ def test_combined_report_routes_nested_black_box_conflict_to_structured_artifact
     assert "最终登录成功进入 Operational Negotiation（CSG=1）" in issue["conflicting_excerpt"]
 
 
+def test_final_login_stage_audit_allows_explicit_csg_alternatives_after_response():
+    from app.services.test_activity_contract import (
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整流程 SFMEA 黑盒测试设计",
+        repo_path="/repo/spdk",
+    )
+    content = (
+        "完成最终迁移请求（T=1、NSG=3）并抓取成功响应；"
+        "CSG 按当前协商路径为 CSG=0 或 CSG=1，不固定为单一值。"
+    )
+
+    issues = _audit_professional_constraints(content, contract)
+
+    assert "iscsi_final_login_stage_alternatives" not in {
+        item.get("constraint_id") for item in issues
+    }
+
+
 def test_combined_iscsi_report_rejects_normal_login_with_auth_failure_expected_result():
     from app.services.test_activity_contract import _audit_combined_report_consistency
 
