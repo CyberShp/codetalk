@@ -89,7 +89,7 @@ means that the cited current implementation and evidence cover the whole AC;
 
 | AC | Status | Current evidence / remaining proof |
 | --- | --- | --- |
-| AC-UI-001 | partial | V3 desktop/narrow layouts have browser evidence; final visual review screenshots are still required. |
+| AC-UI-001 | verified | Visual browser review at 1440x900 and 390x844 covers the workflow wizard, task cockpit and AI thread. All inspected views have no horizontal overflow; the desktop stays tool-compact and narrow screens use a non-overlapping single-column layout. Screenshots and browser metrics: `/Volumes/Media/codetalk-e2e-artifacts/v3-ui-compact-review-20260726/`. |
 | AC-UI-002 | verified | Cockpit failure presentation regression prevents alert panels obscuring summary and artifacts. |
 | AC-UI-003 | verified | Bounded task/project/thread rails regressions prevent page-height accumulation. |
 | AC-UI-004 | verified | AI thread preserves manual upward scroll while output streams. |
