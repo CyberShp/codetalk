@@ -8858,6 +8858,67 @@ def _deterministic_quality_claim_repair(
         repaired.append(template)
         fields.append("$[+].resource_wraparound_case")
 
+    # A quality-repair turn is allowed to patch only affected artifacts, but a
+    # provider can still return a shorter black-box array. Preserve the
+    # contract's required dimensions by materializing an external-observable
+    # case for every remaining missing dimension. This is additive: accepted
+    # cases and their verified technical claims are never discarded.
+    if artifact == "black_box_cases.json" and isinstance(repaired, list) and repaired:
+        present_dimensions = {
+            str(row.get("test_dimension") or "").strip().lower()
+            for row in repaired
+            if isinstance(row, dict)
+        }
+        generic_missing_dimensions = sorted(
+            missing_dimensions - present_dimensions - {
+                "resource_pressure",
+                "resource_wraparound",
+            }
+        )
+        dimension_templates = {
+            "upstream_error_propagation": {
+                "scenario_name": "上游 Login 参数解析失败的外部错误传播",
+                "steps": [
+                    "通过 raw-PDU harness 发送包含无法解析参数的 Login Request，并保存请求、响应和 target 日志",
+                    "在同一隔离环境重新发起一条合法 Login，记录响应、连接状态和 target 进程状态",
+                ],
+                "expected_result": "首个请求对外返回明确失败结果且不会建立可用会话；后续合法 Login 不受该失败请求影响。",
+                "observability": ["Login Response 的 status/status-detail", "target 日志、连接状态和后续合法 Login 的结果"],
+                "failure_diagnostics": ["保留错误请求与响应 PDU、target 日志及后续合法 Login 的连接状态。"],
+                "oracle_basis": "判据来源：Login Response 的公开状态字段、TCP 连接结果、target 日志和后续合法 Login 的外部行为。",
+            },
+        }
+        existing_ids = {
+            str(row.get("case_id") or "")
+            for row in repaired
+            if isinstance(row, dict)
+        }
+        for dimension in generic_missing_dimensions:
+            definition = dimension_templates.get(dimension)
+            if definition is None:
+                continue
+            template = json.loads(json.dumps(repaired[0], ensure_ascii=False))
+            base_id = "BBC-" + re.sub(r"[^A-Z0-9]+", "-", dimension.upper()).strip("-")
+            case_id = base_id
+            suffix = 2
+            while case_id in existing_ids:
+                case_id = f"{base_id}-{suffix}"
+                suffix += 1
+            existing_ids.add(case_id)
+            template.update({
+                "case_id": case_id,
+                "test_dimension": dimension,
+                "scenario_name": definition["scenario_name"],
+                "steps": definition["steps"],
+                "expected_result": definition["expected_result"],
+                "observability": definition["observability"],
+                "failure_diagnostics": definition["failure_diagnostics"],
+                "oracle_basis": definition["oracle_basis"],
+                "mapped_test_dir": "ai_suggested_unverified: 需新增上游错误传播黑盒用例",
+            })
+            repaired.append(template)
+            fields.append(f"$[+].{dimension}_case")
+
     mcs_mapping_issues = [
         item
         for item in issues

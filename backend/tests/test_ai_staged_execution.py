@@ -10526,3 +10526,26 @@ def test_deterministic_quality_repair_distinguishes_duplicate_sfmea_mitigations(
     assert "资源计数回到基线" in mitigations[0]
     assert "只产生一次外部响应" in mitigations[1]
     assert "阶段字段" in mitigations[2]
+
+
+def test_deterministic_quality_repair_restores_missing_upstream_error_dimension():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "case_id": "BB-01",
+            "test_dimension": "normal_path",
+            "risk_ids": ["SFMEA-001"],
+            "technical_claims": [{"claim_id": "TC-001"}],
+        }],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "missing_black_box_dimensions",
+            "dimensions": ["upstream_error_propagation"],
+        }]},
+    )
+
+    restored = repaired[-1]
+    assert fields == ["$[+].upstream_error_propagation_case"]
+    assert restored["test_dimension"] == "upstream_error_propagation"
+    assert restored["technical_claims"] == [{"claim_id": "TC-001"}]
+    assert "错误传播" in restored["scenario_name"]
