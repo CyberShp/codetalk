@@ -5883,6 +5883,30 @@ def test_quality_feedback_marks_missing_verified_flow_paths_as_non_repairable():
     assert feedback["blocked_reasons"] == ["flow_incomplete_for_delivery"]
 
 
+def test_quality_feedback_routes_transient_sfmea_contract_floor_to_repair():
+    from app.services.workbench_workflow_runner import _quality_feedback_from_audit
+
+    feedback = _quality_feedback_from_audit(
+        {
+            "status": "needs_rework",
+            "score": 0,
+            "issues": [
+                {
+                    "artifact": "sfmea.json",
+                    "code": "artifact_contract_repair_required",
+                    "message": "sfmea.json: $ 项目数小于 12",
+                }
+            ],
+        },
+        required_artifacts=["report.md", "sfmea.json", "black_box_cases.json"],
+        quality_artifact="quality_audit.json",
+    )
+
+    assert feedback["repairable_issue_count"] == 1
+    assert feedback["affected_artifacts"] == ["sfmea.json"]
+    assert feedback["issues"][0]["repairable"] is True
+
+
 def test_each_quality_repair_attempt_only_bypasses_its_current_failed_artifacts():
     from app.services.workbench_workflow_runner import (
         _apply_quality_feedback_to_staged_plan,

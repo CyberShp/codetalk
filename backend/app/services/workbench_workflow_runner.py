@@ -41,6 +41,7 @@ from app.services.ai_staged_execution import (
     refresh_deterministic_combined_report,
 )
 from app.services.agent_run_harness import ArtifactValidationHarness
+from app.services.ai_thread_artifacts import ArtifactContractError
 from app.services.harness_facade import AgentHarnessFacade
 from app.services.artifact_contract_v3 import (
     enrich_external_agent_claim_bindings,
@@ -2382,23 +2383,52 @@ class WorkbenchWorkflowRunner:
                         # Otherwise a carried-forward repair plan can bypass
                         # the deterministic SFMEA boundary normalizer and leave
                         # stale source-driven judge data in place.
-                        normalize_materialized_sfmea_risk_contract(
-                            artifact_dir=artifact_dir,
-                            plan=current_plan,
-                        )
-                        _refresh_source_delivery_governance_after_finalizing(
-                            artifact_dir=artifact_dir,
-                            plan=current_plan,
-                        )
-                        return await _run_sync_with_absolute_deadline(
-                            lambda: _audit_staged_agent_artifacts(
+                        try:
+                            normalize_materialized_sfmea_risk_contract(
                                 artifact_dir=artifact_dir,
-                                task_bundle=task_bundle,
-                                execution_contract=scoped_execution_contract,
-                                workflow_snapshot=workflow_snapshot,
-                            ),
-                            deadline=staged_lifecycle_deadline,
-                        )
+                                plan=current_plan,
+                            )
+                            _refresh_source_delivery_governance_after_finalizing(
+                                artifact_dir=artifact_dir,
+                                plan=current_plan,
+                            )
+                            return await _run_sync_with_absolute_deadline(
+                                lambda: _audit_staged_agent_artifacts(
+                                    artifact_dir=artifact_dir,
+                                    task_bundle=task_bundle,
+                                    execution_contract=scoped_execution_contract,
+                                    workflow_snapshot=workflow_snapshot,
+                                ),
+                                deadline=staged_lifecycle_deadline,
+                            )
+                        except ArtifactContractError as exc:
+                            # A post-validation row removal can temporarily put
+                            # a structured artifact below its delivery floor.
+                            # This is a repairable quality gap, not an Agent
+                            # runtime crash: keep the strict contract and feed
+                            # the exact artifact back into the repair loop.
+                            message = _redact_failure_diagnostic_text(str(exc))
+                            artifact = (
+                                "sfmea.json"
+                                if "sfmea.json" in message
+                                else "black_box_cases.json"
+                                if "black_box_cases.json" in message
+                                else "assistant-output.md"
+                            )
+                            return {
+                                "status": "needs_rework",
+                                "deliverable": False,
+                                "score": 0,
+                                "issue_count": 1,
+                                "issues": [{
+                                    "artifact": artifact,
+                                    "code": "artifact_contract_repair_required",
+                                    "message": message or "结构化交付件未通过合同校验，需要定向补全。",
+                                }],
+                                "recommendations": [
+                                    "保留已验证条目，仅补全合同要求的缺失条目后重新校验。"
+                                ],
+                            }
 
                     current_plan = staged_plan
                     try:
@@ -2408,10 +2438,15 @@ class WorkbenchWorkflowRunner:
                         behavior_validation = await validate_behavior_claims()
                         if (artifact_dir / "judge_report.json").is_file():
                             staged_lifecycle_phase = "refresh_source_delivery_governance"
-                            _refresh_source_delivery_governance_after_finalizing(
-                                artifact_dir=artifact_dir,
-                                plan=current_plan,
-                            )
+                            try:
+                                _refresh_source_delivery_governance_after_finalizing(
+                                    artifact_dir=artifact_dir,
+                                    plan=current_plan,
+                                )
+                            except ArtifactContractError:
+                                # The first audit below turns this transient
+                                # contract violation into scoped repair input.
+                                pass
                         if (
                             behavior_validation.get("reason")
                             == "workflow_deadline_exceeded"
