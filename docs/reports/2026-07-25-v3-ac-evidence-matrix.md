@@ -31,7 +31,7 @@ means that the cited current implementation and evidence cover the whole AC;
 | AC-SEC-001 | blocked | Code and sandbox controls exist, but the required administrator-owned PCAP/gateway capture has not run. See `docs/security/zero-public-egress-verification.md`. |
 | AC-SEC-002 | partial | Policy/tests deny telemetry, tracing, update and hosted-MCP paths; deployment capture must corroborate the shipped process behavior. |
 | AC-SEC-003 | partial | macOS `sandbox-exec` DNS-denial subprocess evidence exists. An approved Agent route plus capture is still absent. |
-| AC-SEC-004 | partial | Unit/sandbox policy rejects public targets before launch; needs browser workflow proof of one allowed configured Provider route in intranet deployment. |
+| AC-SEC-004 | verified | A real settings-page run approved only `api.deepseek.com` at deployment level and completed configured Flash/Pro inference; the Chromium settings regression separately enters `https://example.com/v1` and receives `运行时出站策略拒绝：host_not_allowlisted` before connection. Policy unit coverage confirms approved hostname and narrow model endpoint behavior. Evidence: `/Volumes/Media/codetalk-e2e-artifacts/v3-deepseek-flash-pro-20260726/run5/`, `/Volumes/Media/codetalk-e2e-artifacts/v3-intranet-policy-ui-20260726/`. |
 | AC-SEC-005 | partial | SDK POC retains version/hash/license material outside product dependencies; final product SBOM and approved offline bundle evidence are missing. |
 | AC-SEC-006 | partial | xyflow is locally bundled in the app; final network capture must prove no CDN/update/plugin/telemetry request in deployed designer. |
 
