@@ -2925,6 +2925,30 @@ def test_normalize_sfmea_risk_contract_marks_unmeasured_hypothesis_rpn_provision
     assert "$[0].occurrence_basis:provisional_expert_prior" in fields
 
 
+def test_sfmea_contract_fills_declared_minimum_with_distinct_source_hypotheses():
+    from app.services.ai_staged_execution import _complete_minimum_sfmea_hypotheses
+
+    rows = [
+        {"sfmea_id": f"SFMEA-{index:02d}", "failure_mode": f"已有风险 {index}"}
+        for index in range(1, 12)
+    ]
+    catalog = [
+        {"evidence_id": "SRC-1", "path": "lib/iscsi/iscsi.c", "quote": "if (conn->state >= ISCSI_CONN_STATE_EXITING) {"},
+        {"evidence_id": "SRC-2", "path": "lib/iscsi/iscsi.c", "quote": "spdk_poller_unregister(&conn->logout_request_timer);"},
+    ]
+
+    completed, fields = _complete_minimum_sfmea_hypotheses(
+        rows,
+        minimum_items=12,
+        product_claim_catalog=catalog,
+    )
+
+    assert len(completed) == 12
+    assert completed[-1]["rpn_status"] == "provisional"
+    assert completed[-1]["technical_claims"][0]["evidence"][0]["evidence_id"]
+    assert fields == ["$[11]:deterministic_source_risk_floor"]
+
+
 def test_materialized_sfmea_normalizer_resolves_agent_owned_artifact_from_task_root(tmp_path):
     from app.services.ai_staged_execution import normalize_materialized_sfmea_risk_contract
 

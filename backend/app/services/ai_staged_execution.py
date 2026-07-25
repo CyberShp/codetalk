@@ -4716,6 +4716,7 @@ async def _execute_regular_stage(
                     rendered, sfmea_contract_fields = _normalize_sfmea_risk_contract(
                         rendered,
                         product_claim_catalog=_sfmea_product_claim_catalog(claim_catalog),
+                        minimum_items=_minimum_sfmea_items(stage),
                     )
                     deterministic_repair_fields.extend(sfmea_contract_fields)
                 if base_stage_id == "black_box_cases":
@@ -4878,6 +4879,7 @@ async def _execute_regular_stage(
                     rendered, sfmea_contract_fields = _normalize_sfmea_risk_contract(
                         rendered,
                         product_claim_catalog=_sfmea_product_claim_catalog(claim_catalog),
+                        minimum_items=_minimum_sfmea_items(stage),
                     )
                     deterministic_repair_fields.extend(sfmea_contract_fields)
                 if base_stage_id == "black_box_cases":
@@ -6387,10 +6389,63 @@ def _source_risk_candidate_for_sfmea_row(
     }
 
 
+def _minimum_sfmea_items(stage: dict[str, Any]) -> int:
+    contract = stage.get("output_contract") if isinstance(stage.get("output_contract"), dict) else {}
+    schema = contract.get("schema") if isinstance(contract.get("schema"), dict) else {}
+    return max(0, int(schema.get("minItems") or contract.get("min_sfmea_rows") or 0))
+
+
+def _complete_minimum_sfmea_hypotheses(
+    rendered: list[dict[str, Any]],
+    *,
+    minimum_items: int,
+    product_claim_catalog: list[dict[str, str]],
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Fill an explicit SFMEA floor with distinct, evidence-bound hypotheses."""
+    if minimum_items <= len(rendered) or not product_claim_catalog:
+        return rendered, []
+    fields: list[str] = []
+    seen_modes = {str(row.get("failure_mode") or "").strip() for row in rendered}
+    used_ids = {str(row.get("sfmea_id") or "").strip() for row in rendered}
+    next_number = 1
+    for catalog_index in range(len(product_claim_catalog) * 2):
+        if len(rendered) >= minimum_items:
+            break
+        while f"SFMEA-{next_number:02d}" in used_ids:
+            next_number += 1
+        candidate = _source_risk_candidate_for_sfmea_row(
+            {"sfmea_id": f"SFMEA-{next_number:02d}"},
+            product_claim_catalog=product_claim_catalog,
+            index=catalog_index,
+        )
+        if not candidate:
+            continue
+        mode = str(candidate.get("failure_mode") or "").strip()
+        if not mode or mode in seen_modes:
+            continue
+        candidate.update({
+            "sfmea_id": f"SFMEA-{next_number:02d}",
+            "severity": 6,
+            "occurrence": 2,
+            "detection_score": 7,
+            "rpn": 84,
+            "occurrence_basis": "专家工程评审先验；无实测数据，低置信度，待采样校准。",
+            "rpn_status": "provisional",
+            "score_explanation": "Severity=6（测试优先级先验）；Occurrence=2（专家工程评审先验，低置信度，待采样校准）；Detection=7（需通过协议、日志和资源指标验证）；RPN 仅用于测试优先级。",
+        })
+        rendered.append(candidate)
+        used_ids.add(f"SFMEA-{next_number:02d}")
+        seen_modes.add(mode)
+        fields.append(f"$[{len(rendered) - 1}]:deterministic_source_risk_floor")
+        next_number += 1
+    return rendered, fields
+
+
 def _normalize_sfmea_risk_contract(
     rendered: Any,
     *,
     product_claim_catalog: list[dict[str, str]] | None = None,
+    minimum_items: int = 0,
 ) -> tuple[Any, list[str]]:
     """Keep generated SFMEA rows honest about fact versus test hypothesis."""
     if not isinstance(rendered, list):
@@ -6690,6 +6745,12 @@ def _normalize_sfmea_risk_contract(
                 f"$[{index}].score_explanation:provisional_expert_prior",
             ))
     normalized = _normalize_sfmea_source_anchor_claims(normalized)
+    normalized, floor_fields = _complete_minimum_sfmea_hypotheses(
+        normalized,
+        minimum_items=minimum_items,
+        product_claim_catalog=product_claim_catalog or [],
+    )
+    fields.extend(floor_fields)
     for index, row in enumerate(normalized):
         if not isinstance(row, dict):
             continue
