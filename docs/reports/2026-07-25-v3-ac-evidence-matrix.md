@@ -108,7 +108,7 @@ means that the cited current implementation and evidence cover the whole AC;
 | AC-PERF-002 | unverified | Need five uncached rapid samples, P50/P95 and explicit 10-25 minute interpretation. |
 | AC-PERF-003 | unverified | Need an uncached deep sample within the 45-90 minute target with continuous progress. |
 | AC-PERF-004 | verified | Cached/reused stages are displayed; non-cache heavy tasks have anti-false-pass checks. |
-| AC-PERF-005 | partial | Stage metrics exist but current cached final manifest does not preserve every aggregate metric; performance report must collect them. |
+| AC-PERF-005 | partial | Attempt 35 preserves final per-stage Flash/Pro metrics even after deterministic SFMEA repair: provider, attempts, waits, output tokens, finish reason and repair type. A five-run performance aggregation report is still required. |
 | AC-PERF-006 | unverified | Needs large artifact and concurrent-task browser evidence. |
 | AC-PERF-007 | verified | Cockpit labels profile, target time and cache/reuse; docs prohibit treating retries as deep benchmarks. |
 
@@ -162,6 +162,23 @@ The run also exposed a follow-up consistency gap: the Source Evidence Pack
 materialized two test cards while the final report met its four-test-path
 requirement by repository-path validation. This must be reconciled before the
 stronger source-evidence provenance claim can be marked verified.
+
+### 2026-07-26 Flash/Pro final-SFMEA contract regression
+
+Chromium clicked “启动新运行” for Attempt 35
+(`task_run_47fd0993df044db2aacdea0fc3018279`) after the backend loaded
+`49502140`. The browser page reported `已完成 / 通过 / 交付完整`, nine
+downloadable files, 12 final SFMEA rows, and `36/36` verified facts with zero
+blockers. Flash performed the flow branch; Pro performed SFMEA and black-box
+generation. The final SFMEA stage retained its original Pro execution metrics
+after deterministic claim repair: one provider call, 85,496.1 ms provider wait,
+5,772 output tokens, `provider_finish_reason=stop`, and
+`finish_reason=deterministic_claim_repair`. Screenshot evidence is
+`/Volumes/Media/codetalk-e2e-artifacts/v3-deepseek-flash-pro-risk-evidence-20260724/attempt35-completed.png`.
+
+Source analysis was a declared cache hit, so the 3 minutes 31 seconds elapsed
+time is functional and observability evidence only. It does not close the
+uncached deep performance acceptance criterion.
 
 ### 2026-07-25 DeepSeek Flash/Pro Quality-Retry Regression
 
