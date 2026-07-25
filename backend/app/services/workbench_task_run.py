@@ -766,6 +766,10 @@ def build_local_source_context(
         for token in _source_query_tokens(query)
         if token != repo.name.lower() and token not in repo_name_tokens
     ]
+    mandatory_protocol_tokens = {
+        token for token in tokens
+        if token in {"cbit", "partial_text_parameter"}
+    }
     base = {
         "provider": "local-source-search",
         "query": query[:2000],
@@ -918,6 +922,16 @@ def build_local_source_context(
             if _source_token_matches_line(token, excerpt_lower)
         )
         score += len(matched_terms) * 4
+        # A protocol-specific test obligation must survive generic timeout/auth
+        # noise.  It remains a normal, SHA-validated source slice; this only
+        # reserves it during bounded deterministic evidence selection.
+        protocol_anchor = bool(
+            mandatory_protocol_tokens.intersection(matched_terms)
+            and classification == "source"
+            and source_path.suffix.lower() == ".c"
+        )
+        if protocol_anchor:
+            score += 20_000
         if tokens and score <= 0:
             continue
         scored.append({
@@ -939,6 +953,7 @@ def build_local_source_context(
             ])[:12],
             "classification": classification,
             "status": "validated_source_file",
+            "protocol_anchor": protocol_anchor,
         })
     deduplicated: list[dict[str, Any]] = []
     seen_slices: set[tuple[str, int, int]] = set()
@@ -1214,6 +1229,7 @@ def _select_source_and_test_evidence(
                     int(remaining[index].get("score") or 0)
                     + implementation_bonus(remaining[index])
                     + risk_evidence_bonus(remaining[index])
+                    + (20_000 if remaining[index].get("protocol_anchor") else 0)
                     + 8
                     * len(
                         (
@@ -1735,6 +1751,12 @@ def _source_query_tokens(query: str) -> list[str]:
     if re.search(r"\bio\b", query_without_paths, flags=re.IGNORECASE):
         raw_tokens.append("io")
     semantic_expansions = (
+        # Login text can be fragmented across PDUs.  This is a protocol-level
+        # test obligation, so preserve the C-bit handling evidence even when a
+        # tester only describes the broader iSCSI Login flow in natural language.
+        (r"iscsi.*login|login.*iscsi|iSCSI.*登录|登录.*iSCSI", [
+            "cbit", "partial_text_parameter",
+        ]),
         (r"nvme[- ]?o[- ]?f|nvme\s+over\s+fabrics", ["nvmf", "fabrics"]),
         (r"dh[- ]?hmac[- ]?chap", ["dhchap"]),
         (r"资源(?:清理|释放|泄漏|耗尽)|长时间运行", ["cleanup", "release", "close", "refcount"]),
@@ -1777,6 +1799,11 @@ def _source_excerpt(
         return "", 0, 0
     lower_lines = [line.lower() for line in lines]
     token_weights = {
+        # Protocol fragmentation is a mandatory iSCSI Login test concern.
+        # Prefer the concrete implementation branch over a generic auth helper
+        # when both exist in the same selected source file.
+        "cbit": 10,
+        "partial_text_parameter": 10,
         "chap": 8,
         "login": 7,
         "auth": 7,

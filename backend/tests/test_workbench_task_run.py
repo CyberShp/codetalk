@@ -6997,6 +6997,38 @@ def test_local_source_context_keeps_verified_branch_hints_with_enclosing_symbol(
     assert card["symbols"] == ["append_connection"]
 
 
+def test_local_source_context_includes_iscsi_login_cbit_protocol_anchor(tmp_path):
+    from app.services.workbench_task_run import build_local_source_context
+
+    source = tmp_path / "lib" / "iscsi" / "iscsi.c"
+    source.parent.mkdir(parents=True)
+    source.write_text(
+        "static int iscsi_op_login_store_incoming_params(void)\n"
+        "{\n"
+        "    if (ISCSI_BHS_LOGIN_GET_CBIT(bhs))\n"
+        "        return partial_text_parameter(conn);\n"
+        "    return complete_text_parameter(conn);\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    test = tmp_path / "test" / "iscsi_tgt" / "login.sh"
+    test.parent.mkdir(parents=True)
+    test.write_text("run_iscsi_login() { :; }\n", encoding="utf-8")
+
+    context = build_local_source_context(
+        repo_path=str(tmp_path),
+        query="分析 iSCSI Login 认证和超时路径",
+        limit=2,
+        min_test_files=1,
+    )
+
+    assert any(
+        "ISCSI_BHS_LOGIN_GET_CBIT" in str(item.get("excerpt") or "")
+        for item in context["files"]
+    ), context
+    assert "cbit" in context["tokens"]
+
+
 def test_local_source_context_prefers_git_files_and_records_revision(tmp_path):
     import subprocess
 
