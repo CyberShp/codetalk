@@ -83,7 +83,7 @@ means that the cited current implementation and evidence cover the whole AC;
 | AC-QUALITY-003 | verified | Black-box boundary validators reject internal function steps. |
 | AC-QUALITY-004 | verified | Quality retry preserves accepted rows and patches declared failed rows; real C-bit/risk-link retries covered. |
 | AC-QUALITY-005 | verified | `READY_WITH_WARNINGS` / blocked status is separate from structural success. |
-| AC-QUALITY-006 | failed | A real linked-artifact `deepseek-v4-flash` review of the Flash/Pro deep run scored 62/100; remediate unsupported claims, then repeat with a stored rubric at >=80. |
+| AC-QUALITY-006 | failed | The earlier linked-artifact Flash review scored 62/100. A new real AI-thread review of the repaired nine-deliverable Flash/Pro run scored 72/100 and identified nonexistent symbols, Discovery `TargetAddress` overclaims, and expanded test-script mappings. The score remains below 80; test-path-to-scenario claims need deterministic/independent validation before another rubric run. |
 
 ## User Experience And Linking
 
