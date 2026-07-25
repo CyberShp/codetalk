@@ -114,6 +114,19 @@ means that the cited current implementation and evidence cover the whole AC;
 
 ## Release Decision
 
+### Final-quality audit consistency regression (2026-07-25)
+
+Chromium started `task_run_79d4674fef6148408e526c77d89f3a77` from the
+SPDK iSCSI task UI. The task completed with `quality_status=passed`. After
+final delivery materialization, the task-level
+`test_activity_quality_audit.json` and the Agent-visible
+`quality_repairs/final_quality_audit.json` have the same SHA-256:
+`8b9d28656fb343ec2cf81e0275be0211ce9f4711a5e5a4237575827d4424465c`.
+Both record `deliverable`, score 100 and zero issues. The preceding repair-loop
+snapshot is retained separately as
+`pre_delivery_materialization_quality_audit.json`; it is no longer presented
+as the final audit.
+
 ### 2026-07-25 Flash/Pro Basic Workflow Regression
 
 Browser-run `task_run_b3b524bc6ad34e40bb1616b3a463c832` completed the published
