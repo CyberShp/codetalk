@@ -14,7 +14,7 @@ from typing import Any
 # hide newly recognized source evidence from downstream flow quality gates.
 FLOW_EVIDENCE_VERSION = "flow-evidence-pack-v4"
 _FLOW_EVIDENCE_VERSION = FLOW_EVIDENCE_VERSION
-FLOW_OUTLINE_VERSION = "flow-outline-v2"
+FLOW_OUTLINE_VERSION = "flow-outline-v3"
 _FLOW_OUTLINE_VERSION = FLOW_OUTLINE_VERSION
 _CALL_PATTERN = re.compile(r"\b([A-Za-z_][A-Za-z0-9_]*)\s*\(")
 _STATE_PATTERN = re.compile(
@@ -530,7 +530,8 @@ def build_flow_outline(flow_pack: dict[str, Any]) -> dict[str, Any]:
                 "reason": "不属于已验证入口可达分量的调用边",
             }
         )
-    if entries and not entry_roots and usable_edges:
+    entry_has_reachable_edge = any(root in from_symbols for root in entry_roots)
+    if entries and usable_edges and not entry_has_reachable_edge:
         outline_gaps.append(
             "已验证入口缺少可达调用边，未将其他任意调用根提升为主流程"
         )
