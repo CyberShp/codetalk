@@ -5957,16 +5957,19 @@ async def _workbench_task_refs(scope_type: str, scope_id: str) -> list[ContextRe
         return []
     task_dir = settings.data_path / "workbench" / "task_runs" / safe
     deliverable_refs = await _workbench_task_deliverable_refs(task_dir, scope_id)
-    candidates = [
-        # These artifacts make an AI-thread review auditable: include the
-        # formal quality result and the verified source ledger before generic
-        # execution metadata.
-        "task_artifact_manifest.json",
+    priority_candidates = [
+        # Review threads have a bounded context window.  Give the reviewer
+        # the result, verified facts and source anchors before metadata or
+        # prose, otherwise a truncated review can incorrectly call a real
+        # ``SRC-*`` citation missing.
         "test_activity_quality_audit.json",
         "claim_evidence_ledger.json",
         "verified_fact_ledger.json",
         "agent_runs/analyze/evidence_cards.json",
+    ]
+    diagnostic_candidates = [
         "agent_runs/analyze/flow_evidence_pack.json",
+        "task_artifact_manifest.json",
         "task_run.json",
         "task_bundle.json",
         "test_activity_contract.json",
@@ -5975,29 +5978,33 @@ async def _workbench_task_refs(scope_type: str, scope_id: str) -> list[ContextRe
     ]
     # Fact ledgers must precede narrative deliverables: task-run reviews are
     # otherwise truncated before they see the evidence needed to audit claims.
-    refs: list[ContextReference] = []
-    for name in candidates:
-        path = task_dir / name
-        if not path.exists():
-            continue
-        try:
-            text = await _read_text(path)
-        except Exception:
-            continue
-        refs.append(
-            ContextReference(
-                source_type="workbench_task_artifact",
-                source_id=f"{scope_id}/{name}",
-                title=name,
-                excerpt=_clip(text),
-                metadata={"task_run_id": scope_id, "path": name},
+    async def read_candidates(names: list[str]) -> list[ContextReference]:
+        references: list[ContextReference] = []
+        for name in names:
+            path = task_dir / name
+            if not path.exists():
+                continue
+            try:
+                text = await _read_text(path)
+            except Exception:
+                continue
+            references.append(
+                ContextReference(
+                    source_type="workbench_task_artifact",
+                    source_id=f"{scope_id}/{name}",
+                    title=name,
+                    excerpt=_clip(text),
+                    metadata={"task_run_id": scope_id, "path": name},
+                )
             )
-        )
-    refs.extend(deliverable_refs)
-    # A task-run review is explicitly about the task's delivered results.  Keep
-    # every declared deliverable ahead of diagnostic metadata so an auditor is
-    # never asked to judge an artifact that was silently omitted from context.
-    return refs
+        return references
+
+    priority_refs = await read_candidates(priority_candidates)
+    diagnostic_refs = await read_candidates(diagnostic_candidates)
+    # A task-run review is explicitly about the task's delivered results. Keep
+    # all deliverables directly after the four audit facts; less important run
+    # metadata can consume only the remaining bounded-context slots.
+    return priority_refs + deliverable_refs + diagnostic_refs
 
 
 async def _workbench_task_deliverable_refs(

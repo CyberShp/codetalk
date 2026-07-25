@@ -2590,6 +2590,9 @@ class TestAIConversationsAPI:
             encoding="utf-8",
         )
         (task_dir / "task_run.json").write_text('{"status":"completed"}', encoding="utf-8")
+        (task_dir / "test_activity_quality_audit.json").write_text(
+            '{"status":"passed","score":100}', encoding="utf-8"
+        )
         (task_dir / "claim_evidence_ledger.json").write_text(
             '{"claims":[{"claim_id":"CL-1","status":"verified"}]}', encoding="utf-8"
         )
@@ -2632,6 +2635,45 @@ class TestAIConversationsAPI:
             "verified_fact_ledger.json",
             "agent_runs/analyze/evidence_cards.json",
         } <= artifact_titles
+        prioritized_titles = [
+            ref.title
+            for ref in refs
+            if ref.source_type == "workbench_task_artifact"
+        ]
+        assert prioritized_titles[:4] == [
+            "test_activity_quality_audit.json",
+            "claim_evidence_ledger.json",
+            "verified_fact_ledger.json",
+            "agent_runs/analyze/evidence_cards.json",
+        ]
+
+        # A failed or interrupted task may not have emitted its final audit.
+        # Missing one priority artifact must not let a generic manifest evict a
+        # declared deliverable from the bounded review context.
+        (task_dir / "test_activity_quality_audit.json").unlink()
+        refs_without_audit = await build_context_references(
+            conversation={
+                "id": "conv-complete-delivery-review-without-audit",
+                "scope_type": "workbench_task_run",
+                "scope_id": task_run_id,
+                "workspace_id": "ws-complete-delivery-review",
+                "memory_namespace": "workspace:ws-complete-delivery-review",
+                "initial_context": {"workspace_id": "ws-complete-delivery-review"},
+            },
+            user_message="仅基于本次运行的所有交付件做独立质量审查",
+            db_path=sqlite_db,
+        )
+        assert {
+            str(ref.metadata["path"])
+            for ref in refs_without_audit
+            if ref.source_type == "workbench_task_deliverable"
+        } == set(deliverables)
+        assert [ref.title for ref in refs_without_audit[:3]] == [
+            "claim_evidence_ledger.json",
+            "verified_fact_ledger.json",
+            "agent_runs/analyze/evidence_cards.json",
+        ]
+        assert refs_without_audit[3].source_type == "workbench_task_deliverable"
 
     async def test_workbench_task_thread_references_test_activity_contract_and_quality_audit(
         self,
