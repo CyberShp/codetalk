@@ -94,6 +94,22 @@ def materialize_artifact_contract_v3_outputs(
                 ],
             )
             written.append("覆盖缺口与建议.md")
+        # Rapid is intentionally bounded, not incomplete.  It delivers the
+        # targeted SFMEA and black-box design promised by its stage contract,
+        # while the comprehensive report and developer explanation remain
+        # deep-only outputs below.
+        if sfmea:
+            _write_markdown(
+                root / "风险点与SFMEA.md",
+                ["# 定向风险点与 SFMEA", *_sfmea_lines(sfmea)],
+            )
+            written.append("风险点与SFMEA.md")
+        if cases:
+            _write_markdown(
+                root / "黑盒测试设计.md",
+                ["# 定向黑盒测试设计", *_case_lines(cases)],
+            )
+            written.append("黑盒测试设计.md")
         return written
 
     if profile_id != "deep":

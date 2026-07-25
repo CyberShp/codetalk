@@ -21,6 +21,26 @@ def test_rapid_contract_is_bounded_without_claiming_deep_deliverables():
     assert contract["delivery_class"] == "bounded_analysis"
 
 
+def test_rapid_contract_materializes_targeted_sfmea_and_black_box_deliverables(tmp_path):
+    import json
+
+    from app.services.artifact_contract_v3 import materialize_artifact_contract_v3_outputs
+
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps([{"sfmea_id": "SFMEA-01", "failure_mode": "Login timeout"}]),
+        encoding="utf-8",
+    )
+    (tmp_path / "black_box_cases.json").write_text(
+        json.dumps([{"case_id": "BBC-01", "scenario_name": "Login timeout"}]),
+        encoding="utf-8",
+    )
+
+    written = materialize_artifact_contract_v3_outputs(tmp_path, profile_id="rapid")
+
+    assert {"风险点与SFMEA.md", "黑盒测试设计.md"} <= set(written)
+    assert not (tmp_path / "完整分析报告.md").exists()
+
+
 def test_claim_evidence_ledger_blocks_a_claim_with_a_fabricated_quote(tmp_path):
     import json
 
