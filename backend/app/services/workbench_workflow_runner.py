@@ -2498,6 +2498,30 @@ class WorkbenchWorkflowRunner:
                                     ),
                                 )
                                 if not feedback.get("affected_artifacts"):
+                                    if int(
+                                        feedback.get("non_repairable_issue_count")
+                                        or 0
+                                    ):
+                                        quality_repair_stop_reason = (
+                                            "source_evidence_gap_requires_scope_change"
+                                        )
+                                        self._emit_event(
+                                            "quality_repair_skipped",
+                                            {
+                                                "step_id": step_id,
+                                                "provider": BUILTIN_LLM_PROVIDER_ID,
+                                                "attempt": repair_attempt,
+                                                "reason": quality_repair_stop_reason,
+                                                "blocked_reasons": list(
+                                                    feedback.get("blocked_reasons")
+                                                    or []
+                                                ),
+                                                "user_message": (
+                                                    "质量门禁发现源码流程证据缺口；"
+                                                    "当前证据不足以证明完整路径，已停止无效模型重试并保留阻断结论。"
+                                                ),
+                                            },
+                                        )
                                     break
                                 repair_dir = (
                                     artifact_dir
@@ -7831,7 +7855,18 @@ def _quality_feedback_from_audit(
         str(required_artifacts[0]) if required_artifacts else "assistant-output.md",
     )
     required_names = {Path(str(value)).name for value in required_artifacts if str(value).strip()}
+    # These failures describe a missing verified source path, not an editable
+    # report defect.  Re-running an LLM against the same evidence cannot turn
+    # that absence into a fact.  Keep them in the audit (and therefore block
+    # delivery), but never spend another repair turn trying to invent a path.
+    non_repairable_codes = {
+        "flow_incomplete_for_delivery",
+        "flow_missing_abnormal_paths",
+        "flow_evidence_not_connected",
+    }
     issues: list[dict[str, Any]] = []
+    repairable_issues: list[dict[str, Any]] = []
+    non_repairable_issues: list[dict[str, Any]] = []
     affected_artifacts: list[str] = []
     for raw_issue in audit.get("issues") or []:
         if not isinstance(raw_issue, dict):
@@ -7853,7 +7888,9 @@ def _quality_feedback_from_audit(
             "harness_case_not_registered",
         }:
             artifact = "black_box_cases.json"
-        if artifact:
+        is_repairable = code not in non_repairable_codes
+        issue["repairable"] = is_repairable
+        if artifact and is_repairable:
             issue["artifact"] = artifact
             if source_artifact != artifact:
                 issue["source_artifact"] = source_artifact
@@ -7881,6 +7918,10 @@ def _quality_feedback_from_audit(
                     if structured_artifact not in affected_artifacts:
                         affected_artifacts.append(structured_artifact)
         issues.append(issue)
+        if is_repairable:
+            repairable_issues.append(issue)
+        else:
+            non_repairable_issues.append(issue)
     grouped: dict[tuple[str, str, str], dict[str, Any]] = {}
     for issue in issues:
         key = (
@@ -7907,6 +7948,16 @@ def _quality_feedback_from_audit(
         "status": str(audit.get("status") or "needs_rework"),
         "issue_count": len(issues),
         "issues": issues[:50],
+        "repairable_issue_count": len(repairable_issues),
+        "repairable_issues": repairable_issues[:50],
+        "non_repairable_issue_count": len(non_repairable_issues),
+        "blocked_reasons": list(
+            dict.fromkeys(
+                str(issue.get("code") or "")
+                for issue in non_repairable_issues
+                if str(issue.get("code") or "")
+            )
+        ),
         "issue_groups": list(grouped.values()),
         "affected_artifacts": affected_artifacts,
         "recommendations": [
