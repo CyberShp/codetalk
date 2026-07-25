@@ -595,6 +595,38 @@ def test_run_outcomes_keep_quality_and_delivery_independent():
     assert delivery_status == "partial"
 
 
+def test_run_outcomes_never_mark_quality_blocked_artifacts_as_formal_delivery():
+    from app.api.agent_workbench import _derive_task_run_outcomes
+
+    quality_status, delivery_status = _derive_task_run_outcomes(
+        execution={
+            "test_activity_quality": {
+                "deliverable": False,
+                "issue_count": 3,
+            }
+        },
+        run_summary={
+            "nodes": [{
+                "outputs": [
+                    {
+                        "artifact": "report.md",
+                        "path": "agent/report.md",
+                        "status_label": "可下载",
+                    },
+                    {
+                        "artifact": "sfmea.json",
+                        "path": "agent/sfmea.json",
+                        "status_label": "可下载",
+                    },
+                ]
+            }]
+        },
+    )
+
+    assert quality_status == "blocked"
+    assert delivery_status == "none"
+
+
 def test_node_diagnostic_trial_is_never_a_formal_delivery():
     from app.api.agent_workbench import _is_diagnostic_trial
 

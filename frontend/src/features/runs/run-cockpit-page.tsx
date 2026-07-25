@@ -186,6 +186,7 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
   const kinds = [...new Set(events.map((item) => item.event_kind).filter(Boolean))];
   const publicArtifacts = artifacts.filter((item) => item.audience !== "diagnostic");
   const deliverables = publicArtifacts.filter((item) => item.audience === "deliverable");
+  const qualityBlocked = run.quality_status === "blocked";
   const executionProfile = run.task_bundle?.execution_profile as Record<string, unknown> | undefined;
   const executionProfileId = typeof executionProfile?.id === "string" ? executionProfile.id : "";
   const executionProfileLabel = typeof executionProfile?.label === "string" ? executionProfile.label : executionProfileId;
@@ -286,7 +287,7 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
 
     <section className="ct-v2-run-results">
       {failed && <FailurePanel summary={summary} onRetry={() => void retry()} busy={actionBusy} />}
-      <section className="ct-v2-run-deliverables"><header><div><h2>交付件</h2><span>{deliverables.length} 个可交付文件</span></div></header><div>{deliverables.length ? deliverables.map((item) => <ArtifactRow key={item.relative_path} item={item} runId={runId} onOpen={openArtifact} />) : <p>运行完成后，用户可下载的最终文件会显示在这里。</p>}</div></section>
+      <section className="ct-v2-run-deliverables"><header><div><h2>{qualityBlocked ? "受阻产物" : "交付件"}</h2><span>{qualityBlocked ? `${deliverables.length} 个待修复草稿` : `${deliverables.length} 个可交付文件`}</span></div></header><div>{deliverables.length ? <>{qualityBlocked && <p>质量门禁未通过：以下文件仅用于查看问题与辅助修复，尚不能作为正式交付。</p>}{deliverables.map((item) => <ArtifactRow key={item.relative_path} item={item} runId={runId} onOpen={openArtifact} />)}</> : <p>运行完成后，用户可下载的最终文件会显示在这里。</p>}</div></section>
       <QualityPanel run={run} onRetry={() => void retry()} busy={actionBusy} />
       <InputConsumptionPanel ledger={run.input_consumption} />
       <details className="ct-v2-run-support"><summary>支撑文件与输入快照（{publicArtifacts.length - deliverables.length}）</summary>{publicArtifacts.filter((item) => item.audience !== "deliverable").map((item) => <ArtifactRow key={item.relative_path} item={item} runId={runId} onOpen={openArtifact} />)}</details>
