@@ -134,6 +134,12 @@ def materialize_artifact_contract_v3_outputs(
                 ["# 定向黑盒测试设计", *_case_lines(cases)],
             )
             written.append("黑盒测试设计.md")
+        if flow_cards:
+            _write_markdown(
+                root / "流程状态资源与异常传播.md",
+                ["# 定向流程、状态、资源与异常传播", "\n## 已建模流程", *_flow_lines(flow_cards)],
+            )
+            written.append("流程状态资源与异常传播.md")
         materialize_artifact_alignment_audit(root, profile_id=profile_id)
         return written
 
