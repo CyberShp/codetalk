@@ -2544,6 +2544,95 @@ class TestAIConversationsAPI:
         assert deliverable_refs[0].metadata["audience"] == "deliverable"
         assert "integration-agent" in deliverable_refs[0].excerpt
 
+    async def test_workbench_task_review_keeps_every_deliverable_before_diagnostics(
+        self,
+        sqlite_db,
+        tmp_path: Path,
+        monkeypatch,
+    ):
+        """A task-run review must receive the complete delivery set it is asked to audit."""
+        from app.config import settings
+        from app.services.ai_conversations import build_context_references
+
+        data_root = tmp_path / "data"
+        task_run_id = "task_run_complete_delivery_review"
+        task_dir = data_root / "workbench" / "task_runs" / task_run_id
+        task_dir.mkdir(parents=True)
+        deliverables = [
+            "完整分析报告.md",
+            "开发给测试讲代码.md",
+            "流程状态资源与异常传播.md",
+            "风险点与SFMEA.md",
+            "黑盒测试设计.md",
+            "agent_runs/analyze/sfmea.json",
+            "agent_runs/analyze/black_box_cases.json",
+            "agent_runs/analyze/flow_cards.json",
+            "agent_runs/analyze/report.md",
+        ]
+        for relative_path in deliverables:
+            path = task_dir / relative_path
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"delivery evidence for {relative_path}", encoding="utf-8")
+        (task_dir / "task_artifact_manifest.json").write_text(
+            json.dumps(
+                {
+                    "task_run_id": task_run_id,
+                    "artifacts": [
+                        {
+                            "relative_path": relative_path,
+                            "kind": "text",
+                            "audience": "deliverable",
+                        }
+                        for relative_path in deliverables
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        (task_dir / "task_run.json").write_text('{"status":"completed"}', encoding="utf-8")
+        (task_dir / "claim_evidence_ledger.json").write_text(
+            '{"claims":[{"claim_id":"CL-1","status":"verified"}]}', encoding="utf-8"
+        )
+        (task_dir / "verified_fact_ledger.json").write_text(
+            '{"facts":[{"claim_id":"CL-1"}]}', encoding="utf-8"
+        )
+        evidence_cards = task_dir / "agent_runs" / "analyze" / "evidence_cards.json"
+        evidence_cards.parent.mkdir(parents=True, exist_ok=True)
+        evidence_cards.write_text(
+            '[{"evidence_id":"SRC-01","path":"lib/iscsi/conn.c","start_line":153}]',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(settings, "data_dir", str(data_root))
+
+        refs = await build_context_references(
+            conversation={
+                "id": "conv-complete-delivery-review",
+                "scope_type": "workbench_task_run",
+                "scope_id": task_run_id,
+                "workspace_id": "ws-complete-delivery-review",
+                "memory_namespace": "workspace:ws-complete-delivery-review",
+                "initial_context": {"workspace_id": "ws-complete-delivery-review"},
+            },
+            user_message="仅基于本次运行的所有交付件做独立质量审查",
+            db_path=sqlite_db,
+        )
+
+        reviewed_paths = {
+            str(ref.metadata["path"])
+            for ref in refs
+            if ref.source_type == "workbench_task_deliverable"
+        }
+        assert reviewed_paths == set(deliverables)
+        artifact_titles = {
+            ref.title for ref in refs if ref.source_type == "workbench_task_artifact"
+        }
+        assert {
+            "task_artifact_manifest.json",
+            "claim_evidence_ledger.json",
+            "verified_fact_ledger.json",
+            "agent_runs/analyze/evidence_cards.json",
+        } <= artifact_titles
+
     async def test_workbench_task_thread_references_test_activity_contract_and_quality_audit(
         self,
         sqlite_db,
@@ -5351,6 +5440,59 @@ async def test_linked_workflow_review_keeps_truncated_answer_as_conversation(
     assert run["status"] == "completed"
     assert [message["role"] for message in messages] == ["user", "assistant"]
     assert "当前可用的问答结果" in messages[-1]["content"]
+    assert not any(
+        str(action.get("kind") or "") == "download"
+        for action in messages[-1].get("actions") or []
+        if isinstance(action, dict)
+    )
+
+
+@pytest.mark.asyncio
+async def test_linked_workflow_read_only_verification_does_not_create_downloadable_artifacts(
+    sqlite_db,
+):
+    from app.services import ai_conversations
+    from app.services.ai_conversations import AIConversationStore
+
+    class ReadOnlyReviewLLM:
+        async def stream_complete(self, messages, max_tokens=4096, temperature=0.3):
+            yield (
+                "`sfmea.json` 中 SFMEA-01 的 `risk_status` 为 `test_hypothesis`。"
+                "source_evidence 为 `SRC-02:L153`。"
+            )
+
+    store = AIConversationStore(sqlite_db)
+    conversation = await store.create_conversation(
+        scope_type="workbench_task_run",
+        scope_id="task_run_completed",
+        workspace_id="global",
+        title="已完成交付件只读核验",
+        initial_context={"task_run_id": "task_run_completed"},
+    )
+    created = await store.create_user_message_and_run(
+        conversation_id=conversation["id"],
+        content=(
+            "请只根据本次旁挂交付件回答：sfmea.json 中 SFMEA-01 的 risk_status 是什么？"
+            "并列出其 source_evidence。"
+        ),
+        references=[],
+    )
+
+    await ai_conversations.run_generation(
+        store=store,
+        run_id=created["run"]["id"],
+        llm=ReadOnlyReviewLLM(),
+    )
+
+    run = await store.get_run(created["run"]["id"])
+    messages = await store.list_messages(conversation["id"])
+    assert run["status"] == "completed"
+    assert "test_hypothesis" in messages[-1]["content"]
+    assert not any(
+        str(action.get("kind") or "") == "download"
+        for action in messages[-1].get("actions") or []
+        if isinstance(action, dict)
+    )
 
 
 @pytest.mark.asyncio
@@ -5928,6 +6070,11 @@ async def test_test_activity_explanations_do_not_trigger_full_artifact_gate():
         "scope_id": "task_run_example",
     }
     assert _is_linked_workflow_review_turn(linked_review, discussion_requests[-1]) is True
+    assert _is_linked_workflow_review_turn(
+        linked_review,
+        "请只根据本次旁挂交付件回答：sfmea.json 中 SFMEA-01 的 risk_status 是什么？"
+        "并列出其 source_evidence。若你看不到该 JSON 或证据卡，必须明确说明，不得猜测。",
+    ) is True
     assert _is_linked_workflow_review_turn(
         linked_review,
         "评审现有交付件后，重新生成 SFMEA 和黑盒测试用例",

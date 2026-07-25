@@ -811,6 +811,10 @@ class AIConversationStore:
                 continue
             user_content = user_message_by_run.get(run_id, "")
             content = str(message.get("content") or "").strip()
+            # Do not retroactively turn a linked task-run fact check into an
+            # artifact merely because it mentions a structured filename.
+            if _is_linked_workflow_review_turn(conversation, user_content):
+                continue
             if not content or not _agent_task_requests_downloadable_artifact(user_content, content):
                 continue
             final_content, final_actions = await _prepare_assistant_delivery(
@@ -2331,10 +2335,18 @@ async def run_generation(
             user_message=user_message["content"],
             force_artifact=bound_artifacts_materialized
             or staged_artifact_root is not None
-            or _agent_task_requests_downloadable_artifact(user_message["content"], content),
+            # A task-run follow-up may quote a formal filename while checking a
+            # fact.  It is still a conversation unless the user explicitly
+            # asks for a new delivery; do not turn that answer into a fake
+            # downloadable test-design package.
+            or (
+                not linked_review_turn
+                and _agent_task_requests_downloadable_artifact(user_message["content"], content)
+            ),
             artifact_only=bound_artifacts_materialized or staged_artifact_root is not None,
             declared_artifacts=staged_delivery_contracts,
             source_artifact_dir=staged_artifact_root,
+            suppress_artifact=linked_review_turn,
         )
         workflow_action = _bound_workflow_action(conversation)
         if workflow_action:
@@ -5931,11 +5943,18 @@ async def _workbench_task_refs(scope_type: str, scope_id: str) -> list[ContextRe
     task_dir = settings.data_path / "workbench" / "task_runs" / safe
     deliverable_refs = await _workbench_task_deliverable_refs(task_dir, scope_id)
     candidates = [
+        # These artifacts make an AI-thread review auditable: include the
+        # formal quality result and the verified source ledger before generic
+        # execution metadata.
+        "task_artifact_manifest.json",
+        "test_activity_quality_audit.json",
+        "claim_evidence_ledger.json",
+        "verified_fact_ledger.json",
+        "agent_runs/analyze/evidence_cards.json",
+        "agent_runs/analyze/flow_evidence_pack.json",
         "task_run.json",
         "task_bundle.json",
         "test_activity_contract.json",
-        "test_activity_quality_audit.json",
-        "task_artifact_manifest.json",
         "workflow_execution.json",
         "artifact_manifest.json",
     ]
@@ -5957,7 +5976,10 @@ async def _workbench_task_refs(scope_type: str, scope_id: str) -> list[ContextRe
                 metadata={"task_run_id": scope_id, "path": name},
             )
         )
-    return refs[:10]
+    # A task-run review is explicitly about the task's delivered results.  Keep
+    # every declared deliverable ahead of diagnostic metadata so an auditor is
+    # never asked to judge an artifact that was silently omitted from context.
+    return refs
 
 
 async def _workbench_task_deliverable_refs(
@@ -6006,8 +6028,6 @@ async def _workbench_task_deliverable_refs(
                 },
             )
         )
-        if len(refs) >= 4:
-            break
     return refs
 
 
@@ -6374,12 +6394,15 @@ async def _prepare_assistant_delivery(
     artifact_only: bool = False,
     declared_artifacts: list[dict[str, Any]] | None = None,
     source_artifact_dir: Path | None = None,
+    suppress_artifact: bool = False,
 ) -> tuple[str, list[dict[str, Any]]]:
     test_activity_actions = _test_activity_task_card_actions(
         conversation=conversation,
         user_message=user_message,
     )
     actions: list[dict[str, Any]] = [*test_activity_actions, *_default_actions()]
+    if suppress_artifact:
+        return content, actions
     if not force_artifact and not _should_materialize_thread_artifact(content):
         return content, actions
     safe_content = redact_agent_diagnostic_text(content)
@@ -6692,24 +6715,24 @@ def _is_linked_workflow_review_turn(
     conversation: dict[str, Any],
     user_message: str,
 ) -> bool:
-    """Keep task-run follow-ups conversational unless a new delivery is explicit."""
+    """Keep every task-run follow-up conversational unless it requests a new delivery.
+
+    A linked run already has an Artifact Contract and its delivered files are
+    evidence.  A question that names ``sfmea.json`` or ``source_evidence`` is
+    often a precise read-only verification, not a request to regenerate the
+    complete test-design bundle.  Do not infer a new deliverable merely from
+    the names of formal artifacts.
+    """
 
     if str(conversation.get("scope_type") or "") != "workbench_task_run":
         return False
     text = str(user_message or "").lower()
-    review_markers = (
-        "解释", "为什么", "为何", "是否合理", "不合理", "评审", "审查", "点评",
-        "评估", "评分", "核验", "复核", "验证", "风险判断", "背后的",
-        "explain", "why", "review", "evaluate", "assess", "score", "validate", "verify",
-    )
     creation_markers = (
         "生成", "产出", "创建", "制定", "编写", "写一份", "设计一套", "请做",
         "做一次", "重做", "重新生成", "补齐", "完善", "generate", "produce",
         "create", "write", "design", "regenerate",
     )
-    return any(marker in text for marker in review_markers) and not any(
-        marker in text for marker in creation_markers
-    )
+    return not any(marker in text for marker in creation_markers)
 
 
 def _agent_structured_deliverable_groups(text: str) -> set[str]:
