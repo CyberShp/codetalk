@@ -5016,6 +5016,62 @@ def test_iscsi_gate_rejects_non_executable_or_semantically_false_blackbox_mappin
     }.issubset(constraint_ids), audit
 
 
+def test_artifact_audit_blocks_structured_blackbox_mapping_semantic_conflict(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_artifacts,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    mapping = repo / "test" / "iscsi_tgt" / "multiconnection" / "multiconnection.sh"
+    mapping.parent.mkdir(parents=True)
+    mapping.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "black_box_cases.json").write_text(
+        json.dumps([
+            {
+                "case_id": "BB-MCS-001",
+                "scenario_name": "多个 Initiator 并发登录同一 Target",
+                "test_dimension": "concurrency",
+                "preconditions": ["隔离 target"],
+                "steps": ["从多个 initiator 发起公开 Login"],
+                "expected_result": "服务保持可用" ,
+                "observability": ["登录响应"],
+                "failure_diagnostics": ["target 日志"],
+                "mapped_test_dir": "test/iscsi_tgt/multiconnection/multiconnection.sh",
+                "source_or_test_evidence": [
+                    "test/iscsi_tgt/multiconnection/multiconnection.sh"
+                ],
+            }
+        ], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    contract = build_test_activity_contract(
+        target="iSCSI Login 完整灰盒黑盒测试设计",
+        repo_path=str(repo),
+    )
+    contract["artifact_contract"] = {"black_box_cases.json": {"required_fields": []}}
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    semantic_claims = [
+        claim for claim in audit["fact_claims"]
+        if claim.get("type") == "test_mapping_semantics"
+    ]
+    assert audit["deliverable"] is False
+    assert audit["quality_axes"]["facts"]["status"] == "blocked"
+    assert any(
+        claim.get("constraint_id") == "iscsi_multiconnection_mapping_scope"
+        and claim.get("status") == "contradicted"
+        for claim in semantic_claims
+    ), audit
+
+
 def test_iscsi_release_gate_rejects_shallow_raw_pdu_chap_and_statistical_design(tmp_path):
     from app.services.test_activity_contract import (
         audit_test_activity_response,

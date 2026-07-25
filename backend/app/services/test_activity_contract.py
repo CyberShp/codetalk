@@ -1569,6 +1569,8 @@ def audit_test_activity_artifacts(
     structural_issues: list[dict[str, Any]] = []
     executable_issues: list[dict[str, Any]] = []
     lint_warnings: list[dict[str, Any]] = []
+    structured_semantic_issues: list[dict[str, Any]] = []
+    structured_semantic_claims: list[dict[str, Any]] = []
     execution_checks_applicable = False
     artifact_contract = contract.get("artifact_contract") or {}
     structured_black_box_declared = any(
@@ -1581,6 +1583,64 @@ def audit_test_activity_artifacts(
         if isinstance(spec, dict)
     ) or (root / "black_box_cases.json").is_file()
     audited_json_artifacts: set[str] = set()
+
+    def audit_structured_semantics(*, artifact: str, payload: Any) -> None:
+        """Turn JSON-only professional conflicts into fact-gate claims.
+
+        The user downloads structured SFMEA and black-box artifacts directly.
+        A correct Markdown summary must not be able to mask a false test-path
+        mapping in those authoritative files.
+        """
+        if not isinstance(payload, (dict, list)):
+            return
+        rows = payload if isinstance(payload, list) else [payload]
+        semantic_rows: list[str] = []
+        semantic_keys = (
+            "failure_mode",
+            "scenario_name",
+            "expected_result",
+            "test_mapping",
+            "mapped_test_dir",
+            "source_evidence",
+            "source_or_test_evidence",
+        )
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            # Constraint patterns express a semantic relation such as
+            # scenario -> mapped test. Rebuild it in a stable relation-first
+            # order so parsing a JSON artifact cannot alter the verdict.
+            ordered = {
+                key: row[key]
+                for key in semantic_keys
+                if key in row and row[key] not in (None, "", [], {})
+            }
+            if ordered:
+                semantic_rows.append(json.dumps(ordered, ensure_ascii=False))
+        content = "\n".join(semantic_rows)
+        for index, issue in enumerate(
+            _audit_professional_constraints(
+                content,
+                contract,
+                source_artifact=artifact,
+                infer_structured_section=True,
+            ),
+            start=1,
+        ):
+            constraint_id = str(issue.get("constraint_id") or "semantic-mapping")
+            structured_semantic_issues.append(issue)
+            structured_semantic_claims.append(
+                {
+                    "claim_id": f"SEM-{Path(artifact).stem.upper()}-{index:03d}",
+                    "type": "test_mapping_semantics",
+                    "statement": str(issue.get("message") or "测试映射与已验证领域事实冲突"),
+                    "status": "contradicted",
+                    "source_artifact": artifact,
+                    "constraint_id": constraint_id,
+                    "evidence": list(issue.get("evidence") or []),
+                }
+            )
+
     if contract.get("audit_scope_required") and not artifact_contract:
         structural_issues.append(
             _issue(
@@ -1601,6 +1661,7 @@ def audit_test_activity_artifacts(
             structural_issues.extend(
                 _audit_json_artifact(artifact=artifact, payload=payload, spec=spec, repo=repo)
             )
+            audit_structured_semantics(artifact=artifact, payload=payload)
             audited_json_artifacts.add(Path(str(artifact)).name)
         else:
             content = path.read_text(encoding="utf-8", errors="ignore").strip()
@@ -1688,14 +1749,16 @@ def audit_test_activity_artifacts(
         path = _artifact_path(root, artifact)
         if artifact in audited_json_artifacts or not path.is_file():
             continue
+        payload = _read_json(path)
         structural_issues.extend(
             _audit_json_artifact(
                 artifact=artifact,
-                payload=_read_json(path),
+                payload=payload,
                 spec={},
                 repo=repo,
             )
         )
+        audit_structured_semantics(artifact=artifact, payload=payload)
     structural_issues.extend(_audit_cross_artifact_references(
         root=root,
         declared_artifacts={str(item) for item in artifact_contract},
@@ -1710,6 +1773,8 @@ def audit_test_activity_artifacts(
             )
         ),
     )
+    fact_claims.extend(structured_semantic_claims)
+    fact_issues.extend(structured_semantic_issues)
     issues = [*structural_issues, *fact_issues, *executable_issues]
     structure_score = max(0, 100 - len(structural_issues) * 15)
     empty_scope = any(
