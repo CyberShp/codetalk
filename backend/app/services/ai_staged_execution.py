@@ -2542,6 +2542,27 @@ def _existing_quality_stage_result(
     output_path = artifact_dir / artifact
     if not output_path.is_file():
         return None
+    if artifact.endswith(".json"):
+        output_contract = (
+            stage.get("output_contract")
+            if isinstance(stage.get("output_contract"), dict)
+            else {}
+        )
+        schema = output_contract.get("schema")
+        payload = _read_json_file(output_path)
+        if not isinstance(payload, (dict, list)):
+            return None
+        if isinstance(schema, dict):
+            repaired_payload, repaired_fields = _deterministic_schema_repair(
+                payload, schema
+            )
+            if repaired_fields:
+                _write_json(output_path, repaired_payload)
+                payload = repaired_payload
+            if _validate_schema(payload, schema):
+                # Do not label a stale or malformed artifact as accepted just
+                # because it exists. The normal stage path will regenerate it.
+                return None
     produced_artifacts = [
         str(value).strip()
         for value in stage.get("produces_artifacts") or []

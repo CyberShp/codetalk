@@ -10572,3 +10572,41 @@ def test_deterministic_schema_repair_normalizes_reused_black_box_diagnostics():
     repaired, fields = _deterministic_schema_repair(payload, schema)
     assert repaired[0]["failure_diagnostics"] == ["保留请求、响应和 target 日志。"]
     assert fields == ["$[0].failure_diagnostics"]
+
+
+def test_quality_stage_reuse_normalizes_json_before_marking_completed(tmp_path):
+    from app.services.ai_staged_execution import _existing_quality_stage_result
+
+    artifact = tmp_path / "black_box_cases.json"
+    artifact.write_text(
+        json.dumps([{"failure_diagnostics": "保留请求和响应。"}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    stage_dir = tmp_path / "stages" / "black_box_cases"
+    stage_dir.mkdir(parents=True)
+    result = _existing_quality_stage_result(
+        plan={"quality_retry_feedback": {"affected_artifacts": []}},
+        artifact_dir=tmp_path,
+        stage_dir=stage_dir,
+        stage={
+            "id": "black_box_cases",
+            "artifact": "black_box_cases.json",
+            "output_contract": {
+                "schema": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "failure_diagnostics": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            }
+                        },
+                    },
+                }
+            },
+        },
+    )
+
+    assert result is not None
+    assert json.loads(artifact.read_text(encoding="utf-8"))[0]["failure_diagnostics"] == ["保留请求和响应。"]
