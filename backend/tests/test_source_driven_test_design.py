@@ -766,6 +766,54 @@ def test_refresh_source_delivery_governance_resolves_agent_owned_artifacts(tmp_p
     assert not (tmp_path / "judge_report.json").exists()
 
 
+def test_refresh_source_delivery_governance_rebuilds_risk_ledger_after_sfmea_id_normalization(tmp_path):
+    from app.services.source_driven_test_design import refresh_source_driven_delivery_governance
+
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps([{
+            "sfmea_id": "SFMEA-001",
+            "failure_mode": "Login timeout cleanup risk",
+            "source_evidence": ["SRC-1"],
+            "test_mapping": ["BB-1"],
+        }]),
+        encoding="utf-8",
+    )
+    (tmp_path / "scenario_candidates.json").write_text(
+        json.dumps({"items": []}), encoding="utf-8"
+    )
+    # This mimics an old pre-normalization ledger written while the model used
+    # SFMEA-01.  The final delivery refresh must not retain that stale ID.
+    (tmp_path / "risk_register.json").write_text(
+        json.dumps({"items": [{"risk_id": "SFMEA-01"}]}), encoding="utf-8"
+    )
+    (tmp_path / "evidence_cards.json").write_text(
+        json.dumps([{
+            "evidence_id": "SRC-1",
+            "file_path": "lib/iscsi/conn.c",
+            "start_line": 10,
+            "end_line": 10,
+            "excerpt": "return 0;",
+            "sha256": "a" * 64,
+        }]),
+        encoding="utf-8",
+    )
+    (tmp_path / "black_box_cases.json").write_text(
+        json.dumps([{
+            "case_id": "BB-1",
+            "risk_ids": ["SFMEA-001"],
+            "evidence_refs": ["SRC-1"],
+        }]),
+        encoding="utf-8",
+    )
+
+    refresh_source_driven_delivery_governance(tmp_path)
+
+    risk_register = json.loads((tmp_path / "risk_register.json").read_text())
+    traceability = json.loads((tmp_path / "traceability_matrix.json").read_text())
+    assert risk_register["items"][0]["risk_id"] == "SFMEA-001"
+    assert traceability["unknown_risk_ids"] == []
+
+
 def test_final_fact_verification_preserves_l1_conflicts_and_unreviewed_tail(tmp_path):
     from app.services.source_driven_test_design import _combined_final_fact_verification
 

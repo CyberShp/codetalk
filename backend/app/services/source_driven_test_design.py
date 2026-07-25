@@ -475,6 +475,22 @@ def refresh_source_driven_delivery_governance(
     }
     # The provider payload may be normalized after the first deterministic
     # pass (for example SFMEA IDs are canonicalized during quality repair).
+    # Rebuild every SFMEA-derived ledger from those final bytes.  Keeping an
+    # early risk_register alongside a repaired sfmea.json makes a real risk
+    # look unknown to the coverage judge solely because its display padding
+    # changed (SFMEA-01 vs SFMEA-001).
+    sfmea_rows = _read_json_artifact(root / "sfmea.json")
+    candidates = _read_json_artifact(root / "scenario_candidates.json")
+    if isinstance(sfmea_rows, list) and isinstance(candidates, dict):
+        artifacts["risk_register.json"] = _risk_register_artifact(
+            sfmea_rows,
+            candidates,
+        )
+        _write_json_artifact(
+            root / "risk_register.json",
+            artifacts["risk_register.json"],
+        )
+
     # Rebuild traceability from those final bytes instead of carrying an early
     # snapshot with pre-normalization IDs into the delivery verdict.
     cases = _read_json_artifact(root / "black_box_cases.json")
