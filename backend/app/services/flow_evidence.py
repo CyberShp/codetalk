@@ -338,7 +338,66 @@ def build_flow_outline(flow_pack: dict[str, Any]) -> dict[str, Any]:
     used_edges: set[int] = set()
     main_flows: list[dict[str, Any]] = []
     steps: list[dict[str, Any]] = []
-    for root in roots:
+    supporting_components: list[dict[str, Any]] = []
+    primary_selection = _select_primary_normal_path(
+        usable_edges=usable_edges,
+        entry_roots=entry_roots,
+        analysis_target=str(flow_pack.get("analysis_target") or ""),
+    )
+    if primary_selection:
+        root, edge_indexes = primary_selection
+        component = [usable_edges[index] for index in edge_indexes]
+        used_edges.update(edge_indexes)
+        flow_id = "main-flow-01"
+        flow_steps = [
+            {
+                "step": index,
+                "flow_id": flow_id,
+                "action": (
+                    f"{edge.get('from_symbol') or edge.get('symbol')} 传入回调 {edge.get('to_symbol')}"
+                    if edge.get("relation") == "callback_reference"
+                    else f"{edge.get('from_symbol') or edge.get('symbol')} 调用 {edge.get('to_symbol')}"
+                ),
+                "from_symbol": str(edge.get("from_symbol") or edge.get("symbol") or ""),
+                "to_symbol": str(edge.get("to_symbol") or ""),
+                "evidence_ids": [str(edge.get("evidence_id") or "")],
+            }
+            for index, edge in enumerate(component, 1)
+        ]
+        steps.extend(flow_steps)
+        main_flows.append(
+            {
+                "id": flow_id,
+                "name": f"从 {root} 到正常完成的已验证主流程",
+                "root_symbol": root,
+                "steps": flow_steps,
+            }
+        )
+        primary_symbols = {
+            root,
+            *(str(edge.get("from_symbol") or edge.get("symbol") or "") for edge in component),
+            *(str(edge.get("to_symbol") or "") for edge in component),
+        }
+        for supporting_root in entry_roots:
+            if not supporting_root or supporting_root in primary_symbols:
+                continue
+            branch_edges = [
+                edge
+                for edge in usable_edges
+                if str(edge.get("from_symbol") or edge.get("symbol") or "") == supporting_root
+            ][:8]
+            if branch_edges:
+                supporting_components.append(
+                    {
+                        "root_symbol": supporting_root,
+                        "edge_count": len(branch_edges),
+                        "purpose": "已验证支撑分支；不作为正常主流程顺序",
+                        "evidence_ids": _dedupe(
+                            str(edge.get("evidence_id") or "") for edge in branch_edges
+                        ),
+                    }
+                )
+    for root in ([] if primary_selection else roots):
         queue = [root]
         component: list[dict[str, Any]] = []
         while queue and len(component) < 32:
@@ -361,7 +420,11 @@ def build_flow_outline(flow_pack: dict[str, Any]) -> dict[str, Any]:
             {
                 "step": index,
                 "flow_id": flow_id,
-                "action": f"{edge.get('from_symbol') or edge.get('symbol')} 调用 {edge.get('to_symbol')}",
+                "action": (
+                    f"{edge.get('from_symbol') or edge.get('symbol')} 传入回调 {edge.get('to_symbol')}"
+                    if edge.get("relation") == "callback_reference"
+                    else f"{edge.get('from_symbol') or edge.get('symbol')} 调用 {edge.get('to_symbol')}"
+                ),
                 "from_symbol": str(edge.get("from_symbol") or edge.get("symbol") or ""),
                 "to_symbol": str(edge.get("to_symbol") or ""),
                 "evidence_ids": [str(edge.get("evidence_id") or "")],
@@ -382,7 +445,7 @@ def build_flow_outline(flow_pack: dict[str, Any]) -> dict[str, Any]:
         for entry in entries
     }
     represented_roots = {str(item.get("root_symbol") or "") for item in main_flows}
-    for entry_symbol in entry_symbols[:12]:
+    for entry_symbol in ([] if primary_selection else entry_symbols[:12]):
         if entry_symbol in represented_roots:
             continue
         flow_id = f"entry-only-{len(main_flows) + 1:02d}"
@@ -427,7 +490,7 @@ def build_flow_outline(flow_pack: dict[str, Any]) -> dict[str, Any]:
         outline_gaps.append(
             "已验证入口缺少可达调用边，未将其他任意调用根提升为主流程"
         )
-    if len(main_flows) > 1:
+    if len(main_flows) > 1 and not primary_selection:
         outline_gaps.append(
             f"当前证据形成 {len(main_flows)} 个互不连通的调用分量，不能证明单一端到端业务顺序"
         )
@@ -447,6 +510,7 @@ def build_flow_outline(flow_pack: dict[str, Any]) -> dict[str, Any]:
         "actors": ["external_caller", "target_entry", "state_backend"],
         "entry_points": entries,
         "main_flows": main_flows,
+        "supporting_components": supporting_components,
         "steps": steps,
         "branches": list(flow_pack.get("conditions") or []),
         "error_flows": list(flow_pack.get("error_paths") or []),
@@ -458,6 +522,61 @@ def build_flow_outline(flow_pack: dict[str, Any]) -> dict[str, Any]:
         "evidence_ids": all_evidence_ids,
         "evidence_gaps": _dedupe(outline_gaps),
     }
+
+
+def _select_primary_normal_path(
+    *,
+    usable_edges: list[dict[str, Any]],
+    entry_roots: list[str],
+    analysis_target: str,
+) -> tuple[str, list[int]] | None:
+    """Return one source-supported normal path, never a stitched inference."""
+    primary_terms = _primary_flow_terms(analysis_target)
+    if not primary_terms:
+        return None
+    normal_terminal = re.compile(r"(?:success|complete|ready|finish)", re.IGNORECASE)
+    error_terminal = re.compile(r"(?:err|error|fail|timeout|reject)", re.IGNORECASE)
+    terminals = {
+        str(edge.get("to_symbol") or "")
+        for edge in usable_edges
+        if str(edge.get("to_symbol") or "")
+        and normal_terminal.search(str(edge.get("to_symbol") or ""))
+        and not error_terminal.search(str(edge.get("to_symbol") or ""))
+        and any(term in str(edge.get("to_symbol") or "").lower() for term in primary_terms)
+    }
+    if not terminals:
+        return None
+    outgoing: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    for index, edge in enumerate(usable_edges):
+        source = str(edge.get("from_symbol") or edge.get("symbol") or "")
+        if source:
+            outgoing.setdefault(source, []).append((index, edge))
+    candidates: list[tuple[int, str, list[int]]] = []
+    for root in entry_roots:
+        if not root or error_terminal.search(root) or "fuzz" in root.lower():
+            continue
+        queue: deque[tuple[str, list[int]]] = deque([(root, [])])
+        visited = {root}
+        while queue:
+            symbol, path = queue.popleft()
+            if symbol in terminals and len(path) >= 3:
+                # A longer source-supported path is more useful for a testing
+                # flow than a late internal handler that happens to reach the
+                # same normal completion in one hop.
+                candidates.append((len(path), root, path))
+                break
+            if len(path) >= 16:
+                continue
+            for edge_index, edge in outgoing.get(symbol) or []:
+                target = str(edge.get("to_symbol") or "")
+                if not target or target in visited:
+                    continue
+                visited.add(target)
+                queue.append((target, [*path, edge_index]))
+    if not candidates:
+        return None
+    _, root, path = max(candidates, key=lambda item: (item[0], item[1]))
+    return root, path
 
 
 def build_business_flow_context(
@@ -856,7 +975,10 @@ def _discover_with_git_grep(
     # Start with verified card symbols, then walk a bounded reverse-call frontier.
     # A one-hop grep can find ``payload_login -> login_complete`` but misses the
     # verified ingress that reaches that callback through the read loop.
-    all_seed_symbols = _dedupe([*declared_symbols, *called_symbols])
+    all_seed_symbols = _prioritize_flow_symbols(
+        _dedupe([*declared_symbols, *called_symbols]),
+        analysis_target=str(source_pack.get("analysis_target") or ""),
+    )
     # Reserve half of the finite search budget for verified expansion.  Feeding
     # every evidence-card symbol into the queue first starves the callback
     # chain discovered from the earliest, most relevant anchors.
@@ -868,6 +990,13 @@ def _discover_with_git_grep(
         symbol.lstrip("_").split("_", 1)[0]
         for symbol in all_seed_symbols
         if "_" in symbol and not symbol.lstrip("_").isupper()
+    }
+    primary_terms = _primary_flow_terms(str(source_pack.get("analysis_target") or ""))
+    primary_prefixes = {
+        symbol.lstrip("_").split("_", 1)[0]
+        for symbol in all_seed_symbols
+        if "_" in symbol
+        and any(term in symbol.lower() for term in primary_terms)
     }
     roots = _dedupe(roots)[:12]
     if not symbols or not roots:
@@ -936,7 +1065,8 @@ def _discover_with_git_grep(
                 if 0 < line_number <= len(sanitized_lines)
                 else ""
             )
-            if not _line_has_symbol_call(sanitized_line, symbol):
+            reference_kind = _line_symbol_reference_kind(sanitized_line, symbol)
+            if not reference_kind:
                 continue
             caller = _nearest_function_symbol(sanitized_lines, line_number)
             if caller == symbol:
@@ -958,10 +1088,18 @@ def _discover_with_git_grep(
                             and callee.lstrip("_").split("_", 1)[0]
                             not in project_prefixes
                         )
+                        or (
+                            primary_prefixes
+                            and callee.lstrip("_").split("_", 1)[0]
+                            not in primary_prefixes
+                        )
                     ):
                         continue
                     queued_symbols.add(callee)
-                    symbols.append(callee)
+                    # Follow the verified chain before consuming unrelated
+                    # evidence-card seeds.  The edge below remains tied to a
+                    # concrete source line; this changes only search order.
+                    symbols.appendleft(callee)
                     edges.append(
                         _evidence_node(
                             evidence_id="",
@@ -983,6 +1121,7 @@ def _discover_with_git_grep(
                 "from_symbol": caller or "unknown_caller",
                 "to_symbol": symbol,
                 "matched_text": line_text.strip()[:300],
+                "relation": reference_kind,
             }
             if _is_test_path(file_path):
                 tests.append(
@@ -1015,7 +1154,11 @@ def _discover_with_git_grep(
                 # upstream ingress without inventing a control-flow link.
                 if caller not in queued_symbols:
                     queued_symbols.add(caller)
-                    symbols.append(caller)
+                    # Reverse callers are the shortest path from a callback
+                    # or terminal handler to its real ingress.  Treat them as
+                    # the active frontier so a crowded card set cannot spend
+                    # the finite budget on unrelated symbols first.
+                    symbols.appendleft(caller)
             if len(edges) + len(tests) >= max_matches:
                 break
     return {
@@ -1026,6 +1169,15 @@ def _discover_with_git_grep(
 
 def _line_has_symbol_call(line_text: str, symbol: str) -> bool:
     return re.search(rf"\b{re.escape(symbol)}\s*\(", line_text) is not None
+
+
+def _line_symbol_reference_kind(line_text: str, symbol: str) -> str:
+    """Classify a verified direct call or C callback reference on one code line."""
+    if _line_has_symbol_call(line_text, symbol):
+        return "direct_call"
+    if re.search(rf"\b{re.escape(symbol)}\b", line_text):
+        return "callback_reference"
+    return ""
 
 
 def _sanitize_c_like_lines(lines: list[str]) -> list[str]:
@@ -1109,7 +1261,9 @@ def _git_blob(
 
 def _nearest_function_symbol(lines: list[str], line_number: int) -> str:
     start = min(max(0, line_number - 1), len(lines) - 1)
-    for index in range(start, max(-1, start - 80), -1):
+    # Keep this bounded, but allow normal C functions that contain a state
+    # machine or parsing loop to exceed the old 80-line lookup window.
+    for index in range(start, max(-1, start - 600), -1):
         symbol = _definition_symbol("\n".join(lines[index : index + 16]))
         if symbol:
             return symbol
@@ -1147,7 +1301,18 @@ def _function_local_calls(
 
 
 def _definition_symbol(line: str) -> str:
-    match = _FUNCTION_DEFINITION_PATTERN.search(line)
+    lines = line.splitlines()
+    if not lines:
+        return ""
+    # This helper is called while scanning a source window.  Only inspect the
+    # current source line (or its immediately following split signature), never
+    # a later function in the window: otherwise a call can be attributed to a
+    # definition that happens to appear several lines below it.
+    # Match from the current source line only.  The existing C definition
+    # expression handles split return types, pointers, and multi-line
+    # arguments; using ``search`` against a source window was the bug because
+    # it could instead select a later definition in that window.
+    match = _FUNCTION_DEFINITION_PATTERN.match("\n".join(lines[:10]))
     return match.group(1) if match else ""
 
 
@@ -1193,6 +1358,42 @@ def _search_root(file_path: str) -> str:
     if len(path.parts) >= 3:
         return "/".join(path.parts[:2])
     return path.parts[0]
+
+
+def _prioritize_flow_symbols(symbols: list[str], *, analysis_target: str) -> list[str]:
+    """Keep target-relevant verified symbols at the front of a bounded search."""
+    primary_terms = _primary_flow_terms(analysis_target)
+    target_terms = {
+        term.lower()
+        for term in re.findall(r"[A-Za-z][A-Za-z0-9_]{2,}", analysis_target)
+        if term.lower() not in {"the", "and", "for", "with", "from", "target"}
+    }
+    if not target_terms:
+        return symbols
+
+    def relevance(symbol: str) -> int:
+        lowered = symbol.lower()
+        # The clause before the first colon is the user's core analysis
+        # subject.  The rest commonly enumerates CHAP, Digest, recovery, and
+        # other coverage dimensions; keep those useful, but never let them
+        # starve the primary protocol path in a finite traversal.
+        primary_score = sum(len(term) for term in primary_terms if term in lowered)
+        supporting_score = sum(len(term) for term in target_terms if term in lowered)
+        branch_penalty = 50 if re.search(r"(?:err|error|fail|timeout|reject)", lowered) else 0
+        return primary_score * 8 + supporting_score - branch_penalty
+
+    # ``sorted`` is stable, preserving evidence-card order when relevance is
+    # equal and preventing the ranker from inventing a source relationship.
+    return sorted(symbols, key=relevance, reverse=True)
+
+
+def _primary_flow_terms(analysis_target: str) -> set[str]:
+    primary_clause = re.split(r"[:：]", analysis_target, maxsplit=1)[0]
+    return {
+        term.lower()
+        for term in re.findall(r"[A-Za-z][A-Za-z0-9_]{2,}", primary_clause)
+        if term.lower() not in {"the", "and", "for", "with", "from", "target"}
+    }
 
 
 def _is_test_path(file_path: str) -> bool:

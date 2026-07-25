@@ -71,6 +71,7 @@ from app.services.workflow_presets import (
     SFMEA_SCHEMA,
 )
 from app.services.flow_evidence import (
+    _definition_symbol,
     build_business_flow_context,
     build_flow_evidence_pack,
     build_flow_outline,
@@ -4831,6 +4832,37 @@ def test_flow_outline_keeps_disconnected_call_components_separate():
     assert any("单一端到端" in gap for gap in outline["evidence_gaps"])
 
 
+def test_flow_outline_selects_verified_normal_path_and_keeps_error_as_supporting_branch():
+    outline = build_flow_outline(
+        {
+            "analysis_target": "iSCSI login: timeout and recovery coverage",
+            "repo_revision": "abc123",
+            "entry_points": [
+                {"evidence_id": "ENTRY-START", "symbol": "iscsi_conn_start", "details": {"classification": "source"}},
+                {"evidence_id": "ENTRY-TIMEOUT", "symbol": "login_timeout", "details": {"classification": "source"}},
+            ],
+            "call_edges": [
+                {"evidence_id": "EDGE-01", "from_symbol": "iscsi_conn_start", "to_symbol": "iscsi_conn_sock_cb"},
+                {"evidence_id": "EDGE-02", "from_symbol": "iscsi_conn_sock_cb", "to_symbol": "iscsi_handle_incoming_pdus"},
+                {"evidence_id": "EDGE-03", "from_symbol": "iscsi_handle_incoming_pdus", "to_symbol": "iscsi_read_pdu"},
+                {"evidence_id": "EDGE-04", "from_symbol": "iscsi_read_pdu", "to_symbol": "iscsi_pdu_payload_handle"},
+                {"evidence_id": "EDGE-05", "from_symbol": "iscsi_pdu_payload_handle", "to_symbol": "iscsi_pdu_payload_op_login"},
+                {"evidence_id": "EDGE-06", "from_symbol": "iscsi_pdu_payload_op_login", "to_symbol": "iscsi_conn_login_pdu_success_complete", "relation": "callback_reference"},
+                {"evidence_id": "EDGE-TIMEOUT", "from_symbol": "login_timeout", "to_symbol": "spdk_poller_unregister"},
+            ],
+        }
+    )
+
+    assert len(outline["main_flows"]) == 1
+    assert outline["main_flows"][0]["root_symbol"] == "iscsi_conn_start"
+    assert outline["main_flows"][0]["steps"][-1]["to_symbol"] == "iscsi_conn_login_pdu_success_complete"
+    assert outline["main_flows"][0]["steps"][-1]["action"] == (
+        "iscsi_pdu_payload_op_login 传入回调 iscsi_conn_login_pdu_success_complete"
+    )
+    assert outline["supporting_components"][0]["root_symbol"] == "login_timeout"
+    assert not any("不能证明单一端到端" in gap for gap in outline["evidence_gaps"])
+
+
 def test_flow_outline_excludes_edges_not_reachable_from_verified_entries():
     outline = build_flow_outline(
         {
@@ -6855,6 +6887,137 @@ def test_flow_evidence_expands_reverse_callers_and_outlines_from_verified_ingres
     assert [step["to_symbol"] for step in outline["main_flows"][0]["steps"]] == [
         "incoming_pdus", "read_pdu", "payload_login", "login_complete"
     ]
+
+
+def test_flow_evidence_prioritizes_a_verified_chain_over_unrelated_card_symbols(tmp_path):
+    """A crowded evidence pack must not starve the target's call chain."""
+    repo = tmp_path / "repo-priority-flow"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    source = (
+        "static int\nlogin_complete(void) { return 0; }\n"
+        "static int\npayload_login(void) { return login_complete(); }\n"
+        "static int\nread_pdu(void) { return payload_login(); }\n"
+        "static int\nincoming_pdus(void) { return read_pdu(); }\n"
+        "static int\nportal_accept(void) { return incoming_pdus(); }\n"
+        "int unrelated_01(void) { return 0; }\n"
+        "int unrelated_02(void) { return 0; }\n"
+        "int unrelated_03(void) { return 0; }\n"
+        "int unrelated_04(void) { return 0; }\n"
+        "int unrelated_05(void) { return 0; }\n"
+        "int unrelated_06(void) { return 0; }\n"
+        "int unrelated_07(void) { return 0; }\n"
+        "int unrelated_08(void) { return 0; }\n"
+        "int unrelated_09(void) { return 0; }\n"
+        "int unrelated_10(void) { return 0; }\n"
+        "int unrelated_11(void) { return 0; }\n"
+        "int unrelated_12(void) { return 0; }\n"
+        "int unrelated_13(void) { return 0; }\n"
+        "int unrelated_14(void) { return 0; }\n"
+        "int unrelated_15(void) { return 0; }\n"
+        "int unrelated_16(void) { return 0; }\n"
+    )
+    path = repo / "lib" / "iscsi" / "login.c"
+    path.write_text(source, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=CodeTalk Test", "-c", "user.email=codetalk@example.invalid", "commit", "-qm", "fixture"],
+        cwd=repo,
+        check=True,
+    )
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    noise_symbols = [f"unrelated_{index:02d}" for index in range(1, 17)]
+    source_pack = {
+        "analysis_target": "iSCSI Login",
+        "repo_revision": revision,
+        "source_scope": {"repo": str(repo), "source_files": ["lib/iscsi/login.c"]},
+        "evidence_cards": [
+            {
+                "evidence_id": "SRC-NOISE",
+                "file_path": "lib/iscsi/login.c",
+                "classification": "source",
+                "start_line": 11,
+                "end_line": 26,
+                "excerpt": "\n".join(source.splitlines()[10:]),
+                "symbols": noise_symbols,
+                "sha256": hashlib.sha256(source.encode()).hexdigest(),
+            },
+            {
+                "evidence_id": "SRC-LOGIN",
+                "file_path": "lib/iscsi/login.c",
+                "classification": "source",
+                "start_line": 1,
+                "end_line": 2,
+                "excerpt": "static int\nlogin_complete(void) { return 0; }\n",
+                "symbols": ["login_complete"],
+                "sha256": hashlib.sha256(source.encode()).hexdigest(),
+            },
+        ],
+    }
+
+    pack = build_flow_evidence_pack(source_pack, repo_path=str(repo), max_files=4)
+
+    assert {
+        (edge["from_symbol"], edge["to_symbol"])
+        for edge in pack["call_edges"]
+    }.issuperset({
+        ("payload_login", "login_complete"),
+        ("read_pdu", "payload_login"),
+        ("incoming_pdus", "read_pdu"),
+        ("portal_accept", "incoming_pdus"),
+    })
+
+
+def test_flow_symbol_parser_accepts_split_c_definitions_but_rejects_control_macros():
+    assert _definition_symbol("static int\niscsi_login(void)\n{") == "iscsi_login"
+    assert _definition_symbol("TAILQ_FOREACH(item, &items, link) {") == ""
+
+
+def test_flow_evidence_tracks_verified_callback_references_without_call_syntax(tmp_path):
+    repo = tmp_path / "repo-callback-flow"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    source = (
+        "static void\nlogin_complete(void) { }\n"
+        "static int\nresponse(void (*callback)(void)) { callback(); return 0; }\n"
+        "static int\npayload_login(void) { return response(login_complete); }\n"
+        "static int\nincoming_pdus(void) { return payload_login(); }\n"
+    )
+    path = repo / "lib" / "iscsi" / "login.c"
+    path.write_text(source, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=CodeTalk Test", "-c", "user.email=codetalk@example.invalid", "commit", "-qm", "fixture"],
+        cwd=repo,
+        check=True,
+    )
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+    pack = build_flow_evidence_pack(
+        {
+            "analysis_target": "iSCSI login",
+            "repo_revision": revision,
+            "source_scope": {"repo": str(repo), "source_files": ["lib/iscsi/login.c"]},
+            "evidence_cards": [{
+                "evidence_id": "SRC-LOGIN",
+                "file_path": "lib/iscsi/login.c",
+                "classification": "source",
+                "start_line": 1,
+                "end_line": 2,
+                "excerpt": "static void\nlogin_complete(void) { }\n",
+                "symbols": ["login_complete"],
+                "sha256": hashlib.sha256(source.encode()).hexdigest(),
+            }],
+        },
+        repo_path=str(repo),
+        max_files=2,
+    )
+
+    callback_edge = next(
+        edge for edge in pack["call_edges"]
+        if edge.get("from_symbol") == "payload_login"
+        and edge.get("to_symbol") == "login_complete"
+    )
+    assert callback_edge["relation"] == "callback_reference"
 
 
 def test_local_source_context_ignores_generic_product_terms_and_keeps_test_symbols(tmp_path):
