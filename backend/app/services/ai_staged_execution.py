@@ -8502,10 +8502,10 @@ def _deterministic_quality_claim_repair(
             fields.append(f"$[{index}].steps")
 
     cbit_mapping_missing_without_ledger = False
-    if {
-        "missing_c_bit_fragmentation_case",
-        "risk_case_missing_sfmea_mapping",
-    } <= issue_codes:
+    if "missing_c_bit_fragmentation_case" in issue_codes and (
+        sfmea_risk_ledger is not None
+        or "risk_case_missing_sfmea_mapping" in issue_codes
+    ):
         cbit_mapping_missing_without_ledger = not any(
             str(risk.get("sfmea_id") or "").strip()
             and any(

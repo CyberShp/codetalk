@@ -168,6 +168,7 @@ def test_basic_report_workflow_presets_have_named_analysis_target_and_one_report
             "iscsi_conn_login_pdu_err_complete",
             "iscsi_op_login_rsp_handle_csg_bit",
             "iscsi_pdu_payload_op_login",
+            "iscsi_op_login_store_incoming_params",
             "ISCSI_LOGIN_AUTHENT_FAIL",
             "ISCSI_LOGIN_TIMEOUT",
             "configuring initiator with biderectional authentication",

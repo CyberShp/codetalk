@@ -481,6 +481,7 @@ _BASIC_ISCSI_EVIDENCE_HINTS = [
     {"path": "lib/iscsi/iscsi.c", "term": "iscsi_conn_login_pdu_err_complete", "label": "login error completion"},
     {"path": "lib/iscsi/iscsi.c", "term": "iscsi_op_login_rsp_handle_csg_bit", "label": "login stage transition"},
     {"path": "lib/iscsi/iscsi.c", "term": "iscsi_pdu_payload_op_login", "label": "login payload entry"},
+    {"path": "lib/iscsi/iscsi.c", "term": "iscsi_op_login_store_incoming_params", "label": "C-bit parameter reassembly"},
     {"path": "lib/iscsi/iscsi.c", "term": "spdk_poller_unregister(&conn->login_timer)", "label": "login timer cancellation"},
     {"path": "lib/iscsi/iscsi.c", "term": "rsph->status_detail = ISCSI_LOGIN_AUTHENT_FAIL", "label": "authentication failure response"},
     {"path": "lib/iscsi/iscsi.c", "term": "iscsi_op_login_response", "label": "login response"},
