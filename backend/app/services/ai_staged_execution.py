@@ -531,9 +531,30 @@ def _expand_verified_source_anchors(
     }
     tokens = [
         token for token in dict.fromkeys(tokens) if token not in generic_terms
-    ][:32]
+    ]
+    protocol_priority_terms = {
+        "auth", "chap", "digest", "login", "mcs", "session", "target",
+        "timeout", "tsih",
+    }
+    tokens = sorted(
+        tokens,
+        key=lambda token: (token not in protocol_priority_terms, tokens.index(token)),
+    )[:32]
     if not tokens:
         return compact
+
+    # A token can occur in several unrelated protocol paths.  Preserve a small
+    # deterministic set of implementation anchors for storage-protocol terms
+    # whose allocation or response semantics matter to black-box design.
+    semantic_anchor_patterns: list[str] = []
+    token_set = set(tokens)
+    if "tsih" in token_set:
+        semantic_anchor_patterns.extend(("sess->tsih =", "tsih 0 is reserved"))
+    if "target" in token_set and "login" in token_set:
+        semantic_anchor_patterns.extend((
+            "iscsi_login_target_removed",
+            "iscsi_login_target_not_found",
+        ))
 
     selected_by_path: dict[str, dict[str, Any]] = {}
     existing_ranges: dict[str, list[tuple[int, int]]] = {}
@@ -589,6 +610,12 @@ def _expand_verified_source_anchors(
             ranked_matching_lines = sorted(
                 matching_lines,
                 key=lambda index: (
+                    sum(
+                        pattern in "\n".join(
+                            lines[max(0, index - 8) : min(len(lines), index + 9)]
+                        ).lower()
+                        for pattern in semantic_anchor_patterns
+                    ),
                     _source_symbol_matches_token(
                         _source_enclosing_c_function(
                             source_text,
@@ -677,6 +704,10 @@ def _expand_verified_source_anchors(
                         for symbol in symbols
                         for token in matched_terms
                     ),
+                    "_semantic_anchor_value": sum(
+                        pattern in excerpt_lower
+                        for pattern in semantic_anchor_patterns
+                    ),
                 })
 
     additional_per_path: dict[str, int] = {}
@@ -710,6 +741,7 @@ def _expand_verified_source_anchors(
             range(len(candidates)),
             key=lambda index: (
                 candidates[index]["classification"] == "source",
+                candidates[index]["_semantic_anchor_value"],
                 bool(
                     set(candidates[index]["symbols"])
                     & recent_referenced_symbols
@@ -752,6 +784,7 @@ def _expand_verified_source_anchors(
         candidate.pop("_risk_signal_value", None)
         candidate.pop("_specialization_penalty", None)
         candidate.pop("_symbol_term_relevance", None)
+        candidate.pop("_semantic_anchor_value", None)
         candidate["evidence_id"] = f"SRC-{len(files) + 1:02d}"
         files.append(candidate)
         additional_per_path[candidate["file_path"]] = (
