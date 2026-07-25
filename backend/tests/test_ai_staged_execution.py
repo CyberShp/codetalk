@@ -10685,3 +10685,48 @@ def test_deterministic_quality_repair_separates_duplicate_cid_from_mcs_capacity(
     assert "MaxConnections" in row["failure_mode"]
     assert "重复 CID" not in row["failure_mode"]
     assert "$[0].failure_mode" in fields
+
+
+def test_deterministic_quality_repair_keeps_chap_response_csg_path_dependent():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "case_id": "BC-CHAP-01",
+            "scenario_name": "CHAP Login",
+            "steps": [
+                "Login Request CSG=0, NSG=1, T=0; Login Response CSG=0, T=0",
+                "Login Request CSG=1, NSG=3, T=1; Login Response CSG=1, NSG=3, T=1",
+            ],
+        }],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_chap_request_response_flags",
+        }]},
+    )
+
+    steps = " ".join(repaired[0]["steps"])
+    assert "CSG=0 或 CSG=1" in steps
+    assert "响应继承请求" in steps
+    assert "$[0].steps" in fields
+
+
+def test_deterministic_quality_repair_replaces_fuzz_mapping_with_black_box_harness():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "case_id": "BC-VERSION-01",
+            "scenario_name": "Unsupported Version",
+            "mapped_test_dir": "test/app/fuzz/iscsi_fuzz/iscsi_fuzz.c",
+            "steps": ["发送带非法版本字段的 Login Request PDU"],
+        }],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "black_box_boundary_violation",
+            "row_id": "BC-VERSION-01",
+        }]},
+    )
+
+    case = repaired[0]
+    assert case["mapped_test_dir"].startswith("ai_suggested_unverified:")
+    assert "$[0].mapped_test_dir" in fields

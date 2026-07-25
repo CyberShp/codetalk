@@ -8458,6 +8458,7 @@ def _deterministic_quality_claim_repair(
         "missing_black_box_dimensions",
         "missing_max_connections_target_setup",
         "black_box_case_quality_failed",
+        "black_box_boundary_violation",
         "non_actionable_mitigation",
         "duplicate_generic_sfmea_mitigation",
         "professional_fact_conflict",
@@ -8547,6 +8548,55 @@ def _deterministic_quality_claim_repair(
                     f"$[{index}].mitigation",
                 ]
             )
+
+    if (
+        "iscsi_chap_request_response_flags" in professional_constraints
+        and artifact_name == "black_box_cases.json"
+        and isinstance(repaired, list)
+    ):
+        for index, row in enumerate(repaired):
+            if not isinstance(row, dict):
+                continue
+            context = " ".join(
+                str(row.get(key) or "")
+                for key in ("scenario_name", "steps", "expected_result", "observability")
+            ).lower()
+            if "chap" not in context:
+                continue
+            row["steps"] = [
+                "由公开 initiator 发起 CHAP Login 的首轮安全协商请求（T=0），抓取对应 Login Response。",
+                "验证首轮响应继承请求的 T、C 与 CSG，且 T=0 时不把 NSG 当作响应阶段迁移字段。",
+                "完成最终迁移请求（T=1、NSG=3）并抓取成功响应；CSG 按当前协商路径为 CSG=0 或 CSG=1，不固定为单一值。",
+            ]
+            row["expected_result"] = (
+                "首轮 CHAP Login Response 保持 T=0 并继承请求的 CSG；最终进入 Full Feature 的"
+                "请求和成功响应使用 T=1、NSG=3，CSG 由当前协商路径决定。"
+            )
+            fields.extend([f"$[{index}].steps", f"$[{index}].expected_result"])
+
+    boundary_case_ids = {
+        str(issue.get("row_id") or "").strip()
+        for issue in issues
+        if str(issue.get("code") or "") == "black_box_boundary_violation"
+        and str(issue.get("row_id") or "").strip()
+    }
+    if (
+        boundary_case_ids
+        and artifact_name == "black_box_cases.json"
+        and isinstance(repaired, list)
+    ):
+        for index, row in enumerate(repaired):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("case_id") or "").strip() not in boundary_case_ids:
+                continue
+            mapped_path = str(row.get("mapped_test_dir") or "")
+            if "fuzz" not in mapped_path.lower():
+                continue
+            row["mapped_test_dir"] = (
+                "ai_suggested_unverified: 需新增受控 raw-PDU 版本字段黑盒 harness"
+            )
+            fields.append(f"$[{index}].mapped_test_dir")
 
     # The SFMEA contract requires the mitigation itself to name a verification
     # action.  When the generator already supplied a bounded recovery check in
