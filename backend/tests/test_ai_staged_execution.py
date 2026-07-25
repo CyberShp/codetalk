@@ -10610,3 +10610,30 @@ def test_quality_stage_reuse_normalizes_json_before_marking_completed(tmp_path):
 
     assert result is not None
     assert json.loads(artifact.read_text(encoding="utf-8"))[0]["failure_diagnostics"] == ["保留请求和响应。"]
+
+
+def test_deterministic_quality_repair_does_not_override_source_backed_discovery_target_address_claim():
+    from app.services.ai_staged_execution import _deterministic_quality_claim_repair
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "case_id": "BB-DISCOVERY-01",
+            "scenario_name": "Discovery Login Response 包含 TargetAddress",
+            "expected_result": "Login Response 数据段包含 TargetAddress=ip:port",
+            "observability": ["Login Response 包含 TargetAddress"],
+            "failure_diagnostics": ["检查 TargetAddress 格式"],
+            "mapped_test_dir": "test/iscsi_tgt/chap/chap_discovery.sh",
+        }],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_discovery_target_address",
+        }]},
+    )
+
+    case = repaired[0]
+    assert case["scenario_name"] == "Discovery Login Response 包含 TargetAddress"
+    assert case["expected_result"] == "Login Response 数据段包含 TargetAddress=ip:port"
+    assert case["mapped_test_dir"] == "test/iscsi_tgt/chap/chap_discovery.sh"
+    assert fields == []

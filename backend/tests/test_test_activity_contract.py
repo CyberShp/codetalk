@@ -4134,7 +4134,6 @@ def test_iscsi_professional_constraints_reject_state_machine_timeout_and_discove
         "iscsi_full_feature_request_rejected",
         "iscsi_unknown_key_not_understood",
         "iscsi_login_timer_after_first_pdu",
-        "iscsi_discovery_target_address",
         "iscsi_internal_observer_boundary",
         "iscsi_login_response_stage_bits",
     }
@@ -4216,7 +4215,6 @@ def test_iscsi_constraints_reject_multiline_chap_timer_and_unknown_key_conflatio
         "iscsi_chap_request_response_flags",
         "iscsi_unknown_key_not_understood",
         "iscsi_login_timer_after_first_pdu",
-        "iscsi_discovery_target_address",
     }.issubset(constraint_ids), audit
 
 
@@ -8527,7 +8525,7 @@ def test_combined_iscsi_report_accepts_run46_unverified_no_timeout_claim():
     ), issues
 
 
-def test_combined_iscsi_report_rejects_discovery_login_target_address_oracle():
+def test_combined_iscsi_report_accepts_discovery_login_target_address_oracle():
     from app.services.test_activity_contract import _audit_combined_report_consistency
 
     content = """
@@ -8537,6 +8535,24 @@ def test_combined_iscsi_report_rejects_discovery_login_target_address_oracle():
 - 操作步骤：Run iscsiadm -m discovery -t sendtargets -p 127.0.0.1:3260.
 - 预期结果：Discovery login succeeds; response contains TargetAddress= keys.
 - 观测点：Wire pcap shows Login Response with Status=0x00 and TargetAddress in data segment.
+"""
+
+    issues = _audit_combined_report_consistency(content)
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_discovery_target_address"
+        for issue in issues
+    )
+
+
+def test_combined_iscsi_report_rejects_discovery_login_target_address_absence_claim():
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    content = """
+## 黑盒测试用例
+### TC-05 Discovery login excludes TargetAddress
+- 预期结果：Discovery Login Response 不包含 TargetAddress。
+- 观测点：抓包确认 Login Response 数据段没有 TargetAddress。
 """
 
     issues = _audit_combined_report_consistency(content)

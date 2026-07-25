@@ -634,21 +634,19 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
             {
                 "id": "iscsi_discovery_target_address",
                 "assertion": (
-                    "iscsi_op_login_set_target_info 仅在 target != NULL 时向响应追加 TargetAddress；"
-                    "Discovery session 没有 target，不能声称 Discovery Login 必定返回 TargetAddress。"
+                    "iscsi_op_login_set_target_info 在 target != NULL 且 session_type 为 "
+                    "SESSION_TYPE_DISCOVERY 时向 Login Response 追加 TargetAddress；"
+                    "不能声称 Discovery Login 不会追加 TargetAddress，也不能把该行为归因于不存在的 "
+                    "iscsi_op_login_set_params。"
                 ),
                 "evidence": ["lib/iscsi/iscsi.c::iscsi_op_login_set_target_info"],
                 "conflict_patterns": [
-                    r"discovery login.{0,120}(?:必定|总是|always).{0,60}(?:返回|包含|return).{0,40}targetaddress",
-                    r"discovery.{0,100}(?:成功响应|response).{0,100}(?:返回|包含).{0,40}targetaddress",
-                    r"discovery login[\s\S]{0,700}(?:login response|登录响应)[\s\S]{0,320}targetaddress\s*=",
+                    r"discovery.{0,220}(?:不返回|不会返回|不会收到|不追加|不包含|不应包含|不该包含|does not (?:return|append|include)|does not receive|should not include).{0,30}targetaddress",
+                    r"discovery login.{0,100}(?:不强制|不要求|非必需|not require).{0,40}targetaddress",
                 ],
                 "correction_patterns": [
-                    r"discovery.{0,220}(?:不返回|不会返回|不会收到|不追加|不包含|不应包含|不该包含|does not (?:return|append|include)|does not receive|should not include).{0,30}targetaddress",
-                    r"discovery.{0,180}(?:不应声称|不能声称|不得声称|not claim).{0,80}targetaddress",
-                    r"(?:检查|验证|检测|check).{0,120}discovery.{0,120}(?:是否|有无|whether).{0,30}(?:包含|返回|include|return)?.{0,20}targetaddress",
-                    r"discovery login.{0,100}(?:不强制|不要求|非必需|not require).{0,40}targetaddress",
-                    r"discovery login response.{0,100}(?:成功|success|status\s*=\s*0x?0+).{0,120}sendtargets.{0,60}(?:响应|response).{0,60}(?:包含|contains?|includes?).{0,40}targetaddress",
+                    r"discovery.{0,120}(?:返回|包含|append|include|return).{0,40}targetaddress",
+                    r"session_type.{0,100}(?:session_type_discovery|discovery).{0,140}targetaddress",
                 ],
             },
             {
@@ -5048,33 +5046,18 @@ def _audit_combined_report_consistency(content: str) -> list[dict[str, Any]]:
             lower,
             flags=re.IGNORECASE | re.DOTALL,
         ))
-        target_address_positive_oracle = bool(re.search(
-            r"(?:contains?|includes?|returns?|包含|返回).{0,40}targetaddress"
-            r"|targetaddress.{0,40}(?:is present|存在|应有)",
-            expected,
-            flags=re.IGNORECASE | re.DOTALL,
-        ))
-        target_address_negative_oracle = bool(re.search(
-            r"(?:does not|must not|should not|不应|不会|不返回|不包含).{0,40}targetaddress",
-            expected,
-            flags=re.IGNORECASE | re.DOTALL,
-        ))
-        target_address_sendtargets_oracle = bool(re.search(
-            r"sendtargets.{0,80}(?:response|响应).{0,80}(?:contains?|includes?|returns?|包含|返回).{0,40}targetaddress"
-            r"|(?:sendtargets.{0,80})?targetaddress.{0,80}(?:sendtargets|text response|文本响应)",
-            expected,
-            flags=re.IGNORECASE | re.DOTALL,
-        ))
         if (
             discovery_login_case
-            and target_address_positive_oracle
-            and not target_address_negative_oracle
-            and not target_address_sendtargets_oracle
+            and bool(re.search(
+                r"(?:does not|must not|should not|不应|不会|不返回|不包含).{0,40}targetaddress",
+                expected,
+                flags=re.IGNORECASE | re.DOTALL,
+            ))
         ):
             issues.append(_issue(
                 "black_box_evidence_contradiction",
                 "black_box_cases.json",
-                f"{heading} 把 TargetAddress 作为 Discovery Login Response 的必然字段；当前源码仅在 target 非空时追加该字段，Discovery 应在后续 SendTargets Text Response 中核验地址。",
+                f"{heading} 声称 Discovery Login Response 不包含 TargetAddress；当前源码在 target 非空的 Discovery session 中向 Login Response 追加该字段。",
                 scenario=heading,
                 constraint_id="iscsi_discovery_target_address",
             ))
