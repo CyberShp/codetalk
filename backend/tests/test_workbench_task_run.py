@@ -1759,7 +1759,9 @@ def test_workbench_runner_builtin_llm_uses_handoff_contract_and_writes_outputs(
         tmp_path / "task_runs"
     ).execute_task_run(task_run.task_run_id)
 
-    assert execution.status == "completed"
+    # The fixture proves prompt/artifact transport, not a deliverable-quality
+    # SPDK report. V3 must block this deliberately sparse generated output.
+    assert execution.status == "quality_blocked"
     assert [item["status"] for item in execution.outputs] == ["ok", "ok"]
     agent_dir = Path(task_run.artifact_dir, "agent_runs", "agent_collect")
     assert json.loads((agent_dir / "sfmea.json").read_text(encoding="utf-8"))[0][
@@ -1947,7 +1949,9 @@ def test_workbench_runner_staged_builtin_llm_writes_each_declared_artifact(
         tmp_path / "task_runs"
     ).execute_task_run(prepared.task_run_id)
 
-    assert result.status == "completed"
+    # Stage artifacts are intentionally minimal; the runner must retain them
+    # while the delivery quality gate prevents a false completed result.
+    assert result.status == "quality_blocked"
     agent_dir = Path(prepared.artifact_dir, "agent_runs", "analyze_source_flow")
     assert (agent_dir / "staged_execution_plan.json").exists()
     assert (agent_dir / "stages" / "source_analysis" / "stage_result.json").exists()
@@ -1961,7 +1965,7 @@ def test_workbench_runner_staged_builtin_llm_writes_each_declared_artifact(
     stages = {item["stage_id"]: item for item in stage_progress["stages"]}
     assert stages["input_scope"]["status"] == "completed"
     assert stages["source_evidence"]["status"] == "completed"
-    assert stages["sfmea"]["status"] == "partial"
+    assert stages["sfmea"]["status"] == "completed"
     source_prompt = staged_prompts[0]
     assert "iSCSI login" in source_prompt
     assert "lib/iscsi/iscsi.c" in source_prompt
@@ -9412,7 +9416,9 @@ def test_module_analysis_preset_executes_with_local_scope_discovery(
         timeout_sec=10,
     )
 
-    assert result.status == "completed"
+    # The preset completes deterministic scope work, but the deliberately tiny
+    # fixture has too little evidence for a formal delivered analysis.
+    assert result.status == "quality_blocked"
     step_status = {item["step_id"]: item["status"] for item in result.step_results}
     assert step_status == {
         "discover_scope": "completed",
@@ -9769,7 +9775,9 @@ def test_mr_blackbox_preset_executes_with_local_patch_diff(tmp_path):
         timeout_sec=10,
     )
 
-    assert result.status == "completed"
+    # A minimal patch fixture may produce artifacts but must not bypass the
+    # quality gate required for a user-facing black-box delivery.
+    assert result.status == "quality_blocked"
     root = Path(task_run.artifact_dir)
     black_box_cases = json.loads(
         (root / "steps" / "collect_mr" / "black_box_cases.json").read_text(encoding="utf-8")
@@ -9889,7 +9897,7 @@ def test_runner_materializes_verified_fact_ledger_with_quality_audit(tmp_path, m
 
     assert result["status"] == "needs_rework"
     assert result["deliverable"] is False
-    assert result["issue_count"] == 2
+    assert result["issue_count"] == 3
     assert any(
         item["code"] == "claim_evidence_ledger_blocked"
         for item in result["issues"]
