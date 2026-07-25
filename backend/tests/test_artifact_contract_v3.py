@@ -433,6 +433,61 @@ def test_deep_contract_materializes_named_deliverables_only_from_real_stage_outp
     assert "当前证据未直接覆盖" in explanation
 
 
+def test_artifact_alignment_audit_keeps_structured_ids_and_hashes_in_markdown(tmp_path):
+    import json
+
+    from app.services.artifact_contract_v3 import (
+        materialize_artifact_alignment_audit,
+        materialize_artifact_contract_v3_outputs,
+        validate_artifact_contract_v3_outputs,
+    )
+
+    (tmp_path / "source_scope.json").write_text(
+        json.dumps({"analysis_target": "iSCSI login"}), encoding="utf-8"
+    )
+    (tmp_path / "evidence_cards.json").write_text(
+        json.dumps([{
+            "evidence_id": "SRC-09",
+            "file_path": "test/iscsi_tgt/chap/chap_common.sh",
+            "start_line": 82,
+            "end_line": 99,
+            "symbols": ["config_chap_credentials_for_target"],
+        }]),
+        encoding="utf-8",
+    )
+    (tmp_path / "flow_cards.json").write_text(
+        json.dumps({"items": [{"id": "FLOW-LOGIN-01", "title": "登录流程"}]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps([{"sfmea_id": "SFMEA-LOGIN-01", "failure_mode": "认证失败"}]),
+        encoding="utf-8",
+    )
+    (tmp_path / "black_box_cases.json").write_text(
+        json.dumps([{"case_id": "BB-ISC-01", "title": "错误 CHAP 凭据"}]),
+        encoding="utf-8",
+    )
+
+    materialize_artifact_contract_v3_outputs(tmp_path, profile_id="deep")
+    audit = materialize_artifact_alignment_audit(tmp_path, profile_id="deep")
+
+    assert audit["status"] == "passed"
+    assert all(item["json_sha256"] and item["markdown_sha256"] for item in audit["pairs"])
+    assert all(not item["missing_ids"] for item in audit["pairs"])
+    assert "[SRC-09]" in (tmp_path / "完整分析报告.md").read_text(encoding="utf-8")
+    assert "[FLOW-LOGIN-01]" in (tmp_path / "流程状态资源与异常传播.md").read_text(encoding="utf-8")
+    assert "[BB-ISC-01]" in (tmp_path / "黑盒测试设计.md").read_text(encoding="utf-8")
+
+    case_delivery = tmp_path / "黑盒测试设计.md"
+    case_delivery.write_text(case_delivery.read_text(encoding="utf-8").replace("BB-ISC-01", ""), encoding="utf-8")
+    failed_audit = materialize_artifact_alignment_audit(tmp_path, profile_id="deep")
+
+    assert failed_audit["status"] == "blocked"
+    assert failed_audit["pairs"][-1]["missing_ids"] == ["BB-ISC-01"]
+    validation = validate_artifact_contract_v3_outputs(tmp_path, profile_id="deep")
+    assert "artifact_alignment_audit.json" in validation["malformed_required"]
+
+
 def test_deep_contract_keeps_sfmea_hypotheses_distinct_from_observed_defects(tmp_path):
     import json
 

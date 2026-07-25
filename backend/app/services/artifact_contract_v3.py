@@ -43,6 +43,7 @@ def default_artifact_contract_v3(*, profile_id: str) -> dict[str, object]:
         _item("source_scope.json", "supporting", True, "json"),
         _item("evidence_cards.json", "supporting", True, "json"),
         _item("claim_evidence_ledger.json", "supporting", True, "json"),
+        _item("artifact_alignment_audit.json", "supporting", True, "json"),
         _item("input_consumption.json", "supporting", True, "json"),
         _item("task_artifact_manifest.json", "supporting", True, "json"),
         _item("provider_diagnostics.json", "diagnostic", False, "json"),
@@ -133,6 +134,7 @@ def materialize_artifact_contract_v3_outputs(
                 ["# 定向黑盒测试设计", *_case_lines(cases)],
             )
             written.append("黑盒测试设计.md")
+        materialize_artifact_alignment_audit(root, profile_id=profile_id)
         return written
 
     if profile_id != "deep":
@@ -184,7 +186,77 @@ def materialize_artifact_contract_v3_outputs(
             ["# 黑盒测试设计", *_case_lines(cases)],
         )
         written.append("黑盒测试设计.md")
+    materialize_artifact_alignment_audit(root, profile_id=profile_id)
     return written
+
+
+def materialize_artifact_alignment_audit(
+    artifact_dir: str | Path,
+    *,
+    profile_id: str,
+) -> dict[str, Any]:
+    """Verify that human-readable deliveries retain structured artifact IDs.
+
+    JSON is the canonical task record; Markdown is the tester-facing delivery.
+    This audit makes the relationship explicit so a renderer cannot silently
+    omit an evidence, flow, risk, or case identifier while still looking
+    complete to a human reader.
+    """
+    root = Path(artifact_dir)
+    pairs = [
+        ("evidence_cards.json", "快速分析报告.md" if profile_id == "rapid" else "完整分析报告.md", ("evidence_id", "id")),
+        ("flow_cards.json", "流程状态资源与异常传播.md", ("flow_id", "id")),
+        ("sfmea.json", "风险点与SFMEA.md", ("sfmea_id", "risk_id", "id")),
+        ("black_box_cases.json", "黑盒测试设计.md", ("case_id", "id")),
+    ]
+    results: list[dict[str, Any]] = []
+    for json_name, markdown_name, id_keys in pairs:
+        json_path = _find_artifact(root, json_name)
+        if not json_path.is_file() or json_path.stat().st_size == 0:
+            continue
+        rows = _items(_read_json(json_path))
+        if json_name != "flow_cards.json":
+            rows = _read_json_list(json_path)
+        identifiers = [
+            next((str(row.get(key)).strip() for key in id_keys if str(row.get(key) or "").strip()), "")
+            for row in rows
+        ]
+        missing_identifiers = [f"row-{index}" for index, value in enumerate(identifiers, start=1) if not value]
+        identifiers = [value for value in identifiers if value]
+        markdown_path = _find_artifact(root, markdown_name)
+        markdown = (
+            markdown_path.read_text(encoding="utf-8", errors="replace")
+            if markdown_path.is_file()
+            else ""
+        )
+        missing_ids = [value for value in identifiers if value not in markdown]
+        status = (
+            "not_applicable"
+            if not rows
+            else "passed"
+            if markdown and not missing_ids and not missing_identifiers
+            else "blocked"
+        )
+        results.append({
+            "json_artifact": json_name,
+            "markdown_artifact": markdown_name,
+            "json_sha256": _file_sha256(json_path),
+            "markdown_sha256": _file_sha256(markdown_path) if markdown_path.is_file() else "",
+            "structured_ids": identifiers,
+            "missing_ids": missing_ids,
+            "missing_identifier_rows": missing_identifiers,
+            "status": status,
+        })
+    checked = [item for item in results if item["status"] != "not_applicable"]
+    audit = {
+        "kind": "artifact_alignment_audit",
+        "schema_version": "artifact-alignment-audit-v1",
+        "profile_id": profile_id,
+        "status": "blocked" if any(item["status"] == "blocked" for item in checked) else "passed",
+        "pairs": results,
+    }
+    _write_json(root / "artifact_alignment_audit.json", audit)
+    return audit
 
 
 def enrich_external_agent_claim_bindings(artifact_dir: str | Path) -> dict[str, int]:
@@ -401,6 +473,13 @@ def validate_artifact_contract_v3_outputs(
         ]
         if absent_headings:
             malformed["开发给测试讲代码.md"] = absent_headings
+    alignment_path = _find_artifact(root, "artifact_alignment_audit.json")
+    if alignment_path.is_file():
+        alignment = _read_json_object(alignment_path)
+        if alignment.get("status") != "passed":
+            malformed["artifact_alignment_audit.json"] = [
+                "结构化 JSON 与 Markdown 交付件的 ID 对齐校验未通过。"
+            ]
     return {
         "kind": "artifact_contract_v3_validation",
         "schema_version": "artifact-contract-v3-validation-v1",
@@ -556,18 +635,29 @@ def _items(payload: Any) -> list[dict[str, Any]]:
 def _evidence_lines(evidence: list[dict[str, Any]]) -> list[str]:
     result = []
     for item in evidence[:20]:
+        evidence_id = str(item.get("evidence_id") or item.get("id") or "").strip()
         path = str(item.get("file_path") or item.get("path") or "未知文件")
+        start = int(item.get("start_line") or 0)
+        end = int(item.get("end_line") or 0)
+        location = (
+            f":L{start}-L{end}" if start and end and start != end
+            else f":L{start}" if start
+            else ""
+        )
         symbols = ", ".join(str(value) for value in item.get("symbols") or [] if str(value))
-        result.append(f"- `{path}`{f'：{symbols}' if symbols else ''}")
+        label = f"[{evidence_id}] " if evidence_id else ""
+        result.append(f"- {label}`{path}{location}`{f'：{symbols}' if symbols else ''}")
     return result or ["- 未发现可交付的代码证据。"]
 
 
 def _flow_lines(flow_cards: list[dict[str, Any]]) -> list[str]:
     result = []
     for item in flow_cards[:20]:
-        title = str(item.get("title") or item.get("name") or item.get("id") or "流程节点")
+        flow_id = str(item.get("flow_id") or item.get("id") or "").strip()
+        title = str(item.get("title") or item.get("name") or flow_id or "流程节点")
         detail = str(item.get("summary") or item.get("description") or "")
-        result.append(f"- **{title}**{f'：{detail}' if detail else ''}")
+        label = f"[{flow_id}] " if flow_id else ""
+        result.append(f"- {label}**{title}**{f'：{detail}' if detail else ''}")
     return result or ["- 未形成可交付的流程卡片。"]
 
 
@@ -818,8 +908,8 @@ def _artifact_value(value: Any) -> str:
 
 def _case_lines(rows: list[dict[str, Any]]) -> list[str]:
     return [
-        f"- **{item.get('title') or item.get('scenario_name') or item.get('case_id') or '测试用例'}**：{item.get('expected_result') or item.get('expected') or '详见 JSON 交付件'}"
-        for item in rows[:100]
+        f"- **[{item.get('case_id') or item.get('id') or f'CASE-{index:03d}'}] {item.get('title') or item.get('scenario_name') or '测试用例'}**：{item.get('expected_result') or item.get('expected') or '详见 JSON 交付件'}"
+        for index, item in enumerate(rows[:100], start=1)
     ]
 
 
@@ -831,6 +921,10 @@ def _json_sha256(payload: Any) -> str:
     return hashlib.sha256(
         json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
     ).hexdigest()
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

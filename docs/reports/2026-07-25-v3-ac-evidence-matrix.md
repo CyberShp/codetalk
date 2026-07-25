@@ -74,7 +74,7 @@ means that the cited current implementation and evidence cover the whole AC;
 | AC | Status | Current evidence / remaining proof |
 | --- | --- | --- |
 | AC-ART-001 | verified for builtin | Latest SPDK deep browser run delivered formal files without terminal-only output. |
-| AC-ART-002 | partial | IDs are reconciled in traceability and RunSnapshot hashes exist; final Markdown/JSON hash audit remains required. |
+| AC-ART-002 | verified for builtin | Attempt 12 (`task_run_d2fb76735d5648a7a368e7d95a8489b3`) was started from the browser on 2026-07-26. `artifact_alignment_audit.json` passed all four deterministic pairs: evidence `12/12`, flow `1/1`, SFMEA `12/12`, and black-box cases `13/13`; it records SHA256 values for each structured JSON and rendered Markdown delivery. |
 | AC-ART-003 | verified for builtin | Cockpit separates delivery, supporting and diagnostic files. |
 | AC-ART-004 | verified | Mind-map artifacts materialize from governed structured facts. |
 | AC-ART-005 | verified | Node inspector renders output configuration as forms, without user JSON. |
