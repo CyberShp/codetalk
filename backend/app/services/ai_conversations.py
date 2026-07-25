@@ -6732,7 +6732,21 @@ def _is_linked_workflow_review_turn(
         "做一次", "重做", "重新生成", "补齐", "完善", "generate", "produce",
         "create", "write", "design", "regenerate",
     )
-    return not any(marker in text for marker in creation_markers)
+    negative_prefix = r"(?:不要|不需要|无需|不必|不得|禁止|not\\s+)"
+
+    def is_affirmative_creation(marker: str) -> bool:
+        if marker not in text:
+            return False
+        # A review instruction routinely says things like "不要创建任务或改写
+        # 文件".  That is a guardrail on a read-only follow-up, not a request
+        # to create a new formal delivery.
+        return not bool(re.search(
+            rf"{negative_prefix}[^。；，,\\n]{{0,32}}{re.escape(marker)}",
+            text,
+            re.IGNORECASE,
+        ))
+
+    return not any(is_affirmative_creation(marker) for marker in creation_markers)
 
 
 def _agent_structured_deliverable_groups(text: str) -> set[str]:

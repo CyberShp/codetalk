@@ -6077,6 +6077,10 @@ async def test_test_activity_explanations_do_not_trigger_full_artifact_gate():
     ) is True
     assert _is_linked_workflow_review_turn(
         linked_review,
+        "只审阅旁挂交付件并按 rubric 打分；不要创建任务、生成文件或改写交付件。",
+    ) is True
+    assert _is_linked_workflow_review_turn(
+        linked_review,
         "评审现有交付件后，重新生成 SFMEA 和黑盒测试用例",
     ) is False
 
