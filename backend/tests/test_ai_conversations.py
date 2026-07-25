@@ -6326,6 +6326,7 @@ async def test_bound_workflow_missing_agent_artifact_fails_closed(
 async def test_test_activity_explanations_do_not_trigger_full_artifact_gate():
     from app.services.ai_conversations import (
         _agent_task_requests_downloadable_artifact,
+        _build_prompt,
         _is_independent_task_review_request,
         _is_linked_workflow_review_turn,
         _requires_strict_test_activity_quality_gate,
@@ -6368,6 +6369,10 @@ async def test_test_activity_explanations_do_not_trigger_full_artifact_gate():
     )
     assert _is_linked_workflow_review_turn(linked_review, read_only_review) is True
     assert _is_independent_task_review_request(linked_review, read_only_review) is True
+    review_prompt = _build_prompt(linked_review, [], [], read_only_review)
+    assert "## 总分（0-100）" in review_prompt[0]["content"]
+    ordinary_prompt = _build_prompt(linked_review, [], [], "解释 SFMEA-01 的 source_evidence")
+    assert "## 总分（0-100）" not in ordinary_prompt[0]["content"]
     assert _is_linked_workflow_review_turn(
         linked_review,
         "评审现有交付件后，重新生成 SFMEA 和黑盒测试用例",

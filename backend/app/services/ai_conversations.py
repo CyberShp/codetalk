@@ -4296,6 +4296,17 @@ def _build_prompt(
         if history[index]["role"] == "user" and history[index]["content"].strip() == current:
             del history[index]
             break
+    independent_review_contract = (
+        "独立审阅输出契约：这是只读复核，不得创建任务或文件。必须按以下中文标题输出，"
+        "不得省略总分：\n"
+        "## 审阅结论\n"
+        "## 总分（0-100）\n"
+        "## 分项评分（证据真实性25、流程完整性20、SFMEA20、黑盒测试20、幻觉控制10、可用性5）\n"
+        "## 已核验事实\n## 发现的问题与证据\n## 判定（通过/不通过）\n"
+        "没有问题时也必须明确写“无可由引用证明的问题”，并给出数值总分。\n\n"
+        if _is_independent_task_review_request(conversation, user_message)
+        else ""
+    )
     system = (
         "你是 CodeTalks 的 AI 测试调查助手。你要帮助测试人员围绕需求、代码、报告、"
         "Workbench 任务和测试用例持续追问。\n"
@@ -4310,6 +4321,7 @@ def _build_prompt(
         "如果本轮要求完整、重新生成或可下载的交付件，本轮必须重新输出完整正文；"
         "历史下载产物只用于延续上下文，不得只回复历史摘要或声称产物已经存在。\n\n"
         f"{_codex_style_answer_instruction()}\n\n"
+        f"{independent_review_contract}"
         f"{_source_first_contract(references, user_message)}\n\n"
         f"{_test_activity_contract_prompt(user_message=test_activity_context, repo_path=_conversation_initial_repo_path(conversation))}\n\n"
         f"{_bound_workflow_execution_prompt(conversation)}\n\n"
