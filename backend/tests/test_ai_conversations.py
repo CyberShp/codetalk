@@ -1700,6 +1700,7 @@ class TestAIConversationsAPI:
         assert "不得据此直接断言 TCP 状态" in system
         assert "已验证源码事实”" in system
         assert "待通过黑盒操作验证的预期”" in system
+        assert "不要输出 Markdown 表格" in system
 
     async def test_agent_prompt_includes_public_task_deliverable_excerpt(self):
         from app.services.ai_conversations import _build_agent_prompt
