@@ -1681,7 +1681,11 @@ def audit_test_activity_artifacts(
     # Those rows remain quality-critical even when they are not separate user
     # downloads; otherwise report-only contracts lose case-level repair IDs.
     for artifact in ("flow_cards.json", "sfmea.json", "black_box_cases.json"):
-        path = root / artifact
+        # The Harness stores structured stage outputs under the producing node
+        # (for example ``agent_runs/analyze``). Resolve them through the same
+        # path policy as declared artifacts so report-only contracts cannot
+        # bypass their quality gates simply because the files are nested.
+        path = _artifact_path(root, artifact)
         if artifact in audited_json_artifacts or not path.is_file():
             continue
         structural_issues.extend(
@@ -6335,6 +6339,7 @@ def _audit_json_artifact(
     seen_case_ids: set[str] = set()
     seen_case_signatures: set[str] = set()
     observed_dimensions: set[str] = set()
+    sfmea_mitigation_rows: dict[str, list[tuple[str, str]]] = {}
     for index, row in enumerate(rows, start=1):
         if not isinstance(row, dict):
             issues.append(_issue("json_item_invalid", artifact, f"{artifact} 第 {index} 项不是对象"))
@@ -6380,6 +6385,11 @@ def _audit_json_artifact(
             issues.extend(_audit_sfmea_scores(row, artifact=artifact, index=index))
             issues.extend(_audit_sfmea_mitigation(row, artifact=artifact, index=index))
             issues.extend(_audit_sfmea_occurrence_basis(row, artifact=artifact, index=index))
+            mitigation = re.sub(r"\s+", " ", str(row.get("mitigation") or "").strip())
+            if mitigation:
+                sfmea_mitigation_rows.setdefault(mitigation, []).append(
+                    (row_id, str(row.get("failure_mode") or "").strip())
+                )
             risk_status = str(row.get("risk_status") or "").strip()
             risk_text = " ".join(
                 str(row.get(field) or "")
@@ -6664,6 +6674,22 @@ def _audit_json_artifact(
                     artifact,
                     "black_box_cases.json 缺少测试维度: " + ", ".join(missing_dimensions),
                     dimensions=missing_dimensions,
+                )
+            )
+    if artifact == "sfmea.json":
+        for mitigation, rows_with_mitigation in sfmea_mitigation_rows.items():
+            distinct_failure_modes = {
+                failure_mode for _, failure_mode in rows_with_mitigation if failure_mode
+            }
+            if len(rows_with_mitigation) < 2 or len(distinct_failure_modes) < 2:
+                continue
+            issues.append(
+                _issue(
+                    "duplicate_generic_sfmea_mitigation",
+                    artifact,
+                    "多个不同失效模式复用了同一 mitigation 模板；必须为每项给出可区分的整改与验证动作",
+                    row_ids=[row_id for row_id, _ in rows_with_mitigation],
+                    mitigation=mitigation,
                 )
             )
     return issues

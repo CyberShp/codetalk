@@ -262,6 +262,66 @@ def test_report_only_contract_still_audits_internal_flow_connectivity(tmp_path):
     ), audit
 
 
+def test_report_only_contract_audits_nested_agent_flow_connectivity(tmp_path):
+    """Supporting artifacts are normally collected below agent_runs, not root."""
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+
+    artifact = tmp_path / "agent_runs" / "analyze" / "flow_cards.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(
+        json.dumps(
+            {
+                "items": [{"flow_id": "FLOW-01"}],
+                "gaps": ["当前证据形成互不连通的调用分量，不能证明单一端到端业务顺序"],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=tmp_path,
+        contract={"artifact_contract": {}},
+        repo_path=str(tmp_path),
+    )
+
+    assert any(
+        issue["code"] == "flow_evidence_not_connected"
+        for issue in audit["issues"]
+    ), audit
+
+
+def test_quality_audit_blocks_reused_generic_sfmea_mitigation(tmp_path):
+    from app.services.test_activity_contract import _audit_json_artifact
+
+    generic_mitigation = (
+        "整改: 在相关错误响应或异常清理路径中固化状态、资源和错误传播契约，并增加运行时断言。"
+        "验证: 注入对应异常条件，确认协议响应、连接状态和资源指标一致。"
+    )
+    issues = _audit_json_artifact(
+        artifact="sfmea.json",
+        payload=[
+            {
+                "sfmea_id": "SFMEA-01",
+                "failure_mode": "登录超时后回调与清理竞争",
+                "mitigation": generic_mitigation,
+            },
+            {
+                "sfmea_id": "SFMEA-02",
+                "failure_mode": "MCS 容量检查与连接添加非原子",
+                "mitigation": generic_mitigation,
+            },
+        ],
+        spec={},
+        repo=tmp_path,
+    )
+
+    assert any(
+        issue["code"] == "duplicate_generic_sfmea_mitigation"
+        for issue in issues
+    ), issues
+
+
 def test_quality_audit_allows_explicit_local_component_flow_scope(tmp_path):
     from app.services.test_activity_contract import _audit_json_artifact
     issues = _audit_json_artifact(artifact="flow_cards.json", payload={"status": "local_component_analysis", "items": [{"flow_id": "FLOW-01"}], "gaps": ["当前证据形成互不连通的调用分量；本次只交付已验证的局部分量分析。"]}, spec={"required_fields": []}, repo=tmp_path)
