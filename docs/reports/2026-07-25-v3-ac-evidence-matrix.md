@@ -181,6 +181,27 @@ accepted artifacts, not a fresh deep execution. It also does not close
 AC-QUALITY-006: the independent full-artifact rubric must be rerun after the
 delivery-rendering repairs and score at least 80.
 
+### 2026-07-26 Explicit Source-Card Follow-Up Regression
+
+The same Chromium task-result thread was used to reproduce an independent
+review failure around `SRC-09`. The real Flash/Pro delivery contains
+`SRC-09` for `test/iscsi_tgt/chap/chap_common.sh`, lines `82-99`, symbol
+`config_chap_credentials_for_target`. Before the regression fix, the AI thread
+received only the beginning of the large evidence-card JSON and then repeated
+its own stale statement that `SRC-09` did not exist.
+
+The repair has three bounded parts: task-review context reserves priority for
+the quality audit, claim/fact ledgers and evidence cards; an explicit `SRC-*`
+lookup extracts a compact verified card rather than clipping the beginning of
+the full JSON; and a matching card is answered deterministically instead of
+asking a model to recollect a verified fact. Chromium evidence is retained as
+`attempt15-deterministic-src09-pass.png` and
+`attempt15-deterministic-src09-pass.txt` in
+`/Volumes/Media/codetalk-e2e-artifacts/v3-deepseek-flash-pro-risk-evidence-20260724/`.
+The final result showed the correct path, `L82-L99`, and symbol in zero seconds;
+this is a metadata lookup, not a non-cached workflow benchmark and therefore
+does not alter the performance ACs or close AC-QUALITY-006.
+
 The current code is **not releasable as V3**. No push to `origin/feat` and no
 goal completion is permitted until every `partial`, `blocked`, and `unverified`
 row has direct current evidence, including the deployment-owned security and
