@@ -5788,6 +5788,60 @@ def test_final_behavior_validation_field_patches_converge_to_fixed_point(tmp_pat
     assert final_validation["claims"][0]["status"] == "supports"
 
 
+def test_final_behavior_validation_reconverges_after_deterministic_repair(tmp_path):
+    import asyncio
+
+    from app.services.workbench_workflow_runner import (
+        _converge_behavior_validation_field_patches,
+    )
+
+    artifact_dir = tmp_path / "agent"
+    artifact_dir.mkdir()
+    sfmea = artifact_dir / "sfmea.json"
+    sfmea.write_text(
+        json.dumps(
+            [
+                {
+                    "risk_id": "SFMEA-10",
+                    "cause": "old cause",
+                    "effect": "login fails",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    async def validate_after_final_repair():
+        return {
+            "status": "completed",
+            "claims": [
+                {
+                    "claim_id": "ROW:sfmea.json:SFMEA-10",
+                    "status": "contradicts",
+                    "field_patch": {
+                        "cause": "verified cause after deterministic repair"
+                    },
+                }
+            ],
+        }
+
+    initial_validation = asyncio.run(validate_after_final_repair())
+    validation, changed, rounds = asyncio.run(
+        _converge_behavior_validation_field_patches(
+            artifact_dir=artifact_dir,
+            validation=initial_validation,
+            validate=validate_after_final_repair,
+        )
+    )
+
+    assert changed == {"sfmea.json": ["SFMEA-10"]}
+    assert rounds == 1
+    assert validation["status"] == "completed"
+    assert json.loads(sfmea.read_text(encoding="utf-8"))[0]["cause"] == (
+        "verified cause after deterministic repair"
+    )
+
+
 def test_quality_retry_generation_scope_applies_to_builtin_llm():
     from app.services.workbench_workflow_runner import _quality_retry_generation_artifacts
 

@@ -2915,6 +2915,37 @@ class WorkbenchWorkflowRunner:
                                 ]))
                                 behavior_validation = await validate_behavior_claims()
                                 final_repair_audit = await audit_staged_artifacts()
+                            # Final deterministic repairs and contradiction tombstones can
+                            # change a row after the first field-patch convergence pass.
+                            # Re-run the independent validator against those final bytes so
+                            # a newly proposed field patch is never left behind in the
+                            # delivery audit snapshot.
+                            if deterministic_repairs or tombstoned_rows:
+                                (
+                                    behavior_validation,
+                                    final_materialized_patches,
+                                    final_patch_rounds,
+                                ) = await _converge_behavior_validation_field_patches(
+                                    artifact_dir=artifact_dir,
+                                    validation=behavior_validation,
+                                    validate=validate_behavior_claims,
+                                    max_rounds=3,
+                                )
+                                if final_materialized_patches:
+                                    refreshed_reports = list(dict.fromkeys([
+                                        *refreshed_reports,
+                                        *_refresh_reports_after_tombstones(
+                                            artifact_dir=artifact_dir,
+                                            plan=current_plan,
+                                        ),
+                                    ]))
+                                final_repair_audit = await audit_staged_artifacts()
+                                for artifact, row_ids in final_materialized_patches.items():
+                                    materialized_patches[artifact] = list(dict.fromkeys([
+                                        *materialized_patches.get(artifact, []),
+                                        *row_ids,
+                                    ]))
+                                patch_rounds += final_patch_rounds
                             _write_json(
                                 artifact_dir
                                 / "quality_repairs"
