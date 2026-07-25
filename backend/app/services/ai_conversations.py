@@ -6067,14 +6067,29 @@ def _task_artifact_excerpt(name: str, text: str, *, user_message: str = "") -> s
         value.upper()
         for value in re.findall(r"\bSRC-\d{1,4}\b", str(user_message or ""), flags=re.IGNORECASE)
     }
-    if not requested_ids:
-        return _clip(text)
     try:
         cards = json.loads(text)
     except (TypeError, json.JSONDecodeError):
         return _clip(text)
     if not isinstance(cards, list):
         return _clip(text)
+    if not requested_ids:
+        evidence_index = [
+            {
+                "evidence_id": card.get("evidence_id"),
+                "file_path": card.get("file_path") or card.get("path"),
+                "start_line": card.get("start_line"),
+                "end_line": card.get("end_line"),
+                "symbols": card.get("symbols") or [],
+                "classification": card.get("classification") or card.get("kind"),
+            }
+            for card in cards
+            if isinstance(card, dict)
+        ]
+        return _clip(
+            json.dumps({"evidence_card_index": evidence_index}, ensure_ascii=False),
+            2400,
+        )
     matched_cards = [
         card
         for card in cards

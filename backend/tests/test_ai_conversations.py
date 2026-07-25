@@ -2724,6 +2724,13 @@ class TestAIConversationsAPI:
             "verified_fact_ledger.json",
             "agent_runs/analyze/evidence_cards.json",
         ]
+        generic_source_card_ref = next(
+            ref
+            for ref in refs
+            if ref.title == "agent_runs/analyze/evidence_cards.json"
+        )
+        assert "SRC-09" in generic_source_card_ref.excerpt
+        assert "config_chap_credentials_for_target" in generic_source_card_ref.excerpt
 
         source_id_refs = await build_context_references(
             conversation={
