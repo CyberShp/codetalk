@@ -3655,10 +3655,12 @@ def _workflow_scoped_test_activity_contract(
             ("black_box_cases.json", "min_black_box_cases"),
         ):
             threshold = combined_thresholds[threshold_key]
-            if not threshold or artifact in scoped_artifacts:
+            if not threshold:
                 continue
-            support_spec = base_artifacts.get(artifact) or ARTIFACT_TEMPLATES.get(
-                artifact, {}
+            support_spec = (
+                scoped_artifacts.get(artifact)
+                or base_artifacts.get(artifact)
+                or ARTIFACT_TEMPLATES.get(artifact, {})
             )
             if isinstance(support_spec, dict):
                 scoped_artifacts[artifact] = {

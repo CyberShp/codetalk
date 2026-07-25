@@ -2195,7 +2195,13 @@ def test_staged_combined_report_audits_the_canonical_sfmea_and_blackbox_rows():
         },
         workflow_snapshot={
             "id": "combined-staged-test-delivery",
-            "steps": [{"id": "analyze", "execution_mode": "staged"}],
+            "steps": [
+                {
+                    "id": "analyze",
+                    "execution_mode": "staged",
+                    "required_artifacts": ["sfmea.json", "black_box_cases.json"],
+                }
+            ],
             "outputs": [{"artifact": "report.md", "type": "combined_test_report"}],
         },
     )
