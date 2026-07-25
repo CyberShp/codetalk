@@ -5886,6 +5886,43 @@ async def test_linked_workflow_review_suppresses_test_activity_draft_card():
 
 
 @pytest.mark.asyncio
+async def test_linked_independent_review_uses_configured_audit_model(monkeypatch):
+    from app.api import ai_conversations as ai_api
+
+    class Store:
+        async def list_messages(self, _conversation_id):
+            return [{
+                "id": "message-review",
+                "role": "user",
+                "content": "请对旁挂交付件进行独立质量复核，只审阅不创建任务。",
+            }]
+
+    audit_llm = object()
+    active_llm = object()
+
+    async def audit_factory():
+        return audit_llm, "audit-config", "deepseek-v4-pro"
+
+    async def active_factory():
+        return active_llm
+
+    monkeypatch.setattr(ai_api, "create_behavior_claim_audit_llm_client", audit_factory)
+    monkeypatch.setattr(ai_api, "create_llm_client_from_active", active_factory)
+
+    selected = await ai_api._builtin_llm_for_run(
+        store=Store(),
+        run={"input_message_id": "message-review"},
+        conversation={
+            "id": "conv-review",
+            "scope_type": "workbench_task_run",
+            "scope_id": "task-run-review",
+        },
+    )
+
+    assert selected is audit_llm
+
+
+@pytest.mark.asyncio
 async def test_downloadable_assistant_delivery_writes_manifest_and_file_actions(
     tmp_path,
     monkeypatch,

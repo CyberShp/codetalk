@@ -16,13 +16,17 @@ from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import settings
-from app.llm.factory import create_llm_client_from_active
+from app.llm.factory import (
+    create_behavior_claim_audit_llm_client,
+    create_llm_client_from_active,
+)
 from app.services.ai_conversations import (
     AI_SCOPE_TYPES,
     AIConversationStore,
     ai_thread_artifact_path,
     ai_thread_delivery_dir,
     build_context_references,
+    _is_independent_task_review_request,
     maybe_await,
     run_agent_generation,
     run_generation,
@@ -339,7 +343,11 @@ def kick_conversation_queue(conversation_id: str) -> None:
                     await run_agent_generation(store=store, run_id=run_id, runtime=runtime)
                 return
             try:
-                llm = await maybe_await(create_llm_client_from_active())
+                llm = await _builtin_llm_for_run(
+                    store=store,
+                    run=run,
+                    conversation=conversation,
+                )
             except Exception as exc:
                 await store.fail_run(run_id, f"LLM 不可用：{exc}")
                 return
@@ -354,6 +362,32 @@ def kick_conversation_queue(conversation_id: str) -> None:
                 kick_conversation_queue(conversation_id)
 
     asyncio.create_task(_job())
+
+
+async def _builtin_llm_for_run(
+    *,
+    store: AIConversationStore,
+    run: dict[str, Any],
+    conversation: dict[str, Any],
+) -> Any:
+    """Choose the frozen independent auditor for linked deliverable reviews."""
+    messages = await store.list_messages(str(conversation.get("id") or ""))
+    input_id = str(run.get("input_message_id") or "")
+    user_message = next(
+        (
+            str(message.get("content") or "")
+            for message in messages
+            if str(message.get("id") or "") == input_id
+            and str(message.get("role") or "") == "user"
+        ),
+        "",
+    )
+    if _is_independent_task_review_request(conversation, user_message):
+        audit = await maybe_await(create_behavior_claim_audit_llm_client())
+        if audit is None:
+            raise ValueError("未配置独立质量复核模型，不能用生成模型代替复核")
+        return audit[0]
+    return await maybe_await(create_llm_client_from_active())
 
 
 def schedule_conversation_run(run_id: str) -> None:
