@@ -5390,6 +5390,7 @@ async def test_builtin_test_activity_rejects_truncated_provider_output(
             "详细分析 iSCSI login 流程并输出完整 SFMEA、黑盒测试用例和可下载测试设计文件"
         ),
         references=[],
+        run_snapshot={"execution_mode": "managed"},
     )
 
     await ai_conversations.run_generation(
@@ -5467,7 +5468,10 @@ async def test_linked_workflow_read_only_verification_does_not_create_downloadab
         scope_id="task_run_completed",
         workspace_id="global",
         title="已完成交付件只读核验",
-        initial_context={"task_run_id": "task_run_completed"},
+        initial_context={
+            "task_run_id": "task_run_completed",
+            "selected_workflow_id": "source_flow_sfmea_blackbox",
+        },
     )
     created = await store.create_user_message_and_run(
         conversation_id=conversation["id"],
@@ -5476,6 +5480,7 @@ async def test_linked_workflow_read_only_verification_does_not_create_downloadab
             "并列出其 source_evidence。"
         ),
         references=[],
+        run_snapshot={"execution_mode": "managed"},
     )
 
     await ai_conversations.run_generation(
@@ -5490,6 +5495,11 @@ async def test_linked_workflow_read_only_verification_does_not_create_downloadab
     assert "test_hypothesis" in messages[-1]["content"]
     assert not any(
         str(action.get("kind") or "") == "download"
+        for action in messages[-1].get("actions") or []
+        if isinstance(action, dict)
+    )
+    assert not any(
+        str(action.get("id") or "") == "create_task_draft"
         for action in messages[-1].get("actions") or []
         if isinstance(action, dict)
     )

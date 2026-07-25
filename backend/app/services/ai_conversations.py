@@ -2348,7 +2348,7 @@ async def run_generation(
             source_artifact_dir=staged_artifact_root,
             suppress_artifact=linked_review_turn,
         )
-        workflow_action = _bound_workflow_action(conversation)
+        workflow_action = None if linked_review_turn else _bound_workflow_action(conversation)
         if workflow_action:
             actions = [*actions, workflow_action]
         await store.complete_run(
@@ -2478,6 +2478,10 @@ async def run_agent_generation(
         return
     test_activity_context = _test_activity_request_context(
         messages,
+        user_message["content"],
+    )
+    linked_review_turn = _is_linked_workflow_review_turn(
+        conversation,
         user_message["content"],
     )
     references = user_message.get("references") or []
@@ -2744,6 +2748,8 @@ async def run_agent_generation(
             ):
                 return
         if (
+            not linked_review_turn
+            and
             _agent_task_requests_downloadable_artifact(test_activity_context, content)
             and _requires_strict_test_activity_quality_gate(test_activity_context)
             and not await _enforce_ai_thread_test_activity_quality(
@@ -2790,16 +2796,22 @@ async def run_agent_generation(
             conversation=conversation,
             content=content,
             user_message=user_message["content"],
-            force_artifact=adopted_agent_artifact
-            or _agent_task_requests_downloadable_artifact(user_message["content"], content),
+            force_artifact=(
+                not linked_review_turn
+                and (
+                    adopted_agent_artifact
+                    or _agent_task_requests_downloadable_artifact(user_message["content"], content)
+                )
+            ),
             artifact_only=adopted_agent_artifact,
             declared_artifacts=_materializable_agent_delivery_contracts(
                 invocation_manifest,
                 agent_artifact_dir,
             ),
             source_artifact_dir=agent_artifact_dir,
+            suppress_artifact=linked_review_turn,
         )
-        workflow_action = _bound_workflow_action(conversation)
+        workflow_action = None if linked_review_turn else _bound_workflow_action(conversation)
         if workflow_action:
             actions = [*actions, workflow_action]
         artifact_action = next(
