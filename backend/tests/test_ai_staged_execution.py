@@ -10549,3 +10549,4 @@ def test_deterministic_quality_repair_restores_missing_upstream_error_dimension(
     assert restored["test_dimension"] == "upstream_error_propagation"
     assert restored["technical_claims"] == [{"claim_id": "TC-001"}]
     assert "错误传播" in restored["scenario_name"]
+    assert isinstance(restored["failure_diagnostics"], list)

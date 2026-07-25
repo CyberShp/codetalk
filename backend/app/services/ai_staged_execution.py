@@ -8884,7 +8884,9 @@ def _deterministic_quality_claim_repair(
                 ],
                 "expected_result": "首个请求对外返回明确失败结果且不会建立可用会话；后续合法 Login 不受该失败请求影响。",
                 "observability": ["Login Response 的 status/status-detail", "target 日志、连接状态和后续合法 Login 的结果"],
-                "failure_diagnostics": ["保留错误请求与响应 PDU、target 日志及后续合法 Login 的连接状态。"],
+                "failure_diagnostics": [
+                    "保留错误请求与响应 PDU、target 日志及后续合法 Login 的连接状态。",
+                ],
                 "oracle_basis": "判据来源：Login Response 的公开状态字段、TCP 连接结果、target 日志和后续合法 Login 的外部行为。",
             },
         }
