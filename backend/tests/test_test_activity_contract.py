@@ -7753,6 +7753,27 @@ def test_behavior_validation_excludes_black_box_test_contract_from_source_entail
     assert request["claims"] == []
 
 
+def test_row_behavior_statement_defaults_black_box_cases_to_test_hypotheses():
+    from app.services.test_activity_contract import _row_behavior_statement
+
+    statement = json.loads(
+        _row_behavior_statement(
+            artifact="black_box_cases.json",
+            row={
+                "case_id": "BB-001",
+                "test_dimension": "long_steady_state",
+                "scenario_name": "长期连接资源观察",
+                "steps": ["持续执行公开 I/O 负载"],
+                "expected_result": "待验证：资源指标不持续恶化",
+                "observability": ["进程 RSS 与公开会话计数"],
+            },
+        )
+    )
+
+    assert statement["case_type"] == "black_box_hypothesis"
+    assert statement["expected_result"] == "待验证：资源指标不持续恶化"
+
+
 def test_behavior_validation_includes_row_semantics_when_claims_are_only_source_anchors(
     tmp_path,
 ):

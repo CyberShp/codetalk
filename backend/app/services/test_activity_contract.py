@@ -2357,6 +2357,15 @@ def _row_behavior_statement(*, artifact: str, row: dict[str, Any]) -> str:
         )
     )
     payload = {field: row.get(field) for field in fields if field in row}
+    if artifact == "black_box_cases.json":
+        # External steps, oracles and observability describe a test contract;
+        # they are not claims that the product already implements an RSS probe,
+        # fio harness, or every measurement tool named by the tester.  Producers
+        # may explicitly elevate another case type, but the safe default keeps
+        # ordinary source-driven black-box designs in the hypothesis lane.
+        payload["case_type"] = str(
+            row.get("case_type") or "black_box_hypothesis"
+        ).strip() or "black_box_hypothesis"
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
@@ -2452,6 +2461,13 @@ def build_behavior_claim_validation_request(
                 continue
             row_id = str(row.get(row_id_key) or f"row-{row_index}").strip()
             if not row_id:
+                continue
+            # A pure black-box contract can name public operations, metrics and
+            # an oracle without asserting that the implementation already owns
+            # those test tools. Its execution quality belongs to the structural
+            # and executability gates. Only a bound source anchor makes a
+            # black-box row a source-behaviour claim for independent L2 review.
+            if artifact == "black_box_cases.json" and not claims_by_row.get(row_id):
                 continue
             evidence = _row_behavior_evidence(
                 row=row,
