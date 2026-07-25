@@ -555,6 +555,11 @@ def _expand_verified_source_anchors(
             "iscsi_login_target_removed",
             "iscsi_login_target_not_found",
         ))
+    if "login" in token_set:
+        semantic_anchor_patterns.extend((
+            "iscsi_op_login_store_incoming_params",
+            "iscsi_bhs_login_get_cbit",
+        ))
 
     selected_by_path: dict[str, dict[str, Any]] = {}
     existing_ranges: dict[str, list[tuple[int, int]]] = {}

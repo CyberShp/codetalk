@@ -5881,6 +5881,76 @@ def test_source_analysis_context_preserves_protocol_semantic_anchors_after_token
     assert "ISCSI_LOGIN_TARGET_REMOVED" in excerpts
 
 
+def test_source_analysis_context_keeps_login_cbit_parameter_assembly_anchor(
+    tmp_path,
+):
+    source = tmp_path / "lib" / "iscsi" / "iscsi.c"
+    source.parent.mkdir(parents=True)
+    noisy_login_functions = []
+    for index in range(6):
+        noisy_login_functions.extend(
+            [
+                f"static int iscsi_login_noise_{index}(int rc)",
+                "{",
+                "    if (rc < 0) {",
+                "        return -EINVAL;",
+                "    }",
+                "    return rc;",
+                "}",
+                "",
+            ]
+        )
+    source_text = "\n".join(
+        [
+            "static int iscsi_login_response(void)",
+            "{",
+            "    return 0;",
+            "}",
+            "",
+            *noisy_login_functions,
+            "static int iscsi_op_login_store_incoming_params(struct request *req)",
+            "{",
+            "    return iscsi_parse_params(&req->params, req->data, req->length,",
+            "        ISCSI_BHS_LOGIN_GET_CBIT(req->flags), &req->partial_parameter);",
+            "}",
+        ]
+    )
+    source.write_text(source_text, encoding="utf-8")
+    staged_context = {
+        "repo_path": str(tmp_path),
+        "source_context": {
+            "repo_path": str(tmp_path),
+            "repo_revision": "fixture",
+            "tokens": ["login"],
+            "files": [
+                {
+                    "file_path": "lib/iscsi/iscsi.c",
+                    "classification": "source",
+                    "start_line": 1,
+                    "end_line": 4,
+                    "excerpt": "\n".join(source_text.splitlines()[:4]),
+                    "symbols": ["iscsi_login_response"],
+                    "matched_terms": ["login"],
+                    "sha256": hashlib.sha256(source_text.encode()).hexdigest(),
+                    "status": "validated_source_file",
+                }
+            ],
+        },
+    }
+
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "分析 iSCSI Login 参数协商"},
+        staged_context=staged_context,
+        max_files=1,
+        excerpt_chars=500,
+        max_evidence_anchors=2,
+    )
+
+    excerpts = "\n".join(str(item["excerpt"]) for item in compact["files"])
+    assert "ISCSI_BHS_LOGIN_GET_CBIT" in excerpts
+    assert "iscsi_parse_params" in excerpts
+
+
 def test_source_analysis_context_does_not_fill_anchor_budget_with_help_text(
     tmp_path,
 ):
