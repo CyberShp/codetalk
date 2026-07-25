@@ -455,18 +455,15 @@ function EvidenceReferenceCard({ refItem }: { refItem: AIContextReference }) {
 
 function agentProcessLatestSummary({
   diagnostics,
-  processEvents,
   runStatus,
+  downloadableArtifactCount,
 }: {
   diagnostics: string[];
-  processEvents?: AIRunEvent[];
   runStatus?: string;
+  downloadableArtifactCount: number;
 }): string {
   if (runStatus === "completed") {
-    const producedArtifact = (processEvents ?? []).some((event) =>
-      ["artifact", "artifact_progress"].includes(processEventKind(event)),
-    );
-    return producedArtifact ? "本轮已完成，产物可下载。" : "本轮已完成，结果已整理。";
+    return downloadableArtifactCount > 0 ? "本轮已完成，产物可下载。" : "本轮已完成，结果已整理。";
   }
   return diagnostics.length > 0 ? latestAgentProcessSummaryText(diagnostics) : "等待 Agent 事件";
 }
@@ -475,16 +472,18 @@ function AgentProcessDisclosure({
   diagnostics,
   processEvents,
   runStatus,
+  downloadableArtifactCount,
 }: {
   diagnostics: string[];
   processEvents: AIRunEvent[];
   runStatus?: string;
+  downloadableArtifactCount: number;
 }) {
   const [open, setOpen] = useState(false);
   const visibleDiagnostics = capAgentProcessDiagnostics(diagnostics);
   const timelineRows = publicTimelineRows(processEvents);
   if (visibleDiagnostics.length === 0 && timelineRows.length === 0) return null;
-  const latestSummary = agentProcessLatestSummary({ diagnostics: visibleDiagnostics, processEvents, runStatus });
+  const latestSummary = agentProcessLatestSummary({ diagnostics: visibleDiagnostics, runStatus, downloadableArtifactCount });
   const toggleOpen = () => setOpen((current) => !current);
   return (
     <details
@@ -518,12 +517,13 @@ function AgentProcessDisclosure({
   );
 }
 
-function CurrentRunPanel({ diagnostics, processEvents, run, running, referenceCount, cancelling, onCancel }: {
+function CurrentRunPanel({ diagnostics, processEvents, run, running, referenceCount, downloadableArtifactCount, cancelling, onCancel }: {
   diagnostics: string[];
   processEvents: AIRunEvent[];
   run: AIConversationRun | null;
   running: boolean;
   referenceCount: number;
+  downloadableArtifactCount: number;
   cancelling: boolean;
   onCancel: () => void;
 }) {
@@ -534,7 +534,7 @@ function CurrentRunPanel({ diagnostics, processEvents, run, running, referenceCo
   const latestTimeline = timelineRows.at(-1);
   const currentAction = latestTimeline?.title || agentLifecycleLabel({ runStatus: run?.status, streaming: running, processEvents, diagnostics: visibleDiagnostics.join("\n") });
   const evidenceCount = Number(run?.metrics?.evidence_count ?? referenceCount);
-  const artifactCount = Number(run?.metrics?.artifact_count ?? 0);
+  const artifactCount = downloadableArtifactCount;
   return (
     <section data-testid="current-run-panel">
       <h2><Bot size={16} />本轮运行</h2>
@@ -979,6 +979,11 @@ export default function AIThreadPage() {
   }, [linkedTaskRunId]);
   const runsById = useMemo(() => new Map(runs.map((run) => [run.id, run])), [runs]);
   const displayedLatestRun = latestRun?.id ? runsById.get(latestRun.id) ?? latestRun : null;
+  const latestRunDownloadableArtifactCount = useMemo(() => {
+    if (!displayedLatestRun?.id) return 0;
+    const message = [...messages].reverse().find((item) => item.run_id === displayedLatestRun.id);
+    return attachmentActions(message?.actions).length;
+  }, [displayedLatestRun?.id, messages]);
   const threadNavigationBusy =
     savingRuntime || cancelling || creatingSiblingThread || Boolean(deletingThreadId);
   const lastUserMessage = useMemo(
@@ -1939,6 +1944,7 @@ export default function AIThreadPage() {
             diagnostics={streamingDiagnostics}
             processEvents={streamingProcessEvents}
             runStatus={latestRun?.status}
+            downloadableArtifactCount={latestRunDownloadableArtifactCount}
           />
         </div>
         {showJumpToLatest && (
@@ -2021,6 +2027,7 @@ export default function AIThreadPage() {
           run={displayedLatestRun}
           running={isActuallyRunning}
           referenceCount={references.length}
+          downloadableArtifactCount={latestRunDownloadableArtifactCount}
           cancelling={cancelling}
           onCancel={() => void cancel()}
         />
