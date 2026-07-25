@@ -3035,6 +3035,41 @@ def test_final_materialized_sfmea_contract_removes_deletion_tombstones(tmp_path)
     assert [row["sfmea_id"] for row in rows] == ["SFMEA-01"]
 
 
+def test_final_materialized_sfmea_contract_refills_declared_floor_after_tombstone(tmp_path):
+    from app.services.ai_staged_execution import normalize_materialized_sfmea_risk_contract
+
+    (tmp_path / "evidence_cards.json").write_text(json.dumps([{
+        "evidence_id": "SRC-01",
+        "file_path": "lib/iscsi/iscsi.c",
+        "start_line": 10,
+        "end_line": 10,
+        "excerpt": "if (conn == NULL) {",
+        "symbols": ["iscsi_login"],
+        "sha256": "digest",
+        "classification": "source",
+    }]), encoding="utf-8")
+    (tmp_path / "source_scope.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "sfmea.json").write_text(json.dumps([
+        {"sfmea_id": "SFMEA-01", "failure_mode": "retained risk"},
+        {"sfmea_id": "SFMEA-02", "_delete": True},
+    ]), encoding="utf-8")
+
+    normalize_materialized_sfmea_risk_contract(
+        artifact_dir=tmp_path,
+        plan={"stages": [{
+            "id": "sfmea",
+            "artifact": "sfmea.json",
+            "output_contract": {"schema": {"minItems": 2}},
+        }]},
+    )
+
+    rows = json.loads((tmp_path / "sfmea.json").read_text(encoding="utf-8"))
+    assert len(rows) == 2
+    assert all(row.get("_delete") is not True for row in rows)
+    assert rows[-1]["risk_status"] == "test_hypothesis"
+    assert rows[-1]["technical_claims"][0]["evidence"][0]["evidence_id"] == "SRC-01:L10"
+
+
 def test_normalize_black_box_delivery_contract_replaces_source_mapping_and_unit_fallback():
     rendered, fields = _normalize_black_box_delivery_contract(
         [

@@ -6442,6 +6442,7 @@ def normalize_materialized_sfmea_risk_contract(
     catalog = _sfmea_product_claim_catalog(
         _build_verified_claim_catalog(source_pack if isinstance(source_pack, dict) else {})
     )
+    minimum_items = _minimum_sfmea_items_from_plan(plan)
     # The provider may accurately choose a verified source line but phrase a
     # broader behavioural conclusion around it.  Preserve that interpretation
     # in the SFMEA fields while making the technical claim itself an exact L1
@@ -6452,10 +6453,33 @@ def normalize_materialized_sfmea_risk_contract(
     normalized, fields = _normalize_sfmea_risk_contract(
         rendered,
         product_claim_catalog=catalog,
+        minimum_items=minimum_items,
     )
     if normalized != rendered:
         _write_json(path, normalized)
     return fields
+
+
+def _minimum_sfmea_items_from_plan(plan: dict[str, Any]) -> int:
+    """Read the final SFMEA floor from the workflow contract.
+
+    The final quality pass can remove contradicted rows after the original
+    stage has already met its output contract. Reusing that contract here
+    keeps the delivery file valid without restoring a disproven claim.
+    """
+    if not isinstance(plan, dict):
+        return 0
+    stages = plan.get("stages")
+    if not isinstance(stages, list):
+        return 0
+    for stage in stages:
+        if not isinstance(stage, dict):
+            continue
+        artifact = str(stage.get("artifact") or "")
+        stage_id = str(stage.get("id") or stage.get("stage_id") or "")
+        if artifact == "sfmea.json" or stage_id == "sfmea":
+            return _minimum_sfmea_items(stage)
+    return 0
 
 
 def _source_risk_candidate_for_sfmea_row(
