@@ -1582,7 +1582,9 @@ def audit_test_activity_artifacts(
     ) or (root / "black_box_cases.json").is_file()
     audited_json_artifacts: set[str] = set()
 
-    def record_semantic_conflicts(*, artifact: str, content: str) -> None:
+    def record_semantic_conflicts(
+        *, artifact: str, content: str, row_id: str = ""
+    ) -> None:
         """Turn delivery-level professional conflicts into fact-gate claims.
 
         Markdown and JSON are both user-facing delivery surfaces. A correct
@@ -1591,7 +1593,8 @@ def audit_test_activity_artifacts(
         """
         if not content.strip():
             return
-        for index, issue in enumerate(
+        row_token = re.sub(r"[^A-Za-z0-9_.-]+", "-", row_id).strip("-")
+        for index, raw_issue in enumerate(
             _audit_professional_constraints(
                 content,
                 contract,
@@ -1600,11 +1603,16 @@ def audit_test_activity_artifacts(
             ),
             start=1,
         ):
+            issue = dict(raw_issue)
+            if row_id:
+                issue["row_id"] = row_id
             constraint_id = str(issue.get("constraint_id") or "semantic-mapping")
             structured_semantic_issues.append(issue)
             structured_semantic_claims.append(
                 {
-                    "claim_id": f"SEM-{Path(artifact).stem.upper()}-{index:03d}",
+                    "claim_id": (
+                        f"SEM-{Path(artifact).stem.upper()}-{row_token or index}-{index:03d}"
+                    ),
                     "type": (
                         "test_mapping_semantics"
                         if "mapping" in constraint_id
@@ -1622,7 +1630,7 @@ def audit_test_activity_artifacts(
         if not isinstance(payload, (dict, list)):
             return
         rows = payload if isinstance(payload, list) else [payload]
-        semantic_rows: list[str] = []
+        row_id_key = "sfmea_id" if artifact == "sfmea.json" else "case_id"
         semantic_keys = (
             "failure_mode",
             "scenario_name",
@@ -1632,7 +1640,7 @@ def audit_test_activity_artifacts(
             "source_evidence",
             "source_or_test_evidence",
         )
-        for row in rows:
+        for row_index, row in enumerate(rows, start=1):
             if not isinstance(row, dict):
                 continue
             # Constraint patterns express a semantic relation such as
@@ -1644,11 +1652,11 @@ def audit_test_activity_artifacts(
                 if key in row and row[key] not in (None, "", [], {})
             }
             if ordered:
-                semantic_rows.append(json.dumps(ordered, ensure_ascii=False))
-        record_semantic_conflicts(
-            artifact=artifact,
-            content="\n".join(semantic_rows),
-        )
+                record_semantic_conflicts(
+                    artifact=artifact,
+                    content=json.dumps(ordered, ensure_ascii=False),
+                    row_id=str(row.get(row_id_key) or f"row-{row_index}").strip(),
+                )
 
     if contract.get("audit_scope_required") and not artifact_contract:
         structural_issues.append(
@@ -2541,8 +2549,10 @@ def build_behavior_claim_validation_request(
             # those test tools. Its execution quality belongs to the structural
             # and executability gates. Only a bound source anchor makes a
             # black-box row a source-behaviour claim for independent L2 review.
-            if artifact == "black_box_cases.json" and not claims_by_row.get(row_id):
-                continue
+            if artifact == "black_box_cases.json":
+                case_type = str(row.get("case_type") or "black_box_hypothesis").strip()
+                if not claims_by_row.get(row_id) or case_type == "black_box_hypothesis":
+                    continue
             evidence = _row_behavior_evidence(
                 row=row,
                 verified_files=verified_files,

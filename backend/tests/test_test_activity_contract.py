@@ -7972,6 +7972,42 @@ def test_behavior_validation_excludes_black_box_test_contract_from_source_entail
     assert request["claims"] == []
 
 
+def test_behavior_validation_excludes_hypothesis_even_with_a_verified_anchor(tmp_path):
+    from app.services.test_activity_contract import build_behavior_claim_validation_request
+
+    repo = tmp_path / "repo"
+    source = repo / "src" / "connect.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("int connect_target(void) { return 0; }\n", encoding="utf-8")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    quote = "int connect_target(void) { return 0; }"
+    (artifacts / "evidence_cards.json").write_text(
+        json.dumps([{
+            "evidence_id": "SRC-001", "file_path": "src/connect.c",
+            "start_line": 1, "end_line": 1, "excerpt": quote,
+            "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            "symbols": ["connect_target"],
+        }]),
+        encoding="utf-8",
+    )
+    (artifacts / "black_box_cases.json").write_text(
+        json.dumps([{
+            "case_id": "BB-PERF-001", "test_dimension": "performance",
+            "scenario_name": "baseline latency sampling", "steps": ["run public CLI 30 times"],
+            "expected_result": "compare P95 with the measured baseline",
+            "oracle_basis": "same-environment measured baseline", "observability": ["P50/P95"],
+            "technical_claims": [{"claim_id": "TC-001", "type": "source_anchor", "statement": quote,
+                "evidence": [{"evidence_id": "SRC-001", "path": "src/connect.c", "lines": "L1", "quote": quote}]}],
+        }]),
+        encoding="utf-8",
+    )
+
+    request = build_behavior_claim_validation_request(artifact_dir=artifacts, repo_path=repo)
+
+    assert request["claims"] == []
+
+
 def test_row_behavior_statement_defaults_black_box_cases_to_test_hypotheses():
     from app.services.test_activity_contract import _row_behavior_statement
 
@@ -8920,6 +8956,37 @@ def test_quality_audit_blocks_professional_fact_conflict_as_verified_fact(tmp_pa
     assert result["quality_axes"]["structure"]["status"] == "passed"
     assert result["quality_axes"]["facts"]["status"] == "blocked"
     assert result["quality_axes"]["executability"]["status"] == "not_checked"
+
+
+def test_structured_professional_conflict_keeps_the_affected_case_id(tmp_path):
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "black_box_cases.json").write_text(
+        json.dumps([{
+            "case_id": "BB-ROW-001", "scenario_name": "wrong mapping",
+            "mapped_test_dir": "test/wrong.sh", "expected_result": "WRONG_PROTOCOL_VALUE",
+        }]),
+        encoding="utf-8",
+    )
+    result = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract={
+            "artifact_contract": {"black_box_cases.json": {"required_fields": []}},
+            "professional_constraints": [{
+                "id": "legacy_regex_fact", "assertion": "source truth",
+                "conflict_patterns": ["WRONG_PROTOCOL_VALUE"], "correction_patterns": [],
+            }],
+            "quality_gates": {},
+        },
+    )
+
+    assert any(
+        issue.get("code") == "professional_fact_conflict"
+        and issue.get("row_id") == "BB-ROW-001"
+        for issue in result["issues"]
+    )
 
 
 @pytest.mark.parametrize(
