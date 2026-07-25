@@ -5168,6 +5168,29 @@ def test_flow_outline_selects_verified_normal_path_and_keeps_error_as_supporting
     assert not any("不能证明单一端到端" in gap for gap in outline["evidence_gaps"])
 
 
+def test_flow_outline_selects_verified_target_slice_when_completion_callback_is_not_visible():
+    outline = build_flow_outline(
+        {
+            "analysis_target": "iSCSI Login C-bit 参数重组，从接收 PDU 到参数解析",
+            "repo_revision": "abc123",
+            "entry_points": [{"evidence_id": "ENTRY", "symbol": "iscsi_conn_start"}],
+            "call_edges": [
+                {"evidence_id": "EDGE-01", "from_symbol": "iscsi_conn_start", "to_symbol": "iscsi_handle_incoming_pdus"},
+                {"evidence_id": "EDGE-02", "from_symbol": "iscsi_handle_incoming_pdus", "to_symbol": "iscsi_read_pdu"},
+                {"evidence_id": "EDGE-03", "from_symbol": "iscsi_read_pdu", "to_symbol": "iscsi_pdu_payload_handle"},
+                {"evidence_id": "EDGE-04", "from_symbol": "iscsi_pdu_payload_handle", "to_symbol": "iscsi_pdu_payload_op_login"},
+                {"evidence_id": "EDGE-05", "from_symbol": "iscsi_pdu_payload_op_login", "to_symbol": "iscsi_op_login_store_incoming_params"},
+                {"evidence_id": "EDGE-06", "from_symbol": "iscsi_op_login_store_incoming_params", "to_symbol": "iscsi_parse_params"},
+            ],
+        }
+    )
+
+    assert len(outline["main_flows"]) == 1
+    assert "目标范围" in outline["main_flows"][0]["name"]
+    assert outline["main_flows"][0]["steps"][-1]["to_symbol"] == "iscsi_parse_params"
+    assert not any("不能证明单一端到端" in gap for gap in outline["evidence_gaps"])
+
+
 def test_flow_outline_excludes_edges_not_reachable_from_verified_entries():
     outline = build_flow_outline(
         {

@@ -344,6 +344,15 @@ def build_flow_outline(flow_pack: dict[str, Any]) -> dict[str, Any]:
         entry_roots=entry_roots,
         analysis_target=str(flow_pack.get("analysis_target") or ""),
     )
+    primary_selection_kind = "normal_completion"
+    if primary_selection is None:
+        primary_selection = _select_primary_target_slice(
+            usable_edges=usable_edges,
+            entry_roots=entry_roots,
+            analysis_target=str(flow_pack.get("analysis_target") or ""),
+        )
+        if primary_selection is not None:
+            primary_selection_kind = "target_slice"
     if primary_selection:
         root, edge_indexes = primary_selection
         component = [usable_edges[index] for index in edge_indexes]
@@ -368,8 +377,13 @@ def build_flow_outline(flow_pack: dict[str, Any]) -> dict[str, Any]:
         main_flows.append(
             {
                 "id": flow_id,
-                "name": f"从 {root} 到正常完成的已验证主流程",
+                "name": (
+                    f"从 {root} 到正常完成的已验证主流程"
+                    if primary_selection_kind == "normal_completion"
+                    else f"从 {root} 到目标范围的已验证流程"
+                ),
                 "root_symbol": root,
+                "scope": primary_selection_kind,
                 "steps": flow_steps,
             }
         )
@@ -576,6 +590,59 @@ def _select_primary_normal_path(
     if not candidates:
         return None
     _, root, path = max(candidates, key=lambda item: (item[0], item[1]))
+    return root, path
+
+
+def _select_primary_target_slice(
+    *,
+    usable_edges: list[dict[str, Any]],
+    entry_roots: list[str],
+    analysis_target: str,
+) -> tuple[str, list[int]] | None:
+    """Choose a bounded verified slice when the user explicitly named a range.
+
+    This is deliberately not a fallback for generic analysis: without an
+    explicit range, a connected component must not be promoted to an
+    end-to-end flow merely because it is long.  A selected slice is labelled
+    separately so downstream reports cannot call it a normal completion path.
+    """
+    if not re.search(r"(?:\\bfrom\\b|\\bto\\b|从|到|流程|flow)", analysis_target, re.IGNORECASE):
+        return None
+    primary_terms = _primary_flow_terms(analysis_target)
+    if not primary_terms:
+        return None
+    outgoing: dict[str, list[tuple[int, dict[str, Any]]]] = {}
+    for index, edge in enumerate(usable_edges):
+        source = str(edge.get("from_symbol") or edge.get("symbol") or "")
+        if source:
+            outgoing.setdefault(source, []).append((index, edge))
+    candidates: list[tuple[int, int, str, list[int]]] = []
+    for root in entry_roots:
+        if not root or "fuzz" in root.lower():
+            continue
+        queue: deque[tuple[str, list[int]]] = deque([(root, [])])
+        visited: set[tuple[str, tuple[int, ...]]] = {(root, ())}
+        while queue:
+            symbol, path = queue.popleft()
+            if len(path) >= 3:
+                relevance = sum(term in symbol.lower() for term in primary_terms)
+                if relevance:
+                    candidates.append((len(path), relevance, root, path))
+            if len(path) >= 16:
+                continue
+            for edge_index, edge in outgoing.get(symbol) or []:
+                target = str(edge.get("to_symbol") or "")
+                if not target or edge_index in path:
+                    continue
+                next_path = [*path, edge_index]
+                state = (target, tuple(next_path))
+                if state in visited:
+                    continue
+                visited.add(state)
+                queue.append((target, next_path))
+    if not candidates:
+        return None
+    _, _, root, path = max(candidates, key=lambda item: (item[0], item[1], item[2]))
     return root, path
 
 
