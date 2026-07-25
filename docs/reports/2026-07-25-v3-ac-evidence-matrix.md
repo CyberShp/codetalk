@@ -198,6 +198,23 @@ SPDK workspace and uploaded design document. Three targeted quality-repair
 passes occurred, so it is functional and quality evidence, not an uncached
 rapid performance baseline. Artifacts: `/Volumes/Media/codetalk-e2e-artifacts/v3-deepseek-flash-pro-20260726/run5/`.
 
+### 2026-07-26 DeepSeek V4 Flash/Pro isolated rapid regression
+
+Chromium configured and probed the official DeepSeek V4 routes from the settings
+page, then created a fresh SPDK workspace, uploaded the design document, chose
+the published built-in rapid workflow and started the task through the task
+wizard. Run `task_run_7931e9af092243ca9720d2ee0c32db6b` completed in
+`197509ms` with `completed / passed / complete`; the final acceptance audit and
+artifact-alignment audit both passed. The initial source, flow, SFMEA and
+black-box stage calls were cache misses. Flash handled source/flow work and Pro
+handled SFMEA/black-box work: source-analysis waited 1.1s, business-flow 16.5s,
+SFMEA 73.1s and black-box 42.1s. Two targeted same-run quality-repair passes
+reused accepted artifacts and made no second full source call. This is valid
+functional, quality and V4 route evidence, but is deliberately not counted as
+one of the five uncached rapid performance samples because the rapid policy's
+published 10-25 minute interpretation still needs a representative sample set.
+Artifacts: `/Volumes/Media/codetalk-e2e-artifacts/v3-rapid-five-samples-20260726/run3/`.
+
 ### 2026-07-25 DeepSeek Flash/Pro Quality-Retry Regression
 
 Browser-run `task_run_2ca4eb1e31ed49baba52ed9eeed9ac09` is a real Chromium
