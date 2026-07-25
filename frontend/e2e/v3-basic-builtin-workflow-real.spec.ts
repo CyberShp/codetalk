@@ -44,7 +44,7 @@ test("V3 basic source plus design workflow runs through the browser with a real 
   const terminalStatus = (await status.textContent())?.trim() || "";
   expect(terminalStatus).toMatch(/^(已完成|部分完成)$/);
 
-  await expect(page.getByText(/交付文件|正式交付件/).first()).toBeVisible({ timeout: 30_000 });
+  await expect(page.locator(".ct-v2-run-deliverables")).toBeVisible({ timeout: 30_000 });
   const quality = page.locator(".ct-v2-run-status").filter({ hasText: "质量状态" }).locator("strong");
   await expect(quality).toHaveText("通过");
   await page.screenshot({ path: path.join(dataDir, "v3-basic-builtin-b-completed.png"), fullPage: false });
