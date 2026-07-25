@@ -8913,6 +8913,37 @@ def _deterministic_quality_claim_repair(
                 ]
             )
 
+    # The iSCSI fuzz target intentionally skips Login opcodes.  A generator
+    # may still attach it to a Login SFMEA row because it shares PDU parsing
+    # vocabulary with the source evidence.  Preserve the risk hypothesis, but
+    # replace that false test-coverage claim with the explicit missing harness
+    # that a tester must provide.
+    if (
+        "iscsi_fuzzer_skips_login_opcode" in professional_constraints
+        and artifact_name == "sfmea.json"
+        and isinstance(repaired, list)
+    ):
+        targeted_row_ids = {
+            str(issue.get("row_id") or "").strip()
+            for issue in issues
+            if str(issue.get("code") or "") == "professional_fact_conflict"
+            and str(issue.get("constraint_id") or "") == "iscsi_fuzzer_skips_login_opcode"
+            and str(issue.get("row_id") or "").strip()
+        }
+        for index, row in enumerate(repaired):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("sfmea_id") or "").strip() not in targeted_row_ids:
+                continue
+            replacement = (
+                "ai_suggested_unverified: 需新增受控 raw-PDU 并发 Login harness；"
+                "test/app/fuzz/iscsi_fuzz/iscsi_fuzz.c 明确跳过 LOGIN opcode，"
+                "不得将其作为 Login Request 覆盖证据。"
+            )
+            if row.get("test_mapping") != replacement:
+                row["test_mapping"] = replacement
+                fields.append(f"$[{index}].test_mapping")
+
     if (
         "iscsi_chap_request_response_flags" in professional_constraints
         and artifact_name == "black_box_cases.json"

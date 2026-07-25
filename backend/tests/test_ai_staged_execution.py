@@ -11233,3 +11233,43 @@ def test_deterministic_quality_repair_replaces_fuzz_mapping_with_black_box_harne
     case = repaired[0]
     assert case["mapped_test_dir"].startswith("ai_suggested_unverified:")
     assert "$[0].mapped_test_dir" in fields
+
+
+def test_deterministic_quality_repair_replaces_login_fuzzer_mapping_in_sfmea(tmp_path):
+    from app.services.ai_staged_execution import _deterministic_quality_claim_repair
+    from app.services.test_activity_contract import (
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "sfmea_id": "SFMEA-LOGIN-FUZZ",
+            "failure_mode": "并发登录请求导致状态覆盖",
+            "test_mapping": "test/app/fuzz/iscsi_fuzz/iscsi_fuzz.c（需扩展并发登录场景）",
+            "source_evidence": ["SRC-02:L1301"],
+        }],
+        artifact="sfmea.json",
+        quality_feedback={"issues": [{
+            "artifact": "sfmea.json",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_fuzzer_skips_login_opcode",
+            "row_id": "SFMEA-LOGIN-FUZZ",
+        }]},
+    )
+
+    row = repaired[0]
+    assert row["test_mapping"].startswith("ai_suggested_unverified:")
+    assert "明确跳过 LOGIN opcode" in row["test_mapping"]
+    assert "$[0].test_mapping" in fields
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(target="iSCSI Login 测试设计", repo_path=str(repo))
+    issues = _audit_professional_constraints(
+        json.dumps(row, ensure_ascii=False),
+        contract,
+    )
+    assert "iscsi_fuzzer_skips_login_opcode" not in {
+        issue.get("constraint_id") for issue in issues
+    }
