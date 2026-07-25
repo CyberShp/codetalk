@@ -5017,6 +5017,49 @@ def test_final_quality_repair_materializes_sfmea_deletions_without_tombstones(tm
     ]
 
 
+def test_deterministic_stage_repair_preserves_prior_provider_metrics():
+    from app.services.ai_staged_execution import (
+        _preserve_provider_metrics_for_deterministic_repair,
+    )
+
+    result = _preserve_provider_metrics_for_deterministic_repair(
+        {
+            "stage_id": "sfmea",
+            "model": "deterministic",
+            "attempt_count": 0,
+            "provider_wait_ms": 0.0,
+            "output_tokens": 0,
+            "total_duration_ms": 5.0,
+            "duration_ms": 5.0,
+            "finish_reason": "deterministic_claim_repair",
+        },
+        prior_result={
+            "model": "deepseek-v4-pro",
+            "attempts": 1,
+            "attempt_count": 1,
+            "provider_call_count": 1,
+            "prompt_characters": 19635,
+            "prompt_estimated_tokens": 4908,
+            "provider_wait_ms": 4905.3,
+            "output_tokens": 321,
+            "total_duration_ms": 4964.0,
+            "duration_ms": 4964.0,
+            "finish_reason": "stop",
+        },
+        repair_duration_ms=5.0,
+    )
+
+    assert result["model"] == "deepseek-v4-pro"
+    assert result["attempt_count"] == 1
+    assert result["provider_wait_ms"] == 4905.3
+    assert result["output_tokens"] == 321
+    assert result["prompt_estimated_tokens"] == 4908
+    assert result["total_duration_ms"] == 4969.0
+    assert result["finish_reason"] == "deterministic_claim_repair"
+    assert result["provider_finish_reason"] == "stop"
+    assert result["repair_model"] == "deterministic"
+
+
 def test_deterministic_quality_claim_repair_materializes_missing_mcs_target_setup_case():
     payload = [
         {

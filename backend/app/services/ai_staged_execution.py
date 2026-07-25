@@ -2515,6 +2515,70 @@ def _provider_work_metrics(result: dict[str, Any]) -> dict[str, float | int]:
     }
 
 
+_STAGE_EXECUTION_METRIC_FIELDS = (
+    "attempts",
+    "attempt_count",
+    "provider_call_count",
+    "queue_wait_ms",
+    "provider_wait_ms",
+    "time_to_first_token_ms",
+    "generation_ms",
+    "validation_ms",
+    "total_duration_ms",
+    "duration_ms",
+    "prompt_characters",
+    "prompt_estimated_tokens",
+    "prompt_characters_before_compaction",
+    "prepared_prompt_characters",
+    "output_tokens",
+    "finish_reason",
+    "model",
+)
+
+
+def _preserve_provider_metrics_for_deterministic_repair(
+    result: dict[str, Any],
+    *,
+    prior_result: dict[str, Any],
+    repair_duration_ms: float,
+) -> dict[str, Any]:
+    """Publish a deterministic repair without erasing earlier provider work.
+
+    A quality retry may only patch rows in an artifact generated during an
+    earlier pass.  The repair itself is local, but the stage still consumed a
+    provider call and must retain those timing and token metrics for the
+    cockpit, audit bundle and performance report.
+    """
+    if not isinstance(prior_result, dict):
+        return result
+    prior_metrics = {
+        field: prior_result.get(field)
+        for field in _STAGE_EXECUTION_METRIC_FIELDS
+        if prior_result.get(field) not in (None, "", 0, 0.0)
+    }
+    if not prior_metrics:
+        return result
+
+    preserved = dict(result)
+    preserved["prior_execution_metrics"] = prior_metrics
+    for field in _STAGE_EXECUTION_METRIC_FIELDS:
+        if field not in prior_metrics:
+            continue
+        if field in {"total_duration_ms", "duration_ms"}:
+            try:
+                preserved[field] = round(float(prior_metrics[field]) + repair_duration_ms, 1)
+            except (TypeError, ValueError):
+                preserved[field] = prior_metrics[field]
+            continue
+        preserved[field] = prior_metrics[field]
+    preserved["provider_finish_reason"] = str(prior_metrics.get("finish_reason") or "")
+    preserved["finish_reason"] = "deterministic_claim_repair"
+    preserved["repair_kind"] = "deterministic_claim_repair"
+    preserved["repair_model"] = "deterministic"
+    preserved["repair_ms"] = repair_duration_ms
+    return preserved
+
+
 def _existing_quality_stage_result(
     *,
     plan: dict[str, Any],
@@ -4133,6 +4197,7 @@ async def _execute_regular_stage(
     prompt_characters_before_compaction = len(legacy_prompt)
     prompt_characters = len(prompt)
     prompt_estimated_tokens = BaseLLMClient.estimate_tokens(prompt)
+    prior_stage_result = _read_json_file(stage_dir / "stage_result.json")
     if current_artifact_seed.strip() and artifact.endswith(".json"):
         try:
             current_payload = _render_stage_artifact(current_artifact_seed, artifact)
@@ -4204,6 +4269,11 @@ async def _execute_regular_stage(
                     "cache_status": "disabled",
                     "deterministic_repair_fields": repaired_fields,
                 }
+                result = _preserve_provider_metrics_for_deterministic_repair(
+                    result,
+                    prior_result=prior_stage_result,
+                    repair_duration_ms=duration_ms,
+                )
                 _write_json(stage_dir / "stage_result.json", result)
                 await _emit_progress(
                     on_progress,
