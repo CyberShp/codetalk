@@ -8356,8 +8356,14 @@ def _deterministic_quality_claim_repair(
                     "若第二个连接成功，确认 iscsi_set_options -c 1 在 target 启动前已执行。",
                     "若首连接断开，保留两个 socket 的 PDU、TSIH/CID 值和 target 日志。",
                 ],
+                "oracle_basis": (
+                    "判据来源：启动前的 `scripts/rpc.py iscsi_set_options -c 1` "
+                    "配置、首连接成功响应中的 non-zero TSIH，以及第二个 Login Response "
+                    "的公开 status/status-detail 字段；不得预设未经证实的数值阈值。"
+                ),
                 "mapped_test_dir": (
-                    "需新增 raw-PDU MCS 黑盒用例；multiconnection.sh 仅作环境搭建参考，"
+                    "ai_suggested_unverified: 需新增 raw-PDU MCS 黑盒用例；"
+                    "multiconnection.sh 仅作环境搭建参考，"
                     "不覆盖同一 session 的 MCS。"
                 ),
             }

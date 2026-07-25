@@ -4625,6 +4625,8 @@ def test_deterministic_quality_claim_repair_materializes_missing_mcs_target_setu
     assert case["case_id"] == "BBC-MCS-CAPACITY"
     assert "scripts/rpc.py iscsi_set_options -c 1" in " ".join(case["preconditions"])
     assert "non-zero TSIH" in " ".join(case["steps"])
+    assert case["mapped_test_dir"].startswith("ai_suggested_unverified:")
+    assert "判据来源" in case["oracle_basis"]
     assert "$[+].mcs_target_setup_case" in fields
     report = _render_deterministic_combined_report(
         plan={"original_user_request": "SPDK iSCSI Login 测试设计"},
