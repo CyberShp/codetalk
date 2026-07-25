@@ -2026,6 +2026,16 @@ def _staged_execution_profile(raw_profile: dict[str, Any] | None) -> dict[str, A
             requested_source_limits if isinstance(requested_source_limits, dict) else {}
         )
         source_limits = {
+            "max_tokens": max(
+                2400,
+                int(requested_source_limits.get("max_tokens") or 0),
+                int(settings.source_analysis_max_tokens),
+            ),
+            "max_chinese_characters": max(
+                2400,
+                int(requested_source_limits.get("max_chinese_characters") or 0),
+                int(settings.source_analysis_max_chinese_characters),
+            ),
             "max_files": max(
                 18,
                 int(requested_source_limits.get("max_files") or 0),
@@ -2052,12 +2062,10 @@ def _staged_execution_profile(raw_profile: dict[str, Any] | None) -> dict[str, A
             "delivery_class": str(raw.get("delivery_class") or "full_test_delivery"),
             "configured_max_subagents": configured_max_subagents,
             "applied_subagent_count": applied_subagent_count,
-            "source_analysis_max_tokens": max(
-                2400, int(settings.source_analysis_max_tokens)
-            ),
-            "source_analysis_max_chinese_characters": max(
-                2400, int(settings.source_analysis_max_chinese_characters)
-            ),
+            "source_analysis_max_tokens": source_limits["max_tokens"],
+            "source_analysis_max_chinese_characters": source_limits[
+                "max_chinese_characters"
+            ],
             "source_analysis_max_evidence_anchors": source_limits["max_evidence_anchors"],
             "source_analysis_limits": source_limits,
         }
