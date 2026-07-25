@@ -10738,6 +10738,22 @@ def test_deterministic_quality_repair_makes_targeted_black_box_result_observable
     assert "$[0].expected_result" in fields
 
 
+def test_deterministic_quality_repair_tombstones_contradicted_sfmea_without_rewriting_fact():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{"sfmea_id": "SFMEA-003", "failure_mode": "保留 NSG 未被拒绝"}],
+        artifact="sfmea.json",
+        quality_feedback={"issues": [{
+            "artifact": "sfmea.json",
+            "code": "row_source_claim_contradicted",
+            "row_id": "SFMEA-003",
+            "message": "源码已显式拒绝保留 NSG。",
+        }]},
+    )
+
+    assert repaired == [{"sfmea_id": "SFMEA-003", "_delete": True}]
+    assert fields == ["SFMEA-003._delete"]
+
+
 def test_deterministic_schema_repair_normalizes_reused_black_box_diagnostics():
     from app.services.ai_staged_execution import _deterministic_schema_repair
 

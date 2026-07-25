@@ -8556,11 +8556,31 @@ def _deterministic_quality_claim_repair(
         "non_actionable_mitigation",
         "duplicate_generic_sfmea_mitigation",
         "professional_fact_conflict",
+        "behavior_claim_contradicted",
+        "source_claim_contradicted",
+        "row_source_claim_contradicted",
+        "behavior_claim_insufficient",
+        "source_claim_insufficient",
+        "row_source_claim_insufficient",
     }
     if not issue_codes or not (issue_codes & supported_codes):
         return repaired, []
 
     fields: list[str] = []
+
+    if artifact_name == "sfmea.json" and isinstance(repaired, list):
+        tombstoned = _apply_sfmea_nonrisk_deletion_tombstones(
+            repaired,
+            quality_feedback={"issues": issues},
+            base_items=repaired,
+        )
+        if tombstoned != repaired:
+            deleted = [
+                str(item.get("sfmea_id") or "")
+                for item in tombstoned
+                if isinstance(item, dict) and item.get("_delete") is True
+            ]
+            return tombstoned, [f"{row_id}._delete" for row_id in deleted if row_id]
 
     ambiguous_expected_result_ids = {
         str(issue.get("row_id") or issue.get("case_id") or "").strip()
@@ -9930,7 +9950,8 @@ def _apply_sfmea_nonrisk_deletion_tombstones(
                 has_verified_risk_replacement = True
                 break
         if has_explicit_nonrisk_replacement or (
-            codes & contradiction_codes and not has_verified_risk_replacement
+            codes & (contradiction_codes | insufficient_codes)
+            and not has_verified_risk_replacement
         ):
             deletion_ids.add(row_id)
     if not deletion_ids:
