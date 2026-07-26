@@ -85,6 +85,36 @@ OpenAI Agents SDK `0.18.3` 已额外完成一次真实 `Runner.run()`：适配�
 这验证 SDK 的真实 Runner、受控 Transport 和显式禁用 tracing 可并存；它不是 CodeTalk
 业务工作流验收，也不允许以 loopback fixture 冒充内网模型或真实 SPDK 运行。
 
+### 可复现重跑（2026-07-27）
+
+为避免该结论只依赖一次交互式命令，开发 POC 目录新增了
+`/Volumes/Media/codetalk-v3-sdk-poc/scripts/openai_agents_loopback_runner_poc.py`。
+该脚本自行启动临时 `127.0.0.1` OpenAI-compatible fixture，拒绝任何非 loopback
+`base_url`，然后以 `set_tracing_disabled(True)` 和
+`RunConfig(tracing_disabled=True)` 运行真实 `Runner.run()`。
+
+```bash
+/Volumes/Media/codetalk-v3-sdk-poc/venv/bin/python \
+  /Volumes/Media/codetalk-v3-sdk-poc/scripts/openai_agents_loopback_runner_poc.py
+```
+
+2026-07-27 重跑输出为：
+
+```json
+{
+  "final_output": "CODETALK_LOOPBACK_OK",
+  "paths": ["/v1/chat/completions"],
+  "tracing_disabled": true,
+  "transport": "loopback_only"
+}
+```
+
+证据文件位于
+`/Volumes/Media/codetalk-e2e-artifacts/v3-sdk-offline-rerun-20260727/openai-agents-loopback.json`
+（SHA-256：`6bca98b7eb33a7f2a8cdd5ff57b902b152f3ed39a5599bc44c292c0c76924f79`）。
+这仍只验证 SDK 的本地选型边界：没有产品 RunSnapshot、真实 SPDK、外部模型、MCP、
+取消/恢复或管理员流量捕获，因而不得据此提升任何生产 Adapter 或 AC 状态。
+
 ## 已确认的风险与下一门禁
 
 1. Microsoft 与 LangGraph 已证明本地确定性工作流运行不出网；这仍不证明模型调用、trace、
