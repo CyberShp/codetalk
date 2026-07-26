@@ -24,6 +24,7 @@ from app.services.ai_staged_execution import (
     _normalize_black_box_delivery_contract,
     _normalize_black_box_source_anchor_claims,
     _normalize_black_box_oracle_contract,
+    _materialize_missing_sfmea_source_anchor_claims,
     _normalize_sfmea_source_anchor_claims,
     _normalize_sfmea_risk_contract,
     _apply_regular_stage_output_limits,
@@ -64,6 +65,7 @@ from app.services.ai_staged_execution import (
     build_staged_execution_plan,
     execute_staged_builtin_plan,
     materialize_source_evidence_pack,
+    materialize_final_deterministic_quality_repairs,
 )
 
 from app.services.workflow_presets import (
@@ -460,13 +462,16 @@ def test_sfmea_normalizer_replaces_test_only_or_guard_inversion_with_product_ris
     assert "SFMEA-13:source_risk_candidate" in changed
     assert "SFMEA-14:source_risk_candidate" in changed
     assert "SFMEA-15:source_risk_candidate" in changed
-    assert "参数更新在非 Full Feature 阶段执行" not in normalized[0]["failure_mode"]
-    assert "错误接受" in normalized[1]["failure_mode"]
-    assert normalized[1]["technical_claims"][0]["evidence"][0]["path"] == "lib/iscsi/iscsi.c"
-    assert "残留" in normalized[2]["failure_mode"]
-    assert "并发" in normalized[3]["failure_mode"]
-    assert "错误接受" in normalized[4]["failure_mode"]
-    assert "错误返回" in normalized[5]["failure_mode"]
+    by_id = {row["sfmea_id"]: row for row in normalized}
+    assert "参数更新在非 Full Feature 阶段执行" not in by_id["SFMEA-09"]["failure_mode"]
+    assert "错误接受" in by_id["SFMEA-11"]["failure_mode"]
+    assert by_id["SFMEA-11"]["technical_claims"][0]["evidence"][0]["path"] == "lib/iscsi/iscsi.c"
+    assert "残留" in by_id["SFMEA-12"]["failure_mode"]
+    assert "并发" in by_id["SFMEA-13"]["failure_mode"]
+    # SFMEA-14 and SFMEA-11 normalize to the same verified MaxConnections
+    # hypothesis. Delivery de-duplicates semantic twins before publication.
+    assert "SFMEA-14" not in by_id
+    assert "错误返回" in by_id["SFMEA-15"]["failure_mode"]
     assert all(row["risk_status"] == "test_hypothesis" for row in normalized)
 
 
@@ -796,15 +801,17 @@ def test_deep_profile_plan_materializes_parallel_exploration_branches():
     assert branch_ids.issubset(stages["business_flow"]["depends_on"])
     assert branch_ids.issubset(stages["sfmea"]["depends_on"])
     assert branch_ids.issubset(stages["black_box_cases"]["depends_on"])
-    assert all(stages[branch_id]["max_tokens"] >= 6000 for branch_id in branch_ids)
+    # Deep mode gains breadth from independently scoped branches, not from
+    # silently defeating the V3 source-evidence/output budget per branch.
+    assert all(stages[branch_id]["max_tokens"] <= 1600 for branch_id in branch_ids)
     assert all(
-        stages[branch_id]["output_limits"]["max_evidence_anchors"] >= 24
+        stages[branch_id]["output_limits"]["max_evidence_anchors"] <= 12
         for branch_id in branch_ids
     )
-    assert stages["source_analysis"]["max_tokens"] >= 2400
-    assert stages["source_analysis"]["output_limits"]["max_evidence_anchors"] >= 36
-    assert plan["execution_profile"]["source_analysis_limits"]["max_files"] >= 18
-    assert plan["execution_profile"]["source_analysis_limits"]["max_evidence_anchors"] >= 36
+    assert stages["source_analysis"]["max_tokens"] <= 1600
+    assert stages["source_analysis"]["output_limits"]["max_evidence_anchors"] <= 12
+    assert plan["execution_profile"]["source_analysis_limits"]["max_files"] <= 6
+    assert plan["execution_profile"]["source_analysis_limits"]["max_evidence_anchors"] <= 12
     assert (
         plan["execution_profile"]["source_analysis_limits"]["max_tokens"]
         == stages["source_analysis"]["max_tokens"]
@@ -1045,6 +1052,53 @@ def test_deep_profile_evidence_rejects_reuse_without_prior_branch_provider_work(
     assert evidence["missing_delivery_provider_work"] is True
 
 
+def test_sfmea_missing_technical_claim_is_materialized_from_its_exact_source_reference():
+    rendered = [
+        {
+            "sfmea_id": "SFMEA-010",
+            "source_evidence": ["lib/iscsi/conn.c:147-158"],
+            "technical_claims": [],
+        }
+    ]
+    catalog = [
+        {
+            "evidence_id": "SRC-03:L153",
+            "path": "lib/iscsi/conn.c",
+            "lines": "L153",
+            "quote": "conn->state = ISCSI_CONN_STATE_EXITING;",
+            "symbol": "login_timeout",
+        }
+    ]
+
+    normalized = _materialize_missing_sfmea_source_anchor_claims(rendered, catalog)
+
+    claim = normalized[0]["technical_claims"][0]
+    assert claim["claim_id"] == "TC-SFMEA-010-SOURCE"
+    assert claim["statement"] == "conn->state = ISCSI_CONN_STATE_EXITING;"
+    assert claim["evidence"][0]["evidence_id"] == "SRC-03:L153"
+
+
+def test_deep_profile_evidence_does_not_report_a_deadline_failure_when_work_passed(tmp_path):
+    for stage_id in ("deep_entry_paths", "deep_state_and_resources", "black_box_cases"):
+        stage_dir = tmp_path / "stages" / stage_id
+        stage_dir.mkdir(parents=True)
+        (stage_dir / "stage_result.json").write_text(
+            json.dumps(
+                {"stage_id": stage_id, "status": "completed", "provider_call_count": 1}
+            ),
+            encoding="utf-8",
+        )
+
+    evidence = build_profile_execution_evidence(
+        artifact_dir=tmp_path,
+        execution_profile={"id": "deep", "applied_subagent_count": 2},
+    )
+
+    assert evidence["status"] == "passed"
+    assert evidence["reason"] != "workflow_deadline_exceeded"
+    assert "真实模型工作" in evidence["reason"]
+
+
 def test_deep_profile_evidence_rejects_branch_without_its_routed_citations(tmp_path):
     (tmp_path / "staged_execution_plan.json").write_text(
         json.dumps(
@@ -1113,6 +1167,53 @@ def test_deep_profile_evidence_rejects_branch_without_its_routed_citations(tmp_p
 
     assert evidence["status"] == "blocked"
     assert evidence["under_evidenced_branches"] == ["deep_state_and_resources"]
+
+
+def test_deep_profile_evidence_accepts_a_routed_file_and_line_reference(tmp_path):
+    (tmp_path / "staged_execution_plan.json").write_text(
+        json.dumps({"original_user_request": "分析 iSCSI Login"}), encoding="utf-8"
+    )
+    source_stage = tmp_path / "stages" / "source_analysis"
+    source_stage.mkdir(parents=True)
+    (source_stage / "source_evidence_pack.json").write_text(
+        json.dumps({"evidence_cards": [{
+            "evidence_id": "SRC-01",
+            "file_path": "lib/iscsi/iscsi.c",
+            "start_line": 1114,
+            "end_line": 1132,
+            "symbols": ["iscsi_conn_login_pdu_err_complete"],
+            "matched_terms": ["login"],
+            "excerpt": "login error completion",
+        }, {
+            "evidence_id": "SRC-02",
+            "file_path": "test/iscsi_tgt/chap/chap_common.sh",
+            "start_line": 82,
+            "end_line": 99,
+            "symbols": ["config_chap_credentials_for_target"],
+            "matched_terms": ["chap"],
+            "excerpt": "chap setup",
+        }]}),
+        encoding="utf-8",
+    )
+    for stage_id in ("deep_entry_paths", "deep_state_and_resources", "black_box_cases"):
+        stage_dir = tmp_path / "stages" / stage_id
+        stage_dir.mkdir(parents=True)
+        (stage_dir / "stage_result.json").write_text(
+            json.dumps({"stage_id": stage_id, "status": "completed", "provider_call_count": 1}),
+            encoding="utf-8",
+        )
+        citations = "SRC-01 SRC-02" if stage_id != "deep_entry_paths" else (
+            "lib/iscsi/iscsi.c:1130\ntest/iscsi_tgt/chap/chap_common.sh:82-99"
+        )
+        (stage_dir / "raw_output.txt").write_text(citations, encoding="utf-8")
+
+    evidence = build_profile_execution_evidence(
+        artifact_dir=tmp_path,
+        execution_profile={"id": "deep", "applied_subagent_count": 2},
+    )
+
+    assert evidence["status"] == "passed"
+    assert evidence["branch_citation_requirements"]["deep_entry_paths"]["cited_evidence_ids"] == ["SRC-01", "SRC-02"]
 
 
 def test_quality_reuse_always_rebuilds_derived_judge(tmp_path):
@@ -1519,6 +1620,43 @@ def test_sfmea_uses_compact_stage_context_instead_of_full_staged_context(tmp_pat
     assert "full staged context marker" not in prompt
 
 
+def test_flow_edges_are_promoted_into_the_l1_source_evidence_ledger():
+    from app.services.ai_staged_execution import _merge_verified_flow_edges_into_source_pack
+
+    merged = _merge_verified_flow_edges_into_source_pack(
+        {
+            "evidence_cards": [{
+                "evidence_id": "SRC-01",
+                "file_path": "lib/iscsi/iscsi.c",
+                "start_line": 100,
+                "end_line": 102,
+                "excerpt": "int login(void);",
+                "sha256": "a" * 64,
+            }],
+        },
+        {
+            "call_edges": [{
+                "evidence_id": "FLOW-EDGE-001",
+                "file_path": "lib/iscsi/iscsi.c",
+                "start_line": 1889,
+                "end_line": 1889,
+                "matched_text": "rc = iscsi_op_login_session_discovery_chap(conn);",
+                "from_symbol": "iscsi_op_login_phase_none",
+                "to_symbol": "iscsi_op_login_session_discovery_chap",
+                "sha256": "b" * 64,
+            }],
+        },
+    )
+
+    edge = next(item for item in merged["evidence_cards"] if item["evidence_id"] == "FLOW-EDGE-001")
+    assert edge["excerpt"] == "rc = iscsi_op_login_session_discovery_chap(conn);"
+    assert edge["start_line"] == 1889
+    assert edge["sha256"] == "b" * 64
+    assert edge["kind"] == "source"
+    assert edge["source"] == "flow-evidence-pack"
+    assert edge["reason"]
+
+
 def test_regular_stage_prompt_exposes_canonical_claim_evidence_catalog(tmp_path):
     source_pack = {
         "repo_revision": "abc123",
@@ -1565,6 +1703,24 @@ def test_regular_stage_prompt_exposes_canonical_claim_evidence_catalog(tmp_path)
     assert "VERIFIED_CLAIM_EVIDENCE_CATALOG" in prompt
     assert "SRC-01:L518" in prompt
     assert "只能逐字选择一个 evidence_id" in prompt
+
+
+def test_verified_claim_catalog_keeps_single_card_enclosing_symbol_on_internal_line():
+    catalog = _build_verified_claim_catalog({
+        "evidence_cards": [{
+            "evidence_id": "SRC-02",
+            "file_path": "lib/iscsi/param.c",
+            "classification": "source",
+            "start_line": 319,
+            "end_line": 321,
+            "symbols": ["iscsi_parse_params"],
+            "excerpt": "if (cbit_enabled) {\n\treturn -1;\n}",
+            "sha256": "b" * 64,
+        }],
+    })
+
+    assert catalog[0]["symbol"] == "iscsi_parse_params"
+    assert catalog[0]["quote"] == "if (cbit_enabled) {"
 
 
 def test_black_box_prompt_exposes_only_materialized_sfmea_risk_ids(tmp_path):
@@ -2937,7 +3093,7 @@ def test_sfmea_literal_source_claim_is_normalized_to_l1_source_anchor():
     assert normalized[0]["technical_claims"][0]["type"] == "source_anchor"
 
 
-def test_sfmea_interpreted_source_claim_remains_an_l2_behavior_claim():
+def test_sfmea_interpreted_source_claim_is_reduced_to_its_l1_anchor():
     rows = [{
         "technical_claims": [{
             "type": "source",
@@ -2948,7 +3104,9 @@ def test_sfmea_interpreted_source_claim_remains_an_l2_behavior_claim():
 
     normalized = _normalize_sfmea_source_anchor_claims(rows)
 
-    assert normalized[0]["technical_claims"][0]["type"] == "source"
+    claim = normalized[0]["technical_claims"][0]
+    assert claim["type"] == "source_anchor"
+    assert claim["statement"] == "spdk_sock_close(&conn->sock);"
 
 
 def test_final_materialized_sfmea_contract_rewrites_cleanup_order_to_hypothesis(tmp_path):
@@ -2984,7 +3142,7 @@ def test_final_materialized_sfmea_contract_rewrites_cleanup_order_to_hypothesis(
     )
 
     row = json.loads((tmp_path / "sfmea.json").read_text())[0]
-    assert "source_risk_candidate" in fields[0]
+    assert any("source_risk_candidate" in field for field in fields)
     assert row["risk_status"] == "test_hypothesis"
     assert "故障注入" in row["cause"]
     assert row["technical_claims"][0]["type"] == "source_anchor"
@@ -3028,6 +3186,101 @@ def test_final_materialized_sfmea_contract_canonicalizes_claim_to_bound_quote(tm
     claim = json.loads((tmp_path / "sfmea.json").read_text())[0]["technical_claims"][0]
     assert claim["type"] == "source_anchor"
     assert claim["statement"] == "if (conn == NULL) {"
+
+
+def test_final_materialized_sfmea_contract_binds_declared_source_evidence_without_model_claim(tmp_path):
+    from app.services.ai_staged_execution import normalize_materialized_sfmea_risk_contract
+
+    (tmp_path / "evidence_cards.json").write_text(json.dumps([{
+        "evidence_id": "SRC-07",
+        "file_path": "lib/iscsi/iscsi.c",
+        "start_line": 1288,
+        "end_line": 1304,
+        "excerpt": "if (rc < 0) {\n\tiscsi_param_free(*params);\n}",
+        "symbols": ["iscsi_op_login_store_incoming_params"],
+        "sha256": "digest",
+        "classification": "source",
+    }]), encoding="utf-8")
+    (tmp_path / "source_scope.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "stages" / "source_analysis").mkdir(parents=True)
+    (tmp_path / "stages" / "source_analysis" / "source_evidence_pack.json").write_text(
+        json.dumps({"evidence_cards": [{
+            "evidence_id": "SRC-EARLY",
+            "file_path": "lib/iscsi/tgt_node.c",
+            "start_line": 10,
+            "end_line": 10,
+            "excerpt": "return 0;",
+            "symbols": [],
+            "sha256": "other-digest",
+            "classification": "source",
+        }]}),
+        encoding="utf-8",
+    )
+    (tmp_path / "sfmea.json").write_text(json.dumps([{
+        "sfmea_id": "SFMEA-07",
+        "risk_status": "test_hypothesis",
+        "source_evidence": ["lib/iscsi/iscsi.c:1288-1304"],
+    }]), encoding="utf-8")
+
+    normalize_materialized_sfmea_risk_contract(
+        artifact_dir=tmp_path,
+        plan={"original_user_request": "iSCSI login"},
+    )
+
+    claim = json.loads((tmp_path / "sfmea.json").read_text())[0]["technical_claims"][0]
+    assert claim["type"] == "source_anchor"
+    assert claim["statement"] == "if (rc < 0) {"
+    assert claim["evidence"][0]["evidence_id"] == "SRC-07:L1288"
+
+
+def test_final_materialized_sfmea_contract_binds_unique_declared_source_symbol_without_model_claim(tmp_path):
+    from app.services.ai_staged_execution import normalize_materialized_sfmea_risk_contract
+
+    (tmp_path / "evidence_cards.json").write_text(json.dumps([{
+        "evidence_id": "SRC-08",
+        "file_path": "lib/iscsi/iscsi.c",
+        "start_line": 2238,
+        "end_line": 2238,
+        "excerpt": "return iscsi_op_login_session_normal(conn, rsp_pdu, params);",
+        "symbols": ["iscsi_op_login_session_normal"],
+        "sha256": "digest",
+        "classification": "source",
+    }]), encoding="utf-8")
+    (tmp_path / "source_scope.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "sfmea.json").write_text(json.dumps([{
+        "sfmea_id": "SFMEA-08",
+        "risk_status": "test_hypothesis",
+        "source_evidence": ["lib/iscsi/iscsi.c:iscsi_op_login_session_normal"],
+    }]), encoding="utf-8")
+
+    normalize_materialized_sfmea_risk_contract(
+        artifact_dir=tmp_path,
+        plan={"original_user_request": "iSCSI login"},
+    )
+
+    claim = json.loads((tmp_path / "sfmea.json").read_text())[0]["technical_claims"][0]
+    assert claim["type"] == "source_anchor"
+    assert claim["statement"] == "return iscsi_op_login_session_normal(conn, rsp_pdu, params);"
+    assert claim["evidence"][0]["evidence_id"] == "SRC-08:L2238"
+
+
+def test_final_materialized_sfmea_contract_uses_declared_range_end_to_disambiguate_flow_cards(tmp_path):
+    from app.services.ai_staged_execution import normalize_materialized_sfmea_risk_contract
+
+    (tmp_path / "evidence_cards.json").write_text(json.dumps([
+        {"evidence_id": "FLOW-EDGE-009", "file_path": "lib/iscsi/iscsi.c", "start_line": 1864, "end_line": 1864, "excerpt": "rc = iscsi_op_login_initialize_port(conn);", "symbols": [], "sha256": "a", "classification": "source"},
+        {"evidence_id": "FLOW-EDGE-010", "file_path": "lib/iscsi/iscsi.c", "start_line": 1870, "end_line": 1870, "excerpt": "rc = iscsi_op_login_session_type(conn, rsp_pdu, &session_type, params);", "symbols": [], "sha256": "b", "classification": "source"},
+    ]), encoding="utf-8")
+    (tmp_path / "source_scope.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "sfmea.json").write_text(json.dumps([{
+        "sfmea_id": "SFMEA-11", "risk_status": "test_hypothesis",
+        "source_evidence": ["lib/iscsi/iscsi.c:1864-1870"],
+    }]), encoding="utf-8")
+
+    normalize_materialized_sfmea_risk_contract(artifact_dir=tmp_path, plan={})
+
+    claim = json.loads((tmp_path / "sfmea.json").read_text())[0]["technical_claims"][0]
+    assert claim["evidence"][0]["evidence_id"] == "FLOW-EDGE-010:L1870"
 
 
 def test_final_materialized_sfmea_contract_removes_deletion_tombstones(tmp_path):
@@ -3089,6 +3342,64 @@ def test_final_materialized_sfmea_contract_refills_declared_floor_after_tombston
     assert all(row.get("_delete") is not True for row in rows)
     assert rows[-1]["risk_status"] == "test_hypothesis"
     assert rows[-1]["technical_claims"][0]["evidence"][0]["evidence_id"] == "SRC-01:L10"
+    assert rows[-1]["failure_mode"] in rows[-1]["mitigation"]
+
+
+def test_final_materialized_sfmea_contract_removes_exact_delivery_duplicate_before_floor(tmp_path):
+    from app.services.ai_staged_execution import normalize_materialized_sfmea_risk_contract
+
+    (tmp_path / "evidence_cards.json").write_text(json.dumps([
+        {
+            "evidence_id": "SRC-01",
+            "file_path": "lib/iscsi/iscsi.c",
+            "start_line": 10,
+            "end_line": 10,
+            "excerpt": "if (conn == NULL) {",
+            "symbols": ["iscsi_login"],
+            "sha256": "digest-1",
+            "classification": "source",
+        },
+        {
+            "evidence_id": "SRC-02",
+            "file_path": "lib/iscsi/conn.c",
+            "start_line": 20,
+            "end_line": 20,
+            "excerpt": "spdk_sock_close(&conn->sock);",
+            "symbols": ["iscsi_conn_close"],
+            "sha256": "digest-2",
+            "classification": "source",
+        },
+    ]), encoding="utf-8")
+    (tmp_path / "source_scope.json").write_text("{}", encoding="utf-8")
+    duplicate = {
+        "failure_mode": "登录输入校验失败导致会话不可用",
+        "cause": "故障注入假设：输入不合法",
+        "effect": "发起端无法建立会话",
+        "detection": "观察协议响应和连接状态",
+        "mitigation": "整改: 固化输入校验。验证: 注入非法输入并观察协议响应。",
+        "severity": 6,
+        "occurrence": 2,
+        "detection_score": 7,
+        "rpn": 84,
+        "risk_status": "test_hypothesis",
+        "technical_claims": [{"type": "source_anchor", "statement": "if (conn == NULL) {", "evidence": [{
+            "evidence_id": "SRC-01:L10", "path": "lib/iscsi/iscsi.c", "lines": "L10", "quote": "if (conn == NULL) {",
+        }]}],
+        "source_evidence": ["SRC-01:L10"],
+    }
+    rows = [{**duplicate, "sfmea_id": "SFMEA-01"}, {**duplicate, "sfmea_id": "SFMEA-02"}]
+    (tmp_path / "sfmea.json").write_text(json.dumps(rows, ensure_ascii=False), encoding="utf-8")
+
+    fields = normalize_materialized_sfmea_risk_contract(
+        artifact_dir=tmp_path,
+        plan={"stages": [{"id": "sfmea", "artifact": "sfmea.json", "output_contract": {"schema": {"minItems": 2}}}]},
+    )
+
+    normalized = json.loads((tmp_path / "sfmea.json").read_text(encoding="utf-8"))
+    assert any("SFMEA-02:duplicate_removed" == field for field in fields)
+    assert len(normalized) == 2
+    assert normalized[0]["failure_mode"] == duplicate["failure_mode"]
+    assert normalized[1]["failure_mode"] != duplicate["failure_mode"]
 
 
 def test_final_materialized_sfmea_contract_uses_agent_staged_plan_from_task_root(tmp_path):
@@ -3191,12 +3502,35 @@ def test_normalize_sfmea_risk_contract_marks_unsupported_defect_language_as_hypo
     assert row["mechanism"].startswith("风险假设：若")
     assert row["cause"].startswith("故障注入假设：若")
     assert "故障注入风险假设" in row["evidence_interpretation"]
-    assert fields == [
+    for expected in (
         "$[0].risk_status",
         "$[0].evidence_interpretation",
         "$[0].mechanism",
         "$[0].cause",
-    ]
+        "$[0].effect:risk_hypothesis_default",
+    ):
+        assert expected in fields
+
+
+def test_normalize_sfmea_risk_contract_fills_only_missing_effect_chain_as_hypothesis():
+    rendered, fields = _normalize_sfmea_risk_contract(
+        [
+            {
+                "sfmea_id": "SFMEA-STRUCTURE-01",
+                "failure_mode": "登录阶段的异常时序导致会话状态不一致",
+                "mechanism": "风险假设：异常时序可能使状态迁移交错。",
+                "cause": "故障注入假设：若回调与断连交错，则状态迁移可能偏离。",
+                "local_effect": "已有局部影响说明。",
+            }
+        ]
+    )
+
+    assert rendered[0]["local_effect"] == "已有局部影响说明。"
+    assert rendered[0]["effect"].startswith("风险假设：登录阶段的异常时序")
+    assert rendered[0]["downstream_effect"]
+    assert rendered[0]["final_effect"]
+    assert "$[0].effect:risk_hypothesis_default" in fields
+    assert "$[0].local_effect:risk_hypothesis_default" not in fields
 
 
 def test_normalize_sfmea_risk_contract_marks_unmeasured_hypothesis_rpn_provisional():
@@ -3294,6 +3628,33 @@ def test_normalize_sfmea_risk_contract_replaces_unbound_source_labels_with_claim
 
     assert rendered[0]["source_evidence"] == ["SRC-02:L153"]
     assert "$[0].source_evidence" in fields
+
+
+def test_normalize_sfmea_replaces_bare_source_path_with_verified_hypothesis():
+    rendered, fields = _normalize_sfmea_risk_contract(
+        [{
+            "sfmea_id": "SFMEA-BARE-PATH-01",
+            "failure_mode": "并发登录导致会话状态不一致",
+            "mechanism": "风险假设：多个连接同时登录时状态更新未加锁。",
+            "cause": "风险假设：并发时序可能绕过预期状态收敛。",
+            "source_evidence": ["lib/iscsi/iscsi.c"],
+            "technical_claims": [],
+        }],
+        product_claim_catalog=[{
+            "evidence_id": "SRC-22:L1674",
+            "path": "lib/iscsi/iscsi.c",
+            "symbol": "iscsi_op_login_session_normal",
+            "lines": "L1674",
+            "quote": "rc = iscsi_op_login_check_session(conn, sess);",
+        }],
+    )
+
+    row = rendered[0]
+    assert "SFMEA-BARE-PATH-01:source_risk_candidate" in fields
+    assert row["risk_status"] == "test_hypothesis"
+    assert row["technical_claims"][0]["evidence"][0]["evidence_id"] == "SRC-22:L1674"
+    assert row["source_evidence"] == ["SRC-22:L1674"]
+    assert "已验证源码锚点" in row["evidence_interpretation"]
 
 
 def test_normalize_sfmea_turns_guarded_full_feature_into_a_timing_hypothesis():
@@ -4943,6 +5304,350 @@ def test_deterministic_quality_claim_repair_materializes_audited_iscsi_vague_ste
     assert black_box_steps_are_actionable(repaired[0]["steps"])
 
 
+def test_deterministic_quality_repair_removes_audited_duplicate_black_box_case():
+    payload = [
+        {
+            "case_id": "BB-KEEP",
+            "scenario_name": "非法 Login 请求",
+            "steps": ["发送非法 Login Request 并记录响应"],
+            "expected_result": "请求被拒绝并记录响应。",
+        },
+        {
+            "case_id": "BB-DUPLICATE",
+            "scenario_name": "重复的非法 Login 请求",
+            "steps": ["发送非法 Login Request 并记录响应"],
+            "expected_result": "请求被拒绝并记录响应。",
+        },
+    ]
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "black_box_case_quality_failed",
+            "invalid_cases": [{
+                "case_id": "BB-DUPLICATE",
+                "reasons": ["duplicate_black_box_case"],
+            }],
+        }]},
+    )
+
+    assert [row["case_id"] for row in repaired] == ["BB-KEEP"]
+    assert fields == ["BB-DUPLICATE._delete_duplicate"]
+
+
+def test_deterministic_quality_claim_repair_replaces_calsoft_semantic_mapping():
+    payload = [{
+        "case_id": "BC-12",
+        "scenario_name": "Login Response 中 T 和 C 位同时设置时的错误传播",
+        "mapped_test_dir": "test/iscsi_tgt/calsoft/calsoft.py",
+        "expected_result": "target 返回 Initiator Error",
+        "steps": ["使用协议测试工具发送构造的 Login Response PDU"],
+    }]
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_fuzz_calsoft_semantic_mapping",
+            "row_id": "BC-12",
+        }]},
+    )
+
+    assert "$[0].mapped_test_dir" in fields
+    assert "ai_suggested_unverified" in repaired[0]["mapped_test_dir"]
+    assert "raw-PDU harness" in repaired[0]["expected_result"]
+    assert "不得把 calsoft" in repaired[0]["expected_result"].lower()
+
+
+def test_deterministic_quality_claim_repair_corrects_sfmea_c_bit_claim():
+    payload = [{
+        "sfmea_id": "SFMEA-010",
+        "failure_mode": "Login 响应中错误标志未正确清除",
+        "cause": "错误分支清除 T/C/CSG/NSG",
+    }]
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="sfmea.json",
+        quality_feedback={"issues": [{
+            "artifact": "sfmea.json",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_login_error_c_flag_preserved",
+            "row_id": "SFMEA-010",
+        }]},
+    )
+    assert "$[0].failure_mode" in fields
+    assert "但不清除 C bit" in repaired[0]["cause"]
+    assert "raw-PDU harness" in repaired[0]["detection"]
+
+
+def test_deterministic_quality_claim_repair_routes_report_c_bit_feedback_to_matching_sfmea_row():
+    payload = [
+        {
+            "sfmea_id": "SFMEA-006",
+            "failure_mode": "错误 Login Response 的标志位处理与协议语义不一致",
+            "cause": "错误响应分支应清除 T、CSG 和 NSG；C bit 必须按请求与协议语义单独判读。",
+        },
+        {
+            "sfmea_id": "SFMEA-007",
+            "failure_mode": "普通资源耗尽",
+            "cause": "无关条目",
+        },
+    ]
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="sfmea.json",
+        quality_feedback={"issues": [{
+            "artifact": "report.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_login_error_c_flag_preserved",
+        }]},
+    )
+
+    assert "$[0].cause" in fields
+    assert "但不清除 C bit" in repaired[0]["cause"]
+    assert repaired[1]["cause"] == "无关条目"
+
+
+def test_deterministic_quality_claim_repair_uses_audited_excerpt_row_id_for_sfmea_facts():
+    payload = [
+        {
+            "sfmea_id": "SFMEA-006",
+            "failure_mode": "CHAP 认证失败后未清除安全上下文",
+            "cause": "错误分支会清除 T/C/CSG/NSG",
+        },
+        {
+            "sfmea_id": "SFMEA-012",
+            "failure_mode": "登录定时器在首个 PDU 后注销，后续停滞无超时保护",
+            "cause": "首个 Login PDU 后停滞必由 30 秒登录定时器清理",
+            "detection": "发送首个 Login PDU 后停滞 60 秒，确认连接被关闭",
+        },
+    ]
+    feedback = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "code": "professional_fact_conflict",
+                "constraint_id": "iscsi_login_error_c_flag_preserved",
+                "conflicting_excerpt": "| SFMEA-006 | CHAP 认证失败后未清除安全上下文 |",
+            },
+            {
+                "artifact": "sfmea.json",
+                "code": "professional_fact_conflict",
+                "constraint_id": "iscsi_login_timer_after_first_pdu",
+                "conflicting_excerpt": "| SFMEA-012 | 登录定时器在首个 PDU 后注销 |",
+            },
+        ]
+    }
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="sfmea.json",
+        quality_feedback=feedback,
+    )
+
+    assert "$[0].cause" in fields
+    assert "但不清除 C bit" in repaired[0]["cause"]
+    assert "$[1].cause" in fields
+    assert "当前多阶段登录不重新注册该定时器" in repaired[1]["cause"]
+    assert "不把 30 秒登录定时器清理作为预期" in repaired[1]["detection"]
+
+
+def test_deterministic_quality_claim_repair_corrects_unknown_key_and_multiconnection_sfmea():
+    payload = [
+        {
+            "sfmea_id": "SFMEA-008",
+            "failure_mode": "未知参数键未按规范返回错误",
+            "cause": "未知键解析失败并断开连接",
+            "detection": "检查目标是否关闭连接",
+            "mitigation": "修复解析失败路径",
+        },
+        {
+            "sfmea_id": "SFMEA-012",
+            "failure_mode": "并发登录时资源竞争导致连接状态不一致",
+            "test_mapping": "test/iscsi_tgt/multiconnection/multiconnection.sh",
+        },
+    ]
+    feedback = {
+        "issues": [
+            {
+                "artifact": "sfmea.json",
+                "code": "professional_fact_conflict",
+                "constraint_id": "iscsi_unknown_key_not_understood",
+                "conflicting_excerpt": "| SFMEA-008 | 未知参数键未按规范返回错误 |",
+            },
+            {
+                "artifact": "sfmea.json",
+                "code": "professional_fact_conflict",
+                "constraint_id": "iscsi_multiconnection_mapping_scope",
+                "conflicting_excerpt": "| SFMEA-012 | 并发登录时资源竞争导致连接状态不一致 |",
+            },
+        ]
+    }
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="sfmea.json",
+        quality_feedback=feedback,
+    )
+
+    assert "$[0].expected_result" not in fields
+    assert "$[0].cause" in fields
+    assert "NotUnderstood" in repaired[0]["cause"]
+    assert "格式非法" in repaired[0]["detection"]
+    assert "$[1].test_mapping" in fields
+    assert repaired[1]["test_mapping"].startswith("ai_suggested_unverified:")
+
+
+def test_deterministic_quality_claim_repair_corrects_black_box_flags_and_thresholds():
+    payload = [
+        {
+            "case_id": "BC-07",
+            "scenario_name": "CHAP authentication failure followed by successful re-login",
+            "expected_result": "认证失败响应保留 T=1 并进入阶段迁移。",
+            "observability": ["抓取 Login Response"],
+        },
+        {
+            "case_id": "BC-PERF-01",
+            "scenario_name": "Login performance baseline",
+            "expected_result": "P99 Login latency must be below 50 ms.",
+            "oracle_basis": "固定 50 ms 阈值",
+        },
+    ]
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [
+            {"artifact": "black_box_cases.json", "code": "professional_fact_conflict", "constraint_id": "iscsi_login_error_flags_cleared", "row_id": "BC-07"},
+            {"artifact": "black_box_cases.json", "code": "ungrounded_performance_threshold", "row_id": "BC-PERF-01"},
+        ]},
+    )
+    assert "$[0].expected_result" in fields
+    assert "清除 T、CSG、NSG" in repaired[0]["expected_result"]
+    assert "$[1].expected_result" in fields
+    assert "相对退化门槛" in repaired[1]["expected_result"]
+    assert "50 ms" not in repaired[1]["expected_result"]
+
+
+def test_deterministic_quality_claim_repair_routes_report_unit_mapping_feedback_to_sfmea():
+    payload = [
+        {
+            "sfmea_id": "SFMEA-012",
+            "failure_mode": "参数解析失败后参数对象未释放",
+            "test_mapping": "test/unit/lib/iscsi/iscsi.c/iscsi_ut.c",
+        },
+        {
+            "sfmea_id": "SFMEA-013",
+            "failure_mode": "普通错误",
+            "test_mapping": "test/iscsi_tgt/chap/chap_common.sh",
+        },
+    ]
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="sfmea.json",
+        quality_feedback={"issues": [{
+            "artifact": "report.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_unit_coverage_scope",
+        }]},
+    )
+
+    assert "$[0].test_mapping" in fields
+    assert "iscsi_ut.c" not in repaired[0]["test_mapping"]
+    assert repaired[1]["test_mapping"] == "test/iscsi_tgt/chap/chap_common.sh"
+
+
+def test_deterministic_quality_claim_repair_removes_report_only_missing_sfmea_test_path():
+    payload = [{
+        "sfmea_id": "SFMEA-001",
+        "failure_mode": "登录超时后连接未完全释放资源",
+        "test_mapping": "test/iscsi_tgt/login_timeout/login_timeout.sh (待创建)",
+    }]
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="sfmea.json",
+        quality_feedback={"issues": [{
+            "artifact": "report.md",
+            "code": "evidence_path_not_found",
+            "evidence_path": "test/iscsi_tgt/login_timeout/login_timeout.sh",
+        }]},
+    )
+
+    assert "$[0].test_mapping" in fields
+    assert "login_timeout/login_timeout.sh" not in repaired[0]["test_mapping"]
+    assert "ai_suggested_unverified" in repaired[0]["test_mapping"]
+
+
+def test_deterministic_quality_claim_repair_routes_report_status_detail_feedback_to_sfmea():
+    payload = [{
+        "sfmea_id": "SFMEA-007",
+        "failure_mode": "Unsupported Version 未返回正确状态码",
+        "cause": "版本检查失败时使用通用 Initiator Error 而非特定 0x05",
+    }]
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="sfmea.json",
+        quality_feedback={"issues": [{
+            "artifact": "report.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_login_status_detail_05",
+        }]},
+    )
+
+    assert "$[0].cause" in fields
+    assert "ISCSI_LOGIN_UNSUPPORTED_VERSION (0x05)" in repaired[0]["cause"]
+
+
+def test_deterministic_quality_claim_repair_routes_report_rpc_mapping_feedback_to_sfmea():
+    payload = [{
+        "sfmea_id": "SFMEA-007",
+        "failure_mode": "不支持的版本号未正确拒绝",
+        "trigger_condition": "发送不支持版本的 Login Request",
+        "test_mapping": "test/iscsi_tgt/rpc_config/rpc_config.py（需扩展版本测试）",
+    }]
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="sfmea.json",
+        quality_feedback={"issues": [{
+            "artifact": "report.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_rpc_config_mapping_scope",
+        }]},
+    )
+
+    assert "$[0].test_mapping" in fields
+    assert "rpc_config.py" not in repaired[0]["test_mapping"]
+    assert "raw-PDU Login harness" in repaired[0]["test_mapping"]
+
+
+def test_deterministic_quality_claim_repair_removes_direct_duplicate_case_indices():
+    payload = [
+        {"case_id": "BC-01", "scenario_name": "保留"},
+        {"case_id": "BC-02", "scenario_name": "重复"},
+        {"case_id": "BC-03", "scenario_name": "重复"},
+    ]
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "duplicate_black_box_case",
+            "index": 3,
+        }]},
+    )
+
+    assert [row["case_id"] for row in repaired] == ["BC-01", "BC-02"]
+    assert fields == ["BC-03._delete_duplicate"]
+
+
 def test_deterministic_quality_claim_repair_enforces_mcs_raw_pdu_contract():
     payload = [
         {
@@ -5043,6 +5748,1209 @@ def test_final_quality_repair_materializes_professional_mapping_fix(tmp_path):
     assert changed == {"black_box_cases.json": ["$[0].mapped_test_dir"]}
     repaired = json.loads(artifact.read_text(encoding="utf-8"))
     assert "ai_suggested_unverified" in repaired[0]["mapped_test_dir"]
+
+
+def test_final_quality_repair_rebuilds_nested_business_flow_from_verified_outline(tmp_path):
+    from app.services.ai_staged_execution import (
+        materialize_final_deterministic_quality_repairs,
+    )
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    (artifacts / "business_flow.md").write_text(
+        "# 关键业务流程分析\n\n错误响应清除 T/C/CSG/NSG。\n",
+        encoding="utf-8",
+    )
+    (artifacts / "flow_outline.json").write_text(json.dumps({
+        "analysis_target": "iSCSI Login",
+        "repo_revision": "abc123",
+        "actors": [],
+        "main_flow": [],
+        "branches": [],
+        "states": [],
+        "related_tests": [],
+        "evidence": [],
+    }), encoding="utf-8")
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "business_flow.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_login_error_c_flag_preserved",
+        }]},
+    )
+
+    assert changed == {"business_flow.md": ["render_verified_flow_outline"]}
+    rendered = (artifacts / "business_flow.md").read_text(encoding="utf-8")
+    assert "确定性 Flow Outline renderer" in rendered
+    assert "清除 T/C/CSG/NSG" not in rendered
+
+
+def test_final_quality_repair_corrects_nested_module_map_c_bit_claim(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    module_map = artifacts / "module_map.md"
+    module_map.write_text(
+        "# 模块映射\n\n错误响应 flags 清除 T/C/CSG/NSG。\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "module_map.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_login_error_c_flag_preserved",
+        }]},
+    )
+
+    assert changed == {"module_map.md": ["iscsi_login_error_c_flag_preserved"]}
+    rendered = module_map.read_text(encoding="utf-8")
+    assert "清除 T/C/CSG/NSG" not in rendered
+    assert "C bit 按请求与协议语义单独判读" in rendered
+
+
+def test_final_quality_repair_corrects_chinese_delimited_module_map_c_bit_claim(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    module_map = artifacts / "module_map.md"
+    module_map.write_text(
+        "错误 Login Response 清除 T、C、CSG 和 NSG。\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "module_map.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_login_error_c_flag_preserved",
+        }]},
+    )
+
+    assert changed == {"module_map.md": ["iscsi_login_error_c_flag_preserved"]}
+    rendered = module_map.read_text(encoding="utf-8")
+    assert "清除 T、C、CSG 和 NSG" not in rendered
+    assert "C bit 按请求与协议语义单独判读" in rendered
+
+
+def test_final_quality_repair_corrects_c_bit_table_heading_variant(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    module_map = artifacts / "module_map.md"
+    module_map.write_text(
+        "| 错误响应 flags 清除 | 现有单元测试未覆盖错误响应 T/C/CSG/NSG 清除逻辑 | 新增测试 |\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "module_map.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_login_error_c_flag_preserved",
+        }]},
+    )
+
+    assert changed == {"module_map.md": ["iscsi_login_error_c_flag_preserved"]}
+    rendered = module_map.read_text(encoding="utf-8")
+    assert "错误响应 flags 清除" not in rendered
+    assert "C bit 按请求与协议语义单独判读" in rendered
+
+
+def test_final_quality_repair_corrects_nested_module_map_chap_role(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    module_map = artifacts / "module_map.md"
+    module_map.write_text(
+        "| **CHAP 协商** | `iscsi_negotiate_chap_param` | `lib/iscsi/iscsi.c:1559` | 执行 CHAP 认证协商 | `SRC-01:L1559` |\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "module_map.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_chap_execution_role",
+        }]},
+    )
+
+    assert changed == {"module_map.md": ["iscsi_chap_execution_role"]}
+    rendered = module_map.read_text(encoding="utf-8")
+    assert "执行 CHAP 认证协商" not in rendered
+    assert "实际 CHAP challenge/response 校验由 `iscsi_auth_params` 路径执行" in rendered
+
+
+def test_final_quality_repair_corrects_variant_chap_module_map_row(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    module_map = artifacts / "module_map.md"
+    module_map.write_text(
+        "| CHAP 协商 | `lib/iscsi/iscsi.c` | `iscsi_negotiate_chap_param` | 执行 CHAP 认证协商 |\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "module_map.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_chap_execution_role",
+        }]},
+    )
+
+    assert changed == {"module_map.md": ["iscsi_chap_execution_role"]}
+    rendered = module_map.read_text(encoding="utf-8")
+    assert "执行 CHAP 认证协商" not in rendered
+    assert "iscsi_auth_params" in rendered
+
+
+def test_final_quality_repair_renames_module_map_dependency_section(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    module_map = artifacts / "module_map.md"
+    module_map.write_text(
+        "## 核心函数调用链\n\n`iscsi_parse_params` 解析输入。\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "module_map.md",
+            "code": "missing_markdown_sections",
+            "sections": ["依赖"],
+        }]},
+    )
+
+    assert changed == {"module_map.md": ["dependency_section_heading"]}
+    assert "## 依赖与调用链" in module_map.read_text(encoding="utf-8")
+
+
+def test_final_quality_repair_renames_module_map_dependency_graph_section(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    module_map = artifacts / "module_map.md"
+    module_map.write_text(
+        "## 核心函数依赖图\n\n`iscsi_parse_params` 解析输入。\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "module_map.md",
+            "code": "missing_markdown_sections",
+            "sections": ["依赖"],
+        }]},
+    )
+
+    assert changed == {"module_map.md": ["dependency_section_heading"]}
+    assert "## 依赖与调用链" in module_map.read_text(encoding="utf-8")
+
+
+def test_final_quality_repair_removes_nested_module_map_path_from_audit_message(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    module_map = artifacts / "module_map.md"
+    module_map.write_text("# 模块映射\n\n依赖 `lib/not-real/`。\n", encoding="utf-8")
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "module_map.md",
+            "code": "evidence_path_not_found",
+            "message": "证据路径不存在: lib/not-real/",
+        }]},
+    )
+
+    assert changed == {"module_map.md": ["evidence_path_not_found"]}
+    assert "lib/not-real/" not in module_map.read_text(encoding="utf-8")
+
+
+def test_final_quality_repair_rebuilds_legacy_flow_map_alias_from_verified_outline(tmp_path):
+    from app.services.ai_staged_execution import (
+        materialize_final_deterministic_quality_repairs,
+    )
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    (artifacts / "flow_map.md").write_text(
+        "# 业务流程\n\n初始状态为 ISCSI_SECURITY_NEGOTIATION。\n",
+        encoding="utf-8",
+    )
+    (artifacts / "flow_outline.json").write_text(json.dumps({
+        "analysis_target": "iSCSI Login",
+        "repo_revision": "abc123",
+        "entry_points": [],
+        "steps": [],
+        "error_flows": [],
+        "cleanup_flows": [],
+        "recovery_flows": [],
+        "state_objects": [],
+        "state_transitions": [],
+        "related_tests": [],
+        "evidence": [],
+    }), encoding="utf-8")
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "business_flow.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_rpc_login_phase_values",
+        }]},
+    )
+
+    assert changed == {"flow_map.md": ["render_verified_flow_outline"]}
+    rendered = (artifacts / "flow_map.md").read_text(encoding="utf-8")
+    assert "确定性 Flow Outline renderer" in rendered
+    assert "ISCSI_SECURITY_NEGOTIATION" not in rendered
+
+
+def test_final_quality_repair_removes_calsoft_latency_mapping_from_test_strategy(tmp_path):
+    from app.services.ai_staged_execution import (
+        materialize_final_deterministic_quality_repairs,
+    )
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    strategy = artifacts / "test_strategy.md"
+    strategy.write_text(
+        "| BB-PERF-008 | Login 延迟基线 | performance | test/iscsi_tgt/calsoft/calsoft.py | - |\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "test_strategy.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_calsoft_mapping_scope",
+        }]},
+    )
+
+    assert changed == {"test_strategy.md": ["iscsi_calsoft_mapping_scope"]}
+    rendered = strategy.read_text(encoding="utf-8")
+    assert "calsoft.py" not in rendered
+    assert "独立 Login 延迟计时与抓包 harness" in rendered
+
+
+def test_final_quality_repair_normalizes_calsoft_latency_mapping_before_audit(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    strategy = artifacts / "test_strategy.md"
+    strategy.write_text(
+        "| L4 - 性能测试 | 登录延迟与吞吐 | 黑盒 | calsoft.py, 自定义脚本 |\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": []},
+    )
+
+    assert changed == {"test_strategy.md": ["iscsi_calsoft_mapping_scope"]}
+    rendered = strategy.read_text(encoding="utf-8")
+    assert "calsoft.py" not in rendered
+    assert "独立 Login 延迟计时与抓包 harness" in rendered
+
+
+def test_final_quality_repair_normalizes_rpc_config_wire_mapping_before_audit(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    (artifacts / "black_box_cases.json").write_text(
+        json.dumps([{
+            "case_id": "BC-12",
+            "scenario_name": "Login with T=1 and C=1 simultaneously is rejected",
+            "mapped_test_dir": "test/iscsi_tgt/rpc_config/rpc_config.py",
+            "steps": ["send Login PDU with CSG=0 and T=1"],
+        }]),
+        encoding="utf-8",
+    )
+    strategy = artifacts / "test_strategy.md"
+    strategy.write_text(
+        "| SFMEA-005 | T=1 和 C=1 同时设置 | 黑盒测试 BC-12 | `test/iscsi_tgt/rpc_config/rpc_config.py` |\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": []},
+    )
+
+    cases = json.loads((artifacts / "black_box_cases.json").read_text(encoding="utf-8"))
+    assert "rpc_config.py" not in cases[0]["mapped_test_dir"]
+    assert "raw-PDU Login wire" in cases[0]["mapped_test_dir"]
+    rendered = strategy.read_text(encoding="utf-8")
+    assert "rpc_config.py" not in rendered
+    assert "raw-PDU Login wire" in rendered
+    assert "black_box_cases.json" in changed
+    assert "test_strategy.md" in changed
+
+
+def test_final_quality_repair_rebinds_claim_path_to_verified_evidence_card(tmp_path):
+    from app.services.ai_staged_execution import (
+        materialize_final_deterministic_quality_repairs,
+    )
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    (artifacts / "evidence_cards.json").write_text(json.dumps([{
+        "evidence_id": "SRC-06",
+        "file_path": "test/unit/lib/iscsi/iscsi.c/iscsi_ut.c",
+        "start_line": 174,
+        "end_line": 174,
+        "excerpt": "static void op_login_session_normal_test(void)",
+        "sha256": "verified",
+    }]), encoding="utf-8")
+    target = artifacts / "black_box_cases.json"
+    target.write_text(json.dumps([{
+        "case_id": "BB-RECONNECT-001",
+        "technical_claims": [{
+            "claim_id": "TC-RECONNECT-001",
+            "evidence": [{
+                "evidence_id": "SRC-06:L174",
+                "path": "lib/iscsi/iscsi.c/iscsi_ut.c",
+            }],
+        }],
+    }]), encoding="utf-8")
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "row_id": "BB-RECONNECT-001",
+            "claim_id": "TC-RECONNECT-001",
+            "code": "source_claim_insufficient",
+        }]},
+    )
+
+    repaired = json.loads(target.read_text(encoding="utf-8"))
+    assert changed == {
+        "black_box_cases.json": ["$[0].technical_claims[0].evidence[0].path"]
+    }
+    assert repaired[0]["technical_claims"][0]["evidence"][0]["path"] == (
+        "test/unit/lib/iscsi/iscsi.c/iscsi_ut.c"
+    )
+
+
+def test_final_quality_repair_replaces_contradicted_claim_with_verified_anchor(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    (artifacts / "evidence_cards.json").write_text(json.dumps([{
+        "evidence_id": "SRC-07",
+        "file_path": "lib/iscsi/iscsi.c",
+        "start_line": 1889,
+        "end_line": 1889,
+        "excerpt": "rc = iscsi_op_login_session_discovery_chap(conn);",
+        "symbols": ["iscsi_op_login_phase_none"],
+        "sha256": "verified",
+    }]), encoding="utf-8")
+    target = artifacts / "black_box_cases.json"
+    target.write_text(json.dumps([{
+        "case_id": "BC-03",
+        "technical_claims": [{
+            "claim_id": "TC-03",
+            "type": "source_code_behavior",
+            "statement": "invented behavior",
+            "evidence": [{"evidence_id": "SRC-07:L1889", "quote": "invented"}],
+        }],
+    }]), encoding="utf-8")
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "row_id": "BC-03",
+            "claim_id": "TC-03",
+            "code": "source_claim_contradicted",
+        }]},
+    )
+
+    repaired = json.loads(target.read_text(encoding="utf-8"))
+    claim = repaired[0]["technical_claims"][0]
+    assert changed == {"black_box_cases.json": ["$[0].technical_claims[0]"]}
+    assert claim["type"] == "source_anchor"
+    assert claim["statement"] == "rc = iscsi_op_login_session_discovery_chap(conn);"
+    assert claim["evidence"][0]["path"] == "lib/iscsi/iscsi.c"
+
+
+def test_final_quality_repair_removes_audited_missing_module_map_path(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    module_map = artifacts / "module_map.md"
+    module_map.write_text("CHAP (`lib/iscsi/chap.c`)\n", encoding="utf-8")
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "module_map.md",
+            "code": "evidence_path_not_found",
+            "evidence_path": "lib/iscsi/chap.c",
+        }]},
+    )
+
+    assert changed == {"module_map.md": ["evidence_path_not_found"]}
+    assert "lib/iscsi/chap.c" not in module_map.read_text(encoding="utf-8")
+
+
+def test_final_quality_repair_removes_audited_missing_flow_map_path(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    flow_map = artifacts / "flow_map.md"
+    flow_map.write_text(
+        "CHAP 协商细节需要进一步分析 `iscsi_chap.c` 中的实现。\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "flow_map.md",
+            "code": "evidence_path_not_found",
+            "evidence_path": "iscsi_chap.c",
+        }]},
+    )
+
+    assert changed == {"flow_map.md": ["evidence_path_not_found"]}
+    repaired = flow_map.read_text(encoding="utf-8")
+    assert "iscsi_chap.c" not in repaired
+    assert "待确认实现文件" in repaired
+
+
+def test_final_quality_repair_replaces_audited_missing_test_strategy_path_with_explicit_harness_gap(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    target = artifacts / "test_strategy.md"
+    target.write_text(
+        "认证失败映射：`test/iscsi_tgt/chap/chap_auth_failure.sh`。\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "test_strategy.md",
+            "code": "evidence_path_not_found",
+            "evidence_path": "test/iscsi_tgt/chap/chap_auth_failure.sh",
+        }]},
+    )
+
+    repaired = target.read_text(encoding="utf-8")
+    assert changed == {"test_strategy.md": ["evidence_path_not_found"]}
+    assert "chap_auth_failure.sh" not in repaired
+    assert "ai_suggested_unverified: 需新增外部可执行测试 harness" in repaired
+
+
+def test_final_quality_repair_removes_unverified_login_fuzzer_and_unit_coverage_mapping(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    target = artifacts / "test_strategy.md"
+    target.write_text(
+        "| 非法输入 | 随机 Login Request | `test/app/fuzz/iscsi_fuzz/iscsi_fuzz.c` |\n"
+        "| 错误响应 flags | 已覆盖 | `test/unit/lib/iscsi/iscsi.c/iscsi_ut.c` |\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [
+            {
+                "artifact": "test_strategy.md",
+                "code": "professional_fact_conflict",
+                "constraint_id": "iscsi_fuzzer_skips_login_opcode",
+            },
+            {
+                "artifact": "test_strategy.md",
+                "code": "professional_fact_conflict",
+                "constraint_id": "iscsi_unit_coverage_scope",
+            },
+        ]},
+    )
+
+    repaired = target.read_text(encoding="utf-8")
+    assert "明确跳过 LOGIN opcode" in repaired
+    assert "已覆盖" not in repaired
+    assert changed["test_strategy.md"] == [
+        "iscsi_fuzzer_skips_login_opcode",
+        "iscsi_unit_coverage_scope",
+    ]
+
+
+def test_final_quality_repair_expands_iscsi_csg_nsg_transition_semantics(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    target = artifacts / "test_strategy.md"
+    target.write_text(
+        "| 协议阶段 | Security Negotiation (CSG=0) → Operational Negotiation (NSG=1) 转换 |\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "test_strategy.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_csg_values",
+        }]},
+    )
+
+    assert changed == {"test_strategy.md": ["iscsi_csg_transition_semantics"]}
+    repaired = target.read_text(encoding="utf-8")
+    assert "CSG=0，NSG=1" in repaired
+    assert "后续操作协商请求（CSG=1）" in repaired
+
+
+def test_final_quality_repair_corrects_csg_nsg_table_state_shorthand(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    target = artifacts / "test_strategy.md"
+    target.write_text(
+        "| 关键状态转换 | CSG=0 (Security Negotiation) → NSG=1 (Operational Negotiation) 或 NSG=3 (Full Feature Phase) |\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "test_strategy.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_csg_values",
+        }]},
+    )
+
+    repaired = target.read_text(encoding="utf-8")
+    assert "CSG=0（安全协商）" in repaired
+    assert "后续请求 CSG=1" in repaired
+    assert "NSG=3" not in repaired
+    assert changed == {"test_strategy.md": ["iscsi_csg_transition_semantics"]}
+
+
+def test_final_quality_repair_removes_login_fuzzer_coverage_from_strategy(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    target = artifacts / "test_strategy.md"
+    target.write_text(
+        "| 随机 PDU | 使用 iscsi_fuzz 发送随机 Login Request | SRC-06:L523-L541 |\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "test_strategy.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_fuzzer_skips_login_opcode",
+        }]},
+    )
+
+    repaired = target.read_text(encoding="utf-8")
+    assert "明确跳过 LOGIN opcode" in repaired
+    assert "发送随机 Login Request" not in repaired
+    assert changed["test_strategy.md"] == ["iscsi_fuzzer_skips_login_opcode"]
+
+
+def test_final_quality_repair_corrects_module_map_login_phase_labels(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    target = artifacts / "module_map.md"
+    target.write_text(
+        "Login Response (CSG=0, NSG=1, T=0)\n"
+        "Login Request (CSG=1, T=0) -> 安全协商继续\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [
+            {
+                "artifact": "module_map.md",
+                "code": "professional_fact_conflict",
+                "constraint_id": "iscsi_chap_request_response_flags",
+            },
+            {
+                "artifact": "module_map.md",
+                "code": "professional_fact_conflict",
+                "constraint_id": "iscsi_csg_values",
+            },
+        ]},
+    )
+
+    repaired = target.read_text(encoding="utf-8")
+    assert "NSG 不作为迁移字段" in repaired
+    assert "CSG=1, T=0) -> 操作协商继续" in repaired
+    assert changed["module_map.md"] == [
+        "iscsi_login_phase_flag_semantics",
+        "iscsi_csg_transition_semantics",
+    ]
+
+
+def test_final_quality_repair_narrows_iscsi_unit_coverage_scope(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    module_map = artifacts / "module_map.md"
+    module_map.write_text(
+        "| 错误响应 flags 验证 | 无单元测试覆盖 | `test/unit/lib/iscsi/iscsi.c/iscsi_ut.c` |\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "module_map.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_unit_coverage_scope",
+        }]},
+    )
+
+    assert changed == {"module_map.md": ["iscsi_unit_coverage_scope"]}
+    assert "iscsi_ut.c" not in module_map.read_text(encoding="utf-8")
+
+
+def test_final_quality_repair_prevents_test_strategy_from_claiming_unverified_iscsi_unit_coverage(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    target = artifacts / "test_strategy.md"
+    target.write_text(
+        "| 错误响应 flags 清除 | 单元测试未覆盖 | 新增 test/unit/lib/iscsi/iscsi.c/iscsi_ut.c 测试 |\n"
+        "**禁止声明“完整覆盖”**，直至缺口通过执行验证。\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": []},
+    )
+
+    repaired = target.read_text(encoding="utf-8")
+    assert changed == {"test_strategy.md": ["iscsi_unit_coverage_scope"]}
+    assert "iscsi_ut.c" not in repaired
+    assert "需新增专用单元测试并逐项记录断言" in repaired
+    assert "禁止声明“完整覆盖”" in repaired
+
+
+def test_final_quality_repair_prevents_multiconnection_script_from_claiming_generic_concurrent_login(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    target = artifacts / "test_strategy.md"
+    target.write_text(
+        "| 并发 Login | 同一 ISID 并发登录 | test/iscsi_tgt/multiconnection/multiconnection.sh |\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": []},
+    )
+
+    repaired = target.read_text(encoding="utf-8")
+    assert changed == {"test_strategy.md": ["iscsi_multiconnection_mapping_scope"]}
+    assert "需新增同一 Target 并发 Login harness" in repaired
+    assert "不证明通用并发登录覆盖" in repaired
+
+
+def test_final_quality_repair_corrects_login_error_c_bit_statement(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    target = artifacts / "black_box_cases.json"
+    target.write_text(json.dumps([{
+        "case_id": "BC-02",
+        "expected_result": "T/C/CSG/NSG bits cleared",
+    }]), encoding="utf-8")
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_login_error_c_flag_preserved",
+            "row_id": "BC-02",
+        }]},
+    )
+
+    repaired = json.loads(target.read_text(encoding="utf-8"))[0]
+    assert "不会清除 C bit" in repaired["expected_result"]
+    assert changed["black_box_cases.json"]
+
+
+def test_final_quality_repair_corrects_login_timer_claim_in_black_box_case(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    target = artifacts / "black_box_cases.json"
+    target.write_text(json.dumps([{
+        "case_id": "BC-04",
+        "expected_result": "首个 Login PDU 后停滞时，30 秒 login_timer 必然断开连接。",
+    }]), encoding="utf-8")
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_login_timer_after_first_pdu",
+            "row_id": "BC-04",
+        }]},
+    )
+
+    repaired = json.loads(target.read_text(encoding="utf-8"))[0]
+    assert "不把 30 秒 login_timer 清理作为预期" in repaired["expected_result"]
+    assert changed["black_box_cases.json"]
+
+
+def test_final_quality_repair_adds_recovery_and_timeout_black_box_dimensions(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    target = artifacts / "black_box_cases.json"
+    target.write_text(json.dumps([{
+        "case_id": "BC-01",
+        "test_dimension": "normal_path",
+        "technical_claims": [],
+    }]), encoding="utf-8")
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "missing_black_box_dimensions",
+            "dimensions": ["recovery", "timeout"],
+        }]},
+    )
+
+    rows = json.loads(target.read_text(encoding="utf-8"))
+    assert {row["test_dimension"] for row in rows} >= {"recovery", "timeout"}
+    assert changed["black_box_cases.json"]
+
+
+def test_final_quality_repair_attaches_verified_source_anchor_to_black_box_rows(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    (artifacts / "evidence_cards.json").write_text(json.dumps([{
+        "evidence_id": "SRC-01",
+        "file_path": "lib/iscsi/iscsi.c",
+        "start_line": 1889,
+        "end_line": 1889,
+        "excerpt": "rc = iscsi_op_login_session_discovery_chap(conn);",
+        "symbols": ["iscsi_op_login_phase_none"],
+        "sha256": "verified",
+    }]), encoding="utf-8")
+    target = artifacts / "black_box_cases.json"
+    target.write_text(json.dumps([{
+        "case_id": "BC-01",
+        "scenario_name": "公开 initiator 登录",
+        "steps": ["使用公开 initiator 发起登录"],
+    }]), encoding="utf-8")
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "row_source_claim_insufficient",
+            "row_id": "BC-01",
+        }]},
+    )
+
+    repaired = json.loads(target.read_text(encoding="utf-8"))[0]
+    claim = repaired["technical_claims"][0]
+    assert changed["black_box_cases.json"] == ["$[0].technical_claims[0]"]
+    assert claim["type"] == "source_anchor"
+    assert claim["statement"] == "rc = iscsi_op_login_session_discovery_chap(conn);"
+    assert claim["evidence"][0]["path"] == "lib/iscsi/iscsi.c"
+    assert claim["evidence"][0]["lines"] == "L1889"
+
+
+def test_final_quality_repair_rewrites_indexed_black_box_boundary_violation(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    target = artifacts / "black_box_cases.json"
+    target.write_text(json.dumps([{
+        "case_id": "BC-10",
+        "steps": ["检查 conn->params_text 是否被正确清理"],
+    }]), encoding="utf-8")
+
+    materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "black_box_boundary_violation",
+            "index": 1,
+        }]},
+    )
+
+    row = json.loads(target.read_text(encoding="utf-8"))[0]
+    assert "conn->" not in " ".join(row["steps"])
+    assert "lib/" not in " ".join(row["failure_diagnostics"])
+
+
+def test_final_quality_repair_normalizes_malformed_markdown_table_column_count(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    target = artifacts / "module_map.md"
+    target.write_text(
+        "| 缺口描述 | 建议测试路径 |\n"
+        "| --- | --- |\n"
+        "| 对应失败语义 | 现有证据不足 | 需新增专用测试 |\n",
+        encoding="utf-8",
+    )
+
+    materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "module_map.md",
+            "code": "malformed_markdown_table",
+            "lines": [3],
+        }]},
+    )
+
+    assert target.read_text(encoding="utf-8").splitlines()[2] == (
+        "| 对应失败语义 | 现有证据不足; 需新增专用测试 |"
+    )
+
+
+def test_final_quality_repair_normalizes_test_strategy_table_before_audit_feedback(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    target = artifacts / "test_strategy.md"
+    target.write_text(
+        "| 场景 | 现有映射 | 缺口 |\n"
+        "| --- | --- | --- |\n"
+        "| 并发登录 | 无 | 需新增 | 附加说明 |\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": []},
+    )
+
+    assert changed == {"test_strategy.md": ["markdown_table_column_count"]}
+    assert target.read_text(encoding="utf-8").splitlines()[2] == (
+        "| 并发登录 | 无 | 需新增; 附加说明 |"
+    )
+
+
+def test_final_quality_repair_keeps_concurrent_login_mapping_in_three_column_table(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    target = artifacts / "test_strategy.md"
+    target.write_text(
+        "| 测试目录 | 文件路径 | 覆盖内容 |\n"
+        "| --- | --- | --- |\n"
+        "| 并发 Login | test/iscsi_tgt/multiconnection/multiconnection.sh | 并发 Login 覆盖 |\n",
+        encoding="utf-8",
+    )
+
+    materialize_final_deterministic_quality_repairs(tmp_path, quality_feedback={"issues": []})
+
+    assert target.read_text(encoding="utf-8").splitlines()[2] == (
+        "| 并发 Login | 会话隔离与资源收敛 | 黑盒；"
+        "ai_suggested_unverified: 需新增同一 Target 并发 Login harness；"
+        "multiconnection.sh 仅作多个 Target/连接环境参考，不证明通用并发登录覆盖 |"
+    )
+
+
+def test_final_quality_repair_preserves_case_index_column_count_after_concurrency_rewrite(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    target = artifacts / "test_strategy.md"
+    target.write_text(
+        "| 用例 ID | 场景 | 测试维度 | 映射测试目录 | 优先级 |\n"
+        "| --- | --- | --- | --- | --- |\n"
+        "| BC-03 | 同一 Target 并发 Login | concurrent | "
+        "test/iscsi_tgt/multiconnection/multiconnection.sh | P1 |\n",
+        encoding="utf-8",
+    )
+
+    materialize_final_deterministic_quality_repairs(tmp_path, quality_feedback={"issues": []})
+
+    cells = [cell.strip() for cell in target.read_text(encoding="utf-8").splitlines()[2].strip("|").split("|")]
+    assert len(cells) == 5
+    assert "需新增同一 Target 并发 Login harness" in " | ".join(cells)
+
+
+def test_final_quality_repair_rebuilds_agent_report_from_repaired_protocol_facts(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    stage_dir = artifacts / "stages" / "source_analysis"
+    stage_dir.mkdir(parents=True)
+    evidence_cards = [{
+        "evidence_id": "SRC-01",
+        "file_path": "lib/iscsi/iscsi.c",
+        "start_line": 100,
+        "end_line": 100,
+        "excerpt": "iscsi login source anchor",
+        "symbols": ["iscsi_login"],
+    }]
+    (stage_dir / "source_evidence_pack.json").write_text(json.dumps({
+        "repo_revision": "test-revision",
+        "evidence_cards": evidence_cards,
+    }), encoding="utf-8")
+    (artifacts / "evidence_cards.json").write_text(json.dumps(evidence_cards), encoding="utf-8")
+    (artifacts / "business_flow.md").write_text("# 流程\n\n已验证流程。\n", encoding="utf-8")
+    (artifacts / "staged_execution_plan.json").write_text(json.dumps({
+        "original_user_request": "分析 iSCSI login",
+        "repo_revision": "test-revision",
+    }), encoding="utf-8")
+    (artifacts / "sfmea.json").write_text(json.dumps([{
+        "sfmea_id": "SFMEA-01",
+        "failure_mode": "Login 错误响应标志位错误",
+        "cause": "错误响应固定 CSG=1 和 NSG=3",
+        "effect": "协商语义错误",
+        "detection": "抓包",
+        "severity": 6,
+        "occurrence": 3,
+        "detection_score": 4,
+        "rpn": 72,
+        "mitigation": "清除全部 flags",
+    }, {
+        "sfmea_id": "SFMEA-02",
+        "failure_mode": "未知键处理错误",
+        "cause": "未知 key 直接解析失败",
+        "effect": "协商失败",
+        "detection": "抓包",
+        "severity": 4,
+        "occurrence": 2,
+        "detection_score": 4,
+        "rpn": 32,
+        "mitigation": "拒绝未知 key",
+    }]), encoding="utf-8")
+    (artifacts / "black_box_cases.json").write_text(json.dumps([{
+        "case_id": "BB-01",
+        "scenario_name": "CHAP Login flags",
+        "steps": ["CHAP 首轮"],
+        "expected_result": "CSG=1",
+        "observability": [],
+        "failure_diagnostics": [],
+    }, {
+        "case_id": "BB-02",
+        "scenario_name": "unknown key",
+        "steps": ["发送未知 key"],
+        "expected_result": "解析失败并断开",
+        "observability": [],
+        "failure_diagnostics": [],
+    }]), encoding="utf-8")
+    report = artifacts / "report.md"
+    report.write_text("# 模型报告\n\n未知 key 解析失败并断开。\n", encoding="utf-8")
+
+    changed = materialize_final_deterministic_quality_repairs(tmp_path, quality_feedback={"issues": [{
+        "artifact": "report.md",
+        "code": "professional_fact_conflict",
+        "constraint_id": "iscsi_chap_request_response_flags",
+    }, {
+        "artifact": "report.md",
+        "code": "professional_fact_conflict",
+        "constraint_id": "iscsi_unknown_key_not_understood",
+    }]})
+
+    rendered = report.read_text(encoding="utf-8")
+    assert "NotUnderstood" in rendered
+    assert "CSG 按协商路径记录为 0 或 1" in rendered
+    assert "render_repaired_structured_delivery" in changed["report.md"]
+
+
+def test_final_quality_repair_removes_report_only_missing_source_path(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    report = artifacts / "report.md"
+    report.write_text(
+        "## 证据缺口\n\n需要从 `lib/iscsi/chap.c` 获取 CHAP 流程。\n",
+        encoding="utf-8",
+    )
+    (artifacts / "staged_execution_plan.json").write_text("{}", encoding="utf-8")
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "report.md",
+            "code": "evidence_path_not_found",
+            "message": "证据路径不存在: lib/iscsi/chap.c",
+        }]},
+    )
+
+    assert changed == {"report.md": ["render_repaired_structured_delivery"]}
+    assert "lib/iscsi/chap.c" not in report.read_text(encoding="utf-8")
+
+
+def test_black_box_stage_fills_missing_technical_claims_from_verified_cards():
+    from app.services.ai_staged_execution import _materialize_missing_black_box_technical_claims
+
+    rows, fields = _materialize_missing_black_box_technical_claims(
+        [{
+            "case_id": "BB-01",
+            "scenario_name": "公开 Login 验证",
+            "technical_claims": [],
+        }],
+        evidence_cards=[{
+            "evidence_id": "SRC-01",
+            "file_path": "lib/iscsi/iscsi.c",
+            "start_line": 100,
+            "end_line": 101,
+            "excerpt": "iscsi login verified anchor",
+            "symbols": ["iscsi_login"],
+        }],
+    )
+
+    assert fields == ["$[0].technical_claims[0]"]
+    assert rows[0]["technical_claims"][0]["type"] == "source_anchor"
+    assert rows[0]["technical_claims"][0]["evidence"][0] == {
+        "evidence_id": "SRC-01",
+        "path": "lib/iscsi/iscsi.c",
+        "lines": "L100-L101",
+        "quote": "iscsi login verified anchor",
+        "symbol": "iscsi_login",
+    }
+
+
+def test_deterministic_quality_repair_removes_unbound_raw_device_placeholder():
+    from app.services.ai_staged_execution import _deterministic_quality_claim_repair
+
+    rows, fields = _deterministic_quality_claim_repair(
+        [{
+            "case_id": "BC-001",
+            "scenario_name": "iSCSI Login 后 I/O 验证",
+            "preconditions": ["Login 成功"],
+            "expected_result": "出现 /dev/sdX 后执行 I/O",
+            "observability": ["lsblk 显示 /dev/sdX"],
+        }],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "report.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "black_box_raw_device_identity",
+            "row_id": "BC-001",
+        }]},
+    )
+
+    rendered = json.dumps(rows, ensure_ascii=False)
+    assert "/dev/sdX" not in rendered
+    assert "by-path" in rendered
+    assert "序列号" in rendered
+    assert "$[0].preconditions" in fields
+
+
+def test_final_quality_repair_materializes_missing_strategy_execution_order_and_test_evidence(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    artifacts = tmp_path / "agent_runs" / "analyze"
+    artifacts.mkdir(parents=True)
+    (artifacts / "evidence_cards.json").write_text(json.dumps([{
+        "evidence_id": "TEST-01",
+        "file_path": "test/iscsi_tgt/chap/chap_common.sh",
+        "classification": "test",
+        "start_line": 10,
+        "end_line": 12,
+        "excerpt": "run_test login_chap",
+        "sha256": "verified",
+    }]), encoding="utf-8")
+    target = artifacts / "test_strategy.md"
+    target.write_text("# 测试策略\n\n## 范围\n仅保留已有内容。\n", encoding="utf-8")
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "test_strategy.md",
+            "code": "missing_markdown_sections",
+            "sections": ["执行顺序"],
+        }, {
+            "artifact": "test_strategy.md",
+            "code": "missing_test_evidence",
+        }]},
+    )
+
+    repaired = target.read_text(encoding="utf-8")
+    assert changed["test_strategy.md"] == ["required_sections_and_source_evidence"]
+    assert "## 执行顺序" in repaired
+    assert "test/iscsi_tgt/chap/chap_common.sh:L10" in repaired
+
+
+def test_black_box_normalization_promotes_exact_declared_source_line_to_l1_claim():
+    from app.services.ai_staged_execution import _normalize_black_box_source_anchor_claims
+
+    rows = [{
+        "case_id": "BC-01",
+        "source_or_test_evidence": ["lib/iscsi/iscsi.c:1889-1889"],
+    }]
+    catalog = [{
+        "evidence_id": "FLOW-EDGE-008:L1889",
+        "path": "lib/iscsi/iscsi.c",
+        "lines": "L1889",
+        "quote": "rc = iscsi_op_login_session_discovery_chap(conn);",
+        "symbol": "iscsi_op_login_phase_none",
+    }]
+
+    normalized = _normalize_black_box_source_anchor_claims(rows, catalog)
+
+    claim = normalized[0]["technical_claims"][0]
+    assert claim["type"] == "source_anchor"
+    assert claim["statement"] == "rc = iscsi_op_login_session_discovery_chap(conn);"
+    assert claim["evidence"][0]["evidence_id"] == "FLOW-EDGE-008:L1889"
 
 
 def test_final_quality_repair_materializes_sfmea_deletions_without_tombstones(tmp_path):
@@ -5204,7 +7112,7 @@ def test_deterministic_quality_repair_names_public_rpc_field_for_full_feature():
             {
                 "case_id": "BB-001",
                 "observability": [
-                    "target 端 iscsi_get_connections RPC 返回 conn_state 为 full_feature_phase"
+                    "target 端 show_connections RPC 返回 conn_state 为 full_feature_phase"
                 ],
             }
         ],
@@ -5217,6 +7125,27 @@ def test_deterministic_quality_repair_names_public_rpc_field_for_full_feature():
                 }
             ]
         },
+    )
+
+    assert repaired[0]["observability"] == [
+        "执行 scripts/rpc.py iscsi_get_connections，确认 connections[].login_phase=full_feature_phase"
+    ]
+    assert fields == ["$[0].observability"]
+
+
+def test_deterministic_quality_repair_names_public_rpc_field_without_full_feature_hint():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "case_id": "BB-010",
+            "observability": [
+                "scripts/rpc.py iscsi_get_connections shows connection established"
+            ],
+        }],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "black_box_rpc_observability_ambiguous",
+        }]},
     )
 
     assert repaired[0]["observability"] == [
@@ -5451,6 +7380,56 @@ def test_deterministic_business_flow_uses_quality_contract_section_names():
 
     assert "## 异常分支\n" in report
     assert "## 异常分支与恢复" not in report
+
+
+def test_business_flow_markdown_escapes_source_pipes_inside_tables():
+    report = render_business_flow_markdown(
+        {
+            "analysis_target": "iSCSI login",
+            "repo_revision": "abc123",
+            "entry_points": [],
+            "steps": [],
+            "error_flows": [{
+                "text": "if ((!disable && !require) || auth_failed)",
+                "evidence_id": "ERR-001",
+            }],
+            "cleanup_flows": [],
+            "recovery_flows": [],
+            "state_objects": [],
+            "state_transitions": [],
+            "evidence_gaps": [],
+        }
+    )
+
+    assert "if ((!disable && !require) \\|\\| auth_failed)" in report
+
+
+def test_business_flow_markdown_renders_related_test_evidence():
+    report = render_business_flow_markdown(
+        {
+            "analysis_target": "iSCSI login",
+            "repo_revision": "abc123",
+            "entry_points": [],
+            "steps": [],
+            "error_flows": [],
+            "cleanup_flows": [],
+            "recovery_flows": [],
+            "state_objects": [],
+            "state_transitions": [],
+            "related_tests": [{
+                "evidence_id": "FLOW-TEST-001",
+                "file_path": "test/unit/lib/iscsi/iscsi.c/iscsi_ut.c",
+                "symbol": "op_login_session_normal_test",
+                "start_line": 173,
+                "end_line": 191,
+            }],
+            "evidence_gaps": [],
+        }
+    )
+
+    assert "## 关联测试证据" in report
+    assert "test/unit/lib/iscsi/iscsi.c/iscsi_ut.c" in report
+    assert "FLOW-TEST-001" in report
 
 
 def test_flow_outline_keeps_disconnected_call_components_separate():
@@ -6775,6 +8754,43 @@ def test_markdown_canonicalizes_stale_prefix_to_closest_verified_repo_path():
 
     assert "src/fabrics.c" not in normalized
     assert "分析目标提到 fabrics.c" in normalized
+
+
+def test_markdown_replaces_invalid_prefixed_path_with_unique_verified_path_when_line_is_unverified():
+    content = "参考 lib/iscsi/iscsi.c/iscsi_ut.c:173-191 的 Login 单元测试。"
+    source_pack = {
+        "evidence_cards": [{
+            "file_path": "test/unit/lib/iscsi/iscsi.c/iscsi_ut.c",
+            "start_line": 174,
+            "end_line": 220,
+        }],
+    }
+
+    normalized = _canonicalize_verified_repo_path_mentions(content, source_pack)
+
+    assert "参考 lib/iscsi/iscsi.c/iscsi_ut.c" not in normalized
+    assert "test/unit/lib/iscsi/iscsi.c/iscsi_ut.c" in normalized
+    assert ":173-191" not in normalized
+    assert "行号未验证" in normalized
+
+
+def test_markdown_keeps_test_path_when_a_parent_directory_ends_with_c_extension():
+    content = "`test/unit/lib/iscsi/iscsi.c/iscsi_ut.c` 是已验证单元测试。"
+    source_pack = {
+        "evidence_cards": [
+            {"file_path": "lib/iscsi/iscsi.c", "start_line": 1551, "end_line": 1560},
+            {
+                "file_path": "test/unit/lib/iscsi/iscsi.c/iscsi_ut.c",
+                "start_line": 174,
+                "end_line": 220,
+            },
+        ],
+    }
+
+    normalized = _canonicalize_verified_repo_path_mentions(content, source_pack)
+
+    assert "test/unit/lib/iscsi/iscsi.c/iscsi_ut.c" in normalized
+    assert "`lib/iscsi/iscsi.c/iscsi_ut.c`" not in normalized
 
 
 def test_sfmea_generation_rules_forbid_normal_behavior_padding_and_evidence_drift():
@@ -9149,9 +11165,11 @@ async def test_source_analysis_timeout_cancels_provider_and_continues_with_evide
         (tmp_path / "stages" / "source_analysis" / "stage_result.json").read_text()
     )
     assert stage_result["attempt_count"] == 1
+    assert stage_result["provider_call_count"] == 1
     assert stage_result["degraded"] is True
     assert stage_result["degradation_reason"] == "provider_timeout"
     assert stage_result["provider_wait_ms"] >= 40
+    assert stage_result["total_duration_ms"] >= stage_result["provider_wait_ms"]
 
 
 @pytest.mark.asyncio
@@ -9216,7 +11234,9 @@ async def test_source_analysis_cache_reuses_validated_pack_without_provider_call
     )
     assert stage_result["cache_status"] == "hit"
     assert stage_result["attempt_count"] == 0
+    assert stage_result["provider_call_count"] == 0
     assert stage_result["duration_ms"] < 30000
+    assert stage_result["total_duration_ms"] == stage_result["duration_ms"]
 
 
 @pytest.mark.asyncio
@@ -10576,9 +12596,27 @@ async def test_regular_stage_cache_reuses_flow_and_invalidates_on_repo_revision(
         and event.get("stage_id") == "flow_evidence_pack"
     )
     reused_pack = json.loads((tmp_path / "second" / "flow_evidence_pack.json").read_text())
+    reused_source_pack = json.loads(
+        (tmp_path / "second" / "stages" / "source_analysis" / "source_evidence_pack.json").read_text()
+    )
     assert reused_flow["entry_point_count"] == len(reused_pack.get("entry_points") or [])
     assert reused_flow["call_edge_count"] == len(reused_pack.get("call_edges") or [])
     assert reused_flow["test_reference_count"] == len(reused_pack.get("related_tests") or [])
+    expected_reused_edge_ids = {
+        str(edge.get("evidence_id") or "")
+        for edge in reused_pack.get("call_edges") or []
+        if isinstance(edge, dict)
+        and edge.get("evidence_id")
+        and edge.get("file_path")
+        and edge.get("matched_text")
+        and edge.get("start_line")
+        and edge.get("sha256")
+    }
+    assert {
+        card["evidence_id"]
+        for card in reused_source_pack["evidence_cards"]
+        if str(card.get("evidence_id") or "").startswith("FLOW-EDGE-")
+    } == expected_reused_edge_ids
     assert changed.calls_by_stage.get("business_flow", 0) == 1
 
 
@@ -10959,6 +12997,26 @@ def test_missing_black_box_contract_dimensions_include_reconnect_performance_and
     assert "$[+].long_steady_state_case" in fields
 
 
+def test_black_box_output_limit_never_drops_declared_required_dimensions():
+    from app.services.ai_staged_execution import _apply_regular_stage_output_limits
+
+    rows = [
+        {"case_id": f"BB-{index}", "test_dimension": f"dimension-{index}"}
+        for index in range(12)
+    ]
+    result = _apply_regular_stage_output_limits(
+        rows,
+        {
+            "output_contract": {
+                "required_dimensions": [f"dimension-{index}" for index in range(12)],
+            },
+            "output_limits": {"max_items": 8},
+        },
+    )
+
+    assert len(result) == 12
+
+
 def test_deterministic_quality_repair_makes_targeted_black_box_result_observable():
     repaired, fields = _deterministic_quality_claim_repair(
         [{
@@ -11148,7 +13206,7 @@ def test_deterministic_quality_repair_replaces_unrelated_iscsi_test_mappings_wit
     assert "ai_suggested_unverified" in reset_case["mapped_test_dir"]
     assert "不覆盖 logout/relogin" in reset_case["mapped_test_dir"]
     assert "ai_suggested_unverified" in latency_case["mapped_test_dir"]
-    assert "不采集 Login P50/P95" in latency_case["mapped_test_dir"]
+    assert "不得作为 Login 延迟基线" in latency_case["mapped_test_dir"]
     assert "$[0].mapped_test_dir" in fields
     assert "$[1].mapped_test_dir" in fields
 
@@ -11165,6 +13223,68 @@ def test_deterministic_quality_repair_replaces_unrelated_iscsi_test_mappings_wit
     constraint_ids = {issue.get("constraint_id") for issue in issues}
     assert "iscsi_reset_mapping_scope" not in constraint_ids
     assert "iscsi_calsoft_mapping_scope" not in constraint_ids
+
+
+def test_deterministic_quality_repair_fixes_calsoft_latency_without_row_id():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "case_id": "BB-PERF-001",
+            "scenario_name": "Login Latency Baseline",
+            "expected_result": "报告 Login P50/P95",
+            "mapped_test_dir": "test/iscsi_tgt/calsoft/calsoft.py",
+            "steps": ["measure login latency"],
+        }],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_calsoft_mapping_scope",
+        }]},
+    )
+
+    assert "calsoft" not in repaired[0]["mapped_test_dir"].lower()
+    assert "协议一致性套件" in repaired[0]["expected_result"]
+    assert "$[0].mapped_test_dir" in fields
+
+
+def test_deterministic_quality_repair_fixes_declared_mitigation_and_mapping_gaps():
+    sfmea, sfmea_fields = _deterministic_quality_claim_repair(
+        [{"sfmea_id": "SFMEA-03", "failure_mode": "解析失败后资源未收敛"}],
+        artifact="sfmea.json",
+        quality_feedback={"issues": [{
+            "artifact": "sfmea.json",
+            "code": "non_actionable_mitigation",
+            "row_id": "SFMEA-03",
+        }]},
+    )
+    cases, case_fields = _deterministic_quality_claim_repair(
+        [{
+            "case_id": "BB-CONCURRENCY-006",
+            "mapped_test_dir": "test/iscsi_tgt/multiconnection/multiconnection.sh",
+            "expected_result": "Both initiators successfully log in",
+        }],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [
+            {
+                "artifact": "black_box_cases.json",
+                "code": "missing_test_directory_mapping",
+                "row_id": "BB-CONCURRENCY-006",
+            },
+            {
+                "artifact": "black_box_cases.json",
+                "code": "professional_fact_conflict",
+                "constraint_id": "iscsi_multiconnection_scenario_semantics",
+                "row_id": "BB-CONCURRENCY-006",
+            },
+        ]},
+    )
+
+    assert "整改:" in sfmea[0]["mitigation"] and "验证:" in sfmea[0]["mitigation"]
+    assert "$[0].mitigation" in sfmea_fields
+    assert "multiconnection" not in cases[0]["mapped_test_dir"]
+    assert "；" not in cases[0]["mapped_test_dir"]
+    assert "不得将并发成功预设" in cases[0]["expected_result"]
+    assert "$[0].mapped_test_dir" in case_fields
 
 
 def test_deterministic_quality_repair_separates_duplicate_cid_from_mcs_capacity():
@@ -11190,6 +13310,54 @@ def test_deterministic_quality_repair_separates_duplicate_cid_from_mcs_capacity(
     assert "$[0].failure_mode" in fields
 
 
+def test_deterministic_quality_repair_does_not_present_capacity_status_as_duplicate_cid_oracle():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "case_id": "BC-DUP-CID",
+            "scenario_name": "重复 CID 被拒绝",
+            "steps": ["复用首连接 CID 发送第二个 Login Request"],
+            "expected_result": "返回 Too Many Connections (0x06)",
+            "failure_diagnostics": ["期望 0x0105"],
+        }],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_duplicate_cid_not_too_many_connections",
+            "row_id": "BC-DUP-CID",
+        }]},
+    )
+
+    row = repaired[0]
+    assert "Too Many Connections" not in row["expected_result"]
+    assert "实际响应判读" in row["expected_result"]
+    assert "不同 CID" in row["failure_diagnostics"][1]
+    assert "$[0].expected_result" in fields
+
+
+def test_deterministic_quality_repair_does_not_label_login_detail_05_as_parameter_error():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "case_id": "BC-PARAM-05",
+            "scenario_name": "参数解析失败",
+            "expected_result": "Login Response 返回 Parameter Error (0x05)",
+        }],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_login_status_detail_05",
+            "row_id": "BC-PARAM-05",
+        }]},
+    )
+
+    row = repaired[0]
+    assert "Parameter Error" not in row["expected_result"]
+    assert "不预设" in row["expected_result"]
+    assert "0x05" not in row["expected_result"]
+    assert "$[0].expected_result" in fields
+
+
 def test_deterministic_quality_repair_keeps_chap_response_csg_path_dependent():
     repaired, fields = _deterministic_quality_claim_repair(
         [{
@@ -11212,6 +13380,75 @@ def test_deterministic_quality_repair_keeps_chap_response_csg_path_dependent():
     assert "CSG=0 或 CSG=1" in steps
     assert "响应继承请求" in steps
     assert "$[0].steps" in fields
+
+
+def test_deterministic_quality_repair_keeps_final_login_csg_path_dependent():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "case_id": "BB-NORMAL-001",
+            "scenario_name": "Discovery Login",
+            "steps": ["final response CSG=1, NSG=3, T=1"],
+            "expected_result": "final response CSG=1, NSG=3, T=1",
+        }],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_final_login_stage_alternatives",
+            "row_id": "BB-NORMAL-001",
+        }]},
+    )
+
+    steps = " ".join(repaired[0]["steps"])
+    assert "CSG=0 与 CSG=1" in steps
+    assert "T=1、NSG=3" in repaired[0]["expected_result"]
+    assert "$[0].expected_result" in fields
+
+
+def test_deterministic_quality_repair_corrects_final_login_response_stage_bits():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "case_id": "BB-01",
+            "scenario_name": "正常安全协商登录",
+            "expected_result": "Login Response 最终 T=1、CSG=3、NSG=3",
+        }],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_login_response_stage_bits",
+            "row_id": "BB-01",
+        }]},
+    )
+
+    assert "CSG=3" not in repaired[0]["expected_result"]
+    assert "CSG=0 和 CSG=1" in repaired[0]["expected_result"]
+    assert "T=1、NSG=3" in repaired[0]["expected_result"]
+    assert "$[0].expected_result" in fields
+
+
+def test_final_quality_repair_corrects_first_login_pdu_timer_strategy(tmp_path):
+    strategy_path = tmp_path / "test_strategy.md"
+    strategy_path.write_text(
+        "| H-01 | 首个 Login PDU 后登录定时器注销，后续停滞无超时清理 |\\n"
+        "| G-01 | 首个 Login PDU 后登录定时器注销行为未在测试中覆盖 |\\n"
+        "| T-01 | 首个 Login PDU 后停滞超时测试 |\\n",
+        encoding="utf-8",
+    )
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "test_strategy.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_login_timer_after_first_pdu",
+        }]},
+    )
+
+    repaired = strategy_path.read_text(encoding="utf-8")
+    assert "后续停滞无超时清理" not in repaired
+    assert "不把 30 秒登录定时器清理作为预期" in repaired
+    assert changed["test_strategy.md"] == ["iscsi_login_timer_after_first_pdu"]
 
 
 def test_deterministic_quality_repair_replaces_fuzz_mapping_with_black_box_harness():
@@ -11273,3 +13510,30 @@ def test_deterministic_quality_repair_replaces_login_fuzzer_mapping_in_sfmea(tmp
     assert "iscsi_fuzzer_skips_login_opcode" not in {
         issue.get("constraint_id") for issue in issues
     }
+
+
+def test_sfmea_floor_uses_distinct_verified_symbols_after_tombstones():
+    from app.services.ai_staged_execution import _complete_minimum_sfmea_hypotheses
+
+    rows = [{"sfmea_id": f"SFMEA-{index:02d}", "failure_mode": "登录异常路径处理错误导致会话状态异常"}
+            for index in range(1, 9)]
+    catalog = [
+        {
+            "evidence_id": f"SRC-{index}",
+            "path": "lib/iscsi/iscsi.c",
+            "symbol": f"iscsi_login_handler_{index}",
+            "lines": f"L{index}",
+            "quote": "unclassified source anchor",
+        }
+        for index in range(1, 5)
+    ]
+
+    completed, fields = _complete_minimum_sfmea_hypotheses(
+        rows,
+        minimum_items=12,
+        product_claim_catalog=catalog,
+    )
+
+    assert len(completed) == 12
+    assert len(fields) == 4
+    assert len({row["failure_mode"] for row in completed}) == 5

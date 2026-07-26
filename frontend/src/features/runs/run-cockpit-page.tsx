@@ -42,7 +42,7 @@ import {
 } from "@/features/runs/stage-progress-event";
 
 const tabs = ["摘要", "实时输出", "工具调用", "全部事件"] as const;
-const terminalStatuses = new Set(["completed", "partial", "success", "failed", "error", "cancelled", "interrupted"]);
+const terminalStatuses = new Set(["completed", "partial", "success", "failed", "error", "cancelled", "interrupted", "quality_blocked"]);
 const lifecycleEventTypes = new Set([
   "queued", "running", "step_started", "node_started", "step_completed", "node_completed",
   "step_failed", "node_failed", "provider_readiness_blocked", "completed", "partial", "failed", "error", "cancelled", "interrupted",
@@ -299,7 +299,7 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
 
     <button className="ct-v2-diagnostic-trigger" type="button" onClick={() => setDiagnosticsOpen(true)}><Wrench size={14} />技术诊断</button>
     <aside className={`ct-v2-diagnostic-drawer ${diagnosticsOpen ? "is-open" : ""}`} hidden={!diagnosticsOpen} aria-label="技术诊断"><header><h2>技术诊断</h2><button aria-label="关闭技术诊断" onClick={() => setDiagnosticsOpen(false)}><X size={16} /></button></header><a href={`${currentApiBase()}/api/workbench/task-runs/${encodeURIComponent(runId)}/diagnostic-package`}><Download size={14} />下载脱敏诊断包</a><details><summary>运行快照</summary><pre>{JSON.stringify(run, null, 2)}</pre></details><details><summary>原始公开事件</summary><pre>{JSON.stringify(events, null, 2)}</pre></details><details><summary>诊断产物</summary>{artifacts.filter((item) => item.audience === "diagnostic").map((item) => <span key={item.relative_path}>{item.relative_path}</span>)}</details></aside>
-    {preview && <div className="ct-v2-artifact-modal" role="dialog" aria-modal="true" aria-label="产物预览"><section><header><FileText size={15} /><strong>{artifactDisplayName(preview.path)}</strong><button aria-label="关闭产物预览" onClick={() => setPreview(null)}><X size={16} /></button></header>{preview.path.endsWith("test_design_mindmap.json") ? <TestDesignMindmapPreview content={preview.content} /> : <pre>{preview.content}</pre>}{preview.truncated && <p>内容较长，预览已截断，请下载完整文件。</p>}</section></div>}
+    {preview && <div className="ct-v2-artifact-modal" role="dialog" aria-modal="true" aria-label="产物预览"><section><header><FileText size={15} /><strong>{artifactDisplayName(preview.path)}</strong><a title="下载完整文件" href={artifactDownloadHref(runId, preview.path)}><Download size={15} /></a><button aria-label="关闭产物预览" onClick={() => setPreview(null)}><X size={16} /></button></header>{preview.path.endsWith("test_design_mindmap.json") ? <TestDesignMindmapPreview content={preview.content} /> : <pre>{preview.content}</pre>}{preview.truncated && <p>内容较长，预览已截断，请下载完整文件。</p>}</section></div>}
   </main>;
 }
 
@@ -457,6 +457,7 @@ function QualityPanel({ run, onRetry, busy }: { run: PreparedWorkbenchTaskRun; o
   const quality = run.test_activity_quality;
   const axes = quality?.quality_axes;
   const factSummary = quality?.fact_verification;
+  const profileExecution = quality?.profile_execution;
   const blockers = (quality?.issues || []).slice(0, 3);
   return <section className="ct-v2-run-quality">
     <header><div><h2>质量结果</h2><strong>{taskStatusLabel(taskQualityLabels, run.quality_status || "not_checked")}</strong></div><span>{quality?.issue_count ?? 0} 个阻断项</span>{run.quality_status === "blocked" && <button type="button" disabled={busy} onClick={onRetry}><RefreshCw size={14} />{busy ? "正在启动修复" : "修复质量问题并重试"}</button>}</header>
@@ -466,6 +467,7 @@ function QualityPanel({ run, onRetry, busy }: { run: PreparedWorkbenchTaskRun; o
       <QualityAxis label="可执行性通过率" status={axes?.executability?.status} value={axes?.executability?.pass_rate} detail={`${axes?.executability?.issue_count ?? 0} 个执行能力问题`} />
       <QualityAxis label="覆盖处置门禁" status={axes?.coverage_judge?.status} value={axes?.coverage_judge?.score} detail={`${axes?.coverage_judge?.blocking_reasons?.length ?? 0} 个覆盖阻断项`} />
     </div>
+    {profileExecution?.profile_id === "deep" ? <section className={`ct-v2-profile-work-proof is-${profileExecution.status || "unknown"}`} aria-label="深度执行工作量证明"><header><span>深度执行证明</span><strong>{profileExecution.status === "passed" ? "已验证" : "待核验"}</strong></header><p>{profileExecution.provider_call_count ?? 0} 次模型调用 · {(profileExecution.output_tokens ?? 0).toLocaleString()} 输出 token · Provider 等待 {formatMilliseconds(profileExecution.provider_wait_ms)}</p><small>{profileExecution.branch_count ?? 0} 个定向探索分支{profileExecution.reused_stage_count ? ` · 复用 ${profileExecution.reused_stage_count} 个阶段` : " · 未复用已完成阶段"}{profileExecution.missing_branch_provider_work?.length ? ` · 缺少 ${profileExecution.missing_branch_provider_work.length} 个分支的模型工作` : ""}{profileExecution.under_evidenced_branches?.length ? ` · ${profileExecution.under_evidenced_branches.length} 个分支证据不足` : ""}</small></section> : null}
     {run.quality_status === "blocked" && <section className="ct-v2-quality-blockers" aria-label="质量阻断原因"><h3>质量阻断原因</h3><ul>{blockers.map((item, index) => <li key={`${item.code || "issue"}-${index}`}><strong>{item.artifact || "交付件"}</strong><span>{item.message || "质量检查发现需要修复的问题"}</span></li>)}</ul>{quality?.recommendations?.length ? <p>下一步：{quality.recommendations[0]}</p> : null}</section>}
     <p>{qualityMessage(run)}{quality?.lint_warning_count ? ` 另有 ${quality.lint_warning_count} 条结构提示，不作为事实核验结论。` : ""}</p>
   </section>;
@@ -480,7 +482,8 @@ function InputConsumptionPanel({ ledger }: { ledger?: PreparedWorkbenchTaskRun["
   })}</div></details>;
 }
 function FailurePanel({ summary, onRetry, busy }: { summary: PreparedWorkbenchTaskRun["run_ui_summary"]; onRetry: () => void; busy: boolean }) { const failure = summary?.failure; const node = summary?.nodes.find((item) => item.id === failure?.failed_node_id); const nodeName = displayNodeName(node?.label || node?.id || "运行节点"); const preflightTitle = failure?.preflight_kind === "independent_quality_audit" ? "独立质量核验未就绪" : "执行器启动前检查未通过"; return <section className="ct-v2-run-failure"><AlertTriangle size={18} /><div><h2>{failure?.preflight_blocked ? preflightTitle : `${nodeName}执行失败`}</h2><p>{failure?.reasons?.[0] || "执行器未完成当前节点，请查看公开事件或技术诊断。"}</p><dl><div><dt>用户目标阶段</dt><dd>{displayNodeName(failure?.user_goal_stage || nodeName || "当前节点")}</dd></div><div><dt>失败性质</dt><dd>{failure?.failure_class === "configuration" ? "配置问题" : "运行时问题"}</dd></div><div><dt>已保留上游结果</dt><dd>{failure?.preserved_node_labels?.map(displayNodeName).join("、") || "无"}</dd></div><div><dt>重试时复用</dt><dd>{failure?.reuse_node_labels?.map(displayNodeName).join("、") || "无"}</dd></div><div><dt>重试时重跑</dt><dd>{failure?.rerun_node_labels?.map(displayNodeName).join("、") || nodeName}</dd></div><div><dt>推荐操作</dt><dd>{failure?.recommended_action || "查看公开事件后创建新 Attempt。"}</dd></div></dl></div>{failure?.preflight_blocked ? <Link href="/settings"><Wrench size={14} />检查执行器设置</Link> : failure?.can_retry && <button disabled={busy} onClick={onRetry}><RefreshCw size={14} />从失败节点重试</button>}</section>; }
-function ArtifactRow({ item, runId, onOpen }: { item: WorkbenchTaskArtifact; runId: string; onOpen: (path: string) => void }) { const path = item.relative_path || item.path; const encoded = path.split("/").map(encodeURIComponent).join("/"); return <article className="ct-v2-artifact-row"><FileText size={15} /><button onClick={() => void onOpen(path)}><strong>{artifactDisplayName(path)}</strong><small>{path.split("/").pop()} · {formatBytes(item.size_bytes)}</small></button><a title="下载文件" href={`${currentApiBase()}/api/workbench/task-runs/${encodeURIComponent(runId)}/artifacts/download/${encoded}`}><Download size={15} /></a></article>; }
+function artifactDownloadHref(runId: string, path: string) { const encoded = path.split("/").map(encodeURIComponent).join("/"); return `${currentApiBase()}/api/workbench/task-runs/${encodeURIComponent(runId)}/artifacts/download/${encoded}`; }
+function ArtifactRow({ item, runId, onOpen }: { item: WorkbenchTaskArtifact; runId: string; onOpen: (path: string) => void }) { const path = item.relative_path || item.path; return <article className="ct-v2-artifact-row"><FileText size={15} /><button onClick={() => void onOpen(path)}><strong>{artifactDisplayName(path)}</strong><small>{path.split("/").pop()} · {formatBytes(item.size_bytes)}</small></button><a title="下载文件" href={artifactDownloadHref(runId, path)}><Download size={15} /></a></article>; }
 function artifactDisplayName(path: string) { const name=path.split("/").pop() || path; return ({"test_design_mindmap.json":"测试设计脑图（结构化）","test_design_mindmap.html":"测试设计脑图（交互版）","test_design_mindmap.svg":"测试设计脑图（评审版）","judge_report.json":"覆盖质量判定"} as Record<string,string>)[name] || name; }
 function EventRow({ item, compact = false }: { item: WorkbenchTaskRunEvent; compact?: boolean }) { return <article className={`ct-v2-event-row is-${item.event_kind} ${compact ? "is-compact" : ""}`}><time>{new Date(item.created_at).toLocaleTimeString("zh-CN", { hour12: false })}</time><span>{displayNodeName(eventNode(item) || "系统")}</span><em>{eventKindLabel(item.event_kind)}</em><div><strong>{eventMessage(item)}</strong>{!compact && eventDetail(item) && <pre>{eventDetail(item)}</pre>}</div></article>; }
 type PairedToolCall = { id: string; use?: WorkbenchTaskRunEvent; result?: WorkbenchTaskRunEvent };
@@ -496,7 +499,7 @@ function applyLifecycleEvents(run: PreparedWorkbenchTaskRun, events: WorkbenchTa
   if (terminalStatuses.has(statusOf(run))) return run;
   const event = [...events].reverse().find((item) => lifecycleEventTypes.has(item.event_type));
   if (!event) return run;
-  const status = lifecycleStatus(event.event_type);
+  const status = lifecycleStatus(event.event_type, event.payload);
   if (!status) return run;
   const nodeId = eventNode(event);
   const summary = run.run_ui_summary;
@@ -518,11 +521,15 @@ function applyLifecycleEvents(run: PreparedWorkbenchTaskRun, events: WorkbenchTa
     } : summary,
   };
 }
-function lifecycleStatus(eventType: string) {
+function lifecycleStatus(eventType: string, payload: WorkbenchTaskRunEvent["payload"] = {}) {
   if (["queued"].includes(eventType)) return "queued";
   if (["running", "step_started", "node_started", "step_completed", "node_completed"].includes(eventType)) return "running";
   if (["completed", "partial", "failed", "error", "cancelled", "interrupted"].includes(eventType)) return eventType;
-  if (["step_failed", "node_failed", "provider_readiness_blocked"].includes(eventType)) return "failed";
+  if (["step_failed", "node_failed", "provider_readiness_blocked"].includes(eventType)) {
+    return String(payload.status || "").toLowerCase() === "quality_blocked"
+      ? "quality_blocked"
+      : "failed";
+  }
   return "";
 }
 function statusOf(run: PreparedWorkbenchTaskRun) { return String(run.execution_status || run.runtime?.status || run.status || "prepared").toLowerCase(); }
@@ -549,6 +556,7 @@ function qualityMessage(run: PreparedWorkbenchTaskRun) { const status = run.qual
 function formatNodeTime(value?: string) { return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "尚未开始"; }
 function formatNodeDuration(value?: number) { if (!value) return "尚未完成"; const seconds = Math.floor(value / 1000); return seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`; }
 function formatDuration(start?: string, end?: string, nowMs = Date.now()) { if (!start) return "—"; const milliseconds = Math.max(0, new Date(end || nowMs).getTime() - new Date(start).getTime()); const seconds = Math.floor(milliseconds / 1000); return seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`; }
+function formatMilliseconds(value?: number) { const milliseconds = Math.max(0, Number(value) || 0); const seconds = Math.floor(milliseconds / 1000); return seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`; }
 function displayNodeName(value: string) { return ({ analyze_source_flow: "源码驱动测试分析", validate_evidence: "源码证据校验", render_report: "汇总报告生成" } as Record<string, string>)[value] || value; }
 function displayNodeType(value: string) { return ({ agent_task: "智能分析", evidence_validate: "证据校验", report_render: "报告生成" } as Record<string, string>)[value] || value; }
 function displayNodeGoal(node: WorkbenchRunUiNodeSummary) {

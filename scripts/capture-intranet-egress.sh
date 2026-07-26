@@ -38,7 +38,25 @@ command -v shasum >/dev/null || { echo "shasum is required" >&2; exit 127; }
 mkdir -p "$output"
 pcap="$output/${label}-egress.pcap"
 manifest="$output/${label}-egress-manifest.txt"
+processes_before="$output/${label}-processes-before.txt"
+processes_after="$output/${label}-processes-after.txt"
 started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+capture_process_snapshot() {
+  local destination="$1"
+  # Do not archive full process tables or environment-derived secrets.  This
+  # is deliberately a correlation aid for CodeTalk service processes, not a
+  # forensic dump of every user process on the host.
+  ps -axo pid=,ppid=,user=,command= 2>/dev/null \
+    | grep -E -i 'codetalk|uvicorn|next([[:space:]]|$)|python[^[:space:]]*.*backend' \
+    | grep -v 'grep -E' \
+    | sed -E \
+      -e 's/sk-[[:alnum:]_-]{8,}/[REDACTED_API_KEY]/g' \
+      -e 's/([[:alnum:]_]*(API_KEY|TOKEN|SECRET|PASSWORD)[[:alnum:]_]*=)[^[:space:]]+/\1[REDACTED]/g' \
+    > "$destination" || true
+}
+
+capture_process_snapshot "$processes_before"
 
 {
   echo "capture_kind=intranet_egress_evidence"
@@ -46,6 +64,9 @@ started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "interface=$interface"
   echo "duration_seconds=$seconds"
   echo "filter=(udp port 53 or tcp port 53 or tcp port 443)"
+  echo "network_configuration_changed=false"
+  echo "process_snapshot_before=$(basename "$processes_before")"
+  echo "process_snapshot_after=$(basename "$processes_after")"
   echo "operator_uid=$(id -u)"
   echo "host=$(hostname)"
   echo "command=tcpdump -n -s 0 -i $interface -G $seconds -W 1 -w $pcap '(udp port 53 or tcp port 53 or tcp port 443)'"
@@ -57,8 +78,11 @@ echo "Capturing $seconds seconds on $interface. Run one browser workflow now."
 tcpdump -n -s 0 -i "$interface" -G "$seconds" -W 1 -w "$pcap" \
   '(udp port 53 or tcp port 53 or tcp port 443)'
 
+capture_process_snapshot "$processes_after"
+
 {
   echo "finished_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   shasum -a 256 "$pcap"
+  shasum -a 256 "$processes_before" "$processes_after"
 } >> "$manifest"
 echo "Evidence written to $output"

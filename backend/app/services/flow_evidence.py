@@ -891,7 +891,9 @@ def render_business_flow_markdown(outline: dict[str, Any]) -> str:
         if not isinstance(step, dict):
             continue
         evidence = ", ".join(str(value) for value in step.get("evidence_ids") or [])
-        lines.append(f"| {step.get('step')} | {step.get('action')} | `{evidence}` |")
+        lines.append(
+            f"| {step.get('step')} | {_markdown_table_cell(step.get('action'))} | `{evidence}` |"
+        )
     if not outline.get("steps"):
         lines.append("| 1 | 当前证据不足以构造调用步骤 | `evidence_gap` |")
     lines.extend(["", "## 异常分支", "", "| 类型 | 位置/条件 | 证据 |", "|---|---|---|"])
@@ -900,7 +902,7 @@ def render_business_flow_markdown(outline: dict[str, Any]) -> str:
             if not isinstance(item, dict):
                 continue
             lines.append(
-                f"| {label} | {item.get('text') or item.get('symbol') or '(未记录)'} | "
+                f"| {label} | {_markdown_table_cell(item.get('text') or item.get('symbol') or '(未记录)')} | "
                 f"`{item.get('evidence_id')}` |"
             )
     if not any(outline.get(key) for key in ("error_flows", "cleanup_flows", "recovery_flows")):
@@ -918,6 +920,18 @@ def render_business_flow_markdown(outline: dict[str, Any]) -> str:
         lines.append(f"| `{item.get('symbol')}` | `{', '.join(related) or item.get('evidence_id')}` |")
     if not outline.get("state_objects"):
         lines.append("| 未识别 | 当前有界证据未暴露状态对象 |")
+    lines.extend(["", "## 关联测试证据", "", "| 测试文件 | 符号 | 行号 | 证据 |", "|---|---|---:|---|"])
+    for item in outline.get("related_tests") or []:
+        if not isinstance(item, dict):
+            continue
+        lines.append(
+            f"| `{_markdown_table_cell(item.get('file_path'))}` | "
+            f"`{_markdown_table_cell(item.get('symbol') or '(未记录)')}` | "
+            f"{item.get('start_line') or '-'}-{item.get('end_line') or '-'} | "
+            f"`{item.get('evidence_id') or 'evidence_gap'}` |"
+        )
+    if not outline.get("related_tests"):
+        lines.append("| 当前未定位到相关测试 | - | - | `evidence_gap` |")
     lines.extend(["", "## 观测点与证据引用"])
     for item in outline.get("entry_points") or []:
         if not isinstance(item, dict):
@@ -932,6 +946,11 @@ def render_business_flow_markdown(outline: dict[str, Any]) -> str:
     if not gaps:
         lines.append("- 未发现结构性证据缺口；仍需通过实机测试确认运行时行为。")
     return "\n".join(lines).rstrip() + "\n"
+
+
+def _markdown_table_cell(value: Any) -> str:
+    """Render source text safely inside a Markdown table cell."""
+    return " ".join(str(value or "").splitlines()).replace("|", "\\|").strip()
 
 
 def stable_payload_sha256(payload: Any) -> str:
@@ -1230,7 +1249,11 @@ def _discover_with_git_grep(
                             details={
                                 "from_symbol": symbol,
                                 "to_symbol": callee,
-                                "matched_text": sanitized_lines[call_line - 1].strip()[:300],
+                                # The downstream L1 ledger verifies this excerpt
+                                # against the revision-pinned file. Do not strip
+                                # indentation here, or a real call edge becomes
+                                # unverifiable after materialization.
+                                "matched_text": lines[call_line - 1][:300],
                             },
                         )
                     )
@@ -1238,7 +1261,7 @@ def _discover_with_git_grep(
             details = {
                 "from_symbol": caller or "unknown_caller",
                 "to_symbol": symbol,
-                "matched_text": line_text.strip()[:300],
+                "matched_text": lines[line_number - 1][:300],
                 "relation": reference_kind,
             }
             if _is_test_path(file_path):

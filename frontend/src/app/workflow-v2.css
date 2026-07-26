@@ -795,6 +795,13 @@
 .ct-v2-quality-axes article.is-blocked > strong { color: #b42323; }
 .ct-v2-quality-axes article.is-passed > strong { color: #187845; }
 .ct-v2-quality-axes article.is-not_checked > strong { color: #7c8992; }
+.ct-v2-profile-work-proof { border: 1px solid #dbe7ec; background: #f7fbfc; padding: 8px 10px; }
+.ct-v2-profile-work-proof > header { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.ct-v2-profile-work-proof header > span { color: #526570; font-size: 11px; font-weight: 650; }
+.ct-v2-profile-work-proof header > strong { color: #187845; font-size: 11px; }
+.ct-v2-profile-work-proof > p { margin: 4px 0 2px; color: #364954; font-size: 11px; }
+.ct-v2-profile-work-proof > small { color: #71808a; font-size: 10px; line-height: 1.4; }
+.ct-v2-profile-work-proof.is-blocked header > strong { color: #b42323; }
 .ct-v2-artifact-row { display: grid; grid-template-columns: 22px minmax(0, 1fr) 28px; align-items: center; gap: 5px; border-top: 1px solid #edf1f4; padding: 7px 0; }
 .ct-v2-artifact-row > svg { color: #7a8994; }
 .ct-v2-artifact-row button { display: grid; min-width: 0; border: 0; background: transparent; padding: 0; text-align: left; }
@@ -839,7 +846,8 @@
 .ct-v2-artifact-modal { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; background: rgba(21,32,40,.35); padding: 24px; }
 .ct-v2-artifact-modal > section { display: grid; width: min(900px, 92vw); max-height: 84vh; grid-template-rows: 42px minmax(0, 1fr) auto; overflow: hidden; border-radius: 7px; background: #fff; box-shadow: 0 20px 60px rgba(19,31,39,.24); }
 .ct-v2-artifact-modal header { display: flex; align-items: center; gap: 7px; border-bottom: 1px solid #dce4e9; padding: 0 12px; }
-.ct-v2-artifact-modal header button { margin-left: auto; border: 0; background: transparent; }
+.ct-v2-artifact-modal header > a { margin-left: auto; color: #176c8b; }
+.ct-v2-artifact-modal header button { border: 0; background: transparent; }
 .ct-v2-artifact-modal pre { overflow: auto; margin: 0; background: #f8fafb; padding: 13px; font-size: 10px; line-height: 1.55; white-space: pre-wrap; }
 .ct-v2-artifact-modal p { margin: 0; border-top: 1px solid #e3e9ed; padding: 7px 12px; color: #8a5c21; }
 

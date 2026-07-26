@@ -19,6 +19,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable, Iterable
 
 from app.config import settings
@@ -55,9 +56,11 @@ from app.services.regular_stage_governance import promote_regular_stage_caches
 from app.services.source_driven_test_design import (
     refresh_source_driven_delivery_governance,
 )
+from app.services.flow_evidence import render_business_flow_markdown
 from app.services.test_activity_contract import (
     ARTIFACT_TEMPLATES,
     audit_test_activity_artifacts,
+    black_box_case_delivery_quality_gaps,
     refresh_test_activity_contract,
 )
 from app.services.test_activity_stage_specs import (
@@ -77,6 +80,91 @@ from app.services.workbench_task_run import WorkbenchTaskRunStore, validate_run_
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _append_nested_black_box_delivery_issues(
+    audit: dict[str, Any],
+    *,
+    artifact_dir: Path,
+    repo_path: str,
+) -> dict[str, Any]:
+    """Bring the canonical nested Agent delivery under the final quality gate.
+
+    Staged workflow artifacts live under ``agent_runs/<step>``.  The generic
+    activity audit evaluates declared root artifacts, while final acceptance
+    correctly evaluates those nested canonical files.  Keeping those two
+    checks separate made a vague case visible only after the runner had
+    already stopped its deterministic repair loop.  Scan the same canonical
+    files here and preserve the per-case reasons needed by the repairer.
+    """
+    issues = audit.get("issues")
+    if not isinstance(issues, list):
+        issues = []
+        audit["issues"] = issues
+    known_artifacts = {
+        str(item.get("artifact") or "")
+        for item in issues
+        if isinstance(item, dict)
+    }
+    for path in sorted(artifact_dir.rglob("black_box_cases.json")):
+        relative_path = str(path.relative_to(artifact_dir))
+        if relative_path == "black_box_cases.json" or relative_path in known_artifacts:
+            continue
+        try:
+            cases = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        if not isinstance(cases, list):
+            continue
+        invalid_cases = []
+        for index, case in enumerate(cases):
+            if not isinstance(case, dict):
+                continue
+            reasons = black_box_case_delivery_quality_gaps(
+                case,
+                repo_path=repo_path,
+            )
+            if reasons:
+                invalid_cases.append({
+                    "case_id": str(case.get("case_id") or f"case-{index + 1}"),
+                    "index": index,
+                    "reasons": reasons,
+                    "title": str(
+                        case.get("scenario_name")
+                        or case.get("title")
+                        or "未命名黑盒用例"
+                    ),
+                })
+        if not invalid_cases:
+            continue
+        issues.append({
+            "artifact": relative_path,
+            "code": "black_box_case_quality_failed",
+            "message": "黑盒测试用例包含不可执行或不合规步骤，当前结果不能交付。",
+            "invalid_cases": invalid_cases[:50],
+        })
+        for invalid_case in invalid_cases:
+            if "white_box_boundary" not in invalid_case["reasons"]:
+                continue
+            issues.append({
+                "artifact": relative_path,
+                "code": "black_box_boundary_violation",
+                "message": (
+                    f"{relative_path} 第 {invalid_case['index'] + 1} 项混入内部实现或"
+                    "单元测试操作，不是可交付黑盒步骤。"
+                ),
+                "index": invalid_case["index"] + 1,
+                "case_id": invalid_case["case_id"],
+            })
+    if any(
+        isinstance(item, dict)
+        and str(item.get("code") or "") == "black_box_case_quality_failed"
+        for item in issues
+    ):
+        audit["issue_count"] = len(issues)
+        audit["deliverable"] = False
+        audit["status"] = "needs_rework"
+    return audit
 
 
 def _materialize_external_agent_source_evidence_pack(task_run: Any) -> bool:
@@ -618,6 +706,27 @@ def _quality_repair_regressed(
     return int(after.get("score") or 0) < int(before.get("score") or 0)
 
 
+def _should_apply_final_deterministic_repairs(
+    *,
+    repair_history: list[dict[str, Any]],
+    behavior_validation: dict[str, Any],
+) -> bool:
+    """Allow local fact corrections without treating them as model self-review.
+
+    A missing independent reviewer stops further LLM repair turns, but it must
+    not prevent a bounded, source-backed correction already implemented by the
+    product.  Deadline exhaustion remains a hard stop because even local work
+    must respect the frozen run budget.
+    """
+    if repair_history:
+        return True
+    return (
+        str(behavior_validation.get("status") or "") == "unavailable"
+        and str(behavior_validation.get("reason") or "")
+        != "workflow_deadline_exceeded"
+    )
+
+
 def _snapshot_quality_repair_artifacts(
     *,
     artifact_dir: Path,
@@ -885,8 +994,21 @@ def _profile_execution_evidence_for_quality_audit(
             "status": "not_applicable",
             "reason": "当前不是深度档。",
         }
-    result_path = artifact_dir / "staged_execution_result.json"
-    evidence_path = artifact_dir / "profile_execution_evidence.json"
+    runtime_artifact_dir = artifact_dir
+    result_path = runtime_artifact_dir / "staged_execution_result.json"
+    if not result_path.is_file():
+        nested_results = sorted((artifact_dir / "agent_runs").glob("*/staged_execution_result.json"))
+        if len(nested_results) == 1:
+            runtime_artifact_dir = nested_results[0].parent
+            result_path = nested_results[0]
+        elif len(nested_results) > 1:
+            return {
+                "kind": "profile_execution_evidence",
+                "profile_id": "deep",
+                "status": "not_applicable",
+                "reason": "发现多个内置 staged 子运行，无法在未冻结目标运行的情况下推断深度执行证据。",
+            }
+    evidence_path = runtime_artifact_dir / "profile_execution_evidence.json"
     if not result_path.is_file():
         return {
             "kind": "profile_execution_evidence",
@@ -898,7 +1020,7 @@ def _profile_execution_evidence_for_quality_audit(
     if isinstance(persisted, dict) and persisted.get("kind") == "profile_execution_evidence":
         return persisted
     evidence = build_profile_execution_evidence(
-        artifact_dir=artifact_dir,
+        artifact_dir=runtime_artifact_dir,
         execution_profile=profile,
     )
     _write_json(evidence_path, evidence)
@@ -1241,21 +1363,58 @@ class WorkbenchWorkflowRunner:
         ):
             enrich_external_agent_claim_bindings(task_run.artifact_dir)
             _refresh_external_agent_delivery_report(task_run)
+        # A repair can remove an unsafe SFMEA row after the stage contract was
+        # first met. Normalize the bytes before the initial final audit so the
+        # declared minimum and the judge are assessed on the same delivery
+        # artifact.  Running the judge first leaves a stale contradicted claim
+        # behind even when normalization produces a fully verified ledger.
+        normalize_materialized_sfmea_risk_contract(
+            artifact_dir=Path(str(task_run.artifact_dir)),
+            plan={},
+        )
         self._materialize_final_behavior_validation(
             task_run=task_run,
             step_results=step_results,
         )
         test_activity_quality = self.audit_test_activity_quality(task_run=task_run)
-        final_deterministic_repairs = materialize_final_deterministic_quality_repairs(
-            task_run.artifact_dir,
-            quality_feedback=test_activity_quality,
-        )
-        if final_deterministic_repairs:
+        final_deterministic_repairs: dict[str, list[str]] = {}
+        # One repair can reveal the next deterministic contract mismatch (for
+        # example, a corrected source statement can expose a missing formal
+        # Markdown heading). Converge over final bytes without sending another
+        # provider request; the bound prevents an accidental repair loop.
+        for _ in range(3):
+            repairs = materialize_final_deterministic_quality_repairs(
+                task_run.artifact_dir,
+                quality_feedback=test_activity_quality,
+            )
+            if not repairs:
+                break
+            for artifact, fields in repairs.items():
+                final_deterministic_repairs.setdefault(artifact, [])
+                final_deterministic_repairs[artifact].extend(
+                    field
+                    for field in fields
+                    if field not in final_deterministic_repairs[artifact]
+                )
+            # Repairs can deduplicate or tombstone a risk row. Reapply the
+            # declared SFMEA minimum to those final bytes before the next
+            # artifact contract and judge are materialized.  The final judge
+            # must see these bytes, otherwise it retains contradicted claims
+            # from the pre-normalization artifact.
+            normalize_materialized_sfmea_risk_contract(
+                artifact_dir=Path(str(task_run.artifact_dir)),
+                plan={},
+            )
             materialize_artifact_contract_v3_outputs(
                 task_run.artifact_dir,
                 profile_id=profile_id,
             )
+            self._materialize_final_behavior_validation(
+                task_run=task_run,
+                step_results=step_results,
+            )
             test_activity_quality = self.audit_test_activity_quality(task_run=task_run)
+        if final_deterministic_repairs:
             test_activity_quality["final_deterministic_quality_repair"] = {
                 "changed_fields": final_deterministic_repairs,
                 "reason": "final_professional_audit_feedback",
@@ -1320,10 +1479,69 @@ class WorkbenchWorkflowRunner:
             task_run.artifact_dir,
             profile_id=profile_id,
         )
+        _refresh_source_delivery_governance_after_finalizing(
+            artifact_dir=Path(str(task_run.artifact_dir)),
+            plan={},
+        )
+        # The final delivery renderer can rewrite Markdown after the bounded
+        # repair loop above. Re-run the same deterministic, no-model repair on
+        # those final bytes so a regenerated table row cannot evade the last
+        # acceptance audit.
+        final_delivery_repairs = materialize_final_deterministic_quality_repairs(
+            task_run.artifact_dir,
+            quality_feedback={"issues": []},
+        )
+        if final_delivery_repairs:
+            final_deterministic_repairs.update(final_delivery_repairs)
+        # The final delivery materialization can normalize/tombstone risks and
+        # rebuild coverage dispositions.  Rebuild the judge from those final
+        # bytes before the last audit; otherwise a stale coverage verdict can
+        # block an already READY disposition ledger.
+        self._materialize_final_behavior_validation(
+            task_run=task_run,
+            step_results=step_results,
+        )
         # Markdown delivery is rendered from the repaired canonical JSON above.
         # Re-audit those final bytes before publishing any status or cache entry;
         # otherwise the cockpit and the repair directory can disagree.
         final_quality_audit = self.audit_test_activity_quality(task_run=task_run)
+        # The final renderer may surface a syntactic Markdown defect or a
+        # deterministic observability alias that was not present when the
+        # earlier repair loop ran. Give only the bounded repairer one last
+        # chance against the actual final audit; this never calls a provider.
+        # Rendering can re-materialize an older structured snapshot.  Converge
+        # over the *actual delivery bytes* a second time so a final-audit-only
+        # repair (notably duplicate SFMEA mitigations) is not overwritten by
+        # the renderer immediately before status publication.  This remains
+        # deterministic and bounded; no provider call or full-stage rerun is
+        # introduced here.
+        for _ in range(2):
+            post_render_repairs = materialize_final_deterministic_quality_repairs(
+                task_run.artifact_dir,
+                quality_feedback=final_quality_audit,
+            )
+            if not post_render_repairs:
+                break
+            for artifact, fields in post_render_repairs.items():
+                final_deterministic_repairs.setdefault(artifact, [])
+                final_deterministic_repairs[artifact].extend(
+                    field
+                    for field in fields
+                    if field not in final_deterministic_repairs[artifact]
+                )
+            materialize_artifact_contract_v3_outputs(
+                task_run.artifact_dir,
+                profile_id=profile_id,
+            )
+            _refresh_source_delivery_governance_after_finalizing(
+                artifact_dir=Path(str(task_run.artifact_dir)),
+                plan={},
+            )
+            self._materialize_final_behavior_validation(
+                task_run=task_run,
+                step_results=step_results,
+            )
+            final_quality_audit = self.audit_test_activity_quality(task_run=task_run)
         if isinstance(test_activity_quality.get("external_agent_quality_repair"), dict):
             final_quality_audit["external_agent_quality_repair"] = dict(
                 test_activity_quality["external_agent_quality_repair"]
@@ -1368,6 +1586,19 @@ class WorkbenchWorkflowRunner:
             and test_activity_quality.get("status") in {"needs_rework", "invalid"}
         ):
             status = "quality_blocked"
+        # Final quality repair can deliberately update a canonical JSON artifact
+        # after the first output manifest was collected. Re-read those exact
+        # bytes before publishing workflow_outputs.json so the materialization
+        # layer verifies the repaired delivery rather than a stale SHA-256.
+        outputs = self._collect_workflow_outputs(
+            task_run=task_run,
+            workflow_snapshot=task_run.workflow_snapshot,
+            step_results=step_results,
+        )
+        if status == "completed" and any(
+            item.get("status") in {"missing", "invalid"} for item in outputs
+        ):
+            status = "invalid"
         result = WorkbenchWorkflowExecutionResult(
             task_run_id=task_run.task_run_id,
             status=status,
@@ -1633,6 +1864,14 @@ class WorkbenchWorkflowRunner:
                 "recommendations": ["当前工作流未声明测试活动交付件，跳过测试活动质量门禁。"],
             }
         artifact_dir = Path(str(task_run.artifact_dir))
+        # Every caller, including final task publication, must audit normalized
+        # delivery bytes.  Renderers can regenerate Markdown after a stage-level
+        # repair, so keep this bounded no-model materialization at the single
+        # quality-audit entry point rather than relying on call ordering.
+        materialize_final_deterministic_quality_repairs(
+            artifact_dir,
+            quality_feedback={"issues": []},
+        )
         scoped_contract = _workflow_scoped_test_activity_contract(
             contract=contract,
             workflow_snapshot=task_run.workflow_snapshot,
@@ -1650,6 +1889,11 @@ class WorkbenchWorkflowRunner:
         audit = _apply_claim_evidence_ledger_to_quality_audit(
             audit=audit,
             claim_ledger=claim_ledger,
+        )
+        audit = _append_nested_black_box_delivery_issues(
+            audit,
+            artifact_dir=artifact_dir,
+            repo_path=str(task_run.repo_path or ""),
         )
         quality_axes = audit.get("quality_axes")
         execution_profile = task_run.task_bundle.get("execution_profile")
@@ -2051,6 +2295,11 @@ class WorkbenchWorkflowRunner:
             workflow_snapshot = {}
         if not isinstance(output_contract, dict):
             output_contract = {}
+        # Direct harness tests and isolated recovery tools intentionally call
+        # this executor before a persisted task-run exists.  A stored run is
+        # required only for the staged quality audit; ordinary LLM execution
+        # must not fail before contacting its provider.
+        staged_task_run: Any | None = None
         execution_contract = (
             task_bundle.get("execution_contract")
             if isinstance(task_bundle.get("execution_contract"), dict)
@@ -2115,6 +2364,20 @@ class WorkbenchWorkflowRunner:
         staged_lifecycle_phase = "not_started"
         try:
             if str(step.get("execution_mode") or "") == "staged":
+                staged_task_run_id = str(task_bundle.get("task_run_id") or run_id)
+                try:
+                    staged_task_run = self.store.load(staged_task_run_id)
+                except KeyError:
+                    staged_task_run = SimpleNamespace(
+                        task_bundle=task_bundle,
+                        workflow_snapshot=workflow_snapshot,
+                        artifact_dir=artifact_dir,
+                        repo_path=str(
+                            execution_contract.get("repo_path")
+                            or task_bundle.get("repo_path")
+                            or ""
+                        ),
+                    )
                 execution_profile = task_bundle.get("execution_profile")
                 profile_id = (
                     str(execution_profile.get("id") or "rapid")
@@ -2408,6 +2671,16 @@ class WorkbenchWorkflowRunner:
                         # the deterministic SFMEA boundary normalizer and leave
                         # stale source-driven judge data in place.
                         try:
+                            # Run syntactic and evidence-bounded repairs before
+                            # the first task-level audit as well as after a
+                            # model repair.  Regular stages write their
+                            # canonical bytes below agent_runs/<step>; waiting
+                            # for the later task finalizer left first-pass
+                            # Markdown table defects needlessly quality-blocked.
+                            materialize_final_deterministic_quality_repairs(
+                                artifact_dir,
+                                quality_feedback={"issues": []},
+                            )
                             normalize_materialized_sfmea_risk_contract(
                                 artifact_dir=artifact_dir,
                                 plan=current_plan,
@@ -2416,12 +2689,15 @@ class WorkbenchWorkflowRunner:
                                 artifact_dir=artifact_dir,
                                 plan=current_plan,
                             )
+                            # The repair loop must inspect the same quality
+                            # contract that decides the task's final delivery
+                            # status.  The former narrow staged-artifact audit
+                            # omitted claim-ledger and source-path findings, so
+                            # a model could finish with no repair turn and only
+                            # be blocked later by the task-level audit.
                             return await _run_sync_with_absolute_deadline(
-                                lambda: _audit_staged_agent_artifacts(
-                                    artifact_dir=artifact_dir,
-                                    task_bundle=task_bundle,
-                                    execution_contract=scoped_execution_contract,
-                                    workflow_snapshot=workflow_snapshot,
+                                lambda: self.audit_test_activity_quality(
+                                    task_run=staged_task_run
                                 ),
                                 deadline=staged_lifecycle_deadline,
                             )
@@ -2525,14 +2801,15 @@ class WorkbenchWorkflowRunner:
                                     "invalid",
                                 }:
                                     break
-                                if str(behavior_validation.get("status") or "") == "unavailable":
-                                    if (
-                                        behavior_validation.get("reason")
-                                        == "workflow_deadline_exceeded"
-                                    ):
-                                        quality_repair_stop_reason = (
-                                            "workflow_deadline_exceeded"
-                                        )
+                                if (
+                                    str(behavior_validation.get("status") or "")
+                                    == "unavailable"
+                                    and behavior_validation.get("reason")
+                                    == "workflow_deadline_exceeded"
+                                ):
+                                    quality_repair_stop_reason = (
+                                        "workflow_deadline_exceeded"
+                                    )
                                     break
                                 remaining_seconds = remaining_lifecycle_seconds()
                                 minimum_remaining_seconds = float(
@@ -2836,7 +3113,10 @@ class WorkbenchWorkflowRunner:
                                     "invalid",
                                 }:
                                     break
-                        if repair_history:
+                        if _should_apply_final_deterministic_repairs(
+                            repair_history=repair_history,
+                            behavior_validation=behavior_validation,
+                        ):
                             normalize_materialized_sfmea_risk_contract(
                                 artifact_dir=artifact_dir,
                                 plan=current_plan,
@@ -2892,6 +3172,26 @@ class WorkbenchWorkflowRunner:
                                     audit=final_repair_audit,
                                 )
                             )
+                            # Regular stages keep canonical artifacts below
+                            # agent_runs/<step>. Apply the shared nested-artifact
+                            # repair layer before re-auditing those final bytes.
+                            nested_deterministic_repairs = (
+                                materialize_final_deterministic_quality_repairs(
+                                    artifact_dir,
+                                    quality_feedback=final_repair_audit,
+                                )
+                            )
+                            if nested_deterministic_repairs:
+                                for artifact, fields in nested_deterministic_repairs.items():
+                                    existing = deterministic_repairs.setdefault(artifact, [])
+                                    existing.extend(field for field in fields if field not in existing)
+                                # A deterministic repair can remove duplicate
+                                # SFMEA rows. Re-apply the declared floor to the
+                                # materialized nested file before the next audit.
+                                normalize_materialized_sfmea_risk_contract(
+                                    artifact_dir=artifact_dir,
+                                    plan=current_plan,
+                                )
                             if deterministic_repairs:
                                 refreshed_reports = _refresh_reports_after_tombstones(
                                     artifact_dir=artifact_dir,
@@ -2952,21 +3252,38 @@ class WorkbenchWorkflowRunner:
                                 / "final_quality_audit.json",
                                 final_repair_audit,
                             )
-                            repair_history[-1]["materialized_field_patches"] = (
-                                materialized_patches
-                            )
-                            repair_history[-1]["contradiction_tombstones"] = tombstoned_rows
-                            repair_history[-1]["deterministic_repairs"] = (
-                                deterministic_repairs
-                            )
-                            repair_history[-1]["refreshed_reports"] = refreshed_reports
-                            repair_history[-1]["field_patch_rounds"] = patch_rounds
-                            repair_history[-1]["final_status"] = str(
-                                final_repair_audit.get("status") or ""
-                            )
-                            repair_history[-1]["final_issues"] = int(
-                                final_repair_audit.get("issue_count") or 0
-                            )
+                            finalization = {
+                                "materialized_field_patches": materialized_patches,
+                                "contradiction_tombstones": tombstoned_rows,
+                                "deterministic_repairs": deterministic_repairs,
+                                "refreshed_reports": refreshed_reports,
+                                "field_patch_rounds": patch_rounds,
+                                "final_status": str(
+                                    final_repair_audit.get("status") or ""
+                                ),
+                                "final_issues": int(
+                                    final_repair_audit.get("issue_count") or 0
+                                ),
+                            }
+                            if repair_history:
+                                repair_history[-1].update(finalization)
+                            else:
+                                _write_json(
+                                    artifact_dir
+                                    / "deterministic_quality_finalization.json",
+                                    {
+                                        "mode": "deterministic_only",
+                                        "independent_behavior_validation": {
+                                            "status": str(
+                                                behavior_validation.get("status") or ""
+                                            ),
+                                            "reason": str(
+                                                behavior_validation.get("reason") or ""
+                                            ),
+                                        },
+                                        **finalization,
+                                    },
+                                )
                             staged_result = (
                                 _promote_staged_result_after_deliverable_quality(
                                     staged_result,
@@ -2978,11 +3295,36 @@ class WorkbenchWorkflowRunner:
                                 artifact_dir=artifact_dir,
                                 plan=current_plan,
                             )
+                            # The source-driven judge is rebuilt from the final
+                            # JSON rows above. Its result is itself a delivery
+                            # gate, so never retain the pre-refresh audit when
+                            # deciding whether this attempt is publishable.
+                            final_repair_audit = await audit_staged_artifacts()
+                            _write_json(
+                                artifact_dir
+                                / "quality_repairs"
+                                / "final_quality_audit.json",
+                                final_repair_audit,
+                            )
+                            staged_result = _promote_staged_result_after_deliverable_quality(
+                                staged_result,
+                                final_repair_audit,
+                            )
                         except ArtifactContractError:
                             # The final audit already records this as an
                             # undeliverable quality result.  Never turn a
                             # truthful blocked outcome into a runtime failure.
                             pass
+                        except asyncio.TimeoutError:
+                            # The primary/repair audit paths already preserve
+                            # a bounded partial result when the shared budget
+                            # expires.  The final refresh must obey the same
+                            # contract instead of converting that truthful
+                            # timeout into an opaque execution error.
+                            staged_result = _mark_staged_workflow_deadline_exceeded(
+                                staged_result
+                            )
+                            quality_repair_stop_reason = "workflow_deadline_exceeded"
                         _write_json(
                             artifact_dir / "quality_repair_result.json",
                             {
@@ -3752,14 +4094,20 @@ def _workflow_scoped_test_activity_contract(
     # canonical files contain fewer rows or stale risk references.
     combined_thresholds = {
         "min_sfmea_rows": max(
-            int(spec.get("min_sfmea_rows") or 0)
-            for spec in scoped_artifacts.values()
-            if isinstance(spec, dict)
+            (
+                int(spec.get("min_sfmea_rows") or 0)
+                for spec in scoped_artifacts.values()
+                if isinstance(spec, dict)
+            ),
+            default=0,
         ),
         "min_black_box_cases": max(
-            int(spec.get("min_black_box_cases") or 0)
-            for spec in scoped_artifacts.values()
-            if isinstance(spec, dict)
+            (
+                int(spec.get("min_black_box_cases") or 0)
+                for spec in scoped_artifacts.values()
+                if isinstance(spec, dict)
+            ),
+            default=0,
         ),
     }
     if allow_flow_map_alias and any(combined_thresholds.values()):
@@ -4578,6 +4926,17 @@ async def _run_sync_with_absolute_deadline(
         if time.monotonic() >= deadline:
             raise asyncio.TimeoutError
         return result
+
+    # FastAPI's synchronous background runner invokes this lifecycle from a
+    # worker thread.  Forking an already multithreaded interpreter is unsafe
+    # on macOS and can make the child die before it sends the audit result.
+    # The quality audit is local file/JSON work, so preserve the shared
+    # deadline with a cancellable await instead of introducing a nested fork.
+    if threading.current_thread() is not threading.main_thread():
+        remaining = max(0.0, deadline - time.monotonic())
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        return await asyncio.wait_for(asyncio.to_thread(callback), timeout=remaining)
 
     context = multiprocessing.get_context("fork")
     receive_connection, send_connection = context.Pipe(duplex=False)
@@ -6836,6 +7195,93 @@ def _apply_final_contradiction_tombstones(
             continue
         _write_json(path, kept)
         changed[artifact] = sorted(row_ids)
+    removed_risk_ids = rejected["sfmea.json"]
+    if removed_risk_ids:
+        cases_path = artifact_dir / "black_box_cases.json"
+        cases = _read_json(cases_path)
+        if isinstance(cases, list):
+            updated_cases: list[Any] = []
+            updated_case_ids: list[str] = []
+            for row in cases:
+                if not isinstance(row, dict) or not isinstance(row.get("risk_ids"), list):
+                    updated_cases.append(row)
+                    continue
+                retained = [risk_id for risk_id in row["risk_ids"] if risk_id not in removed_risk_ids]
+                if retained == row["risk_ids"]:
+                    updated_cases.append(row)
+                    continue
+                updated_cases.append({**row, "risk_ids": retained})
+                row_id = _json_quality_row_id(row)
+                if row_id:
+                    updated_case_ids.append(f"{row_id}.risk_ids")
+            if updated_case_ids:
+                _write_json(cases_path, updated_cases)
+                changed["black_box_cases.json"] = updated_case_ids
+    return changed
+
+
+def _apply_source_driven_fact_tombstones(*, artifact_dir: Path) -> dict[str, list[str]]:
+    """Remove delivery rows disproven by the independent fact verifier.
+
+    The source-driven judge intentionally publishes an aggregate
+    ``facts:blocked`` status.  That status is useful to the cockpit but loses
+    the row identity needed for a deterministic repair.  The verifier's own
+    persisted ledger remains authoritative: only explicit ``contradicted``
+    ROW claims are removed here, then the judge is rebuilt from those final
+    bytes.  Insufficient evidence is deliberately left blocked.
+    """
+    verification_path = artifact_dir / "final_fact_verification.json"
+    verification = _read_json(verification_path)
+    if not isinstance(verification, dict):
+        return {}
+    rejected: dict[str, set[str]] = {
+        "sfmea.json": set(),
+        "black_box_cases.json": set(),
+    }
+    for claim in verification.get("claims") or []:
+        if not isinstance(claim, dict) or str(claim.get("status") or "") != "contradicted":
+            continue
+        claim_id = str(claim.get("claim_id") or "")
+        match = re.fullmatch(
+            r"ROW:(sfmea\.json|black_box_cases\.json):(.+)", claim_id
+        )
+        if match:
+            rejected[match.group(1)].add(match.group(2))
+    changed: dict[str, list[str]] = {}
+    for artifact, row_ids in rejected.items():
+        if not row_ids:
+            continue
+        path = artifact_dir / artifact
+        rows = _read_json(path)
+        if not isinstance(rows, list):
+            continue
+        kept = [row for row in rows if _json_quality_row_id(row) not in row_ids]
+        if len(kept) == len(rows):
+            continue
+        _write_json(path, kept)
+        changed[artifact] = sorted(row_ids)
+    removed_risk_ids = rejected["sfmea.json"]
+    if removed_risk_ids:
+        cases_path = artifact_dir / "black_box_cases.json"
+        cases = _read_json(cases_path)
+        if isinstance(cases, list):
+            updated_cases: list[Any] = []
+            updated_case_ids: list[str] = []
+            for row in cases:
+                if not isinstance(row, dict) or not isinstance(row.get("risk_ids"), list):
+                    updated_cases.append(row)
+                    continue
+                retained = [risk_id for risk_id in row["risk_ids"] if risk_id not in removed_risk_ids]
+                if retained == row["risk_ids"]:
+                    updated_cases.append(row)
+                    continue
+                updated_cases.append({**row, "risk_ids": retained})
+                row_id = _json_quality_row_id(row)
+                if row_id:
+                    updated_case_ids.append(f"{row_id}.risk_ids")
+            if updated_case_ids:
+                _write_json(cases_path, updated_cases)
+                changed["black_box_cases.json"] = updated_case_ids
     return changed
 
 
@@ -6854,6 +7300,37 @@ def _apply_final_deterministic_quality_repairs(
         for issue in audit.get("issues") or []
         if isinstance(issue, dict)
     ]
+    # Some providers wrap an otherwise valid complete Markdown artifact in a
+    # single outer ```markdown fence. That turns every heading into code and
+    # makes the delivery parser report missing sections. Strip only a complete
+    # document wrapper; nested code examples remain untouched.
+    for issue in issues:
+        if str(issue.get("code") or "") != "missing_markdown_sections":
+            continue
+        artifact = Path(str(issue.get("artifact") or "")).name
+        if not artifact.endswith(".md"):
+            continue
+        path = artifact_dir / artifact
+        if not path.is_file():
+            # Task-level audits address the canonical artifact basename, while
+            # staged Agent outputs live under agent_runs/<step>.  Repair the
+            # materialized delivery bytes rather than silently skipping a
+            # valid, audited issue because of that storage boundary.
+            candidates = sorted(
+                artifact_dir.rglob(artifact),
+                key=lambda candidate: candidate.stat().st_mtime,
+                reverse=True,
+            )
+            if candidates:
+                path = candidates[0]
+        if not path.is_file():
+            continue
+        content = path.read_text(encoding="utf-8", errors="replace")
+        match = re.fullmatch(r"\s*```(?:markdown|md)?\s*\n(?P<body>[\s\S]*?)\n```\s*", content)
+        if not match:
+            continue
+        path.write_text(match.group("body").rstrip() + "\n", encoding="utf-8")
+        changed.setdefault(artifact, []).append("outer_markdown_fence")
     # A non-risk SFMEA entry is a rejected categorisation, not an unproven fact
     # that merits another full model turn.  Keep the underlying black-box scenario
     # but remove its invalid risk link so the final report never presents normal
@@ -6932,6 +7409,78 @@ def _apply_final_deterministic_quality_repairs(
         _write_json(path, repaired)
         changed[artifact] = fields
 
+    # These two iSCSI findings have bounded, source-defined meanings. A model
+    # can mention the right symbols but overstate their role; replace only the
+    # validator-captured sentence with the verified wording rather than asking
+    # for another full report generation round.
+    flow_fact_replacements = {
+        "iscsi_chap_execution_role": (
+            "`iscsi_negotiate_chap_param` 根据配置协商 AuthMethod 策略；"
+            "实际 CHAP challenge/response 校验由 `iscsi_auth_params` 路径执行。"
+        ),
+        "iscsi_rpc_login_phase_values": (
+            "内部连接状态使用 `ISCSI_SECURITY_NEGOTIATION` 等枚举；"
+            "公开 `iscsi_get_connections` 将其显示为 `security_negotiation_phase`、"
+            "`operational_negotiation_phase` 或 `full_feature_phase`。"
+        ),
+    }
+    for issue in issues:
+        if str(issue.get("code") or "") != "professional_fact_conflict":
+            continue
+        artifact = Path(str(issue.get("artifact") or "")).name
+        replacement = flow_fact_replacements.get(str(issue.get("constraint_id") or ""))
+        excerpt = str(issue.get("conflicting_excerpt") or "").strip()
+        if artifact != "business_flow.md" or not replacement or not excerpt:
+            continue
+        path = artifact_dir / artifact
+        if not path.is_file():
+            continue
+        content = path.read_text(encoding="utf-8", errors="replace")
+        if excerpt not in content:
+            continue
+        path.write_text(content.replace(excerpt, replacement), encoding="utf-8")
+        changed.setdefault(artifact, []).append(str(issue.get("constraint_id") or ""))
+
+    # Business flow is a source-derived deliverable. Once a professional
+    # validator finds a semantic conflict, discard provider prose and render
+    # the persisted, SHA-checked flow outline instead of attempting wording
+    # repairs. This preserves real calls, branch evidence and related tests.
+    if any(
+        Path(str(issue.get("artifact") or "")).name == "business_flow.md"
+        and str(issue.get("code") or "") == "professional_fact_conflict"
+        for issue in issues
+    ):
+        outline = _read_json(artifact_dir / "flow_outline.json")
+        flow_path = artifact_dir / "business_flow.md"
+        if isinstance(outline, dict) and flow_path.is_file():
+            flow_path.write_text(render_business_flow_markdown(outline), encoding="utf-8")
+            changed.setdefault("business_flow.md", []).append("render_verified_flow_outline")
+
+    # A table row can contain a private enum name without the full sentence
+    # captured by the professional-audit excerpt. Normalize those labels to
+    # their public RPC values before the final audit.
+    if any(
+        str(issue.get("constraint_id") or "") == "iscsi_rpc_login_phase_values"
+        for issue in issues
+    ):
+        path = artifact_dir / "business_flow.md"
+        if path.is_file():
+            content = path.read_text(encoding="utf-8", errors="replace")
+            replacements = {
+                "LOGIN_PHASE_SECURITY_NEGOTIATION": "security_negotiation_phase",
+                "LOGIN_PHASE_OPERATIONAL_NEGOTIATION": "operational_negotiation_phase",
+                "LOGIN_PHASE_FULL_FEATURE": "full_feature_phase",
+                "ISCSI_SECURITY_NEGOTIATION": "security_negotiation_phase",
+                "ISCSI_OPERATIONAL_NEGOTIATION": "operational_negotiation_phase",
+                "ISCSI_FULL_FEATURE_PHASE": "full_feature_phase",
+            }
+            updated = content
+            for old, new in replacements.items():
+                updated = updated.replace(old, new)
+            if updated != content:
+                path.write_text(updated, encoding="utf-8")
+                changed.setdefault("business_flow.md", []).append("login_phase_public_labels")
+
     # A report may repeat a provider-produced source reference that the
     # deterministic audit has proved does not exist.  Do not invent a
     # replacement path and do not keep an invalid citation just because the
@@ -6950,6 +7499,18 @@ def _apply_final_deterministic_quality_repairs(
         if not invalid_reference:
             continue
         path = artifact_dir / artifact
+        if not path.is_file():
+            # Task-level audits address the canonical artifact basename, while
+            # staged Agent outputs live under agent_runs/<step>.  Repair the
+            # materialized delivery bytes rather than silently skipping a
+            # valid, audited issue because of that storage boundary.
+            candidates = sorted(
+                artifact_dir.rglob(artifact),
+                key=lambda candidate: candidate.stat().st_mtime,
+                reverse=True,
+            )
+            if candidates:
+                path = candidates[0]
         if not path.is_file():
             continue
         content = path.read_text(encoding="utf-8", errors="replace")
@@ -6998,13 +7559,49 @@ def _refresh_source_delivery_governance_after_finalizing(
     can write them before its first delivery refresh, so every refresh path
     must materialize their removal before report or judge code reads SFMEA.
     """
+    _apply_source_driven_fact_tombstones(artifact_dir=artifact_dir)
     normalize_materialized_sfmea_risk_contract(
         artifact_dir=artifact_dir,
         plan=plan,
     )
-    if not (artifact_dir / "judge_report.json").is_file():
+    governance_root = artifact_dir
+    if not (governance_root / "judge_report.json").is_file():
+        candidates = sorted(
+            (artifact_dir / "agent_runs").glob("*/judge_report.json"),
+            key=lambda candidate: candidate.stat().st_mtime,
+            reverse=True,
+        ) if (artifact_dir / "agent_runs").is_dir() else []
+        if candidates:
+            governance_root = candidates[0].parent
+    if not (governance_root / "judge_report.json").is_file():
         return None
-    return refresh_source_driven_delivery_governance(artifact_dir)
+    # SFMEA normalization can remove a contradicted/tombstoned risk after the
+    # model has already attached its ID to a black-box case.  Keep the case and
+    # its observable procedure, but never publish a dangling risk reference.
+    sfmea = _read_json(governance_root / "sfmea.json")
+    cases = _read_json(governance_root / "black_box_cases.json")
+    valid_risk_ids = {
+        str(row.get("sfmea_id") or "").strip()
+        for row in sfmea if isinstance(row, dict)
+    } if isinstance(sfmea, list) else set()
+    if isinstance(cases, list) and valid_risk_ids:
+        reconciled = []
+        changed_cases = False
+        for row in cases:
+            if not isinstance(row, dict):
+                reconciled.append(row)
+                continue
+            risk_ids = [
+                str(value) for value in row.get("risk_ids") or []
+                if str(value).strip() in valid_risk_ids
+            ]
+            if risk_ids != list(row.get("risk_ids") or []):
+                row = {**row, "risk_ids": risk_ids}
+                changed_cases = True
+            reconciled.append(row)
+        if changed_cases:
+            _write_json(governance_root / "black_box_cases.json", reconciled)
+    return refresh_source_driven_delivery_governance(governance_root)
 
 
 async def _converge_behavior_validation_field_patches(
@@ -8084,6 +8681,10 @@ def _quality_feedback_from_audit(
         "flow_incomplete_for_delivery",
         "flow_missing_abnormal_paths",
         "flow_evidence_not_connected",
+        # A generator cannot make itself an independent auditor. Keep this
+        # fail-closed finding in the audit, but still repair concrete delivery
+        # defects reported alongside it.
+        "independent_behavior_validation_unavailable",
     }
     issues: list[dict[str, Any]] = []
     repairable_issues: list[dict[str, Any]] = []

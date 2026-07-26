@@ -218,6 +218,33 @@ def test_graph_compiles_declared_execution_profiles_into_immutable_contracts():
         ]
 
 
+def test_default_execution_profiles_match_the_product_time_windows():
+    from app.services.workflow_graph import compile_workflow_graph
+
+    compiled = compile_workflow_graph(
+        _graph(), capabilities=_capabilities(), workflow_version_id="wfv_default_profiles"
+    )
+
+    assert compiled["compiled_definition"]["execution_profiles"] == [
+        {
+            "id": "rapid",
+            "label": "速度型",
+            "delivery_class": "bounded_analysis",
+            "expected_duration_minutes": [8, 20],
+            "max_subagents": 1,
+            "stage_overrides": {"independent_judge": {"required": False}},
+        },
+        {
+            "id": "deep",
+            "label": "深度型",
+            "delivery_class": "full_test_delivery",
+            "expected_duration_minutes": [40, 90],
+            "max_subagents": 4,
+            "stage_overrides": {"independent_judge": {"required": True}},
+        },
+    ]
+
+
 def test_graph_validator_reports_cycle_port_type_artifact_and_reachability_errors():
     from app.services.workflow_graph import validate_workflow_graph
 

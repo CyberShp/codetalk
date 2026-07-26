@@ -3,6 +3,8 @@ feature_ids: [agent-harness-v3, zero-public-egress]
 topics: [sdk, poc, offline]
 doc_kind: decision-record
 created: 2026-07-23
+updated: 2026-07-27
+status: superseded_by_adr_024
 ---
 
 # SDK Runtime POC Gate
@@ -58,8 +60,15 @@ backend interpreter merely for provider selection.
 
 ## Current selection
 
-No Durable Stage Runtime is selected yet. CodeTalk keeps its existing local workflow runner
-as the durable runtime while the Provider Adapter POCs continue. The later selection compares
-real SPDK sessions, cancellation, resume, event fidelity, artifact collection, security
-controls, dependency/SBOM footprint and migration cost; it will choose at most one framework
-or formally retain the current runner.
+This POC gate has been concluded by
+[ADR-024: Retain the Local Durable Stage Runtime](adr-024-durable-stage-runtime-selection.md).
+CodeTalk's existing local Workflow Runner plus `AgentHarnessFacade` is the sole Durable Stage
+Runtime for V3. It owns `WorkflowVersion`, `RunSnapshot`, task state, events and Artifact
+Contract; candidate SDKs remain behind isolated Provider Adapters and may not create a second
+task ID, workflow state or Artifact Store.
+
+The POC comparison remains useful as admission evidence for a future Adapter, but it is not a
+pending runtime-selection process. A candidate must still pass ADR-024's six production gates:
+approved offline bundle/SBOM, sanitized telemetry-free launch, frozen Harness contract, OS
+sandbox, deployment traffic capture, and a real SPDK task with cancellation/recovery and
+artifact/quality evidence. Until then no SDK is a product startup dependency.

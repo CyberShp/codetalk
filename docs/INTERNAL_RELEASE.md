@@ -59,6 +59,20 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1 -
 
 这条 E2E 不允许使用 mock 代替产品主链路。
 
+## 离线依赖证据
+
+发布候选必须在不联网的环境生成依赖清单：
+
+```bash
+python3 scripts/generate-offline-sbom.py --output /Volumes/Media/codetalk-release-evidence/sbom.json
+```
+
+该命令只读取本地 `backend/requirements.txt`、`frontend/package-lock.json` 和
+已安装的 Python 分发元数据，记录输入 SHA256、组件版本和可获得的许可证字段；
+产物中的 `network_used` 必须为 `false`，且不得有 `UNRESOLVED` 后端依赖。它是
+AC-SEC-005 的可重复基础证据，不替代管理员执行的出站 PCAP、网关日志审查或批准的
+离线 bundle 签收。
+
 ## Blocker 定义
 
 以下问题属于 release blocker：
@@ -72,6 +86,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\release-gate.ps1 -
 - Stop All 后端口未释放。
 - 配置保存后实际启动未生效。
 - 启动失败时 deployer 没有明确错误，表现为静默卡住。
+- 发布候选没有离线 SBOM，或 SBOM 记录了未解析的后端依赖。
 
 以下问题可以进入 release notes，但不阻塞当前内部 release：
 

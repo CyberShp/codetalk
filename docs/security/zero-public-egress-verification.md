@@ -77,6 +77,14 @@ service-account process list and egress-gateway log, and confirm:
 3. a separately captured denied Agent/public-DNS probe has no successful
    outbound connection.
 
+The collector now writes `*-processes-before.txt` and
+`*-processes-after.txt` alongside the PCAP. These contain only matching
+CodeTalk/uvicorn/Next/backend process lines and redact common API-key, token,
+secret and password command-line values. Their names and SHA-256 values are
+recorded in the manifest with `network_configuration_changed=false`. This
+makes the eventual administrator-owned capture correlatable without turning it
+into an unsafe full host-process or environment dump.
+
 The current developer account cannot open macOS `/dev/bpf*` and has no
 non-interactive administrator credential, so it cannot fabricate this
 deployment-owned evidence. That limitation remains a release blocker until an

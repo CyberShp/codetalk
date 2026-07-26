@@ -63,14 +63,14 @@ _COMPATIBILITY_EXECUTION_PROFILES = (
         "id": "rapid",
         "label": "速度型",
         "delivery_class": "bounded_analysis",
-        "expected_duration_minutes": [10, 25],
+        "expected_duration_minutes": [8, 20],
         "max_subagents": 1,
     },
     {
         "id": "deep",
         "label": "深度型",
         "delivery_class": "full_test_delivery",
-        "expected_duration_minutes": [45, 90],
+        "expected_duration_minutes": [40, 90],
         "max_subagents": 4,
     },
 )
@@ -604,6 +604,10 @@ class WorkbenchTaskRunPreparer:
         _write_json(artifact_dir / "stage_specs.json", stage_specs)
         _write_json(artifact_dir / "artifact_contract_v3.json", artifact_contract_v3)
         _write_json(artifact_dir / "input_consumption.json", input_consumption)
+        # Consumption events are appended while an Agent runs. Freeze the
+        # prepared input ledger separately so retries validate the original
+        # bindings instead of treating normal runtime observations as tampering.
+        _write_json(artifact_dir / "input_consumption_snapshot.json", input_consumption)
         _write_json(artifact_dir / "workflow_contract.json", workflow_contract)
         _write_json(artifact_dir / "agent_mcp_requests.json", agent_mcp_requests)
         _write_json(artifact_dir / "input_snapshot.json", input_snapshot)
@@ -4287,7 +4291,7 @@ def build_run_snapshot_v3(
     component_paths = {
         "workflow_definition": "workflow_snapshot.json",
         "input_snapshot": "input_snapshot.json",
-        "input_consumption": "input_consumption.json",
+        "input_consumption": "input_consumption_snapshot.json",
         "execution_profile": "execution_profile.json",
         "network_policy": "network_policy.json",
         "stage_specs": "stage_specs.json",

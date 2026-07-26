@@ -699,6 +699,44 @@ def test_flow_card_links_verified_success_error_callback_companions_in_same_file
     assert card["abnormal_paths"] == ["Login response uses error completion callback"]
 
 
+def test_flow_card_links_nearby_unlabeled_verified_error_line_without_same_file_overreach():
+    from app.services.source_driven_test_design import build_source_driven_test_design
+
+    flow = _flow_pack()
+    flow["call_edges"][0].update({"start_line": 2238, "end_line": 2238})
+    flow["error_paths"] = [
+        {
+            "evidence_id": "FLOW-ERROR-NEAR",
+            "file_path": "lib/iscsi/iscsi.c",
+            "symbol": "",
+            "text": "if (rc < 0) {",
+            "start_line": 2348,
+            "end_line": 2348,
+        },
+        {
+            "evidence_id": "FLOW-ERROR-FAR",
+            "file_path": "lib/iscsi/iscsi.c",
+            "symbol": "",
+            "text": "return SPDK_ISCSI_LOGIN_ERROR_RESPONSE;",
+            "start_line": 1259,
+            "end_line": 1259,
+        },
+    ]
+
+    artifacts = build_source_driven_test_design(
+        source_pack=_source_pack(),
+        flow_pack=flow,
+        flow_outline=_outline(),
+        sfmea=_sfmea(),
+        black_box_cases=_cases(),
+    )
+
+    card = artifacts["flow_cards.json"]["items"][0]
+    assert card["status"] == "READY"
+    assert card["error_chain_refs"] == ["FLOW-ERROR-NEAR"]
+    assert card["abnormal_paths"] == ["if (rc < 0) {"]
+
+
 def test_final_fact_verification_never_passes_without_independent_l2(tmp_path):
     from app.services.source_driven_test_design import _combined_final_fact_verification
 
@@ -747,6 +785,60 @@ def test_final_fact_verification_accepts_l1_only_source_anchors_when_l2_is_not_a
     assert result["behavior_validator_not_required"] is True
     assert result["verified"] == 1
     assert result["claims"][0]["status"] == "verified"
+
+
+def test_final_fact_verification_accepts_l1_only_source_anchors_when_same_model_l2_is_unavailable(tmp_path):
+    from app.services.source_driven_test_design import _combined_final_fact_verification
+
+    (tmp_path / "independent_fact_verification.json").write_text(
+        json.dumps({
+            "status": "passed",
+            "claims": [{
+                "claim_id": "SRC-1",
+                "type": "source_anchor",
+                "status": "verified",
+            }],
+        }),
+        encoding="utf-8",
+    )
+    (tmp_path / "behavior_claim_validation.json").write_text(
+        json.dumps({
+            "status": "unavailable",
+            "validator": {"independent": False},
+            "claims": [],
+        }),
+        encoding="utf-8",
+    )
+
+    result = _combined_final_fact_verification(tmp_path)
+
+    assert result["status"] == "passed"
+    assert result["behavior_validator_not_required"] is True
+
+
+def test_final_fact_verification_preserves_l1_source_anchors_when_mixed_l2_is_unavailable(tmp_path):
+    from app.services.source_driven_test_design import _combined_final_fact_verification
+
+    (tmp_path / "independent_fact_verification.json").write_text(
+        json.dumps({
+            "claims": [
+                {"claim_id": "A-1", "type": "source_anchor", "status": "verified"},
+                {"claim_id": "B-1", "type": "source_code_behavior", "status": "verified"},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    (tmp_path / "behavior_claim_validation.json").write_text(
+        json.dumps({"status": "unavailable", "validator": {"independent": False}}),
+        encoding="utf-8",
+    )
+
+    result = _combined_final_fact_verification(tmp_path)
+
+    by_id = {item["claim_id"]: item for item in result["claims"]}
+    assert result["status"] == "blocked"
+    assert by_id["A-1"]["status"] == "verified"
+    assert by_id["B-1"]["status"] == "insufficient"
 
 
 def test_final_fact_verification_rebuilds_l1_from_repaired_delivery_bytes(tmp_path):

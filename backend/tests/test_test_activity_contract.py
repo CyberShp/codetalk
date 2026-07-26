@@ -1505,6 +1505,25 @@ def test_black_box_quality_rejects_chinese_internal_call_and_return_code_only():
     assert _black_box_expected_result_is_observable(case["expected_result"]) is False
 
 
+def test_black_box_boundary_allows_explicit_prohibition_of_internal_call():
+    from app.services.test_activity_contract import (
+        _black_box_boundary_violation,
+        black_box_case_delivery_quality_gaps,
+    )
+
+    case = {
+        "steps": ["等待公开 initiator 超时结果，不调用内部函数。"],
+        "mapped_test_dir": "ai_suggested_unverified: 需新增受控 Login 超时黑盒用例",
+        "scenario_name": "Login 超时",
+        "expected_result": "观察公开超时状态和连接状态。",
+        "observability": ["公开 initiator 返回码和日志"],
+        "failure_diagnostics": ["保留 pcap 和日志"],
+    }
+
+    assert _black_box_boundary_violation(case) is False
+    assert "white_box_boundary" not in black_box_case_delivery_quality_gaps(case)
+
+
 @pytest.mark.parametrize(
     "step",
     [
@@ -1595,6 +1614,50 @@ def test_black_box_delivery_gate_accepts_multiple_existing_test_mappings(tmp_pat
     assert black_box_case_delivery_quality_gaps(case, repo_path=str(repo)) == []
 
 
+def test_black_box_delivery_gate_accepts_unverified_mapping_with_reference_path(tmp_path):
+    from app.services.test_activity_contract import black_box_case_delivery_quality_gaps
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    case = {
+        "steps": ["send two externally observable Login requests and retain target logs"],
+        "expected_result": "record the public Login result and TCP session state",
+        "mapped_test_dir": (
+            "ai_suggested_unverified: 需新增同一 Target 并发 Login 黑盒用例；"
+            "multiconnection.sh 仅作环境搭建参考，不证明同一 Target 并发覆盖"
+        ),
+    }
+
+    assert black_box_case_delivery_quality_gaps(case, repo_path=str(repo)) == []
+
+
+def test_iscsi_rpc_phase_constraint_does_not_reject_internal_state_machine_enum(tmp_path):
+    from app.services.test_activity_contract import (
+        audit_test_activity_response,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login 流程分析",
+        repo_path=str(repo),
+    )
+    audit = audit_test_activity_response(
+        content=(
+            "源码内部 conn->login_phase 初始为 ISCSI_SECURITY_NEGOTIATION；"
+            "该内部状态机字段不是 iscsi_get_connections 的公开枚举字符串。"
+        ),
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_rpc_login_phase_values"
+        for issue in audit["issues"]
+    ), audit
+
+
 def test_explicit_claim_accepts_base_evidence_card_id_with_exact_quote(tmp_path):
     import hashlib
 
@@ -1666,6 +1729,52 @@ def test_explicit_claim_accepts_base_evidence_card_id_with_exact_quote(tmp_path)
     assert claims[0]["evidence"][0]["evidence_id_matches"] is True
 
 
+def test_explicit_claim_accepts_indent_normalized_flow_edge_card(tmp_path):
+    import hashlib
+
+    from app.services.test_activity_contract import (
+        _audit_explicit_technical_claims,
+        _verified_evidence_files,
+    )
+
+    repo = tmp_path / "spdk"
+    source = repo / "lib" / "iscsi" / "iscsi.c"
+    source.parent.mkdir(parents=True)
+    source.write_text("\trc = login_phase(conn);\n", encoding="utf-8")
+    root = tmp_path / "artifacts"
+    root.mkdir()
+    (root / "evidence_cards.json").write_text(json.dumps([{
+        "evidence_id": "FLOW-EDGE-001",
+        "file_path": "lib/iscsi/iscsi.c",
+        "start_line": 1,
+        "end_line": 1,
+        "excerpt": "rc = login_phase(conn);",
+        "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+    }]), encoding="utf-8")
+    claims, issues = _audit_explicit_technical_claims(
+        artifact="black_box_cases.json",
+        rows=[{
+            "case_id": "BC-01",
+            "source_or_test_evidence": ["FLOW-EDGE-001:L1"],
+            "technical_claims": [{
+                "claim_id": "TC-01",
+                "type": "source_anchor",
+                "statement": "rc = login_phase(conn);",
+                "evidence": [{
+                    "evidence_id": "FLOW-EDGE-001",
+                    "path": "lib/iscsi/iscsi.c",
+                    "lines": "L1",
+                    "quote": "rc = login_phase(conn);",
+                }],
+            }],
+        }],
+        verified_files=_verified_evidence_files(root=root, repo=repo),
+    )
+
+    assert issues == []
+    assert claims[0]["status"] == "verified"
+
+
 def test_black_box_quality_accepts_measurable_performance_oracle():
     from app.services.test_activity_contract import (
         _black_box_expected_result_is_observable,
@@ -1694,6 +1803,11 @@ def test_performance_oracle_requires_reproducible_basis():
     case["oracle_basis"] = (
         "在同一内核、目标配置和网络环境预热 5 次后重复 30 次，"
         "记录 P50/P95；阈值取未改动 commit 的 P95 基线与方差。"
+    )
+    assert black_box_oracle_basis_quality_gaps(case) == []
+
+    case["oracle_basis"] = (
+        "同环境基线；预热 5 次后至少 30 次采样，报告 P50/P95、方差和失败率。"
     )
     assert black_box_oracle_basis_quality_gaps(case) == []
 
@@ -1779,6 +1893,25 @@ def test_strategy_rejects_complete_coverage_claim_when_gaps_remain(tmp_path):
     )
 
     assert any(
+        issue["code"] == "unsupported_complete_coverage_claim"
+        for issue in issues
+    )
+
+
+def test_strategy_does_not_treat_a_prohibition_as_a_complete_coverage_claim(tmp_path):
+    from app.services.test_activity_contract import _audit_markdown_artifact
+
+    issues = _audit_markdown_artifact(
+        artifact="test_strategy.md",
+        content=(
+            "# 测试策略\n仍有证据缺口和待补场景。"
+            "不声明完整覆盖任何维度。\n"
+        ),
+        spec={},
+        repo=tmp_path,
+    )
+
+    assert not any(
         issue["code"] == "unsupported_complete_coverage_claim"
         for issue in issues
     )
@@ -7686,6 +7819,50 @@ def test_source_behavior_claim_requires_bound_l2_validation(tmp_path):
     assert result["deliverable"] is False
 
 
+def test_required_independent_behavior_validation_fails_closed_when_auditor_is_unavailable(tmp_path):
+    """A report with no routable technical claims must not bypass L2 readiness."""
+    from app.services.test_activity_contract import audit_test_activity_artifacts
+    from app.services.workflow_presets import SFMEA_SCHEMA
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    (artifacts / "sfmea.json").write_text(json.dumps([]), encoding="utf-8")
+    (artifacts / "behavior_claim_validation.json").write_text(
+        json.dumps(
+            {
+                "kind": "behavior_claim_validation",
+                "status": "unavailable",
+                "reason": "configured_auditor_matches_generator",
+                "validator": {
+                    "provider": "builtin-llm",
+                    "model": "deepseek-v4-flash",
+                    "independent": False,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = audit_test_activity_artifacts(
+        artifact_dir=artifacts,
+        contract={
+            "artifact_contract": {"sfmea.json": {"schema": SFMEA_SCHEMA}},
+            "quality_gates": {"require_independent_behavior_validation": True},
+        },
+        repo_path=str(repo),
+    )
+
+    issue = next(
+        item
+        for item in result["issues"]
+        if item["code"] == "independent_behavior_validation_unavailable"
+    )
+    assert issue["artifact"] == "behavior_claim_validation.json"
+    assert result["deliverable"] is False
+
+
 def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(tmp_path):
     from app.services.test_activity_contract import (
         _behavior_claim_binding,
@@ -9076,6 +9253,10 @@ def test_structured_professional_conflict_keeps_the_affected_case_id(tmp_path):
             "非 success Login Response 清除 T、CSG、NSG；源码未在该分支清除 C bit，因此不能写成清除 T/C/CSG/NSG。",
         ),
         (
+            "iscsi_login_error_flags_cleared",
+            "CHAP authentication failure with T=1 request does not propagate T bit in error response; expected error response T=0, CSG=0, NSG=0。",
+        ),
+        (
             "iscsi_csg_values",
             "CSG 0/1/3 分别为 Security Negotiation、Operational Negotiation、Full Feature Phase。",
         ),
@@ -9110,6 +9291,14 @@ def test_structured_professional_conflict_keeps_the_affected_case_id(tmp_path):
         (
             "iscsi_multiconnection_mapping_scope",
             "multiconnection.sh 仅作危险隔离环境参考，不证明同一 session 非零 TSIH 下追加不同 CID。",
+        ),
+        (
+            "iscsi_unit_coverage_scope",
+            "现有 test/unit/lib/iscsi/iscsi.c/iscsi_ut.c 不能笼统宣称已覆盖所有 Login 失败语义；每项必须指向具体测试函数和断言。",
+        ),
+        (
+            "iscsi_unit_coverage_scope",
+            "错误响应 flags 的单元测试覆盖：无法确认 test/unit/lib/iscsi/iscsi.c/iscsi_ut.c 覆盖所有错误语义；需人工审查测试代码。",
         ),
         (
             "iscsi_login_version_offsets",
@@ -9288,3 +9477,25 @@ def test_fact_ledger_reads_workflow_artifacts_from_agent_run_directory(tmp_path)
 
     assert result["fact_verification"]["total"] == 1
     assert result["fact_verification"]["contradicted"] == 1
+
+
+def test_iscsi_professional_lint_accepts_post_login_text_scope_and_zeroed_error_flags(tmp_path):
+    from app.services.test_activity_contract import (
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login 测试设计",
+        repo_path=str(repo),
+    )
+    issues = _audit_professional_constraints(
+        "不包含 Text Request 处理（进入 Full Feature Phase 后）。\n"
+        "Error response has T=0, CSG=0, NSG=0。",
+        contract,
+    )
+    ids = {issue.get("constraint_id") for issue in issues}
+    assert "iscsi_login_negotiation_transport" not in ids
+    assert "iscsi_login_error_flags_cleared" not in ids

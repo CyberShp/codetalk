@@ -640,7 +640,10 @@ def _items(payload: Any) -> list[dict[str, Any]]:
 
 def _evidence_lines(evidence: list[dict[str, Any]]) -> list[str]:
     result = []
-    for item in evidence[:20]:
+    # The alignment audit verifies every structured evidence ID against this
+    # tester-facing delivery.  Truncating here made a valid evidence pack look
+    # incomplete as soon as it contained more than twenty source/flow cards.
+    for item in evidence:
         evidence_id = str(item.get("evidence_id") or item.get("id") or "").strip()
         path = str(item.get("file_path") or item.get("path") or "未知文件")
         start = int(item.get("start_line") or 0)

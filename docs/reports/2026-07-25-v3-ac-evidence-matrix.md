@@ -28,11 +28,11 @@ means that the cited current implementation and evidence cover the whole AC;
 
 | AC | Status | Current evidence / remaining proof |
 | --- | --- | --- |
-| AC-SEC-001 | blocked | Code and sandbox controls exist, but the required administrator-owned PCAP/gateway capture has not run. See `docs/security/zero-public-egress-verification.md`. |
+| AC-SEC-001 | blocked | Code and sandbox controls exist, and the capture collector now records redacted before/after CodeTalk process snapshots plus PCAP hashes without changing network configuration. The required administrator-owned PCAP/gateway capture has not run. See `docs/security/zero-public-egress-verification.md`. |
 | AC-SEC-002 | partial | Policy/tests deny telemetry, tracing, update and hosted-MCP paths; deployment capture must corroborate the shipped process behavior. |
 | AC-SEC-003 | partial | macOS `sandbox-exec` DNS-denial subprocess evidence exists. An approved Agent route plus capture is still absent. |
 | AC-SEC-004 | verified | A real settings-page run approved only `api.deepseek.com` at deployment level and completed configured Flash/Pro inference; the Chromium settings regression separately enters `https://example.com/v1` and receives `运行时出站策略拒绝：host_not_allowlisted` before connection. Policy unit coverage confirms approved hostname and narrow model endpoint behavior. Evidence: `/Volumes/Media/codetalk-e2e-artifacts/v3-deepseek-flash-pro-20260726/run5/`, `/Volumes/Media/codetalk-e2e-artifacts/v3-intranet-policy-ui-20260726/`. |
-| AC-SEC-005 | partial | SDK POC retains version/hash/license material outside product dependencies; final product SBOM and approved offline bundle evidence are missing. |
+| AC-SEC-005 | partial | `scripts/generate-offline-sbom.py` creates a local-only manifest from the backend requirements, frontend lockfile and installed metadata; the 2026-07-26 run recorded 692 components, input SHA256 values and no unresolved backend dependency. Final license review and approved offline bundle evidence remain required. |
 | AC-SEC-006 | partial | xyflow is locally bundled in the app; final network capture must prove no CDN/update/plugin/telemetry request in deployed designer. |
 
 ## Workflow Designer
@@ -56,12 +56,12 @@ means that the cited current implementation and evidence cover the whole AC;
 
 | AC | Status | Current evidence / remaining proof |
 | --- | --- | --- |
-| AC-HARNESS-001 | verified | Provider live-readiness artifacts are consumed by probe and run paths; deployment probe regressions cover both. |
+| AC-HARNESS-001 | verified | Provider live-readiness artifacts are consumed by probe and run paths; deployment probe regressions cover both. The 2026-07-26 real Chromium Codex preflight regression also covers mixed Agent/independent-audit failures and verifies that the cockpit prioritizes the actual Agent startup blocker. |
 | AC-HARNESS-002 | verified | Harness and AI-thread regression preserves multiline RunRequest content. |
 | AC-HARNESS-003 | verified for builtin | Named workspace, document, MR and goal bindings appear in the input-consumption ledger. External Agent proof remains pending. |
 | AC-HARNESS-004 | verified for builtin | RunSnapshot freezes provider, skills and MCP references; Flash/Pro browser runs use the frozen profile. |
 | AC-HARNESS-005 | verified | Activity-aware timeout and provider-work preservation regressions cover active work beyond fixed idle timeout. |
-| AC-HARNESS-006 | partial | Cancellation/failure classes are implemented and tested; restart/resume needs final real concurrency/restart evidence. |
+| AC-HARNESS-006 | partial | Cancellation/failure classes are implemented and tested. A real Chromium Flash run now proves terminal task state and materialized artifacts survive an isolated backend restart; in-flight provider-session resume or an explicit unrecoverable reason still needs live-provider evidence. |
 | AC-HARNESS-007 | partial | Facade normalizes local/builtin events; a live external Agent is deployment-blocked. |
 | AC-HARNESS-008 | partial | Session-capability fields exist; live provider resume behavior needs evidence. |
 | AC-SKILL-001 | verified for builtin | Nine observable StageSpecs, gates and targeted repair completed in the 2026-07-25 SPDK deep run. |
@@ -78,6 +78,59 @@ means that the cited current implementation and evidence cover the whole AC;
 | AC-ART-003 | verified for builtin | Cockpit separates delivery, supporting and diagnostic files. |
 | AC-ART-004 | verified | Mind-map artifacts materialize from governed structured facts. |
 | AC-ART-005 | verified | Node inspector renders output configuration as forms, without user JSON. |
+
+## 2026-07-26 Flash Regression Addendum
+
+`task_run_5adb8ec688824611be1ddc10c1e374af` is a real Chromium, Flash-only SPDK
+run. It reached `completed / passed / complete`, a `deliverable` quality audit
+at 100 with zero issues, 24/24 verified claims, and a ready task acceptance
+audit with 70 required checks and no missing items. Its artifact root is
+`/Volumes/Media/codetalk-e2e-artifacts/v3-regular-stage-governance-flash-only-final42-20260726/`.
+This strengthens builtin workflow/quality/delivery evidence only; it does not
+turn any remaining `partial`, `blocked`, or independent-performance AC into a
+verified release condition.
+
+> 2026-07-26 gate correction: the Flash-only records above used the same
+> model identifier for generation and audit. They remain real functional,
+> evidence and performance records, but no longer count as independent quality
+> approval after `independent_behavior_validation_unavailable` was made
+> fail-closed. A final deliverable must use a different audit model or an
+> independent Agent.
+
+The latest same-Flash browser run (`task_run_a99d941e4c1c4e01999e7af042808713`)
+confirms that this correction is effective against real SPDK output: source evidence,
+flow, SFMEA, black-box and report drafts are physically materialized, but the cockpit
+ends at `quality_blocked` when independent behavior review is unavailable and the
+professional fact gate detects an invalid CHAP Login-response assertion and an unsafe
+`/dev/sdX` black-box instruction. Evidence:
+`/Volumes/Media/codetalk-e2e-v3/flash-same-model-20260726-232123/`.
+
+### Flash 生成 + Pro 独立审计正式交付（2026-07-27）
+
+真实 Chromium 运行 `task_run_0f4f8ef34825433a8dcee67c4ababad4` 使用 Flash 生成源码、
+流程、SFMEA 与黑盒交付，再由不同模型标识的 Pro 执行独立质量核验。最终
+`task_acceptance_audit.json` 为 `ready`，`final_quality_audit.json` 为
+`deliverable / 100 / 0 issues`，而不是同模型路径的 `quality_blocked`。完整证据位于
+`/Volumes/Media/codetalk-e2e-v3/flash-pro-independent-audit-20260727-001211/`；Playwright
+端到端用时 `4.9m`。该记录是基础内置模型工作流的独立交付证据，仍不替代深度性能、外部
+Agent 或部署级流量捕获验收。
+
+### 基础对照 B：设计文档输入与 Flash（2026-07-26）
+
+`task_run_055485884aae4a819a21c9b21ef684d2` 通过真实浏览器完成设置、工作空间、
+上传设计文档、任务向导和驾驶舱等待；当时显示 `completed / passed / complete`、质量 100、
+零问题与完整交付。它还验证修复后的 source-analysis metrics 在真实 cache-miss 运行中记录
+`provider_call_count=1` 与 `total_duration_ms=12597.4`。详细证据见
+`2026-07-26-basic-builtin-flash-e2e.md`。这是 builtin 对照 B 的验收，不替代外部 Agent、
+深度档、部署抓包或并发大产物门禁。
+
+同一对照工作流的后续深度型 Flash 浏览器运行
+`task_run_88c41392b2554d54952e3c2bccbe5cb7` 于 2026-07-26 以
+`completed / passed / complete`、质量 100、零问题和完整交付结束，点击至终态为
+`178574ms`。它验证最终报告级定向修复在真实模型输出上的收敛；但运行远短于 40--90
+分钟，因此不改变 AC-PERF-003 的 `unverified` 状态。两者均因同模型 Flash 审计在新门禁
+下改记为“待独立复核”，不再构成 AC-QUALITY-006 的通过证据。
+
 | AC-QUALITY-001 | verified | Cockpit presents structure, facts, executability and coverage independently. |
 | AC-QUALITY-002 | verified | Claim ledger tests and real quote/path/card failures block falsified anchors. |
 | AC-QUALITY-003 | verified | Black-box boundary validators reject internal function steps. |
@@ -105,14 +158,135 @@ means that the cited current implementation and evidence cover the whole AC;
 | AC | Status | Current evidence / remaining proof |
 | --- | --- | --- |
 | AC-PERF-001 | verified | `rapid` / `deep` are frozen execution policies of one WorkflowVersion. |
-| AC-PERF-002 | unverified | Need five uncached rapid samples, P50/P95 and explicit 10-25 minute interpretation. |
-| AC-PERF-003 | unverified | Need an uncached deep sample within the 45-90 minute target with continuous progress. |
+| AC-PERF-002 | partial | Five real, cache-miss-only Flash browser samples completed with P50 `3:22` and P95 `3:52`; all delivered. This is below the current 8-20 minute target, so it is evidence against the current estimate rather than a completed timing acceptance. See `2026-07-26-flash-rapid-uncached-e2e-baseline.md`. |
+| AC-PERF-003 | unverified | Need an uncached deep sample within the 40-90 minute target with continuous progress. |
 | AC-PERF-004 | verified | Cached/reused stages are displayed; non-cache heavy tasks have anti-false-pass checks. |
-| AC-PERF-005 | partial | Attempt 35 preserves final per-stage Flash/Pro metrics even after deterministic SFMEA repair: provider, attempts, waits, output tokens, finish reason and repair type. A five-run performance aggregation report is still required. |
-| AC-PERF-006 | unverified | Needs large artifact and concurrent-task browser evidence. |
+| AC-PERF-005 | partial | Attempt 35 preserves final per-stage Flash/Pro metrics even after deterministic SFMEA repair. A five-run Flash aggregation now records waits, tokens, retries, cache state and terminal duration; `source_analysis` metric writing was corrected to include `total_duration_ms` and `provider_call_count`, and needs a fresh real-run verification. |
+| AC-PERF-006 | verified for builtin | Two independent Chromium sessions ran the published built-in workflow concurrently against SPDK without cross-run corruption (117 artifacts and about 5.3 MiB per run). A separate real Chromium run opened a 61,406-byte SPDK report in the bounded preview, surfaced the truncation notice, and downloaded the complete file directly from the modal. Evidence: `/Volumes/Media/codetalk-e2e-v3/flash-concurrent-two-browser-fixed-20260727-002820/`, `/Volumes/Media/codetalk-e2e-v3/flash-large-artifact-download-fixed-20260727-004421/`. |
 | AC-PERF-007 | verified | Cockpit labels profile, target time and cache/reuse; docs prohibit treating retries as deep benchmarks. |
 
+### Flash deep-profile evidence and repair convergence (2026-07-27)
+
+Chromium ran the real “source workspace + design document” SPDK workflow in
+the `deep` profile with DeepSeek Flash for generation and the same Flash model
+configured as the audit model. The final run was not a false delivery: it
+ended `quality_blocked` because same-model review is intentionally not treated
+as independent. All other deep-work gates converged: eight provider calls,
+29,037 generated output tokens, 161,223 ms provider wait, four exploration
+branches, and every branch's routed evidence proof passed. The repair loop
+also removed all observed black-box boundary and professional-fact conflicts.
+
+- Evidence root: `/Volumes/Media/codetalk-e2e-v3/v3-deep-flash-path-proof-20260727-012831/`
+- Task run: `task_run_4ef705f65d6d4879b14d3f22b374668d`.
+- Browser result: `1 passed`; duration was about three minutes. This is real
+  deep-profile functional and quality-governance evidence, but remains too
+  short for AC-PERF-003's 40–90 minute workload acceptance, and cannot close
+  independent-quality acceptance while generator and auditor are identical.
+
+The cockpit now exposes a bounded “深度执行证明” summary for this run instead
+of leaving users to infer work from duration alone: model-call count, output
+tokens, Provider wait, exploration-branch count and reuse state are visible;
+raw prompts, source routes and provider diagnostics remain private. A fresh
+Chromium inspection against the persisted real run passed on 2026-07-27:
+`frontend/e2e/v3-deep-work-proof-real.spec.ts` (`1 passed`, 6.8s). This is a
+UI observability improvement, not evidence that the three-minute run meets
+AC-PERF-003.
+
+### Five-run Flash uncached rapid baseline (2026-07-26)
+
+Playwright created five separate iSCSI SPDK tasks through the product UI with
+DeepSeek `deepseek-v4-flash` for both generation and quality review. Every
+model stage was a cache miss and `reused=false`; all five completed as
+`completed / passed / complete` with `deliverable` quality and zero issues.
+The observed P50 was `3:22` and nearest-rank P95 `3:52`, not the published
+8-20 minute speed estimate. The local deterministic source/flow stages and
+parallelized bounded model stages explain the result; no artificial delay was
+added. Full per-run evidence, artifacts and the observability follow-up are in
+`2026-07-26-flash-rapid-uncached-e2e-baseline.md`.
+
+### Two concurrent Chromium Flash runs after audit-worker repair (2026-07-27)
+
+The first attempt to collect a fresh concurrent browser proof exposed a real
+runtime defect instead of a provider or UI issue: one run entered the expected
+same-model quality block, while the other terminated with
+`Quality audit worker exited without a result (exit=1)`. The task was still
+executing the local final quality audit from FastAPI's background thread, which
+then performed a nested POSIX `fork`. On macOS that can fork a multithreaded
+interpreter after concurrent model work and make the child exit before writing
+its audit result.
+
+The repair keeps the main-thread process-isolation path, but executes this
+strictly local file/JSON audit in a deadline-bound thread whenever the lifecycle
+already runs in a background thread. A regression test prevents reintroducing
+the nested fork. Chromium then repeated the complete user flow in two workers:
+settings configuration, existing-workspace reuse through the visible UI, design
+document upload, target entry, profile selection and click-to-run.
+
+- Evidence root: `/Volumes/Media/codetalk-e2e-v3/flash-concurrent-two-browser-fixed-20260727-002820/`
+- `task_run_7de2e9a9ef234d6ea59f953a0275e7db`: `quality_blocked / blocked / none`, 129,055 ms, 117 materialized artifacts, 5,412 KiB.
+- `task_run_9688b5dc85af4b32ade03e26e9ddab92`: `quality_blocked / blocked / none`, 149,637 ms, 117 materialized artifacts, 5,344 KiB.
+- Both runs record `deterministic_only` finalization with independent behavior
+  validation unavailable because the generator and auditor were intentionally
+  the same Flash model. This is an expected quality block, not an execution
+  failure or a false delivery.
+
+This closes the concurrent task stability portion of AC-PERF-006. The following
+browser run closes its separate bounded-preview/download portion.
+
+### Bounded long-artifact preview and direct download (2026-07-27)
+
+The concurrent run produced a 72 KiB `report.md`, but the cockpit had never
+proven the user action after its 50,000-character preview boundary. A real
+browser regression exposed that the old list download button sat behind the
+modal; the preview itself told users to download the complete file, but the
+modal intercepted that click. The preview header now provides its own visible
+`下载完整文件` control. Chromium repeated the real workflow and then opened
+the generated 61,406-byte SPDK report, observed `内容较长，预览已截断，请下载完整文件。`,
+and downloaded the corresponding full `report.md` before closing the dialog.
+
+- Evidence root: `/Volumes/Media/codetalk-e2e-v3/flash-large-artifact-download-fixed-20260727-004421/`
+- This is browser interaction with a real model-generated artifact, not a
+  routed response or fixture. Preview stays bounded while the download remains
+  the complete exact artifact endpoint.
+
+### V3 terminal-run persistence across backend restart (2026-07-27)
+
+The V3 cockpit must not rely on browser memory to display a finished run. A
+fresh Chromium session configured DeepSeek Flash in Settings, created a real
+SPDK workspace, uploaded the design-document input, created the basic
+source-plus-document task, selected the rapid profile, and clicked run. The
+real run reached the expected fail-closed `已阻断` terminal state and
+materialized a 63.8 KiB `report.md`. The test then stopped its isolated backend
+process, started the backend again against exactly the same data directory, and
+navigated the browser back to the same task/run URL. The restored cockpit still
+showed the task title, `已阻断`, and the same `report.md` delivery item.
+
+- Evidence root: `/Volumes/Media/codetalk-e2e-v3/v3-restart-real-20260727-005829/`
+- Chromium result: `1 passed (2.4m)`.
+- This proves durable terminal task/artifact restoration for the builtin Flash
+  route. It deliberately does not claim an interrupted external provider
+  session was resumed natively; that remains the open portion of
+  AC-HARNESS-006/008.
+
 ## Release Decision
+
+### DeepSeek Flash final-delivery convergence regression (2026-07-26)
+
+Chromium created a fresh SPDK iSCSI Login task from the product UI after
+configuring `deepseek-v4-flash`. Run
+`task_run_1ef03fa103db4a818f8997789882dbd0` completed in `195764ms` with
+`completed / passed / complete`. Its final task audit is `deliverable`, score
+100, with zero findings; the acceptance audit has no missing required checks;
+the final Claim Ledger is `24/24 verified`; and the nested source-driven judge
+is `READY_WITH_WARNINGS` with facts, structure and executability all passed.
+The remaining coverage entries are explicit `need_verify` warnings, not claimed
+coverage or blocking failures. This run exercises the final SFMEA normalization,
+black-box risk-ID reconciliation, source-driven governance refresh, and
+nonexistent-test-path downgrade paths. Evidence:
+`/Volumes/Media/codetalk-e2e-artifacts/v3-regular-stage-governance-flash-only-final55-20260726/`.
+It is a Flash functional/convergence regression, not a five-run uncached
+performance baseline, deep-profile benchmark, external-Agent acceptance, or
+full V3 release decision.
 
 ### Final-quality audit consistency regression (2026-07-25)
 

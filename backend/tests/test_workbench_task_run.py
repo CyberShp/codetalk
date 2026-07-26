@@ -11,6 +11,74 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_final_quality_gate_includes_nested_black_box_case_details(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _append_nested_black_box_delivery_issues,
+    )
+
+    nested = tmp_path / "agent_runs" / "analyze_source_flow"
+    nested.mkdir(parents=True)
+    (nested / "black_box_cases.json").write_text(json.dumps([{
+        "case_id": "BC-09",
+        "scenario_name": "登录会话保持 24 小时不中断",
+        "mapped_test_dir": "test/iscsi_tgt/multiconnection/multiconnection.sh",
+        "steps": ["检查", "验证"],
+    }]), encoding="utf-8")
+
+    audit = _append_nested_black_box_delivery_issues(
+        {"status": "deliverable", "deliverable": True, "issues": []},
+        artifact_dir=tmp_path,
+        repo_path="",
+    )
+
+    assert audit["status"] == "needs_rework"
+    assert audit["deliverable"] is False
+    assert audit["issues"] == [{
+        "artifact": "agent_runs/analyze_source_flow/black_box_cases.json",
+        "code": "black_box_case_quality_failed",
+        "message": "黑盒测试用例包含不可执行或不合规步骤，当前结果不能交付。",
+        "invalid_cases": [{
+            "case_id": "BC-09",
+            "index": 0,
+            "reasons": ["vague_steps"],
+            "title": "登录会话保持 24 小时不中断",
+        }],
+    }]
+
+
+def test_source_driven_fact_tombstones_remove_only_explicitly_contradicted_rows(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _apply_source_driven_fact_tombstones,
+    )
+
+    (tmp_path / "sfmea.json").write_text(json.dumps([
+        {"sfmea_id": "SFMEA-010", "failure_mode": "已证伪"},
+        {"sfmea_id": "SFMEA-011", "failure_mode": "保留"},
+    ]), encoding="utf-8")
+    (tmp_path / "black_box_cases.json").write_text(json.dumps([
+        {"case_id": "BB-001", "scenario_name": "保留", "risk_ids": ["SFMEA-010", "SFMEA-011"]},
+    ]), encoding="utf-8")
+    (tmp_path / "final_fact_verification.json").write_text(json.dumps({
+        "claims": [
+            {"claim_id": "ROW:sfmea.json:SFMEA-010", "status": "contradicted"},
+            {"claim_id": "ROW:black_box_cases.json:BB-001", "status": "insufficient"},
+        ]
+    }), encoding="utf-8")
+
+    changed = _apply_source_driven_fact_tombstones(artifact_dir=tmp_path)
+
+    assert changed == {
+        "sfmea.json": ["SFMEA-010"],
+        "black_box_cases.json": ["BB-001.risk_ids"],
+    }
+    assert json.loads((tmp_path / "sfmea.json").read_text(encoding="utf-8")) == [
+        {"sfmea_id": "SFMEA-011", "failure_mode": "保留"}
+    ]
+    assert json.loads((tmp_path / "black_box_cases.json").read_text(encoding="utf-8")) == [
+        {"case_id": "BB-001", "scenario_name": "保留", "risk_ids": ["SFMEA-011"]}
+    ]
+
+
 def test_deep_quality_evidence_uses_persisted_staged_execution_metrics(tmp_path):
     from app.services.workbench_workflow_runner import (
         _profile_execution_evidence_for_quality_audit,
@@ -41,6 +109,79 @@ def test_deep_quality_evidence_uses_persisted_staged_execution_metrics(tmp_path)
     assert evidence["status"] == "passed"
     assert evidence["provider_call_count"] == 3
     assert json.loads((tmp_path / "profile_execution_evidence.json").read_text())["status"] == "passed"
+
+
+def test_deep_quality_evidence_discovers_the_single_nested_builtin_agent_run(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _profile_execution_evidence_for_quality_audit,
+    )
+
+    agent_dir = tmp_path / "agent_runs" / "analyze"
+    (agent_dir / "staged_execution_result.json").parent.mkdir(parents=True)
+    (agent_dir / "staged_execution_result.json").write_text("{}", encoding="utf-8")
+    for stage_id in ("deep_entry_paths", "deep_state_and_resources", "black_box_cases"):
+        stage_dir = agent_dir / "stages" / stage_id
+        stage_dir.mkdir(parents=True)
+        (stage_dir / "stage_result.json").write_text(
+            json.dumps({"stage_id": stage_id, "status": "completed", "provider_call_count": 1}),
+            encoding="utf-8",
+        )
+
+    evidence = _profile_execution_evidence_for_quality_audit(
+        artifact_dir=tmp_path,
+        execution_profile={"id": "deep", "applied_subagent_count": 2},
+    )
+
+    assert evidence["status"] == "passed"
+    assert evidence["provider_call_count"] == 3
+    assert json.loads((agent_dir / "profile_execution_evidence.json").read_text())["status"] == "passed"
+
+
+def test_deep_quality_evidence_does_not_guess_between_multiple_nested_builtin_runs(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _profile_execution_evidence_for_quality_audit,
+    )
+
+    for agent_id in ("analyze", "review"):
+        result = tmp_path / "agent_runs" / agent_id / "staged_execution_result.json"
+        result.parent.mkdir(parents=True)
+        result.write_text("{}", encoding="utf-8")
+
+    evidence = _profile_execution_evidence_for_quality_audit(
+        artifact_dir=tmp_path,
+        execution_profile={"id": "deep", "applied_subagent_count": 2},
+    )
+
+    assert evidence["status"] == "not_applicable"
+    assert "多个" in evidence["reason"]
+
+
+def test_quality_feedback_keeps_independent_audit_unavailability_out_of_repair_targets():
+    from app.services.workbench_workflow_runner import _quality_feedback_from_audit
+
+    feedback = _quality_feedback_from_audit(
+        {
+            "status": "needs_rework",
+            "issues": [
+                {
+                    "artifact": "report.md",
+                    "code": "independent_behavior_validation_unavailable",
+                    "message": "同一模型不能充当独立审计。",
+                },
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "black_box_boundary_violation",
+                    "message": "黑盒步骤泄露内部实现。",
+                },
+            ],
+        },
+        required_artifacts=["report.md", "black_box_cases.json"],
+        quality_artifact="quality.json",
+    )
+
+    assert feedback["affected_artifacts"] == ["black_box_cases.json"]
+    assert feedback["repairable_issue_count"] == 1
+    assert feedback["non_repairable_issue_count"] == 1
 
 
 def test_external_agent_finalization_restores_task_owned_source_evidence_pack(tmp_path):
@@ -1071,7 +1212,7 @@ def test_prepare_legacy_workflow_allows_the_v3_deep_execution_profile(tmp_path):
     )
 
     assert prepared.execution_profile["id"] == "deep"
-    assert prepared.execution_profile["expected_duration_minutes"] == [45, 90]
+    assert prepared.execution_profile["expected_duration_minutes"] == [40, 90]
 
 
 def test_prepare_workbench_task_run_ingests_file_inputs(tmp_path):
@@ -2051,6 +2192,11 @@ def test_staged_partial_result_is_not_reported_as_completed():
     assert _execution_status([{"status": "partial"}]) == "partial"
     assert _normalized_execution_status("partial") == "partial"
     assert _terminal_execution_status({"execution_status": "partial"}) == "partial"
+    assert _terminal_execution_status({
+        "status": "quality_blocked",
+        "execution_status": "completed",
+        "test_activity_quality": {"deliverable": False},
+    }) == "quality_blocked"
     assert _task_run_ui_status(execution={"status": "partial"}, nodes=[]) == {
         "status": "partial",
         "label": "部分完成",
@@ -4263,6 +4409,48 @@ def test_workflow_output_collection_normalizes_repairable_json_schema_fields(tmp
     assert json.loads(artifact.read_text(encoding="utf-8"))[0]["failure_diagnostics"] == ["保留请求与响应。"]
 
 
+def test_workflow_output_collection_refreshes_sha_after_final_artifact_repair(tmp_path):
+    from types import SimpleNamespace
+
+    from app.services.workbench_workflow_runner import WorkbenchWorkflowRunner
+
+    artifact_dir = tmp_path / "agent_runs" / "analyze"
+    artifact_dir.mkdir(parents=True)
+    artifact = artifact_dir / "black_box_cases.json"
+    artifact.write_text(json.dumps([{"case_id": "BB-01"}]), encoding="utf-8")
+    task_run = SimpleNamespace(
+        task_run_id="task-output-refresh",
+        artifact_dir=str(tmp_path),
+    )
+    kwargs = {
+        "task_run": task_run,
+        "workflow_snapshot": {"outputs": [{
+            "id": "black_box_cases",
+            "type": "test_cases",
+            "from": "analyze",
+            "artifact": "black_box_cases.json",
+        }]},
+        "step_results": [{
+            "step_id": "analyze",
+            "artifact_dir": str(artifact_dir),
+            "status": "completed",
+        }],
+    }
+    runner = WorkbenchWorkflowRunner(tmp_path)
+    original = runner._collect_workflow_outputs(**kwargs)
+
+    artifact.write_text(
+        json.dumps([{"case_id": "BB-01", "technical_claims": []}]),
+        encoding="utf-8",
+    )
+    refreshed = runner._collect_workflow_outputs(**kwargs)
+
+    assert original[0]["status"] == "ok"
+    assert refreshed[0]["status"] == "ok"
+    assert refreshed[0]["sha256"] != original[0]["sha256"]
+    assert refreshed[0]["sha256"] == hashlib.sha256(artifact.read_bytes()).hexdigest()
+
+
 def test_prepare_workbench_task_run_includes_output_schemas_in_agent_bundle(
     tmp_path,
 ):
@@ -6256,6 +6444,44 @@ def test_sync_deadline_reports_a_worker_that_exits_without_a_result():
         _run_async_blocking(lifecycle())
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX fork behavior is under test")
+def test_sync_deadline_avoids_forking_quality_audit_from_a_background_thread(monkeypatch):
+    """FastAPI executes this lifecycle from a worker thread in production.
+
+    Forking a multithreaded Python process is unsafe on macOS and can make the
+    child exit before it writes its audit result.  The local audit itself is
+    bounded by the workflow deadline, so the worker-thread path must run it
+    without creating a nested fork.
+    """
+    import app.services.workbench_workflow_runner as runner_module
+    from app.services.workbench_workflow_runner import (
+        _run_async_blocking,
+        _run_sync_with_absolute_deadline,
+    )
+
+    def unexpected_fork(*_args, **_kwargs):
+        raise AssertionError("background quality audit must not fork")
+
+    monkeypatch.setattr(runner_module.multiprocessing, "get_context", unexpected_fork)
+    result: dict[str, object] = {}
+
+    async def lifecycle():
+        return await _run_sync_with_absolute_deadline(
+            lambda: "quality-audit-result",
+            deadline=time.monotonic() + 1,
+        )
+
+    def run() -> None:
+        result["value"] = _run_async_blocking(lifecycle())
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    thread.join(timeout=2)
+
+    assert not thread.is_alive()
+    assert result["value"] == "quality-audit-result"
+
+
 @pytest.mark.parametrize(
     ("minimum_remaining_seconds", "expected_plan_count", "expected_stop_reason"),
     [
@@ -6342,7 +6568,12 @@ def test_staged_builtin_quality_repair_respects_the_shared_attempt_budget(
         await llm.touch()
         await asyncio.sleep(0.01)
         plans.append(json.loads(json.dumps(plan)))
-        (artifact_dir / "report.md").write_text("# report\n", encoding="utf-8")
+        # The audit runs in a deadline-bounded child process on POSIX, so it
+        # cannot safely infer state from this test process' in-memory list.
+        # Persist the attempt marker exactly as a real staged execution does.
+        (artifact_dir / "report.md").write_text(
+            f"# report attempt {len(plans)}\n", encoding="utf-8"
+        )
         return {
             "status": "completed",
             "models": ["fake-model"],
@@ -6354,7 +6585,8 @@ def test_staged_builtin_quality_repair_respects_the_shared_attempt_budget(
         return await awaitable
 
     def fake_audit(**_kwargs):
-        if len(plans) >= 2:
+        report = (artifact_dir / "report.md").read_text(encoding="utf-8")
+        if "attempt 2" in report:
             return {
                 "status": "deliverable",
                 "score": 100,
@@ -6397,9 +6629,9 @@ def test_staged_builtin_quality_repair_respects_the_shared_attempt_budget(
         capture_shared_deadline,
     )
     monkeypatch.setattr(
-        runner_module,
-        "_audit_staged_agent_artifacts",
-        fake_audit,
+        WorkbenchWorkflowRunner,
+        "audit_test_activity_quality",
+        lambda _self, **_kwargs: fake_audit(**_kwargs),
     )
     monkeypatch.setattr(
         runner_module,
@@ -6557,6 +6789,30 @@ def test_quality_audit_deadline_marks_staged_execution_partial_and_timed_out(
         (artifact_dir / "quality_repair_result.json").read_text(encoding="utf-8")
     )
     assert repair["stopped_reason"] == "workflow_deadline_exceeded"
+
+
+@pytest.mark.parametrize(
+    ("repair_history", "behavior_validation", "expected"),
+    [
+        ([{"attempt": 1}], {"status": "completed"}, True),
+        ([], {"status": "unavailable", "reason": "independent_validator_unavailable"}, True),
+        ([], {"status": "unavailable", "reason": "workflow_deadline_exceeded"}, False),
+        ([], {"status": "completed"}, False),
+    ],
+)
+def test_final_deterministic_repairs_do_not_depend_on_independent_audit_availability(
+    repair_history,
+    behavior_validation,
+    expected,
+):
+    from app.services.workbench_workflow_runner import (
+        _should_apply_final_deterministic_repairs,
+    )
+
+    assert _should_apply_final_deterministic_repairs(
+        repair_history=repair_history,
+        behavior_validation=behavior_validation,
+    ) is expected
 
 
 def test_regressed_quality_repair_restores_the_previous_deliverables(tmp_path):
@@ -6764,6 +7020,60 @@ def test_final_deterministic_quality_repair_materializes_only_declared_c_bit_cas
     assert [item["case_id"] for item in repaired] == ["BB-01", "BBC-CBIT-FRAGMENT"]
 
 
+def test_final_deterministic_quality_repair_finds_nested_agent_markdown_artifact(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _apply_final_deterministic_quality_repairs,
+    )
+
+    agent_dir = tmp_path / "agent_runs" / "analyze"
+    agent_dir.mkdir(parents=True)
+    module_map = agent_dir / "module_map.md"
+    module_map.write_text(
+        "# 模块映射\n\n建议新增 `test/iscsi_tgt/future_login/`。\n",
+        encoding="utf-8",
+    )
+
+    changed = _apply_final_deterministic_quality_repairs(
+        artifact_dir=tmp_path,
+        audit={"issues": [{
+            "artifact": "module_map.md",
+            "code": "evidence_path_not_found",
+            "message": "证据路径不存在: test/iscsi_tgt/future_login/",
+        }]},
+    )
+
+    assert changed == {"module_map.md": ["test/iscsi_tgt/future_login/"]}
+    assert "test/iscsi_tgt/future_login/" not in module_map.read_text(encoding="utf-8")
+    assert "待补充验证的源码定位" in module_map.read_text(encoding="utf-8")
+
+
+def test_final_governance_refresh_uses_nested_agent_delivery_root(tmp_path, monkeypatch):
+    import app.services.workbench_workflow_runner as runner
+
+    agent_dir = tmp_path / "agent_runs" / "analyze"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "judge_report.json").write_text("{}", encoding="utf-8")
+    observed = {}
+
+    monkeypatch.setattr(
+        runner,
+        "normalize_materialized_sfmea_risk_contract",
+        lambda **_: [],
+    )
+    monkeypatch.setattr(
+        runner,
+        "refresh_source_driven_delivery_governance",
+        lambda path: observed.setdefault("path", Path(path)) or {"status": "READY"},
+    )
+
+    runner._refresh_source_delivery_governance_after_finalizing(
+        artifact_dir=tmp_path,
+        plan={},
+    )
+
+    assert observed["path"] == agent_dir
+
+
 def test_final_deterministic_quality_repair_removes_audited_nonrisk_sfmea_and_links(
     tmp_path,
 ):
@@ -6892,6 +7202,97 @@ def test_final_deterministic_quality_repair_replaces_invalid_markdown_evidence_w
     assert (tmp_path / "report.md").read_text(encoding="utf-8") == (
         "| PDU buffer | `iscsi_get_pdu` | `待补充验证的源码定位` |\n"
     )
+
+
+def test_final_deterministic_quality_repair_corrects_bounded_business_flow_facts(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _apply_final_deterministic_quality_repairs,
+    )
+
+    flow = tmp_path / "business_flow.md"
+    flow.write_text(
+        "`iscsi_negotiate_chap_param` 被调用以完成 CHAP 认证参数的协商。\n"
+        "`iscsi_pdu_payload_op_login`（`lib/iscsi/iscsi.c:2231`）根据连接当前所处的 Login 阶段"
+        "（`conn->login_phase`）进行分发。初始阶段为 `ISCSI_SECURITY_NEGOTIATION`，"
+        "对应调用 `iscsi_op_login_phase_none`。\n",
+        encoding="utf-8",
+    )
+
+    changed = _apply_final_deterministic_quality_repairs(
+        artifact_dir=tmp_path,
+        audit={"issues": [
+            {
+                "artifact": "business_flow.md",
+                "code": "professional_fact_conflict",
+                "constraint_id": "iscsi_chap_execution_role",
+                "conflicting_excerpt": "`iscsi_negotiate_chap_param` 被调用以完成 CHAP 认证参数的协商。",
+            },
+            {
+                "artifact": "business_flow.md",
+                "code": "professional_fact_conflict",
+                "constraint_id": "iscsi_rpc_login_phase_values",
+                "conflicting_excerpt": (
+                    "`iscsi_pdu_payload_op_login`（`lib/iscsi/iscsi.c:2231`）根据连接当前所处的 Login 阶段"
+                    "（`conn->login_phase`）进行分发。初始阶段为 `ISCSI_SECURITY_NEGOTIATION`，"
+                    "对应调用 `iscsi_op_login_phase_none`。"
+                ),
+            },
+        ]},
+    )
+
+    repaired = flow.read_text(encoding="utf-8")
+    assert changed == {"business_flow.md": [
+        "iscsi_chap_execution_role",
+        "iscsi_rpc_login_phase_values",
+        "login_phase_public_labels",
+    ]}
+    assert "iscsi_auth_params" in repaired
+    assert "security_negotiation_phase" in repaired
+
+
+def test_final_deterministic_quality_repair_unwraps_complete_markdown_document(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _apply_final_deterministic_quality_repairs,
+    )
+
+    target = tmp_path / "module_map.md"
+    target.write_text("```markdown\n# 模块映射\n\n## 模块边界\n```\n", encoding="utf-8")
+
+    changed = _apply_final_deterministic_quality_repairs(
+        artifact_dir=tmp_path,
+        audit={"issues": [{
+            "artifact": "module_map.md",
+            "code": "missing_markdown_sections",
+        }]},
+    )
+
+    assert changed == {"module_map.md": ["outer_markdown_fence"]}
+    assert target.read_text(encoding="utf-8") == "# 模块映射\n\n## 模块边界\n"
+
+
+def test_final_deterministic_quality_repair_renders_verified_flow_after_fact_conflict(tmp_path):
+    from app.services.workbench_workflow_runner import _apply_final_deterministic_quality_repairs
+
+    (tmp_path / "business_flow.md").write_text("模型编造的流程\n", encoding="utf-8")
+    (tmp_path / "flow_outline.json").write_text(json.dumps({
+        "analysis_target": "iSCSI login",
+        "repo_revision": "abc",
+        "entry_points": [], "steps": [], "error_flows": [], "cleanup_flows": [],
+        "recovery_flows": [], "state_objects": [], "state_transitions": [],
+        "related_tests": [], "evidence_gaps": [],
+    }, ensure_ascii=False), encoding="utf-8")
+
+    changed = _apply_final_deterministic_quality_repairs(
+        artifact_dir=tmp_path,
+        audit={"issues": [{
+            "artifact": "business_flow.md",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_rpc_login_phase_values",
+        }]},
+    )
+
+    assert "render_verified_flow_outline" in changed["business_flow.md"]
+    assert "模型编造" not in (tmp_path / "business_flow.md").read_text(encoding="utf-8")
 
 
 def test_quality_repair_salvages_only_rows_with_fewer_issues():

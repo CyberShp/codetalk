@@ -1060,6 +1060,17 @@ export interface PreparedWorkbenchTaskRun {
         blocking_reasons?: string[];
       };
     };
+    profile_execution?: {
+      profile_id?: string;
+      status?: string;
+      provider_call_count?: number;
+      output_tokens?: number;
+      provider_wait_ms?: number;
+      reused_stage_count?: number;
+      branch_count?: number;
+      missing_branch_provider_work?: string[];
+      under_evidenced_branches?: string[];
+    };
   };
   artifact_dir: string;
   workflow_snapshot: Record<string, unknown>;

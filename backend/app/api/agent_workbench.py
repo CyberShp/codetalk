@@ -472,21 +472,30 @@ def _public_task_run_runtime_summary(task_root: Path) -> dict[str, Any]:
 
     quality = _read_json(task_root / "test_activity_quality_audit.json")
     if isinstance(quality, dict):
-        summary["test_activity_quality"] = {
+        public_quality = {
             key: quality.get(key)
             for key in (
                 "status",
                 "deliverable",
                 "score",
                 "issue_count",
-                "issues",
-                "recommendations",
                 "lint_warning_count",
                 "fact_verification",
                 "quality_axes",
+                # The cockpit renders these concise, user-actionable entries when
+                # quality blocks delivery.  Keep detailed claim payloads private,
+                # but never hide the reason a user cannot proceed.
+                "issues",
+                "recommendations",
             )
             if key in quality
         }
+        profile_execution = _public_profile_execution_summary(
+            quality.get("profile_execution_evidence")
+        )
+        if profile_execution:
+            public_quality["profile_execution"] = profile_execution
+        summary["test_activity_quality"] = public_quality
 
     stage_progress = _public_test_activity_stage_progress(task_root)
     if stage_progress:
@@ -506,6 +515,45 @@ def _public_task_run_runtime_summary(task_root: Path) -> dict[str, Any]:
             "manifest_path": "task_artifact_manifest.json",
         }
     return summary
+
+
+def _public_profile_execution_summary(value: Any) -> dict[str, Any]:
+    """Expose bounded deep-work proof without leaking prompts or source routes."""
+    if not isinstance(value, dict):
+        return {}
+    branch_requirements = value.get("branch_citation_requirements")
+    branch_count = len(branch_requirements) if isinstance(branch_requirements, dict) else 0
+    return {
+        "profile_id": str(value.get("profile_id") or ""),
+        "status": str(value.get("status") or "unknown"),
+        "provider_call_count": _public_nonnegative_int(value.get("provider_call_count")),
+        "output_tokens": _public_nonnegative_int(value.get("output_tokens")),
+        "provider_wait_ms": _public_nonnegative_float(value.get("provider_wait_ms")),
+        "reused_stage_count": _public_nonnegative_int(value.get("reused_stage_count")),
+        "branch_count": branch_count,
+        "missing_branch_provider_work": [
+            str(item) for item in value.get("missing_branch_provider_work") or []
+            if str(item)
+        ],
+        "under_evidenced_branches": [
+            str(item) for item in value.get("under_evidenced_branches") or []
+            if str(item)
+        ],
+    }
+
+
+def _public_nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _public_nonnegative_float(value: Any) -> float:
+    try:
+        return max(0.0, float(value or 0))
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _public_test_activity_stage_progress(task_root: Path) -> dict[str, Any]:
@@ -685,6 +733,21 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
     status = _task_run_ui_status(execution=execution, nodes=nodes)
     live_readiness_failures = _task_run_ui_live_readiness_failures(task_root)
     live_readiness_actions = _task_run_ui_live_readiness_actions(task_root)
+    live_readiness_checks = [
+        item
+        for item in (_read_json(task_root / "provider_live_readiness.json") or {}).get("checks") or []
+        if isinstance(item, dict)
+    ]
+    has_failed_agent_runtime = any(
+        str(item.get("provider") or "") != "independent-quality-audit"
+        and item.get("success") is not True
+        for item in live_readiness_checks
+    )
+    has_failed_independent_quality_audit = any(
+        str(item.get("provider") or "") == "independent-quality-audit"
+        and item.get("success") is not True
+        for item in live_readiness_checks
+    )
     # A preflight failure intentionally has no step result.  It must still
     # become the primary run state; otherwise the cockpit misleadingly keeps
     # the run in its queued layout and hides the actionable failure panel.
@@ -745,15 +808,10 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
             "can_retry": bool(failed_node),
             "preflight_blocked": bool(live_readiness_failures),
             "preflight_kind": (
-                "independent_quality_audit"
-                if any(
-                    str(item.get("provider") or "") == "independent-quality-audit"
-                    and item.get("success") is not True
-                    for item in (_read_json(task_root / "provider_live_readiness.json") or {}).get("checks") or []
-                    if isinstance(item, dict)
-                )
-                else "agent_runtime"
-                if live_readiness_failures
+                "agent_runtime"
+                if has_failed_agent_runtime
+                else "independent_quality_audit"
+                if has_failed_independent_quality_audit
                 else ""
             ),
             "user_goal_stage": str((failed_node or {}).get("label") or ""),
@@ -1256,6 +1314,19 @@ def _task_run_ui_node_outputs(
         output_id = str(output.get("id") or "")
         artifact = str(output.get("artifact") or output.get("path") or "")
         resolved = output_by_key.get((step_id, output_id, artifact), {})
+        if not resolved and not artifact:
+            # Some output declarations intentionally let the runner infer the
+            # report filename. The execution record is authoritative after
+            # that inference, so bind the unique source-step/output-id result
+            # instead of presenting a generated report as still waiting.
+            candidates = [
+                candidate
+                for (source_step, candidate_id, _), candidate in output_by_key.items()
+                if source_step == step_id and candidate_id == output_id
+            ]
+            if len(candidates) == 1:
+                resolved = candidates[0]
+                artifact = str(resolved.get("artifact") or "")
         status = str(resolved.get("status") or "waiting")
         item = {
             "id": output_id,
@@ -2749,6 +2820,14 @@ def _frozen_runtime_preflight_payload(
 
 
 def _terminal_execution_status(result: dict[str, Any]) -> str:
+    quality = result.get("test_activity_quality")
+    if (
+        str(result.get("status") or "").strip().lower() == "quality_blocked"
+        or isinstance(quality, dict) and quality.get("deliverable") is False
+    ):
+        # Node execution can finish while the final delivery fails its quality
+        # contract. That terminal task state must never be shown as green.
+        return "quality_blocked"
     explicit = str(result.get("execution_status") or "").strip().lower()
     if explicit in {"completed", "partial", "failed", "cancelled", "interrupted"}:
         return explicit
@@ -3399,6 +3478,25 @@ async def import_task_run_outputs_as_semantic_cases(
             status_code=400,
             detail="workflow outputs have not been generated",
         )
+    quality_gate_result = _workflow_output_quality_gate_result(
+        task_run=task_run,
+        workflow_outputs=workflow_outputs,
+    )
+    if quality_gate_result is not None:
+        result = _empty_semantic_import_result(
+            source_ref=f"task_run:{task_run.task_run_id}"
+        )
+        result["reason"] = str(
+            quality_gate_result.get("reason")
+            or "test_activity_quality_gate_failed"
+        )
+        _write_semantic_output_import_artifact(
+            task_run=task_run,
+            mode="manual_blocked",
+            result=result,
+        )
+        write_task_artifact_manifest(task_dir, task_run_id=task_run.task_run_id)
+        return result
     result = _import_workflow_outputs_as_semantic_cases(
         task_run=task_run,
         workflow_outputs=workflow_outputs,
@@ -8336,7 +8434,7 @@ def _risk_finding_source_candidates(finding: dict[str, Any]) -> list[str]:
         else:
             candidate = str(item or "").strip()
             if re.match(
-                r"(?i)^(?:EV|SRC|TEST)[-_][A-Za-z0-9_-]+(?::L?\d+(?:-L?\d+)?)?$",
+                r"(?i)^(?:EV|SRC|TEST|FLOW)[-_][A-Za-z0-9_-]+(?::L?\d+(?:-L?\d+)?)?$",
                 candidate,
             ):
                 continue

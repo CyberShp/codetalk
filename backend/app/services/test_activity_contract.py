@@ -348,6 +348,9 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 ],
                 "correction_patterns": [
                     r"(?:认证失败|authentication failure|error response|错误响应|失败响应).{0,220}(?:清除|清零|reserved|clear).{0,80}(?:t|csg|nsg)",
+                    r"(?:认证失败|authentication failure|error response|错误响应|失败响应).{0,120}"
+                    r"t\s*[:=]\s*1.{0,120}(?:不传播|does not propagate).{0,120}"
+                    r"(?:error response|错误响应|失败响应).{0,120}t\s*[:=]\s*0",
                 ],
             },
             {
@@ -588,7 +591,11 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 ),
                 "evidence": ["lib/iscsi/conn.c::iscsi_conn_info_json"],
                 "conflict_patterns": [
-                    r"login_phase.{0,120}(?:security_negotiation(?!_phase)|operational_negotiation(?!_phase))(?:[\s`\"',/]|$)",
+                    # This contract concerns the public RPC value, not the
+                    # internal conn->login_phase enum used by the state
+                    # machine.  Keeping the RPC anchor avoids rejecting a
+                    # source-accurate flow map that names internal constants.
+                    r"(?:iscsi_get_connections|connections?\s*\[\s*\]).{0,180}login_phase.{0,120}(?:security_negotiation(?!_phase)|operational_negotiation(?!_phase))(?:[\s`\"',/]|$)",
                 ],
                 "correction_patterns": [
                     r"login_phase.{0,160}(?:security_negotiation_phase|operational_negotiation_phase)",
@@ -993,8 +1000,9 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 ],
                 "correction_patterns": [
                     r"iscsi_ut\.c.{0,220}(?:未覆盖|没有断言|不能证明|需新增|does not cover|missing assertion)",
+                    r"(?:无法确认|不能确认).{0,160}iscsi_ut\.c.{0,160}(?:覆盖|断言).{0,120}(?:错误响应\s*flags|target removed|authorization failure|所有.*(?:错误|失败))",
                     r"iscsi_ut\.c.{0,220}(?:未完整断言|不能声称完整覆盖|只断言部分|partial).{0,160}(?:target removed|authorization failure|错误响应)",
-                    r"iscsi_ut\.c.{0,360}(?:不能笼统声称|不得笼统声称|must not claim).{0,220}(?:target removed|authorization failure|错误响应)",
+                    r"iscsi_ut\.c.{0,360}(?:不能笼统(?:声称|宣称)|不得笼统(?:声称|宣称)|must not claim).{0,220}(?:target removed|authorization failure|错误响应|所有.*(?:错误|失败))",
                 ],
             },
             {
@@ -1583,9 +1591,54 @@ def audit_test_activity_artifacts(
         if isinstance(spec, dict)
     ) or (root / "black_box_cases.json").is_file()
     audited_json_artifacts: set[str] = set()
+    quality_gates = contract.get("quality_gates") or {}
+    behavior_validation_surface = any(
+        "sfmea" in str(artifact).lower()
+        or "black_box" in str(artifact).lower()
+        or str((spec or {}).get("type") or "").lower()
+        == "combined_test_report"
+        for artifact, spec in artifact_contract.items()
+        if isinstance(spec, dict)
+    )
+    require_behavior_validation = bool(
+        quality_gates.get("require_independent_behavior_validation", False)
+        and behavior_validation_surface
+    )
+    if require_behavior_validation:
+        behavior_validation = _read_json(
+            _artifact_path(root, "behavior_claim_validation.json")
+        )
+        validation = behavior_validation if isinstance(behavior_validation, dict) else {}
+        validator = validation.get("validator")
+        validator = validator if isinstance(validator, dict) else {}
+        validation_status = str(validation.get("status") or "missing").strip().lower()
+        independent = bool(validator.get("independent"))
+        if validation_status != "completed" or not independent:
+            reason = str(validation.get("reason") or "未生成可用的独立核验结论。")
+            structural_issues.append(
+                _issue(
+                    "independent_behavior_validation_unavailable",
+                    "behavior_claim_validation.json",
+                    (
+                        "工作流要求独立源码事实核验，但当前核验不可作为独立审计使用："
+                        f"状态为 {validation_status or 'missing'}，原因：{reason}。"
+                        "请配置与生成执行器不同的独立审计模型或 Agent 后重新运行。"
+                    ),
+                    severity="blocking",
+                    validation_status=validation_status or "missing",
+                    independent=independent,
+                    recommended_action=(
+                        "选择与生成执行器不同的独立质量核验模型或 Agent，然后从失败节点重试。"
+                    ),
+                )
+            )
 
     def record_semantic_conflicts(
-        *, artifact: str, content: str, row_id: str = ""
+        *,
+        artifact: str,
+        content: str,
+        row_id: str = "",
+        infer_structured_section: bool = False,
     ) -> None:
         """Turn delivery-level professional conflicts into fact-gate claims.
 
@@ -1601,7 +1654,11 @@ def audit_test_activity_artifacts(
                 content,
                 contract,
                 source_artifact=artifact,
-                infer_structured_section=True,
+                # Only a combined report contains multiple delivery sections.
+                # Infer its section so an SFMEA fact conflict is attributed to
+                # the structured SFMEA output. Standalone Markdown keeps its
+                # own artifact attribution.
+                infer_structured_section=infer_structured_section,
             ),
             start=1,
         ):
@@ -1708,6 +1765,7 @@ def audit_test_activity_artifacts(
                 record_semantic_conflicts(
                     artifact=artifact,
                     content=content,
+                    infer_structured_section=combined_report,
                 )
                 if combined_report:
                     execution_checks_applicable = True
@@ -1781,12 +1839,7 @@ def audit_test_activity_artifacts(
     fact_claims, fact_issues = _audit_structured_fact_claims(
         root=root,
         repo=repo,
-        require_behavior_validation=bool(
-            (contract.get("quality_gates") or {}).get(
-                "require_independent_behavior_validation",
-                False,
-            )
-        ),
+        require_behavior_validation=require_behavior_validation,
     )
     fact_claims.extend(structured_semantic_claims)
     fact_issues.extend(structured_semantic_issues)
@@ -2883,7 +2936,18 @@ def _verified_evidence_files(
             bounded_end = min(end_line, len(source_lines))
             source_excerpt = "\n".join(source_lines[start_line - 1 : bounded_end])
             declared_excerpt = str(card.get("excerpt") or "").strip("\n")
-            if bounded_end != end_line or declared_excerpt != source_excerpt.strip("\n"):
+            # Flow discovery preserves the code tokens and line range but can
+            # intentionally omit leading indentation from a one-line call
+            # edge. Treat indentation-only differences as equivalent after
+            # the file SHA256 and every referenced line have been verified.
+            # Any token, order, or line-range difference still fails closed.
+            normalized_declared = "\n".join(
+                line.strip() for line in declared_excerpt.splitlines()
+            )
+            normalized_source = "\n".join(
+                line.strip() for line in source_excerpt.strip("\n").splitlines()
+            )
+            if bounded_end != end_line or normalized_declared != normalized_source:
                 continue
             metadata["evidence_cards"][card_id] = {
                 "path": relative,
@@ -5884,6 +5948,13 @@ def _matches_professional_correction(statement: str, constraint: dict[str, Any])
             r"(?:源码)?(?:未|不会|没有).{0,40}(?:清除|clear).{0,10}c(?:\s*bit)?"
             r".{0,100}(?:不能|不得|不可).{0,30}(?:写成|声称).{0,30}清除.{0,20}t/c/csg/nsg"
         ),
+        "iscsi_login_error_flags_cleared": (
+            r"(?:认证失败|authentication failure|error response|错误响应|失败响应).{0,120}"
+            r"t\s*[:=]\s*1.{0,120}(?:不传播|does not propagate).{0,120}"
+            r"(?:error response|错误响应|失败响应).{0,120}t\s*[:=]\s*0"
+            r"|(?:error response|错误响应|失败响应).{0,160}"
+            r"t\s*[:=]\s*0.{0,100}csg\s*[:=]\s*0.{0,100}nsg\s*[:=]\s*0"
+        ),
         "iscsi_csg_values": (
             r"csg\s*0/1/3.{0,20}分别为.{0,40}security negotiation"
             r".{0,40}operational negotiation.{0,40}full feature phase"
@@ -5921,6 +5992,11 @@ def _matches_professional_correction(statement: str, constraint: dict[str, Any])
             r"multiconnection\.sh.{0,80}(?:仅|只).{0,30}(?:作|作为).{0,60}参考"
             r".{0,80}(?:不证明|不能证明).{0,100}(?:非零\s*tsih|不同\s*cid|同一\s*session)"
         ),
+        "iscsi_unit_coverage_scope": (
+            r"iscsi_ut\.c.{0,360}(?:不能笼统(?:声称|宣称)|不得笼统(?:声称|宣称)|"
+            r"(?:无法|不能)确认.{0,80}(?:覆盖|断言)|must not claim)"
+            r".{0,220}(?:target removed|authorization failure|错误响应|所有.*(?:错误|失败))"
+        ),
     }
     stable_pattern = stable_correction_patterns.get(constraint_id)
     if stable_pattern and re.search(
@@ -5931,6 +6007,19 @@ def _matches_professional_correction(statement: str, constraint: dict[str, Any])
         return True
     if constraint_id == "iscsi_csg_values" and _has_correct_csg_stage_mapping(statement):
         return True
+    if constraint_id == "iscsi_unit_coverage_scope":
+        lowered = statement.lower()
+        if (
+            "iscsi_ut.c" in lowered
+            and (
+                "不能笼统" in statement
+                or "不得笼统" in statement
+                or ("无法确认" in statement or "不能确认" in statement)
+                and any(term in lowered for term in ("覆盖", "断言"))
+            )
+            and any(term in lowered for term in ("target removed", "authorization failure", "错误响应", "login 失败"))
+        ):
+            return True
     if (
         constraint_id == "iscsi_login_negotiation_transport"
         and _is_post_login_text_request_claim(statement)
@@ -5941,6 +6030,13 @@ def _matches_professional_correction(statement: str, constraint: dict[str, Any])
         r"(?:discovery\s+)?login.{0,100}(?:成功|完成|进入).{0,80}full feature phase.{0,40}(?:后|之后|then|after).{0,120}(?:text request|sendtargets)"
         r"|(?:text request|sendtargets).{0,160}(?:仅|只|only).{0,80}(?:登录成功后|full feature phase 后|after login|after full feature)"
         r")",
+        statement,
+        flags=re.IGNORECASE | re.DOTALL,
+    ):
+        return True
+    if constraint_id == "iscsi_login_negotiation_transport" and re.search(
+        r"(?:不处理|不属于|并非).{0,80}(?:text request|sendtargets).{0,120}"
+        r"(?:full feature phase|full feature|全功能阶段).{0,40}(?:后|之后|after)",
         statement,
         flags=re.IGNORECASE | re.DOTALL,
     ):
@@ -6000,6 +6096,8 @@ def _is_post_login_text_request_claim(statement: str) -> bool:
             "登录完成后",
             "登录成功后",
             "login 完成后",
+            "full feature phase 后",
+            "进入 full feature phase 后",
             "after login",
             "after discovery login",
             "post-login",
@@ -6014,6 +6112,14 @@ def _is_post_login_text_request_claim(statement: str) -> bool:
             "outside the login pdu",
             "not part of the login pdu",
         )
+    )
+    # A module-scope exclusion such as "不包含 Text Request 处理（进入 Full
+    # Feature Phase 后）" is the same semantic boundary. It is not claiming
+    # that Text Request participates in Login; requiring one particular
+    # English/Chinese negation phrase here made a correct scope statement look
+    # like a protocol contradiction.
+    excludes_login_pdu = excludes_login_pdu or (
+        "不包含" in lower and "text request" in lower
     )
     return has_followup_request and has_post_login_scope and excludes_login_pdu
 
@@ -7240,10 +7346,19 @@ def _audit_markdown_artifact(
                 "调用证据尚未连成可核验的端到端流程，不能作为完整流程交付",
             )
         )
-    if artifact == "test_strategy.md" and re.search(
+    coverage_claim = re.search(
         r"(?i)(?:完整覆盖|全量覆盖|fully\s+covered|complete\s+coverage)",
         content,
-    ) and re.search(
+    )
+    coverage_claim_is_negated = bool(
+        coverage_claim
+        and re.search(
+            r"(?:禁止|不得|不能|不可|避免|未|不声明|不声称|不宣称)\s*(?:写|声称|宣称|声明|表示)?\s*[\"“']?\s*$",
+            content[max(0, coverage_claim.start() - 28):coverage_claim.start()],
+            flags=re.IGNORECASE,
+        )
+    )
+    if artifact == "test_strategy.md" and coverage_claim and not coverage_claim_is_negated and re.search(
         r"(?i)(?:待补证据|证据缺口|尚未覆盖|未覆盖|remaining\s+gap|evidence\s+gap)",
         content,
     ):
@@ -7901,6 +8016,9 @@ def _black_box_boundary_violation(row: dict[str, Any]) -> bool:
         row.get("test_steps"),
     ]
     text = " ".join(part for value in action_fields for part in _flatten_text(value)).lower()
+    # A black-box instruction may explicitly prohibit an internal operation.
+    # Do not turn “不得调用内部函数” into the very violation it prevents.
+    text = re.sub(r"(?:不得|不要|禁止|不)\s*调用内部函数", "", text)
     return bool(
         re.search(
             r"\b(call|invoke)\s+[a-z0-9_]*\(|"
@@ -7968,6 +8086,11 @@ def black_box_steps_are_actionable(steps: Any) -> bool:
 
 
 def _test_mapping_values(value: Any) -> list[str]:
+    # An explicit "needs a new test" declaration may explain why an existing
+    # script is only a setup reference.  It is one mapping contract, not a
+    # semicolon-delimited list whose explanatory path becomes a false mapping.
+    if not isinstance(value, list) and _is_explicit_unverified_test_mapping(str(value or "")):
+        return [str(value).strip()]
     raw_values = value if isinstance(value, list) else [value]
     return _unique_strings(
         part.strip()
@@ -8055,6 +8178,7 @@ def black_box_case_delivery_quality_gaps(
             r"(?:internal|private|unit\s*test|内部|私有|单元测试|修改源码)",
             part,
         )
+        and not re.search(r"(?:不得|不要|禁止|不)\s*调用内部函数", part)
         for part in boundary_parts
     ):
         gaps.append("white_box_boundary")
@@ -8101,7 +8225,7 @@ _BLACK_BOX_TRACEABLE_BASIS_RE = re.compile(
 )
 _BLACK_BOX_PERFORMANCE_SAMPLE_RE = re.compile(
     r"(?i)(?=.*(?:warmup|preheat|预热))"
-    r"(?=.*(?:repeat|iterations?|samples?|runs?|重复|样本|运行))"
+    r"(?=.*(?:repeat|iterations?|samples?|runs?|重复|样本|采样|运行))"
     r"(?=.*(?:p50|50th\s*percentile|中位数))"
     r"(?=.*(?:p95|95th\s*percentile))",
     flags=re.DOTALL,

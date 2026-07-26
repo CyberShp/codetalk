@@ -576,10 +576,13 @@ def _combined_final_fact_verification(root: Path) -> dict[str, Any]:
         and isinstance(behavior.get("validator"), dict)
         and behavior["validator"].get("independent") is True
     )
+    # Literal source anchors are SHA-bound local quotations. They do not carry
+    # an open-world behavioural assertion for an L2 model to judge. A same-
+    # model Flash audit may correctly be marked unavailable, but it must not
+    # downgrade already verified L1 anchors merely because no independent L2
+    # call is applicable to them.
     behavior_not_required = bool(
-        isinstance(behavior, dict)
-        and str(behavior.get("status") or "") == "not_applicable"
-        and deterministic_claims
+        deterministic_claims
         and all(
             str(item.get("type") or "") == "source_anchor"
             for item in deterministic_claims
@@ -676,14 +679,29 @@ def _combined_final_fact_verification(root: Path) -> dict[str, Any]:
             for item in deterministic_claims
         ]
     else:
-        claims = [
-            {
-                **item,
-                "binding_status": str(item.get("status") or "insufficient"),
-                "status": "insufficient",
-            }
-            for item in deterministic_claims
-        ]
+        # A missing independent L2 validator blocks behavioural assertions,
+        # but it must not erase already SHA-bound L1 source quotations in a
+        # mixed artifact.  Preserve their truthful status in the ledger so the
+        # UI can distinguish "one behaviour needs review" from "no source
+        # evidence was verified".
+        claims = []
+        for item in deterministic_claims:
+            l1_status = str(item.get("status") or "insufficient")
+            claim_type = str(item.get("type") or "")
+            source_anchor = claim_type == "source_anchor"
+            claims.append(
+                {
+                    **item,
+                    "binding_status": l1_status,
+                    "behavior_status": "not_required" if source_anchor else "unavailable",
+                    "status": l1_status if source_anchor else "insufficient",
+                    "validation_layer": (
+                        "L1_deterministic_source_anchor"
+                        if source_anchor
+                        else "L1_binding_L2_unavailable_behavior"
+                    ),
+                }
+            )
 
     total = len(claims)
     verified = sum(item.get("status") == "verified" for item in claims)
@@ -1424,6 +1442,7 @@ def _flow_cards_artifact(*, flows: dict[str, Any], flow_outline: dict[str, Any],
                 if str(value or "")
             )
         flow_files = _flow_evidence_files(flow_pack, flow_evidence)
+        flow_positions = _flow_evidence_positions(flow_pack, flow_evidence)
         flow_symbols.update(_flow_evidence_symbols(flow_pack, flow_evidence))
         related_branches = [
             item for item in branches
@@ -1432,7 +1451,12 @@ def _flow_cards_artifact(*, flows: dict[str, Any], flow_outline: dict[str, Any],
         related_errors = [
             item for item in errors
             if _row_related_to_flow(item, flow_evidence, flow_symbols)
-            or _error_is_verified_flow_companion(item, flow_symbols, flow_files)
+            or _error_is_verified_flow_companion(
+                item,
+                flow_symbols,
+                flow_files,
+                flow_positions,
+            )
         ]
         related_states = [
             item for item in flow_pack.get("state_transitions") or []
@@ -1518,8 +1542,32 @@ def _flow_evidence_symbols(flow_pack: dict[str, Any], evidence_ids: set[str]) ->
     return symbols
 
 
+def _flow_evidence_positions(
+    flow_pack: dict[str, Any], evidence_ids: set[str]
+) -> dict[str, list[int]]:
+    """Return exact source lines already used by the normal-flow evidence."""
+
+    positions: dict[str, list[int]] = {}
+    for collection in ("entry_points", "call_edges", "state_transitions", "conditions"):
+        for row in flow_pack.get(collection) or []:
+            if not isinstance(row, dict):
+                continue
+            row_ids = set(_strings([row.get("id"), row.get("evidence_id"), row.get("evidence_refs")]))
+            if not row_ids & evidence_ids:
+                continue
+            path = str(row.get("file_path") or "")
+            line = int(row.get("start_line") or 0)
+            if path and line > 0:
+                positions.setdefault(path, []).append(line)
+    return positions
+
+
 def _error_is_verified_flow_companion(
-    row: dict[str, Any], flow_symbols: set[str], flow_files: set[str]) -> bool:
+    row: dict[str, Any],
+    flow_symbols: set[str],
+    flow_files: set[str],
+    flow_positions: dict[str, list[int]],
+) -> bool:
     """Link only an explicit success/error callback pair in an already-used file.
 
     Source extraction commonly records the success and error completion callbacks
@@ -1529,9 +1577,28 @@ def _error_is_verified_flow_companion(
     same-file matching, which would make unrelated error paths look connected.
     """
 
+    file_path = str(row.get("file_path") or "")
     error_symbol = str(row.get("symbol") or "")
-    if not error_symbol or str(row.get("file_path") or "") not in flow_files:
+    if file_path not in flow_files:
         return False
+    if not error_symbol:
+        # Some local extractors preserve a verified error line but cannot
+        # recover its enclosing C function. Treat it as a companion only when
+        # it is a nearby, explicit error/control line of an already traversed
+        # normal path. This is narrower than same-file matching and avoids
+        # connecting independent login handlers merely because they share a
+        # translation unit.
+        error_line = int(row.get("start_line") or 0)
+        error_text = str(row.get("text") or "")
+        if (
+            error_line <= 0
+            or not re.search(r"(?:return\s+.*(?:ERROR|FAIL)|ERRLOG|status_(?:class|detail)|\brc\s*<\s*0)", error_text, re.IGNORECASE)
+        ):
+            return False
+        return any(
+            abs(error_line - normal_line) <= 160
+            for normal_line in flow_positions.get(file_path, [])
+        )
     error_family = _completion_callback_family(error_symbol)
     if not error_family or error_family == error_symbol:
         return False

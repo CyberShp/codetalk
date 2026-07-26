@@ -10,15 +10,20 @@ const dataDir = process.env.CODETALK_PLAYWRIGHT_DATA_DIR ?? "";
 const executionProfile = process.env.CODETALK_E2E_EXECUTION_PROFILE ?? "rapid";
 const profileLabel = executionProfile === "deep" ? "深度型" : "速度型";
 const profileMaximumDurationMs = executionProfile === "deep" ? 95 * 60_000 : 25 * 60_000;
+const generatorModel = process.env.CODETALK_E2E_LLM_MODEL ?? "deepseek-chat";
+const auditModel = process.env.CODETALK_E2E_AUDIT_LLM_MODEL ?? "deepseek-reasoner";
+const hasIndependentAuditor = generatorModel.trim().toLowerCase() !== auditModel.trim().toLowerCase();
 
 test.skip(!enabled, "Set CODETALK_E2E_REAL_BUILTIN_B=1 to run the real built-in model acceptance flow");
 test.skip(!apiKey, "CODETALK_E2E_LLM_API_KEY is required for the real built-in model acceptance flow");
 test.skip(!fs.existsSync(repoPath), `SPDK repository is unavailable: ${repoPath}`);
 test.skip(!dataDir, "CODETALK_PLAYWRIGHT_DATA_DIR is required to retain real-run evidence");
 
-test("V3 basic source plus design workflow runs through the browser with a real built-in model", async ({ page }) => {
+test("V3 basic source plus design workflow runs through the browser with a real built-in model", async ({ page }, testInfo) => {
   test.setTimeout(profileMaximumDurationMs + 5 * 60_000);
-  const stamp = Date.now();
+  // The test is intentionally safe to repeat in parallel for real provider
+  // capacity checks. A millisecond timestamp alone can collide across workers.
+  const stamp = `${Date.now()}-${testInfo.workerIndex}-${testInfo.repeatEachIndex}`;
   const workspaceName = `SPDK Builtin B ${stamp}`;
   const taskName = `iSCSI login Builtin B ${stamp}`;
   const configName = `DeepSeek Builtin B ${stamp}`;
@@ -31,8 +36,13 @@ test("V3 basic source plus design workflow runs through the browser with a real 
 
   await page.setViewportSize({ width: 1440, height: 900 });
   await configureBuiltInModelsThroughUi(page, configName, auditConfigName);
-  await createWorkspaceThroughUi(page, workspaceName);
-  const runId = await createAndRunTaskThroughUi(page, { taskName, workspaceName, target, designDocument });
+  const selectedWorkspaceName = await createWorkspaceThroughUi(page, workspaceName);
+  const runId = await createAndRunTaskThroughUi(page, {
+    taskName,
+    workspaceName: selectedWorkspaceName,
+    target,
+    designDocument,
+  });
 
   const startedAt = Date.now();
   const status = page.locator(".ct-v2-run-status").filter({ hasText: "执行状态" }).locator("strong");
@@ -42,12 +52,37 @@ test("V3 basic source plus design workflow runs through the browser with a real 
   }).toMatch(/^(已完成|部分完成|失败|已阻断|已取消)$/);
   const elapsedMs = Date.now() - startedAt;
   const terminalStatus = (await status.textContent())?.trim() || "";
-  expect(terminalStatus).toMatch(/^(已完成|部分完成)$/);
-
-  await expect(page.locator(".ct-v2-run-deliverables")).toBeVisible({ timeout: 30_000 });
   const quality = page.locator(".ct-v2-run-status").filter({ hasText: "质量状态" }).locator("strong");
-  await expect(quality).toHaveText("通过");
-  await page.screenshot({ path: path.join(dataDir, "v3-basic-builtin-b-completed.png"), fullPage: false });
+  if (hasIndependentAuditor) {
+    expect(terminalStatus).toMatch(/^(已完成|部分完成)$/);
+    await expect(page.locator(".ct-v2-run-deliverables")).toBeVisible({ timeout: 30_000 });
+    await expect(quality).toHaveText("通过");
+  } else {
+    expect(terminalStatus).toBe("已阻断");
+    await expect(quality).toHaveText("已阻断");
+    await expect(page.locator(".ct-v2-quality-blockers")).toContainText("独立源码事实核验", { timeout: 30_000 });
+  }
+
+  // The real SPDK report is deliberately larger than the cockpit preview
+  // budget.  Users must get a bounded preview and still be able to download
+  // the exact complete artifact, including when quality correctly blocks it.
+  const longReport = page.locator(".ct-v2-artifact-row")
+    .filter({ hasText: "report.md" })
+    .first();
+  await expect(longReport).toContainText(/report\.md/);
+  await longReport.getByRole("button").click();
+  await expect(page.getByRole("dialog", { name: "产物预览" })).toBeVisible();
+  await expect(page.getByText("内容较长，预览已截断，请下载完整文件。")).toBeVisible();
+  const downloadPromise = page.waitForEvent("download");
+  await page.getByRole("dialog", { name: "产物预览" }).getByTitle("下载完整文件").click();
+  const download = await downloadPromise;
+  expect(download.suggestedFilename()).toContain("report.md");
+  await page.getByRole("button", { name: "关闭产物预览" }).click();
+
+  await page.screenshot({
+    path: path.join(dataDir, `v3-basic-builtin-b-${stamp}-completed.png`),
+    fullPage: false,
+  });
 
   const runRoot = path.join(dataDir, "workbench", "task_runs", runId);
   const manifestPath = path.join(runRoot, "task_artifact_manifest.json");
@@ -59,9 +94,19 @@ test("V3 basic source plus design workflow runs through the browser with a real 
   for (const required of ["source_analysis.md", "source_scope.json", "evidence_cards.json"]) {
     expect(artifactNames).toContain(required);
   }
+  if (!hasIndependentAuditor) {
+    const repairResultPath = path.join(runRoot, "agent_runs", "analyze", "quality_repair_result.json");
+    expect(fs.existsSync(repairResultPath)).toBeTruthy();
+    const repairResult = JSON.parse(fs.readFileSync(repairResultPath, "utf8")) as {
+      attempt_count?: number;
+      stopped_reason?: string;
+    };
+    expect(Number(repairResult.attempt_count ?? 0)).toBeGreaterThanOrEqual(0);
+    expect(repairResult.stopped_reason).not.toBe("workflow_deadline_exceeded");
+  }
 
   fs.writeFileSync(
-    path.join(dataDir, "v3-basic-builtin-b-metrics.json"),
+    path.join(dataDir, `v3-basic-builtin-b-${stamp}-metrics.json`),
     JSON.stringify({ run_id: runId, repo_path: repoPath, elapsed_ms: elapsedMs, artifact_names: artifactNames }, null, 2),
     "utf8",
   );
@@ -76,9 +121,9 @@ async function configureBuiltInModelsThroughUi(
 ) {
   await page.goto("/settings", { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: /可选：内置模型与 RAG 检索/ }).click();
-  await createModelConfigThroughUi(page, configName, process.env.CODETALK_E2E_LLM_MODEL ?? "deepseek-chat");
-  await createModelConfigThroughUi(page, auditConfigName, process.env.CODETALK_E2E_AUDIT_LLM_MODEL ?? "deepseek-reasoner");
-  await page.getByLabel("独立质量核验模型").selectOption({ label: `${auditConfigName} (${process.env.CODETALK_E2E_AUDIT_LLM_MODEL ?? "deepseek-reasoner"})` });
+  await createModelConfigThroughUi(page, configName, generatorModel);
+  await createModelConfigThroughUi(page, auditConfigName, auditModel);
+  await page.getByLabel("独立质量核验模型").selectOption({ label: `${auditConfigName} (${auditModel})` });
   await expect(page.getByLabel("独立质量核验模型")).toHaveValue(/.+/);
   await expect(page.locator("body")).not.toContainText(apiKey);
 }
@@ -101,13 +146,29 @@ async function createModelConfigThroughUi(
   await expect(page.getByText(configName, { exact: true })).toBeVisible({ timeout: 15_000 });
 }
 
-async function createWorkspaceThroughUi(page: import("@playwright/test").Page, workspaceName: string) {
+async function createWorkspaceThroughUi(
+  page: import("@playwright/test").Page,
+  workspaceName: string,
+): Promise<string> {
   await page.goto("/workspaces/new", { waitUntil: "domcontentloaded" });
   await page.getByLabel("工作空间名称").fill(workspaceName);
   await page.getByLabel("代码仓库路径").fill(repoPath);
   await page.getByRole("button", { name: "创建工作空间" }).hover();
   await page.getByRole("button", { name: "创建工作空间" }).click();
-  await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 90_000 });
+  try {
+    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 15_000 });
+    return workspaceName;
+  } catch {
+    const existing = page.getByRole("link", { name: /打开已有工作空间：/ });
+    await expect(existing).toBeVisible({ timeout: 15_000 });
+    const actualName = (await existing.textContent() ?? "")
+      .replace(/^打开已有工作空间：/, "")
+      .trim();
+    expect(actualName).not.toBe("");
+    await existing.click();
+    await page.waitForURL(/\/workspaces\/[0-9a-f-]{36}$/, { timeout: 15_000 });
+    return actualName;
+  }
 }
 
 async function createAndRunTaskThroughUi(
@@ -122,7 +183,10 @@ async function createAndRunTaskThroughUi(
   await page.getByRole("button", { name: "保存并继续" }).click();
   await page.getByRole("textbox", { name: "分析目标 *" }).fill(values.target);
   await page.locator('input[type="file"]').setInputFiles(values.designDocument);
-  await page.getByRole("button", { name: "保存并继续" }).click();
+  const continueButton = page.getByRole("button", { name: "保存并继续" });
+  await expect(page.locator(".ct-v2-uploaded-files")).toHaveText("已选择 1 个文件", { timeout: 30_000 });
+  await expect(continueButton).toBeEnabled({ timeout: 30_000 });
+  await continueButton.click();
   await expect(page.getByRole("heading", { name: "确认执行配置" })).toBeVisible();
   const selectedProfile = page.getByRole("radio", { name: new RegExp(profileLabel) });
   await selectedProfile.check();

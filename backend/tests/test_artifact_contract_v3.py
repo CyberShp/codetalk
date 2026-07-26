@@ -466,6 +466,29 @@ def test_rapid_contract_materializes_flow_delivery_for_alignment_audit(tmp_path)
     assert audit["status"] == "passed"
 
 
+def test_rapid_contract_keeps_every_evidence_card_id_in_the_tester_report(tmp_path):
+    """Rapid delivery must not silently truncate IDs required by its audit."""
+    import json
+
+    from app.services.artifact_contract_v3 import materialize_artifact_contract_v3_outputs
+
+    (tmp_path / "source_scope.json").write_text(
+        json.dumps({"analysis_target": "iSCSI login"}), encoding="utf-8"
+    )
+    cards = [
+        {"evidence_id": f"FLOW-EDGE-{index:03d}", "file_path": "lib/iscsi/iscsi.c"}
+        for index in range(1, 25)
+    ]
+    (tmp_path / "evidence_cards.json").write_text(json.dumps(cards), encoding="utf-8")
+
+    materialize_artifact_contract_v3_outputs(tmp_path, profile_id="rapid")
+
+    report = (tmp_path / "快速分析报告.md").read_text(encoding="utf-8")
+    audit = json.loads((tmp_path / "artifact_alignment_audit.json").read_text(encoding="utf-8"))
+    assert "FLOW-EDGE-024" in report
+    assert audit["status"] == "passed"
+
+
 def test_artifact_alignment_audit_keeps_structured_ids_and_hashes_in_markdown(tmp_path):
     import json
 
