@@ -603,6 +603,26 @@ def test_run_outcomes_keep_quality_and_delivery_independent():
     assert delivery_status == "partial"
 
 
+def test_run_outcomes_keep_limited_coverage_warning_downloadable_not_blocked():
+    from app.api.agent_workbench import _derive_task_run_outcomes
+
+    quality_status, delivery_status = _derive_task_run_outcomes(
+        execution={"test_activity_quality": {
+            "status": "warning",
+            "deliverable": False,
+            "issue_count": 0,
+            "quality_axes": {"coverage_breadth": {"status": "warning"}},
+        }},
+        run_summary={"nodes": [{"outputs": [
+            {"artifact": "report.md", "path": "agent/report.md", "status_label": "已生成"},
+            {"artifact": "cases.json", "path": "agent/cases.json", "status_label": "已生成"},
+        ]}]},
+    )
+
+    assert quality_status == "warning"
+    assert delivery_status == "partial"
+
+
 def test_run_outcomes_never_mark_quality_blocked_artifacts_as_formal_delivery():
     from app.api.agent_workbench import _derive_task_run_outcomes
 

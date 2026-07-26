@@ -3160,9 +3160,11 @@ def _derive_task_run_outcomes(
     quality = execution.get("test_activity_quality")
     if not isinstance(quality, dict):
         quality_status = "not_checked"
+    elif str(quality.get("status") or "") in {"warning", "partial"}:
+        quality_status = "warning"
     elif quality.get("deliverable") is False:
         quality_status = "blocked"
-    elif int(quality.get("issue_count") or 0) > 0 or str(quality.get("status") or "") in {"warning", "partial"}:
+    elif int(quality.get("issue_count") or 0) > 0:
         quality_status = "warning"
     elif quality.get("deliverable") is True:
         quality_status = "passed"
@@ -3199,6 +3201,11 @@ def _derive_task_run_outcomes(
         if available == len(expected_outputs)
         else "partial"
     )
+    # A rapid workflow can deliberately return source-verified artifacts with
+    # known breadth gaps. Those bytes are useful as a limited handoff, but must
+    # not be presented as a complete professional test delivery.
+    if quality_status == "warning" and delivery_status == "complete":
+        delivery_status = "partial"
     return quality_status, delivery_status
 
 
