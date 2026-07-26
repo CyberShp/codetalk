@@ -78,7 +78,7 @@ _SOURCE_DRIVEN_STAGE_GROUPS = {
     "scenario_expansion": {
         "anchor": "scenario_candidates.json",
         "artifacts": ("scenario_candidates.json",),
-        "depends_on": ("developer_explanation",),
+        "depends_on": ("breadth_inventory",),
     },
     "test_design_governance": {
         "anchor": "traceability_matrix.json",
@@ -109,6 +109,11 @@ _SOURCE_DRIVEN_DETERMINISTIC_STAGES = frozenset(_SOURCE_DRIVEN_STAGE_GROUPS)
 _SOURCE_DRIVEN_STAGE_ANCHORS = tuple(
     str(spec["anchor"])
     for spec in _SOURCE_DRIVEN_STAGE_GROUPS.values()
+)
+_TEST_ACTIVITY_BASE_SOURCE_DRIVEN_ANCHORS = (
+    "entrypoints.json",
+    "flow_cards.json",
+    "scenario_candidates.json",
 )
 _DEEP_EXPLORATION_BRANCHES = (
     (
@@ -1835,15 +1840,32 @@ def build_staged_execution_plan(
             "output_limits": source_output_limits,
         }
     ]
-    # A deep test activity is a governed test-design run, not a selection of
-    # unrelated report files.  Its evidence inventory, scenario expansion and
-    # independent judge are therefore mandatory support stages even when the
-    # user only selected a combined report as the visible deliverable.
-    # Keep these anchors out of ``required_outputs``: they are execution
-    # contract support artifacts, not surprise downloads requested by a user.
+    # A test-design run is a governed activity, not a selection of unrelated
+    # report files. Rapid mode must still materialize the three contract
+    # stages that establish breadth, developer-facing flow coverage and test
+    # scenario expansion; otherwise the immutable stage contract can only
+    # discover missing files after an expensive model run. Deep mode adds the
+    # full governance/judge chain. Keep support anchors out of
+    # ``required_outputs``: they are not surprise user-facing downloads.
     planning_outputs = list(outputs)
-    if profile["id"] == "deep":
-        for anchor in _SOURCE_DRIVEN_STAGE_ANCHORS:
+    test_design_outputs = {
+        "sfmea.json",
+        "black_box_cases.json",
+        "black_box_cases.md",
+        "test_strategy.md",
+        "test_design.md",
+        "test_design_mindmap.md",
+    }
+    is_governed_test_activity = bool(combined_report_contract) or bool(
+        test_design_outputs.intersection(outputs)
+    )
+    if profile["id"] == "deep" or is_governed_test_activity:
+        required_anchors = (
+            _SOURCE_DRIVEN_STAGE_ANCHORS
+            if profile["id"] == "deep"
+            else _TEST_ACTIVITY_BASE_SOURCE_DRIVEN_ANCHORS
+        )
+        for anchor in required_anchors:
             if anchor not in planning_outputs:
                 planning_outputs.append(anchor)
 
@@ -1889,8 +1911,6 @@ def build_staged_execution_plan(
             )
         ):
             dependencies = ["business_flow", "sfmea", "black_box_cases"]
-        if v2_requested and stage_id == "sfmea" and "scenario_expansion" not in dependencies:
-            dependencies = [*dependencies, "scenario_expansion"]
         if v2_requested and stage_id == "black_box_cases" and "scenario_expansion" not in dependencies:
             dependencies = [*dependencies, "scenario_expansion"]
         requested.append((output_index, artifact, stage_id, list(dependencies)))

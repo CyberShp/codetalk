@@ -756,20 +756,52 @@ def test_plan_compiles_dependency_order_and_declared_outputs():
         "source_analysis",
         "flow_evidence_pack",
         "flow_outline",
+        "breadth_inventory",
+        "developer_explanation",
+        "scenario_expansion",
         "business_flow",
         "sfmea",
         "black_box_cases",
         "test_design",
     ]
-    assert plan["stages"][4]["depends_on"] == ["source_analysis", "flow_outline"]
-    assert plan["stages"][4]["artifact"] == "sfmea.json"
-    assert plan["stages"][3]["depends_on"] == ["flow_outline"]
+    stages = {stage["id"]: stage for stage in plan["stages"]}
+    assert stages["breadth_inventory"]["depends_on"] == ["flow_outline"]
+    assert stages["developer_explanation"]["depends_on"] == ["breadth_inventory"]
+    assert stages["scenario_expansion"]["depends_on"] == ["breadth_inventory"]
+    assert stages["sfmea"]["depends_on"] == ["source_analysis", "flow_outline"]
+    assert stages["sfmea"]["artifact"] == "sfmea.json"
+    assert stages["business_flow"]["depends_on"] == ["flow_outline"]
     assert "第一行" in plan["original_user_request"]
     assert "第二行" in plan["original_user_request"]
     source_stage = plan["stages"][0]
     assert source_stage["max_tokens"] == 1600
     assert source_stage["output_limits"]["max_chinese_characters"] == 1200
     assert source_stage["output_limits"]["max_evidence_anchors"] == 12
+
+
+@pytest.mark.asyncio
+async def test_rapid_test_activity_materializes_required_stage_contract_artifacts(tmp_path):
+    plan = build_staged_execution_plan(
+        contract=_contract(),
+        original_user_request="分析 iSCSI login 并输出可执行测试设计",
+        execution_profile={"id": "rapid"},
+    )
+
+    result = await execute_staged_builtin_plan(
+        llm=_StageLLM(),
+        plan=plan,
+        artifact_dir=tmp_path,
+        context_prompt="legacy",
+        source_analysis_context=_verified_source_context(),
+    )
+
+    assert result["status"] == "completed"
+    assert all((tmp_path / name).is_file() for name in (
+        "entrypoints.json",
+        "flows.json",
+        "flow_cards.json",
+        "scenario_candidates.json",
+    ))
 
 
 def test_deep_profile_plan_materializes_parallel_exploration_branches():
@@ -1406,7 +1438,7 @@ def test_source_driven_v2_plan_groups_ledgers_and_mindmap_without_extra_model_ca
     assert set(grouped["breadth_inventory"]["produces_artifacts"]) == {
         "entrypoints.json", "flows.json", "states.json", "resources.json", "model_applicability.json"
     }
-    assert grouped["sfmea"]["depends_on"] == ["source_analysis", "flow_outline", "scenario_expansion"]
+    assert grouped["sfmea"]["depends_on"] == ["source_analysis", "flow_outline"]
     assert grouped["black_box_cases"]["depends_on"] == [
         "source_analysis", "flow_outline", "sfmea", "scenario_expansion"
     ]
@@ -4420,6 +4452,9 @@ def test_combined_report_plan_runs_flow_sfmea_and_black_box_before_report():
         "source_analysis",
         "flow_evidence_pack",
         "flow_outline",
+        "breadth_inventory",
+        "developer_explanation",
+        "scenario_expansion",
         "business_flow",
         "sfmea",
         "black_box_cases",
@@ -10463,11 +10498,15 @@ def test_source_scope_and_evidence_precede_flow_and_feed_it():
         "evidence_cards",
         "flow_evidence_pack",
         "flow_outline",
+        "breadth_inventory",
+        "developer_explanation",
+        "scenario_expansion",
         "business_flow",
         "sfmea",
     ]
-    assert plan["stages"][5]["depends_on"] == ["flow_outline"]
-    sfmea_stage = plan["stages"][6]
+    stages = {stage["id"]: stage for stage in plan["stages"]}
+    assert stages["breadth_inventory"]["depends_on"] == ["flow_outline"]
+    sfmea_stage = stages["sfmea"]
     assert sfmea_stage["output_limits"] == {
         "max_items": 10,
         "max_field_characters": 180,
@@ -10620,13 +10659,20 @@ def test_plan_uses_canonical_dependency_order_for_unordered_user_outputs():
         "source_analysis",
         "flow_evidence_pack",
         "flow_outline",
+        "breadth_inventory",
+        "developer_explanation",
+        "scenario_expansion",
         "business_flow",
         "sfmea",
         "black_box_cases",
         "test_strategy",
         "test_design",
     ]
-    assert plan["stages"][4]["depends_on"] == ["source_analysis", "flow_outline"]
+    stages = {stage["id"]: stage for stage in plan["stages"]}
+    assert stages["sfmea"]["depends_on"] == ["source_analysis", "flow_outline"]
+    assert stages["black_box_cases"]["depends_on"] == [
+        "source_analysis", "flow_outline", "sfmea", "scenario_expansion"
+    ]
 
 
 def test_plan_keeps_multiple_artifacts_owned_by_the_same_stage():
@@ -10686,7 +10732,7 @@ async def test_executor_writes_each_stage_and_preserves_original_request(tmp_pat
     )
 
     assert result["status"] == "completed"
-    assert result["completed_stages"] == 7
+    assert result["completed_stages"] == 10
     assert (tmp_path / "staged_execution_plan.json").exists()
     assert (tmp_path / "stages" / "source_analysis" / "stage_result.json").exists()
     for artifact in _contract()["required_outputs"]:
