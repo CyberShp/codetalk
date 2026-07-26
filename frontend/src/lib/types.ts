@@ -1055,6 +1055,11 @@ export interface PreparedWorkbenchTaskRun {
       structure?: WorkbenchQualityAxis;
       facts?: WorkbenchQualityAxis;
       executability?: WorkbenchQualityAxis;
+      coverage_breadth?: WorkbenchQualityAxis & {
+        missing_scenario_count?: number;
+        declared_scope?: string;
+        warnings?: string[];
+      };
       coverage_judge?: WorkbenchQualityAxis & {
         judge_status?: string;
         blocking_reasons?: string[];

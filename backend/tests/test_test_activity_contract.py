@@ -6934,6 +6934,38 @@ def test_combined_markdown_artifact_audit_surfaces_legacy_professional_fact_lint
         issue.get("code") == "missing_iscsi_professional_scenarios"
         for issue in audit["lint_warnings"]
     ), audit
+    coverage = audit["quality_axes"]["coverage_breadth"]
+    assert coverage["status"] == "warning"
+    assert coverage["issue_count"] == 3
+    assert coverage["declared_scope"] == "professional_scenario_coverage"
+
+
+def test_professional_coverage_axis_marks_missing_groups_without_changing_hard_gates():
+    from app.services.test_activity_contract import _professional_coverage_axis
+
+    coverage = _professional_coverage_axis(
+        [
+            {
+                "code": "missing_iscsi_professional_scenarios",
+                "message": "缺少协议状态转换场景",
+                "scenarios": ["非法 NSG", "Unsupported Version"],
+            },
+            {
+                "code": "missing_chap_negative_scenarios",
+                "message": "缺少 CHAP 负向场景",
+                "scenarios": ["缺少 CHAP_R"],
+            },
+        ]
+    )
+
+    assert coverage == {
+        "status": "warning",
+        "score": 33,
+        "issue_count": 2,
+        "missing_scenario_count": 3,
+        "declared_scope": "professional_scenario_coverage",
+        "warnings": ["缺少协议状态转换场景", "缺少 CHAP 负向场景"],
+    }
 
 
 def test_combined_report_routes_nested_black_box_conflict_to_structured_artifact(tmp_path):

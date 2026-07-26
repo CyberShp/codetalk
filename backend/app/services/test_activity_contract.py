@@ -1546,6 +1546,54 @@ _PROFESSIONAL_EXECUTABILITY_CODES = {
     "non_executable_mcs_client",
     "missing_mcs_capable_client",
 }
+_PROFESSIONAL_COVERAGE_GROUP_COUNT = len(_PROFESSIONAL_MARKER_LINT_CODES)
+
+
+def _professional_coverage_axis(
+    lint_warnings: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Expose incomplete domain coverage without treating it as a fact failure.
+
+    The professional scenario checks are intentionally heuristics, so they do
+    not replace L1/L2 fact gates.  They are nevertheless product-quality
+    evidence: a rapid run may be downloadable with declared gaps, while a
+    deep run must turn the same gaps into a delivery block at the profile
+    layer.  Keeping this as its own axis prevents a structurally valid report
+    from being represented as fully covered.
+    """
+    warnings = [
+        issue
+        for issue in lint_warnings
+        if str(issue.get("code") or "") in _PROFESSIONAL_MARKER_LINT_CODES
+    ]
+    if not warnings:
+        return {
+            "status": "passed",
+            "score": 100,
+            "issue_count": 0,
+            "missing_scenario_count": 0,
+            "declared_scope": "professional_scenario_coverage",
+            "warnings": [],
+        }
+    codes = {str(issue.get("code") or "") for issue in warnings}
+    scenarios = {
+        str(scenario).strip()
+        for issue in warnings
+        for scenario in issue.get("scenarios") or []
+        if str(scenario).strip()
+    }
+    covered_groups = max(0, _PROFESSIONAL_COVERAGE_GROUP_COUNT - len(codes))
+    return {
+        "status": "warning",
+        "score": round(covered_groups * 100 / _PROFESSIONAL_COVERAGE_GROUP_COUNT),
+        "issue_count": len(codes),
+        "missing_scenario_count": len(scenarios),
+        "declared_scope": "professional_scenario_coverage",
+        "warnings": [
+            str(issue.get("message") or "存在待扩展的专业测试场景")
+            for issue in warnings
+        ],
+    }
 
 
 def _partition_combined_professional_issues(
@@ -1876,6 +1924,7 @@ def audit_test_activity_artifacts(
     )
     fact_pass_rate = round(fact_verified * 100 / fact_total) if fact_total else 100
     executable_pass_rate = 0 if executable_issues else 100
+    coverage_breadth = _professional_coverage_axis(lint_warnings)
     quality_axes = {
         "structure": {
             "status": "blocked" if structural_issues else "passed",
@@ -1907,13 +1956,30 @@ def audit_test_activity_artifacts(
             "issue_count": len(executable_issues),
             "pass_rate": executable_pass_rate if execution_checks_applicable else None,
         },
+        "coverage_breadth": coverage_breadth,
     }
     score = min(
         structure_score,
         fact_pass_rate if fact_total else 100,
         executable_pass_rate if execution_checks_applicable else 100,
+        int(coverage_breadth["score"]),
     )
-    status = "invalid" if empty_scope else "needs_rework" if issues else "deliverable"
+    status = (
+        "invalid"
+        if empty_scope
+        else "needs_rework"
+        if issues
+        else "warning"
+        if coverage_breadth["status"] == "warning"
+        else "deliverable"
+    )
+    recommendations = _recommendations_for_issues(issues)
+    if coverage_breadth["status"] == "warning":
+        recommendations.insert(
+            0,
+            "本次结果保留为受限覆盖交付；请补充覆盖广度轴列出的协议、认证或恢复场景，"
+            "再用于完整测试设计评审。",
+        )
     return {
         "kind": "test_activity_quality_audit",
         "status": status,
@@ -1923,7 +1989,7 @@ def audit_test_activity_artifacts(
         "issues": issues,
         "lint_warning_count": len(lint_warnings),
         "lint_warnings": lint_warnings,
-        "recommendations": _recommendations_for_issues(issues),
+        "recommendations": recommendations,
         "fact_verification": {
             "total": fact_total,
             "verified": fact_verified,

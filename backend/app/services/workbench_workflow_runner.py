@@ -1895,13 +1895,17 @@ class WorkbenchWorkflowRunner:
             artifact_dir=artifact_dir,
             repo_path=str(task_run.repo_path or ""),
         )
-        quality_axes = audit.get("quality_axes")
         execution_profile = task_run.task_bundle.get("execution_profile")
         profile_id = (
             str(execution_profile.get("id") or "rapid")
             if isinstance(execution_profile, dict)
             else "rapid"
         )
+        audit = _apply_profile_coverage_to_quality_audit(
+            audit=audit,
+            profile_id=profile_id,
+        )
+        quality_axes = audit.get("quality_axes")
         artifact_contract_validation = (
             validate_artifact_contract_v3_outputs(
                 artifact_dir,
@@ -4241,6 +4245,68 @@ def _apply_claim_evidence_ledger_to_quality_audit(
             "deliverable": False,
             "issues": issues,
             "issue_count": len(issues),
+        }
+    )
+    return result
+
+
+def _apply_profile_coverage_to_quality_audit(
+    *, audit: dict[str, Any], profile_id: str
+) -> dict[str, Any]:
+    """Apply the execution-profile policy to visible coverage gaps.
+
+    A rapid run is a bounded analysis: professional scenario gaps must remain
+    visible and lower its score, but do not discard useful, source-verified
+    deliverables.  A deep run explicitly promises full test delivery, so the
+    same gaps become a repairable delivery blocker.  This keeps the common
+    artifact audit profile-agnostic while avoiding a false "100% passed"
+    presentation in either path.
+    """
+    result = dict(audit or {})
+    axes = dict(result.get("quality_axes") or {})
+    coverage = dict(axes.get("coverage_breadth") or {})
+    if str(coverage.get("status") or "") != "warning":
+        return result
+
+    score = coverage.get("score")
+    if isinstance(score, (int, float)):
+        current_score = result.get("score")
+        if isinstance(current_score, (int, float)):
+            result["score"] = min(int(current_score), int(score))
+        else:
+            result["score"] = int(score)
+    profile = str(profile_id or "rapid").strip().lower()
+    if profile != "deep":
+        if result.get("deliverable") is True and result.get("status") == "deliverable":
+            result["status"] = "warning"
+        return result
+
+    issues = [
+        dict(item)
+        for item in result.get("issues") or []
+        if isinstance(item, dict)
+    ]
+    if not any(item.get("code") == "professional_coverage_incomplete" for item in issues):
+        issues.append(
+            {
+                "code": "professional_coverage_incomplete",
+                "severity": "blocking",
+                "artifact": "完整分析报告.md",
+                "message": (
+                    "深度型交付尚未覆盖必需的专业测试场景："
+                    + "；".join(str(item) for item in coverage.get("warnings") or [])
+                ),
+                "recommended_action": "从场景扩展阶段重试，补齐覆盖广度提示中的场景后再发布。",
+            }
+        )
+    axes["coverage_breadth"] = {**coverage, "status": "blocked"}
+    result.update(
+        {
+            "status": "needs_rework" if result.get("status") != "invalid" else "invalid",
+            "deliverable": False,
+            "issues": issues,
+            "issue_count": len(issues),
+            "quality_axes": axes,
         }
     )
     return result

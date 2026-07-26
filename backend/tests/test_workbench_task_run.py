@@ -689,6 +689,78 @@ def test_source_driven_judge_preserves_deliverable_when_only_coverage_work_is_pe
     ]
 
 
+def test_professional_coverage_warning_keeps_rapid_delivery_but_prevents_a_perfect_score():
+    from app.services.workbench_workflow_runner import (
+        _apply_profile_coverage_to_quality_audit,
+    )
+
+    result = _apply_profile_coverage_to_quality_audit(
+        audit={
+            "status": "warning",
+            "deliverable": True,
+            "score": 100,
+            "issue_count": 0,
+            "issues": [],
+            "lint_warnings": [
+                {
+                    "code": "missing_iscsi_professional_scenarios",
+                    "message": "缺少 iSCSI 协议异常场景",
+                }
+            ],
+            "quality_axes": {
+                "coverage_breadth": {
+                    "status": "warning",
+                    "score": 67,
+                    "issue_count": 1,
+                    "warnings": ["缺少 iSCSI 协议异常场景"],
+                }
+            },
+        },
+        profile_id="rapid",
+    )
+
+    assert result["deliverable"] is True
+    assert result["status"] == "warning"
+    assert result["score"] == 67
+    assert result["quality_axes"]["coverage_breadth"]["status"] == "warning"
+
+
+def test_professional_coverage_warning_blocks_deep_delivery():
+    from app.services.workbench_workflow_runner import (
+        _apply_profile_coverage_to_quality_audit,
+    )
+
+    result = _apply_profile_coverage_to_quality_audit(
+        audit={
+            "status": "warning",
+            "deliverable": True,
+            "score": 100,
+            "issue_count": 0,
+            "issues": [],
+            "lint_warnings": [
+                {
+                    "code": "missing_chap_negative_scenarios",
+                    "artifact": "sfmea.json",
+                    "message": "缺少 CHAP 负向场景",
+                }
+            ],
+            "quality_axes": {
+                "coverage_breadth": {
+                    "status": "warning",
+                    "score": 67,
+                    "issue_count": 1,
+                    "warnings": ["缺少 CHAP 负向场景"],
+                }
+            },
+        },
+        profile_id="deep",
+    )
+
+    assert result["deliverable"] is False
+    assert result["status"] == "needs_rework"
+    assert result["issues"][-1]["code"] == "professional_coverage_incomplete"
+
+
 def test_claim_evidence_ledger_blocks_delivery_with_a_repairable_issue():
     from app.services.workbench_workflow_runner import (
         _apply_claim_evidence_ledger_to_quality_audit,
@@ -2130,6 +2202,8 @@ def test_workbench_runner_staged_builtin_llm_writes_each_declared_artifact(
         return StageLLM()
 
     monkeypatch.setattr(runner_module, "create_llm_client_from_active", fake_factory)
+    monkeypatch.setattr(runner_module, "create_source_analysis_llm_client", fake_factory)
+    monkeypatch.setattr(runner_module, "create_quality_repair_llm_client", fake_factory)
     prepared = WorkbenchTaskRunPreparer(
         artifact_root=tmp_path / "task_runs",
         workflow_store=store,
@@ -7625,6 +7699,8 @@ def test_staged_builtin_quality_retry_receives_feedback_and_scopes_nested_contra
         return StageLLM()
 
     monkeypatch.setattr(runner_module, "create_llm_client_from_active", fake_factory)
+    monkeypatch.setattr(runner_module, "create_source_analysis_llm_client", fake_factory)
+    monkeypatch.setattr(runner_module, "create_quality_repair_llm_client", fake_factory)
     result = WorkbenchWorkflowRunner(tmp_path / "task_runs")._execute_builtin_llm_step(
         step={
             "id": "analyze",
