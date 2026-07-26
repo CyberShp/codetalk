@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Literal, Protocol
@@ -162,7 +163,10 @@ class AgentHarnessFacade:
         self._adapter: ProviderAdapter = adapter or LocalCliProviderAdapter(self.artifact_dir)
 
     def prepare(self, request: HarnessRunRequest) -> Any:
-        return self._adapter.prepare(request)
+        session = self._adapter.prepare(request)
+        session_id = str(getattr(session, "run_id", "") or request.run_id or "")
+        self._write_harness_contract(session_id=session_id, request=request)
+        return session
 
     def execute(
         self,
@@ -232,8 +236,57 @@ class AgentHarnessFacade:
         )
 
     def collect_artifacts(self, session_id: str) -> list[str]:
-        """Return adapter candidates through the workflow-owned artifact boundary."""
-        return self._adapter.collect_artifacts(session_id)
+        """Accept only declared, local files from an Adapter's candidate list."""
+        declared = set(self._declared_artifacts(session_id))
+        accepted: list[str] = []
+        for candidate in self._adapter.collect_artifacts(session_id):
+            if not isinstance(candidate, str) or candidate not in declared:
+                continue
+            path = Path(candidate)
+            if path.is_absolute() or ".." in path.parts:
+                continue
+            resolved = (self.artifact_dir / path).resolve()
+            try:
+                resolved.relative_to(self.artifact_dir.resolve())
+            except ValueError:
+                continue
+            if resolved.is_file():
+                accepted.append(candidate)
+        return accepted
+
+    def _write_harness_contract(
+        self,
+        *,
+        session_id: str,
+        request: HarnessRunRequest,
+    ) -> None:
+        self.artifact_dir.mkdir(parents=True, exist_ok=True)
+        required = request.task_bundle.get("required_artifacts")
+        declared = [str(item) for item in required or [] if isinstance(item, str)]
+        payload = {
+            "contract_version": 1,
+            "session_id": session_id,
+            "required_artifacts": declared,
+        }
+        (self.artifact_dir / "harness_contract.json").write_text(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2),
+            encoding="utf-8",
+        )
+
+    def _declared_artifacts(self, session_id: str) -> list[str]:
+        try:
+            payload = json.loads(
+                (self.artifact_dir / "harness_contract.json").read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            return []
+        if not isinstance(payload, dict) or payload.get("session_id") != session_id:
+            return []
+        return [
+            str(item)
+            for item in payload.get("required_artifacts") or []
+            if isinstance(item, str)
+        ]
 
     @staticmethod
     def _emit_lifecycle_event(

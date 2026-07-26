@@ -138,10 +138,13 @@ def test_agent_harness_facade_keeps_product_contract_when_adapter_is_replaced(tm
 
         def collect_artifacts(self, session_id):
             assert session_id == "sdk_session"
-            return ["report.md"]
+            return ["report.md", "invented.md", "../outside.md"]
 
     adapter = IsolatedAdapter()
-    facade = AgentHarnessFacade(tmp_path / "artifacts", adapter=adapter)
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "report.md").write_text("verified delivery", encoding="utf-8")
+    facade = AgentHarnessFacade(artifact_dir, adapter=adapter)
     events = []
     request = HarnessRunRequest(
         provider="future-sdk",
