@@ -1816,6 +1816,10 @@ def build_staged_execution_plan(
         if isinstance(contract.get("artifact_contract"), dict)
         else {}
     )
+    professional_black_box_case_floor = _professional_black_box_case_floor(
+        contract=contract,
+        execution_profile=profile,
+    )
     combined_report_contract = next(
         (
             dict(artifact_contract.get(artifact) or {})
@@ -1983,6 +1987,7 @@ def build_staged_execution_plan(
             schema["minItems"] = max(
                 int(schema.get("minItems") or 0),
                 int(combined_report_contract.get("min_black_box_cases") or 1),
+                professional_black_box_case_floor,
             )
             _require_technical_claims(schema)
             output_contract["schema"] = schema
@@ -2019,11 +2024,25 @@ def build_staged_execution_plan(
                     or 0
                 ),
             )
+        if base_stage_id == "black_box_cases":
+            declared_minimum_items = max(
+                declared_minimum_items,
+                professional_black_box_case_floor,
+            )
         if declared_minimum_items and base_stage_id in {"sfmea", "black_box_cases"}:
             stage_limits = {
                 "max_tokens": max(
                     int(stage_limits.get("max_tokens") or 0),
-                    9000 if base_stage_id == "sfmea" else settings.black_box_cases_max_tokens,
+                    (
+                        9000
+                        if base_stage_id == "sfmea"
+                        else (
+                            settings.professional_black_box_cases_max_tokens
+                            if professional_black_box_case_floor
+                            > len(BLACK_BOX_REQUIRED_DIMENSIONS)
+                            else settings.black_box_cases_max_tokens
+                        )
+                    ),
                 ),
                 "output_limits": {
                     **dict(stage_limits.get("output_limits") or {}),
@@ -2070,6 +2089,19 @@ def build_staged_execution_plan(
                     if output_index < 0 and base_stage_id == "business_flow" and combined_report_contract
                     else {}
                 ),
+                **(
+                    {
+                        "streaming": True,
+                        "continue_on_length": True,
+                        "max_continuations": 2,
+                    }
+                    if (
+                        base_stage_id == "black_box_cases"
+                        and professional_black_box_case_floor
+                        > len(BLACK_BOX_REQUIRED_DIMENSIONS)
+                    )
+                    else {}
+                ),
                 **stage_limits,
             }
         )
@@ -2089,6 +2121,49 @@ def build_staged_execution_plan(
         },
         "stages": stages,
     }
+
+
+def _professional_black_box_case_floor(
+    *,
+    contract: dict[str, Any],
+    execution_profile: dict[str, Any],
+) -> int:
+    """Return the minimum cardinality for atomic professional test suites.
+
+    Required dimensions are coverage categories, not a fixed-size test-suite
+    template.  A deep, profile-driven activity must retain one atomic case for
+    each required scenario *in addition to* its dimension baseline; otherwise
+    the 12 dimension categories silently cap a larger protocol matrix.
+    """
+    profile_id = str(execution_profile.get("id") or "").strip().lower()
+    profiles = {
+        str(item).strip()
+        for item in contract.get("domain_profiles") or []
+        if str(item).strip()
+    }
+    target = str(contract.get("target") or "")
+    is_complete_iscsi = "iscsi_login" in profiles and "完整" in target
+    if profile_id != "deep" and not is_complete_iscsi:
+        return 0
+
+    requirements = (
+        contract.get("domain_requirements")
+        if isinstance(contract.get("domain_requirements"), dict)
+        else {}
+    )
+    scenarios: set[str] = set()
+    for profile_name in profiles:
+        profile_requirements = requirements.get(profile_name)
+        if not isinstance(profile_requirements, dict):
+            continue
+        scenarios.update(
+            str(item).strip()
+            for item in profile_requirements.get("required_scenarios") or []
+            if str(item).strip()
+        )
+    if not scenarios:
+        return 0
+    return len(BLACK_BOX_REQUIRED_DIMENSIONS) + len(scenarios)
 
 
 def _staged_execution_profile(raw_profile: dict[str, Any] | None) -> dict[str, Any]:
@@ -7849,7 +7924,12 @@ def _normalize_black_box_dimension_contract(
     *,
     preserve_additional_cases: bool = False,
 ) -> tuple[Any, list[str]]:
-    """Keep one executable case for every declared dimension."""
+    """Keep every atomic case whose dimension belongs to the contract.
+
+    A dimension is a coverage category, not a uniqueness key.  Dropping a
+    second ``invalid_input`` case would erase independently required protocol
+    failures such as an unknown key and a malformed authentication response.
+    """
     if not isinstance(rendered, list):
         return rendered, []
     output_contract = (
@@ -7865,7 +7945,6 @@ def _normalize_black_box_dimension_contract(
     if not required:
         return rendered, []
     allowed = set(required)
-    seen: set[str] = set()
     normalized: list[Any] = []
     fields: list[str] = []
     for index, item in enumerate(rendered):
@@ -7876,10 +7955,6 @@ def _normalize_black_box_dimension_contract(
         if dimension not in allowed:
             fields.append(f"$[{index}].test_dimension:noncontract_removed")
             continue
-        if dimension in seen and not preserve_additional_cases:
-            fields.append(f"$[{index}].test_dimension:duplicate_removed")
-            continue
-        seen.add(dimension)
         normalized.append(item)
     return normalized, fields
 
@@ -8035,7 +8110,18 @@ def _apply_regular_stage_output_limits(
             if str(value).strip()
         ]
     )
-    max_items = max(max_items, int(minimum_items or 0), required_dimension_count)
+    schema = (
+        output_contract.get("schema")
+        if isinstance(output_contract.get("schema"), dict)
+        else {}
+    )
+    schema_minimum_items = int(schema.get("minItems") or 0)
+    max_items = max(
+        max_items,
+        int(minimum_items or 0),
+        required_dimension_count,
+        schema_minimum_items,
+    )
     if isinstance(rendered, list) and max_items > 0 and len(rendered) > max_items:
         return rendered[:max_items]
     return rendered
@@ -14171,7 +14257,8 @@ def _stage_format_rules(stage_id: str, artifact: str) -> list[str]:
             "test_dimension 必须覆盖且逐字使用 "
             "normal_path、invalid_input、resource_pressure、timeout、reconnect、concurrency、"
             "recovery、performance、long_steady_state、resource_wraparound、resource_cleanup、"
-            "upstream_error_propagation 十二个值，每个恰好一条；步骤只能使用外部操作和可观测结果。\n"
+            "upstream_error_propagation 十二个值，每个至少一条；专业协议场景必须保留独立原子用例，"
+            "即使与既有维度同属一个类别也不得合并或删减；步骤只能使用外部操作和可观测结果。\n"
             "- 命令行选项、sysfs 路径、日志字面量和状态值必须来自已验证证据或输入材料；"
             "证据不足时写明待环境确认，不得猜测。不得编造性能阈值，性能用例应要求先建立基线并"
             "报告分位数或退化比例；预期结果必须唯一可判定，不得使用‘可能成功或失败’。"
@@ -14180,7 +14267,8 @@ def _stage_format_rules(stage_id: str, artifact: str) -> list[str]:
             "还必须包含预热次数、至少 30 次重复、P50/P95 和方差。\n"
             "- 质量修复必须保持既有 case_id；当门禁反馈缺少 test_dimension 时，必须把重复维度的"
             "既有 case_id 重新分配为缺失维度，并完整重写该用例的场景、前置条件、步骤、预期结果、"
-            "观测点、诊断和 oracle_basis，直到十二个维度各恰好一条；resource_wraparound 只能通过"
+            "观测点、诊断和 oracle_basis，直到十二个维度各至少一条；不得为了维度唯一性删除已要求的"
+            "专业原子场景；resource_wraparound 只能通过"
             "公开 CLI、sysfs、配置或外部故障注入观测边界，禁止 mock/调用 libnvme 或 libnvmf 内部函数；"
             "若环境没有安全的外部边界注入能力，应把该能力写成前置条件和 Blocked 判据。"
             "upstream_error_propagation 必须从目标端、网络、配置文件或公开 CLI 注入上游错误，"

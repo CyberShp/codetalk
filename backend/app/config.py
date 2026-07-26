@@ -203,6 +203,12 @@ class Settings(BaseSettings):
     regular_stage_quality_repair_use_primary_model: bool = True
     business_flow_max_tokens: int = Field(default=8000, ge=512, le=8000)
     black_box_cases_max_tokens: int = Field(default=12000, ge=6000, le=16000)
+    # Deep domain profiles can require more atomic cases than the twelve
+    # coverage dimensions. Keep this separately configurable so production
+    # deployments can tune the cost without weakening the artifact contract.
+    professional_black_box_cases_max_tokens: int = Field(
+        default=16000, ge=6000, le=16000
+    )
     business_flow_provider_timeout_seconds: int = Field(default=180, ge=1, le=360)
     business_flow_total_timeout_seconds: int = Field(default=240, ge=1, le=360)
     business_flow_repair_timeout_seconds: int = Field(default=30, ge=1, le=60)

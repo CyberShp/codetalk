@@ -2481,7 +2481,7 @@ def test_black_box_oracle_contract_replaces_unregistered_absolute_latency_expect
     assert "$[0].expected_result" in fields
 
 
-def test_black_box_dimension_contract_removes_noncontract_and_duplicate_rows():
+def test_black_box_dimension_contract_keeps_atomic_duplicate_dimensions():
     rows = [
         {"case_id": "BB-01", "test_dimension": "normal_path"},
         {"case_id": "BB-02", "test_dimension": "invalid_input"},
@@ -2496,11 +2496,8 @@ def test_black_box_dimension_contract_removes_noncontract_and_duplicate_rows():
 
     normalized, fields = _normalize_black_box_dimension_contract(rows, stage)
 
-    assert [item["case_id"] for item in normalized] == ["BB-01", "BB-02"]
-    assert fields == [
-        "$[2].test_dimension:noncontract_removed",
-        "$[3].test_dimension:duplicate_removed",
-    ]
+    assert [item["case_id"] for item in normalized] == ["BB-01", "BB-02", "BB-02B"]
+    assert fields == ["$[2].test_dimension:noncontract_removed"]
 
 
 def test_black_box_dimension_contract_keeps_gate_required_additional_case():
@@ -13137,6 +13134,58 @@ def test_black_box_output_limit_never_drops_declared_required_dimensions():
     )
 
     assert len(result) == 12
+
+
+def test_black_box_output_limit_never_drops_schema_declared_atomic_cases():
+    from app.services.ai_staged_execution import _apply_regular_stage_output_limits
+
+    rows = [
+        {"case_id": f"BB-{index}", "test_dimension": "invalid_input"}
+        for index in range(27)
+    ]
+    result = _apply_regular_stage_output_limits(
+        rows,
+        {
+            "output_contract": {
+                "schema": {"type": "array", "minItems": 27},
+                "required_dimensions": ["invalid_input"],
+            },
+            "output_limits": {"max_items": 12},
+        },
+    )
+
+    assert len(result) == 27
+
+
+def test_deep_iscsi_plan_budget_allows_atomic_profile_scenarios():
+    contract = {
+        "target": "完整 iSCSI Login 测试设计",
+        "domain_profiles": ["iscsi_login"],
+        "domain_requirements": {
+            "iscsi_login": {
+                "required_scenarios": [f"场景-{index}" for index in range(15)],
+            }
+        },
+        "required_outputs": ["report.md"],
+        "artifact_contract": {
+            "report.md": {
+                "artifact": "report.md",
+                "min_sfmea_rows": 12,
+                "min_black_box_cases": 12,
+            }
+        },
+    }
+
+    plan = build_staged_execution_plan(
+        contract=contract,
+        original_user_request="完整 iSCSI Login 测试设计",
+        execution_profile={"id": "deep"},
+    )
+    cases = next(stage for stage in plan["stages"] if stage["id"] == "black_box_cases")
+
+    assert cases["output_contract"]["schema"]["minItems"] == 27
+    assert cases["output_limits"]["max_items"] == 27
+    assert cases["continue_on_length"] is True
 
 
 def test_deterministic_quality_repair_makes_targeted_black_box_result_observable():
