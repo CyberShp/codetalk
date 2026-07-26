@@ -2661,9 +2661,16 @@ async def _execute_task_run_background(
             payload=payload,
         )
         status = _terminal_execution_status(result)
+        # ``quality_blocked`` means the executor finished but the resulting
+        # delivery did not clear its quality contract.  It is a public quality
+        # conclusion, not an execution lifecycle state.  Persisting it as the
+        # latter made WorkbenchTaskRunStore normalize the run back to
+        # ``prepared`` on reload, which in turn made a completed analysis look
+        # as though it had never started.
+        persisted_execution_status = "completed" if status == "quality_blocked" else status
         updated, _ = event_store.mark_status_unless(
             task_run_id,
-            status,
+            persisted_execution_status,
             blocked_statuses={"cancelled"},
             completed_at=datetime.now(timezone.utc).isoformat(),
         )
