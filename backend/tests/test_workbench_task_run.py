@@ -11,6 +11,41 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_workbench_staged_plan_preserves_profile_scenario_capacity():
+    from app.services.workbench_workflow_runner import _build_workbench_staged_plan
+
+    plan = _build_workbench_staged_plan(
+        run_id="run-professional-capacity",
+        execution_contract={
+            "goal": "完整 iSCSI Login 测试设计",
+            "test_activity_contract": {
+                "target": "完整 iSCSI Login 测试设计",
+                "domain_profiles": ["iscsi_login"],
+                "domain_requirements": {
+                    "iscsi_login": {
+                        "required_scenarios": [f"场景-{index}" for index in range(15)],
+                    }
+                },
+                "artifact_contract": {
+                    "report.md": {
+                        "artifact": "report.md",
+                        "min_sfmea_rows": 12,
+                        "min_black_box_cases": 12,
+                    }
+                },
+            },
+        },
+        task_bundle={"execution_profile": {"id": "deep"}},
+        output_contract={"expected_output_schemas": []},
+        required_artifacts=["report.md"],
+    )
+    cases = next(stage for stage in plan["stages"] if stage["id"] == "black_box_cases")
+
+    assert cases["output_contract"]["schema"]["minItems"] == 27
+    assert cases["output_limits"]["max_items"] == 27
+    assert cases["continue_on_length"] is True
+
+
 def test_final_quality_gate_includes_nested_black_box_case_details(tmp_path):
     from app.services.workbench_workflow_runner import (
         _append_nested_black_box_delivery_issues,

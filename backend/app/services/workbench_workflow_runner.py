@@ -4582,6 +4582,13 @@ def _build_workbench_staged_plan(
             "target": str(test_activity_contract.get("target") or original_request),
             "required_outputs": required_artifacts,
             "artifact_contract": artifact_contract,
+            # The staged planner owns cardinality and timeout decisions. Keep
+            # the domain contract attached so profile-specific atomic test
+            # matrices cannot be silently reduced to generic output limits.
+            "domain_profiles": list(test_activity_contract.get("domain_profiles") or []),
+            "domain_requirements": dict(
+                test_activity_contract.get("domain_requirements") or {}
+            ),
         },
         original_user_request=original_request,
         execution_profile=(
