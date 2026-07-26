@@ -626,7 +626,12 @@ def _seed_quality_retry_from_parent(*, parent_run: Any, prepared: Any) -> None:
     copied, copied_support, path_replacements = _copy_parent_agent_artifacts(
         parent_agents=parent_agents,
         child_agents=child_agents,
-        include_support=audit_status not in {"needs_rework", "invalid"},
+        # A quality repair may rerun only one downstream artifact, but the
+        # immutable stage contract still needs the already-verified support
+        # evidence from the parent attempt.  Seed it into the child as a
+        # read-only baseline; affected delivery artifacts remain eligible for
+        # replacement by the repair stage below.
+        include_support=True,
     )
     if audit_status not in {"needs_rework", "invalid"}:
         retry_seed_results = prepared.task_bundle.get("retry_seed_results")
@@ -674,6 +679,7 @@ def _seed_quality_retry_from_parent(*, parent_run: Any, prepared: Any) -> None:
         "audit_status": str(audit.get("status") or ""),
         "issue_count": int(audit.get("issue_count") or 0),
         "copied_artifacts": copied,
+        "copied_support_files": copied_support,
     }
 
 

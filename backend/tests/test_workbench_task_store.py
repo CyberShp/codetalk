@@ -30,6 +30,9 @@ def test_quality_retry_reaudits_parent_and_seeds_report(tmp_path, monkeypatch):
     parent_agent.mkdir(parents=True)
     child_agent.mkdir(parents=True)
     (parent_agent / "report.md").write_text("# 旧报告\n", encoding="utf-8")
+    (parent_agent / "entrypoints.json").write_text("[]", encoding="utf-8")
+    (parent_agent / "flows.json").write_text("[]", encoding="utf-8")
+    (parent_agent / "scenario_candidates.json").write_text("[]", encoding="utf-8")
     audit = {
         "status": "needs_rework",
         "issue_count": 1,
@@ -82,6 +85,11 @@ def test_quality_retry_reaudits_parent_and_seeds_report(tmp_path, monkeypatch):
     assert prepared.task_bundle["retry_seed_results"] == {}
     assert prepared.task_bundle["quality_retry_seed"]["copied_artifacts"] == [
         "analyze:report.md"
+    ]
+    assert prepared.task_bundle["quality_retry_seed"]["copied_support_files"] == [
+        "analyze:entrypoints.json",
+        "analyze:flows.json",
+        "analyze:scenario_candidates.json",
     ]
 
 
