@@ -17,7 +17,7 @@ means that the cited current implementation and evidence cover the whole AC;
 | AC | Status | Current evidence / remaining proof |
 | --- | --- | --- |
 | AC-ARCH-001 | verified | `run_snapshot_v3.json`, `WorkflowVersionStore`, `WorkbenchTaskRun`; Chromium `task_run_ee411b3017c14a83984ca6f93d02fca2` validates frozen snapshot before execution. |
-| AC-ARCH-002 | partial | `AgentHarnessFacade` and SDK POC ADR isolate vendor SDKs, but no production SDK Adapter has passed all admission gates. |
+| AC-ARCH-002 | partial | `AgentHarnessFacade` now accepts an injected `ProviderAdapter`; the default `LocalCliProviderAdapter` preserves the existing CLI path while the facade keeps stable task results, lifecycle events and artifact semantics. SDK POC ADR isolates vendor SDKs, but no production SDK Adapter has passed all admission gates. |
 | AC-ARCH-003 | verified | ADR-024 selects the existing local runner plus Harness Facade as the one durable runtime. |
 | AC-ARCH-004 | verified | `WORKBENCH_V2_ENABLED=false` is now rejected at configuration load; V3 migrations and task APIs always initialize. Legacy URLs unconditionally redirect to `/tasks`, `/workflows`, or `/semantic-library`, while historical artifacts remain read-only compatibility data. Chromium `workbench-v2-release-real.spec.ts` verifies all three redirects and the V3 pages at 1440/1280/1024. |
 | AC-ARCH-005 | verified | `/api/workbench/node-registry` drives node kind, ports, schema and inspector metadata; registry/inspector browser regressions are recorded. |
