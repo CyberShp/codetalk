@@ -113,7 +113,27 @@ OpenAI Agents SDK `0.18.3` 已额外完成一次真实 `Runner.run()`：适配�
 `/Volumes/Media/codetalk-e2e-artifacts/v3-sdk-offline-rerun-20260727/openai-agents-loopback.json`
 （SHA-256：`6bca98b7eb33a7f2a8cdd5ff57b902b152f3ed39a5599bc44c292c0c76924f79`）。
 这仍只验证 SDK 的本地选型边界：没有产品 RunSnapshot、真实 SPDK、外部模型、MCP、
-取消/恢复或管理员流量捕获，因而不得据此提升任何生产 Adapter 或 AC 状态。
+恢复或管理员流量捕获，因而不得据此提升任何生产 Adapter 或 AC 状态。
+
+### Loopback 取消 POC（2026-07-27）
+
+`openai_agents_loopback_cancel_poc.py` 让同一 loopback endpoint 在收到真实
+`Runner.run()` 请求后暂停响应，再由调用方取消 asyncio task。重跑得到：
+
+```json
+{
+  "cancelled": true,
+  "paths": ["/v1/chat/completions"],
+  "tracing_disabled": true
+}
+```
+
+证据文件为
+`/Volumes/Media/codetalk-e2e-artifacts/v3-sdk-offline-rerun-20260727/openai-agents-cancel.json`
+（SHA-256：`a3fa08815b8c26aafeb8420b5b8e1fd25e2d58ade018f6702ac28f265a1fc7a9`）。
+它仅说明 SDK Runner 会响应调用方取消；**不**证明原生会话恢复、Provider 远端取消、
+Artifact 收集或 CodeTalk 的任务恢复。因此 RunSnapshot、状态机和恢复语义仍归
+CodeTalk Durable Stage Runtime 所有。
 
 ## 已确认的风险与下一门禁
 
