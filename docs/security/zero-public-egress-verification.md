@@ -89,3 +89,21 @@ The current developer account cannot open macOS `/dev/bpf*` and has no
 non-interactive administrator credential, so it cannot fabricate this
 deployment-owned evidence. That limitation remains a release blocker until an
 authorized deployment capture is attached.
+
+## Offline SBOM and license-inventory refresh (2026-07-27)
+
+`scripts/generate-offline-sbom.py` was executed locally with no network client
+or package-manager invocation. It reads only `backend/requirements.txt`,
+`frontend/package-lock.json`, installed Python distribution metadata and local
+`frontend/node_modules/*/package.json` metadata. The output now includes a
+separate `license-review.json`; unknown licenses remain explicitly pending and
+are never inferred as approved.
+
+- Evidence root: `/Volumes/Media/codetalk-e2e-artifacts/v3-offline-sbom-20260727/`
+- SBOM: 692 components, no unresolved backend dependency, manifest SHA-256
+  values recorded, `network_used=false`.
+- License inventory: 623 resolved local licenses and 69 `UNKNOWN` components;
+  review status is `needs_human_review`.
+
+This is inventory evidence only. It does not substitute for a release owner's
+license approval or an approved internal offline bundle.
