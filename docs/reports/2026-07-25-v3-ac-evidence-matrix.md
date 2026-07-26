@@ -61,7 +61,7 @@ means that the cited current implementation and evidence cover the whole AC;
 | AC-HARNESS-003 | verified for builtin | Named workspace, document, MR and goal bindings appear in the input-consumption ledger. External Agent proof remains pending. |
 | AC-HARNESS-004 | verified for builtin | RunSnapshot freezes provider, skills and MCP references; Flash/Pro browser runs use the frozen profile. |
 | AC-HARNESS-005 | verified | Activity-aware timeout and provider-work preservation regressions cover active work beyond fixed idle timeout. |
-| AC-HARNESS-006 | partial | Cancellation/failure classes are implemented and tested. A real Chromium Flash run now proves terminal task state and materialized artifacts survive an isolated backend restart; in-flight provider-session resume or an explicit unrecoverable reason still needs live-provider evidence. |
+| AC-HARNESS-006 | verified for builtin | Cancellation/failure classes are implemented and tested. Real Chromium Flash evidence covers both terminal restoration and an active provider call interrupted by backend restart, with the active node, public reason and retry path preserved. Native provider-session resume remains separately unverified under AC-HARNESS-008. |
 | AC-HARNESS-007 | partial | Facade normalizes local/builtin events; a live external Agent is deployment-blocked. |
 | AC-HARNESS-008 | partial | Session-capability fields exist; live provider resume behavior needs evidence. |
 | AC-SKILL-001 | verified for builtin | Nine observable StageSpecs, gates and targeted repair completed in the 2026-07-25 SPDK deep run. |
@@ -267,6 +267,24 @@ showed the task title, `已阻断`, and the same `report.md` delivery item.
   route. It deliberately does not claim an interrupted external provider
   session was resumed natively; that remains the open portion of
   AC-HARNESS-006/008.
+
+### V3 in-flight provider interruption after backend restart (2026-07-27)
+
+The companion reliability test now covers the failure case that terminal
+restoration alone cannot prove. Chromium configured DeepSeek Flash through the
+Settings UI, created a real SPDK workspace and source-plus-design-document
+task, then waited until the `business_flow` stage had emitted both `provider
+submitted` and live output checkpoints. The isolated backend process was then
+stopped while Flash was still generating and restarted against the identical
+data directory. Reopening the same cockpit showed `已中断`, changed the active
+`analyze` node to `运行中断`, retained the public explanation `后端服务重启，本次
+工作流运行已中断，请重新运行。`, and exposed the normal retry path.
+
+- Evidence root: `/Volumes/Media/codetalk-e2e-v3/v3-inflight-restart-2026-07-26T19-13-56-716Z/`
+- Chromium result: `1 passed (32.3s)`.
+- This proves the product's explicit unrecoverable-provider behavior for the
+  builtin route. It does **not** claim native provider session continuation;
+  that remains AC-HARNESS-008.
 
 ## Release Decision
 

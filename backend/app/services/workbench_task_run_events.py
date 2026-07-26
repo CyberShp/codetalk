@@ -240,23 +240,27 @@ def reconcile_interrupted_task_runs(artifact_root: str | Path) -> dict[str, Any]
         if status not in {"queued", "running"}:
             continue
         try:
+            active_step_id = _active_step_id(store.list_after(task_run_id, limit=10_000))
             store.mark_status(
                 task_run_id,
                 "interrupted",
                 completed_at=_now(),
                 error="service restarted before task run completed",
             )
+            interruption_payload: dict[str, Any] = {
+                "status": "interrupted",
+                "kind": "service_restart_interrupted",
+                "user_message": "后端服务重启，本次工作流运行已中断，请重新运行。",
+                "technical_diagnostics": {
+                    "previous_status": status,
+                },
+            }
+            if active_step_id:
+                interruption_payload["step_id"] = active_step_id
             store.append(
                 task_run_id,
                 "step_failed",
-                {
-                    "status": "interrupted",
-                    "kind": "service_restart_interrupted",
-                    "user_message": "后端服务重启，本次工作流运行已中断，请重新运行。",
-                    "technical_diagnostics": {
-                        "previous_status": status,
-                    },
-                },
+                interruption_payload,
             )
             reconciled.append({"task_run_id": task_run_id, "previous_status": status})
         except KeyError:
@@ -266,6 +270,21 @@ def reconcile_interrupted_task_runs(artifact_root: str | Path) -> dict[str, Any]
         "interrupted_count": len(reconciled),
         "task_runs": reconciled,
     }
+
+
+def _active_step_id(events: list[dict[str, Any]]) -> str:
+    """Recover the active workflow step without trusting process-local state."""
+    active_step_id = ""
+    for event in events:
+        event_type = str(event.get("event_type") or "")
+        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        step_id = str(payload.get("step_id") or payload.get("node_id") or "").strip()
+        if event_type in {"step_started", "node_started"} and step_id:
+            active_step_id = step_id
+        elif event_type in {"step_completed", "step_failed", "step_cancelled", "node_completed", "node_failed"}:
+            if step_id and step_id == active_step_id:
+                active_step_id = ""
+    return active_step_id
 
 
 def _read_json(path: Path) -> Any:

@@ -851,7 +851,10 @@
 .ct-v2-artifact-modal pre { overflow: auto; margin: 0; background: #f8fafb; padding: 13px; font-size: 10px; line-height: 1.55; white-space: pre-wrap; }
 .ct-v2-artifact-modal p { margin: 0; border-top: 1px solid #e3e9ed; padding: 7px 12px; color: #8a5c21; }
 
-@media (max-width: 1050px) {
+/* The persistent side navigation leaves substantially less than the viewport
+ * width for the cockpit. Collapse secondary run metrics before the header
+ * creates a second implicit grid row over the workspace tabs. */
+@media (max-width: 1500px) {
   .ct-v2-run-header { grid-template-columns: minmax(190px, 1fr) repeat(3, 86px) auto; }
   .ct-v2-run-header .ct-v2-run-metric { display: none; }
   .ct-v2-run-workspace { grid-template-columns: minmax(0, 1fr) 230px; }

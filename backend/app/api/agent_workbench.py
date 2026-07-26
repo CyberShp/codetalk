@@ -680,6 +680,7 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
         for step in steps
     ]
     active_step_id = _task_run_ui_active_step_id(task_root)
+    interrupted_step_id = _task_run_ui_interrupted_step_id(task_root)
     if active_step_id:
         nodes = [
             {
@@ -700,6 +701,19 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
                 "status_label": _task_run_ui_status_label("cancelled"),
             }
             if node.get("status_label") in {"运行中", "运行失败", "等待运行"}
+            else node
+            for node in nodes
+        ]
+    elif task_status == "interrupted" and (interrupted_step_id or active_step_id):
+        affected_step_id = interrupted_step_id or active_step_id
+        nodes = [
+            {
+                **node,
+                "status": "interrupted",
+                "status_label": _task_run_ui_status_label("interrupted"),
+            }
+            if node.get("id") == affected_step_id
+            and node.get("status_label") in {"运行中", "等待运行"}
             else node
             for node in nodes
         ]
@@ -756,12 +770,17 @@ def _build_task_run_ui_summary(task_run: Any, task_root: Path) -> dict[str, Any]
     failed_node = (
         None
         if status["status"] == "cancelled"
-        else next((node for node in nodes if node.get("status_label") == "运行失败"), None)
+        else next(
+            (node for node in nodes if node.get("status_label") in {"运行失败", "运行中断"}),
+            None,
+        )
     )
     running_node = next((node for node in nodes if node.get("status_label") == "运行中"), None)
     waiting_node = next((node for node in nodes if node.get("status_label") == "等待运行"), None)
     current_node = failed_node or running_node or waiting_node or (nodes[-1] if nodes else {})
     failure_reasons = _task_run_ui_failure_reasons(failed_node) if failed_node else []
+    if task_status == "interrupted":
+        failure_reasons = _task_run_ui_interruption_reasons(task_root) or failure_reasons
     if status["status"] == "failed" and not failed_node:
         failure_reasons = _dedupe_strings([
             *live_readiness_failures,
@@ -881,6 +900,48 @@ def _task_run_ui_active_step_id(task_root: Path) -> str:
         elif event_type in {"step_completed", "step_failed", "step_cancelled"} and step_id == active_step_id:
             active_step_id = ""
     return active_step_id
+
+
+def _task_run_ui_interruption_reasons(task_root: Path) -> list[str]:
+    events_path = task_root / "task_run_events.jsonl"
+    if not events_path.is_file():
+        return []
+    try:
+        lines = events_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return []
+    for line in reversed(lines):
+        try:
+            event = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        payload = event.get("payload") if isinstance(event, dict) and isinstance(event.get("payload"), dict) else {}
+        if str(payload.get("status") or "").lower() != "interrupted":
+            continue
+        message = str(payload.get("user_message") or "").strip()
+        if message:
+            return [message]
+    return ["后端服务重启，本次工作流运行已中断，请重新运行。"]
+
+
+def _task_run_ui_interrupted_step_id(task_root: Path) -> str:
+    events_path = task_root / "task_run_events.jsonl"
+    if not events_path.is_file():
+        return ""
+    try:
+        lines = events_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        try:
+            event = json.loads(line)
+        except (TypeError, ValueError):
+            continue
+        payload = event.get("payload") if isinstance(event, dict) and isinstance(event.get("payload"), dict) else {}
+        if str(payload.get("status") or "").lower() != "interrupted":
+            continue
+        return str(payload.get("step_id") or payload.get("node_id") or "").strip()
+    return ""
 
 
 def _task_run_ui_node_summary(

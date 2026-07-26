@@ -36,13 +36,10 @@ test("V3 cockpit surfaces a real in-flight Flash task as interrupted after backe
     const { runId, taskId } = await createAndRunTaskThroughUi(page, taskName, workspaceName);
 
     await page.getByRole("tab", { name: "实时输出" }).click();
-    // Stage 1 only becomes complete after a real provider response. Stage 2 confirms
-    // that the run remained active when the process was deliberately restarted.
-    await expect(page.locator(".ct-v2-event-viewport")).toContainText("源码证据阶段已完成，产物已保存", {
+    // This event is emitted only after the real provider request has been
+    // submitted for the business-flow stage, while the task remains active.
+    await expect(page.locator(".ct-v2-event-viewport")).toContainText("模型已提交，正在等待首段输出", {
       timeout: 7 * 60_000,
-    });
-    await expect(page.locator(".ct-v2-event-viewport")).toContainText(/内置模型阶段 [2-9]\//, {
-      timeout: 90_000,
     });
     await expect(page.locator(".ct-v2-run-status").filter({ hasText: "执行状态" }).locator("strong")).toHaveText("运行中");
     await page.screenshot({ path: path.join(dataRoot, `v3-inflight-restart-${stamp}-before.png`), fullPage: false });
@@ -53,6 +50,7 @@ test("V3 cockpit surfaces a real in-flight Flash task as interrupted after backe
     await page.goto(`/tasks/${encodeURIComponent(taskId)}/runs/${encodeURIComponent(runId)}`, { waitUntil: "domcontentloaded" });
     await expect(page.getByRole("heading", { name: taskName })).toBeVisible({ timeout: 30_000 });
     await expect(page.locator(".ct-v2-run-status").filter({ hasText: "执行状态" }).locator("strong")).toHaveText("已中断");
+    await expect(page.locator(".ct-v2-node-timeline button").first()).toContainText("运行中断");
     await page.getByRole("tab", { name: "全部事件" }).click();
     await expect(page.locator(".ct-v2-event-viewport")).toContainText("后端服务重启，本次工作流运行已中断，请重新运行。");
     await page.screenshot({ path: path.join(dataRoot, `v3-inflight-restart-${stamp}-interrupted.png`), fullPage: false });

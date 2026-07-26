@@ -3611,6 +3611,55 @@ async def test_task_run_ui_summary_prioritizes_cancelled_status_over_stale_failu
     assert "acceptance_audit" not in _public_task_run_runtime_summary(task_root)
 
 
+async def test_task_run_ui_summary_marks_active_node_interrupted_after_service_restart(tmp_path):
+    from types import SimpleNamespace
+
+    from app.api.agent_workbench import _build_task_run_ui_summary
+
+    task_root = tmp_path / "task_run_interrupted"
+    task_root.mkdir()
+    (task_root / "task_run.json").write_text(
+        json.dumps({"status": "interrupted", "runtime": {"status": "interrupted"}}),
+        encoding="utf-8",
+    )
+    (task_root / "task_run_events.jsonl").write_text(
+        json.dumps({
+            "event_type": "step_started",
+            "payload": {"step_id": "analyze"},
+            "created_at": "2026-07-27T00:00:00+00:00",
+        }) + "\n" + json.dumps({
+            "event_type": "step_failed",
+            "payload": {
+                "status": "interrupted",
+                "kind": "service_restart_interrupted",
+                "user_message": "后端服务重启，本次工作流运行已中断，请重新运行。",
+            },
+            "created_at": "2026-07-27T00:01:00+00:00",
+        }) + "\n",
+        encoding="utf-8",
+    )
+    task_run = SimpleNamespace(
+        workflow_id="restart_agent_workflow",
+        workflow_snapshot={
+            "id": "restart_agent_workflow",
+            "name": "Restart agent workflow",
+            "steps": [{"id": "analyze", "type": "agent_task"}],
+        },
+        task_bundle={"workflow_contract": {"outputs": []}},
+        input_snapshot={},
+    )
+
+    summary = _build_task_run_ui_summary(task_run, task_root)
+
+    assert summary["status"] == "failed"
+    assert summary["status_label"] == "运行中断"
+    assert summary["current_node"]["id"] == "analyze"
+    assert summary["current_node"]["status_label"] == "运行中断"
+    assert summary["failure"]["failed_node_id"] == "analyze"
+    assert summary["failure"]["can_retry"] is True
+    assert summary["failure"]["reasons"] == ["后端服务重启，本次工作流运行已中断，请重新运行。"]
+
+
 async def test_task_run_ui_summary_marks_quality_recovered_partial_step_as_completed(tmp_path):
     """A final accepted delivery must not leave the cockpit contradicting itself."""
     from types import SimpleNamespace
