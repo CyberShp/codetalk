@@ -107,3 +107,22 @@ are never inferred as approved.
 
 This is inventory evidence only. It does not substitute for a release owner's
 license approval or an approved internal offline bundle.
+
+## SDK POC offline-bundle manifest (2026-07-27)
+
+`scripts/generate-offline-bundle-manifest.py` inventories a supplied wheel or
+npm tarball directory without invoking pip, npm, DNS, or an HTTP client. It
+records every bundle member's SHA-256, size, package name/version, locally
+available license metadata, host platform, and explicit unknown-license count.
+
+- Evidence: `/Volumes/Media/codetalk-e2e-artifacts/v3-offline-sdk-bundle-20260727/offline-bundle-manifest.json`
+- Input: `/Volumes/Media/codetalk-v3-sdk-poc/wheels/` (64 locally supplied POC artifacts).
+- Result: `network_used=false`, 64 hashed artifacts, one explicit unknown item:
+  `@anthropic-ai/claude-agent-sdk@0.3.218` declares only “SEE LICENSE IN README.md”.
+- Result status: `needs_human_review`; this is deliberately not an approval or
+  a deployable product bundle.
+
+The manifest closes the previous “files happen to exist” evidence gap for the
+isolated SDK POC. A release owner still has to approve licenses and provide a
+complete platform-specific CodeTalk dependency bundle before AC-SEC-005 can
+be marked complete.
