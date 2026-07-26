@@ -24,6 +24,33 @@ def test_harness_event_normalizer_hides_raw_provider_diagnostics_from_user_outpu
     assert event.user_message == ""
 
 
+def test_harness_event_normalizer_preserves_required_lifecycle_vocabulary():
+    from app.services.harness_facade import normalize_provider_event
+
+    required = {
+        "run_started": "run_started",
+        "session_created": "session_created",
+        "stage_started": "stage_started",
+        "thinking_summary": "thinking_summary",
+        "tool_started": "tool_started",
+        "tool_completed": "tool_completed",
+        "source_read": "source_read",
+        "artifact_progress": "artifact_progress",
+        "validation_started": "validation_started",
+        "validation_failed": "validation_failed",
+        "repair_started": "repair_started",
+        "stage_completed": "stage_completed",
+        "idle": "idle",
+        "blocked": "blocked",
+        "cancelled": "cancelled",
+    }
+
+    for raw_event, expected_kind in required.items():
+        event = normalize_provider_event(raw_event, {"stage_id": "source_evidence"})
+        assert event.kind == expected_kind
+        assert event.visibility != "diagnostic"
+
+
 def test_agent_harness_emits_facade_fields_without_breaking_legacy_event_type():
     from app.services.agent_run_harness import _emit_agent_run_event
 

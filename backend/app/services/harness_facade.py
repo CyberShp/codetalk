@@ -266,6 +266,21 @@ def normalize_provider_event(event_type: str, payload: dict[str, Any] | None = N
         kind = "stage_started" if raw == "stage_started" else "stage_completed"
         message = "阶段开始执行" if kind == "stage_started" else "阶段执行完成"
         return HarnessEvent(kind, "summary", data, message)
+    lifecycle_events: dict[str, tuple[HarnessEventKind, HarnessVisibility, str]] = {
+        "thinking_summary": ("thinking_summary", "summary", "执行器正在归纳当前进展"),
+        "tool_started": ("tool_started", "summary", "正在调用工具"),
+        "tool_completed": ("tool_completed", "summary", "工具调用完成"),
+        "artifact_progress": ("artifact_progress", "summary", "正在生成交付文件"),
+        "validation_started": ("validation_started", "summary", "正在核验交付质量"),
+        "validation_failed": ("validation_failed", "user", "交付质量核验发现问题"),
+        "repair_started": ("repair_started", "summary", "正在定向修复未通过项目"),
+        "idle": ("idle", "summary", "执行器正在等待下一项有效工作"),
+        "blocked": ("blocked", "user", "执行被必要条件阻断"),
+        "cancelled": ("cancelled", "user", "执行已取消"),
+    }
+    if raw in lifecycle_events:
+        kind, visibility, message = lifecycle_events[raw]
+        return HarnessEvent(kind, visibility, data, message)
     if raw in {"artifact", "artifact_created"}:
         return HarnessEvent("artifact_created", "user", data, "已生成交付文件")
     if raw == "network_egress_blocked":
