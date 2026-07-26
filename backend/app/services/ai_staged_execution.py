@@ -9211,6 +9211,39 @@ def _deterministic_schema_repair(
             return
         properties = current_schema.get("properties")
         properties = properties if isinstance(properties, dict) else {}
+        required_fields = {str(field) for field in current_schema.get("required") or []}
+        # A common structured-output slip is a technically correct source
+        # anchor flattened directly into ``technical_claims``.  The evidence
+        # has already been supplied by the model, so reconstructing the
+        # claim wrapper is deterministic and preserves the exact quote rather
+        # than asking a small repair call to repeat a large array.
+        claim_wrapper_fields = {"claim_id", "type", "statement", "evidence"}
+        flat_evidence_fields = {"evidence_id", "path", "quote"}
+        if (
+            claim_wrapper_fields.issubset(required_fields)
+            and flat_evidence_fields.issubset(value)
+            and all(str(value.get(field) or "").strip() for field in flat_evidence_fields)
+        ):
+            evidence = {
+                field: str(value.get(field) or "").strip()
+                for field in ("evidence_id", "path", "quote", "lines", "symbol")
+                if str(value.get(field) or "").strip()
+            }
+            digest = hashlib.sha256(
+                f"{path}:{evidence['evidence_id']}:{evidence['quote']}".encode("utf-8")
+            ).hexdigest()[:12]
+            if not str(value.get("claim_id") or "").strip():
+                value["claim_id"] = f"AUTO-SOURCE-{digest}"
+                fields.append(f"{path}.claim_id")
+            if not str(value.get("type") or "").strip():
+                value["type"] = "source_anchor"
+                fields.append(f"{path}.type")
+            if not str(value.get("statement") or "").strip():
+                value["statement"] = evidence["quote"]
+                fields.append(f"{path}.statement")
+            if not isinstance(value.get("evidence"), list) or not value["evidence"]:
+                value["evidence"] = [evidence]
+                fields.append(f"{path}.evidence")
         for field in current_schema.get("required") or []:
             field_name = str(field)
             field_schema = properties.get(field_name)
@@ -9363,6 +9396,8 @@ def _deterministic_quality_claim_repair(
         "non_actionable_mitigation",
         "duplicate_generic_sfmea_mitigation",
         "professional_fact_conflict",
+        "sfmea_evidence_contradiction",
+        "black_box_evidence_contradiction",
         "behavior_claim_contradicted",
         "source_claim_contradicted",
         "row_source_claim_contradicted",
@@ -9530,10 +9565,17 @@ def _deterministic_quality_claim_repair(
             )
             fields.append(f"$[{index}].expected_result")
 
+    fact_conflict_codes = {
+        "professional_fact_conflict",
+        # These originate from final Markdown consistency validation. They
+        # are source-backed fact conflicts and require the same repair path.
+        "sfmea_evidence_contradiction",
+        "black_box_evidence_contradiction",
+    }
     professional_constraints = {
         str(issue.get("constraint_id") or "").strip()
         for issue in issues
-        if str(issue.get("code") or "") == "professional_fact_conflict"
+        if str(issue.get("code") or "") in fact_conflict_codes
     }
 
     def _audited_sfmea_row_ids(constraint_id: str) -> set[str]:
@@ -9549,7 +9591,12 @@ def _deterministic_quality_claim_repair(
         for issue in issues:
             if str(issue.get("constraint_id") or "") != constraint_id:
                 continue
-            explicit = str(issue.get("row_id") or "").strip()
+            # Consistency checks on a rendered SFMEA table use ``risk_id``;
+            # structured validators use ``row_id``. Both name the canonical
+            # SFMEA row and must retain the same targeted-repair semantics.
+            explicit = str(
+                issue.get("row_id") or issue.get("risk_id") or ""
+            ).strip()
             if explicit:
                 row_ids.add(explicit)
                 continue

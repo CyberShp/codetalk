@@ -1056,6 +1056,71 @@ def test_professional_marker_findings_are_lint_but_harness_failures_are_l3():
     assert [item["code"] for item in structure] == ["sfmea_not_sorted_by_rpn"]
 
 
+def test_professional_fact_conflicts_are_never_demoted_to_lint():
+    from app.services.test_activity_contract import _partition_combined_professional_issues
+
+    structure, lint, executable = _partition_combined_professional_issues(
+        [
+            {"code": "sfmea_evidence_contradiction"},
+            {"code": "black_box_evidence_contradiction"},
+            {"code": "missing_iscsi_professional_scenarios"},
+        ]
+    )
+
+    assert [item["code"] for item in structure] == [
+        "sfmea_evidence_contradiction",
+        "black_box_evidence_contradiction",
+    ]
+    assert [item["code"] for item in lint] == ["missing_iscsi_professional_scenarios"]
+    assert executable == []
+
+
+def test_combined_report_consistency_conflict_blocks_delivery(monkeypatch, tmp_path):
+    import app.services.test_activity_contract as activity_contract
+    from app.services.test_activity_contract import (
+        audit_test_activity_artifacts,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "repo"
+    artifact_dir = tmp_path / "artifacts"
+    repo.mkdir()
+    artifact_dir.mkdir()
+    (artifact_dir / "report.md").write_text(
+        "# 测试分析报告\n\n## 关键源码证据\n已整理。\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        activity_contract,
+        "_audit_combined_report_consistency",
+        lambda _content: [
+            {
+                "code": "sfmea_evidence_contradiction",
+                "artifact": "sfmea.json",
+                "message": "SFMEA 与源码证据矛盾。",
+                "constraint_id": "iscsi_login_timer_after_first_pdu",
+            }
+        ],
+    )
+    contract = build_test_activity_contract(
+        target="iSCSI Login 测试设计",
+        repo_path=str(repo),
+        workflow_outputs=[{"artifact": "report.md", "type": "combined_test_report"}],
+    )
+
+    audit = audit_test_activity_artifacts(
+        artifact_dir=artifact_dir,
+        contract=contract,
+        repo_path=str(repo),
+    )
+
+    assert audit["deliverable"] is False
+    assert any(
+        issue["code"] == "sfmea_evidence_contradiction"
+        for issue in audit["issues"]
+    ), audit
+
+
 def test_test_activity_contract_covers_storage_testing_profiles_and_templates():
     from app.services.test_activity_contract import (
         ARTIFACT_TEMPLATES,

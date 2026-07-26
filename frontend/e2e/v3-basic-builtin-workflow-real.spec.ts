@@ -116,11 +116,23 @@ test("V3 basic source plus design workflow runs through the browser with a real 
     output_tokens?: number;
     total_duration_ms?: number;
     finish_reason?: string;
+    reused?: boolean;
+    reuse_source?: string;
   };
-  expect(Number(sourceStage.attempt_count ?? 0)).toBeGreaterThanOrEqual(1);
-  expect(Number(sourceStage.provider_call_count ?? 0)).toBeGreaterThanOrEqual(1);
-  expect(Number(sourceStage.provider_wait_ms ?? 0)).toBeGreaterThan(0);
-  expect(Number(sourceStage.output_tokens ?? 0)).toBeGreaterThan(0);
+  const sourceRanWithProvider =
+    Number(sourceStage.attempt_count ?? 0) >= 1 &&
+    Number(sourceStage.provider_call_count ?? 0) >= 1 &&
+    Number(sourceStage.provider_wait_ms ?? 0) > 0 &&
+    Number(sourceStage.output_tokens ?? 0) > 0;
+  const sourceReusedVerifiedEvidence =
+    sourceStage.reused === true &&
+    typeof sourceStage.reuse_source === "string" &&
+    sourceStage.reuse_source.length > 0 &&
+    String(sourceStage.finish_reason ?? "") !== "";
+  // A V3 run may safely reuse a SHA-validated Source Evidence Pack. The
+  // browser flow is still real; the cache route must be explicit rather than
+  // faking a provider call. Cold-run performance is covered separately.
+  expect(sourceRanWithProvider || sourceReusedVerifiedEvidence).toBeTruthy();
   expect(Number(sourceStage.total_duration_ms ?? 0)).toBeGreaterThanOrEqual(Number(sourceStage.provider_wait_ms ?? 0));
   expect(String(sourceStage.finish_reason ?? "")).not.toBe("");
 

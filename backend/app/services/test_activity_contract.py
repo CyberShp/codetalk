@@ -1807,7 +1807,22 @@ def audit_test_activity_artifacts(
                                 "missing_performance_statistical_basis",
                             }
                         ]
-                    lint_warnings.extend(consistency_issues)
+                    # A report-level consistency check can expose a direct
+                    # contradiction between a user-facing SFMEA/black-box
+                    # assertion and its verified source evidence.  Those are
+                    # factual gate failures, not optional presentation lint.
+                    # Route them through the same severity partition used by
+                    # the completeness checks so a contradictory report can
+                    # never receive a deliverable verdict merely because its
+                    # JSON artifacts look structurally valid.
+                    (
+                        consistency_structure,
+                        consistency_lint,
+                        consistency_executable,
+                    ) = _partition_combined_professional_issues(consistency_issues)
+                    structural_issues.extend(consistency_structure)
+                    lint_warnings.extend(consistency_lint)
+                    executable_issues.extend(consistency_executable)
     # Staged workflows commonly expose one formal Markdown report while using
     # SFMEA, black-box JSON, and flow cards as the authoritative intermediate
     # fact ledger.  A report-only contract must not bypass a known disconnected

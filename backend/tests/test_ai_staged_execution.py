@@ -5236,6 +5236,54 @@ def test_deterministic_schema_repair_wraps_string_for_string_array_field():
     assert fields == ["$[0].failure_diagnostics"]
 
 
+def test_deterministic_schema_repair_lifts_flat_source_anchor_into_claim():
+    payload = [{
+        "case_id": "BB-01",
+        "technical_claims": [{
+            "evidence_id": "SRC-01:L42",
+            "path": "lib/iscsi/iscsi.c",
+            "quote": "iscsi_conn_login_pdu_success_complete(void *arg)",
+            "lines": "L42",
+            "symbol": "iscsi_conn_login_pdu_success_complete",
+        }],
+    }]
+    schema = {
+        "type": "array",
+        "items": {
+            "type": "object",
+            "properties": {
+                "technical_claims": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["claim_id", "type", "statement", "evidence"],
+                        "properties": {
+                            "claim_id": {"type": "string"},
+                            "type": {"type": "string"},
+                            "statement": {"type": "string"},
+                            "evidence": {"type": "array"},
+                        },
+                    },
+                },
+            },
+        },
+    }
+
+    repaired, fields = _deterministic_schema_repair(payload, schema)
+
+    claim = repaired[0]["technical_claims"][0]
+    assert claim["type"] == "source_anchor"
+    assert claim["statement"] == claim["quote"]
+    assert claim["evidence"] == [{
+        "evidence_id": "SRC-01:L42",
+        "path": "lib/iscsi/iscsi.c",
+        "quote": "iscsi_conn_login_pdu_success_complete(void *arg)",
+        "lines": "L42",
+        "symbol": "iscsi_conn_login_pdu_success_complete",
+    }]
+    assert "$[0].technical_claims[0].evidence" in fields
+
+
 def test_deterministic_quality_claim_repair_normalizes_invalid_tcpdump_filter():
     payload = [
         {
@@ -13162,6 +13210,30 @@ def test_deterministic_quality_repair_corrects_unknown_key_contract_from_report_
     assert "NotUnderstood" in case["expected_result"]
     assert "不得笼统断言" in case["expected_result"]
     assert "$[0].expected_result" in fields
+
+
+def test_deterministic_quality_repair_corrects_consistency_finding_in_sfmea():
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "sfmea_id": "SFMEA-006",
+            "failure_mode": "多阶段登录停滞无超时保护",
+            "cause": "首个 Login PDU 后停止响应，30 秒 login_timer 会关闭连接",
+            "detection": "等待 30 秒后确认连接关闭",
+            "mitigation": "确认 timer 正常触发",
+        }],
+        artifact="sfmea.json",
+        quality_feedback={"issues": [{
+            "artifact": "sfmea.json",
+            "code": "sfmea_evidence_contradiction",
+            "constraint_id": "iscsi_login_timer_after_first_pdu",
+            "risk_id": "SFMEA-006",
+        }]},
+    )
+
+    row = repaired[0]
+    assert "已注销" in row["failure_mode"]
+    assert "不把 30 秒登录定时器清理作为预期" in row["detection"]
+    assert "$[0].failure_mode" in fields
 
 
 def test_deterministic_quality_repair_replaces_unrelated_iscsi_test_mappings_with_explicit_harness_gaps(tmp_path):
