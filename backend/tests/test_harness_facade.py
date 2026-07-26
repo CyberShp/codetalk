@@ -75,3 +75,66 @@ def test_agent_harness_facade_runs_local_adapter_and_collects_normalized_result(
     assert result.session_id == session.run_id
     assert result.artifacts == ["report.md"]
     assert any(payload["harness_event_kind"] == "completed" for _, payload in events)
+
+
+def test_agent_harness_facade_keeps_product_contract_when_adapter_is_replaced(tmp_path):
+    """An SDK adapter must not own CodeTalk's public result or artifact semantics."""
+    from types import SimpleNamespace
+
+    from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
+
+    class IsolatedAdapter:
+        def __init__(self):
+            self.prepared = None
+            self.executed = None
+
+        def prepare(self, request):
+            self.prepared = request
+            return SimpleNamespace(run_id="sdk_session", provider=request.provider)
+
+        def execute(self, session_id, **kwargs):
+            self.executed = (session_id, kwargs)
+            return SimpleNamespace(
+                run_id=session_id,
+                status="completed",
+                exit_code=0,
+                started_at="2026-07-27T00:00:00Z",
+                completed_at="2026-07-27T00:00:01Z",
+                duration_ms=1000,
+                timed_out=False,
+                error="",
+                provider_diagnostics={"adapter": "isolated"},
+            )
+
+        def record_raw_output(self, session_id, *, stdout, stderr=""):
+            raise AssertionError("not used by this test")
+
+        def collect_artifacts(self, session_id):
+            assert session_id == "sdk_session"
+            return ["report.md"]
+
+    adapter = IsolatedAdapter()
+    facade = AgentHarnessFacade(tmp_path / "artifacts", adapter=adapter)
+    events = []
+    request = HarnessRunRequest(
+        provider="future-sdk",
+        command=["unused"],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "workflow"},
+        task_bundle={"required_artifacts": ["report.md"]},
+    )
+
+    session = facade.prepare(request)
+    result = facade.execute(
+        session.run_id,
+        timeout_sec=12,
+        event_sink=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    assert adapter.prepared is request
+    assert adapter.executed[0] == "sdk_session"
+    assert result.session_id == "sdk_session"
+    assert result.artifacts == ["report.md"]
+    assert result.provider_diagnostics == {"adapter": "isolated"}
+    assert any(payload["harness_event_kind"] == "run_started" for _, payload in events)
+    assert any(payload["harness_event_kind"] == "completed" for _, payload in events)

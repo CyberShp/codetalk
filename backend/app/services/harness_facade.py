@@ -57,16 +57,28 @@ class HarnessRunResult:
     artifacts: list[str] = field(default_factory=list)
 
 
-class AgentHarnessFacade:
-    """The workflow-owned entry point for external Agent execution.
+class ProviderAdapter(Protocol):
+    """Provider boundary; adapters never own CodeTalk task or artifact state."""
 
-    The current local CLI runner remains an adapter behind this facade.  Provider SDK
-    adapters can therefore be introduced without changing workflow, cockpit, or
-    artifact contracts again.
-    """
+    def prepare(self, request: HarnessRunRequest) -> Any: ...
+    def execute(
+        self,
+        session_id: str,
+        *,
+        timeout_sec: int = 0,
+        idle_timeout_sec: float | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
+        event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> Any: ...
+    def record_raw_output(self, session_id: str, *, stdout: str, stderr: str = "") -> None: ...
+    def collect_artifacts(self, session_id: str) -> list[str]: ...
 
-    def __init__(self, artifact_dir: str | Path) -> None:
-        self.artifact_dir = Path(artifact_dir)
+
+class LocalCliProviderAdapter:
+    """Compatibility adapter for the existing local CLI runner."""
+
+    def __init__(self, artifact_dir: Path) -> None:
+        self.artifact_dir = artifact_dir
 
     def prepare(self, request: HarnessRunRequest) -> Any:
         from app.services.agent_run_harness import AgentRunHarness
@@ -93,15 +105,80 @@ class AgentHarnessFacade:
         idle_timeout_sec: float | None = None,
         is_cancelled: Callable[[], bool] | None = None,
         event_sink: Callable[[str, dict[str, Any]], None] | None = None,
-    ) -> HarnessRunResult:
+    ) -> Any:
         from app.services.agent_run_harness import AgentRunHarness
 
+        return AgentRunHarness(self.artifact_dir).execute_run(
+            session_id,
+            timeout_sec=timeout_sec,
+            idle_timeout_sec=idle_timeout_sec,
+            is_cancelled=is_cancelled,
+            event_sink=event_sink,
+        )
+
+    def record_raw_output(self, session_id: str, *, stdout: str, stderr: str = "") -> None:
+        from app.services.agent_run_harness import AgentRunHarness
+
+        AgentRunHarness(self.artifact_dir).record_raw_output(
+            session_id,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    def collect_artifacts(self, session_id: str) -> list[str]:
+        try:
+            import json
+
+            payload = json.loads(
+                (self.artifact_dir / "agent_output_contract.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        except (OSError, ValueError):
+            return []
+        declared = payload.get("required_artifacts") if isinstance(payload, dict) else []
+        return [
+            str(name)
+            for name in declared or []
+            if isinstance(name, str) and (self.artifact_dir / name).is_file()
+        ]
+
+
+class AgentHarnessFacade:
+    """The workflow-owned entry point for external Agent execution.
+
+    The current local CLI runner remains an adapter behind this facade.  Provider SDK
+    adapters can therefore be introduced without changing workflow, cockpit, or
+    artifact contracts again.
+    """
+
+    def __init__(
+        self,
+        artifact_dir: str | Path,
+        *,
+        adapter: ProviderAdapter | None = None,
+    ) -> None:
+        self.artifact_dir = Path(artifact_dir)
+        self._adapter: ProviderAdapter = adapter or LocalCliProviderAdapter(self.artifact_dir)
+
+    def prepare(self, request: HarnessRunRequest) -> Any:
+        return self._adapter.prepare(request)
+
+    def execute(
+        self,
+        session_id: str,
+        *,
+        timeout_sec: int = 0,
+        idle_timeout_sec: float | None = None,
+        is_cancelled: Callable[[], bool] | None = None,
+        event_sink: Callable[[str, dict[str, Any]], None] | None = None,
+    ) -> HarnessRunResult:
         self._emit_lifecycle_event(
             event_sink,
             "run_started",
             {"session_id": session_id},
         )
-        result = AgentRunHarness(self.artifact_dir).execute_run(
+        result = self._adapter.execute(
             session_id,
             timeout_sec=timeout_sec,
             idle_timeout_sec=idle_timeout_sec,
@@ -118,7 +195,7 @@ class AgentHarnessFacade:
             timed_out=result.timed_out,
             error=result.error,
             provider_diagnostics=dict(result.provider_diagnostics),
-            artifacts=self.collect_artifacts(),
+            artifacts=self.collect_artifacts(session_id),
         )
         terminal_kind = (
             "completed"
@@ -148,32 +225,15 @@ class AgentHarnessFacade:
         stderr: str = "",
     ) -> None:
         """Keep legacy diagnostic capture behind the same workflow-facing boundary."""
-        from app.services.agent_run_harness import AgentRunHarness
-
-        AgentRunHarness(self.artifact_dir).record_raw_output(
+        self._adapter.record_raw_output(
             session_id,
             stdout=stdout,
             stderr=stderr,
         )
 
-    def collect_artifacts(self) -> list[str]:
-        """Return only the Agent-declared files which physically exist for this run."""
-        try:
-            import json
-
-            payload = json.loads(
-                (self.artifact_dir / "agent_output_contract.json").read_text(
-                    encoding="utf-8"
-                )
-            )
-        except (OSError, ValueError):
-            return []
-        declared = payload.get("required_artifacts") if isinstance(payload, dict) else []
-        return [
-            str(name)
-            for name in declared or []
-            if isinstance(name, str) and (self.artifact_dir / name).is_file()
-        ]
+    def collect_artifacts(self, session_id: str) -> list[str]:
+        """Return adapter candidates through the workflow-owned artifact boundary."""
+        return self._adapter.collect_artifacts(session_id)
 
     @staticmethod
     def _emit_lifecycle_event(
@@ -195,19 +255,17 @@ class AgentHarnessFacade:
         )
 
 
-class ProviderAdapter(Protocol):
-    """The only provider-facing surface allowed to leak into the durable runtime."""
-
-    def probe(self, request: dict[str, Any]) -> dict[str, Any]: ...
-    def start(self, request: dict[str, Any]) -> str: ...
-    def cancel(self, session_id: str) -> dict[str, Any]: ...
-    def collect_artifacts(self, session_id: str) -> list[dict[str, Any]]: ...
-
-
 def normalize_provider_event(event_type: str, payload: dict[str, Any] | None = None) -> HarnessEvent:
     """Map raw provider-shaped output into the stable product event vocabulary."""
     data = dict(payload or {})
     raw = str(event_type or "").strip().lower()
+    if raw in {"run_started", "session_created"}:
+        kind: HarnessEventKind = "run_started" if raw == "run_started" else "session_created"
+        return HarnessEvent(kind, "summary", data, "执行器已启动")
+    if raw in {"stage_started", "stage_completed"}:
+        kind = "stage_started" if raw == "stage_started" else "stage_completed"
+        message = "阶段开始执行" if kind == "stage_started" else "阶段执行完成"
+        return HarnessEvent(kind, "summary", data, message)
     if raw in {"artifact", "artifact_created"}:
         return HarnessEvent("artifact_created", "user", data, "已生成交付文件")
     if raw == "network_egress_blocked":
