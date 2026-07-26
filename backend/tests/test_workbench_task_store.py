@@ -753,6 +753,7 @@ async def test_quality_review_result_persists_completed_execution_status(tmp_pat
     from app.api import agent_workbench
     from app.config import settings
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer, WorkbenchTaskRunStore
+    from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
     from app.services.workflow_dsl import WorkflowStore
 
     data_dir = tmp_path / "data"
@@ -799,6 +800,10 @@ async def test_quality_review_result_persists_completed_execution_status(tmp_pat
     stored = WorkbenchTaskRunStore(run_root).load(prepared.task_run_id)
     assert stored.execution_status == "completed"
     assert stored.quality_status == "blocked"
+    events = WorkbenchTaskRunEventStore(run_root).list_after(prepared.task_run_id)
+    assert events[-1]["event_type"] == "quality_blocked"
+    assert events[-1]["payload"]["status"] == "quality_blocked"
+    assert events[-1]["payload"]["execution_status"] == "completed"
 
 
 def test_retry_seed_results_reuse_only_successful_nodes_before_failure(tmp_path):

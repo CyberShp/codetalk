@@ -45,7 +45,7 @@ const tabs = ["摘要", "实时输出", "工具调用", "全部事件"] as const
 const terminalStatuses = new Set(["completed", "partial", "success", "failed", "error", "cancelled", "interrupted", "quality_blocked"]);
 const lifecycleEventTypes = new Set([
   "queued", "running", "step_started", "node_started", "step_completed", "node_completed",
-  "step_failed", "node_failed", "provider_readiness_blocked", "completed", "partial", "failed", "error", "cancelled", "interrupted",
+  "step_failed", "node_failed", "provider_readiness_blocked", "quality_blocked", "completed", "partial", "failed", "error", "cancelled", "interrupted",
 ]);
 const MAX_LOADED_EVENTS = 2000;
 const EVENT_PAGE_SIZE = 1000;
@@ -524,7 +524,7 @@ function applyLifecycleEvents(run: PreparedWorkbenchTaskRun, events: WorkbenchTa
 function lifecycleStatus(eventType: string, payload: WorkbenchTaskRunEvent["payload"] = {}) {
   if (["queued"].includes(eventType)) return "queued";
   if (["running", "step_started", "node_started", "step_completed", "node_completed"].includes(eventType)) return "running";
-  if (["completed", "partial", "failed", "error", "cancelled", "interrupted"].includes(eventType)) return eventType;
+  if (["completed", "partial", "failed", "error", "cancelled", "interrupted", "quality_blocked"].includes(eventType)) return eventType;
   if (["step_failed", "node_failed", "provider_readiness_blocked"].includes(eventType)) {
     const reported = String(payload.status || "").toLowerCase();
     if (reported === "quality_blocked") return "quality_blocked";
@@ -552,7 +552,7 @@ function eventMessage(item: WorkbenchTaskRunEvent) {
 function eventDetail(item: WorkbenchTaskRunEvent) { const value = item.payload.delta ?? item.payload.text ?? item.payload.output ?? item.payload.error ?? item.payload.detail ?? ""; return typeof value === "string" ? value : value ? JSON.stringify(value, null, 2) : ""; }
 function eventClipboardLine(item: WorkbenchTaskRunEvent) { return `[${new Date(item.created_at).toLocaleTimeString("zh-CN", { hour12: false })}] ${eventNode(item) || "系统"} ${eventMessage(item)} ${eventDetail(item)}`.trim(); }
 function eventKindLabel(kind: string) { return ({ status: "状态", done: "完成", artifact: "产物", output: "输出", error: "错误", thinking: "思考", reasoning: "推理", diagnostic: "诊断", trace: "跟踪", tool_use: "工具调用", tool_result: "工具结果" } as Record<string, string>)[kind] || kind; }
-function eventTypeLabel(type: string) { return ({ queued: "已进入运行队列", running: "运行已开始", step_started: "节点开始执行", step_completed: "节点执行完成", step_failed: "节点执行失败", node_reused: "已复用父运行的成功节点", completed: "运行已完成", partial: "运行保留了部分结果", cancelled: "运行已取消", artifact_created: "产物已生成", agent_output: "执行器产生新输出" } as Record<string, string>)[type] || type.replaceAll("_", " "); }
+function eventTypeLabel(type: string) { return ({ queued: "已进入运行队列", running: "运行已开始", step_started: "节点开始执行", step_completed: "节点执行完成", step_failed: "节点执行失败", quality_blocked: "执行完成，质量待修复", node_reused: "已复用父运行的成功节点", completed: "运行已完成", partial: "运行保留了部分结果", cancelled: "运行已取消", artifact_created: "产物已生成", agent_output: "执行器产生新输出" } as Record<string, string>)[type] || type.replaceAll("_", " "); }
 function qualityMessage(run: PreparedWorkbenchTaskRun) { const status = run.quality_status || "not_checked"; if (status === "passed") return "结构化质量检查已通过。"; if (status === "warning") return "产物已生成，但仍有质量警告需要复核。"; if (status === "blocked") return "质量门禁未通过，请先修复阻断项。"; if (status === "pending") return "正在检查产物完整性和质量。"; return "本次运行尚未执行质量检查。"; }
 function formatNodeTime(value?: string) { return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "尚未开始"; }
 function formatNodeDuration(value?: number) { if (!value) return "尚未完成"; const seconds = Math.floor(value / 1000); return seconds < 60 ? `${seconds} 秒` : `${Math.floor(seconds / 60)} 分 ${seconds % 60} 秒`; }

@@ -2683,8 +2683,26 @@ async def _execute_task_run_background(
             return
         event_store.append(
             task_run_id,
-            "completed" if status == "completed" else "partial" if status == "partial" else "step_failed",
-            {"status": status},
+            (
+                "completed"
+                if status == "completed"
+                else "partial"
+                if status == "partial"
+                else "quality_blocked"
+                if status == "quality_blocked"
+                else "step_failed"
+            ),
+            {
+                "status": status,
+                "execution_status": persisted_execution_status,
+                **(
+                    {
+                        "user_message": "执行已完成，但质量门禁未通过；请查看阻断项后从对应阶段重试。"
+                    }
+                    if status == "quality_blocked"
+                    else {}
+                ),
+            },
         )
     except asyncio.CancelledError:
         # A task cancellation can arrive while the blocking workflow thread is
