@@ -105,9 +105,34 @@ test("V3 basic source plus design workflow runs through the browser with a real 
     expect(repairResult.stopped_reason).not.toBe("workflow_deadline_exceeded");
   }
 
+  // Repair/reuse is allowed to preserve a completed stage, but must never
+  // erase the original provider work that made the result auditable.
+  const sourceStagePath = path.join(runRoot, "agent_runs", "analyze", "stages", "source_analysis", "stage_result.json");
+  expect(fs.existsSync(sourceStagePath)).toBeTruthy();
+  const sourceStage = JSON.parse(fs.readFileSync(sourceStagePath, "utf8")) as {
+    attempt_count?: number;
+    provider_call_count?: number;
+    provider_wait_ms?: number;
+    output_tokens?: number;
+    total_duration_ms?: number;
+    finish_reason?: string;
+  };
+  expect(Number(sourceStage.attempt_count ?? 0)).toBeGreaterThanOrEqual(1);
+  expect(Number(sourceStage.provider_call_count ?? 0)).toBeGreaterThanOrEqual(1);
+  expect(Number(sourceStage.provider_wait_ms ?? 0)).toBeGreaterThan(0);
+  expect(Number(sourceStage.output_tokens ?? 0)).toBeGreaterThan(0);
+  expect(Number(sourceStage.total_duration_ms ?? 0)).toBeGreaterThanOrEqual(Number(sourceStage.provider_wait_ms ?? 0));
+  expect(String(sourceStage.finish_reason ?? "")).not.toBe("");
+
   fs.writeFileSync(
     path.join(dataDir, `v3-basic-builtin-b-${stamp}-metrics.json`),
-    JSON.stringify({ run_id: runId, repo_path: repoPath, elapsed_ms: elapsedMs, artifact_names: artifactNames }, null, 2),
+    JSON.stringify({
+      run_id: runId,
+      repo_path: repoPath,
+      elapsed_ms: elapsedMs,
+      artifact_names: artifactNames,
+      source_analysis_metrics: sourceStage,
+    }, null, 2),
     "utf8",
   );
   expect(elapsedMs).toBeGreaterThanOrEqual(60_000);
