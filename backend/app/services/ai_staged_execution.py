@@ -8001,7 +8001,10 @@ def _quality_repair_may_reassign_black_box_dimensions(
 
     return any(
         isinstance(issue, dict)
-        and str(issue.get("code") or "") == "missing_black_box_dimensions"
+        and str(issue.get("code") or "") in {
+            "missing_black_box_dimensions",
+            "professional_coverage_incomplete",
+        }
         for issue in quality_feedback.get("issues") or []
     )
 
@@ -8151,7 +8154,9 @@ def _regular_stage_prompt(
     repair_prompt_seed = current_artifact_seed[:60_000]
     repair_evidence_ids: set[str] = set()
     repair_relevant_cards: list[dict[str, Any]] = []
-    if isinstance(quality_feedback, dict) and artifact in affected_artifacts:
+    if isinstance(quality_feedback, dict) and Path(artifact).name in {
+        Path(value).name for value in affected_artifacts
+    }:
         scoped_quality_feedback = _quality_feedback_for_artifact(
             quality_feedback, artifact
         )
@@ -8988,10 +8993,15 @@ def _quality_feedback_for_artifact(
                 "missing_max_connections_target_setup",
                 "incomplete_mcs_black_box_oracle",
                 "harness_case_not_registered",
+                "professional_coverage_incomplete",
             }:
                 applies = True
         if applies:
-            issues.append(dict(raw_issue))
+            issue = dict(raw_issue)
+            if issue_artifact != artifact_name:
+                issue.setdefault("source_artifact", str(raw_issue.get("artifact") or ""))
+                issue["artifact"] = artifact_name
+            issues.append(issue)
     scoped["issues"] = issues
     issue_groups = [
         dict(group)

@@ -6963,6 +6963,7 @@ def test_professional_coverage_axis_marks_missing_groups_without_changing_hard_g
         "score": 33,
         "issue_count": 2,
         "missing_scenario_count": 3,
+        "missing_scenarios": ["非法 NSG", "Unsupported Version", "缺少 CHAP_R"],
         "declared_scope": "professional_scenario_coverage",
         "warnings": ["缺少协议状态转换场景", "缺少 CHAP 负向场景"],
     }

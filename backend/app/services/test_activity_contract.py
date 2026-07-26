@@ -1572,22 +1572,28 @@ def _professional_coverage_axis(
             "score": 100,
             "issue_count": 0,
             "missing_scenario_count": 0,
+            "missing_scenarios": [],
             "declared_scope": "professional_scenario_coverage",
             "warnings": [],
         }
     codes = {str(issue.get("code") or "") for issue in warnings}
-    scenarios = {
-        str(scenario).strip()
-        for issue in warnings
-        for scenario in issue.get("scenarios") or []
-        if str(scenario).strip()
-    }
+    scenarios: list[str] = []
+    for issue in warnings:
+        for raw_scenario in issue.get("scenarios") or []:
+            scenario = str(raw_scenario).strip()
+            if scenario and scenario not in scenarios:
+                scenarios.append(scenario)
     covered_groups = max(0, _PROFESSIONAL_COVERAGE_GROUP_COUNT - len(codes))
     return {
         "status": "warning",
         "score": round(covered_groups * 100 / _PROFESSIONAL_COVERAGE_GROUP_COUNT),
         "issue_count": len(codes),
         "missing_scenario_count": len(scenarios),
+        # The profile gate turns this advisory axis into a deep-delivery
+        # repair contract.  Preserve the individual scenario names instead
+        # of only their rendered prose, otherwise the repair stage cannot
+        # tell which structured black-box cases it must add.
+        "missing_scenarios": scenarios,
         "declared_scope": "professional_scenario_coverage",
         "warnings": [
             str(issue.get("message") or "存在待扩展的专业测试场景")

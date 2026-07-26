@@ -4291,7 +4291,17 @@ def _apply_profile_coverage_to_quality_audit(
             {
                 "code": "professional_coverage_incomplete",
                 "severity": "blocking",
-                "artifact": "完整分析报告.md",
+                # Coverage is observed in the assembled report, but the
+                # editable source of truth is the structured black-box suite.
+                # Routing this to the report makes a repair describe missing
+                # cases without ever being allowed to add them.
+                "artifact": "black_box_cases.json",
+                "source_artifact": "完整分析报告.md",
+                "scenarios": [
+                    str(item).strip()
+                    for item in coverage.get("missing_scenarios") or []
+                    if str(item).strip()
+                ],
                 "message": (
                     "深度型交付尚未覆盖必需的专业测试场景："
                     + "；".join(str(item) for item in coverage.get("warnings") or [])
@@ -8806,6 +8816,11 @@ def _quality_feedback_from_audit(
             "harness_case_not_registered",
         }:
             artifact = "black_box_cases.json"
+        if code == "professional_coverage_incomplete":
+            # Older attempts stored this report-level profile gate before the
+            # canonical repair target existed.  Preserve compatibility while
+            # always repairing the actual structured test-case artifact.
+            artifact = "black_box_cases.json"
         is_repairable = code not in non_repairable_codes
         issue["repairable"] = is_repairable
         if artifact and is_repairable:
@@ -8825,10 +8840,10 @@ def _quality_feedback_from_audit(
                 ):
                     if structured_artifact not in affected_artifacts:
                         affected_artifacts.append(structured_artifact)
-            if (
-                source_artifact == "assistant-output.md"
-                and code == "missing_iscsi_professional_scenarios"
-            ):
+            if code in {
+                "missing_iscsi_professional_scenarios",
+                "professional_coverage_incomplete",
+            }:
                 for structured_artifact in (
                     "business_flow.md",
                     "black_box_cases.json",

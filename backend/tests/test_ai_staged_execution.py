@@ -45,6 +45,8 @@ from app.services.ai_staged_execution import (
     build_profile_execution_evidence,
     _quality_repair_row_ids,
     _quality_repair_may_reassign_black_box_dimensions,
+    _quality_repair_allows_new_items,
+    _quality_feedback_for_artifact,
     _quality_repair_prompt_seed,
     _quality_repair_evidence_cards,
     _ISCSI_RAW_PDU_APPENDIX,
@@ -2556,6 +2558,32 @@ def test_missing_black_box_dimensions_allows_reassigning_duplicate_case_ids():
     )
     assert not _quality_repair_may_reassign_black_box_dimensions(
         {"issues": [{"code": "black_box_boundary_violation"}]}
+    )
+
+
+def test_professional_coverage_feedback_routes_to_additive_black_box_repair():
+    feedback = {
+        "affected_artifacts": ["black_box_cases.json"],
+        "issues": [
+            {
+                "artifact": "完整分析报告.md",
+                "code": "professional_coverage_incomplete",
+                "scenarios": ["错误 CHAP_R", "未知 CHAP 用户"],
+            }
+        ],
+    }
+
+    scoped = _quality_feedback_for_artifact(feedback, "black_box_cases.json")
+
+    assert scoped["issues"] == [{
+        "artifact": "black_box_cases.json",
+        "source_artifact": "完整分析报告.md",
+        "code": "professional_coverage_incomplete",
+        "scenarios": ["错误 CHAP_R", "未知 CHAP 用户"],
+    }]
+    assert _quality_repair_may_reassign_black_box_dimensions(scoped)
+    assert _quality_repair_allows_new_items(
+        artifact="black_box_cases.json", quality_feedback=scoped
     )
 
 

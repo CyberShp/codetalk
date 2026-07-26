@@ -749,6 +749,7 @@ def test_professional_coverage_warning_blocks_deep_delivery():
                     "status": "warning",
                     "score": 67,
                     "issue_count": 1,
+                    "missing_scenarios": ["错误 CHAP_R", "未知 CHAP 用户"],
                     "warnings": ["缺少 CHAP 负向场景"],
                 }
             },
@@ -759,6 +760,9 @@ def test_professional_coverage_warning_blocks_deep_delivery():
     assert result["deliverable"] is False
     assert result["status"] == "needs_rework"
     assert result["issues"][-1]["code"] == "professional_coverage_incomplete"
+    assert result["issues"][-1]["artifact"] == "black_box_cases.json"
+    assert result["issues"][-1]["source_artifact"] == "完整分析报告.md"
+    assert result["issues"][-1]["scenarios"] == ["错误 CHAP_R", "未知 CHAP 用户"]
 
 
 def test_claim_evidence_ledger_blocks_delivery_with_a_repairable_issue():
