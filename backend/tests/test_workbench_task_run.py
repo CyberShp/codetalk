@@ -7121,6 +7121,63 @@ def test_final_deterministic_quality_repair_finds_nested_agent_markdown_artifact
     assert "待补充验证的源码定位" in module_map.read_text(encoding="utf-8")
 
 
+def test_final_deterministic_quality_repair_reaches_nested_agent_black_box_rows(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _apply_final_deterministic_quality_repairs,
+    )
+
+    agent_dir = tmp_path / "agent_runs" / "analyze"
+    agent_dir.mkdir(parents=True)
+    cases_path = agent_dir / "black_box_cases.json"
+    cases_path.write_text(
+        json.dumps([
+            {
+                "case_id": "BC-03",
+                "scenario_name": "Reject additional connection when MaxConnectionsPerSession=1",
+                "preconditions": ["first connection exists"],
+                "steps": ["open a second connection"],
+                "expected_result": "second connection is rejected",
+                "observability": ["target log"],
+                "failure_diagnostics": ["check connection"],
+                "mapped_test_dir": "test/iscsi_tgt/multiconnection/multiconnection.sh",
+            },
+            {
+                "case_id": "BC-04",
+                "scenario_name": "Login hangs after first request; target should close connection after 30s",
+                "preconditions": ["target running"],
+                "steps": ["send first Login PDU then wait"],
+                "expected_result": "after 30 seconds target closes the connection",
+                "observability": ["tcp state"],
+                "failure_diagnostics": ["connection did not close"],
+            },
+        ], ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    changed = _apply_final_deterministic_quality_repairs(
+        artifact_dir=tmp_path,
+        audit={"issues": [
+            {
+                "artifact": "black_box_cases.json",
+                "code": "missing_mcs_capable_client",
+                "constraint_id": "iscsi_multiconnection_client_capability",
+                "scenario": "TC-03 Reject additional connection when MaxConnectionsPerSession=1",
+            },
+            {
+                "artifact": "black_box_cases.json",
+                "code": "black_box_evidence_contradiction",
+                "constraint_id": "iscsi_login_timer_after_first_pdu",
+                "scenario": "TC-04 Login hangs after first request; target should close connection after 30s",
+            },
+        ]},
+    )
+
+    repaired = json.loads(cases_path.read_text(encoding="utf-8"))
+    assert "black_box_cases.json" in changed
+    assert "--scenario mcs" in " ".join(repaired[0]["steps"])
+    assert "当前实现不会保证" in repaired[1]["expected_result"]
+
+
 def test_final_governance_refresh_uses_nested_agent_delivery_root(tmp_path, monkeypatch):
     import app.services.workbench_workflow_runner as runner
 

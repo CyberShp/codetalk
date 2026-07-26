@@ -3700,13 +3700,14 @@ if __name__ == "__main__":
 
 def _materialize_and_validate_raw_pdu_harness(artifact_dir: Path) -> dict[str, Any]:
     """Execute the deterministic harness self-test over a real loopback TCP socket."""
+    artifact_root = artifact_dir.resolve()
     match = re.search(
         r"```python\s*\n([\s\S]*?)```",
         _ISCSI_RAW_PDU_APPENDIX,
         flags=re.IGNORECASE,
     )
     started = time.monotonic()
-    validation_path = artifact_dir / "raw_pdu_harness_validation.json"
+    validation_path = artifact_root / "raw_pdu_harness_validation.json"
     if match is None:
         result = {
             "status": "failed",
@@ -3716,7 +3717,7 @@ def _materialize_and_validate_raw_pdu_harness(artifact_dir: Path) -> dict[str, A
         _write_json(validation_path, result)
         return result
 
-    support_dir = artifact_dir / "support"
+    support_dir = artifact_root / "support"
     support_dir.mkdir(parents=True, exist_ok=True)
     harness_path = support_dir / "iscsi_login_raw_pdu.py"
     _write_text(harness_path, match.group(1).rstrip() + "\n")
@@ -3755,7 +3756,7 @@ def _materialize_and_validate_raw_pdu_harness(artifact_dir: Path) -> dict[str, A
             "duration_ms": round((time.monotonic() - started) * 1000, 1),
             "stdout_tail": completed.stdout[-500:],
             "stderr_tail": completed.stderr[-500:],
-            "harness": str(harness_path.relative_to(artifact_dir)),
+            "harness": str(harness_path.relative_to(artifact_root)),
         }
     except subprocess.TimeoutExpired:
         result = {
@@ -3764,7 +3765,7 @@ def _materialize_and_validate_raw_pdu_harness(artifact_dir: Path) -> dict[str, A
             "transport": "tcp_loopback",
             "reason": "raw-PDU harness 自检超过 5 秒",
             "duration_ms": round((time.monotonic() - started) * 1000, 1),
-            "harness": str(harness_path.relative_to(artifact_dir)),
+            "harness": str(harness_path.relative_to(artifact_root)),
             "interpreter": interpreter,
         }
     _write_json(validation_path, result)
@@ -8664,6 +8665,28 @@ def _quality_repair_row_ids(
             row_id = str(issue.get(key) or "").strip()
             if row_id:
                 row_ids.add(row_id)
+        scenario = str(issue.get("scenario") or "").strip()
+        if scenario and base_items:
+            # Final report audits refer to a user-facing case title, while the
+            # structured artifact owns stable BC-/BBC- identifiers. Resolve
+            # only exact normalized titles; TC/BC display prefixes are labels,
+            # not a second identifier namespace.
+            normalized_scenario = re.sub(
+                r"^(?:tc|bc|bbc)-\d+\s*[-:：.]?\s*", "", scenario,
+                flags=re.IGNORECASE,
+            ).strip().casefold()
+            for item in base_items:
+                if not isinstance(item, dict):
+                    continue
+                candidate = str(item.get("scenario_name") or "").strip()
+                normalized_candidate = re.sub(
+                    r"^(?:tc|bc|bbc)-\d+\s*[-:：.]?\s*", "", candidate,
+                    flags=re.IGNORECASE,
+                ).strip().casefold()
+                if normalized_scenario and normalized_scenario == normalized_candidate:
+                    row_id = _json_array_row_id(item)
+                    if row_id:
+                        row_ids.add(row_id)
         if not any(
             str(issue.get(key) or "").strip()
             for key in ("row_id", "case_id", "sfmea_id", "risk_id")
@@ -9663,22 +9686,26 @@ def _deterministic_quality_claim_repair(
         and artifact_name == "black_box_cases.json"
         and isinstance(repaired, list)
     ):
-        target_ids = {
-            str(issue.get("row_id") or "").strip()
-            for issue in issues
-            if str(issue.get("constraint_id") or "")
-            == "iscsi_login_timer_after_first_pdu"
-            and str(issue.get("row_id") or "").strip()
-        }
+        target_ids = _quality_repair_row_ids(
+            artifact=artifact_name,
+            quality_feedback={"issues": [
+                issue
+                for issue in issues
+                if str(issue.get("constraint_id") or "")
+                == "iscsi_login_timer_after_first_pdu"
+            ]},
+            base_items=repaired,
+        )
         for index, row in enumerate(repaired):
             if not isinstance(row, dict) or str(row.get("case_id") or "").strip() not in target_ids:
                 continue
             row["expected_result"] = (
-                "首个 Login PDU 后停止后续报文时，记录实际连接状态、target 日志和资源释放；"
+                "当前实现不会保证首个 Login PDU 后 30 秒由 login_timer 清理连接；"
+                "这是待验证的资源残留/半开连接风险。记录实际连接状态、target 日志和资源释放，"
                 "不把 30 秒 login_timer 清理作为预期。"
             )
             row["observability"] = [
-                "公开 initiator 连接状态、target 日志、socket/PDU 资源指标和抓包时间线。",
+                "公开 initiator 连接状态、target 日志、socket/PDU 资源指标、资源残留计数和抓包时间线。",
                 "首个 Login PDU 处理后验证 login_timer 是否已注销；不假定多阶段登录仍有 30 秒清理保障。",
             ]
             row["failure_diagnostics"] = [
@@ -9688,6 +9715,73 @@ def _deterministic_quality_claim_repair(
                 f"$[{index}].expected_result",
                 f"$[{index}].observability",
                 f"$[{index}].failure_diagnostics",
+            ])
+
+    mcs_capability_issues = [
+        issue
+        for issue in issues
+        if str(issue.get("constraint_id") or "")
+        == "iscsi_multiconnection_client_capability"
+        and str(issue.get("code") or "") in {
+            "missing_mcs_capable_client",
+            "non_executable_mcs_client",
+        }
+    ]
+    if (
+        mcs_capability_issues
+        and artifact_name == "black_box_cases.json"
+        and isinstance(repaired, list)
+    ):
+        target_ids = _quality_repair_row_ids(
+            artifact=artifact_name,
+            quality_feedback={"issues": mcs_capability_issues},
+            base_items=repaired,
+        )
+        for index, row in enumerate(repaired):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("case_id") or "").strip() not in target_ids:
+                continue
+            row["preconditions"] = [
+                "仅使用隔离测试 target；启动前执行 `scripts/rpc.py iscsi_set_options -c 1`。",
+                "本次交付的 `support/iscsi_login_raw_pdu.py` raw-PDU harness 可执行，并能控制 ISID、CID 和 non-zero TSIH。",
+                "首个 Login 使用同一 ISID、CID=1；成功响应中的 non-zero TSIH 将被记录并复用。",
+            ]
+            row["steps"] = [
+                "运行 `python3 support/iscsi_login_raw_pdu.py --host <target-ip> --port 3260 --scenario mcs --expected-class 0x02 --expected-detail 0x06`。",
+                "harness 在首 socket 保持在线时，记录首个 Login Response 的 non-zero TSIH，并在新 socket 上用相同 ISID、TSIH=<记录值>、CID=2 发送第二个 Login Request。",
+                "harness 使用 sendall/recv 解析第二个 Login Response；保存两个 socket 的报文、target 日志和首连接状态。",
+            ]
+            row["expected_result"] = (
+                "第二个 Login Response 的 opcode=0x23、status_class=0x02、"
+                "status_detail=0x06（Too Many Connections）；首 socket 保持在线，"
+                "target 进程不退出。"
+            )
+            row["observability"] = [
+                "raw-PDU harness 输出的首响应 non-zero TSIH、第二响应 status_class/status_detail 和 sendall/recv 结果。",
+                "pcap 中相同 ISID/TSIH、不同 CID 的两次 Login 交换，以及 `iscsi_get_connections` 的首连接状态。",
+                "target 日志和进程状态。",
+            ]
+            row["failure_diagnostics"] = [
+                "若第二连接成功，确认 `iscsi_set_options -c 1` 在 target 启动前生效。",
+                "若首连接断开，保留两个 socket 的 PDU、TSIH/CID 值和 target 日志；不得用 iscsiadm 代替该同 session 场景。",
+            ]
+            row["oracle_basis"] = (
+                "判据来自启动前 MaxConnections 配置、首响应记录的 non-zero TSIH，"
+                "以及第二个 Login Response 的公开 opcode/status 字段。"
+            )
+            row["mapped_test_dir"] = (
+                "support/iscsi_login_raw_pdu.py（可执行 raw-PDU MCS harness；"
+                "multiconnection.sh 仅作环境搭建参考，不覆盖同一 session 的 MCS）"
+            )
+            fields.extend([
+                f"$[{index}].preconditions",
+                f"$[{index}].steps",
+                f"$[{index}].expected_result",
+                f"$[{index}].observability",
+                f"$[{index}].failure_diagnostics",
+                f"$[{index}].oracle_basis",
+                f"$[{index}].mapped_test_dir",
             ])
 
     if artifact_name == "black_box_cases.json" and isinstance(repaired, list):

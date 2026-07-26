@@ -13428,6 +13428,114 @@ def test_deterministic_quality_repair_separates_duplicate_cid_from_mcs_capacity(
     assert "$[0].failure_mode" in fields
 
 
+def test_deterministic_quality_repair_routes_audit_scenarios_to_rows_and_fixes_mcs_and_timer_contracts():
+    payload = [
+        {
+            "case_id": "BC-03",
+            "test_dimension": "resource_pressure",
+            "scenario_name": "Reject additional connection when MaxConnectionsPerSession=1",
+            "preconditions": ["first connection exists"],
+            "steps": ["open a second connection"],
+            "expected_result": "second connection is rejected",
+            "observability": ["target log"],
+            "failure_diagnostics": ["check connection"],
+            "mapped_test_dir": "test/iscsi_tgt/multiconnection/multiconnection.sh",
+        },
+        {
+            "case_id": "BC-04",
+            "test_dimension": "timeout",
+            "scenario_name": "Login hangs after first request; target should close connection after 30s",
+            "preconditions": ["target running"],
+            "steps": ["send first Login PDU then wait"],
+            "expected_result": "after 30 seconds target closes the connection",
+            "observability": ["tcp state"],
+            "failure_diagnostics": ["connection did not close"],
+        },
+    ]
+    feedback = {
+        "issues": [
+            {
+                "artifact": "black_box_cases.json",
+                "code": "missing_mcs_capable_client",
+                "constraint_id": "iscsi_multiconnection_client_capability",
+                "scenario": "TC-03 Reject additional connection when MaxConnectionsPerSession=1",
+            },
+            {
+                "artifact": "black_box_cases.json",
+                "code": "black_box_evidence_contradiction",
+                "constraint_id": "iscsi_login_timer_after_first_pdu",
+                "scenario": "TC-04 Login hangs after first request; target should close connection after 30s",
+            },
+        ]
+    }
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="black_box_cases.json",
+        quality_feedback=feedback,
+    )
+
+    mcs_case, timer_case = repaired
+    assert "raw-PDU" in " ".join(mcs_case["preconditions"])
+    assert "non-zero TSIH" in " ".join(mcs_case["steps"])
+    assert "CID=2" in " ".join(mcs_case["steps"])
+    assert "--scenario mcs" in " ".join(mcs_case["steps"])
+    assert "support/iscsi_login_raw_pdu.py" in mcs_case["mapped_test_dir"]
+    assert "当前实现" in timer_case["expected_result"]
+    assert "不把 30 秒 login_timer 清理作为预期" in timer_case["expected_result"]
+    assert "资源残留" in " ".join(timer_case["observability"])
+    assert "$[0].steps" in fields
+    assert "$[1].expected_result" in fields
+
+    from app.services.test_activity_contract import _audit_combined_report_consistency
+
+    report = "\n\n".join(
+        "\n".join([
+            f"### {row['scenario_name']}",
+            "- 前置条件：" + "；".join(row.get("preconditions") or []),
+            "- 操作步骤：" + "；".join(row.get("steps") or []),
+            "- 预期结果：" + str(row.get("expected_result") or ""),
+            "- 观测点：" + "；".join(row.get("observability") or []),
+            "- 失败诊断：" + "；".join(row.get("failure_diagnostics") or []),
+            "- 测试映射：" + str(row.get("mapped_test_dir") or ""),
+        ])
+        for row in repaired
+    )
+    constraint_ids = {
+        issue.get("constraint_id")
+        for issue in _audit_combined_report_consistency(report)
+    }
+    assert "iscsi_login_timer_after_first_pdu" not in constraint_ids
+    assert "iscsi_multiconnection_client_capability" not in constraint_ids
+
+
+def test_quality_repair_row_ids_resolve_tc_prefix_to_persisted_bc_case_id():
+    row_ids = _quality_repair_row_ids(
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "missing_mcs_capable_client",
+            "scenario": "TC-03 Reject additional connection when MaxConnectionsPerSession=1",
+        }]},
+        base_items=[{
+            "case_id": "BC-03",
+            "scenario_name": "Reject additional connection when MaxConnectionsPerSession=1",
+        }],
+    )
+
+    assert row_ids == {"BC-03"}
+
+
+def test_raw_pdu_harness_self_test_resolves_relative_artifact_dir(monkeypatch, tmp_path):
+    from app.services.ai_staged_execution import _materialize_and_validate_raw_pdu_harness
+
+    monkeypatch.chdir(tmp_path)
+    result = _materialize_and_validate_raw_pdu_harness(Path("relative-run"))
+
+    assert result["status"] == "passed"
+    assert (tmp_path / "relative-run" / "support" / "iscsi_login_raw_pdu.py").is_file()
+
+
 def test_deterministic_quality_repair_does_not_present_capacity_status_as_duplicate_cid_oracle():
     repaired, fields = _deterministic_quality_claim_repair(
         [{

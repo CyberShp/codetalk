@@ -7452,12 +7452,40 @@ def _apply_final_deterministic_quality_repairs(
                 _write_json(cases_path, updated_cases)
                 changed["black_box_cases.json"] = updated_case_fields
 
+    def _canonical_structured_artifact_path(artifact: str) -> Path:
+        direct = artifact_dir / artifact
+        if direct.is_file():
+            return direct
+        # Builtin regular stages persist their canonical JSON under one Agent
+        # run. Task-level audits intentionally address the public basename, so
+        # final deterministic repair must resolve that same materialized byte
+        # source instead of silently becoming a root-only no-op.
+        candidates = [
+            candidate
+            for candidate in artifact_dir.glob(f"agent_runs/*/{artifact}")
+            if candidate.is_file()
+        ]
+        if not candidates:
+            candidates = [
+                candidate
+                for candidate in artifact_dir.rglob(artifact)
+                if "quality_repairs" not in candidate.parts
+                and candidate.is_file()
+            ]
+        candidates.sort(
+            key=lambda candidate: candidate.stat().st_mtime,
+            reverse=True,
+        )
+        return candidates[0] if candidates else direct
+
     for artifact in ("sfmea.json", "black_box_cases.json"):
-        path = artifact_dir / artifact
+        path = _canonical_structured_artifact_path(artifact)
         payload = _read_json(path)
         if not isinstance(payload, list):
             continue
-        sfmea_risk_ledger = _read_json(artifact_dir / "sfmea.json")
+        sfmea_risk_ledger = _read_json(
+            _canonical_structured_artifact_path("sfmea.json")
+        )
         repaired, fields = _deterministic_quality_claim_repair(
             payload,
             artifact=artifact,
@@ -7466,7 +7494,9 @@ def _apply_final_deterministic_quality_repairs(
                 sfmea_risk_ledger if isinstance(sfmea_risk_ledger, list) else None
             ),
             evidence_cards=[
-                card for card in _read_json(artifact_dir / "evidence_cards.json") or []
+                card for card in _read_json(
+                    _canonical_structured_artifact_path("evidence_cards.json")
+                ) or []
                 if isinstance(card, dict)
             ],
         )
