@@ -126,3 +126,20 @@ The manifest closes the previous “files happen to exist” evidence gap for th
 isolated SDK POC. A release owner still has to approve licenses and provide a
 complete platform-specific CodeTalk dependency bundle before AC-SEC-005 can
 be marked complete.
+
+### Real offline POC install
+
+On 2026-07-27 an isolated Python 3.11 virtual environment was created under
+`/Volumes/Media/codetalk-e2e-artifacts/v3-offline-sdk-bundle-install-20260727/`.
+It installed `openai-agents==0.18.3` using only:
+
+```text
+pip install --no-index --find-links /Volumes/Media/codetalk-v3-sdk-poc/wheels openai-agents==0.18.3
+```
+
+The install completed from local files and `import agents` succeeded. The
+resulting `freeze.txt` is SHA-256 `0d54bca8136ac69f3392a60ab07f28958a9cae9b297bfc07dbdc6170c79abf8e`.
+This validates that the supplied OpenAI Agents SDK POC dependency closure can
+be installed without an index lookup. It does not admit that SDK to the product
+runtime, approve the separate Claude SDK license, or prove a complete CodeTalk
+release bundle.
