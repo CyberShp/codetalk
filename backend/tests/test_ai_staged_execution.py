@@ -790,7 +790,10 @@ def test_black_box_rules_require_aggregate_coverage_target_binding():
 
 
 def test_coverage_binding_patch_updates_only_existing_cases_and_requires_all_targets():
-    from app.services.ai_staged_execution import _apply_black_box_coverage_binding_patch
+    from app.services.ai_staged_execution import (
+        _apply_black_box_coverage_binding_patch,
+        _normalize_black_box_coverage_target_assignments,
+    )
 
     base = [
         {"case_id": "BC-001", "scenario_name": "正常登录"},
@@ -807,6 +810,12 @@ def test_coverage_binding_patch_updates_only_existing_cases_and_requires_all_tar
 
     assert merged[0]["coverage_target_ids"] == ["FLOW-COND-001"]
     assert merged[1]["coverage_target_ids"] == ["RESOURCE-CMD"]
+    partial = _apply_black_box_coverage_binding_patch(
+        base,
+        [{"case_id": "BC-001", "coverage_target_ids": ["FLOW-COND-001"]}],
+        required_target_ids=["FLOW-COND-001"],
+    )
+    assert "coverage_target_ids" not in partial[1]
     with pytest.raises(ValueError, match="coverage_binding_incomplete"):
         _apply_black_box_coverage_binding_patch(
             base,
@@ -819,12 +828,18 @@ def test_coverage_binding_patch_updates_only_existing_cases_and_requires_all_tar
             [{"case_id": "BC-001", "coverage_target_ids": ["COV-001"]}],
             required_target_ids=["FLOW-COND-001"],
         )
-    with pytest.raises(ValueError, match="coverage_binding_case_unbound"):
-        _apply_black_box_coverage_binding_patch(
-            base,
-            [{"case_id": "BC-001", "coverage_target_ids": ["FLOW-COND-001"]}],
-            required_target_ids=["FLOW-COND-001"],
-        )
+    assert _normalize_black_box_coverage_target_assignments([
+        {"target_id": "FLOW-COND-001", "case_id": "BC-001"},
+        {"target_id": "RESOURCE-CMD", "case_id": "BC-002"},
+    ]) == [
+        {"case_id": "BC-001", "coverage_target_ids": ["FLOW-COND-001"]},
+        {"case_id": "BC-002", "coverage_target_ids": ["RESOURCE-CMD"]},
+    ]
+    with pytest.raises(ValueError, match="coverage_binding_duplicate_target"):
+        _normalize_black_box_coverage_target_assignments([
+            {"target_id": "FLOW-COND-001", "case_id": "BC-001"},
+            {"target_id": "FLOW-COND-001", "case_id": "BC-002"},
+        ])
 
 
 @pytest.mark.asyncio
@@ -853,8 +868,8 @@ async def test_coverage_binding_patch_retries_empty_reasoner_with_fast_client(tm
             self.prompts.append("\n".join(str(message.get("content") or "") for message in messages))
             return LLMResponse(
                 content=json.dumps([
-                    {"case_id": "BC-001", "coverage_target_ids": ["FLOW-COND-001"]},
-                    {"case_id": "BC-002", "coverage_target_ids": ["RESOURCE-CMD"]},
+                    {"target_id": "FLOW-COND-001", "case_id": "BC-001"},
+                    {"target_id": "RESOURCE-CMD", "case_id": "BC-002"},
                 ]),
                 model=self._model,
                 usage={},
@@ -893,8 +908,8 @@ async def test_coverage_binding_patch_retries_empty_reasoner_with_fast_client(tm
     assert fast.calls == 1
     assert result["status"] == "completed"
     assert result["model"] == "deepseek-chat"
-    assert "只绑定该用例确实覆盖的目标，通常每个用例 1-3 个" in fast.prompts[0]
-    assert "不得把全部 TARGETS 重复绑定到每一个用例" in fast.prompts[0]
+    assert "每个 TARGETS.id 只返回一条" in fast.prompts[0]
+    assert "不要输出每个用例的完整列表" in fast.prompts[0]
     assert json.loads(output_path.read_text(encoding="utf-8"))[1]["coverage_target_ids"] == ["RESOURCE-CMD"]
 
 

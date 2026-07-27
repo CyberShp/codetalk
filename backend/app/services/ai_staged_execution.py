@@ -13868,14 +13868,34 @@ def _apply_black_box_coverage_binding_patch(
     missing = sorted(allowed - covered)
     if missing:
         raise ValueError("coverage_binding_incomplete:" + ",".join(missing))
-    unbound_cases = sorted(set(base_by_id) - set(patches))
-    if unbound_cases:
-        raise ValueError("coverage_binding_case_unbound:" + ",".join(unbound_cases))
     return [
         {**item, "coverage_target_ids": patches[row_id]}
         if isinstance(item, dict) and (row_id := _json_array_row_id(item)) in patches
         else item
         for item in base_items
+    ]
+
+
+def _normalize_black_box_coverage_target_assignments(
+    assignments: list[Any],
+) -> list[dict[str, Any]]:
+    """Convert one-target-to-one-case model output into compact case patches."""
+    patches: dict[str, list[str]] = {}
+    seen_targets: set[str] = set()
+    for item in assignments:
+        if not isinstance(item, dict):
+            raise ValueError("coverage_binding_assignment_invalid")
+        target_id = str(item.get("target_id") or "").strip()
+        case_id = str(item.get("case_id") or "").strip()
+        if not target_id or not case_id:
+            raise ValueError("coverage_binding_assignment_missing_fields")
+        if target_id in seen_targets:
+            raise ValueError(f"coverage_binding_duplicate_target:{target_id}")
+        seen_targets.add(target_id)
+        patches.setdefault(case_id, []).append(target_id)
+    return [
+        {"case_id": case_id, "coverage_target_ids": target_ids}
+        for case_id, target_ids in patches.items()
     ]
 
 
@@ -13934,9 +13954,9 @@ async def _execute_black_box_coverage_binding_patch_stage(
     ]
     prompt = "\n".join([
         "TASK: Bind frozen source-coverage targets to already accepted black-box cases.",
-        "Return only a JSON array. Each item must be exactly {case_id, coverage_target_ids}.",
+        "Return only a JSON array. Each item must be exactly {target_id, case_id}.",
         "Use only case_id values in CASES and only target IDs in TARGETS.",
-        "Return exactly one item for every CASES.case_id. Every TARGETS.id must appear at least once across the entire array. 只绑定该用例确实覆盖的目标，通常每个用例 1-3 个；不得把全部 TARGETS 重复绑定到每一个用例。Do not add cases, rewrite test steps, invent COV-* IDs, or use a target unless the named external scenario actually exercises it.",
+        "每个 TARGETS.id 只返回一条，并选择一个最贴合的 CASES.case_id。A case_id may appear in multiple items. 不要输出每个用例的完整列表，不要把全部 TARGETS 重复绑定到每一个用例。Do not add cases, rewrite test steps, invent COV-* IDs, or use a target unless the named external scenario actually exercises it.",
         "TARGETS:",
         json.dumps(target_details or [{"id": value} for value in target_ids], ensure_ascii=False),
         "CASES:",
@@ -13964,7 +13984,7 @@ async def _execute_black_box_coverage_binding_patch_stage(
             response = await _complete_with_cancellation(
                 llm=llm,
                 prompt=prompt,
-                max_tokens=min(2400, policy.max_tokens),
+                max_tokens=min(1600, policy.max_tokens),
                 is_cancelled=is_cancelled,
                 timeout_seconds=min(180.0, policy.provider_timeout_seconds),
                 single_attempt=True,
@@ -13980,7 +14000,7 @@ async def _execute_black_box_coverage_binding_patch_stage(
             response = await _complete_with_cancellation(
                 llm=fallback_llm,
                 prompt=prompt,
-                max_tokens=min(2400, policy.max_tokens),
+                max_tokens=min(1600, policy.max_tokens),
                 is_cancelled=is_cancelled,
                 timeout_seconds=min(120.0, policy.provider_timeout_seconds),
                 single_attempt=True,
@@ -13989,9 +14009,10 @@ async def _execute_black_box_coverage_binding_patch_stage(
         provider_wait_ms = round((time.monotonic() - provider_started) * 1000, 1)
         content = str(getattr(response, "content", "") or "").strip()
         _write_text(stage_dir / "coverage_binding_patch_raw_output.txt", content)
-        patch_items = _render_stage_artifact(content, "coverage_binding_patch.json")
-        if not isinstance(patch_items, list):
+        assignments = _render_stage_artifact(content, "coverage_binding_patch.json")
+        if not isinstance(assignments, list):
             raise ValueError("coverage_binding_patch_not_array")
+        patch_items = _normalize_black_box_coverage_target_assignments(assignments)
         merged = _apply_black_box_coverage_binding_patch(
             base_items,
             patch_items,
