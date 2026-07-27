@@ -3305,10 +3305,22 @@ class WorkbenchWorkflowRunner:
                                 artifact_dir=artifact_dir,
                                 plan=current_plan,
                             )
+                            # Final deterministic rendering/governance can add
+                            # or rebind a technical claim after the last repair
+                            # turn.  Validate that exact final claim set before
+                            # deciding delivery status.  Unchanged bindings are
+                            # reused by the validator, so this does not create
+                            # another provider call for already-audited facts.
+                            behavior_validation = await validate_behavior_claims()
+                            _refresh_source_delivery_governance_after_finalizing(
+                                artifact_dir=artifact_dir,
+                                plan=current_plan,
+                            )
                             # The source-driven judge is rebuilt from the final
-                            # JSON rows above. Its result is itself a delivery
-                            # gate, so never retain the pre-refresh audit when
-                            # deciding whether this attempt is publishable.
+                            # JSON rows and final L2 verdicts above. Its result
+                            # is itself a delivery gate, so never retain the
+                            # pre-refresh audit when deciding whether this
+                            # attempt is publishable.
                             final_repair_audit = await audit_staged_artifacts()
                             _write_json(
                                 artifact_dir

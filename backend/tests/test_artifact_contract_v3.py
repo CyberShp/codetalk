@@ -128,6 +128,65 @@ def test_claim_evidence_ledger_carries_independent_behavior_verdicts(tmp_path):
     assert ledger["claims"][0]["verification_status"] == "contradicted"
 
 
+def test_claim_ledger_uses_l2_for_behavior_not_single_line_word_overlap(tmp_path):
+    """A real source anchor proves provenance; L2 judges the broader behavior."""
+    import json
+
+    from app.services.artifact_contract_v3 import materialize_claim_evidence_ledger
+    from app.services.test_activity_contract import _behavior_claim_binding
+
+    quote = "spdk_poller_unregister(&conn->login_timer);"
+    card = {
+        "evidence_id": "SRC-TIMER",
+        "file_path": "lib/iscsi/iscsi.c",
+        "symbols": ["iscsi_pdu_payload_op_login"],
+        "start_line": 2207,
+        "end_line": 2247,
+        "excerpt": quote,
+        "sha256": "e" * 64,
+    }
+    evidence = [{
+        "evidence_id": "SRC-TIMER",
+        "path": "lib/iscsi/iscsi.c",
+        "symbol": "iscsi_pdu_payload_op_login",
+        "lines": "L2210",
+        "quote": quote,
+    }]
+    claim = {
+        "claim_id": "CLAIM-TIMER",
+        "type": "behavior_assertion",
+        "statement": "第一个登录负载到达后取消超时检查。",
+        "evidence": evidence,
+    }
+    binding = _behavior_claim_binding(
+        claim_id="CLAIM-TIMER",
+        claim_type="behavior_assertion",
+        statement=claim["statement"],
+        evidence=[{**evidence[0], "sha256": card["sha256"]}],
+    )
+    (tmp_path / "evidence_cards.json").write_text(json.dumps([card]), encoding="utf-8")
+    (tmp_path / "sfmea.json").write_text(
+        json.dumps([{"sfmea_id": "SFMEA-TIMER", "technical_claims": [claim]}]),
+        encoding="utf-8",
+    )
+    (tmp_path / "black_box_cases.json").write_text("[]", encoding="utf-8")
+    (tmp_path / "behavior_claim_validation.json").write_text(
+        json.dumps({"claims": [{
+            "claim_id": "CLAIM-TIMER",
+            "binding": binding,
+            "status": "supports",
+        }]}),
+        encoding="utf-8",
+    )
+
+    ledger = materialize_claim_evidence_ledger(tmp_path)
+
+    assert ledger["status"] == "passed"
+    assert ledger["claims"][0]["l1_status"] == "verified"
+    assert ledger["claims"][0]["l2_status"] == "supports"
+    assert ledger["claims"][0]["verification_status"] == "verified"
+
+
 def test_claim_ledger_resolves_line_qualified_evidence_ids_without_losing_l2_binding(tmp_path):
     import json
 

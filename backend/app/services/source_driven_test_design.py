@@ -861,6 +861,14 @@ def verify_technical_claims(
                         ref_status = "contradicted"
                     elif expected_symbol and expected_symbol not in _strings(card.get("symbols")):
                         ref_status = "contradicted"
+                    # L1 proves that the declared quote is a real, bounded
+                    # source anchor.  It cannot prove an open-world behavior
+                    # from token overlap with one line of C; that is exactly
+                    # what the digest-bound independent L2 validator owns.
+                    # Keep deterministic semantic comparison for closed-world
+                    # claim types (constants and literal source anchors), but
+                    # do not reject a truthful Chinese behavior statement just
+                    # because its words are absent from an English identifier.
                     elif not _claim_statement_supported_by_quote(
                         statement=str(claim.get("statement") or ""),
                         quote=quote,
@@ -968,6 +976,19 @@ def _claim_statement_supported_by_quote(
     quote: str,
     claim_type: str,
 ) -> bool:
+    normalized_type = str(claim_type or "").strip().lower()
+    # A behavioral sentence describes the relationship between one or more
+    # source actions.  L1 can prove only that its quoted anchor is local,
+    # SHA-bound and line-bound; it must not pretend that lexical overlap with
+    # a single source line proves (or disproves) the behavior.  The caller
+    # binds these claims to the independent L2 validator.
+    if normalized_type not in {
+        "source_anchor",
+        "protocol_constant",
+        "field_offset",
+        "macro_value",
+    }:
+        return True
     statement_tokens = {
         token.lower()
         for token in re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}|0x[0-9A-Fa-f]+|\d+", statement)
@@ -980,9 +1001,11 @@ def _claim_statement_supported_by_quote(
         token.lower()
         for token in re.findall(r"0x[0-9A-Fa-f]+|\b\d+\b|\b[A-Z][A-Z0-9_]{2,}\b", statement)
     }
-    if claim_type in {"protocol_constant", "field_offset", "macro_value"}:
+    if normalized_type in {"protocol_constant", "field_offset", "macro_value"}:
         return bool(literal_tokens) and literal_tokens.issubset(quote_tokens)
-    return bool(statement_tokens & quote_tokens)
+    return str(statement or "").strip() == str(quote or "").strip()
+
+
 def build_test_design_mindmap(artifacts: dict[str, Any]) -> dict[str, Any]:
     """Build a stable overview plus flow/resource drill-down graph."""
 

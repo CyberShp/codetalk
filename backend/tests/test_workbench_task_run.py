@@ -6833,7 +6833,10 @@ def test_staged_builtin_quality_repair_respects_the_shared_attempt_budget(
     assert repair["stopped_reason"] == expected_stop_reason
     if expected_plan_count == 2:
         assert repair["attempts"][0]["status_after"] == "deliverable"
-    assert len(behavior_validations) == (3 if expected_plan_count == 2 else 1)
+    # Every staged run performs one final snapshot validation after deterministic
+    # rendering/governance. It reuses unchanged bindings, but guarantees claims
+    # introduced by finalization cannot bypass the independent L2 gate.
+    assert len(behavior_validations) == expected_plan_count * 2
     assert clients
     assert all(client.closed for client in clients)
 
