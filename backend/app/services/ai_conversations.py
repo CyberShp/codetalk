@@ -2054,7 +2054,10 @@ async def run_generation(
         current_finish_reason.set(None)
         staged_artifact_root: Path | None = None
         staged_delivery_contracts: list[dict[str, Any]] | None = None
-        deterministic_evidence_reply = _deterministic_source_evidence_reply(
+        deterministic_evidence_reply = _deterministic_workflow_constraint_reply(
+            references,
+            user_message["content"],
+        ) or _deterministic_source_evidence_reply(
             references,
             user_message["content"],
         )
@@ -4196,6 +4199,47 @@ def _source_id_evidence_override(
         "不得重复历史中的‘不存在’或‘证据不足’结论。\n"
         + "\n\n".join(matched)
     )
+
+
+def _deterministic_workflow_constraint_reply(
+    references: list[dict[str, Any]],
+    user_message: str,
+) -> str | None:
+    """Replay frozen workflow facts for an explicit constraint-review question."""
+    query = str(user_message or "").lower()
+    if not any(marker in query for marker in ("质量约束", "按约束", "复核")):
+        return None
+    for reference in references:
+        if str(reference.get("title") or "") != "test_activity_contract.json":
+            continue
+        try:
+            payload = json.loads(str(reference.get("excerpt") or ""))
+        except (TypeError, json.JSONDecodeError):
+            continue
+        constraints = payload.get("workflow_quality_constraints")
+        if not isinstance(constraints, list) or not constraints:
+            continue
+        lines = ["## 工作流质量约束复核", ""]
+        for constraint in constraints:
+            if not isinstance(constraint, dict):
+                continue
+            assertion = str(constraint.get("assertion") or "").strip()
+            if not assertion:
+                continue
+            evidence = "、".join(
+                str(item) for item in constraint.get("evidence") or [] if str(item).strip()
+            ) or "未记录"
+            lines.extend([
+                f"- 已冻结约束：{assertion}",
+                f"  - 证据：`{evidence}`",
+            ])
+        if len(lines) > 2:
+            lines.extend([
+                "",
+                "以上为本次已通过工作流的冻结质量约束；不以模型通用记忆改写。",
+            ])
+            return "\n".join(lines)
+    return None
 
 
 def _deterministic_source_evidence_reply(

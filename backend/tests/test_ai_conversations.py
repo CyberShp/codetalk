@@ -1814,6 +1814,25 @@ class TestAIConversationsAPI:
         assert "L82-L99" in deterministic_reply
         assert "config_chap_credentials_for_target" in deterministic_reply
 
+    async def test_workflow_constraint_review_returns_frozen_protocol_fact(self):
+        from app.services.ai_conversations import _deterministic_workflow_constraint_reply
+
+        reply = _deterministic_workflow_constraint_reply(
+            [{
+                "title": "test_activity_contract.json",
+                "excerpt": json.dumps({"workflow_quality_constraints": [{
+                    "id": "iscsi_login_error_c_flag_preserved",
+                    "assertion": "错误 Login Response 清除 T、CSG 和 NSG，但不会由该错误分支清除 C bit。",
+                    "evidence": ["lib/iscsi/iscsi.c::iscsi_op_login_response"],
+                }]}, ensure_ascii=False),
+            }],
+            "请仅按本次旁挂工作流的质量约束复核：错误 Login Response 是否会清除 C bit？",
+        )
+
+        assert reply is not None
+        assert "不会由该错误分支清除 C bit" in reply
+        assert "iscsi_op_login_response" in reply
+
     async def test_agent_prompt_redacts_reference_secrets_and_absolute_paths(self):
         from app.services.ai_conversations import _build_agent_prompt
 
