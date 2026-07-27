@@ -299,6 +299,9 @@ def test_disposition_maps_flow_evidence_to_case_with_same_verified_symbol():
     branch = artifacts["branch_disposition.json"]["items"][0]
     assert branch["disposition"] == "retain"
     assert branch["covered_by"] == ["CASE-BRANCH"]
+    assert branch["file_path"] == "lib/iscsi/iscsi.c"
+    assert branch["start_line"] == 112
+    assert branch["end_line"] == 112
 
 
 def test_refresh_rebuilds_dispositions_from_final_black_box_cases(tmp_path):

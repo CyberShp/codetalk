@@ -840,7 +840,7 @@ def test_professional_coverage_warning_blocks_deep_delivery():
     assert result["issues"][-1]["scenarios"] == ["错误 CHAP_R", "未知 CHAP 用户"]
 
 
-def test_source_driven_coverage_warning_is_visible_for_rapid_and_blocks_deep():
+def test_source_driven_coverage_warning_is_visible_for_rapid_and_blocks_deep(tmp_path):
     from app.services.workbench_workflow_runner import (
         _apply_profile_coverage_to_quality_audit,
     )
@@ -867,12 +867,37 @@ def test_source_driven_coverage_warning_is_visible_for_rapid_and_blocks_deep():
     assert rapid["score"] == 80
     assert rapid["quality_axes"]["coverage_judge"]["status"] == "warning"
 
-    deep = _apply_profile_coverage_to_quality_audit(audit=audit, profile_id="deep")
+    (tmp_path / "branch_disposition.json").write_text(
+        json.dumps({"items": [{
+            "id": "FLOW-COND-001",
+            "condition": "if (conn->require_chap)",
+            "file_path": "lib/iscsi/iscsi.c",
+            "start_line": 1950,
+            "end_line": 1952,
+            "evidence_refs": ["FLOW-COND-001"],
+        }]}),
+        encoding="utf-8",
+    )
+
+    deep = _apply_profile_coverage_to_quality_audit(
+        audit=audit,
+        profile_id="deep",
+        artifact_dir=tmp_path,
+    )
     assert deep["deliverable"] is False
     assert deep["status"] == "needs_rework"
     assert deep["score"] == 80
     assert deep["quality_axes"]["coverage_judge"]["status"] == "blocked"
     assert deep["issues"][-1]["code"] == "source_driven_coverage_incomplete"
+    assert deep["issues"][-1]["coverage_targets"] == [{
+        "artifact": "branch_disposition.json",
+        "id": "FLOW-COND-001",
+        "condition": "if (conn->require_chap)",
+        "file_path": "lib/iscsi/iscsi.c",
+        "start_line": 1950,
+        "end_line": 1952,
+        "evidence_refs": ["FLOW-COND-001"],
+    }]
 
 
 def test_claim_evidence_ledger_blocks_delivery_with_a_repairable_issue():

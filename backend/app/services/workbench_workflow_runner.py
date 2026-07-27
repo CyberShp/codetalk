@@ -1998,6 +1998,7 @@ class WorkbenchWorkflowRunner:
         audit = _apply_profile_coverage_to_quality_audit(
             audit=audit,
             profile_id=profile_id,
+            artifact_dir=artifact_dir,
         )
         quality_axes = audit.get("quality_axes")
         artifact_contract_validation = (
@@ -4418,7 +4419,10 @@ def _apply_claim_evidence_ledger_to_quality_audit(
 
 
 def _apply_profile_coverage_to_quality_audit(
-    *, audit: dict[str, Any], profile_id: str
+    *,
+    audit: dict[str, Any],
+    profile_id: str,
+    artifact_dir: Path | None = None,
 ) -> dict[str, Any]:
     """Apply the execution-profile policy to visible coverage gaps.
 
@@ -4496,6 +4500,10 @@ def _apply_profile_coverage_to_quality_audit(
                             str(item) for item in coverage_judge.get("warnings") or []
                         )
                     ),
+                    "coverage_targets": _source_driven_coverage_targets(
+                        artifact_dir=artifact_dir,
+                        warnings=coverage_judge.get("warnings") or [],
+                    ),
                     "recommended_action": "从场景扩展阶段重试，补齐待核验的条件、状态和资源覆盖后再发布。",
                 }
             )
@@ -4513,6 +4521,63 @@ def _apply_profile_coverage_to_quality_audit(
         }
     )
     return result
+
+
+def _source_driven_coverage_targets(
+    *, artifact_dir: Path | None, warnings: Iterable[Any]
+) -> list[dict[str, Any]]:
+    """Resolve compact, actionable locators for a coverage-repair turn."""
+
+    if artifact_dir is None:
+        return []
+    root = Path(artifact_dir)
+    targets: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for warning in warnings:
+        parts = str(warning or "").rsplit(":", 2)
+        if len(parts) != 3 or parts[-1] != "need_verify":
+            continue
+        artifact_name, item_id, _ = parts
+        if not artifact_name or not item_id:
+            continue
+        key = (artifact_name, item_id)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidate_paths = [root / artifact_name]
+        if not candidate_paths[0].is_file():
+            candidate_paths.extend(root.rglob(Path(artifact_name).name))
+        payload: dict[str, Any] = {}
+        for path in candidate_paths:
+            if not path.is_file():
+                continue
+            candidate_payload = _read_json(path)
+            if isinstance(candidate_payload, dict):
+                payload = candidate_payload
+                break
+        item = next(
+            (
+                row
+                for row in payload.get("items") or []
+                if isinstance(row, dict) and str(row.get("id") or "") == item_id
+            ),
+            None,
+        )
+        if not isinstance(item, dict):
+            continue
+        target = {
+            "artifact": artifact_name,
+            "id": item_id,
+            "condition": str(item.get("condition") or ""),
+            "file_path": str(item.get("file_path") or ""),
+            "start_line": int(item.get("start_line") or 0),
+            "end_line": int(item.get("end_line") or item.get("start_line") or 0),
+            "evidence_refs": [
+                str(value) for value in item.get("evidence_refs") or [] if str(value).strip()
+            ],
+        }
+        targets.append(target)
+    return targets
 
 
 def _apply_source_driven_judge_to_quality_audit(

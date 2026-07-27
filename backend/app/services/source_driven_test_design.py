@@ -1797,6 +1797,14 @@ def _branch_disposition_artifact(*, flow_pack: dict[str, Any], cases: list[dict[
                 "reason": "已有黑盒用例映射" if case_ids else "已发现测试相关分支，但尚缺独立场景映射",
                 "covered_by": case_ids,
                 "evidence_refs": [evidence_id],
+                # Keep the exact locator with the unresolved decision.  A
+                # later quality repair must be able to ask for a black-box
+                # scenario for this branch, rather than receiving only an
+                # opaque FLOW-* identifier.
+                "file_path": str(row.get("file_path") or ""),
+                "start_line": int(row.get("start_line") or 0),
+                "end_line": int(row.get("end_line") or row.get("start_line") or 0),
+                "symbol": str(row.get("symbol") or ""),
             }
         )
     return _ledger("branch_disposition", items, gaps=[])
