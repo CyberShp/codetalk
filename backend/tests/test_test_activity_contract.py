@@ -1188,6 +1188,26 @@ def test_test_activity_contract_covers_storage_testing_profiles_and_templates():
     assert contract["evidence_policy"]["source_first"] is True
     assert contract["evidence_policy"]["prefer_artifacts"] == ["GitNexus", "CGC"]
     assert contract["black_box_boundary"]["forbidden_internal_steps"]
+
+
+def test_complete_iscsi_contract_exposes_atomic_delivery_matrix():
+    from app.services.test_activity_contract import (
+        COMPLETE_ISCSI_LOGIN_REQUIRED_ATOMIC_SCENARIOS,
+        build_test_activity_contract,
+    )
+
+    contract = build_test_activity_contract(
+        target="完整 iSCSI Login 灰盒测试设计",
+        repo_path="/Volumes/Media/dpdk/spdk",
+        workflow_outputs=[
+            {"artifact": "sfmea.json", "type": "json"},
+            {"artifact": "black_box_cases.json", "type": "json"},
+        ],
+    )
+
+    assert contract["domain_requirements"]["iscsi_login"][
+        "required_atomic_scenarios"
+    ] == list(COMPLETE_ISCSI_LOGIN_REQUIRED_ATOMIC_SCENARIOS)
     assert contract["quality_gates"]["required_black_box_dimensions"] == [
         "normal_path",
         "invalid_input",

@@ -12,6 +12,34 @@ from pathlib import Path
 from typing import Any
 
 
+# This is the generation contract for the complete iSCSI Login activity, not a
+# best-effort keyword list.  The quality audit consumes the same labels below;
+# keeping one canonical matrix prevents the planner from asking for a broad
+# "CHAP negative" case while the delivery gate expects a distinct scenario.
+COMPLETE_ISCSI_LOGIN_REQUIRED_ATOMIC_SCENARIOS = (
+    "T+C 非法组合",
+    "非法 NSG",
+    "Unsupported Version",
+    "未知合法 key=NotUnderstood",
+    "Target not found/removed",
+    "Authorization Failure",
+    "Redirect",
+    "Discovery 后 SendTargets",
+    "首 payload 后 timer 注销",
+    "错误 CHAP_R",
+    "未知 CHAP 用户",
+    "CHAP 参数顺序错误",
+    "Mutual CHAP 缺失或错误 challenge",
+    "Target 要求 Mutual 但 Initiator 未提供",
+    "不支持的 CHAP_A 算法",
+    "缺少 CHAP_R",
+    "CHAP_R 编码格式错误",
+    "Mutual 用户或 secret 缺失",
+    "Initiator 请求 Mutual 但 Target 禁止",
+    "Mutual challenge 合法编码但语义错误",
+)
+
+
 def _profile(
     *,
     name: str,
@@ -1419,6 +1447,19 @@ def build_test_activity_contract(
         project_profile=project_profile,
         user_requirements=user_requirements,
     )
+    domain_requirements = {
+        profile_id: {
+            "required_scenarios": list(PROFILE_REGISTRY[profile_id].get("required_scenarios", [])),
+            "failure_modes": list(PROFILE_REGISTRY[profile_id].get("failure_modes", [])),
+            "black_box_observability": list(PROFILE_REGISTRY[profile_id].get("black_box_observability", [])),
+            "graybox_evidence_points": list(PROFILE_REGISTRY[profile_id].get("graybox_evidence_points", [])),
+        }
+        for profile_id in domain_profiles
+    }
+    if "iscsi_login" in domain_profiles and "完整" in combined_text:
+        domain_requirements["iscsi_login"]["required_atomic_scenarios"] = list(
+            COMPLETE_ISCSI_LOGIN_REQUIRED_ATOMIC_SCENARIOS
+        )
     return {
         "contract_version": 1,
         "target": target_text,
@@ -1427,15 +1468,7 @@ def build_test_activity_contract(
         "user_requirements": str(user_requirements or ""),
         "required_outputs": required_outputs,
         "focus_rationale": focus_rationale,
-        "domain_requirements": {
-            profile_id: {
-                "required_scenarios": list(PROFILE_REGISTRY[profile_id].get("required_scenarios", [])),
-                "failure_modes": list(PROFILE_REGISTRY[profile_id].get("failure_modes", [])),
-                "black_box_observability": list(PROFILE_REGISTRY[profile_id].get("black_box_observability", [])),
-                "graybox_evidence_points": list(PROFILE_REGISTRY[profile_id].get("graybox_evidence_points", [])),
-            }
-            for profile_id in domain_profiles
-        },
+        "domain_requirements": domain_requirements,
         "professional_constraints": [
             dict(constraint)
             for profile_id in domain_profiles

@@ -902,6 +902,53 @@ async def test_materialize_behavior_claim_validation_batches_without_losing_verd
 
 
 @pytest.mark.asyncio
+async def test_behavior_claim_validation_splits_a_truncated_multi_claim_batch(
+    tmp_path, monkeypatch
+):
+    from app.config import settings
+    from app.services.behavior_claim_validator import materialize_behavior_claim_validation
+
+    monkeypatch.setattr(settings, "behavior_claim_audit_enabled", True)
+    monkeypatch.setattr(settings, "behavior_claim_audit_batch_size", 2)
+    monkeypatch.setattr(settings, "behavior_claim_audit_concurrency", 2)
+    calls: list[int] = []
+
+    async def streamer(**kwargs):
+        batch = json.loads(kwargs["prompt"].split("VALIDATION_REQUEST:\n", 1)[1])
+        calls.append(len(batch["claims"]))
+        if len(batch["claims"]) > 1:
+            # Mirrors a provider response cut midway through an otherwise
+            # valid object. The retry must retain this raw diagnostic and
+            # re-validate only its two atomic claims.
+            yield AGENT_FINAL_ANSWER_PREFIX + '{"claims":[{"claim_id":"partial"'
+            return
+        claim = batch["claims"][0]
+        yield AGENT_FINAL_ANSWER_PREFIX + json.dumps(
+            {"claims": [{
+                "claim_id": claim["claim_id"],
+                "binding": claim["binding"],
+                "status": "supports",
+                "reason": "single claim verified",
+            }]}
+        )
+
+    runtime = {"id": "audit", "provider": "claude", "command": "claude", "env": {}}
+    result = await materialize_behavior_claim_validation(
+        artifact_dir=tmp_path / "artifacts",
+        repo_path=tmp_path,
+        generator_identity="agent-runtime:generator",
+        request=_request(),
+        runtime_loader=lambda _runtime_id: runtime,
+        streamer=streamer,
+    )
+
+    assert calls == [2, 1, 1]
+    assert [item["status"] for item in result["claims"]] == ["supports", "supports"]
+    assert (tmp_path / "artifacts" / "behavior_claim_audit" / "batch_01" / "raw_output.txt").is_file()
+    assert (tmp_path / "artifacts" / "behavior_claim_audit" / "batch_1-a" / "raw_output.txt").is_file()
+
+
+@pytest.mark.asyncio
 async def test_materialize_behavior_claim_validation_keeps_duplicate_ids_across_batches(
     tmp_path, monkeypatch
 ):

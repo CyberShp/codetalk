@@ -1820,6 +1820,9 @@ def build_staged_execution_plan(
         contract=contract,
         execution_profile=profile,
     )
+    required_atomic_black_box_scenarios = _required_atomic_black_box_scenarios(
+        contract
+    )
     combined_report_contract = next(
         (
             dict(artifact_contract.get(artifact) or {})
@@ -1991,6 +1994,10 @@ def build_staged_execution_plan(
             )
             _require_technical_claims(schema)
             output_contract["schema"] = schema
+        if base_stage_id == "black_box_cases" and required_atomic_black_box_scenarios:
+            output_contract["required_atomic_scenarios"] = list(
+                required_atomic_black_box_scenarios
+            )
         output_contract["artifact"] = artifact
         if output_contract.get("schema") is None:
             output_contract.pop("schema", None)
@@ -2156,14 +2163,38 @@ def _professional_black_box_case_floor(
         profile_requirements = requirements.get(profile_name)
         if not isinstance(profile_requirements, dict):
             continue
+        atomic_scenarios = profile_requirements.get("required_atomic_scenarios")
         scenarios.update(
             str(item).strip()
-            for item in profile_requirements.get("required_scenarios") or []
+            for item in (
+                atomic_scenarios
+                if isinstance(atomic_scenarios, list) and atomic_scenarios
+                else profile_requirements.get("required_scenarios") or []
+            )
             if str(item).strip()
         )
     if not scenarios:
         return 0
     return len(BLACK_BOX_REQUIRED_DIMENSIONS) + len(scenarios)
+
+
+def _required_atomic_black_box_scenarios(contract: dict[str, Any]) -> list[str]:
+    """Carry exact atomic protocol scenarios into the generated test contract."""
+    requirements = contract.get("domain_requirements")
+    if not isinstance(requirements, dict):
+        return []
+    scenarios: list[str] = []
+    seen: set[str] = set()
+    for profile_name in contract.get("domain_profiles") or []:
+        profile = requirements.get(str(profile_name))
+        if not isinstance(profile, dict):
+            continue
+        for item in profile.get("required_atomic_scenarios") or []:
+            scenario = str(item).strip()
+            if scenario and scenario not in seen:
+                seen.add(scenario)
+                scenarios.append(scenario)
+    return scenarios
 
 
 def _staged_execution_profile(raw_profile: dict[str, Any] | None) -> dict[str, Any]:
@@ -4222,18 +4253,14 @@ def _select_regular_stage_llm(
     quality_repair: bool = False,
     quality_repair_llm: Any | None = None,
 ) -> Any:
-    """Route evidence extraction fast, but keep risk-bearing artifacts on the verifier."""
+    """Route generation separately from independent validation and repair."""
     if quality_repair and quality_repair_llm is not None:
         return quality_repair_llm
-    if (
-        not quality_repair
-        and Path(artifact).name in {"sfmea.json", "black_box_cases.json"}
-        and quality_repair_llm is not None
-    ):
-        # SFMEA and black-box cases make technical risk assertions.  A fast
-        # source/flow model is useful for throughput, but a configured
-        # independent verifier is the primary author for these artifacts.
-        return quality_repair_llm
+    # A configured independent model is a validator, not the primary author.
+    # Making every risk-bearing artifact wait for it couples normal delivery to
+    # a potentially slower model and defeats the L1/L2 separation.  The
+    # independently configured client is still used for behavior validation
+    # and bounded quality repairs above.
     if quality_repair and settings.regular_stage_quality_repair_use_primary_model:
         return llm
     if (
@@ -8191,6 +8218,9 @@ def _regular_stage_prompt(
         if isinstance(item, dict)
     ][:24]
     dependencies = {str(value) for value in stage.get("depends_on") or []}
+    dependency_preview_limit = (
+        1200 if base_stage_id in {"sfmea", "black_box_cases"} else 6000
+    )
     accepted_dependencies: dict[str, Any] = {}
     for stage_id, path in completed.items():
         if stage_id not in dependencies or not path.is_file():
@@ -8200,25 +8230,51 @@ def _regular_stage_prompt(
         text = path.read_text(encoding="utf-8", errors="replace")
         if path.suffix.lower() == ".json":
             try:
-                accepted_dependencies[path.name] = _compact_stage_value(json.loads(text))
+                compact_dependency = _compact_stage_value(json.loads(text))
             except json.JSONDecodeError:
-                accepted_dependencies[path.name] = text[:6000]
+                compact_dependency = text
         else:
-            accepted_dependencies[path.name] = text[:6000]
+            compact_dependency = text
+        serialized_dependency = json.dumps(
+            compact_dependency, ensure_ascii=False, sort_keys=True, default=str
+        )
+        if len(serialized_dependency) > dependency_preview_limit:
+            accepted_dependencies[path.name] = {
+                "preview": serialized_dependency[:dependency_preview_limit],
+                "characters": len(serialized_dependency),
+                "truncated": True,
+            }
+        else:
+            accepted_dependencies[path.name] = compact_dependency
     sfmea_risk_ledger = _materialized_sfmea_risk_ledger(completed)
+    evidence_excerpt_limit = 320 if base_stage_id in {"sfmea", "black_box_cases"} else 600
+    evidence_card_limit = 12 if base_stage_id in {"sfmea", "black_box_cases"} else 24
+    prompt_evidence_cards = [
+        {
+            "evidence_id": str(card.get("evidence_id") or ""),
+            "file_path": str(card.get("file_path") or ""),
+            "start_line": int(card.get("start_line") or 0),
+            "end_line": int(card.get("end_line") or 0),
+            "symbols": [str(item) for item in card.get("symbols") or []][:4],
+            "classification": str(card.get("classification") or ""),
+            "excerpt": str(card.get("excerpt") or "")[:evidence_excerpt_limit],
+        }
+        for card in compact_flow.get("verified_evidence_cards") or []
+        if isinstance(card, dict)
+    ][:evidence_card_limit]
     context = {
         "version": "regular-stage-context-v2",
         "analysis_target": str(
             plan.get("original_user_request") or plan.get("target") or ""
         )[:2400],
         "repo_revision": str(source_pack.get("repo_revision") or ""),
-        "verified_evidence_cards": compact_flow.get("verified_evidence_cards") or [],
+        "verified_evidence_cards": prompt_evidence_cards,
         "verified_evidence_anchors": [
             (
                 f"{card.get('file_path')}:{int(card.get('start_line') or 0)}"
                 f"-{int(card.get('end_line') or 0)}"
             )
-            for card in compact_flow.get("verified_evidence_cards") or []
+            for card in prompt_evidence_cards
             if isinstance(card, dict) and card.get("file_path")
         ],
         "flow_evidence_pack": compact_flow.get("flow_evidence_pack") or {},
@@ -8319,7 +8375,10 @@ def _regular_stage_prompt(
         if isinstance(stage.get("output_limits"), dict)
         else {}
     )
-    claim_catalog = _build_verified_claim_catalog(source_pack)
+    claim_catalog = _build_verified_claim_catalog(
+        source_pack,
+        max_entries=(24 if base_stage_id == "sfmea" else 32),
+    )
     if scoped_quality_feedback and repair_evidence_ids:
         exact_repair_claims = _build_verified_claim_catalog(
             source_pack,
@@ -8342,7 +8401,7 @@ def _regular_stage_prompt(
     source_bound_domain_facts = _source_bound_domain_facts(
         plan=plan,
         source_pack=source_pack,
-    )
+    )[:12]
     if scoped_quality_feedback is not None:
         relevant_card_ids = {
             str(card.get("evidence_id") or "").strip()
@@ -8391,6 +8450,20 @@ def _regular_stage_prompt(
             "- 黑盒 expected_result、steps 和 observability 是待执行测试契约，不是当前源码事实；"
             "technical_claims 只绑定一条已验证源码锚点，系统会将 statement 固化为对应 quote。"
         )
+        required_atomic_scenarios = [
+            str(value).strip()
+            for value in output_contract.get("required_atomic_scenarios") or []
+            if str(value).strip()
+        ]
+        if required_atomic_scenarios:
+            rules.extend(
+                [
+                    "- REQUIRED_ATOMIC_SCENARIOS 中每一个场景必须各自形成一个独立黑盒条目；"
+                    "不得合并、换成近义场景或只在其他字段提及。",
+                    "- 每个对应条目的 scenario_name 必须逐字包含以下标签之一："
+                    + "、".join(required_atomic_scenarios),
+                ]
+            )
         if sfmea_risk_ledger:
             rules.append(
                 "- risk_ids 只能引用 SFMEA_RISK_LEDGER 中逐字列出的 sfmea_id；"
@@ -12553,7 +12626,7 @@ def _deep_exploration_stage_prompt(
             "RULES:",
             "- 只整理当前分支职责；不要重复完整流程、SFMEA、黑盒用例或总报告。",
             "- 只可依据 VERIFIED_EVIDENCE 说明事实；证据不足只能标记为待验证。",
-            "- 每个结论以 evidence_id 和文件行号收束，最多 8 个锚点。",
+            "- 每个结论必须写出 VERIFIED_EVIDENCE 中的精确 evidence_id（例如 SRC-01）和文件行号；至少引用两个不同的 routed evidence_id，最多 8 个锚点。",
             f"- 正文最多 {max_characters} 个中文字符，使用短标题和要点，不贴大段源码。",
             "- 必须直接以 Markdown 标题或列表开始，不得使用 JSON、artifact 容器或 Markdown 代码围栏。",
             "- 仅返回当前 Markdown 文件正文。",

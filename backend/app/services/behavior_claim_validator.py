@@ -601,7 +601,7 @@ async def materialize_behavior_claim_validation(
     semaphore = asyncio.Semaphore(int(settings.behavior_claim_audit_concurrency))
     tasks = [
         asyncio.create_task(
-            _validate_behavior_claim_batch(
+            _validate_behavior_claim_batch_with_adaptive_split(
                 index=index,
                 request=batch,
                 runtime=runtime,
@@ -818,7 +818,7 @@ def _behavior_claim_request_subset(
 
 async def _validate_behavior_claim_batch(
     *,
-    index: int,
+    index: int | str,
     request: dict[str, Any],
     runtime: dict[str, Any] | None,
     validator: dict[str, Any],
@@ -828,7 +828,8 @@ async def _validate_behavior_claim_batch(
     diagnostics_dir: Path,
     semaphore: asyncio.Semaphore,
 ) -> dict[str, Any]:
-    batch_dir = diagnostics_dir / f"batch_{index:02d}"
+    batch_label = f"{index:02d}" if isinstance(index, int) else str(index)
+    batch_dir = diagnostics_dir / f"batch_{batch_label}"
     batch_dir.mkdir(parents=True, exist_ok=True)
     prompt = build_behavior_claim_audit_prompt(request)
     _write_json(batch_dir / "request.json", request)
@@ -861,6 +862,85 @@ async def _validate_behavior_claim_batch(
         request=request,
         validator=validator,
     )
+
+
+async def _validate_behavior_claim_batch_with_adaptive_split(
+    *,
+    index: int | str,
+    request: dict[str, Any],
+    runtime: dict[str, Any] | None,
+    validator: dict[str, Any],
+    streamer: Callable[..., AsyncIterator[str]],
+    llm_client: Any | None,
+    repo_path: str,
+    diagnostics_dir: Path,
+    semaphore: asyncio.Semaphore,
+) -> dict[str, Any]:
+    """Retry only a malformed multi-claim response with smaller requests.
+
+    Providers occasionally truncate a syntactically valid beginning of a large
+    JSON verdict.  Treat that as transport/output capacity, preserve the first
+    raw response, and split the affected batch.  A singleton still fails
+    normally, so this never turns an unparseable answer into a false pass.
+    """
+    try:
+        return await _validate_behavior_claim_batch(
+            index=index,
+            request=request,
+            runtime=runtime,
+            validator=validator,
+            streamer=streamer,
+            llm_client=llm_client,
+            repo_path=repo_path,
+            diagnostics_dir=diagnostics_dir,
+            semaphore=semaphore,
+        )
+    except ValueError:
+        claims = [item for item in request.get("claims") or [] if isinstance(item, dict)]
+        if len(claims) <= 1:
+            raise
+        midpoint = len(claims) // 2
+        child_results = await asyncio.gather(
+            _validate_behavior_claim_batch_with_adaptive_split(
+                index=f"{index}-a",
+                request=_behavior_claim_request_subset(request, claims[:midpoint]),
+                runtime=runtime,
+                validator=validator,
+                streamer=streamer,
+                llm_client=llm_client,
+                repo_path=repo_path,
+                diagnostics_dir=diagnostics_dir,
+                semaphore=semaphore,
+            ),
+            _validate_behavior_claim_batch_with_adaptive_split(
+                index=f"{index}-b",
+                request=_behavior_claim_request_subset(request, claims[midpoint:]),
+                runtime=runtime,
+                validator=validator,
+                streamer=streamer,
+                llm_client=llm_client,
+                repo_path=repo_path,
+                diagnostics_dir=diagnostics_dir,
+                semaphore=semaphore,
+            ),
+        )
+        return {
+            "kind": "behavior_claim_validation",
+            "schema_version": _BEHAVIOR_VALIDATION_SCHEMA_VERSION,
+            "status": "completed",
+            "request_sha256": str(request.get("request_sha256") or ""),
+            "validator": dict(validator),
+            "raw_verdict_count": sum(
+                int(item.get("raw_verdict_count") or 0) for item in child_results
+            ),
+            "adaptive_split": True,
+            "claims": [
+                claim
+                for item in child_results
+                for claim in item.get("claims") or []
+                if isinstance(claim, dict)
+            ],
+        }
 
 
 async def _close_llm_client(client: Any | None) -> None:

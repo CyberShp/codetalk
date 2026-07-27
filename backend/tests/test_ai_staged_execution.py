@@ -177,7 +177,7 @@ def test_structured_quality_repair_routes_to_independent_repair_model(monkeypatc
     )
 
 
-def test_risk_bearing_artifacts_route_to_independent_verifier_model():
+def test_risk_bearing_artifacts_use_primary_author_then_independent_validation():
     class Client:
         def __init__(self, model: str) -> None:
             self._model = model
@@ -187,10 +187,10 @@ def test_risk_bearing_artifacts_route_to_independent_verifier_model():
 
     assert _select_regular_stage_llm(
         flash, flash, "sfmea.json", quality_repair_llm=pro
-    ) is pro
+    ) is flash
     assert _select_regular_stage_llm(
         flash, flash, "black_box_cases.json", quality_repair_llm=pro
-    ) is pro
+    ) is flash
     assert _select_regular_stage_llm(
         flash, flash, "business_flow.md", quality_repair_llm=pro
     ) is flash
@@ -979,6 +979,7 @@ def test_deep_exploration_prompt_routes_evidence_by_branch_responsibility():
     assert "SRC-07" in prompt
     assert "data digest error" in prompt
     assert "SRC-03" in prompt
+    assert "至少引用两个不同的 routed evidence_id" in prompt
 
 
 def test_deep_profile_requires_governed_source_driven_stage_chain_for_basic_report():
@@ -13186,6 +13187,77 @@ def test_deep_iscsi_plan_budget_allows_atomic_profile_scenarios():
     assert cases["output_contract"]["schema"]["minItems"] == 27
     assert cases["output_limits"]["max_items"] == 27
     assert cases["continue_on_length"] is True
+
+
+def test_deep_iscsi_plan_uses_atomic_matrix_over_generic_profile_summary():
+    contract = {
+        "target": "完整 iSCSI Login 测试设计",
+        "domain_profiles": ["iscsi_login"],
+        "domain_requirements": {
+            "iscsi_login": {
+                "required_scenarios": ["宽泛场景"],
+                "required_atomic_scenarios": [f"原子场景-{index}" for index in range(20)],
+            }
+        },
+        "required_outputs": ["report.md"],
+        "artifact_contract": {
+            "report.md": {
+                "artifact": "report.md",
+                "min_sfmea_rows": 1,
+                "min_black_box_cases": 1,
+            }
+        },
+    }
+
+    plan = build_staged_execution_plan(
+        contract=contract,
+        original_user_request="完整 iSCSI Login 测试设计",
+        execution_profile={"id": "deep"},
+    )
+    cases = next(stage for stage in plan["stages"] if stage["id"] == "black_box_cases")
+
+    assert cases["output_contract"]["schema"]["minItems"] == 32
+    assert cases["output_limits"]["max_items"] == 32
+    assert cases["output_contract"]["required_atomic_scenarios"] == [
+        f"原子场景-{index}" for index in range(20)
+    ]
+
+
+def test_sfmea_prompt_bounds_large_dependency_and_evidence_context(tmp_path):
+    source_pack = {
+        "repo_revision": "abc123",
+        "evidence_cards": [
+            {
+                "evidence_id": f"SRC-{index:02d}",
+                "file_path": f"lib/iscsi/file_{index}.c",
+                "start_line": 10,
+                "end_line": 20,
+                "symbols": [f"symbol_{index}"],
+                "classification": "source",
+                "excerpt": ("if (error) { return -1; }\n" * 120),
+            }
+            for index in range(32)
+        ],
+    }
+    dependency = tmp_path / "deep-note.md"
+    dependency.write_text("deep evidence\n" * 3000, encoding="utf-8")
+    prompt = _regular_stage_prompt(
+        plan={"original_user_request": "完整 iSCSI Login 测试设计"},
+        stage={
+            "id": "sfmea",
+            "artifact": "sfmea.json",
+            "depends_on": ["deep_entry_paths"],
+            "output_contract": {"artifact": "sfmea.json", "schema": SFMEA_SCHEMA},
+        },
+        source_pack=source_pack,
+        flow_pack={},
+        outline={},
+        completed={"deep_entry_paths": dependency},
+    )
+
+    assert len(prompt) < 40_000
+    assert '"truncated": true' in prompt
+    assert "SRC-00" in prompt
 
 
 def test_deterministic_quality_repair_makes_targeted_black_box_result_observable():
