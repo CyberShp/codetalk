@@ -1815,7 +1815,11 @@ class TestAIConversationsAPI:
         assert "config_chap_credentials_for_target" in deterministic_reply
 
     async def test_workflow_constraint_review_returns_frozen_protocol_fact(self):
-        from app.services.ai_conversations import _deterministic_workflow_constraint_reply
+        from app.services.ai_conversations import (
+            ContextReference,
+            _task_artifact_excerpt,
+            _deterministic_workflow_constraint_reply,
+        )
 
         reply = _deterministic_workflow_constraint_reply(
             [{
@@ -1832,6 +1836,82 @@ class TestAIConversationsAPI:
         assert reply is not None
         assert "不会由该错误分支清除 C bit" in reply
         assert "iscsi_op_login_response" in reply
+
+        object_reply = _deterministic_workflow_constraint_reply(
+            [
+                ContextReference(
+                    source_type="workbench_task_artifact",
+                    source_id="task-contract",
+                    title="test_activity_contract.json",
+                    excerpt=json.dumps({"workflow_quality_constraints": [{
+                        "id": "iscsi_login_error_c_flag_preserved",
+                        "assertion": "错误 Login Response 清除 T、CSG 和 NSG，但不会由该错误分支清除 C bit。",
+                        "evidence": ["lib/iscsi/iscsi.c::iscsi_op_login_response"],
+                    }]}, ensure_ascii=False),
+                    metadata={},
+                )
+            ],
+            "请仅按本次旁挂工作流的质量约束复核：错误 Login Response 是否会清除 C bit？",
+        )
+
+        assert object_reply is not None
+        assert "不会由该错误分支清除 C bit" in object_reply
+
+        filler_constraints = [
+            {
+                "id": f"unrelated_constraint_{index}",
+                "assertion": "与 C 标志无关的冻结约束。" * 80,
+                "evidence": ["lib/iscsi/iscsi.c::unrelated"],
+            }
+            for index in range(4)
+        ]
+        excerpt = _task_artifact_excerpt(
+            "test_activity_contract.json",
+            json.dumps({"professional_constraints": [
+                *filler_constraints,
+                {
+                    "id": "iscsi_login_error_c_flag_preserved",
+                    "assertion": "错误 Login Response 清除 T、CSG 和 NSG，但不会由该错误分支清除 C。",
+                    "evidence": ["lib/iscsi/iscsi.c::iscsi_op_login_response"],
+                },
+            ]}, ensure_ascii=False),
+            user_message="请仅按质量约束复核：错误 Login Response 是否会清除 C bit？",
+        )
+
+        assert "iscsi_login_error_c_flag_preserved" in excerpt
+        assert "不会由该错误分支清除 C" in excerpt
+
+        noisy_contract = json.dumps({"professional_constraints": [
+            {
+                "id": "iscsi_login_response_general",
+                "assertion": "Login Response 的一般阶段协商约束。",
+                "conflict_patterns": ["login response broad constraint " * 300],
+                "evidence": ["lib/iscsi/iscsi.c::iscsi_op_login_response"],
+            },
+            {
+                "id": "iscsi_login_error_c_flag_preserved",
+                "assertion": "错误 Login Response 清除 T、CSG 和 NSG，但不会由该错误分支清除 C。",
+                "evidence": ["lib/iscsi/iscsi.c::iscsi_op_login_response"],
+            },
+        ]}, ensure_ascii=False)
+        compact_excerpt = _task_artifact_excerpt(
+            "test_activity_contract.json",
+            noisy_contract,
+            user_message="请仅按质量约束复核：错误 Login Response 是否会清除 C bit？",
+        )
+        compact_reply = _deterministic_workflow_constraint_reply(
+            [ContextReference(
+                source_type="workbench_task_artifact",
+                source_id="task-contract-compact",
+                title="test_activity_contract.json",
+                excerpt=compact_excerpt,
+                metadata={},
+            )],
+            "请仅按质量约束复核：错误 Login Response 是否会清除 C bit？",
+        )
+
+        assert compact_reply is not None
+        assert "不会由该错误分支清除 C" in compact_reply
 
     async def test_agent_prompt_redacts_reference_secrets_and_absolute_paths(self):
         from app.services.ai_conversations import _build_agent_prompt

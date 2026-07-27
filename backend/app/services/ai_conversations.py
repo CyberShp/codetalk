@@ -506,6 +506,16 @@ class ContextReference:
         }
 
 
+def _reference_value(reference: ContextReference | dict[str, Any], field: str) -> Any:
+    """Read a context field without leaking its transport shape into answer logic."""
+
+    if isinstance(reference, ContextReference):
+        return getattr(reference, field, None)
+    if isinstance(reference, dict):
+        return reference.get(field)
+    return None
+
+
 class AIConversationStore:
     def __init__(self, db_path: str | Path | None = None) -> None:
         self.db_path = str(db_path or settings.sqlite_db)
@@ -4202,7 +4212,7 @@ def _source_id_evidence_override(
 
 
 def _deterministic_workflow_constraint_reply(
-    references: list[dict[str, Any]],
+    references: list[ContextReference | dict[str, Any]],
     user_message: str,
 ) -> str | None:
     """Replay frozen workflow facts for an explicit constraint-review question."""
@@ -4210,10 +4220,10 @@ def _deterministic_workflow_constraint_reply(
     if not any(marker in query for marker in ("质量约束", "按约束", "复核")):
         return None
     for reference in references:
-        if str(reference.get("title") or "") != "test_activity_contract.json":
+        if str(_reference_value(reference, "title") or "") != "test_activity_contract.json":
             continue
         try:
-            payload = json.loads(str(reference.get("excerpt") or ""))
+            payload = json.loads(str(_reference_value(reference, "excerpt") or ""))
         except (TypeError, json.JSONDecodeError):
             continue
         constraints = payload.get("workflow_quality_constraints")
@@ -4243,7 +4253,7 @@ def _deterministic_workflow_constraint_reply(
 
 
 def _deterministic_source_evidence_reply(
-    references: list[dict[str, Any]],
+    references: list[ContextReference | dict[str, Any]],
     user_message: str,
 ) -> str | None:
     """Answer an explicit source-card lookup from verified task artifacts."""
@@ -4258,10 +4268,10 @@ def _deterministic_source_evidence_reply(
         return None
     cards_by_id: dict[str, dict[str, Any]] = {}
     for reference in references:
-        if str(reference.get("title") or "") != "agent_runs/analyze/evidence_cards.json":
+        if str(_reference_value(reference, "title") or "") != "agent_runs/analyze/evidence_cards.json":
             continue
         try:
-            payload = json.loads(str(reference.get("excerpt") or ""))
+            payload = json.loads(str(_reference_value(reference, "excerpt") or ""))
         except (TypeError, json.JSONDecodeError):
             continue
         cards = payload.get("requested_evidence_cards") if isinstance(payload, dict) else payload
@@ -6133,13 +6143,42 @@ def _task_artifact_excerpt(name: str, text: str, *, user_message: str = "") -> s
             term for term in ("c bit", "c位", "c 位", "csg", "nsg", "login response", "登录响应")
             if term in query
         ]
-        constraints = [
-            item for item in contract.get("professional_constraints") or []
-            if isinstance(item, dict)
-            and any(
-                term in (str(item.get("id") or "") + " " + str(item.get("assertion") or "")).lower()
-                for term in requested
+        field_aliases = {
+            "c bit": ("c bit", "c_bit", "c_flag", "c 标志", "c；", "清除 c", "保留 c"),
+            "c位": ("c bit", "c_bit", "c_flag", "c位", "c 位", "c 标志", "清除 c", "保留 c"),
+            "c 位": ("c bit", "c_bit", "c_flag", "c位", "c 位", "c 标志", "清除 c", "保留 c"),
+            "csg": ("csg", "current stage", "当前阶段"),
+            "nsg": ("nsg", "next stage", "下一阶段"),
+            "login response": ("login response", "登录响应"),
+            "登录响应": ("login response", "登录响应"),
+        }
+        scored_constraints: list[tuple[int, dict[str, Any]]] = []
+        for item in contract.get("professional_constraints") or []:
+            if not isinstance(item, dict):
+                continue
+            searchable = (
+                str(item.get("id") or "")
+                + " "
+                + str(item.get("assertion") or "")
+            ).lower()
+            score = sum(
+                10 if requested_term in {"c bit", "c位", "c 位"} else 2
+                for requested_term in requested
+                if any(alias in searchable for alias in field_aliases[requested_term])
             )
+            if score:
+                scored_constraints.append((score, item))
+        scored_constraints.sort(key=lambda entry: (-entry[0], str(entry[1].get("id") or "")))
+        # Pattern lists are audit implementation details, not facts for an
+        # answer. Projecting just frozen assertions keeps a specific review in
+        # the bounded context window even when the source contract is large.
+        constraints = [
+            {
+                "id": item.get("id"),
+                "assertion": item.get("assertion"),
+                "evidence": item.get("evidence") or [],
+            }
+            for _, item in scored_constraints[:6]
         ]
         if constraints:
             return _clip(json.dumps(
