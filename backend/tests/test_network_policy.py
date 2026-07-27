@@ -179,6 +179,32 @@ def test_tool_client_keeps_loopback_tool_service_available(monkeypatch):
     assert client.base_url.host == "127.0.0.1"
 
 
+@pytest.mark.asyncio
+async def test_process_health_probe_rejects_unapproved_tool_url_before_request(monkeypatch):
+    from app.services.process_manager import ProcessManager
+
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_network_mode", True)
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_hosts", [])
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_cidrs", [])
+    manager = ProcessManager()
+    managed = manager._processes["gitnexus"]
+    managed._config["health_url"] = "https://unapproved-tools.example/health"
+
+    called = False
+
+    async def unexpected_get(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        raise AssertionError("network call must not be attempted")
+
+    manager._http_client = type("NoNetworkClient", (), {"get": unexpected_get, "is_closed": False})()
+    result = await manager.health_check("gitnexus")
+
+    assert called is False
+    assert result["healthy"] is False
+    assert "运行时出站策略拒绝" in str(result["last_error"])
+
+
 def test_configured_model_inference_requires_deployment_host_approval(monkeypatch):
     from app.services.network_policy import (
         NetworkEgressBlocked,
