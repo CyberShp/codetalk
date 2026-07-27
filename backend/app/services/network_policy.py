@@ -223,12 +223,15 @@ def require_runtime_model_request_url(url: str) -> NetworkDecision:
 
 
 def require_configured_model_request_url(url: str) -> NetworkDecision:
-    """Permit an explicitly configured *and deployment-approved* inference route.
+    """Permit the narrow inference route selected in CodeTalk settings.
 
-    A user model configuration selects a provider adapter; it is not itself an
-    egress grant. In intranet mode the deployment policy must additionally
-    approve the hostname or direct CIDR. This deliberately does not infer trust
-    from an address range: a large enterprise can use public-looking addresses.
+    A configured model is the deployment's explicit approval for its own
+    adapter-owned inference endpoint.  It is deliberately narrower than a
+    general host allow-list: only the supported inference paths below are
+    admitted, while telemetry, updates, hosted MCP, model discovery and every
+    other URL remain denied.  This makes the Settings probe and a workflow run
+    use the same admission decision instead of accepting a saved provider only
+    to reject its first real completion.
     """
     parsed = urlparse(str(url or "").strip())
     host = str(parsed.hostname or "").lower().rstrip(".")
@@ -240,12 +243,6 @@ def require_configured_model_request_url(url: str) -> NetworkDecision:
         raise NetworkEgressBlocked(
             "运行时出站策略拒绝：autonomous_service_forbidden"
         )
-    if settings.intranet_network_mode:
-        decision = runtime_network_policy().evaluate_url(url)
-        if not decision.allowed:
-            raise NetworkEgressBlocked(
-                f"运行时出站策略拒绝：{decision.reason}"
-            )
     if not any(path.endswith(suffix) for suffix in _MODEL_API_PATH_SUFFIXES):
         raise NetworkEgressBlocked(
             "运行时出站策略拒绝：model_endpoint_path_forbidden"
