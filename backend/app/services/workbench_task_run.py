@@ -975,18 +975,52 @@ def build_local_source_context(
     scored.sort(
         key=lambda item: (
             not bool(item.get("explicit_path")),
+            not bool(item.get("contract_required")),
             not bool(item.get("evidence_hint")),
             not bool(item.get("symbols")),
             -int(item.get("score") or 0),
             str(item.get("file_path") or ""),
         )
     )
-    files = _select_source_and_test_evidence(
-        scored,
-        limit=limit,
-        min_test_files=min_test_files,
+    required_files = [
+        item for item in scored if bool(item.get("contract_required"))
+    ]
+    required_slice_keys = {
+        (
+            str(item.get("file_path") or ""),
+            int(item.get("start_line") or 0),
+            int(item.get("end_line") or 0),
+        )
+        for item in required_files
+    }
+    # A workflow contract may promise named evidence anchors.  Retain those
+    # locally verified slices before filling the remaining bounded budget with
+    # relevance-ranked material.  This is not an unbounded prompt expansion:
+    # an invalid preset with more required slices than its limit is clipped and
+    # will be surfaced by the normal output contract rather than silently
+    # claiming a missing anchor was consumed.
+    required_files = required_files[:limit]
+    remaining_limit = max(0, limit - len(required_files))
+    required_test_count = sum(
+        1
+        for item in required_files
+        if _local_source_classification(str(item.get("file_path") or "")) == "test"
+    )
+    selected_remaining = _select_source_and_test_evidence(
+        [
+            item
+            for item in scored
+            if (
+                str(item.get("file_path") or ""),
+                int(item.get("start_line") or 0),
+                int(item.get("end_line") or 0),
+            ) not in required_slice_keys
+        ],
+        limit=remaining_limit,
+        min_test_files=max(0, min_test_files - required_test_count),
         coverage_tokens=tokens,
     )
+    files = [*required_files, *selected_remaining]
     return {
         **base,
         "status": "ready" if files else "empty",
@@ -1064,6 +1098,7 @@ def _materialize_source_evidence_hints(
             "classification": _local_source_classification(rel_path),
             "status": "validated_source_file",
             "evidence_hint": True,
+            "contract_required": bool(hint.get("contract_required")),
             "evidence_label": str(hint.get("label") or "").strip(),
         })
     return cards

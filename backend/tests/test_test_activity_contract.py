@@ -2633,6 +2633,25 @@ def test_combined_report_quality_ignores_space_tab_indented_code_block_tables(tm
     assert "insufficient_black_box_cases" in {item["code"] for item in issues}
 
 
+def test_markdown_heading_parser_ignores_tab_indented_shell_comments():
+    from app.services.test_activity_contract import _markdown_heading_matches
+
+    headings = _markdown_heading_matches(
+        "## 黑盒测试用例\n"
+        "### BB-001 正常登录\n"
+        "\t# Enable HeaderDigest to CRC32C\n"
+        "### BB-002 异常登录\n"
+        "## 附录\n"
+    )
+
+    assert [match.group(1) for match in headings] == [
+        "黑盒测试用例",
+        "BB-001 正常登录",
+        "BB-002 异常登录",
+        "附录",
+    ]
+
+
 def test_combined_report_quality_does_not_treat_escaped_pipes_as_table_cells(tmp_path):
     from app.services.test_activity_contract import _audit_markdown_artifact
 

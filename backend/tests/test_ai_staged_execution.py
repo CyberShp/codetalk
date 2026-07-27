@@ -4884,6 +4884,57 @@ def test_quality_repair_declares_existing_claim_evidence_on_its_black_box_row():
     assert "$[0].source_or_test_evidence" in fields
 
 
+def test_quality_repair_removes_a_claim_that_independent_validation_cannot_support():
+    """Never relabel an arbitrary card as proof for a rejected behaviour claim."""
+    repaired, fields = _deterministic_quality_claim_repair(
+        [
+            {
+                "case_id": "BB-013",
+                "scenario_name": "CHAP 参数顺序错误",
+                "source_or_test_evidence": ["SRC-LOGIN"],
+                "technical_claims": [
+                    {
+                        "claim_id": "CLAIM-BB-013-B",
+                        "type": "behavior_assertion",
+                        "statement": "参数顺序错误会被 target 拒绝。",
+                        "evidence": [{"evidence_id": "SRC-LOGIN"}],
+                    },
+                    {
+                        "claim_id": "CLAIM-BB-013-A",
+                        "type": "source_anchor",
+                        "statement": "literal verified source quote",
+                        "evidence": [{"evidence_id": "SRC-LOGIN"}],
+                    },
+                ],
+            }
+        ],
+        artifact="black_box_cases.json",
+        quality_feedback={
+            "issues": [
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "source_claim_insufficient",
+                    "claim_id": "CLAIM-BB-013-B",
+                }
+            ]
+        },
+        evidence_cards=[
+            {
+                "evidence_id": "SRC-LOGIN",
+                "file_path": "lib/iscsi/iscsi.c",
+                "start_line": 100,
+                "end_line": 110,
+                "excerpt": "iscsi_parse_params(conn, pdu);",
+            }
+        ],
+    )
+
+    assert [claim["claim_id"] for claim in repaired[0]["technical_claims"]] == [
+        "CLAIM-BB-013-A"
+    ]
+    assert "$[0].technical_claims[CLAIM-BB-013-B]._remove_unsupported" in fields
+
+
 def test_quality_repair_adds_a_bounded_chap_order_hypothesis_when_deep_coverage_requires_it():
     from app.services.ai_staged_execution import _deterministic_quality_claim_repair
 
@@ -6849,7 +6900,7 @@ def test_final_quality_repair_adds_recovery_and_timeout_black_box_dimensions(tmp
     assert changed["black_box_cases.json"]
 
 
-def test_final_quality_repair_attaches_verified_source_anchor_to_black_box_rows(tmp_path):
+def test_final_quality_repair_does_not_attach_an_unrelated_source_anchor_to_black_box_rows(tmp_path):
     from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
 
     artifacts = tmp_path / "agent_runs" / "analyze"
@@ -6880,12 +6931,9 @@ def test_final_quality_repair_attaches_verified_source_anchor_to_black_box_rows(
     )
 
     repaired = json.loads(target.read_text(encoding="utf-8"))[0]
-    claim = repaired["technical_claims"][0]
-    assert changed["black_box_cases.json"] == ["$[0].technical_claims[0]"]
-    assert claim["type"] == "source_anchor"
-    assert claim["statement"] == "rc = iscsi_op_login_session_discovery_chap(conn);"
-    assert claim["evidence"][0]["path"] == "lib/iscsi/iscsi.c"
-    assert claim["evidence"][0]["lines"] == "L1889"
+    assert changed == {}
+    assert "technical_claims" not in repaired
+    assert repaired["scenario_name"] == "公开 initiator 登录"
 
 
 def test_final_quality_repair_rewrites_indexed_black_box_boundary_violation(tmp_path):

@@ -7129,7 +7129,11 @@ def _markdown_heading_matches(content: str) -> list[re.Match[str]]:
     visible = _markdown_visible_line_mask(lines)
     offset = 0
     for line, line_visible in zip(lines, visible):
-        if line_visible:
+        # A tab or four spaces starts an indented code block.  Source/test
+        # excerpts commonly contain shell comments such as ``# Enable ...``;
+        # they are not report headings and must not truncate a delivery
+        # section during quality auditing.
+        if line_visible and _markdown_indentation_columns(line) < 4:
             match = pattern.match(content, offset, offset + len(line))
             if match is not None:
                 matches.append(match)

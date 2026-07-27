@@ -8741,6 +8741,37 @@ def test_local_source_context_materializes_multiple_verified_evidence_hints_per_
     assert all(item["sha256"] for item in hinted)
 
 
+def test_local_source_context_keeps_contract_required_hint_within_bounded_limit(tmp_path):
+    from app.services.workbench_task_run import build_local_source_context
+
+    (tmp_path / "lib").mkdir()
+    (tmp_path / "test").mkdir()
+    (tmp_path / "lib" / "ordinary.c").write_text(
+        "int ordinary_login_path(void) { return 0; }\n", encoding="utf-8"
+    )
+    (tmp_path / "test" / "required.sh").write_text(
+        "REQUIRED_MULTICONNECTION_EVIDENCE=1\n", encoding="utf-8"
+    )
+
+    context = build_local_source_context(
+        repo_path=str(tmp_path),
+        query="login",
+        limit=1,
+        evidence_hints=[
+            {"path": "lib/ordinary.c", "term": "ordinary_login_path"},
+            {
+                "path": "test/required.sh",
+                "term": "REQUIRED_MULTICONNECTION_EVIDENCE",
+                "contract_required": True,
+            },
+        ],
+    )
+
+    assert context["file_count"] == 1
+    assert context["files"][0]["file_path"] == "test/required.sh"
+    assert context["files"][0]["contract_required"] is True
+
+
 def test_local_source_context_ignores_unsafe_or_unmatched_evidence_hints(tmp_path):
     from app.services.workbench_task_run import build_local_source_context
 

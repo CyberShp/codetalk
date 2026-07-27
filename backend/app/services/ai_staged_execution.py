@@ -10016,6 +10016,47 @@ def _deterministic_quality_claim_repair(
 
     fields: list[str] = []
 
+    # An L2 ``insufficient`` result means the cited source context cannot
+    # support this exact technical assertion.  Re-pointing it at a different
+    # evidence card merely turns an honest uncertainty into a false fact.
+    # Keep the surrounding SFMEA / black-box scenario as a test hypothesis,
+    # but remove only the rejected claim.  A subsequent source-discovery pass
+    # may add a new claim once it has a real, matching anchor.
+    unsupported_behavior_claim_ids = {
+        str(issue.get("claim_id") or issue.get("field") or "").strip()
+        for issue in issues
+        if str(issue.get("code") or "")
+        in {
+            "source_claim_insufficient",
+            "behavior_claim_insufficient",
+        }
+        and str(issue.get("claim_id") or issue.get("field") or "").strip()
+    }
+    if unsupported_behavior_claim_ids and isinstance(repaired, list):
+        for row_index, row in enumerate(repaired):
+            if not isinstance(row, dict) or not isinstance(row.get("technical_claims"), list):
+                continue
+            kept_claims: list[Any] = []
+            for claim in row["technical_claims"]:
+                if not isinstance(claim, dict):
+                    kept_claims.append(claim)
+                    continue
+                claim_id = str(claim.get("claim_id") or "").strip()
+                # Source-anchor claims can be repaired by the precise path
+                # rebind below.  Only a behavior assertion has no honest L1
+                # fallback when its source window is insufficient.
+                if (
+                    claim_id in unsupported_behavior_claim_ids
+                    and str(claim.get("type") or "").strip().lower()
+                    in {"behavior_assertion", "behavior_claim"}
+                ):
+                    fields.append(
+                        f"$[{row_index}].technical_claims[{claim_id}]._remove_unsupported"
+                    )
+                    continue
+                kept_claims.append(claim)
+            row["technical_claims"] = kept_claims
+
     if artifact_name == "black_box_cases.json" and isinstance(repaired, list):
         duplicate_case_ids = {
             str(case.get("case_id") or "").strip()
@@ -12924,75 +12965,6 @@ def materialize_final_deterministic_quality_repairs(
                 if repaired_fields:
                     _write_json(black_box_path, black_box_cases)
                     changed["black_box_cases.json"] = [*changed.get("black_box_cases.json", []), *repaired_fields]
-    # Black-box cases must remain executable through public interfaces, but
-    # their test intent still needs a locally verifiable source provenance
-    # anchor.  Flash occasionally omits these optional fields for every row.
-    # Attach an exact, already-verified card without turning the steps into an
-    # internal-function procedure.  The source_anchor statement is the literal
-    # quote, so this is L1 provenance rather than an invented behaviour claim.
-    missing_black_box_rows = {
-        str(issue.get("row_id") or "").strip()
-        for issue in quality_feedback.get("issues") or []
-        if isinstance(issue, dict)
-        and Path(str(issue.get("artifact") or "")).name == "black_box_cases.json"
-        and str(issue.get("code") or "") == "row_source_claim_insufficient"
-        and str(issue.get("row_id") or "").strip()
-    }
-    black_box_path = root / "black_box_cases.json"
-    if not black_box_path.is_file():
-        black_box_path = next(iter(root.rglob("black_box_cases.json")), black_box_path)
-    if missing_black_box_rows and black_box_path.is_file() and evidence_cards:
-        try:
-            black_box_cases = json.loads(black_box_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError, json.JSONDecodeError):
-            black_box_cases = []
-        source_cards = [
-            card for card in evidence_cards
-            if isinstance(card, dict)
-            and str(card.get("file_path") or "").strip()
-            and str(card.get("excerpt") or "").strip()
-            and int(card.get("start_line") or 0) > 0
-        ]
-        if isinstance(black_box_cases, list) and source_cards:
-            attached: list[str] = []
-            for index, row in enumerate(black_box_cases):
-                if not isinstance(row, dict):
-                    continue
-                case_id = str(row.get("case_id") or "").strip()
-                if case_id not in missing_black_box_rows:
-                    continue
-                card = source_cards[index % len(source_cards)]
-                evidence_id = str(card.get("evidence_id") or "").strip()
-                quote = str(card.get("excerpt") or "").strip()
-                path = str(card.get("file_path") or "").strip()
-                start_line = int(card.get("start_line") or 0)
-                end_line = int(card.get("end_line") or start_line)
-                if not (evidence_id and quote and path and start_line > 0):
-                    continue
-                row["source_evidence"] = list(dict.fromkeys([
-                    *(item for item in row.get("source_evidence") or [] if isinstance(item, str)),
-                    f"{evidence_id}:L{start_line}" if end_line == start_line else f"{evidence_id}:L{start_line}-L{end_line}",
-                ]))
-                row["technical_claims"] = [{
-                    "claim_id": f"TC-{case_id}-SOURCE",
-                    "type": "source_anchor",
-                    "statement": quote,
-                    "evidence": [{
-                        "evidence_id": evidence_id,
-                        "path": path,
-                        "lines": f"L{start_line}" if end_line == start_line else f"L{start_line}-L{end_line}",
-                        "quote": quote,
-                        "symbol": str((card.get("symbols") or [""])[0] or ""),
-                    }],
-                }]
-                attached.append(f"$[{index}].technical_claims[0]")
-            if attached:
-                _write_json(black_box_path, black_box_cases)
-                changed["black_box_cases.json"] = list(dict.fromkeys([
-                    *changed.get("black_box_cases.json", []),
-                    *attached,
-                ]))
-
     # A provider-owned report is a diagnostic narrative, not an independent
     # source of technical truth.  When the final audit identifies a report
     # conflict, rebuild that exact delivery file from the repaired canonical
