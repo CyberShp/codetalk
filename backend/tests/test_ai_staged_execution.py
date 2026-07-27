@@ -13902,6 +13902,43 @@ def test_deterministic_quality_repair_distinguishes_duplicate_sfmea_mitigations(
     assert "阶段字段" in mitigations[2]
 
 
+def test_deterministic_quality_repair_scopes_duplicate_state_mitigations_to_evidence():
+    from app.services.test_activity_contract import sfmea_mitigation_quality_gaps
+
+    shared = "整改: 明确异常路径的状态、资源和错误传播契约。验证: 注入触发条件并确认协议响应、连接状态和资源指标一致。"
+    repaired, fields = _deterministic_quality_claim_repair(
+        [
+            {
+                "sfmea_id": "SFMEA-001",
+                "failure_mode": "登录异常路径处理错误导致会话状态异常",
+                "mitigation": shared,
+                "source_evidence": ["SRC-01:L831"],
+                "recovery_verification": "移除故障条件后重新登录，确认无残留连接",
+            },
+            {
+                "sfmea_id": "SFMEA-007",
+                "failure_mode": "登录异常路径处理错误导致会话状态异常",
+                "mitigation": shared,
+                "source_evidence": ["SRC-01:L828"],
+                "recovery_verification": "移除故障条件后重新登录，确认无残留连接",
+            },
+        ],
+        artifact="sfmea.json",
+        quality_feedback={"issues": [{
+            "artifact": "sfmea.json",
+            "code": "duplicate_generic_sfmea_mitigation",
+            "row_ids": ["SFMEA-001", "SFMEA-007"],
+        }]},
+    )
+
+    mitigations = [row["mitigation"] for row in repaired]
+    assert fields == ["$[0].mitigation", "$[1].mitigation"]
+    assert len(set(mitigations)) == 2
+    assert "SRC-01:L831" in mitigations[0]
+    assert "SRC-01:L828" in mitigations[1]
+    assert all(not sfmea_mitigation_quality_gaps(value) for value in mitigations)
+
+
 def test_deterministic_quality_repair_restores_missing_upstream_error_dimension():
     repaired, fields = _deterministic_quality_claim_repair(
         [{

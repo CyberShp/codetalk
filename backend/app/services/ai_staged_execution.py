@@ -11677,23 +11677,39 @@ def _deterministic_quality_claim_repair(
             if row_id not in duplicate_mitigation_row_ids:
                 continue
             failure_mode = str(row.get("failure_mode") or "该失效模式").strip()
+            # A row can be a bounded hypothesis around the same broad failure
+            # family but a different verified code anchor.  Retain that scope
+            # in the remediation rather than emitting the same generic
+            # state-machine sentence for every row.  This gives a tester a
+            # concrete injection target and stops the quality gate from being
+            # satisfied by cosmetic wording changes.
+            source_scope = ", ".join(
+                str(value).strip()
+                for value in (row.get("source_evidence") or [])
+                if str(value).strip()
+            )
+            if not source_scope:
+                source_scope = str(row.get("trigger_condition") or "该风险触发条件").strip()
+            recovery_verification = str(row.get("recovery_verification") or "").strip()
             if re.search(r"清理|释放|泄漏|资源", failure_mode):
                 action = "把资源所有权与退出清理顺序固化为单一路径，并把资源计数恢复作为退出条件"
-                verification = "注入该失效条件后重复建立和关闭连接，确认资源计数回到基线且后续 Login 可继续成功"
+                verification = "执行重复建立和关闭连接的故障注入测试，确认资源计数回到基线且后续 Login 可继续成功"
             elif re.search(r"回调|竞态|并发", failure_mode):
                 action = "在回调完成与连接退出之间建立状态门禁，禁止退出后的回调再次推进处理"
-                verification = "并发触发该回调与连接关闭，确认只产生一次外部响应、没有重复处理且连接状态最终稳定"
+                verification = "执行回调与连接关闭的并发故障注入测试，确认只产生一次外部响应、没有重复处理且连接状态最终稳定"
             elif re.search(r"阶段|状态|转换", failure_mode):
                 action = "为该阶段迁移校验前置状态并在异常时停止下游状态推进"
-                verification = "交错发送该阶段的边界输入，确认协议响应、阶段字段和连接状态与预期一致"
+                verification = "执行该阶段边界输入的交错测试，确认协议响应、阶段字段和连接状态与预期一致"
             else:
                 action = "为该失效模式定义专属的错误处置和状态收敛条件"
-                verification = "注入该失效模式对应的外部触发条件，确认协议响应、连接状态和可观测资源指标全部收敛"
+                verification = "执行该失效模式的外部故障注入测试，确认协议响应、连接状态和可观测资源指标全部收敛"
+            if recovery_verification:
+                verification += f"；{recovery_verification.rstrip('。；; ')}"
             # The failure-mode label is deliberately retained: it connects the
             # action to the corresponding risk row instead of merely varying
             # wording to evade the duplicate-mitigation validator.
             row["mitigation"] = (
-                f"整改: 针对「{failure_mode}」，{action}。"
+                f"整改: 针对「{failure_mode}」在 {source_scope} 的风险边界，{action}。"
                 f"验证: {verification}。"
             )
             fields.append(f"$[{index}].mitigation")
