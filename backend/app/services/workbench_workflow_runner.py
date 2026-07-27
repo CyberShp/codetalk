@@ -2729,6 +2729,16 @@ class WorkbenchWorkflowRunner:
                         # the deterministic SFMEA boundary normalizer and leave
                         # stale source-driven judge data in place.
                         try:
+                            # Staged execution writes canonical analysis under
+                            # ``agent_runs/<step>`` while its quality gate audits
+                            # the task root.  Materialize the profile delivery at
+                            # that root before auditing; otherwise a deep run is
+                            # falsely blocked for files that only the later task
+                            # finalizer would render from the same bytes.
+                            materialize_artifact_contract_v3_outputs(
+                                Path(str(staged_task_run.artifact_dir)),
+                                profile_id=profile_id,
+                            )
                             # Run syntactic and evidence-bounded repairs before
                             # the first task-level audit as well as after a
                             # model repair.  Regular stages write their

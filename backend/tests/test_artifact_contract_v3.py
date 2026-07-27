@@ -492,6 +492,40 @@ def test_deep_contract_materializes_named_deliverables_only_from_real_stage_outp
     assert "当前证据未直接覆盖" in explanation
 
 
+def test_deep_contract_materializes_task_deliverables_from_nested_agent_stage_outputs(tmp_path):
+    """Stage quality gates audit the task root before final task collection."""
+    import json
+
+    from app.services.artifact_contract_v3 import materialize_artifact_contract_v3_outputs
+
+    stage_dir = tmp_path / "agent_runs" / "analyze"
+    stage_dir.mkdir(parents=True)
+    (stage_dir / "source_scope.json").write_text(
+        json.dumps({"analysis_target": "iSCSI login"}), encoding="utf-8"
+    )
+    (stage_dir / "evidence_cards.json").write_text(
+        json.dumps([{"evidence_id": "SRC-01", "file_path": "lib/iscsi/login.c"}]),
+        encoding="utf-8",
+    )
+    (stage_dir / "flow_cards.json").write_text(
+        json.dumps({"items": [{"flow_id": "FLOW-01", "title": "Login flow"}]}),
+        encoding="utf-8",
+    )
+    (stage_dir / "sfmea.json").write_text(
+        json.dumps([{"sfmea_id": "SFMEA-01", "failure_mode": "认证失败"}]),
+        encoding="utf-8",
+    )
+    (stage_dir / "black_box_cases.json").write_text(
+        json.dumps([{"case_id": "BB-01", "title": "错误凭据"}]), encoding="utf-8"
+    )
+
+    written = materialize_artifact_contract_v3_outputs(tmp_path, profile_id="deep")
+
+    assert "完整分析报告.md" in written
+    assert (tmp_path / "完整分析报告.md").is_file()
+    assert (tmp_path / "artifact_alignment_audit.json").is_file()
+
+
 def test_rapid_contract_materializes_flow_delivery_for_alignment_audit(tmp_path):
     import json
 
