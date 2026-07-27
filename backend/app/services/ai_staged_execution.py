@@ -56,7 +56,7 @@ _CANCELLATION_POLL_INTERVAL = 0.1
 _SOURCE_EVIDENCE_PACK_VERSION = "source-evidence-pack-v1"
 # Bump when deterministic evidence excerpts change.  A checksum-valid cache
 # from a previous selector can still contain an incomplete function fragment.
-_SOURCE_ANALYSIS_CACHE_VERSION = "source-analysis-cache-v5"
+_SOURCE_ANALYSIS_CACHE_VERSION = "source-analysis-cache-v7"
 _FLOW_DETERMINISTIC_STAGES = {"flow_evidence_pack", "flow_outline"}
 _SOURCE_DRIVEN_STAGE_GROUPS = {
     "breadth_inventory": {
@@ -279,18 +279,20 @@ def _project_source_analysis_context(
         compact,
         excerpt_limit=excerpt_limit,
     )
-    return _expand_verified_source_anchors(
+    expanded = _expand_verified_source_anchors(
         compact,
         source_context=source_context,
         excerpt_limit=excerpt_limit,
         anchor_limit=max(
             1,
-            int(
-                max_evidence_anchors
-                or settings.source_analysis_max_evidence_anchors
-            ),
+            int(max_evidence_anchors or settings.source_analysis_max_evidence_anchors),
         ),
     )
+    # Additional semantic anchors are discovered after the initial pack has
+    # been normalized.  Run the same SHA-checked function-window projection on
+    # them as well; otherwise a newly added large function leaks only its
+    # declaration into the model context.
+    return _complete_verified_source_slices(expanded, excerpt_limit=excerpt_limit)
 
 
 def _project_source_analysis_context_from_memory(
@@ -466,7 +468,11 @@ def _complete_verified_source_slices(
         source_text = data.decode("utf-8", errors="replace")
         start_line = max(1, int(item.get("start_line") or 1))
         end_line = max(start_line, int(item.get("end_line") or start_line))
-        anchor_line = start_line + ((end_line - start_line) // 2)
+        anchor_line = _source_item_symbol_anchor_line(
+            source_text,
+            symbols=[str(value) for value in item.get("symbols") or []],
+            fallback_line=start_line + ((end_line - start_line) // 2),
+        )
         span = _source_enclosing_c_function_span(
             source_text,
             anchor_line=anchor_line,
@@ -481,6 +487,12 @@ def _complete_verified_source_slices(
         excerpt_start = function_start
         excerpt_end = function_end
         if len(function_excerpt) > excerpt_limit:
+            anchor_line = _behavior_anchor_in_c_function(
+                lines,
+                function_start=function_start,
+                function_end=function_end,
+                fallback_line=anchor_line,
+            )
             bounded = _bounded_c_function_window(
                 lines,
                 function_start=function_start,
@@ -508,6 +520,67 @@ def _complete_verified_source_slices(
         }
     )[:64]
     return result
+
+
+def _source_item_symbol_anchor_line(
+    source_text: str,
+    *,
+    symbols: list[str],
+    fallback_line: int,
+) -> int:
+    """Resolve a multi-function evidence slice back to its declared symbol."""
+    candidates: list[int] = []
+    for line_number, line in enumerate(source_text.splitlines(), start=1):
+        for symbol in symbols:
+            name = str(symbol).strip()
+            if not name or not re.search(rf"\b{re.escape(name)}\s*\(", line):
+                continue
+            enclosing = _source_enclosing_c_function_span(
+                source_text,
+                anchor_line=line_number,
+            )
+            if enclosing is not None and enclosing[0] == name:
+                candidates.append(line_number)
+    if not candidates:
+        return fallback_line
+    return min(candidates, key=lambda line_number: abs(line_number - fallback_line))
+
+
+def _behavior_anchor_in_c_function(
+    lines: list[str],
+    *,
+    function_start: int,
+    function_end: int,
+    fallback_line: int,
+) -> int:
+    """Pick a compact source window around behavior, not just its signature.
+
+    A source selector often finds a function name at its declaration.  For a
+    large C function, starting a bounded excerpt there captures declarations
+    but omits the resource, timeout, state and error behavior that an evidence
+    claim must prove.  Prefer a concrete action line and keep the original
+    match as a deterministic fallback.
+    """
+    action_patterns = (
+        "unregister(", "register(", "timer", "timeout", "free(", "close(",
+        "cleanup", "release", "destroy", "rollback", "reconnect", "retry",
+        "error", "failed", "return", "state =",
+    )
+    ranked: list[tuple[int, int]] = []
+    for line_number in range(function_start, function_end + 1):
+        line = lines[line_number - 1].lower()
+        score = sum(pattern in line for pattern in action_patterns)
+        if "unregister(" in line or "timer" in line or "timeout" in line:
+            score += 4
+        if "return" in line or "state =" in line:
+            score += 1
+        if score:
+            ranked.append((score, line_number))
+    if not ranked:
+        return min(max(function_start, fallback_line), function_end)
+    # Keep the earliest equally meaningful event: it usually establishes the
+    # lifecycle transition before later success/error exits.
+    return max(ranked, key=lambda item: (item[0], -item[1]))[1]
 
 
 def _bounded_c_function_window(

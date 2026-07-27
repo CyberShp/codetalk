@@ -8870,7 +8870,8 @@ def test_source_analysis_context_reserves_iscsi_login_semantic_anchors(tmp_path)
         *( [""] * 20 ),
         "static void iscsi_pdu_payload_op_login(struct conn *conn)",
         "{",
-        "    conn->login_timer = NULL;",
+        *(f"    int filler_{index} = {index};" for index in range(80)),
+        "    spdk_poller_unregister(&conn->login_timer);",
         "    iscsi_op_login_response(conn);",
         "}",
     ])
@@ -8915,6 +8916,12 @@ def test_source_analysis_context_reserves_iscsi_login_semantic_anchors(tmp_path)
         "iscsi_op_login_rsp_handle_csg_bit",
         "iscsi_pdu_payload_op_login",
     } <= symbols
+    payload_excerpt = next(
+        str(item.get("excerpt") or "")
+        for item in compact["files"]
+        if "iscsi_pdu_payload_op_login" in (item.get("symbols") or [])
+    )
+    assert "spdk_poller_unregister(&conn->login_timer);" in payload_excerpt
 
 
 def test_source_analysis_context_does_not_fill_anchor_budget_with_help_text(
