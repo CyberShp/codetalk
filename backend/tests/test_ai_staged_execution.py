@@ -1239,7 +1239,7 @@ def test_deep_profile_evidence_accepts_a_routed_file_and_line_reference(tmp_path
             encoding="utf-8",
         )
         citations = "SRC-01 SRC-02" if stage_id != "deep_entry_paths" else (
-            "lib/iscsi/iscsi.c:1130\ntest/iscsi_tgt/chap/chap_common.sh:82-99"
+            "iscsi.c:1130\nchap_common.sh:82-99"
         )
         (stage_dir / "raw_output.txt").write_text(citations, encoding="utf-8")
 

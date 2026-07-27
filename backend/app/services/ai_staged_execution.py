@@ -3069,6 +3069,29 @@ def build_profile_execution_evidence(
                 if cited_start <= end_line and cited_end >= start_line:
                     cited_ids.append(evidence_id)
                     break
+            if evidence_id in cited_ids:
+                continue
+            # Providers sometimes preserve a precise file basename and line
+            # but omit the repository prefix.  That is still an auditable
+            # citation only when the basename identifies exactly one routed
+            # card; ambiguous basenames remain rejected.
+            basename = Path(file_path).name
+            matching_basenames = [
+                candidate_id
+                for candidate_id, candidate in routed_by_id.items()
+                if Path(str(candidate.get("file_path") or "")).name == basename
+            ]
+            if not basename or matching_basenames != [evidence_id]:
+                continue
+            short_pattern = re.compile(
+                re.escape(basename) + r":(?P<start>\d+)(?:-(?P<end>\d+))?"
+            )
+            for match in short_pattern.finditer(raw_output):
+                cited_start = int(match.group("start"))
+                cited_end = int(match.group("end") or cited_start)
+                if cited_start <= end_line and cited_end >= start_line:
+                    cited_ids.append(evidence_id)
+                    break
         branch_citation_requirements[stage_id] = {
             "routed_evidence_ids": routed_ids,
             "required_citation_count": required_citations,
