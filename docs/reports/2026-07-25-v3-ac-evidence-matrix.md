@@ -28,8 +28,8 @@ means that the cited current implementation and evidence cover the whole AC;
 
 | AC | Status | Current evidence / remaining proof |
 | --- | --- | --- |
-| AC-SEC-001 | blocked | Code and sandbox controls exist, and the capture collector now records redacted before/after CodeTalk process snapshots plus PCAP hashes without changing network configuration. The required administrator-owned PCAP/gateway capture has not run. See `docs/security/zero-public-egress-verification.md`. |
-| AC-SEC-002 | partial | Policy/tests deny telemetry, tracing, update and hosted-MCP paths; deployment capture must corroborate the shipped process behavior. |
+| AC-SEC-001 | blocked | Code and sandbox controls exist, and the capture collector now records redacted before/after CodeTalk process snapshots plus PCAP hashes without changing network configuration. `26890d01` additionally routes GitNexus (full/light), CGC, Semgrep, CodeCompass, workspace/chat/evidence reads, API proxy and remote Docker TCP through deployment endpoint admission before client creation. The required administrator-owned PCAP/gateway capture has not run. See `docs/security/zero-public-egress-verification.md`. |
+| AC-SEC-002 | partial | Policy/tests deny telemetry, tracing, update and hosted-MCP paths, while tool clients now disable inherited proxies and require a deployment-approved endpoint. Deployment capture must corroborate the shipped process behavior. |
 | AC-SEC-003 | partial | macOS `sandbox-exec` DNS-denial subprocess evidence exists. An approved Agent route plus capture is still absent. |
 | AC-SEC-004 | verified | A real settings-page run approved only `api.deepseek.com` at deployment level and completed configured Flash/Pro inference; the Chromium settings regression separately enters `https://example.com/v1` and receives `运行时出站策略拒绝：host_not_allowlisted` before connection. Policy unit coverage confirms approved hostname and narrow model endpoint behavior. Evidence: `/Volumes/Media/codetalk-e2e-artifacts/v3-deepseek-flash-pro-20260726/run5/`, `/Volumes/Media/codetalk-e2e-artifacts/v3-intranet-policy-ui-20260726/`. |
 | AC-SEC-005 | partial | `scripts/generate-offline-sbom.py` creates a local-only manifest plus a fail-closed `license-review.json` from backend requirements, frontend lockfile and installed metadata. The 2026-07-27 run recorded 692 components, 623 resolved local licenses, 69 explicit `UNKNOWN` items and no unresolved backend dependency. `generate-offline-bundle-manifest.py` now also records SHA256/name/version/license/platform for the 64 local SDK POC artifacts, correctly leaving Claude SDK's “SEE LICENSE IN README.md” as an explicit unknown. A fresh isolated Python 3.11 environment installed `openai-agents==0.18.3` from that bundle with `pip --no-index` and successfully imported `agents` (`freeze.txt` SHA256 recorded). Human license approval and a complete platform-specific CodeTalk offline-bundle install evidence remain required. |
@@ -39,8 +39,8 @@ means that the cited current implementation and evidence cover the whole AC;
 
 | AC | Status | Current evidence / remaining proof |
 | --- | --- | --- |
-| AC-WF-001 | verified | Chromium canvas evidence covers pan, node drag and edge creation. |
-| AC-WF-002 | verified | Edge selection/deletion regression is recorded with undo/redo. |
+| AC-WF-001 | verified | Chromium canvas evidence covers pan, node drag and edge creation; the 2026-07-27 live `@xyflow/react` run also used left-button node drag on a temporary saved copy. |
+| AC-WF-002 | verified | Edge selection/deletion regression is recorded with undo/redo; the 2026-07-27 live canvas run selected an existing edge, pressed Delete, and restored it with the visible undo action. |
 | AC-WF-003 | verified | Registry inspector supports add/edit/rename/delete input and output ports. |
 | AC-WF-004 | verified | Real `file -> directory` drag is rejected immediately in Chinese. |
 | AC-WF-005 | verified | Compiler and browser validation reject multiple data edges to scalar ports. |
@@ -172,8 +172,8 @@ Agent 或部署级流量捕获验收。
 | AC-UI-005 | verified | Thought summaries collapse by default and raw terminal diagnostics remain technical-only. |
 | AC-UI-006 | verified | Product-facing errors are Chinese/actionable with diagnostics behind disclosure. |
 | AC-UI-007 | verified for builtin | Cockpit displays frozen input, provider, skills/MCP, stage output, elapsed time, failure and artifact state. |
-| AC-LINK-001 | verified | Browser click creates a same-workspace AI thread from a completed run. Attempt 13 clicked `围绕本次运行继续分析` and opened `conv_2e743dd6f7274a948465c1f5b4c53a29` for the same SPDK workspace. |
-| AC-LINK-002 | verified | Result thread renders and downloads nine linked deliverables. The Attempt 13 follow-up thread visibly reports `执行 completed · 质量 passed · 交付 complete` and `已旁挂交付件` before the user sends a question. |
+| AC-LINK-001 | verified | Browser click creates a same-workspace AI thread from a completed run. On 2026-07-27 Attempt 15 clicked `围绕本次运行继续分析` and opened `conv_fc27b376c65a4c50a65e4edcf3236be0` for the same SPDK workspace; the temporary thread was then deleted through the UI. |
+| AC-LINK-002 | verified | Result thread renders and downloads nine linked deliverables. The Attempt 15 follow-up thread visibly reported `执行 completed · 质量 passed · 交付 complete` and `已旁挂交付件 9 个文件` before the user sent a question. |
 | AC-LINK-003 | verified for builtin | Follow-up context consumes attached artifacts and source context; repeat once for an uncached release artifact. |
 
 ## Performance
