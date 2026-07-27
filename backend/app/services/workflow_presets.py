@@ -88,7 +88,7 @@ EVIDENCE_CARDS_SCHEMA: dict[str, Any] = {
 
 TECHNICAL_CLAIMS_SCHEMA: dict[str, Any] = {
     "type": "array",
-    "minItems": 2,
+    "minItems": 1,
     # One L1 source anchor proves provenance. A second, independent behavior
     # claim is needed when the row turns that anchor into a protocol or
     # lifecycle conclusion.
