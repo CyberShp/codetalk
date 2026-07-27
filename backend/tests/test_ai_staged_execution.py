@@ -4551,7 +4551,7 @@ def test_combined_report_plan_runs_flow_sfmea_and_black_box_before_report():
     assert "technical_claims" in sfmea_stage["output_contract"]["schema"]["items"]["required"]
     assert "technical_claims" in cases_stage["output_contract"]["schema"]["items"]["required"]
     sfmea_claim_schema = sfmea_stage["output_contract"]["schema"]["items"]["properties"]["technical_claims"]
-    assert sfmea_claim_schema["minItems"] == 1
+    assert sfmea_claim_schema["minItems"] == 2
     assert sfmea_claim_schema["maxItems"] == 2
     assert sfmea_claim_schema["items"]["required"] == [
         "claim_id",
