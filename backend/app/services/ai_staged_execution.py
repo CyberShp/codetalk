@@ -10240,11 +10240,17 @@ def _deterministic_quality_claim_repair(
         str(issue.get("claim_id") or issue.get("field") or "").strip()
         for issue in issues
         if str(issue.get("code") or "")
-        in {
-            "source_claim_insufficient",
-            "behavior_claim_insufficient",
-        }
+        in {"source_claim_insufficient", "behavior_claim_insufficient"}
         and str(issue.get("claim_id") or issue.get("field") or "").strip()
+    }
+    source_proven_insufficient_claim_ids = {
+        str(issue.get("claim_id") or issue.get("field") or "").strip()
+        for issue in issues
+        if str(issue.get("code") or "") == "source_claim_insufficient"
+        and any(
+            isinstance(evidence, dict) and evidence.get("quote_matches") is True
+            for evidence in issue.get("evidence") or []
+        )
     }
     if unsupported_behavior_claim_ids and isinstance(repaired, list):
         for row_index, row in enumerate(repaired):
@@ -10256,18 +10262,17 @@ def _deterministic_quality_claim_repair(
                     kept_claims.append(claim)
                     continue
                 claim_id = str(claim.get("claim_id") or "").strip()
-                # Source-anchor claims can be repaired by the precise path
-                # rebind below.  Only a behavior assertion has no honest L1
-                # fallback when its source window is insufficient.
-                if (
-                    claim_id in unsupported_behavior_claim_ids
-                    and str(claim.get("type") or "").strip().lower()
-                    in {
-                        "behavior_assertion",
-                        "behavior_claim",
-                        "code_analysis",
-                        "code_behavior",
-                    }
+                # The independent auditor, not the model-provided ``type``,
+                # decides whether a claim is supportable.  Models have used
+                # labels such as ``code`` and ``source_anchor`` for the same
+                # unsupported behavior assertion; filtering only a small
+                # allow-list leaked those rejected facts into the final
+                # ledger.  Retain the surrounding test case as a hypothesis,
+                # but remove every specifically rejected claim.
+                if claim_id in unsupported_behavior_claim_ids and (
+                    claim_id in source_proven_insufficient_claim_ids
+                    or str(claim.get("type") or "").strip().lower()
+                    in {"behavior_assertion", "behavior_claim", "code_analysis", "code_behavior", "code"}
                 ):
                     fields.append(
                         f"$[{row_index}].technical_claims[{claim_id}]._remove_unsupported"
