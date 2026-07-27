@@ -372,7 +372,9 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 "evidence": ["lib/iscsi/iscsi.c::iscsi_op_login_response"],
                 "conflict_patterns": [
                     r"(?:认证失败|authentication failure|auth(?:entication)? fail|login error).{0,180}(?:response|响应).{0,180}\bt\s*[:=]\s*1",
-                    r"(?:error response|错误响应|失败响应).{0,160}(?:csg|nsg)\s*[:=]\s*[013]",
+                    r"(?:error response|错误响应|失败响应).{0,160}"
+                    r"(?:flag|flags|标志(?:位)?).{0,80}t\s*[:=]\s*0.{0,100}"
+                    r"csg\s*[:=]\s*0.{0,100}nsg\s*[:=]\s*0",
                 ],
                 "correction_patterns": [
                     r"(?:认证失败|authentication failure|error response|错误响应|失败响应).{0,220}(?:清除|清零|reserved|clear).{0,80}(?:t|csg|nsg)",
@@ -6049,7 +6051,8 @@ def _matches_professional_correction(statement: str, constraint: dict[str, Any])
             r"t\s*[:=]\s*1.{0,120}(?:不传播|does not propagate).{0,120}"
             r"(?:error response|错误响应|失败响应).{0,120}t\s*[:=]\s*0"
             r"|(?:error response|错误响应|失败响应).{0,160}"
-            r"t\s*[:=]\s*0.{0,100}csg\s*[:=]\s*0.{0,100}nsg\s*[:=]\s*0"
+            r"(?:flag|flags|标志(?:位)?).{0,80}t\s*[:=]\s*0.{0,100}"
+            r"csg\s*[:=]\s*0.{0,100}nsg\s*[:=]\s*0"
         ),
         "iscsi_csg_values": (
             r"csg\s*0/1/3.{0,20}分别为.{0,40}security negotiation"

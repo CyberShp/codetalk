@@ -9885,6 +9885,40 @@ def test_iscsi_professional_lint_accepts_explicit_error_flag_prohibition_and_val
     assert "iscsi_chap_request_response_flags" not in blocked
 
 
+def test_iscsi_error_flag_rule_does_not_confuse_a_rejected_csg_request_with_response_flags(tmp_path):
+    from app.services.test_activity_contract import (
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="SPDK iSCSI Login SFMEA",
+        repo_path=str(repo),
+    )
+    issues = _audit_professional_constraints(
+        json.dumps(
+            {
+                "failure_mode": "CSG=3（Full Feature Phase）的 Login Request 未被正确拒绝",
+                "cause": "风险假设：CSG=3 请求路径可能未设置 Initiator Error 状态。",
+                "effect": "initiator 可能收到不正确的错误响应，导致协议状态不一致。",
+                "evidence_interpretation": "CSG=3 的具体处理未在当前证据片段中展示。",
+                "detection": "抓取该 Login Request 触发的错误 Login Response 的 status class/detail。",
+                "mitigation": "发送 CSG=3 Login Request，验证其被拒绝。",
+            },
+            ensure_ascii=False,
+        ),
+        contract,
+        source_artifact="sfmea.json",
+    )
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_login_error_flags_cleared"
+        for issue in issues
+    ), issues
+
+
 def test_iscsi_professional_lint_accepts_explicit_c_bit_preservation(tmp_path):
     from app.services.test_activity_contract import (
         _audit_professional_constraints,

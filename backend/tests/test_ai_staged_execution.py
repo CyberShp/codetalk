@@ -6095,6 +6095,83 @@ def test_deterministic_quality_claim_repair_corrects_black_box_flags_and_thresho
     assert "50 ms" not in repaired[1]["expected_result"]
 
 
+def test_deterministic_quality_repair_reanchors_invalid_black_box_mappings_and_adds_missing_mutual_cases():
+    payload = [
+        {
+            "case_id": "BC-008",
+            "scenario_name": "Redirect：Login Response 包含 Redirect 状态",
+            "source_or_test_evidence": ["test/iscsi_tgt/login_redirection/login_redirection.sh"],
+            "technical_claims": [],
+        },
+        {
+            "case_id": "BC-009",
+            "scenario_name": "Discovery 后 SendTargets：Discovery 登录后发送 Text Request",
+            "source_or_test_evidence": ["test/app/fuzz/iscsi_fuzz/iscsi_fuzz.c:580-599"],
+            "technical_claims": [{
+                "claim_id": "TC-BC-009-SOURCE",
+                "type": "source_anchor",
+                "statement": "fuzzer evidence",
+                "evidence": [{"evidence_id": "SRC-03", "path": "test/app/fuzz/iscsi_fuzz/iscsi_fuzz.c"}],
+            }],
+        },
+        {
+            "case_id": "BC-026",
+            "scenario_name": "并发登录：多个 Initiator 同时登录同一 Target",
+            "mapped_test_dir": "test/iscsi_tgt/multiconnection",
+            "source_or_test_evidence": ["test/iscsi_tgt/multiconnection/multiconnection.sh:18-35"],
+            "technical_claims": [{
+                "claim_id": "CLAIM-CONCURRENT",
+                "type": "behavior_assertion",
+                "statement": "多个 Initiator 并发登录成功",
+                "evidence": [{"evidence_id": "SRC-06", "path": "test/iscsi_tgt/multiconnection/multiconnection.sh"}],
+            }],
+        },
+    ]
+    evidence_cards = [
+        {
+            "evidence_id": "SRC-08",
+            "file_path": "lib/iscsi/iscsi.c",
+            "start_line": 1877,
+            "end_line": 1921,
+            "excerpt": "rsph->tsih = 0;\nconn->sess->MaxConnections = 1;",
+            "symbols": ["iscsi_op_login_phase_none"],
+        },
+        {
+            "evidence_id": "SRC-05",
+            "file_path": "test/iscsi_tgt/chap/chap_common.sh",
+            "start_line": 82,
+            "end_line": 99,
+            "excerpt": "iscsi_auth_group_add_secret -u $CHAP_USER -s $CHAP_PASS",
+            "symbols": ["config_chap_credentials_for_target"],
+        },
+    ]
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="black_box_cases.json",
+        evidence_cards=evidence_cards,
+        quality_feedback={"issues": [
+            {"artifact": "black_box_cases.json", "code": "row_source_claim_insufficient", "row_id": "BC-008"},
+            {"artifact": "black_box_cases.json", "code": "professional_fact_conflict", "constraint_id": "iscsi_fuzzer_skips_login_opcode", "row_id": "BC-009"},
+            {"artifact": "black_box_cases.json", "code": "professional_fact_conflict", "constraint_id": "iscsi_multiconnection_mapping_scope", "row_id": "BC-026"},
+            {"artifact": "black_box_cases.json", "code": "professional_coverage_incomplete", "scenarios": [
+                "Target 要求 Mutual 但 Initiator 未提供",
+                "Mutual 用户或 secret 缺失",
+            ]},
+        ]},
+    )
+
+    rows = {row["case_id"]: row for row in repaired}
+    assert rows["BC-008"]["technical_claims"][0]["evidence"][0]["evidence_id"] == "SRC-08"
+    assert rows["BC-009"]["technical_claims"][0]["evidence"][0]["evidence_id"] == "SRC-08"
+    assert "iscsi_fuzz" not in " ".join(rows["BC-009"]["source_or_test_evidence"])
+    assert rows["BC-026"]["technical_claims"][0]["evidence"][0]["evidence_id"] == "SRC-08"
+    assert "ai_suggested_unverified" in rows["BC-026"]["mapped_test_dir"]
+    scenario_names = {row["scenario_name"] for row in repaired}
+    assert "Target 要求 Mutual 但 Initiator 未提供" in scenario_names
+    assert "Mutual 用户或 secret 缺失" in scenario_names
+    assert fields
+
+
 def test_deterministic_quality_repair_uses_report_heading_for_chap_flag_case_without_chap_label():
     payload = [{
         "case_id": "BB-001",

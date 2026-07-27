@@ -741,17 +741,15 @@ def _quality_repair_stalled(
     candidate_regressed: bool,
     salvaged_rows: dict[str, list[str]],
 ) -> bool:
-    """Stop model retries when rollback restored exactly the same quality gap.
+    """Stop model retries when a repair leaves the quality gap unchanged.
 
-    A rejected candidate plus no row-level salvage means the canonical bytes
-    remain unchanged. Repeating the same provider repair cannot be justified
-    without new source evidence or a different execution strategy.
+    A rejected candidate plus no row-level salvage is one way this happens,
+    but an accepted candidate can also preserve the same unresolved audit.
+    Repeating the provider repair cannot be justified in either case without
+    new source evidence or a different execution strategy.
     """
-    return (
-        candidate_regressed
-        and not salvaged_rows
-        and _quality_audit_signature(before) == _quality_audit_signature(after)
-    )
+    del candidate_regressed
+    return not salvaged_rows and _quality_audit_signature(before) == _quality_audit_signature(after)
 
 
 def _should_apply_final_deterministic_repairs(
@@ -3223,9 +3221,7 @@ class WorkbenchWorkflowRunner:
                                     candidate_regressed=regressed,
                                     salvaged_rows=salvaged_rows,
                                 ):
-                                    quality_repair_stop_reason = (
-                                        "no_progress_after_rollback"
-                                    )
+                                    quality_repair_stop_reason = "no_quality_progress"
                                     self._emit_event(
                                         "quality_repair_skipped",
                                         {
@@ -3234,7 +3230,7 @@ class WorkbenchWorkflowRunner:
                                             "attempt": repair_attempt,
                                             "reason": quality_repair_stop_reason,
                                             "user_message": (
-                                                "本轮修复已回滚且未改善任何质量问题，"
+                                                "本轮修复未改善任何质量问题，"
                                                 "已停止重复模型调用并保留可诊断的阻断结论。"
                                             ),
                                         },

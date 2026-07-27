@@ -7323,6 +7323,15 @@ def test_quality_repair_stalls_after_a_rolled_back_candidate_makes_no_progress()
         candidate_regressed=True,
         salvaged_rows={},
     ) is True
+    # An accepted candidate with exactly the same unresolved quality contract
+    # is no more useful than a rolled-back candidate.  Retrying it would only
+    # repeat the same provider call without new evidence or a new strategy.
+    assert _quality_repair_stalled(
+        before=before,
+        after=dict(before),
+        candidate_regressed=False,
+        salvaged_rows={},
+    ) is True
     assert _quality_repair_stalled(
         before=before,
         after={**before, "issue_count": 2},
