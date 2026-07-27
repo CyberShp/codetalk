@@ -2521,7 +2521,7 @@ def _audit_row_behavior_claims(
             or f"row-{row_index}"
         ).strip()
         row_claims = claims_by_row.get(row_id, [])
-        behavior_claims = [
+        explicit_behavior_claims = [
             claim
             for claim in row_claims
             if str(claim.get("type") or "").strip().lower()
@@ -2534,6 +2534,14 @@ def _audit_row_behavior_claims(
                 "log_literal",
             }
         ]
+        behavior_claims = list(explicit_behavior_claims)
+        # A literal source anchor establishes provenance only.  It must not
+        # become a substitute for the behaviour assertion represented by the
+        # user-visible SFMEA/test-case fields.  Without at least one explicit
+        # behaviour assertion the independent auditor has no bounded claim to
+        # verify, and an arbitrary auto-bound card can otherwise launder a
+        # false protocol outcome into a green quality score.
+        requires_explicit_behavior_assertion = True
         row_behavior_claims: list[dict[str, Any]] = []
         evidence = _row_behavior_evidence(
             row=row,
@@ -2541,16 +2549,13 @@ def _audit_row_behavior_claims(
             explicit_claims=row_claims,
         )
         claim_id = f"ROW:{artifact}:{row_id}"
-        # `build_behavior_claim_validation_request()` deliberately emits a
-        # row-level L2 assertion even when the producer supplied only exact
-        # source anchors.  That independent verdict is the behavior claim for
-        # the user-visible SFMEA row; previously the aggregate gate ignored it
-        # and falsely reported every such row as missing L2 coverage.
-        requires_row_behavior = not (
-            artifact == "black_box_cases.json"
-            and str(row.get("case_type") or "black_box_hypothesis").strip()
-            == "black_box_hypothesis"
-        )
+        # Each visible SFMEA or black-box row can make a source-behaviour
+        # assertion, even when it is labelled as a test hypothesis.  A
+        # hypothesis may propose a test tool or a measurement that is not in
+        # source, but it cannot use that label to assert an unsupported result
+        # such as a protocol status, missing guard, or resource leak.  The L2
+        # auditor distinguishes those two cases from the compact row payload.
+        requires_row_behavior = True
         if requires_row_behavior and evidence:
             row_claim_type = (
                 "sfmea_row_behavior"
@@ -2590,6 +2595,9 @@ def _audit_row_behavior_claims(
         if not row_claims or not evidence:
             status = "insufficient"
             reason = "该条目没有可供事实核验的技术断言或已验证源码证据"
+        elif requires_explicit_behavior_assertion and not explicit_behavior_claims:
+            status = "insufficient"
+            reason = "该条目只有来源锚点，缺少可独立核验的行为断言"
         elif requires_row_behavior and not behavior_claims:
             status = "insufficient"
             reason = "该条目只有 L1 来源锚点，缺少独立核验的行为断言"
@@ -2784,15 +2792,13 @@ def build_behavior_claim_validation_request(
             row_id = str(row.get(row_id_key) or f"row-{row_index}").strip()
             if not row_id:
                 continue
-            # A pure black-box contract can name public operations, metrics and
-            # an oracle without asserting that the implementation already owns
-            # those test tools. Its execution quality belongs to the structural
-            # and executability gates. Only a bound source anchor makes a
-            # black-box row a source-behaviour claim for independent L2 review.
-            if artifact == "black_box_cases.json":
-                case_type = str(row.get("case_type") or "black_box_hypothesis").strip()
-                if not claims_by_row.get(row_id) or case_type == "black_box_hypothesis":
-                    continue
+            # A black-box contract may name public tools and measurements that
+            # are not implemented by the repository, but a source-bound row
+            # still asserts the expected product behaviour.  Submit that
+            # behaviour to L2; the auditor is instructed not to reject the
+            # test tooling merely because it is external.
+            if artifact == "black_box_cases.json" and not claims_by_row.get(row_id):
+                continue
             evidence = _row_behavior_evidence(
                 row=row,
                 verified_files=verified_files,

@@ -1712,7 +1712,7 @@ def test_black_box_boundary_rejects_chinese_internal_function_workflow(step):
     assert _black_box_boundary_violation({"steps": [step]}) is True
 
 
-def test_row_behavior_audit_accepts_a_provenance_anchor_for_black_box_hypothesis():
+def test_row_behavior_audit_requires_independent_verdict_for_black_box_hypothesis():
     from app.services.test_activity_contract import _audit_row_behavior_claims
 
     claims, issues = _audit_row_behavior_claims(
@@ -1734,11 +1734,11 @@ def test_row_behavior_audit_accepts_a_provenance_anchor_for_black_box_hypothesis
         behavior_validation={},
     )
 
-    # A black-box hypothesis defines how to exercise a public interface; it
-    # does not claim the source already implements the CLI, metrics or oracle.
-    # The structural/executability gates assess that contract separately.
-    assert claims[0]["status"] == "verified"
-    assert issues == []
+    # The test tool itself is external, but the expected product behaviour is
+    # still user-visible and requires an independent source verdict.
+    assert claims[0]["status"] == "insufficient"
+    assert issues[0]["code"] == "row_source_claim_insufficient"
+    assert "缺少可独立核验的行为断言" in issues[0]["message"]
 
 
 def test_black_box_delivery_gate_accepts_multiple_existing_test_mappings(tmp_path):
@@ -8236,13 +8236,8 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
     assert stale_claim["status"] == "insufficient"
 
 
-def test_row_l2_verdict_satisfies_source_anchor_only_sfmea_row(tmp_path):
-    """A verified row-level L2 review must count even without an explicit L2 claim.
-
-    Source anchors prove provenance.  The separately generated row assertion is
-    the L2 behavior claim in this case, so the aggregate row gate must consume
-    its digest-bound verdict instead of reporting a false missing-L2 failure.
-    """
+def test_row_l2_verdict_cannot_launder_source_anchor_only_sfmea_row(tmp_path):
+    """A row-level L2 verdict cannot replace a missing explicit behaviour claim."""
     from app.services.test_activity_contract import (
         audit_test_activity_artifacts,
         build_behavior_claim_validation_request,
@@ -8333,12 +8328,17 @@ def test_row_l2_verdict_satisfies_source_anchor_only_sfmea_row(tmp_path):
         claim for claim in result["fact_claims"]
         if claim["claim_id"] == "ROW:sfmea.json:SFMEA-ROW-L2"
     )
-    assert row_claim["status"] == "verified"
+    assert row_claim["status"] == "insufficient"
     assert "ROW:sfmea.json:SFMEA-ROW-L2" in row_claim["statement"]
+    assert any(
+        issue.get("code") == "row_source_claim_insufficient"
+        and issue.get("claim_id") == row_claim["claim_id"]
+        for issue in result["issues"]
+    )
 
 
-def test_black_box_hypothesis_needs_provenance_not_a_product_behavior_verdict(tmp_path):
-    """A public-interface test plan is not a claim that its test tool is source code."""
+def test_black_box_hypothesis_requires_behavior_verdict_for_product_result(tmp_path):
+    """External test tools are fine, but product-result claims need L2 evidence."""
     from app.services.test_activity_contract import _audit_structured_fact_claims
 
     repo = tmp_path / "repo"
@@ -8402,11 +8402,12 @@ def test_black_box_hypothesis_needs_provenance_not_a_product_behavior_verdict(tm
         claim for claim in claims
         if claim["claim_id"] == "ROW:black_box_cases.json:BB-HYPOTHESIS-001"
     )
-    assert row_claim["status"] == "verified"
-    assert not [
-        issue for issue in issues
-        if issue.get("claim_id") == row_claim["claim_id"]
-    ]
+    assert row_claim["status"] == "insufficient"
+    assert any(
+        issue.get("claim_id") == row_claim["claim_id"]
+        and issue.get("code") == "row_source_claim_insufficient"
+        for issue in issues
+    )
 
 
 def test_row_behavior_statement_keeps_sfmea_hypothesis_semantics():
@@ -8578,7 +8579,7 @@ def test_behavior_validation_excludes_black_box_test_contract_from_source_entail
     assert request["claims"] == []
 
 
-def test_behavior_validation_excludes_hypothesis_even_with_a_verified_anchor(tmp_path):
+def test_behavior_validation_includes_black_box_hypothesis_behavior_when_anchor_exists(tmp_path):
     from app.services.test_activity_contract import build_behavior_claim_validation_request
 
     repo = tmp_path / "repo"
@@ -8611,7 +8612,13 @@ def test_behavior_validation_excludes_hypothesis_even_with_a_verified_anchor(tmp
 
     request = build_behavior_claim_validation_request(artifact_dir=artifacts, repo_path=repo)
 
-    assert request["claims"] == []
+    row_claim = next(
+        item
+        for item in request["claims"]
+        if item["claim_id"] == "ROW:black_box_cases.json:BB-PERF-001"
+    )
+    assert row_claim["type"] == "black_box_case_behavior"
+    assert "baseline latency sampling" in row_claim["statement"]
 
 
 def test_row_behavior_statement_defaults_black_box_cases_to_test_hypotheses():
