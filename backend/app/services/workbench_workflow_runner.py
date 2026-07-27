@@ -3377,6 +3377,34 @@ class WorkbenchWorkflowRunner:
                                         *row_ids,
                                     ]))
                                 patch_rounds += final_patch_rounds
+                            # A repair can expose one more deterministic
+                            # protocol correction after the report renderer
+                            # consumes the repaired JSON.  Converge on those
+                            # final delivery bytes before publishing the
+                            # audit; otherwise the UI can retain an issue
+                            # that the preceding materialization already
+                            # fixed.  This bounded loop never calls a model.
+                            for _ in range(2):
+                                follow_up_repairs = materialize_final_deterministic_quality_repairs(
+                                    artifact_dir,
+                                    quality_feedback=final_repair_audit,
+                                )
+                                if not follow_up_repairs:
+                                    break
+                                for artifact, fields in follow_up_repairs.items():
+                                    existing = deterministic_repairs.setdefault(artifact, [])
+                                    existing.extend(
+                                        field for field in fields if field not in existing
+                                    )
+                                refreshed_reports = list(dict.fromkeys([
+                                    *refreshed_reports,
+                                    *_refresh_reports_after_tombstones(
+                                        artifact_dir=artifact_dir,
+                                        plan=current_plan,
+                                    ),
+                                ]))
+                                behavior_validation = await validate_behavior_claims()
+                                final_repair_audit = await audit_staged_artifacts()
                             _write_json(
                                 artifact_dir
                                 / "quality_repairs"

@@ -9883,3 +9883,35 @@ def test_iscsi_professional_lint_accepts_explicit_error_flag_prohibition_and_val
     }
     assert "iscsi_login_error_flags_cleared" not in blocked
     assert "iscsi_chap_request_response_flags" not in blocked
+
+
+def test_iscsi_professional_lint_accepts_explicit_c_bit_preservation(tmp_path):
+    from app.services.test_activity_contract import (
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login CHAP error response black-box design",
+        repo_path=str(repo),
+    )
+    issues = _audit_professional_constraints(
+        json.dumps({
+            "scenario_name": "StatSN 在错误响应中递增",
+            "expected_result": "Login Response 返回 Initiator Error；错误响应分支清除 T、CSG、NSG，"
+            "不会清除 C bit；不得把 C bit 写成由该分支清除。",
+            "observability": [
+                "响应中 T、CSG、NSG 按错误分支清零；错误分支不会清除 C bit，"
+                "C bit 按请求与协议语义单独判读。"
+            ],
+        }, ensure_ascii=False),
+        contract,
+        source_artifact="black_box_cases.json",
+    )
+
+    assert not any(
+        issue.get("constraint_id") == "iscsi_login_error_c_flag_preserved"
+        for issue in issues
+    ), issues
