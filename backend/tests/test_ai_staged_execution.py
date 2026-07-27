@@ -5874,6 +5874,7 @@ def test_deterministic_quality_claim_repair_resolves_black_box_flag_audit_sectio
     assert "$[0].expected_result" in fields
     assert "清除 T、CSG、NSG" in repaired[0]["expected_result"]
     assert "C bit" in " ".join(repaired[0]["observability"])
+    assert "T/C/CSG/NSG" not in " ".join(repaired[0]["failure_diagnostics"])
 
 
 def test_deterministic_quality_claim_repair_routes_report_unit_mapping_feedback_to_sfmea():

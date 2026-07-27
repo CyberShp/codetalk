@@ -10305,7 +10305,7 @@ def _deterministic_quality_claim_repair(
                 "响应中 T、CSG、NSG 按错误分支清零；错误分支不会清除 C bit，C bit 按请求与协议语义单独判读。",
             ]
             row["failure_diagnostics"] = [
-                "保留 Login Response flags；禁止把错误响应概括为清除 T/C/CSG/NSG。",
+                "保留 Login Response flags；确认错误分支不将 C bit 作为清除对象。",
             ]
             fields.extend([
                 f"$[{index}].expected_result",
