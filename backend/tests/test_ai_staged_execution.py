@@ -1757,7 +1757,7 @@ def test_regular_stage_prompt_exposes_canonical_claim_evidence_catalog(tmp_path)
     ]
     assert "VERIFIED_CLAIM_EVIDENCE_CATALOG" in prompt
     assert "SRC-01:L518" in prompt
-    assert "只能逐字选择一个 evidence_id" in prompt
+    assert "必须包含一个 source_anchor" in prompt
 
 
 def test_verified_claim_catalog_keeps_single_card_enclosing_symbol_on_internal_line():
@@ -1936,7 +1936,7 @@ def test_canonical_claim_evidence_is_materialized_from_evidence_id():
     canonicalized = _canonicalize_technical_claim_evidence(rendered, catalog)
 
     assert canonicalized[0]["technical_claims"][0]["evidence"] == [catalog[0]]
-    assert canonicalized[0]["technical_claims"][0]["statement"] == catalog[0]["quote"]
+    assert canonicalized[0]["technical_claims"][0]["statement"] == "Login accept is zero."
     assert canonicalized[1]["technical_claims"][0]["evidence"] == [
         {"evidence_id": "UNKNOWN", "quote": "fake"}
     ]
@@ -3121,7 +3121,7 @@ def test_quality_repair_row_ids_extracts_row_from_derived_claim_id():
     ) == {"SFMEA-09", "SFMEA-12"}
 
 
-def test_black_box_claim_is_normalized_to_verified_source_anchor():
+def test_black_box_behavior_claim_is_preserved_for_independent_review():
     rows = [
         {
             "case_id": "BB-009",
@@ -3146,8 +3146,8 @@ def test_black_box_claim_is_normalized_to_verified_source_anchor():
     normalized = _normalize_black_box_source_anchor_claims(rows)
 
     claim = normalized[0]["technical_claims"][0]
-    assert claim["type"] == "source_anchor"
-    assert claim["statement"] == "c = libnvme_lookup_ctrl(s, &f.ctrl_params, NULL);"
+    assert claim["type"] == "behavior"
+    assert claim["statement"] == "lookup latency depends on the network"
 
 
 def test_sfmea_literal_source_claim_is_normalized_to_l1_source_anchor():
@@ -3171,7 +3171,7 @@ def test_sfmea_literal_source_claim_is_normalized_to_l1_source_anchor():
     assert normalized[0]["technical_claims"][0]["type"] == "source_anchor"
 
 
-def test_sfmea_interpreted_source_claim_is_reduced_to_its_l1_anchor():
+def test_sfmea_interpreted_source_claim_is_preserved_as_behavior_assertion():
     rows = [{
         "technical_claims": [{
             "type": "source",
@@ -3183,8 +3183,8 @@ def test_sfmea_interpreted_source_claim_is_reduced_to_its_l1_anchor():
     normalized = _normalize_sfmea_source_anchor_claims(rows)
 
     claim = normalized[0]["technical_claims"][0]
-    assert claim["type"] == "source_anchor"
-    assert claim["statement"] == "spdk_sock_close(&conn->sock);"
+    assert claim["type"] == "behavior_assertion"
+    assert claim["statement"] == "socket close proves all transfer tasks are safe"
 
 
 def test_final_materialized_sfmea_contract_rewrites_cleanup_order_to_hypothesis(tmp_path):
@@ -3262,8 +3262,8 @@ def test_final_materialized_sfmea_contract_canonicalizes_claim_to_bound_quote(tm
     )
 
     claim = json.loads((tmp_path / "sfmea.json").read_text())[0]["technical_claims"][0]
-    assert claim["type"] == "source_anchor"
-    assert claim["statement"] == "if (conn == NULL) {"
+    assert claim["type"] == "behavior_assertion"
+    assert claim["statement"] == "iscsi_auth_params 对空指针返回 -1。"
 
 
 def test_final_materialized_sfmea_contract_binds_declared_source_evidence_without_model_claim(tmp_path):
@@ -4522,7 +4522,7 @@ def test_combined_report_plan_runs_flow_sfmea_and_black_box_before_report():
     assert "technical_claims" in cases_stage["output_contract"]["schema"]["items"]["required"]
     sfmea_claim_schema = sfmea_stage["output_contract"]["schema"]["items"]["properties"]["technical_claims"]
     assert sfmea_claim_schema["minItems"] == 1
-    assert sfmea_claim_schema["maxItems"] == 1
+    assert sfmea_claim_schema["maxItems"] == 2
     assert sfmea_claim_schema["items"]["required"] == [
         "claim_id",
         "type",
@@ -8848,6 +8848,50 @@ def test_black_box_delivery_contract_replaces_unbound_symbol_references_with_cla
 
     assert rendered[0]["source_or_test_evidence"] == ["SRC-03:L1125"]
     assert fields == ["$[0].source_or_test_evidence"]
+
+
+def test_technical_claim_normalization_preserves_behavior_claim_beside_l1_anchor():
+    from app.services.ai_staged_execution import (
+        _canonicalize_technical_claim_evidence,
+        _normalize_black_box_source_anchor_claims,
+    )
+
+    anchor = {
+        "evidence_id": "SRC-01:L10",
+        "path": "lib/iscsi/iscsi.c",
+        "lines": "L10",
+        "symbol": "iscsi_auth_params",
+        "quote": "return iscsi_auth_params(conn);",
+    }
+    rows = [{
+        "case_id": "BB-01",
+        "source_or_test_evidence": ["SRC-01:L10"],
+        "technical_claims": [
+            {
+                "claim_id": "TC-BB-01-SOURCE",
+                "type": "source_anchor",
+                "statement": anchor["quote"],
+                "evidence": [anchor],
+            },
+            {
+                "claim_id": "TC-BB-01-BEHAVIOR",
+                "type": "behavior_assertion",
+                "statement": "认证失败会返回可观察的 Login Response。",
+                "evidence": [anchor],
+            },
+        ],
+    }]
+
+    rendered = _canonicalize_technical_claim_evidence(rows, [anchor])
+    rendered = _normalize_black_box_source_anchor_claims(rendered, [anchor])
+
+    assert [claim["type"] for claim in rendered[0]["technical_claims"]] == [
+        "source_anchor",
+        "behavior_assertion",
+    ]
+    assert rendered[0]["technical_claims"][1]["statement"] == (
+        "认证失败会返回可观察的 Login Response。"
+    )
 
 
 def test_markdown_canonicalizes_stale_prefix_to_unique_verified_repo_path():

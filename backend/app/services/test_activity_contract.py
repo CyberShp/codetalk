@@ -2521,6 +2521,19 @@ def _audit_row_behavior_claims(
             or f"row-{row_index}"
         ).strip()
         row_claims = claims_by_row.get(row_id, [])
+        behavior_claims = [
+            claim
+            for claim in row_claims
+            if str(claim.get("type") or "").strip().lower()
+            not in {
+                "source_anchor",
+                "protocol_constant",
+                "macro_value",
+                "enum_value",
+                "field_offset",
+                "log_literal",
+            }
+        ]
         evidence = _row_behavior_evidence(
             row=row,
             verified_files=verified_files,
@@ -2531,6 +2544,9 @@ def _audit_row_behavior_claims(
         if not row_claims or not evidence:
             status = "insufficient"
             reason = "该条目没有可供事实核验的技术断言或已验证源码证据"
+        elif not behavior_claims:
+            status = "insufficient"
+            reason = "该条目只有 L1 来源锚点，缺少独立核验的行为断言"
         elif any(claim.get("status") == "contradicted" for claim in failed_claims):
             status = "contradicted"
             reason = "该条目包含与源码矛盾的技术断言"
@@ -2549,6 +2565,9 @@ def _audit_row_behavior_claims(
                     str(claim.get("claim_id") or ""): str(claim.get("status") or "")
                     for claim in row_claims
                 },
+                "behavior_claim_ids": [
+                    str(claim.get("claim_id") or "") for claim in behavior_claims
+                ],
             },
             ensure_ascii=False,
             sort_keys=True,

@@ -1712,6 +1712,32 @@ def test_black_box_boundary_rejects_chinese_internal_function_workflow(step):
     assert _black_box_boundary_violation({"steps": [step]}) is True
 
 
+def test_row_behavior_audit_rejects_a_provenance_anchor_without_behavior_claim():
+    from app.services.test_activity_contract import _audit_row_behavior_claims
+
+    claims, issues = _audit_row_behavior_claims(
+        artifact="black_box_cases.json",
+        rows=[{"case_id": "BB-01", "source_or_test_evidence": ["SRC-01:L10"]}],
+        verified_files={},
+        explicit_claims=[{
+            "claim_id": "TC-BB-01-SOURCE",
+            "artifact": "black_box_cases.json",
+            "row_id": "BB-01",
+            "type": "source_anchor",
+            "status": "verified",
+            "evidence": [{
+                "evidence_id": "SRC-01:L10",
+                "path": "lib/iscsi/iscsi.c",
+                "quote": "return 0;",
+            }],
+        }],
+        behavior_validation={},
+    )
+
+    assert claims[0]["status"] == "insufficient"
+    assert issues[0]["code"] == "row_source_claim_insufficient"
+
+
 def test_black_box_delivery_gate_accepts_multiple_existing_test_mappings(tmp_path):
     from app.services.test_activity_contract import black_box_case_delivery_quality_gaps
 

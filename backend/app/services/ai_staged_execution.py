@@ -2337,7 +2337,7 @@ def _require_technical_claims(schema: dict[str, Any]) -> None:
     )
     if isinstance(claims, dict):
         claims["minItems"] = 1
-        claims["maxItems"] = 1
+        claims["maxItems"] = 2
         claim_item = claims.get("items") if isinstance(claims.get("items"), dict) else {}
         evidence = (
             claim_item.get("properties", {}).get("evidence")
@@ -6678,28 +6678,13 @@ def _canonicalize_technical_claim_evidence(
         claims = row.get("technical_claims")
         if not isinstance(claims, list):
             continue
-        preferred_claim = next(
-            (
-                claim
-                for claim in claims
-                if isinstance(claim, dict)
-                and any(
-                    isinstance(evidence, dict)
-                    and canonical_for(
-                        str(evidence.get("evidence_id") or ""), evidence
-                    ) is not None
-                    for evidence in claim.get("evidence") or []
-                )
-            ),
-            next((claim for claim in claims if isinstance(claim, dict)), None),
-        )
-        if preferred_claim is None:
+        canonical_claims = [
+            claim for claim in claims if isinstance(claim, dict)
+        ][:2]
+        if not canonical_claims:
             continue
-        claims = [preferred_claim]
-        row["technical_claims"] = claims
-        for claim in claims:
-            if not isinstance(claim, dict):
-                continue
+        row["technical_claims"] = canonical_claims
+        for claim in canonical_claims:
             evidence_items = claim.get("evidence")
             if not isinstance(evidence_items, list):
                 continue
@@ -6733,13 +6718,10 @@ def _canonicalize_technical_claim_evidence(
                 )
                 if canonical:
                     evidence_items[index] = dict(canonical)
-                    # A technical claim is a traceability anchor, not a second
-                    # free-form explanation of the surrounding function.  Keep
-                    # its statement exactly bounded by the one verified source
-                    # line it cites; broader risk and test intent live in the
-                    # row's own fields.  This prevents one log line from being
-                    # presented as proof of several unquoted assignments.
-                    claim["statement"] = str(canonical.get("quote") or "")
+                    if str(claim.get("type") or "") == "source_anchor":
+                        # L1 provenance anchors are literal by construction.
+                        # Behavior assertions remain intact for L2 review.
+                        claim["statement"] = str(canonical.get("quote") or "")
     return rendered
 
 
@@ -6773,29 +6755,54 @@ def _normalize_black_box_source_anchor_claims(
     for row in rendered:
         if not isinstance(row, dict):
             continue
-        claims = row.get("technical_claims")
-        if not isinstance(claims, list) or not claims or not isinstance(claims[0], dict):
+        claims = [
+            claim for claim in row.get("technical_claims") or []
+            if isinstance(claim, dict)
+        ]
+        source_claim = next(
+            (
+                claim for claim in claims
+                if str(claim.get("type") or "") == "source_anchor"
+            ),
+            None,
+        )
+        if source_claim is None:
+            source_claim = next(
+                (
+                    claim
+                    for claim in claims
+                    if not str(claim.get("type") or "").strip()
+                    and isinstance(claim.get("evidence"), list)
+                    and claim.get("evidence")
+                ),
+                None,
+            )
+        if source_claim is None:
             anchor = declared_anchor(row)
             if anchor is None:
                 continue
             case_id = str(row.get("case_id") or row.get("id") or "case").strip()
-            row["technical_claims"] = [{
+            source_claim = {
                 "claim_id": f"TC-{case_id}",
                 "type": "source_anchor",
                 "statement": str(anchor.get("quote") or ""),
                 "evidence": [anchor],
-            }]
-            continue
-        claim = claims[0]
-        evidence = claim.get("evidence")
+            }
+            claims.insert(0, source_claim)
+        evidence = source_claim.get("evidence")
         if not isinstance(evidence, list) or not evidence or not isinstance(evidence[0], dict):
             continue
         quote = str(evidence[0].get("quote") or "").strip()
         if not quote:
             continue
-        claim["type"] = "source_anchor"
-        claim["statement"] = quote
-        row["technical_claims"] = [claim]
+        source_claim["type"] = "source_anchor"
+        source_claim["statement"] = quote
+        behavior_claims = [
+            claim for claim in claims
+            if claim is not source_claim
+            and str(claim.get("type") or "") != "source_anchor"
+        ][:1]
+        row["technical_claims"] = [source_claim, *behavior_claims]
         declared = [
             str(item).strip()
             for item in row.get("source_or_test_evidence") or []
@@ -6838,7 +6845,11 @@ def _normalize_sfmea_source_anchor_claims(rendered: Any) -> Any:
                 if isinstance(evidence, dict)
                 and str(evidence.get("quote") or "").strip()
             ]
-            if quotes:
+            if not quotes:
+                continue
+            claim_type = str(claim.get("type") or "").strip().lower()
+            statement = str(claim.get("statement") or "").strip()
+            if claim_type == "source_anchor" or statement in quotes:
                 # Final SFMEA materialization never leaves a provider's
                 # interpretation in ``technical_claims``. The row fields own
                 # the risk hypothesis; the claim is strictly provenance and
@@ -6847,6 +6858,10 @@ def _normalize_sfmea_source_anchor_claims(rendered: Any) -> Any:
                 # L2 reviewer turning a valid source fact into a false block.
                 claim["type"] = "source_anchor"
                 claim["statement"] = quotes[0]
+            elif claim_type in {"source", "source_behavior", "current_behavior"}:
+                # A source-backed interpretation is not provenance. Preserve
+                # it as a behavior assertion so L2 can judge entailment.
+                claim["type"] = "behavior_assertion"
     return rendered
 
 
@@ -8447,8 +8462,8 @@ def _regular_stage_prompt(
     if base_stage_id in {"sfmea", "black_box_cases"}:
         rules.extend(
             [
-                "- 每个条目只能包含一个 technical_claims 条目，每个 claim 只能引用一个 evidence。",
-                "- technical claim 只能逐字选择一个 evidence_id，并完整复制 VERIFIED_CLAIM_EVIDENCE_CATALOG 中对应对象；禁止填写省略号、推测、Function not inspected、No excerpt 或自造 quote。",
+                "- 每个条目必须包含一个 source_anchor；出现协议、状态机、资源回收或错误传播结论时，还必须包含一个 behavior_assertion。每个 claim 只能引用一个 evidence。",
+                "- source_anchor 必须逐字选择一个 evidence_id，并完整复制 VERIFIED_CLAIM_EVIDENCE_CATALOG 中对应对象；behavior_assertion 也只能引用该目录的一个证据，但 statement 必须是可供独立审计的具体行为结论。禁止填写省略号、推测、Function not inspected、No excerpt 或自造 quote。",
                 "- 没有证据支持的事实必须改写为证据缺口或测试假设，不能伪造 technical claim。",
             ]
         )
@@ -8460,7 +8475,7 @@ def _regular_stage_prompt(
     if base_stage_id == "black_box_cases":
         rules.append(
             "- 黑盒 expected_result、steps 和 observability 是待执行测试契约，不是当前源码事实；"
-            "technical_claims 只绑定一条已验证源码锚点，系统会将 statement 固化为对应 quote。"
+            "technical_claims 至少绑定一条已验证源码锚点；当预期结果声称协议行为时，额外提供可独立核验的 behavior_assertion。"
         )
         required_atomic_scenarios = [
             str(value).strip()
