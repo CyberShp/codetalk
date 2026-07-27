@@ -115,6 +115,18 @@ professional fact gate detects an invalid CHAP Login-response assertion and an u
 端到端用时 `4.9m`。该记录是基础内置模型工作流的独立交付证据，仍不替代深度性能、外部
 Agent 或部署级流量捕获验收。
 
+### 深度 iSCSI 质量收敛回归（2026-07-27）
+
+真实 Chromium 从驾驶舱的“修复质量问题并重试”按钮启动 Attempt 13
+`task_run_8799d722df1848a787007176eab583ec`，针对 SPDK iSCSI Login/CHAP、
+设计文档和资源/并发/恢复范围执行。此前两项真实阻断分别来自报告标题无法定位到
+`black_box_cases.json` 的稳定行，以及中文“不会清除 C bit”这一正确否定语义被旧门禁
+误判。修复后运行显示 `completed / passed / complete`；最终质量审计为
+`deliverable`、0 issues、57/57 已验证事实、0 矛盾、0 证据不足，驾驶舱显示 9 个可交付文件。
+浏览器截图位于
+`/Volumes/Media/codetalk-e2e-artifacts/20260727-attempt13/quality-pass.png`。
+这证明定向修复可在真实交付字节上收敛；不替代外部 Agent、部署级抓包或 40--90 分钟深度性能验收。
+
 ### 基础对照 B：设计文档输入与 Flash（2026-07-26）
 
 `task_run_055485884aae4a819a21c9b21ef684d2` 通过真实浏览器完成设置、工作空间、
