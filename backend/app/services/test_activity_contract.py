@@ -2534,17 +2534,63 @@ def _audit_row_behavior_claims(
                 "log_literal",
             }
         ]
+        row_behavior_claims: list[dict[str, Any]] = []
         evidence = _row_behavior_evidence(
             row=row,
             verified_files=verified_files,
             explicit_claims=row_claims,
         )
         claim_id = f"ROW:{artifact}:{row_id}"
-        failed_claims = [claim for claim in row_claims if claim.get("status") != "verified"]
+        # `build_behavior_claim_validation_request()` deliberately emits a
+        # row-level L2 assertion even when the producer supplied only exact
+        # source anchors.  That independent verdict is the behavior claim for
+        # the user-visible SFMEA row; previously the aggregate gate ignored it
+        # and falsely reported every such row as missing L2 coverage.
+        requires_row_behavior = not (
+            artifact == "black_box_cases.json"
+            and str(row.get("case_type") or "black_box_hypothesis").strip()
+            == "black_box_hypothesis"
+        )
+        if requires_row_behavior and evidence:
+            row_claim_type = (
+                "sfmea_row_behavior"
+                if artifact == "sfmea.json"
+                else "black_box_case_behavior"
+            )
+            row_statement = _row_behavior_statement(artifact=artifact, row=row)
+            row_binding = _behavior_claim_binding(
+                claim_id=claim_id,
+                claim_type=row_claim_type,
+                statement=row_statement,
+                evidence=evidence,
+            )
+            l2_status, l2_reason = _bound_behavior_validation_status(
+                validation=behavior_validation,
+                claim_id=claim_id,
+                binding=row_binding,
+            )
+            row_behavior_claims.append(
+                {
+                    "claim_id": claim_id,
+                    "type": row_claim_type,
+                    "status": (
+                        "verified"
+                        if l2_status == "supports"
+                        else "contradicted"
+                        if l2_status == "contradicts"
+                        else "insufficient"
+                    ),
+                    "reason": l2_reason,
+                    "binding": row_binding,
+                }
+            )
+        behavior_claims.extend(row_behavior_claims)
+        all_claims = [*row_claims, *row_behavior_claims]
+        failed_claims = [claim for claim in all_claims if claim.get("status") != "verified"]
         if not row_claims or not evidence:
             status = "insufficient"
             reason = "该条目没有可供事实核验的技术断言或已验证源码证据"
-        elif not behavior_claims:
+        elif requires_row_behavior and not behavior_claims:
             status = "insufficient"
             reason = "该条目只有 L1 来源锚点，缺少独立核验的行为断言"
         elif any(claim.get("status") == "contradicted" for claim in failed_claims):

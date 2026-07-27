@@ -1712,7 +1712,7 @@ def test_black_box_boundary_rejects_chinese_internal_function_workflow(step):
     assert _black_box_boundary_violation({"steps": [step]}) is True
 
 
-def test_row_behavior_audit_rejects_a_provenance_anchor_without_behavior_claim():
+def test_row_behavior_audit_accepts_a_provenance_anchor_for_black_box_hypothesis():
     from app.services.test_activity_contract import _audit_row_behavior_claims
 
     claims, issues = _audit_row_behavior_claims(
@@ -1734,8 +1734,11 @@ def test_row_behavior_audit_rejects_a_provenance_anchor_without_behavior_claim()
         behavior_validation={},
     )
 
-    assert claims[0]["status"] == "insufficient"
-    assert issues[0]["code"] == "row_source_claim_insufficient"
+    # A black-box hypothesis defines how to exercise a public interface; it
+    # does not claim the source already implements the CLI, metrics or oracle.
+    # The structural/executability gates assess that contract separately.
+    assert claims[0]["status"] == "verified"
+    assert issues == []
 
 
 def test_black_box_delivery_gate_accepts_multiple_existing_test_mappings(tmp_path):
@@ -8212,6 +8215,179 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
         if claim["claim_id"] == "C-BEHAVIOR-001"
     )
     assert stale_claim["status"] == "insufficient"
+
+
+def test_row_l2_verdict_satisfies_source_anchor_only_sfmea_row(tmp_path):
+    """A verified row-level L2 review must count even without an explicit L2 claim.
+
+    Source anchors prove provenance.  The separately generated row assertion is
+    the L2 behavior claim in this case, so the aggregate row gate must consume
+    its digest-bound verdict instead of reporting a false missing-L2 failure.
+    """
+    from app.services.test_activity_contract import (
+        audit_test_activity_artifacts,
+        build_behavior_claim_validation_request,
+    )
+    from app.services.workflow_presets import SFMEA_SCHEMA
+
+    repo = tmp_path / "repo"
+    source = repo / "src" / "login.c"
+    source.parent.mkdir(parents=True)
+    quote = "int login_target(void) { return -1; }"
+    source.write_text(quote + "\n", encoding="utf-8")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    evidence = {
+        "evidence_id": "SRC-001:L1",
+        "path": "src/login.c",
+        "symbol": "login_target",
+        "lines": "L1",
+        "quote": quote,
+    }
+    (artifacts / "evidence_cards.json").write_text(
+        json.dumps([{
+            "evidence_id": "SRC-001",
+            "file_path": "src/login.c",
+            "start_line": 1,
+            "end_line": 1,
+            "excerpt": quote,
+            "sha256": source_sha,
+            "symbols": ["login_target"],
+        }]),
+        encoding="utf-8",
+    )
+    row = {
+        "sfmea_id": "SFMEA-ROW-L2",
+        "failure_mode": "Login request is rejected",
+        "cause": "The implementation returns a negative result",
+        "effect": "No session is established",
+        "detection": "Observe the public Login response",
+        "severity": 4,
+        "occurrence": 2,
+        "detection_score": 2,
+        "rpn": 16,
+        "mitigation": "Keep the rejection path covered by a negative test",
+        "source_evidence": ["SRC-001:L1"],
+        "test_mapping": "Send a Login request through the public initiator",
+        "technical_claims": [{
+            "claim_id": "ANCHOR-ONLY-001",
+            "type": "source_anchor",
+            "statement": quote,
+            "evidence": [evidence],
+        }],
+    }
+    (artifacts / "sfmea.json").write_text(json.dumps([row]), encoding="utf-8")
+    request = build_behavior_claim_validation_request(
+        artifact_dir=artifacts,
+        repo_path=repo,
+    )
+    assert [claim["claim_id"] for claim in request["claims"]] == [
+        "ROW:sfmea.json:SFMEA-ROW-L2"
+    ]
+    row_request = request["claims"][0]
+    (artifacts / "behavior_claim_validation.json").write_text(
+        json.dumps({
+            "kind": "behavior_claim_validation",
+            "schema_version": 2,
+            "validator": {"independent": True},
+            "claims": [{
+                "claim_id": row_request["claim_id"],
+                "binding": row_request["binding"],
+                "status": "supports",
+                "reason": "The source returns before a session can be created.",
+            }],
+        }),
+        encoding="utf-8",
+    )
+
+    result = audit_test_activity_artifacts(
+        artifact_dir=artifacts,
+        contract={
+            "artifact_contract": {"sfmea.json": {"schema": SFMEA_SCHEMA}},
+            "quality_gates": {"require_independent_behavior_validation": True},
+        },
+        repo_path=str(repo),
+    )
+
+    row_claim = next(
+        claim for claim in result["fact_claims"]
+        if claim["claim_id"] == "ROW:sfmea.json:SFMEA-ROW-L2"
+    )
+    assert row_claim["status"] == "verified"
+    assert "ROW:sfmea.json:SFMEA-ROW-L2" in row_claim["statement"]
+
+
+def test_black_box_hypothesis_needs_provenance_not_a_product_behavior_verdict(tmp_path):
+    """A public-interface test plan is not a claim that its test tool is source code."""
+    from app.services.test_activity_contract import _audit_structured_fact_claims
+
+    repo = tmp_path / "repo"
+    source = repo / "src" / "login.c"
+    source.parent.mkdir(parents=True)
+    quote = "int login_target(void) { return -1; }"
+    source.write_text(quote + "\n", encoding="utf-8")
+    artifacts = tmp_path / "artifacts"
+    artifacts.mkdir()
+    source_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+    evidence = {
+        "evidence_id": "SRC-001:L1",
+        "path": "src/login.c",
+        "symbol": "login_target",
+        "lines": "L1",
+        "quote": quote,
+    }
+    (artifacts / "evidence_cards.json").write_text(
+        json.dumps([{
+            "evidence_id": "SRC-001",
+            "file_path": "src/login.c",
+            "start_line": 1,
+            "end_line": 1,
+            "excerpt": quote,
+            "sha256": source_sha,
+            "symbols": ["login_target"],
+        }]),
+        encoding="utf-8",
+    )
+    (artifacts / "black_box_cases.json").write_text(
+        json.dumps([{
+            "case_id": "BB-HYPOTHESIS-001",
+            "case_type": "black_box_hypothesis",
+            "scenario_name": "Reject an invalid Login request",
+            "preconditions": ["A reachable target is available"],
+            "steps": ["Send the invalid request using a public initiator"],
+            "expected_result": "Observe a failed Login response and no session",
+            "observability": ["initiator exit code", "target connection count"],
+            "source_or_test_evidence": ["SRC-001:L1"],
+            "technical_claims": [{
+                "claim_id": "ANCHOR-ONLY-BB-001",
+                "type": "source_anchor",
+                "statement": quote,
+                "evidence": [evidence],
+            }],
+        }]),
+        encoding="utf-8",
+    )
+    (artifacts / "behavior_claim_validation.json").write_text(
+        json.dumps({"validator": {"independent": True}, "claims": []}),
+        encoding="utf-8",
+    )
+
+    claims, issues = _audit_structured_fact_claims(
+        root=artifacts,
+        repo=repo,
+        require_behavior_validation=True,
+    )
+
+    row_claim = next(
+        claim for claim in claims
+        if claim["claim_id"] == "ROW:black_box_cases.json:BB-HYPOTHESIS-001"
+    )
+    assert row_claim["status"] == "verified"
+    assert not [
+        issue for issue in issues
+        if issue.get("claim_id") == row_claim["claim_id"]
+    ]
 
 
 def test_row_behavior_statement_keeps_sfmea_hypothesis_semantics():
