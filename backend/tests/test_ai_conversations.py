@@ -16,6 +16,22 @@ from app.database import get_db
 pytestmark = [pytest.mark.asyncio, pytest.mark.integration]
 
 
+async def test_task_contract_excerpt_prioritizes_requested_protocol_constraint():
+    from app.services.ai_conversations import _task_artifact_excerpt
+
+    excerpt = _task_artifact_excerpt(
+        "test_activity_contract.json",
+        json.dumps({"professional_constraints": [{
+            "id": "iscsi_login_error_c_flag_preserved",
+            "assertion": "错误响应不会清除 C bit。",
+        }]}, ensure_ascii=False),
+        user_message="认证失败响应的 C bit 如何判读？",
+    )
+
+    assert "workflow_quality_constraints" in excerpt
+    assert "不会清除 C bit" in excerpt
+
+
 async def _seed_workspace(db_path: str, ws_id: str = "ws-ai") -> str:
     now = datetime.now(timezone.utc).isoformat()
     async with aiosqlite.connect(db_path) as db:

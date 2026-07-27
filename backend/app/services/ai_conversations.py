@@ -4312,6 +4312,8 @@ def _build_prompt(
         "Workbench 任务和测试用例持续追问。\n"
         "回答必须使用中文，先给结论，再给证据与下一步测试建议。"
         "如果引用不足，请明确标记“待验证”。\n"
+        "若上下文包含 workflow_quality_constraints，其中已验证约束优先于通用协议记忆；"
+        "不得把它改写成相反的确定性事实。\n"
         "当线程绑定 workspace 时，workspace_source 和 workspace_material 是优先证据；"
         "必须先依据源码片段和输入材料回答，再用报告或记忆补充。"
         "不要声称读过未出现在引用里的文件。\n"
@@ -6077,6 +6079,29 @@ async def _module_refs(db: aiosqlite.Connection, scope_id: str) -> list[ContextR
 def _task_artifact_excerpt(name: str, text: str, *, user_message: str = "") -> str:
     """Extract a requested source card before applying the normal context clip."""
 
+    if name == "test_activity_contract.json":
+        try:
+            contract = json.loads(text)
+        except (TypeError, json.JSONDecodeError):
+            return _clip(text)
+        query = str(user_message or "").lower()
+        requested = [
+            term for term in ("c bit", "c位", "c 位", "csg", "nsg", "login response", "登录响应")
+            if term in query
+        ]
+        constraints = [
+            item for item in contract.get("professional_constraints") or []
+            if isinstance(item, dict)
+            and any(
+                term in (str(item.get("id") or "") + " " + str(item.get("assertion") or "")).lower()
+                for term in requested
+            )
+        ]
+        if constraints:
+            return _clip(json.dumps(
+                {"workflow_quality_constraints": constraints}, ensure_ascii=False
+            ), 3600)
+        return _clip(text)
     if name != "agent_runs/analyze/evidence_cards.json":
         return _clip(text)
     requested_ids = {
