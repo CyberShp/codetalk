@@ -3218,6 +3218,41 @@ def test_sfmea_interpreted_source_claim_is_preserved_as_behavior_assertion():
     assert claim["statement"] == "socket close proves all transfer tasks are safe"
 
 
+def test_sfmea_row_behavior_assertion_is_materialized_as_a_bound_l2_claim():
+    from app.services.ai_staged_execution import (
+        _materialize_sfmea_row_behavior_assertions,
+    )
+
+    rows = [{
+        "sfmea_id": "SFMEA-13",
+        "behavior_assertion": {
+            "assertion": "未协商到支持的 CHAP 算法时，目标记录错误并进入错误返回路径。",
+            "evidence_id": "SRC-01:L831",
+            "path": "lib/iscsi/iscsi.c",
+            "lines": "L831",
+            "quote": "if (new_val == NULL) {",
+        },
+        "technical_claims": [{
+            "claim_id": "TC-13",
+            "type": "source_anchor",
+            "statement": "if (new_val == NULL) {",
+            "evidence": [{
+                "evidence_id": "SRC-01:L831",
+                "path": "lib/iscsi/iscsi.c",
+                "lines": "L831",
+                "quote": "if (new_val == NULL) {",
+            }],
+        }],
+    }]
+
+    materialized = _materialize_sfmea_row_behavior_assertions(rows)
+
+    claim = materialized[0]["technical_claims"][1]
+    assert claim["type"] == "behavior_assertion"
+    assert claim["statement"] == "未协商到支持的 CHAP 算法时，目标记录错误并进入错误返回路径。"
+    assert claim["evidence"][0]["evidence_id"] == "SRC-01:L831"
+
+
 def test_final_materialized_sfmea_contract_rewrites_cleanup_order_to_hypothesis(tmp_path):
     from app.services.ai_staged_execution import normalize_materialized_sfmea_risk_contract
 

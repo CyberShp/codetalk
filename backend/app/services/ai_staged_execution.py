@@ -5545,6 +5545,8 @@ async def _execute_regular_stage(
                     base_stage_id,
                 )
                 deterministic_repair_fields.extend(stable_id_fields)
+                if base_stage_id == "sfmea":
+                    rendered = _materialize_sfmea_row_behavior_assertions(rendered)
                 rendered = _canonicalize_technical_claim_evidence(
                     rendered,
                     claim_catalog,
@@ -7278,6 +7280,63 @@ def _normalize_sfmea_source_anchor_claims(rendered: Any) -> Any:
     return rendered
 
 
+def _materialize_sfmea_row_behavior_assertions(rendered: Any) -> Any:
+    """Promote a row's declared behavior assertion into the L2 claim contract.
+
+    The SFMEA renderer intentionally keeps user-facing risk language in row
+    fields.  Some providers also emit a compact, evidence-bound
+    ``behavior_assertion`` object at the row level.  Before this normalization,
+    that object was visible in the deliverable but absent from
+    ``technical_claims``; the quality gate consequently saw only an L1 source
+    anchor and correctly (but needlessly) marked the row as insufficient.
+
+    This function does not manufacture a fact.  It merely moves an already
+    supplied assertion plus its declared evidence into the claim list.  The
+    following canonicalizer must still resolve the evidence against the
+    SHA-checked catalog, and the independent L2 validator still decides
+    supports/contradicts/insufficient.
+    """
+    if not isinstance(rendered, list):
+        return rendered
+    for row in rendered:
+        if not isinstance(row, dict):
+            continue
+        assertion = row.get("behavior_assertion")
+        if not isinstance(assertion, dict):
+            continue
+        statement = str(assertion.get("assertion") or "").strip()
+        evidence_id = str(assertion.get("evidence_id") or "").strip()
+        if not statement or not evidence_id:
+            continue
+        claims = row.get("technical_claims")
+        if not isinstance(claims, list):
+            claims = []
+        if any(
+            isinstance(claim, dict)
+            and str(claim.get("type") or "").strip().lower()
+            not in {"", "source_anchor"}
+            for claim in claims
+        ):
+            continue
+        evidence = {
+            key: str(assertion.get(key) or "").strip()
+            for key in ("evidence_id", "path", "lines", "quote", "symbol")
+            if str(assertion.get(key) or "").strip()
+        }
+        claims.append(
+            {
+                "claim_id": (
+                    f"TC-{str(row.get('sfmea_id') or 'row').strip()}-behavior"
+                ),
+                "type": "behavior_assertion",
+                "statement": statement,
+                "evidence": [evidence],
+            }
+        )
+        row["technical_claims"] = claims
+    return rendered
+
+
 def _materialize_missing_sfmea_source_anchor_claims(
     rendered: Any,
     catalog: list[dict[str, str]],
@@ -7522,6 +7581,7 @@ def normalize_materialized_sfmea_risk_contract(
     # in the SFMEA fields while making the technical claim itself an exact L1
     # provenance anchor; otherwise a valid line binding is incorrectly judged
     # as an unsupported behavioural assertion during final delivery.
+    rendered = _materialize_sfmea_row_behavior_assertions(rendered)
     rendered = _canonicalize_technical_claim_evidence(rendered, catalog)
     rendered = _materialize_missing_sfmea_source_anchor_claims(rendered, catalog)
     rendered = _normalize_sfmea_source_anchor_claims(rendered)
