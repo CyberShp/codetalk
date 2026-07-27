@@ -331,6 +331,41 @@ def test_disposition_maps_explicit_coverage_target_without_overloading_source_an
     assert branch["covered_by"] == ["CASE-EXPLICIT-COVERAGE"]
 
 
+def test_disposition_maps_a_branch_when_claim_source_range_contains_the_condition():
+    """A source anchor range must cover every contained branch, not only its first line."""
+    from app.services.source_driven_test_design import build_source_driven_test_design
+
+    flow_pack = _flow_pack()
+    flow_pack["conditions"][0].update({"symbol": "", "start_line": 126, "end_line": 126})
+    cases = _cases() + [{
+        "case_id": "CASE-RANGE-COVERAGE",
+        "test_dimension": "normal_path",
+        "scenario_name": "CHAP algorithm accepted",
+        "source_or_test_evidence": ["SRC-001"],
+        "technical_claims": [{
+            "claim_id": "TC-RANGE",
+            "evidence": [{
+                "path": "lib/iscsi/iscsi.c",
+                "symbol": "",
+                "lines": "L100-L180",
+                "quote": "if (conn->state == EXITING)",
+            }],
+        }],
+    }]
+
+    artifacts = build_source_driven_test_design(
+        source_pack=_source_pack(),
+        flow_pack=flow_pack,
+        flow_outline=_outline(),
+        sfmea=_sfmea(),
+        black_box_cases=cases,
+    )
+
+    branch = artifacts["branch_disposition.json"]["items"][0]
+    assert branch["disposition"] == "retain"
+    assert branch["covered_by"] == ["CASE-RANGE-COVERAGE"]
+
+
 def test_resource_disposition_consumes_a_bound_target_only_when_case_is_executable():
     from app.services.source_driven_test_design import _resource_disposition_artifact
 

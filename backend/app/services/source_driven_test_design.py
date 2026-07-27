@@ -2480,11 +2480,22 @@ def _mapped_case_ids(
                 if not isinstance(evidence, dict) or str(evidence.get("path") or "").strip() != target_path:
                     continue
                 symbol = str(evidence.get("symbol") or "").strip()
-                line_match = re.search(r"\d+", str(evidence.get("lines") or ""))
-                line = int(line_match.group(0)) if line_match else 0
+                line_match = re.search(
+                    r"(\d+)(?:\s*-\s*(?:L)?(\d+))?",
+                    str(evidence.get("lines") or ""),
+                )
+                evidence_start = int(line_match.group(1)) if line_match else 0
+                evidence_end = (
+                    int(line_match.group(2) or evidence_start)
+                    if line_match
+                    else 0
+                )
                 symbol_match = bool(symbol and symbol in target_symbols)
                 range_match = bool(
-                    line and target_start and line <= target_end and line >= target_start
+                    evidence_start
+                    and target_start
+                    and evidence_start <= target_end
+                    and evidence_end >= target_start
                 )
                 if symbol_match or range_match:
                     mapped.append(str(case.get("case_id") or ""))
