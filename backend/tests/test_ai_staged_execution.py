@@ -9343,6 +9343,107 @@ def test_source_analysis_context_reserves_iscsi_login_semantic_anchors(tmp_path)
     assert "spdk_poller_unregister(&conn->login_timer);" in payload_excerpt
 
 
+def test_source_analysis_context_replaces_full_budget_low_value_slices_with_login_anchors(
+    tmp_path,
+):
+    """A full compact pack must not freeze out required protocol evidence."""
+    source = tmp_path / "lib" / "iscsi" / "iscsi.c"
+    source.parent.mkdir(parents=True)
+    source_text = "\n".join([
+        "static int iscsi_login_entry(void)",
+        "{",
+        "    return 0;",
+        "}",
+        "",
+        "static int iscsi_auth_params(struct conn *conn)",
+        "{",
+        "    return conn != NULL;",
+        "}",
+        "",
+        "static int iscsi_op_login_phase_none(struct conn *conn)",
+        "{",
+        "    return iscsi_auth_params(conn);",
+        "}",
+        "",
+        "static void iscsi_op_login_response(struct conn *conn)",
+        "{",
+        "    conn->status = 0;",
+        "}",
+        "",
+        "static int iscsi_op_login_rsp_handle_csg_bit(struct conn *conn)",
+        "{",
+        "    return 0;",
+        "}",
+        "",
+        "static int iscsi_op_login_store_incoming_params(struct conn *conn) {",
+        "    return iscsi_parse_params(&conn->params, NULL, 0, ISCSI_BHS_LOGIN_GET_CBIT(conn->flags), &conn->partial_parameter);",
+        "}",
+        "",
+        "static void iscsi_pdu_payload_op_login(struct conn *conn) {",
+        "    spdk_poller_unregister(&conn->login_timer);",
+        "}",
+    ])
+    source.write_text(source_text, encoding="utf-8")
+    digest = hashlib.sha256(source_text.encode()).hexdigest()
+    files = [{
+        "file_path": "lib/iscsi/iscsi.c",
+        "classification": "source",
+        "start_line": 1,
+        "end_line": 1,
+        "excerpt": "static int iscsi_login_entry(void)\n{\n    return 0;\n}",
+        "symbols": ["iscsi_login_entry"],
+        "matched_terms": ["iscsi", "login"],
+        "sha256": digest,
+        "status": "validated_source_file",
+    }]
+    for index in range(6):
+        extra = tmp_path / "lib" / "noise" / f"noise_{index}.c"
+        extra.parent.mkdir(parents=True, exist_ok=True)
+        extra_text = f"int noise_{index}(void) {{ return {index}; }}\n"
+        extra.write_text(extra_text, encoding="utf-8")
+        files.append({
+            "file_path": f"lib/noise/noise_{index}.c",
+            "classification": "source",
+            "start_line": 1,
+            "end_line": 1,
+            "excerpt": extra_text.strip(),
+            "symbols": [f"noise_{index}"],
+            "matched_terms": ["login"],
+            "sha256": hashlib.sha256(extra_text.encode()).hexdigest(),
+            "status": "validated_source_file",
+        })
+    staged_context = {
+        "repo_path": str(tmp_path),
+        "source_context": {
+            "repo_path": str(tmp_path),
+            "repo_revision": "fixture",
+            "tokens": ["iscsi", "login"],
+            "files": files,
+        },
+    }
+
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "完整 iSCSI Login CHAP 状态机分析"},
+        staged_context=staged_context,
+        max_files=7,
+        excerpt_chars=500,
+        max_evidence_anchors=7,
+    )
+
+    symbols = {
+        symbol
+        for item in compact["files"]
+        for symbol in item.get("symbols") or []
+    }
+    assert {
+        "iscsi_auth_params",
+        "iscsi_op_login_phase_none",
+        "iscsi_op_login_response",
+        "iscsi_op_login_rsp_handle_csg_bit",
+        "iscsi_pdu_payload_op_login",
+    } <= symbols
+
+
 def test_source_analysis_context_does_not_fill_anchor_budget_with_help_text(
     tmp_path,
 ):

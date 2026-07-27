@@ -633,7 +633,7 @@ def _expand_verified_source_anchors(
 ) -> dict[str, Any]:
     """Add bounded, hash-verified slices without widening the selected file set."""
     files = [dict(item) for item in compact.get("files") or [] if isinstance(item, dict)]
-    if not files or len(files) >= anchor_limit:
+    if not files:
         return compact
     repo = Path(str(compact.get("repo_path") or ""))
     if not repo.is_dir():
@@ -785,15 +785,32 @@ def _expand_verified_source_anchors(
                 if str(candidate.get("classification") or "") == "source"
             }
         }
+        # Keep one core source file available for the discovery scan, but do
+        # not freeze an already-full pack merely because every other initial
+        # source slice happens to live in a different file. For a protocol
+        # analysis, the named state-machine functions are stronger evidence
+        # than a generic target/configuration slice. Test cards remain intact.
+        core_source_path = next(
+            (
+                str(item.get("file_path") or "")
+                for item in files
+                if "iscsi" in str(item.get("file_path") or "").lower()
+                and Path(str(item.get("file_path") or "")).suffix.lower()
+                in {".c", ".cc", ".cpp"}
+            ),
+            next(
+                (
+                    str(item.get("file_path") or "")
+                    for item in files
+                    if str(item.get("classification") or "") == "source"
+                ),
+                "",
+            ),
+        )
         evictable_indexes = [
             index
             for index, item in enumerate(files)
             if str(item.get("classification") or "") != "test"
-            # Keep the initial cross-file evidence ledger intact. Only a
-            # duplicate slice from the same source path may be displaced by
-            # additional semantic anchors; otherwise parameter, lifecycle or
-            # configuration evidence silently disappears from the final pack.
-            and source_path_counts.get(str(item.get("file_path") or ""), 0) > 1
             and not (
                 {
                     str(symbol).lower()
@@ -801,10 +818,25 @@ def _expand_verified_source_anchors(
                 }
                 & required_protocol_anchor_terms
             )
+            and not (
+                str(item.get("file_path") or "") == core_source_path
+                and source_path_counts.get(core_source_path, 0) <= 1
+            )
         ]
-        # Earlier generic source snippets are less targeted than later
-        # protocol-specific ones, while test files remain untouched.
-        for index in reversed(evictable_indexes[:eviction_count]):
+        # Displace duplicate or peripheral source snippets first. This keeps
+        # tests and the core parser/response file available while ensuring the
+        # finite evidence budget can actually host mandatory Login anchors.
+        evictable_indexes.sort(
+            key=lambda index: (
+                source_path_counts.get(
+                    str(files[index].get("file_path") or ""), 0
+                ) <= 1,
+                str(files[index].get("file_path") or "") == core_source_path,
+                int(files[index].get("score") or 0),
+                index,
+            )
+        )
+        for index in sorted(evictable_indexes[:eviction_count], reverse=True):
             files.pop(index)
         # The initial pack has stable SRC identifiers.  Once entries are
         # evicted, compact them before appending replacements; otherwise a
