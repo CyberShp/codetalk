@@ -4465,8 +4465,7 @@ def _apply_profile_coverage_to_quality_audit(
         for item in result.get("issues") or []
         if isinstance(item, dict)
     ]
-    if not any(item.get("code") == "professional_coverage_incomplete" for item in issues):
-        coverage_issue = {
+    coverage_issue = {
             "code": "professional_coverage_incomplete",
             "severity": "blocking",
             # Coverage is observed in the assembled report, but the
@@ -4485,28 +4484,32 @@ def _apply_profile_coverage_to_quality_audit(
                 + "；".join(str(item) for item in coverage.get("warnings") or [])
             ),
             "recommended_action": "从场景扩展阶段重试，补齐覆盖广度提示中的场景后再发布。",
-        }
-        if breadth_warning:
-            issues.append(coverage_issue)
-        elif judge_warning:
-            issues.append(
-                {
-                    **coverage_issue,
-                    "code": "source_driven_coverage_incomplete",
-                    "source_artifact": "judge_report.json",
-                    "message": (
-                        "深度型交付仍有待核验的源码驱动覆盖项："
-                        + "；".join(
-                            str(item) for item in coverage_judge.get("warnings") or []
-                        )
-                    ),
-                    "coverage_targets": _source_driven_coverage_targets(
-                        artifact_dir=artifact_dir,
-                        warnings=coverage_judge.get("warnings") or [],
-                    ),
-                    "recommended_action": "从场景扩展阶段重试，补齐待核验的条件、状态和资源覆盖后再发布。",
-                }
-            )
+    }
+    if breadth_warning and not any(
+        item.get("code") == "professional_coverage_incomplete" for item in issues
+    ):
+        issues.append(coverage_issue)
+    if judge_warning and not any(
+        item.get("code") == "source_driven_coverage_incomplete" for item in issues
+    ):
+        issues.append(
+            {
+                **coverage_issue,
+                "code": "source_driven_coverage_incomplete",
+                "source_artifact": "judge_report.json",
+                "message": (
+                    "深度型交付仍有待核验的源码驱动覆盖项："
+                    + "；".join(
+                        str(item) for item in coverage_judge.get("warnings") or []
+                    )
+                ),
+                "coverage_targets": _source_driven_coverage_targets(
+                    artifact_dir=artifact_dir,
+                    warnings=coverage_judge.get("warnings") or [],
+                ),
+                "recommended_action": "从场景扩展阶段重试，补齐待核验的条件、状态和资源覆盖后再发布。",
+            }
+        )
     if breadth_warning:
         axes["coverage_breadth"] = {**coverage, "status": "blocked"}
     if judge_warning:

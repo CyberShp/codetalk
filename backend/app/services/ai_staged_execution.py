@@ -2353,6 +2353,27 @@ def build_staged_execution_plan(
         ]
         raw_contract = artifact_contract.get(artifact)
         output_contract = dict(raw_contract) if isinstance(raw_contract, dict) else {"artifact": artifact}
+        if base_stage_id == "black_box_cases":
+            # Published V3 workflows created before coverage_target_ids existed
+            # retain their immutable version snapshot.  Enrich the runtime
+            # output schema compatibly so a scoped coverage repair can express
+            # precise FLOW/STATE/RESOURCE bindings without migrating or
+            # mutating that historical WorkflowVersion.
+            schema = json.loads(
+                json.dumps(output_contract.get("schema") or BLACK_BOX_CASES_SCHEMA)
+            )
+            item_schema = schema.get("items") if isinstance(schema, dict) else None
+            properties = (
+                item_schema.setdefault("properties", {})
+                if isinstance(item_schema, dict)
+                else None
+            )
+            if isinstance(properties, dict):
+                properties.setdefault(
+                    "coverage_target_ids",
+                    {"type": "array", "items": {"type": "string", "minLength": 1}},
+                )
+                output_contract["schema"] = schema
         if base_stage_id == "sfmea" and combined_report_contract:
             schema = json.loads(
                 json.dumps(output_contract.get("schema") or SFMEA_SCHEMA)

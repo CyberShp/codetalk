@@ -900,6 +900,53 @@ def test_source_driven_coverage_warning_is_visible_for_rapid_and_blocks_deep(tmp
     }]
 
 
+def test_deep_profile_keeps_professional_and_source_coverage_blockers_together(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _apply_profile_coverage_to_quality_audit,
+    )
+
+    (tmp_path / "branch_disposition.json").write_text(
+        json.dumps({"items": [{
+            "id": "FLOW-COND-001",
+            "condition": "if (conn->require_chap)",
+            "file_path": "lib/iscsi/iscsi.c",
+            "start_line": 1950,
+            "end_line": 1952,
+            "evidence_refs": ["FLOW-COND-001"],
+        }]}),
+        encoding="utf-8",
+    )
+    result = _apply_profile_coverage_to_quality_audit(
+        audit={
+            "status": "warning",
+            "deliverable": True,
+            "score": 100,
+            "issues": [],
+            "quality_axes": {
+                "coverage_breadth": {
+                    "status": "warning",
+                    "score": 67,
+                    "missing_scenarios": ["错误 CHAP_R"],
+                    "warnings": ["缺少 CHAP 负向场景"],
+                },
+                "coverage_judge": {
+                    "status": "warning",
+                    "score": 80,
+                    "warnings": ["branch_disposition.json:FLOW-COND-001:need_verify"],
+                },
+            },
+        },
+        profile_id="deep",
+        artifact_dir=tmp_path,
+    )
+
+    assert result["deliverable"] is False
+    assert {item["code"] for item in result["issues"]} == {
+        "professional_coverage_incomplete",
+        "source_driven_coverage_incomplete",
+    }
+
+
 def test_claim_evidence_ledger_blocks_delivery_with_a_repairable_issue():
     from app.services.workbench_workflow_runner import (
         _apply_claim_evidence_ledger_to_quality_audit,
