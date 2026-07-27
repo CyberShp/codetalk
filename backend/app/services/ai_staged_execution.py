@@ -10283,13 +10283,16 @@ def _deterministic_quality_claim_repair(
         and artifact_name == "black_box_cases.json"
         and isinstance(repaired, list)
     ):
-        target_ids = {
-            str(issue.get("row_id") or "").strip()
-            for issue in issues
-            if str(issue.get("constraint_id") or "")
-            == "iscsi_login_error_c_flag_preserved"
-            and str(issue.get("row_id") or "").strip()
-        }
+        target_ids = _quality_repair_row_ids(
+            artifact=artifact_name,
+            quality_feedback={"issues": [
+                issue
+                for issue in issues
+                if str(issue.get("constraint_id") or "")
+                == "iscsi_login_error_c_flag_preserved"
+            ]},
+            base_items=repaired,
+        )
         for index, row in enumerate(repaired):
             if not isinstance(row, dict) or str(row.get("case_id") or "").strip() not in target_ids:
                 continue

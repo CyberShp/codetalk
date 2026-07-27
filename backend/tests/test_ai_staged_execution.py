@@ -5851,6 +5851,31 @@ def test_deterministic_quality_claim_repair_corrects_black_box_flags_and_thresho
     assert "50 ms" not in repaired[1]["expected_result"]
 
 
+def test_deterministic_quality_claim_repair_resolves_black_box_flag_audit_section_heading():
+    payload = [{
+        "case_id": "BB-002",
+        "scenario_name": "T+C 非法组合",
+        "expected_result": "错误响应会清除 T/C/CSG/NSG。",
+        "observability": ["抓取 Login Response"],
+        "failure_diagnostics": ["检查 flags"],
+    }]
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_login_error_c_flag_preserved",
+            "section_heading": "BB-002 T+C 非法组合",
+        }]},
+    )
+
+    assert "$[0].expected_result" in fields
+    assert "清除 T、CSG、NSG" in repaired[0]["expected_result"]
+    assert "C bit" in " ".join(repaired[0]["observability"])
+
+
 def test_deterministic_quality_claim_repair_routes_report_unit_mapping_feedback_to_sfmea():
     payload = [
         {
