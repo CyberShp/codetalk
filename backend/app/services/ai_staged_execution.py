@@ -2675,9 +2675,15 @@ def build_profile_execution_evidence(
             if str(card.get("evidence_id") or "").strip()
         ]
         required_citations = min(2, len(routed_ids))
+        stage_result = stage_results.get(stage_id) or {}
         raw_output = _read_text_file(
             artifact_dir / "stages" / stage_id / "raw_output.txt"
         )
+        if not raw_output:
+            output_path = Path(str(stage_result.get("output_path") or ""))
+            if not output_path.is_file():
+                output_path = artifact_dir / str(stage_result.get("artifact") or "")
+            raw_output = _read_text_file(output_path)
         cited_ids = [evidence_id for evidence_id in routed_ids if evidence_id in raw_output]
         # Providers frequently cite an exact file and line range instead of
         # repeating CodeTalk's internal SRC/FLOW identifier. Treat that as a

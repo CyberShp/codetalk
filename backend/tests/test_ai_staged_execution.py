@@ -1251,6 +1251,26 @@ def test_deep_profile_evidence_accepts_a_routed_file_and_line_reference(tmp_path
     assert evidence["branch_citation_requirements"]["deep_entry_paths"]["cited_evidence_ids"] == ["SRC-01", "SRC-02"]
 
 
+def test_deep_profile_evidence_reads_materialized_branch_artifact_when_raw_is_absent(tmp_path):
+    (tmp_path / "staged_execution_plan.json").write_text(json.dumps({"original_user_request": "iSCSI Login"}), encoding="utf-8")
+    source = tmp_path / "stages" / "source_analysis"
+    source.mkdir(parents=True)
+    (source / "source_evidence_pack.json").write_text(json.dumps({"evidence_cards": [
+        {"evidence_id": "SRC-01", "file_path": "lib/iscsi/iscsi.c", "start_line": 10, "end_line": 20, "excerpt": "login"},
+        {"evidence_id": "SRC-02", "file_path": "test/iscsi_tgt/login.sh", "start_line": 1, "end_line": 5, "excerpt": "login"},
+    ]}), encoding="utf-8")
+    for stage_id in ("deep_entry_paths", "deep_state_and_resources", "black_box_cases"):
+        stage_dir = tmp_path / "stages" / stage_id
+        stage_dir.mkdir(parents=True)
+        artifact = "deep_exploration/entry_paths.md" if stage_id == "deep_entry_paths" else f"{stage_id}.md"
+        output = tmp_path / artifact
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text("SRC-01 SRC-02", encoding="utf-8")
+        (stage_dir / "stage_result.json").write_text(json.dumps({"stage_id": stage_id, "status": "completed", "provider_call_count": 1, "artifact": artifact}), encoding="utf-8")
+    evidence = build_profile_execution_evidence(artifact_dir=tmp_path, execution_profile={"id": "deep", "applied_subagent_count": 2})
+    assert evidence["status"] == "passed"
+
+
 def test_quality_reuse_always_rebuilds_derived_judge(tmp_path):
     (tmp_path / "judge_report.json").write_text("{}", encoding="utf-8")
     reused = _existing_quality_stage_result(
