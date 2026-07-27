@@ -728,6 +728,13 @@ async def materialize_behavior_claim_validation(
         "claims": ordered_claims,
         "reused_claim_count": reused_claim_count,
         "validated_claim_count": len(pending_claims),
+        # The configured provider/model route is the audit identity used for
+        # cache safety.  A gateway may transparently fall back from a reasoner
+        # to a flash model for one response; recording that response model is
+        # useful diagnostics, but mutating ``validator.model`` would make the
+        # next identical request look like a different independent auditor and
+        # needlessly re-run every claim.
+        "response_models": _batch_response_models(batch_results),
         "duration_ms": round((time.monotonic() - started) * 1000, 1),
     }
     (diagnostics_dir / "raw_output.txt").write_text(
@@ -835,6 +842,7 @@ async def _validate_behavior_claim_batch(
     _write_json(batch_dir / "request.json", request)
     (batch_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
     runtime_dir = (batch_dir / "runtime").resolve()
+    response_model = ""
     async with semaphore:
         if llm_client is not None:
             response = await llm_client.complete_once(
@@ -844,8 +852,9 @@ async def _validate_behavior_claim_batch(
             )
             raw_output = str(response.content or "").strip()
             response_model = str(getattr(response, "model", "") or "").strip()
-            if response_model:
-                validator["model"] = response_model
+            # Do not mutate the configured validator identity with a
+            # per-response fallback model.  See ``response_models`` on the
+            # persisted validation result for this diagnostic instead.
         else:
             batch_runtime = {**(runtime or {}), "env": dict((runtime or {}).get("env") or {})}
             batch_runtime["env"]["CODETALK_AGENT_ARTIFACT_DIR"] = str(runtime_dir)
@@ -857,11 +866,14 @@ async def _validate_behavior_claim_batch(
             )
             shutil.rmtree(runtime_dir, ignore_errors=True)
     (batch_dir / "raw_output.txt").write_text(raw_output, encoding="utf-8")
-    return normalize_behavior_claim_verdicts(
+    result = normalize_behavior_claim_verdicts(
         raw_output=raw_output,
         request=request,
         validator=validator,
     )
+    if response_model:
+        result["response_model"] = response_model
+    return result
 
 
 async def _validate_behavior_claim_batch_with_adaptive_split(
@@ -934,6 +946,14 @@ async def _validate_behavior_claim_batch_with_adaptive_split(
                 int(item.get("raw_verdict_count") or 0) for item in child_results
             ),
             "adaptive_split": True,
+            "response_models": sorted(
+                {
+                    str(item.get("response_model") or "").strip()
+                    for item in child_results
+                    if isinstance(item, dict)
+                    and str(item.get("response_model") or "").strip()
+                }
+            ),
             "claims": [
                 claim
                 for item in child_results
@@ -1125,6 +1145,23 @@ def _write_unavailable_validation(
     )
     _write_json(output_path, result)
     return result
+
+
+def _batch_response_models(batch_results: list[dict[str, Any]]) -> list[str]:
+    """Retain concrete provider models for diagnostics without cache coupling."""
+    models: set[str] = set()
+    for item in batch_results:
+        if not isinstance(item, dict):
+            continue
+        direct = str(item.get("response_model") or "").strip()
+        if direct:
+            models.add(direct)
+        models.update(
+            str(model).strip()
+            for model in item.get("response_models") or []
+            if str(model).strip()
+        )
+    return sorted(models)
 
 
 def _unavailable_validation(

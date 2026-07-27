@@ -161,7 +161,8 @@ async def test_materialize_routes_codex_generation_to_active_builtin_llm(
 
     assert result["status"] == "completed"
     assert result["validator"]["provider"] == "builtin-llm"
-    assert result["validator"]["model"] == "deepseek-chat"
+    assert result["validator"]["model"] == "active-chat-model"
+    assert result["response_models"] == ["deepseek-chat"]
     assert result["validator"]["independent"] is True
     assert [item["status"] for item in result["claims"]] == [
         "supports",
@@ -218,8 +219,71 @@ async def test_materialize_routes_builtin_generation_to_configured_independent_a
     assert result["status"] == "completed"
     assert result["validator"]["runtime_id"] == "llm-config:audit-config-id"
     assert result["validator"]["model"] == "deepseek-reasoner"
+    assert result["response_models"] == ["deepseek-reasoner"]
     assert result["validator"]["independent"] is True
     assert calls[-1] == {"closed": True}
+
+
+@pytest.mark.asyncio
+async def test_behavior_claim_audit_reuses_configured_identity_after_response_fallback(
+    tmp_path, monkeypatch
+):
+    """A per-request fallback must not invalidate digest-bound verdict reuse."""
+    from app.config import settings
+    from app.services.behavior_claim_validator import materialize_behavior_claim_validation
+
+    monkeypatch.setattr(settings, "behavior_claim_audit_enabled", True)
+
+    class FallbackLLM:
+        async def complete_once(self, messages, max_tokens, temperature):
+            request = json.loads(
+                messages[0]["content"].split("VALIDATION_REQUEST:\n", 1)[1]
+            )
+            return LLMResponse(
+                content=json.dumps({"claims": [
+                    {
+                        "claim_id": claim["claim_id"],
+                        "binding": claim["binding"],
+                        "status": "supports",
+                        "reason": "已依据当前源码上下文核验",
+                    }
+                    for claim in request["claims"]
+                ]}),
+                # The configured route remains reasoner even when this one
+                # response is served by the provider's flash fallback.
+                model="deepseek-v4-flash",
+                usage={},
+                finish_reason="stop",
+            )
+
+        async def close(self):
+            return None
+
+    async def configured_audit_loader():
+        return FallbackLLM(), "audit-config-id", "deepseek-reasoner"
+
+    artifact_dir = tmp_path / "artifacts"
+    first = await materialize_behavior_claim_validation(
+        artifact_dir=artifact_dir,
+        repo_path=tmp_path,
+        generator_identity="builtin-llm:deepseek-chat",
+        request=_request(),
+        builtin_audit_loader=configured_audit_loader,
+    )
+    assert first["validator"]["model"] == "deepseek-reasoner"
+    assert first["response_models"] == ["deepseek-v4-flash"]
+
+    async def should_not_run():
+        raise AssertionError("unchanged bindings must reuse the completed audit")
+
+    reused = await materialize_behavior_claim_validation(
+        artifact_dir=artifact_dir,
+        repo_path=tmp_path,
+        generator_identity="builtin-llm:deepseek-chat",
+        request=_request(),
+        builtin_audit_loader=should_not_run,
+    )
+    assert reused["reused"] is True
 
 
 @pytest.mark.asyncio
