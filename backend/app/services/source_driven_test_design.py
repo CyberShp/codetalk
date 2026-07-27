@@ -1842,12 +1842,30 @@ def _resource_disposition_artifact(*, resources: dict[str, Any], flow_pack: dict
         kind = str(row.get("kind") or "resource")
         evidence = _strings(row.get("evidence_refs"))
         case_ids = _mapped_case_ids(cases, evidence, target=row)
+        # Coverage binding is a separate, frozen contract from the prose
+        # provenance carried by a test case.  A repaired case can therefore
+        # legitimately exercise RESOURCE-* while citing a different but
+        # verified source anchor.  Consume that binding only when the case is
+        # an executable black-box design; a bare ID assignment must not turn a
+        # resource lifecycle gap into a false "retain" decision.
+        resource_id = str(row.get("id") or f"RESOURCE-{kind}")
+        bound_case_ids = [
+            str(case.get("case_id") or "").strip()
+            for case in cases
+            if isinstance(case, dict)
+            and resource_id in _strings(case.get("coverage_target_ids"))
+            and _strings(case.get("steps"))
+            and str(case.get("expected_result") or "").strip()
+            and _strings(case.get("observability"))
+            and str(case.get("case_id") or "").strip()
+        ]
+        case_ids = _dedupe([*case_ids, *bound_case_ids])
         capacity = bool(row.get("capacity_model_applicable"))
         wrap = bool(row.get("wraparound_applicable"))
         items.append(
             {
-                "id": str(row.get("id") or f"RESOURCE-{kind}"),
-                "resource_id": str(row.get("id") or f"RESOURCE-{kind}"),
+                "id": resource_id,
+                "resource_id": resource_id,
                 "kind": kind,
                 "name": str(row.get("name") or _resource_label(kind)),
                 "allocation": "从已验证 get/alloc/create/open 路径确认；未定位时 need_verify",

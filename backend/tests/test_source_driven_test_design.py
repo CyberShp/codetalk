@@ -331,6 +331,39 @@ def test_disposition_maps_explicit_coverage_target_without_overloading_source_an
     assert branch["covered_by"] == ["CASE-EXPLICIT-COVERAGE"]
 
 
+def test_resource_disposition_consumes_a_bound_target_only_when_case_is_executable():
+    from app.services.source_driven_test_design import _resource_disposition_artifact
+
+    resources = {
+        "items": [{
+            "id": "RESOURCE-CMD",
+            "kind": "cmd",
+            "name": "命令资源",
+            "evidence_refs": ["SRC-001"],
+            "capacity_model_applicable": True,
+            "wraparound_applicable": False,
+        }]
+    }
+    flow_pack = {"cleanup_paths": [], "error_paths": [], "recovery_paths": []}
+    cases = [{
+        "case_id": "CASE-CMD-EXHAUSTION",
+        "coverage_target_ids": ["RESOURCE-CMD"],
+        "steps": ["达到容量 N 后释放一条连接并重新登录"],
+        "expected_result": "释放后可再次登录且资源回到基线范围",
+        "observability": ["连接列表、登录响应和资源采样"],
+    }]
+
+    disposition = _resource_disposition_artifact(
+        resources=resources,
+        flow_pack=flow_pack,
+        cases=cases,
+    )
+
+    row = disposition["items"][0]
+    assert row["disposition"] == "retain"
+    assert row["case_ids"] == ["CASE-CMD-EXHAUSTION"]
+
+
 def test_refresh_rebuilds_dispositions_from_final_black_box_cases(tmp_path):
     from app.services.source_driven_test_design import (
         build_source_driven_test_design,
