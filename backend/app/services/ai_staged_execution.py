@@ -612,6 +612,41 @@ def _expand_verified_source_anchors(
     if required_protocol_anchor_terms:
         semantic_anchor_patterns.extend(sorted(required_protocol_anchor_terms))
 
+    # The deep profile may arrive with a full source/test shortlist already
+    # occupying the evidence budget.  For iSCSI Login that cannot displace the
+    # non-interchangeable authentication/phase/response/CSG definitions. Keep
+    # test evidence in the pack, but free only non-test, non-required initial
+    # slices until the missing protocol anchors have a deterministic budget.
+    present_protocol_anchors = {
+        anchor
+        for item in files
+        for anchor in required_protocol_anchor_terms
+        if anchor in str(item.get("excerpt") or "").lower()
+        or anchor in {
+            str(symbol).lower() for symbol in item.get("symbols") or []
+        }
+    }
+    required_anchor_slots = len(required_protocol_anchor_terms - present_protocol_anchors)
+    available_anchor_slots = max(0, anchor_limit - len(files))
+    eviction_count = max(0, required_anchor_slots - available_anchor_slots)
+    if eviction_count:
+        evictable_indexes = [
+            index
+            for index, item in enumerate(files)
+            if str(item.get("classification") or "") != "test"
+            and not (
+                {
+                    str(symbol).lower()
+                    for symbol in item.get("symbols") or []
+                }
+                & required_protocol_anchor_terms
+            )
+        ]
+        # Earlier generic source snippets are less targeted than later
+        # protocol-specific ones, while test files remain untouched.
+        for index in reversed(evictable_indexes[:eviction_count]):
+            files.pop(index)
+
     selected_by_path: dict[str, dict[str, Any]] = {}
     existing_ranges: dict[str, list[tuple[int, int]]] = {}
     covered_terms: set[str] = set()
