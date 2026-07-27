@@ -70,10 +70,14 @@ export interface WorkflowNodeConfig {
 
 export interface WorkflowGraphNode {
   id: string;
-  kind: WorkflowNodeKind;
+  kind: string;
   label: string;
   position: WorkflowPosition;
   config: WorkflowNodeConfig;
+  ports?: {
+    inputs: WorkflowPortDefinition[];
+    outputs: WorkflowPortDefinition[];
+  };
 }
 
 export interface WorkflowGraphEndpoint {
@@ -138,18 +142,13 @@ export interface AuthoringGraphV3 {
   workflow_id: string;
   name: string;
   description: string;
-  nodes: WorkflowGraphV3Node[];
+  nodes: WorkflowGraphNode[];
   edges: WorkflowGraphEdge[];
   settings: {
     validation_profile: ValidationProfile;
     stop_on_error: boolean;
     max_parallelism: 1;
   };
-}
-
-/** V3 can carry future node kinds while the Phase 1 V2 canvas remains unchanged. */
-export interface WorkflowGraphV3Node extends Omit<WorkflowGraphNode, "kind"> {
-  kind: string;
 }
 
 export type AuthoringGraph = AuthoringGraphV2 | AuthoringGraphV3;
@@ -165,6 +164,7 @@ export interface WorkflowValidationResult {
   valid: boolean;
   errors: WorkflowValidationIssue[];
   warnings: WorkflowValidationIssue[];
+  draft_revision?: number;
 }
 
 export interface WorkflowPlanNode {
@@ -227,6 +227,7 @@ export interface WorkflowCompileResult {
   compiled_definition: Record<string, unknown> | CompiledWorkflowContractV3;
   compiled_plan: CompiledWorkflowPlan | CompiledWorkflowPlanV3;
   validation_result: WorkflowValidationResult;
+  draft_revision?: number;
 }
 
 export interface WorkflowHeader {
@@ -239,6 +240,30 @@ export interface WorkflowHeader {
   created_at: string;
   updated_at: string;
   archived_at: string | null;
+}
+
+export interface WorkflowCanvasCreateResult {
+  workflow: WorkflowHeader;
+  draft: WorkflowVersion;
+  designer_url: string;
+  meta?: WorkflowResourceMeta;
+}
+
+export interface WorkflowResourceMeta {
+  endpoint?: string;
+  backend_commit_sha?: string;
+  frontend_commit_sha?: string;
+}
+
+export interface WorkflowResourceErrorPayload {
+  error?: {
+    kind?: string;
+    endpoint?: string;
+    status?: number;
+    message?: string;
+    retryable?: boolean;
+    backend_commit_sha?: string;
+  };
 }
 
 export interface WorkflowVersion {
@@ -254,6 +279,8 @@ export interface WorkflowVersion {
   created_at: string;
   updated_at: string;
   published_at: string | null;
+  editor_mode?: "read_only_legacy" | "legacy" | "canvas";
+  draft_revision?: number;
 }
 
 export interface WorkflowListItem {
@@ -285,6 +312,7 @@ export interface WorkflowCapabilities {
   step_types: string[];
   output_types: string[];
   skill_catalog?: WorkflowSkillCapability[];
+  meta?: WorkflowResourceMeta;
 }
 
 export interface WorkflowNodeRegistryUi {
@@ -314,6 +342,7 @@ export interface WorkflowNodeRegistryEntry {
 export interface WorkflowNodeRegistry {
   schema_version: number;
   nodes: WorkflowNodeRegistryEntry[];
+  meta?: WorkflowResourceMeta;
 }
 
 export interface WorkflowProviderCapability {
@@ -333,6 +362,7 @@ export interface WorkflowTrialRunResult {
   workflow_id: string;
   workflow_version_id: string;
   workspace_id: string;
+  draft_revision?: number;
   compiled_plan: CompiledWorkflowPlan;
   diagnostic: {
     kind: "node_trial" | "workflow_trial";

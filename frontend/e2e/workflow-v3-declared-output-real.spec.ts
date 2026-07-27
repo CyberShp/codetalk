@@ -16,7 +16,6 @@ assertCanMutatePublicRuntime({
 test("runs a V3 report-only workflow through the task wizard without ghost deliverables", async ({ page, request }) => {
   test.setTimeout(120_000);
   const stamp = Date.now();
-  const workflowId = `v3-report-only-${stamp}`;
   const workflowName = `V3 Report Only ${stamp}`;
   const taskName = `V3 单报告任务 ${stamp}`;
   const workspaceName = `V3 单报告工作空间 ${stamp}`;
@@ -25,6 +24,7 @@ test("runs a V3 report-only workflow through the task wizard without ghost deliv
   const analysisTarget = `  保留开头空格的分析目标\n\n第二段前有一个空行。\n${"长文本输入必须逐字送达执行器。".repeat(120)}  `;
   const mrLink = `https://git.example.internal/storage/codetalk/merge_requests/${stamp}?view=diff`;
   const provider = await configureReportOnlyProvider(request, stamp, repo);
+  let workflowId = "";
   let workflowCreated = false;
   try {
     const workspaceResponse = await request.post(`${backendBase}/api/workspaces`, {
@@ -32,20 +32,12 @@ test("runs a V3 report-only workflow through the task wizard without ghost deliv
     });
     expect(workspaceResponse.ok()).toBeTruthy();
 
-    const workflowResponse = await request.post(`${backendBase}/api/workbench/workflows`, {
-      data: {
-        id: workflowId,
-        name: workflowName,
-        description: "V3 declared-output browser contract",
-        authoring_graph: reportOnlyGraph(workflowId, workflowName, provider.id),
-      },
-    });
-    expect(workflowResponse.status()).toBe(201);
+    const createdWorkflow = await createReportOnlyCanvas(request, workflowName, provider.id);
+    workflowId = createdWorkflow.workflowId;
     workflowCreated = true;
-    const draft = await workflowResponse.json();
     const publishResponse = await request.post(
-      `${backendBase}/api/workbench/workflows/${workflowId}/versions/${draft.current_draft_version_id}/publish`,
-      { data: {} },
+      `${backendBase}/api/workbench/workflows/${workflowId}/versions/${createdWorkflow.versionId}/publish`,
+      { data: { expected_revision: createdWorkflow.revision } },
     );
     expect(publishResponse.ok(), "V3 发布必须使用与运行相同的可执行契约").toBeTruthy();
 
@@ -66,8 +58,8 @@ test("runs a V3 report-only workflow through the task wizard without ghost deliv
     await page.getByRole("button", { name: "保存并继续" }).click();
 
     await expect(page.getByRole("heading", { name: "确认交付输出" })).toBeVisible();
-    await expect(page.getByRole("textbox", { name: "report 展示名称" })).toHaveValue("源码分析报告");
-    await expect(page.getByRole("textbox", { name: "report 文件名" })).toHaveValue("report.md");
+    await expect(page.getByRole("textbox", { name: "源码分析报告 展示名称" })).toHaveValue("源码分析报告");
+    await expect(page.getByRole("textbox", { name: "源码分析报告 文件名" })).toHaveValue("report.md");
     await expect(page.getByRole("button", { name: "添加输出" })).toHaveCount(0);
     await expect(page.getByText("任务专用输出", { exact: false })).toHaveCount(0);
     await page.getByRole("button", { name: "保存并继续" }).click();
@@ -105,7 +97,7 @@ test("runs a V3 report-only workflow through the task wizard without ghost deliv
     expect(JSON.stringify(artifacts)).not.toContain("test_activity_contract");
 
     const receivedResponse = await request.get(
-      `${backendBase}/api/workbench/task-runs/${runId}/artifacts/content/agent_runs/analyze/received_inputs.json`,
+      `${backendBase}/api/workbench/task-runs/${runId}/artifacts/content/agent_runs/${createdWorkflow.agentNodeId}/received_inputs.json`,
     );
     expect(receivedResponse.ok(), "真实 CLI Provider 必须记录它从 stdin 收到的输入").toBeTruthy();
     const receivedPayload = await receivedResponse.json() as { content: string };
@@ -113,9 +105,26 @@ test("runs a V3 report-only workflow through the task wizard without ghost deliv
       resolved_inputs: Record<string, unknown>;
       design_doc_text: string;
     };
-    expect(received.resolved_inputs.analysis_target).toBe(analysisTarget);
-    expect(received.resolved_inputs.mr_link).toBe(mrLink);
+    expect(received.resolved_inputs[createdWorkflow.inputIds.analysis_target]).toBe(analysisTarget);
+    expect(received.resolved_inputs[createdWorkflow.inputIds.mr_link]).toBe(mrLink);
     expect(received.design_doc_text).toBe("# Design document\n\nThe report must preserve every supplied input.\n");
+
+    const agentStateResponse = await request.get(
+      `${backendBase}/api/workbench/task-runs/${runId}/artifacts/content/agent_runs/${createdWorkflow.agentNodeId}/agent_run.json`,
+    );
+    expect(agentStateResponse.ok()).toBeTruthy();
+    const agentStatePayload = await agentStateResponse.json() as { content: string };
+    expect((JSON.parse(agentStatePayload.content) as { requires_network: boolean }).requires_network).toBe(false);
+
+    const networkPolicyResponse = await request.get(
+      `${backendBase}/api/workbench/task-runs/${runId}/artifacts/content/agent_runs/${createdWorkflow.agentNodeId}/network_policy.json`,
+    );
+    expect(networkPolicyResponse.ok()).toBeTruthy();
+    const networkPolicyPayload = await networkPolicyResponse.json() as { content: string };
+    expect(JSON.parse(networkPolicyPayload.content)).toMatchObject({
+      allowed: true,
+      reason: "offline_agent_allowed",
+    });
 
     const evidenceDir = process.env.CODETALK_E2E_ARTIFACT_DIR || "/Volumes/Media/codetalk-e2e-artifacts";
     fs.mkdirSync(evidenceDir, { recursive: true });
@@ -142,9 +151,10 @@ async function configureReportOnlyProvider(request: APIRequestContext, stamp: nu
   fs.writeFileSync(script, [
     "import json, os, sys",
     "from pathlib import Path",
+    "if '--version' in sys.argv: print('report-only-provider 1.0'); raise SystemExit(0)",
     "payload = json.load(sys.stdin)",
     "resolved_inputs = payload.get('task_bundle', {}).get('resolved_inputs', {})",
-    "design_doc = resolved_inputs.get('design_doc', {})",
+    "design_doc = next((value for value in resolved_inputs.values() if isinstance(value, dict) and str(value.get('original_name') or value.get('path') or value.get('copied_path') or '').endswith('design-doc.md')), {})",
     "design_doc_path = Path(design_doc if isinstance(design_doc, str) else design_doc.get('parsed_text_path') or design_doc.get('copied_path') or design_doc.get('path', ''))",
     "if not design_doc_path.is_absolute(): design_doc_path = Path(payload.get('runtime', {}).get('cwd', '.')) / design_doc_path",
     "artifact_dir = Path(os.environ['CODETALK_AGENT_ARTIFACT_DIR'])",
@@ -158,123 +168,152 @@ async function configureReportOnlyProvider(request: APIRequestContext, stamp: nu
   ].join("\n"), "utf8");
   fs.chmodSync(script, 0o755);
 
-  const currentResponse = await request.get(`${backendBase}/api/settings/agent-providers`);
-  expect(currentResponse.ok()).toBeTruthy();
-  const current = await currentResponse.json() as { external_agent_custom_providers?: Array<Record<string, unknown>> };
-  const id = `v3-report-only-provider-${stamp}`;
-  const providers = [
-    ...(current.external_agent_custom_providers || []).filter((item) => item.id !== id),
-    {
-      id,
+  const runtimeResponse = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
+    data: {
+      name: `V3 report-only E2E runtime ${stamp}`,
+      provider: "custom",
       command: "python3.11",
-      readonly_args: ["report_only_provider.py"],
+      args: [script],
       prompt_transport: "stdin",
-      supports_mcp: false,
-      mcp_profiles: [],
-      supports_artifact_export: true,
-      supports_json_output: false,
-      label: "V3 report-only E2E provider",
+      output_mode: "plain",
+      working_dir_mode: "project",
+      timeout_seconds: 60,
+      completion_mode: "process_exit",
+      session_persistence: "none",
+      requires_network: false,
+      enabled: true,
     },
-  ];
-  const updateResponse = await request.put(`${backendBase}/api/settings/agent-providers`, {
-    data: { ...current, external_agent_custom_providers: providers },
   });
-  expect(updateResponse.ok()).toBeTruthy();
+  expect(runtimeResponse.status()).toBe(201);
+  const runtime = await runtimeResponse.json() as { id: string };
   return {
-    id,
+    id: `agent-runtime:${runtime.id}`,
     restore: async () => {
-      const restoreResponse = await request.put(`${backendBase}/api/settings/agent-providers`, { data: current });
-      expect(restoreResponse.ok()).toBeTruthy();
+      const restoreResponse = await request.delete(
+        `${backendBase}/api/settings/agent-runtimes/${encodeURIComponent(runtime.id)}`,
+      );
+      expect(restoreResponse.status()).toBe(204);
     },
   };
 }
 
-function reportOnlyGraph(workflowId: string, name: string, providerRef: string) {
+async function createReportOnlyCanvas(
+  request: APIRequestContext,
+  name: string,
+  providerRef: string,
+) {
+  type Port = { id: string };
+  type Node = {
+    id: string;
+    ports: { inputs: Port[]; outputs: Port[] };
+    config: { input_id?: string };
+  };
+  type Draft = { version_id: string; draft_revision: number };
+
+  const createdResponse = await request.post(`${backendBase}/api/workbench/workflows/new`, {
+    data: {
+      template: "blank",
+      name,
+      description: "Only report.md is a declared deliverable.",
+    },
+  });
+  expect(createdResponse.status(), await createdResponse.text()).toBe(201);
+  const created = await createdResponse.json() as {
+    workflow: { workflow_id: string };
+    draft: Draft;
+  };
+  const workflowId = created.workflow.workflow_id;
+  const versionId = created.draft.version_id;
+  let revision = created.draft.draft_revision;
+
+  const addNode = async (payload: Record<string, unknown>) => {
+    const response = await request.post(
+      `${backendBase}/api/workbench/workflows/${workflowId}/versions/${versionId}/nodes`,
+      { data: { ...payload, expected_revision: revision } },
+    );
+    expect(response.status(), await response.text()).toBe(201);
+    const result = await response.json() as { node: Node; draft: Draft };
+    revision = result.draft.draft_revision;
+    return result.node;
+  };
+  const addPort = async (nodeId: string, label: string, type: string) => {
+    const response = await request.post(
+      `${backendBase}/api/workbench/workflows/${workflowId}/versions/${versionId}/nodes/${nodeId}/ports`,
+      { data: { direction: "inputs", label, type, required: true, expected_revision: revision } },
+    );
+    expect(response.status(), await response.text()).toBe(201);
+    const result = await response.json() as { port: Port; draft: Draft };
+    revision = result.draft.draft_revision;
+    return result.port;
+  };
+  const addEdge = async (source: { node_id: string; port_id: string }, target: { node_id: string; port_id: string }) => {
+    const response = await request.post(
+      `${backendBase}/api/workbench/workflows/${workflowId}/versions/${versionId}/edges`,
+      { data: { source, target, expected_revision: revision } },
+    );
+    expect(response.status(), await response.text()).toBe(201);
+    const result = await response.json() as { draft: Draft };
+    revision = result.draft.draft_revision;
+  };
+
+  const inputSpecs = [
+    ["repo_path", "源码工作区", "directory", "workspace", 0],
+    ["analysis_target", "分析目标", "long_text", "manual", 160],
+    ["design_doc", "开发设计文档", "file", "local", 320],
+    ["mr_link", "MR 链接", "mr_link", "manual", 480],
+  ] as const;
+  const inputNodes: Record<string, Node> = {};
+  for (const [semanticId, label, type, resolver, y] of inputSpecs) {
+    inputNodes[semanticId] = await addNode({
+      kind: "input",
+      label,
+      position: { x: 0, y },
+      config: { type, required: true, resolver },
+    });
+  }
+  const agent = await addNode({
+    kind: "agent",
+    label: "源码分析",
+    position: { x: 360, y: 80 },
+    config: {
+      provider_ref: providerRef,
+      goal: "Read the workspace and create only the declared report artifact.",
+      timeout_sec: 60,
+      idle_timeout_sec: 20,
+      retry_policy: { max_attempts: 1, backoff_seconds: 0 },
+      failure_policy: "stop",
+    },
+  });
+  const agentPorts: Record<string, Port> = { repo_path: agent.ports.inputs[0] };
+  agentPorts.analysis_target = await addPort(agent.id, "analysis_target", "long_text");
+  agentPorts.design_doc = await addPort(agent.id, "design_doc", "file");
+  agentPorts.mr_link = await addPort(agent.id, "mr_link", "mr_link");
+  const output = await addNode({
+    kind: "output",
+    label: "源码分析报告",
+    position: { x: 720, y: 80 },
+    config: { artifact: "report.md", media_type: "text/markdown", required: true },
+  });
+
+  for (const [semanticId] of inputSpecs) {
+    const source = inputNodes[semanticId];
+    await addEdge(
+      { node_id: source.id, port_id: source.ports.outputs[0].id },
+      { node_id: agent.id, port_id: agentPorts[semanticId].id },
+    );
+  }
+  await addEdge(
+    { node_id: agent.id, port_id: agent.ports.outputs[0].id },
+    { node_id: output.id, port_id: output.ports.inputs[0].id },
+  );
+
   return {
-    schema_version: 3,
-    workflow_id: workflowId,
-    name,
-    description: "Only report.md is a declared deliverable.",
-    settings: { validation_profile: "artifact_only", stop_on_error: true, max_parallelism: 1 },
-    nodes: [
-      {
-        id: "repo",
-        kind: "input",
-        label: "源码工作区",
-        position: { x: 0, y: 0 },
-        ports: { inputs: [], outputs: [{ id: "value", type: "directory" }] },
-        config: { input_id: "repo_path", label: "源码工作区", type: "directory", required: true, resolver: "workspace" },
-      },
-      {
-        id: "target",
-        kind: "input",
-        label: "分析目标",
-        position: { x: 0, y: 160 },
-        ports: { inputs: [], outputs: [{ id: "value", type: "long_text" }] },
-        config: { input_id: "analysis_target", label: "分析目标", type: "long_text", required: true, resolver: "manual" },
-      },
-      {
-        id: "design-doc",
-        kind: "input",
-        label: "开发设计文档",
-        position: { x: 0, y: 320 },
-        ports: { inputs: [], outputs: [{ id: "value", type: "file" }] },
-        config: { input_id: "design_doc", label: "开发设计文档", type: "file", required: true, resolver: "local" },
-      },
-      {
-        id: "mr-link",
-        kind: "input",
-        label: "MR 链接",
-        position: { x: 0, y: 480 },
-        ports: { inputs: [], outputs: [{ id: "value", type: "mr_link" }] },
-        config: { input_id: "mr_link", label: "MR 链接", type: "mr_link", required: true, resolver: "manual" },
-      },
-      {
-        id: "analyze",
-        kind: "agent",
-        label: "源码分析",
-        position: { x: 360, y: 80 },
-        ports: {
-          inputs: [
-            { id: "repo_path", type: "directory", required: true },
-            { id: "analysis_target", type: "long_text", required: true },
-            { id: "design_doc", type: "file", required: true },
-            { id: "mr_link", type: "mr_link", required: true },
-          ],
-          outputs: [{ id: "report", type: "artifact", required: true }],
-        },
-        config: {
-          handler_id: "agent",
-          handler_version: 1,
-          provider_ref: providerRef,
-          goal: "Read the workspace and create only the declared report artifact.",
-          prompt_template_version: 1,
-          prompt_template: "{{node_goal}}\n{{bound_inputs}}\n{{output_contract}}",
-          input_rendering: { preserve_user_text_verbatim: true, binding_order: ["repo_path", "analysis_target"] },
-          timeout_sec: 60,
-          idle_timeout_sec: 20,
-          retry_policy: { max_attempts: 1, backoff_seconds: 0 },
-          failure_policy: "stop",
-          mcp_profiles: [],
-          skill_ids: [],
-          skill_instructions: [],
-        },
-      },
-      {
-        id: "report-output",
-        kind: "output",
-        label: "源码分析报告",
-        position: { x: 720, y: 80 },
-        ports: { inputs: [{ id: "value", type: "artifact", required: true }], outputs: [] },
-        config: { output_id: "report", label: "源码分析报告", artifact: "report.md", media_type: "text/markdown", required: true, schema: null },
-      },
-    ],
-    edges: [
-      { id: "repo-analyze", kind: "data", source: { node_id: "repo", port_id: "value" }, target: { node_id: "analyze", port_id: "repo_path" } },
-      { id: "target-analyze", kind: "data", source: { node_id: "target", port_id: "value" }, target: { node_id: "analyze", port_id: "analysis_target" } },
-      { id: "design-analyze", kind: "data", source: { node_id: "design-doc", port_id: "value" }, target: { node_id: "analyze", port_id: "design_doc" } },
-      { id: "mr-analyze", kind: "data", source: { node_id: "mr-link", port_id: "value" }, target: { node_id: "analyze", port_id: "mr_link" } },
-      { id: "analyze-report", kind: "data", source: { node_id: "analyze", port_id: "report" }, target: { node_id: "report-output", port_id: "value" } },
-    ],
+    workflowId,
+    versionId,
+    revision,
+    agentNodeId: agent.id,
+    inputIds: Object.fromEntries(
+      inputSpecs.map(([semanticId]) => [semanticId, agentPorts[semanticId].id]),
+    ) as Record<(typeof inputSpecs)[number][0], string>,
   };
 }

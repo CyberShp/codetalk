@@ -17,6 +17,7 @@ from app.services.workflow_graph import compile_legacy_workflow
 
 WORKFLOW_SCHEMA_VERSION = 2
 _WORKFLOW_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+_V3_DRAFT_REVISION_KEY = "__codetalk_draft_revision"
 
 
 class WorkflowVersionError(ValueError):
@@ -29,6 +30,14 @@ class WorkflowDraftExistsError(WorkflowVersionError):
 
 class PublishedWorkflowVersionError(WorkflowVersionError):
     pass
+
+
+class StaleWorkflowDraftError(WorkflowVersionError):
+    """A V3 canvas mutation was based on an older persisted draft."""
+
+
+class ExpectedWorkflowDraftRevisionError(WorkflowVersionError):
+    """A V3 canvas mutation omitted its required compare-and-swap revision."""
 
 
 @dataclass(frozen=True)
@@ -58,6 +67,11 @@ class WorkflowVersion:
     created_at: str
     updated_at: str
     published_at: str | None
+
+    @property
+    def draft_revision(self) -> int | None:
+        """Server-only V3 compare-and-swap revision, excluded from legacy JSON."""
+        return getattr(self, "_draft_revision", None)
 
 
 def _now() -> str:
@@ -348,9 +362,31 @@ class WorkflowVersionStore:
         description: str,
         authoring_graph: dict[str, Any],
     ) -> tuple[WorkflowHeader, WorkflowVersion]:
+        graph = _json_object(authoring_graph, "authoring_graph")
+        if graph.get("schema_version") == 3:
+            raise WorkflowVersionError(
+                "V3 canvas workflows must be created through create_canvas_workflow"
+            )
+        return self._create_workflow(
+            workflow_id=workflow_id,
+            name=name,
+            description=description,
+            authoring_graph=graph,
+        )
+
+    def _create_workflow(
+        self,
+        *,
+        workflow_id: str,
+        name: str,
+        description: str,
+        authoring_graph: dict[str, Any],
+    ) -> tuple[WorkflowHeader, WorkflowVersion]:
         workflow_id = _validated_workflow_id(workflow_id)
         name = _required_text(name, "name")
         graph = _json_object(authoring_graph, "authoring_graph")
+        if graph.get("schema_version") == 3:
+            graph = _with_v3_draft_revision(graph, 1)
         self.initialize_and_migrate()
         now = _now()
         version_id = _new_version_id()
@@ -384,6 +420,30 @@ class WorkflowVersionStore:
                 raise WorkflowVersionError(f"workflow already exists: {workflow_id}") from exc
         return self.get_workflow(workflow_id), self.get_version(version_id)
 
+    def create_canvas_workflow(
+        self,
+        *,
+        workflow_id: str,
+        name: str,
+        description: str,
+        authoring_graph: dict[str, Any],
+    ) -> tuple[WorkflowHeader, WorkflowVersion]:
+        """Persist a server-created V3 canvas draft.
+
+        This intentionally shares the immutable version store with historical
+        workflows; only the authoring command that produced its graph differs.
+        """
+        if authoring_graph.get("schema_version") != 3:
+            raise WorkflowVersionError("canvas workflows must use schema_version 3")
+        if str(authoring_graph.get("workflow_id") or "") != workflow_id:
+            raise WorkflowVersionError("canvas graph workflow_id does not match header")
+        return self._create_workflow(
+            workflow_id=workflow_id,
+            name=name,
+            description=description,
+            authoring_graph=authoring_graph,
+        )
+
     def copy_workflow_as_custom_draft(
         self,
         source_workflow_id: str,
@@ -392,11 +452,10 @@ class WorkflowVersionStore:
         name: str,
         description: str | None = None,
     ) -> tuple[WorkflowHeader, WorkflowVersion]:
-        """Create an editable V2 draft without ever making the source mutable.
+        """Create an editable copy of an existing V2 workflow.
 
-        Built-in workflows intentionally remain immutable.  A user who wants to
-        adapt one therefore receives a distinct custom workflow whose first
-        draft is materialized from the source's published version.
+        V1 history remains read-only and must use the explicit copy-to-V3
+        migration command. The source workflow is never mutated.
         """
         source = self.get_workflow(source_workflow_id)
         source_version_id = source.published_version_id or source.current_draft_version_id
@@ -549,6 +608,8 @@ class WorkflowVersionStore:
         version_id = _new_version_id()
         now = _now()
         graph = _editable_graph_from_base(base, header) if base else _empty_graph(header)
+        if graph.get("schema_version") == 3:
+            graph = _with_v3_draft_revision(graph, 1)
         with self._connect() as db:
             try:
                 db.execute("BEGIN IMMEDIATE")
@@ -618,6 +679,7 @@ class WorkflowVersionStore:
         version_id: str,
         *,
         authoring_graph: dict[str, Any],
+        expected_revision: int | None = None,
         validation: dict[str, Any] | None = None,
         compiled_definition: dict[str, Any] | None = None,
         compiled_plan: dict[str, Any] | None = None,
@@ -628,6 +690,20 @@ class WorkflowVersionStore:
                 f"published workflow version is immutable: {version_id}"
             )
         graph = _json_object(authoring_graph, "authoring_graph")
+        _assert_draft_graph_contract(current.authoring_graph, graph)
+        if current.authoring_graph.get("schema_version") == 3:
+            if expected_revision is None:
+                raise ExpectedWorkflowDraftRevisionError(
+                    "V3 草稿保存需要版本号。请刷新画布后再次保存。"
+                )
+            return self._replace_v3_draft(
+                version_id,
+                expected_revision=expected_revision,
+                authoring_graph=graph,
+                compiled_definition=compiled_definition,
+                compiled_plan=compiled_plan,
+                validation=validation,
+            )
         with self._connect() as db:
             db.execute(
                 """
@@ -647,20 +723,108 @@ class WorkflowVersionStore:
             )
         return self.get_version(version_id)
 
+    def update_v3_draft_from_server_command(
+        self,
+        version_id: str,
+        *,
+        expected_revision: int | None,
+        authoring_graph: dict[str, Any],
+    ) -> WorkflowVersion:
+        """Persist a graph changed by an authenticated server authoring command.
+
+        Normal PUT requests intentionally cannot add technical identities.  Node,
+        port and edge commands call this narrow method after generating those
+        identities on the server.
+        """
+        if expected_revision is None:
+            raise ExpectedWorkflowDraftRevisionError(
+                "V3 画布操作需要版本号。请刷新画布后重试。"
+            )
+        graph = _json_object(authoring_graph, "authoring_graph")
+        if graph.get("schema_version") != 3:
+            raise WorkflowVersionError("server authoring commands require a V3 draft")
+        return self._replace_v3_draft(
+            version_id,
+            expected_revision=expected_revision,
+            authoring_graph=graph,
+            compiled_definition=None,
+            compiled_plan=None,
+            validation=None,
+            require_v3_command_graph=True,
+        )
+
+    def _replace_v3_draft(
+        self,
+        version_id: str,
+        *,
+        expected_revision: int,
+        authoring_graph: dict[str, Any],
+        compiled_definition: dict[str, Any] | None,
+        compiled_plan: dict[str, Any] | None,
+        validation: dict[str, Any] | None,
+        require_v3_command_graph: bool = False,
+    ) -> WorkflowVersion:
+        """Atomically compare a V3 revision and persist exactly one successor."""
+        if isinstance(expected_revision, bool) or not isinstance(expected_revision, int) or expected_revision < 1:
+            raise ExpectedWorkflowDraftRevisionError(
+                "V3 草稿版本号无效。请刷新画布后再次操作。"
+            )
+        with self._connect() as db:
+            try:
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT * FROM workflow_versions WHERE version_id = ?", (version_id,)
+                ).fetchone()
+                if row is None:
+                    raise KeyError(version_id)
+                current = _version_from_row(row)
+                if current.state != "draft":
+                    raise PublishedWorkflowVersionError(
+                        f"published workflow version is immutable: {version_id}"
+                    )
+                if current.authoring_graph.get("schema_version") != 3:
+                    raise WorkflowVersionError("server authoring commands require a V3 draft")
+                if str(authoring_graph.get("workflow_id") or "") != current.workflow_id:
+                    raise WorkflowVersionError("canvas graph workflow_id does not match draft")
+                if current.draft_revision != expected_revision:
+                    raise StaleWorkflowDraftError(
+                        "画布已被其他窗口更新。请刷新后确认最新内容，再重新操作。"
+                    )
+                if require_v3_command_graph and authoring_graph.get("schema_version") != 3:
+                    raise WorkflowVersionError("server authoring commands require a V3 draft")
+                successor = _with_v3_draft_revision(authoring_graph, expected_revision + 1)
+                db.execute(
+                    """
+                    UPDATE workflow_versions
+                    SET authoring_graph_json = ?, compiled_definition_json = ?,
+                        compiled_plan_json = ?, validation_json = ?, updated_at = ?
+                    WHERE version_id = ? AND state = 'draft'
+                    """,
+                    (
+                        _dump(successor),
+                        _dump_optional(compiled_definition),
+                        _dump_optional(compiled_plan),
+                        _dump_optional(validation),
+                        _now(),
+                        version_id,
+                    ),
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+        return self.get_version(version_id)
+
     def publish_version(
         self,
         version_id: str,
         *,
+        expected_revision: int | None = None,
         authoring_graph: dict[str, Any],
         compiled_definition: dict[str, Any],
         compiled_plan: dict[str, Any],
         validation: dict[str, Any],
     ) -> WorkflowVersion:
-        current = self.get_version(version_id)
-        if current.state != "draft":
-            raise PublishedWorkflowVersionError(
-                f"published workflow version is immutable: {version_id}"
-            )
         graph = _json_object(authoring_graph, "authoring_graph")
         definition = _json_object(compiled_definition, "compiled_definition")
         plan = _json_object(compiled_plan, "compiled_plan")
@@ -671,6 +835,36 @@ class WorkflowVersionStore:
         with self._connect() as db:
             try:
                 db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT * FROM workflow_versions WHERE version_id = ?", (version_id,)
+                ).fetchone()
+                if row is None:
+                    raise KeyError(version_id)
+                current = _version_from_row(row)
+                if current.state != "draft":
+                    raise PublishedWorkflowVersionError(
+                        f"published workflow version is immutable: {version_id}"
+                    )
+                _assert_draft_graph_contract(current.authoring_graph, graph)
+                stored_graph = graph
+                if current.authoring_graph.get("schema_version") == 3:
+                    if (
+                        isinstance(expected_revision, bool)
+                        or not isinstance(expected_revision, int)
+                        or expected_revision < 1
+                    ):
+                        raise ExpectedWorkflowDraftRevisionError(
+                            "V3 发布需要版本号。请刷新画布后再次操作。"
+                        )
+                    if current.draft_revision != expected_revision:
+                        raise StaleWorkflowDraftError(
+                            "画布已被其他窗口更新。请刷新后确认最新内容，再重新操作。"
+                        )
+                    if str(graph.get("workflow_id") or "") != current.workflow_id:
+                        raise WorkflowVersionError(
+                            "canvas graph workflow_id does not match draft"
+                        )
+                    stored_graph = _with_v3_draft_revision(graph, expected_revision)
                 updated = db.execute(
                     """
                     UPDATE workflow_versions
@@ -680,7 +874,7 @@ class WorkflowVersionStore:
                     WHERE version_id = ? AND state = 'draft'
                     """,
                     (
-                        _dump(graph),
+                        _dump(stored_graph),
                         _dump(definition),
                         _dump(plan),
                         _dump(validation_payload),
@@ -853,12 +1047,14 @@ def _header_from_row(row: sqlite3.Row) -> WorkflowHeader:
 
 
 def _version_from_row(row: sqlite3.Row) -> WorkflowVersion:
-    return WorkflowVersion(
+    stored_graph = dict(json.loads(str(row["authoring_graph_json"])))
+    draft_revision = _pop_v3_draft_revision(stored_graph)
+    version = WorkflowVersion(
         version_id=str(row["version_id"]),
         workflow_id=str(row["workflow_id"]),
         version_number=int(row["version_number"]),
         state=str(row["state"]),
-        authoring_graph=dict(json.loads(str(row["authoring_graph_json"]))),
+        authoring_graph=stored_graph,
         compiled_definition=_load_optional(row["compiled_definition_json"]),
         compiled_plan=_load_optional(row["compiled_plan_json"]),
         validation=_load_optional(row["validation_json"]),
@@ -869,6 +1065,26 @@ def _version_from_row(row: sqlite3.Row) -> WorkflowVersion:
         updated_at=str(row["updated_at"]),
         published_at=str(row["published_at"]) if row["published_at"] else None,
     )
+    object.__setattr__(version, "_draft_revision", draft_revision)
+    return version
+
+
+def _pop_v3_draft_revision(graph: dict[str, Any]) -> int | None:
+    """Keep the server-only V3 CAS counter out of the public authoring graph."""
+    raw_revision = graph.pop(_V3_DRAFT_REVISION_KEY, None)
+    if graph.get("schema_version") != 3:
+        return None
+    try:
+        revision = int(raw_revision)
+    except (TypeError, ValueError):
+        return 1
+    return revision if revision >= 1 else 1
+
+
+def _with_v3_draft_revision(graph: dict[str, Any], revision: int) -> dict[str, Any]:
+    stored = _json_object(graph, "authoring_graph")
+    stored[_V3_DRAFT_REVISION_KEY] = revision
+    return stored
 
 
 def _empty_graph(header: WorkflowHeader) -> dict[str, Any]:
@@ -912,17 +1128,37 @@ def _legacy_validation() -> dict[str, Any]:
 def _editable_graph_from_base(
     base: WorkflowVersion, header: WorkflowHeader
 ) -> dict[str, Any]:
-    if base.authoring_graph.get("schema_version") == 2:
+    schema_version = base.authoring_graph.get("schema_version")
+    if schema_version in {2, 3}:
         return json.loads(_dump(base.authoring_graph))
-    definition = base.authoring_graph.get("legacy_definition")
-    if not isinstance(definition, dict):
-        definition = base.compiled_definition
-    if not isinstance(definition, dict):
-        raise WorkflowVersionError("legacy workflow has no definition to convert")
-    return _legacy_definition_to_v2_graph(definition, header)
+    if schema_version == 1:
+        raise WorkflowVersionError(
+            "legacy V1 history is read-only; explicit copy-to-v3 is required"
+        )
+    raise WorkflowVersionError(
+        f"unsupported workflow schema_version: {schema_version!r}"
+    )
 
 
-def _legacy_definition_to_v2_graph(
+def _assert_draft_graph_contract(
+    existing: dict[str, Any], candidate: dict[str, Any]
+) -> None:
+    if existing.get("schema_version") != candidate.get("schema_version"):
+        raise WorkflowVersionError("schema_version_immutable")
+    if existing.get("schema_version") != 3:
+        return
+    from app.services.workflow_authoring_factory import (
+        CanvasAuthoringError,
+        assert_v3_technical_ids_preserved,
+    )
+
+    try:
+        assert_v3_technical_ids_preserved(existing, candidate)
+    except CanvasAuthoringError as exc:
+        raise WorkflowVersionError(str(exc)) from exc
+
+
+def legacy_definition_to_v2_graph(
     definition: dict[str, Any], header: WorkflowHeader
 ) -> dict[str, Any]:
     inputs = [dict(item) for item in definition.get("inputs") or [] if isinstance(item, dict)]

@@ -115,6 +115,41 @@ async def test_intranet_stream_requires_os_sandbox_before_starting_agent(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_probe_allows_absolute_runtime_argument_through_same_read_sandbox(monkeypatch, tmp_path):
+    from app.services import agent_cli_bridge
+
+    script = tmp_path / "offline-provider.py"
+    script.write_text("print('offline-provider 1.0')\n", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_prepare_agent_sandbox(*, runtime, cwd, artifact_dir):
+        captured["runtime"] = runtime
+        return type("Sandbox", (), {"wrapper": [], "status": "active"})()
+
+    class FakeProcess:
+        returncode = 0
+
+        async def communicate(self):
+            return b"offline-provider 1.0", b""
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        return FakeProcess()
+
+    monkeypatch.setattr(agent_cli_bridge, "prepare_agent_sandbox", fake_prepare_agent_sandbox)
+    monkeypatch.setattr(agent_cli_bridge.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+
+    result = await agent_cli_bridge.probe_agent_runtime({
+        "command": sys.executable,
+        "args": [str(script)],
+        "prompt_transport": "stdin",
+        "requires_network": False,
+    })
+
+    assert result["success"] is True
+    assert str(script.resolve()) in captured["runtime"]["sandbox_read_paths"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group semantics")
 async def test_terminate_process_kills_a_sigterm_ignoring_descendant(tmp_path):
     child_pid_file = tmp_path / "child.pid"

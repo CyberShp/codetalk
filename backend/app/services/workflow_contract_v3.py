@@ -551,7 +551,7 @@ def _compiled_node(node: dict[str, Any], node_id: str, depends_on: list[str], bi
         "resolved_input_bindings": bindings,
         "input_ports": _ports(node, "inputs"),
         "output_ports": _ports(node, "outputs"),
-        "provider_ref": config.get("provider_ref"),
+        "provider_ref": config.get("provider_ref") or config.get("provider"),
         "provider_capabilities_required": sorted(_strings(config.get("provider_capabilities_required"))),
         "mcp_profiles": sorted(_strings(config.get("mcp_profiles"))),
         "skill_ids": sorted(_strings(config.get("skill_ids"))),

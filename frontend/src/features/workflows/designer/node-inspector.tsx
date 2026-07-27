@@ -11,6 +11,7 @@ import type {
   WorkflowProviderCapability,
 } from "@/lib/types/workflow";
 import { nodeKindLabel, validateInputPortId } from "../workflow-graph";
+import { providerConfigValue, providerSelectionPatch } from "./provider-contract";
 
 const MINDMAP_ARTIFACTS = [
   "test_design_mindmap.json",
@@ -31,21 +32,56 @@ const outputTypeLabels: Record<string, string> = {
 
 interface Props {
   node: WorkflowGraphNode;
+  schemaVersion?: number;
   capabilities: WorkflowCapabilities | null;
   providers: WorkflowProviderCapability[];
   registry: WorkflowNodeRegistry;
   onChange: (node: WorkflowGraphNode, portMutation?: PortMutation) => void;
   onClose: () => void;
+  onCreatePort?: (nodeId: string, direction: "input" | "output") => Promise<WorkflowGraphNode>;
+  onUpdatePort?: (
+    nodeId: string,
+    portId: string,
+    patch: { label?: string; type?: string; required?: boolean; collection?: boolean },
+  ) => Promise<WorkflowGraphNode>;
+  onDeletePort?: (nodeId: string, portId: string) => Promise<WorkflowGraphNode>;
 }
 
 export type PortMutation =
   | { direction: "input" | "output"; kind: "rename"; oldId: string; newId: string }
   | { direction: "input" | "output"; kind: "delete"; oldId: string };
 
-export function NodeInspector({ node, capabilities, providers, registry, onChange, onClose }: Props) {
+export function NodeInspector({ node, schemaVersion = 2, capabilities, providers, registry, onChange, onClose, onCreatePort, onUpdatePort, onDeletePort }: Props) {
+  const [showDiagnostics, setShowDiagnostics] = useState(false);
+  const [portError, setPortError] = useState("");
+  const isV3 = schemaVersion === 3;
   const config = node.config;
-  const updateConfig = (patch: Record<string, unknown>) =>
+  const runPortCommand = async (command: () => Promise<WorkflowGraphNode>) => {
+    setPortError("");
+    try {
+      onChange(await command());
+      return true;
+    } catch (cause) {
+      setPortError(cause instanceof Error ? cause.message : "端口操作失败");
+      return false;
+    }
+  };
+  const updateConfig = (patch: Record<string, unknown>) => {
+    const nextType = typeof patch.type === "string" ? patch.type : null;
+    const contractPort = node.kind === "input"
+      ? node.ports?.outputs[0]
+      : node.kind === "output"
+        ? node.ports?.inputs[0]
+        : null;
+    if (isV3 && nextType && contractPort && contractPort.type !== nextType && onUpdatePort) {
+      void runPortCommand(async () => {
+        const updated = await onUpdatePort(node.id, contractPort.id, { type: nextType });
+        return { ...updated, config: { ...updated.config, ...patch } };
+      });
+      return;
+    }
     onChange({ ...node, config: { ...config, ...patch } });
+  };
   const updateLabel = (label: string) =>
     onChange({ ...node, label, config: { ...config, label } });
   const definition = registry.nodes.find((item) => item.kind === node.kind);
@@ -66,9 +102,14 @@ export function NodeInspector({ node, capabilities, providers, registry, onChang
           <Field label="节点名称">
             <input value={node.label} onChange={(event) => updateLabel(event.target.value)} />
           </Field>
-          <Field label="节点 ID">
+          {!isV3 && <Field label="节点 ID">
             <input value={node.id} readOnly aria-readonly="true" />
-          </Field>
+          </Field>}
+        </InspectorSection>
+
+        <InspectorSection title="高级">
+          <button type="button" className="ct-v2-add-port" onClick={() => setShowDiagnostics((current) => !current)}>高级诊断</button>
+          {showDiagnostics && <TechnicalIdentifiers node={node} />}
         </InspectorSection>
 
         {definition && (
@@ -87,14 +128,74 @@ export function NodeInspector({ node, capabilities, providers, registry, onChang
               capabilities={capabilities}
               providers={providers}
               onChange={updateConfig}
-              onPortMutation={(key, ports, mutation) => onChange({ ...node, config: { ...config, [key]: ports } }, mutation)}
+              isV3={isV3}
+              onCreatePort={onCreatePort ? async (direction) => onChange(await onCreatePort(node.id, direction)) : undefined}
+              onPortMutation={(key, ports, mutation) => {
+                if (isV3) {
+                  onChange({ ...node, ports: { inputs: directionPorts(node, "input", key, ports), outputs: directionPorts(node, "output", key, ports) } }, mutation);
+                  return;
+                }
+                onChange({ ...node, config: { ...config, [key]: ports } }, mutation);
+              }}
             />
+          </InspectorSection>
+        )}
+
+        {isV3 && node.kind === "agent" && (
+          <InspectorSection title="端口">
+            <p className="ct-v2-inspector-note">端口名称用于画布和运行表单，内部 ID 由系统维护。</p>
+            <PortListEditor
+              direction="input"
+              ports={node.ports?.inputs ?? []}
+              typeOptions={capabilities?.input_types ?? ["text", "file", "directory", "mr_link"]}
+              technicalIdentityLocked
+              onCreate={onCreatePort ? async (direction) => { await runPortCommand(() => onCreatePort(node.id, direction)); } : undefined}
+              onPatch={onUpdatePort ? (portId, patch) => runPortCommand(() => onUpdatePort(node.id, portId, patch)) : undefined}
+              onDelete={onDeletePort ? async (portId) => { await runPortCommand(() => onDeletePort(node.id, portId)); } : undefined}
+              onChange={(ports) => onChange({
+                ...node,
+                ports: { inputs: ports, outputs: node.ports?.outputs ?? [] },
+              })}
+            />
+            <PortListEditor
+              direction="output"
+              ports={node.ports?.outputs ?? []}
+              typeOptions={Array.from(new Set([...(capabilities?.output_types ?? ["markdown", "json"]), "structured_json", "artifact_ref"]))}
+              technicalIdentityLocked
+              onCreate={onCreatePort ? async (direction) => { await runPortCommand(() => onCreatePort(node.id, direction)); } : undefined}
+              onPatch={onUpdatePort ? (portId, patch) => runPortCommand(() => onUpdatePort(node.id, portId, patch)) : undefined}
+              onDelete={onDeletePort ? async (portId) => { await runPortCommand(() => onDeletePort(node.id, portId)); } : undefined}
+              onChange={(ports) => onChange({
+                ...node,
+                ports: { inputs: node.ports?.inputs ?? [], outputs: ports },
+              })}
+            />
+            {portError && <p className="ct-v2-port-id-error" role="alert">{portError}</p>}
           </InspectorSection>
         )}
       </div>
     </aside>
   );
 }
+
+function directionPorts(node: WorkflowGraphNode, direction: "input" | "output", key: string, ports: WorkflowPortDefinition[]) {
+  const current = node.ports ?? { inputs: [], outputs: [] };
+  const target = key === "output_ports" ? "output" : "input";
+  return direction === target ? ports : current[direction === "input" ? "inputs" : "outputs"];
+}
+
+function TechnicalIdentifiers({ node }: { node: WorkflowGraphNode }) {
+  const fields = [
+    ["节点 ID", node.id],
+    ...inputPortDefinitionsForDiagnostics(node).map((port) => ["输入端口 ID", port.id]),
+    ...outputPortDefinitionsForDiagnostics(node).map((port) => ["输出端口 ID", port.id]),
+    ...["contract_id", "output_id", "step_id"].flatMap((key) => node.config[key] ? [[key, String(node.config[key])]] : []),
+  ];
+  return <div className="ct-v2-technical-identifiers" data-testid="workflow-technical-identifiers">{fields.map(([label, value], index) => <div className="ct-v2-field" key={`${label}-${index}`}><span>{label}</span><code>{value}</code><input type="hidden" value={value} readOnly aria-readonly="true" /></div>)}</div>;
+}
+
+function inputPortDefinitionsForDiagnostics(node: WorkflowGraphNode) { return node.ports?.inputs ?? portList(node.config.input_ports); }
+function outputPortDefinitionsForDiagnostics(node: WorkflowGraphNode) { return node.ports?.outputs ?? portList(node.config.output_ports); }
 
 type RegistryField = {
   type?: string;
@@ -111,6 +212,8 @@ function RegistryConfigFields({
   providers,
   onChange,
   onPortMutation,
+  isV3,
+  onCreatePort,
 }: {
   definition: WorkflowNodeRegistryEntry;
   node: WorkflowGraphNode;
@@ -119,11 +222,13 @@ function RegistryConfigFields({
   providers: WorkflowProviderCapability[];
   onChange: (patch: Record<string, unknown>) => void;
   onPortMutation: (key: string, ports: WorkflowPortDefinition[], mutation: PortMutation) => void;
+  isV3: boolean;
+  onCreatePort?: (direction: "input" | "output") => Promise<void>;
 }) {
   const fieldOrder = definition.ui_schema?.inspector?.field_order ?? [];
   const fields = Object.entries(definition.config_schema)
     .map(([key, value]) => [key, value as RegistryField] as const)
-    .filter(([, field]) => Boolean(field.type))
+    .filter(([key, field]) => Boolean(field.type) && !(isV3 && /(^|_)(contract|output|step|port)_id$/.test(key)))
     .sort(([left], [right]) => {
       const leftIndex = fieldOrder.indexOf(left);
       const rightIndex = fieldOrder.indexOf(right);
@@ -163,13 +268,13 @@ function RegistryConfigFields({
           }}>{(capabilities?.output_types ?? ["markdown", "json", "test_cases", "test_design_mindmap"]).map((item) => <option key={item} value={item}>{outputTypeLabels[item] ?? item}</option>)}</select></Field>;
         }
         if (type === "provider") {
-          return <Field key={key} label={label}><select value={String(config[key] ?? "builtin-llm")} onChange={(event) => onChange({ provider: event.target.value, mcp_profiles: [] })}>{providers.map((provider) => <option key={provider.provider} value={provider.provider}>{provider.display_name} · {provider.provider}{provider.status === "unavailable" ? "（不可用）" : ""}</option>)}</select></Field>;
+          return <Field key={key} label={label}><select value={providerConfigValue(config)} onChange={(event) => onChange(providerSelectionPatch(event.target.value, isV3))}>{providers.map((provider) => <option key={provider.provider} value={provider.provider}>{provider.display_name} · {provider.provider}{provider.status === "unavailable" ? "（不可用）" : ""}</option>)}</select></Field>;
         }
         if (type === "skill_multiselect") {
           return <SearchMultiSelect key={key} selected={stringList(config[key])} options={(capabilities?.skill_catalog ?? []).map((item) => ({ id: item.id, label: item.label, detail: item.description }))} emptyText="没有匹配的 Skill" onChange={(value) => onChange({ [key]: value })} />;
         }
         if (type === "mcp_multiselect") {
-          const provider = providers.find((item) => item.provider === config.provider);
+          const provider = providers.find((item) => item.provider === providerConfigValue(config));
           const options = provider?.capabilities?.mcp_profiles ?? [];
           return <SearchMultiSelect key={key} selected={stringList(config[key])} options={options.map((id) => ({ id, label: id }))} emptyText={provider ? "该执行器没有已配置 MCP" : "先选择执行器"} onChange={(value) => onChange({ [key]: value })} />;
         }
@@ -181,7 +286,8 @@ function RegistryConfigFields({
           const typeOptions = direction === "output"
             ? Array.from(new Set([...(capabilities?.output_types ?? ["markdown", "json", "test_cases"]), "structured_json", "artifact_ref"]))
             : capabilities?.input_types ?? ["text", "file", "directory", "mr_link"];
-          return <PortListEditor key={key} direction={direction} ports={portList(config[key])} typeOptions={typeOptions} onChange={(ports, mutation) => {
+          const ports = isV3 ? (direction === "input" ? node.ports?.inputs ?? [] : node.ports?.outputs ?? []) : portList(config[key]);
+          return <PortListEditor key={key} direction={direction} ports={ports} typeOptions={typeOptions} technicalIdentityLocked={isV3} onCreate={onCreatePort} onChange={(ports, mutation) => {
             if (mutation) onPortMutation(key, ports, mutation);
             else onChange({ [key]: ports });
           }} />;
@@ -231,15 +337,27 @@ function PortListEditor({
   direction,
   ports,
   typeOptions,
+  technicalIdentityLocked = false,
+  onCreate,
+  onPatch,
+  onDelete,
   onChange,
 }: {
   direction: "input" | "output";
   ports: WorkflowPortDefinition[];
   typeOptions: string[];
+  technicalIdentityLocked?: boolean;
+  onCreate?: (direction: "input" | "output") => Promise<void>;
+  onPatch?: (
+    portId: string,
+    patch: { label?: string; type?: string; required?: boolean; collection?: boolean },
+  ) => Promise<boolean>;
+  onDelete?: (portId: string) => Promise<void>;
   onChange: (ports: WorkflowPortDefinition[], mutation?: PortMutation) => void;
 }) {
   const [draftIds, setDraftIds] = useState<Record<number, string>>({});
   const [idErrors, setIdErrors] = useState<Record<number, string>>({});
+  const [pendingPatches, setPendingPatches] = useState<Record<string, Partial<WorkflowPortDefinition>>>({});
   const update = (
     index: number,
     patch: Partial<WorkflowPortDefinition>,
@@ -265,45 +383,90 @@ function PortListEditor({
       return next;
     });
   };
+  const patchPort = async (portId: string, patch: Partial<WorkflowPortDefinition>) => {
+    if (!onPatch) return false;
+    setPendingPatches((current) => ({
+      ...current,
+      [portId]: { ...current[portId], ...patch },
+    }));
+    const accepted = await onPatch(portId, patch);
+    setPendingPatches((current) => {
+      const next = { ...current };
+      delete next[portId];
+      return next;
+    });
+    return accepted;
+  };
   return (
     <div className="ct-v2-port-editor">
-      {ports.map((port, index) => (
+      {ports.map((port, index) => {
+        const visiblePort = { ...port, ...pendingPatches[port.id] };
+        return (
         <div className="ct-v2-port-editor-row" key={index}>
           <label>
             <span>端口名称</span>
             <input
-              value={draftIds[index] ?? port.id}
+              value={technicalIdentityLocked ? (draftIds[index] ?? port.label ?? port.id) : (draftIds[index] ?? port.id)}
               aria-label={`${direction === "input" ? "输入" : "输出"}端口 ${index + 1} 名称`}
               onChange={(event) => {
                 const value = event.target.value;
+                if (technicalIdentityLocked) {
+                  setDraftIds((items) => ({ ...items, [index]: value }));
+                  return;
+                }
                 setDraftIds((items) => ({ ...items, [index]: value }));
                 setIdErrors((items) => ({
                   ...items,
                   [index]: validateInputPortId(value, ports, index, direction === "input" ? "输入" : "输出"),
                 }));
               }}
-              onBlur={() => commitId(index)}
+              onBlur={() => {
+                if (!technicalIdentityLocked) {
+                  commitId(index);
+                  return;
+                }
+                const label = (draftIds[index] ?? port.label ?? "").trim();
+                if (label && onPatch) {
+                  void patchPort(port.id, { label }).then(() => setDraftIds((items) => {
+                    const next = { ...items };
+                    delete next[index];
+                    return next;
+                  }));
+                }
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter") event.currentTarget.blur();
               }}
-              aria-invalid={Boolean(idErrors[index])}
+              aria-invalid={technicalIdentityLocked ? undefined : Boolean(idErrors[index])}
             />
-            {idErrors[index] && <small className="ct-v2-port-id-error" role="alert">{idErrors[index]}</small>}
+            {!technicalIdentityLocked && idErrors[index] && <small className="ct-v2-port-id-error" role="alert">{idErrors[index]}</small>}
           </label>
           <label>
             <span>类型</span>
             <select
-              value={port.type || "text"}
+              value={visiblePort.type || "text"}
               aria-label={`${direction === "input" ? "输入" : "输出"}端口 ${index + 1} 类型`}
-              onChange={(event) => update(index, { type: event.target.value })}
+              onChange={(event) => {
+                if (technicalIdentityLocked && onPatch) {
+                  void patchPort(port.id, { type: event.target.value });
+                  return;
+                }
+                update(index, { type: event.target.value });
+              }}
             >
-              {Array.from(new Set([...typeOptions, port.type || "text"])).map((type) => (
+              {Array.from(new Set([...typeOptions, visiblePort.type || "text"])).map((type) => (
                 <option key={type} value={type}>{type}</option>
               ))}
             </select>
           </label>
           {direction === "input" && <label className="ct-v2-port-required">
-            <input type="checkbox" checked={Boolean(port.required)} onChange={(event) => update(index, { required: event.target.checked })} />
+            <input aria-label={`输入端口 ${index + 1} 是否必填`} type="checkbox" checked={Boolean(visiblePort.required)} onChange={(event) => {
+              if (technicalIdentityLocked && onPatch) {
+                void patchPort(port.id, { required: event.target.checked });
+                return;
+              }
+              update(index, { required: event.target.checked });
+            }} />
             <span>必填</span>
           </label>}
           <button
@@ -312,6 +475,10 @@ function PortListEditor({
             aria-label={`删除${direction === "input" ? "输入" : "输出"}端口 ${port.id}`}
             title={`删除${direction === "input" ? "输入" : "输出"}端口`}
             onClick={() => {
+              if (technicalIdentityLocked) {
+                if (onDelete) void onDelete(port.id);
+                return;
+              }
               setDraftIds({});
               setIdErrors({});
               onChange(ports.filter((_, itemIndex) => itemIndex !== index), { direction, kind: "delete", oldId: port.id });
@@ -320,11 +487,14 @@ function PortListEditor({
             <Trash2 size={14} />
           </button>
         </div>
-      ))}
+      );})}
       <button
         type="button"
         className="ct-v2-add-port"
-        onClick={() => onChange([...ports, { id: uniqueId(), type: "file", required: false }])}
+        onClick={() => {
+          if (onCreate) { void onCreate(direction); return; }
+          onChange([...ports, { id: uniqueId(), type: "file", required: false }]);
+        }}
       >
         <Plus size={14} />
         增加{direction === "input" ? "输入" : "输出"}端口

@@ -1,13 +1,13 @@
 import type {
-  AuthoringGraphV2,
+  AuthoringGraph,
   WorkflowGraphEdge,
   WorkflowGraphNode,
 } from "@/lib/types/workflow";
 
 export interface WorkflowEditorState {
-  past: AuthoringGraphV2[];
-  present: AuthoringGraphV2;
-  future: AuthoringGraphV2[];
+  past: AuthoringGraph[];
+  present: AuthoringGraph;
+  future: AuthoringGraph[];
   selectedNodeId: string | null;
   selectedNodeIds: string[];
   selectedEdgeId: string | null;
@@ -16,7 +16,7 @@ export interface WorkflowEditorState {
 }
 
 export type WorkflowEditorAction =
-  | { type: "replace"; graph: AuthoringGraphV2; markSaved?: boolean }
+  | { type: "replace"; graph: AuthoringGraph; markSaved?: boolean }
   | { type: "update-node"; node: WorkflowGraphNode }
   | { type: "update-node-with-edges"; node: WorkflowGraphNode; edges: WorkflowGraphEdge[] }
   | { type: "move-node"; nodeId: string; x: number; y: number }
@@ -32,7 +32,7 @@ export type WorkflowEditorAction =
   | { type: "redo" }
   | { type: "mark-saved"; revision: number };
 
-export function createEditorState(graph: AuthoringGraphV2): WorkflowEditorState {
+export function createEditorState(graph: AuthoringGraph): WorkflowEditorState {
   return {
     past: [],
     present: graph,
@@ -108,7 +108,7 @@ export function workflowEditorReducer(
     };
   }
 
-  let next = state.present;
+  let next: AuthoringGraph = state.present;
   if (action.type === "update-node") {
     next = {
       ...next,

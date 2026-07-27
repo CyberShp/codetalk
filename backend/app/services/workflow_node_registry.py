@@ -266,11 +266,29 @@ _NODE_REGISTRY: tuple[dict[str, Any], ...] = (
 SUPPORTED_NODE_KINDS = frozenset(item["kind"] for item in _NODE_REGISTRY)
 
 
-def node_registry_payload() -> dict[str, Any]:
-    """Return a JSON-safe copy so callers cannot mutate the registry."""
+_PHASE3_EXECUTABLE_KINDS = frozenset({"input", "output", "agent"})
+_TECHNICAL_CONFIG_FIELDS = frozenset({"contract_id", "input_id", "output_id", "step_id", "input_ports", "output_ports"})
+
+
+def node_registry_payload(*, schema_version: int = 3) -> dict[str, Any]:
+    """Return the authoring palette for one graph generation.
+
+    V2 remains readable through an explicit legacy request.  The default is the
+    Canvas First V3 palette and deliberately exposes only nodes whose handlers
+    exist in this release.
+    """
+    if schema_version == 2:
+        return {
+            "schema_version": NODE_REGISTRY_SCHEMA_VERSION,
+            "nodes": deepcopy(list(_NODE_REGISTRY)),
+        }
+    if schema_version != 3:
+        raise ValueError(f"Unsupported node registry schema_version: {schema_version}")
+    nodes = [_phase3_node(item) for item in _NODE_REGISTRY if item["kind"] in _PHASE3_EXECUTABLE_KINDS]
     return {
         "schema_version": NODE_REGISTRY_SCHEMA_VERSION,
-        "nodes": deepcopy(list(_NODE_REGISTRY)),
+        "authoring_schema_version": 3,
+        "nodes": nodes,
     }
 
 
@@ -279,3 +297,47 @@ def node_definition(kind: str) -> dict[str, Any] | None:
         if item["kind"] == kind:
             return deepcopy(item)
     return None
+
+
+def executable_node_definition(kind: str) -> dict[str, Any] | None:
+    """Return a Phase 3 palette definition only when the node can execute."""
+    if kind not in _PHASE3_EXECUTABLE_KINDS:
+        return None
+    definition = node_definition(kind)
+    return _phase3_node(definition) if definition else None
+
+
+def _phase3_node(source: dict[str, Any]) -> dict[str, Any]:
+    node = deepcopy(source)
+    config_schema = node.get("config_schema") if isinstance(node.get("config_schema"), dict) else {}
+    node["config_schema"] = {
+        key: value for key, value in config_schema.items() if key not in _TECHNICAL_CONFIG_FIELDS
+    }
+    if node["kind"] == "input":
+        if "type" in node["config_schema"]:
+            node["config_schema"]["type"]["label"] = "输入类型"
+        if "required" in node["config_schema"]:
+            node["config_schema"]["required"]["label"] = "是否必填"
+    elif node["kind"] == "output":
+        if "type" in node["config_schema"]:
+            node["config_schema"]["type"]["label"] = "输出类型"
+        if "required" in node["config_schema"]:
+            node["config_schema"]["required"]["label"] = "必须交付"
+    inspector = node.get("ui_schema", {}).get("inspector", {})
+    node.setdefault("ui_schema", {}).setdefault("inspector", {})["field_order"] = [
+        key for key in inspector.get("field_order", list(node["config_schema"]))
+        if key in node["config_schema"]
+    ]
+    if node["kind"] in {"input", "output"}:
+        node["execution"] = {
+            "available": True,
+            "handler_id": None,
+            "handler_version": None,
+        }
+    else:
+        node["execution"] = {
+            "available": True,
+            "handler_id": "agent",
+            "handler_version": 1,
+        }
+    return node

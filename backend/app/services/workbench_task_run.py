@@ -37,7 +37,10 @@ from app.services.network_policy import IntranetNetworkPolicy
 from app.services.test_semantic_library import TestSemanticLibraryStore
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_skills import resolve_workbench_skill_instructions
-from app.services.workbench_input_ingest import ingest_workbench_inputs
+from app.services.workbench_input_ingest import (
+    ingest_workbench_inputs,
+    validate_workbench_inputs,
+)
 from app.services.workflow_dsl import WorkflowStore
 from app.services.workbench_task_compile import (
     TaskConfigurationError,
@@ -158,6 +161,24 @@ class WorkbenchTaskRunPreparer:
         self.evidence_memory = evidence_memory
         self.semantic_library = semantic_library
 
+    @staticmethod
+    def preflight_inputs(
+        *, workflow_snapshot: dict[str, Any], inputs: dict[str, Any]
+    ) -> None:
+        """Reject deterministic input failures without creating run state."""
+        try:
+            compiled_contract_version(workflow_snapshot)
+        except TaskConfigurationError as exc:
+            raise ValueError(str(exc)) from exc
+        validate_workbench_inputs(
+            input_definitions=[
+                item
+                for item in workflow_snapshot.get("inputs") or []
+                if isinstance(item, dict)
+            ],
+            inputs=dict(inputs or {}),
+        )
+
     def prepare(
         self,
         *,
@@ -203,6 +224,10 @@ class WorkbenchTaskRunPreparer:
             )
         task_run_id = _new_id("task_run")
         artifact_dir = self.artifact_root / task_run_id
+        self.preflight_inputs(
+            workflow_snapshot=workflow_snapshot,
+            inputs=inputs,
+        )
         artifact_dir.mkdir(parents=True, exist_ok=True)
 
         required_artifacts_by_step = {

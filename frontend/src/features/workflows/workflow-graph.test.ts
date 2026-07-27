@@ -52,6 +52,22 @@ test("a scalar input rejects a second edge before it is created", () => {
   );
 });
 
+test("an occupied scalar input reports its binding before a source type mismatch", () => {
+  const graph = createStarterGraph("occupied-before-type", "Occupied before type");
+  graph.nodes.push({
+    id: "design_doc",
+    kind: "input",
+    label: "开发设计文档",
+    position: { x: 80, y: 360 },
+    config: { contract_id: "design_doc", type: "file", resolver: "local" },
+  });
+
+  assert.deepEqual(
+    validateConnection(graph, "design_doc", "value", "analyze", "repo_path"),
+    { ok: false, code: "target_input_occupied", message: "该输入已绑定" },
+  );
+});
+
 test("file cannot connect to a directory input", () => {
   const graph = createStarterGraph("type-mismatch", "Type mismatch");
   graph.edges = graph.edges.filter((item) => item.target.port_id !== "repo_path");

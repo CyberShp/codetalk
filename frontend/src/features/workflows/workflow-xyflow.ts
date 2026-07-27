@@ -1,7 +1,7 @@
 import type { Connection, Edge, Node } from "@xyflow/react";
 
 import type {
-  AuthoringGraphV2,
+  AuthoringGraph,
   WorkflowGraphEdge,
   WorkflowGraphNode,
 } from "@/lib/types/workflow";
@@ -21,7 +21,7 @@ export type WorkflowFlowNode = Node<WorkflowFlowNodeData, "workflowNode">;
 export type WorkflowFlowEdge = Edge<WorkflowFlowEdgeData, "workflowEdge">;
 
 export function authoringGraphToFlow(
-  graph: AuthoringGraphV2,
+  graph: AuthoringGraph,
   selection: { nodeIds?: string[]; edgeId?: string | null } = {},
 ): {
   nodes: WorkflowFlowNode[];
@@ -55,9 +55,9 @@ export function authoringGraphToFlow(
 }
 
 export function applyFlowPositions(
-  graph: AuthoringGraphV2,
+  graph: AuthoringGraph,
   nodes: ReadonlyArray<Pick<WorkflowFlowNode, "id" | "position">>,
-): AuthoringGraphV2 {
+): AuthoringGraph {
   const positions = new Map(nodes.map((node) => [node.id, node.position]));
   return {
     ...graph,

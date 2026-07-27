@@ -9902,10 +9902,9 @@ def _resolve_single_plan_node_input(
     source_input_id = str(raw_binding.get("source_input_id") or source_id)
     source_port = str(raw_binding.get("source_port_id") or "")
     if source_input_id in input_snapshot:
-        if source_port != "value":
-            raise ValueError(
-                f"task input binding uses an invalid port: {source_id}.{source_port}"
-            )
+        # V3 uses server-generated stable port IDs. Compilation already proves
+        # that this port belongs to the declared input node; execution resolves
+        # through the immutable source_input_id snapshot.
         return input_snapshot[source_input_id]
     source_outputs = direct_dependency_outputs.get(source_id)
     if not isinstance(source_outputs, dict) or source_port not in source_outputs:

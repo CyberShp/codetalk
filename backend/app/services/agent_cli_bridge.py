@@ -124,6 +124,7 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
                     read_paths=[
                         *list(runtime.get("sandbox_read_paths") or []),
                         *_command_runtime_read_paths(command),
+                        *_configured_runtime_read_paths(probe_args),
                     ],
                 ),
                 cwd=str(probe_temp_dir),

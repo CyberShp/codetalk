@@ -1,5 +1,6 @@
 import json
 import sqlite3
+from copy import deepcopy
 from dataclasses import asdict
 from pathlib import Path
 
@@ -465,7 +466,31 @@ def test_builtin_snapshot_reactivates_header_and_archives_stale_draft(tmp_path):
     store = WorkflowVersionStore(db_path)
     store.initialize_and_migrate()
     original_version_id = store.get_workflow("module_analysis").published_version_id
-    draft = store.create_draft("module_analysis")
+    stale_version_id = "historical_v2_stale_draft"
+    stale_graph = {**_graph(), "workflow_id": "module_analysis"}
+    with sqlite3.connect(db_path) as db:
+        db.execute(
+            """
+            INSERT INTO workflow_versions(
+                version_id, workflow_id, version_number, state,
+                authoring_graph_json, compiled_definition_json,
+                compiled_plan_json, validation_json, based_on_version_id,
+                created_at, updated_at, published_at
+            ) VALUES (?, 'module_analysis', 2, 'draft', ?, NULL, NULL, NULL, ?, ?, ?, NULL)
+            """,
+            (
+                stale_version_id,
+                json.dumps(stale_graph),
+                original_version_id,
+                "2026-01-01T00:00:00+00:00",
+                "2026-01-01T00:00:00+00:00",
+            ),
+        )
+        db.execute(
+            "UPDATE workflow_headers SET current_draft_version_id = ? WHERE workflow_id = 'module_analysis'",
+            (stale_version_id,),
+        )
+        db.commit()
     store.archive_workflow("module_analysis")
 
     changed = store.ensure_legacy_published_workflows([definition])
@@ -476,7 +501,7 @@ def test_builtin_snapshot_reactivates_header_and_archives_stale_draft(tmp_path):
     assert header.archived_at is None
     assert header.current_draft_version_id is None
     assert header.published_version_id == original_version_id
-    assert store.get_version(draft.version_id).state == "archived"
+    assert store.get_version(stale_version_id).state == "archived"
     assert store.ensure_legacy_published_workflows([definition]) == 0
 
 
@@ -511,10 +536,12 @@ def test_builtin_snapshot_ensure_is_concurrent_and_idempotent(tmp_path):
     assert published.compiled_plan["compatibility_mode"] == "legacy_sequential"
 
 
-def test_migrated_legacy_version_creates_an_editable_v2_draft(tmp_path):
+def test_migrated_legacy_v1_version_requires_explicit_copy_to_v3(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
-    from app.services.workflow_graph import compile_workflow_graph
-    from app.services.workflow_version_store import WorkflowVersionStore
+    from app.services.workflow_version_store import (
+        WorkflowVersionError,
+        WorkflowVersionStore,
+    )
 
     db_path = tmp_path / "workflows.db"
     WorkflowStore(db_path).save_workflow(_legacy_definition())
@@ -522,28 +549,17 @@ def test_migrated_legacy_version_creates_an_editable_v2_draft(tmp_path):
     store.initialize_and_migrate()
 
     published = store.get_version(store.get_workflow("legacy_module").published_version_id)
-    draft = store.create_draft("legacy_module", based_on_version_id=published.version_id)
 
     assert published.authoring_graph["schema_version"] == 1
-    assert draft.authoring_graph["schema_version"] == 2
-    assert draft.authoring_graph.get("read_only") is not True
-    assert draft.authoring_graph["workflow_id"] == "legacy_module"
-    compiled = compile_workflow_graph(
-        draft.authoring_graph,
-        capabilities={
-            "providers": {"builtin-llm": {"available": True, "mcp_profiles": []}},
-            "skills": [],
-        },
-        workflow_version_id=draft.version_id,
-        workflow_version_number=draft.version_number,
-    )
-    assert compiled["validation_result"]["valid"] is True
-    assert compiled["compiled_definition"]["steps"][0]["type"] == "agent_task"
+    with pytest.raises(WorkflowVersionError, match="explicit copy-to-v3"):
+        store.create_draft("legacy_module", based_on_version_id=published.version_id)
+
+    assert store.get_workflow("legacy_module").current_draft_version_id is None
 
 
-def test_copying_a_read_only_legacy_workflow_creates_an_editable_custom_v2_draft(tmp_path):
+def test_copying_a_read_only_v1_workflow_requires_explicit_v3_migration(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
-    from app.services.workflow_version_store import WorkflowVersionStore
+    from app.services.workflow_version_store import WorkflowVersionError, WorkflowVersionStore
 
     db_path = tmp_path / "workflows.db"
     source = _legacy_definition()
@@ -553,20 +569,16 @@ def test_copying_a_read_only_legacy_workflow_creates_an_editable_custom_v2_draft
     store = WorkflowVersionStore(db_path)
     store.initialize_and_migrate()
 
-    header, draft = store.copy_workflow_as_custom_draft(
-        "builtin_source_flow",
-        workflow_id="builtin_source_flow_custom",
-        name="Built-in source flow copy",
-    )
+    with pytest.raises(WorkflowVersionError, match="explicit copy-to-v3"):
+        store.copy_workflow_as_custom_draft(
+            "builtin_source_flow",
+            workflow_id="builtin_source_flow_custom",
+            name="Built-in source flow copy",
+        )
 
-    assert header.workflow_id == "builtin_source_flow_custom"
-    assert header.current_draft_version_id == draft.version_id
-    assert draft.state == "draft"
-    assert draft.authoring_graph["schema_version"] == 2
-    assert draft.authoring_graph["workflow_id"] == "builtin_source_flow_custom"
-    assert draft.authoring_graph["name"] == "Built-in source flow copy"
-    assert draft.authoring_graph["migration"]["source"] == "workflow_copy"
     assert store.get_workflow("builtin_source_flow").current_draft_version_id is None
+    with pytest.raises(KeyError):
+        store.get_workflow("builtin_source_flow_custom")
 
 
 def test_workflow_draft_publish_and_immutable_version_lifecycle(tmp_path):
@@ -619,6 +631,288 @@ def test_workflow_draft_publish_and_immutable_version_lifecycle(tmp_path):
     )
     assert republished.version_number == 2
     assert [item.version_number for item in store.list_versions("new_flow")] == [2, 1]
+
+
+def test_v3_publish_rejects_stale_snapshot_without_overwriting_newer_graph(tmp_path):
+    from app.services.workflow_authoring_factory import build_canvas_graph
+    from app.services.workflow_version_store import (
+        StaleWorkflowDraftError,
+        WorkflowVersionStore,
+    )
+
+    store = WorkflowVersionStore(tmp_path / "workflows.db")
+    graph = build_canvas_graph(
+        workflow_id="v3_publish_race",
+        name="Initial snapshot",
+        description="",
+        template="free_source_analysis",
+    )
+    _, draft = store.create_canvas_workflow(
+        workflow_id="v3_publish_race",
+        name="Initial snapshot",
+        description="",
+        authoring_graph=graph,
+    )
+    stale_graph = deepcopy(draft.authoring_graph)
+    newer_graph = deepcopy(draft.authoring_graph)
+    newer_graph["name"] = "Newer draft wins"
+    updated = store.update_draft(
+        draft.version_id,
+        authoring_graph=newer_graph,
+        expected_revision=draft.draft_revision,
+    )
+
+    with pytest.raises(StaleWorkflowDraftError):
+        store.publish_version(
+            draft.version_id,
+            expected_revision=draft.draft_revision,
+            authoring_graph=stale_graph,
+            compiled_definition={
+                "id": "v3_publish_race",
+                "name": "Initial snapshot",
+                "version": 1,
+                "inputs": [],
+                "steps": [],
+                "outputs": [],
+            },
+            compiled_plan={"schema_version": 1, "nodes": []},
+            validation={"valid": True, "errors": [], "warnings": []},
+        )
+
+    current = store.get_version(draft.version_id)
+    assert current.state == "draft"
+    assert current.authoring_graph["name"] == "Newer draft wins"
+    assert current.draft_revision == updated.draft_revision
+
+
+def test_v3_generic_update_rejects_schema_downgrade_and_preserves_draft(tmp_path):
+    from app.services.workflow_authoring_factory import build_canvas_graph
+    from app.services.workflow_version_store import WorkflowVersionError, WorkflowVersionStore
+
+    store = WorkflowVersionStore(tmp_path / "workflows.db")
+    graph = build_canvas_graph(
+        workflow_id="v3_update_immutable",
+        name="V3 immutable",
+        description="",
+        template="free_source_analysis",
+    )
+    _, draft = store.create_canvas_workflow(
+        workflow_id="v3_update_immutable",
+        name="V3 immutable",
+        description="",
+        authoring_graph=graph,
+    )
+    downgraded = deepcopy(draft.authoring_graph)
+    downgraded["schema_version"] = 2
+
+    with pytest.raises(WorkflowVersionError, match="schema_version_immutable"):
+        store.update_draft(
+            draft.version_id,
+            authoring_graph=downgraded,
+            expected_revision=draft.draft_revision,
+        )
+
+    current = store.get_version(draft.version_id)
+    assert current.authoring_graph["schema_version"] == 3
+    assert current.draft_revision == draft.draft_revision
+
+
+def test_v3_publish_rejects_schema_downgrade_and_keeps_draft(tmp_path):
+    from app.services.workflow_authoring_factory import build_canvas_graph
+    from app.services.workflow_version_store import WorkflowVersionError, WorkflowVersionStore
+
+    store = WorkflowVersionStore(tmp_path / "workflows.db")
+    graph = build_canvas_graph(
+        workflow_id="v3_publish_immutable",
+        name="V3 immutable",
+        description="",
+        template="free_source_analysis",
+    )
+    _, draft = store.create_canvas_workflow(
+        workflow_id="v3_publish_immutable",
+        name="V3 immutable",
+        description="",
+        authoring_graph=graph,
+    )
+    downgraded = deepcopy(draft.authoring_graph)
+    downgraded["schema_version"] = 2
+
+    with pytest.raises(WorkflowVersionError, match="schema_version_immutable"):
+        store.publish_version(
+            draft.version_id,
+            expected_revision=draft.draft_revision,
+            authoring_graph=downgraded,
+            compiled_definition={
+                "id": "v3_publish_immutable",
+                "name": "V3 immutable",
+                "version": 1,
+                "inputs": [],
+                "steps": [],
+                "outputs": [],
+            },
+            compiled_plan={"schema_version": 1, "nodes": []},
+            validation={"valid": True, "errors": [], "warnings": []},
+        )
+
+    current = store.get_version(draft.version_id)
+    assert current.state == "draft"
+    assert current.authoring_graph["schema_version"] == 3
+
+
+def test_v2_draft_rejects_client_authored_v3_schema_and_server_ids(tmp_path):
+    from app.services.workflow_authoring_factory import build_canvas_graph
+    from app.services.workflow_version_store import WorkflowVersionError, WorkflowVersionStore
+
+    store = WorkflowVersionStore(tmp_path / "workflows.db")
+    _, draft = store.create_workflow(
+        workflow_id="v2_no_smuggled_v3",
+        name="V2 legacy editor",
+        description="",
+        authoring_graph={**_graph(), "workflow_id": "v2_no_smuggled_v3"},
+    )
+    smuggled_v3 = build_canvas_graph(
+        workflow_id="v2_no_smuggled_v3",
+        name="Smuggled V3",
+        description="",
+        template="free_source_analysis",
+    )
+
+    with pytest.raises(WorkflowVersionError, match="schema_version_immutable"):
+        store.update_draft(draft.version_id, authoring_graph=smuggled_v3)
+    with pytest.raises(WorkflowVersionError, match="schema_version_immutable"):
+        store.publish_version(
+            draft.version_id,
+            authoring_graph=smuggled_v3,
+            compiled_definition={
+                "id": "v2_no_smuggled_v3",
+                "name": "Smuggled V3",
+                "version": 1,
+                "inputs": [],
+                "steps": [],
+                "outputs": [],
+            },
+            compiled_plan={"schema_version": 1, "nodes": []},
+            validation={"valid": True, "errors": [], "warnings": []},
+        )
+
+    current = store.get_version(draft.version_id)
+    assert current.state == "draft"
+    assert current.authoring_graph["schema_version"] == 2
+    assert current.authoring_graph["nodes"][0]["id"] == "agent"
+
+
+def test_v3_publish_rejects_client_authored_server_identity(tmp_path):
+    from app.services.workflow_authoring_factory import build_canvas_graph, build_v3_node
+    from app.services.workflow_version_store import WorkflowVersionError, WorkflowVersionStore
+
+    store = WorkflowVersionStore(tmp_path / "workflows.db")
+    graph = build_canvas_graph(
+        workflow_id="v3_publish_ids",
+        name="V3 server IDs",
+        description="",
+        template="blank",
+    )
+    _, draft = store.create_canvas_workflow(
+        workflow_id="v3_publish_ids",
+        name="V3 server IDs",
+        description="",
+        authoring_graph=graph,
+    )
+    client_graph = deepcopy(draft.authoring_graph)
+    client_graph["nodes"].append(build_v3_node("agent", label="Client node"))
+
+    with pytest.raises(WorkflowVersionError, match="v3_new_nodes_require_command"):
+        store.publish_version(
+            draft.version_id,
+            expected_revision=draft.draft_revision,
+            authoring_graph=client_graph,
+            compiled_definition={
+                "id": "v3_publish_ids",
+                "name": "V3 server IDs",
+                "version": 1,
+                "inputs": [],
+                "steps": [],
+                "outputs": [],
+            },
+            compiled_plan={"schema_version": 1, "nodes": []},
+            validation={"valid": True, "errors": [], "warnings": []},
+        )
+
+    current = store.get_version(draft.version_id)
+    assert current.state == "draft"
+    assert current.authoring_graph["nodes"] == []
+
+
+def test_published_v3_creates_a_v3_draft_without_schema_downgrade(tmp_path):
+    from app.services.workflow_authoring_factory import build_canvas_graph
+    from app.services.workflow_version_store import WorkflowVersionStore
+
+    store = WorkflowVersionStore(tmp_path / "workflows.db")
+    graph = build_canvas_graph(
+        workflow_id="v3_next_draft",
+        name="V3 next draft",
+        description="",
+        template="free_source_analysis",
+    )
+    _, draft = store.create_canvas_workflow(
+        workflow_id="v3_next_draft",
+        name="V3 next draft",
+        description="",
+        authoring_graph=graph,
+    )
+    published = store.publish_version(
+        draft.version_id,
+        expected_revision=draft.draft_revision,
+        authoring_graph=draft.authoring_graph,
+        compiled_definition={
+            "id": "v3_next_draft",
+            "name": "V3 next draft",
+            "version": 1,
+            "inputs": [],
+            "steps": [],
+            "outputs": [],
+        },
+        compiled_plan={"schema_version": 1, "nodes": []},
+        validation={"valid": True, "errors": [], "warnings": []},
+    )
+
+    next_draft = store.create_draft(
+        "v3_next_draft", based_on_version_id=published.version_id
+    )
+
+    assert next_draft.authoring_graph["schema_version"] == 3
+    assert next_draft.draft_revision == 1
+    assert next_draft.authoring_graph["nodes"] == published.authoring_graph["nodes"]
+
+
+def test_generic_create_rejects_v3_but_canvas_command_accepts_server_graph(tmp_path):
+    from app.services.workflow_authoring_factory import build_canvas_graph
+    from app.services.workflow_version_store import WorkflowVersionError, WorkflowVersionStore
+
+    store = WorkflowVersionStore(tmp_path / "workflows.db")
+    graph = build_canvas_graph(
+        workflow_id="v3_creation_boundary",
+        name="V3 creation boundary",
+        description="",
+        template="blank",
+    )
+
+    with pytest.raises(WorkflowVersionError, match="create_canvas_workflow"):
+        store.create_workflow(
+            workflow_id="v3_creation_boundary",
+            name="V3 creation boundary",
+            description="",
+            authoring_graph=graph,
+        )
+
+    header, draft = store.create_canvas_workflow(
+        workflow_id="v3_creation_boundary",
+        name="V3 creation boundary",
+        description="",
+        authoring_graph=graph,
+    )
+    assert header.current_draft_version_id == draft.version_id
+    assert draft.authoring_graph["schema_version"] == 3
 
 
 def test_workflow_header_update_archive_and_compatibility_definition(tmp_path):

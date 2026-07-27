@@ -356,7 +356,7 @@ def test_node_registry_is_the_authoritative_graph_kind_and_ui_schema_source():
     from app.services.workflow_graph import SUPPORTED_NODE_KINDS
     from app.services.workflow_node_registry import node_registry_payload
 
-    registry = node_registry_payload()
+    registry = node_registry_payload(schema_version=2)
 
     assert registry["schema_version"] == 1
     assert {item["kind"] for item in registry["nodes"]} == SUPPORTED_NODE_KINDS
@@ -372,7 +372,7 @@ def test_node_registry_is_the_authoritative_graph_kind_and_ui_schema_source():
 def test_registry_describes_editable_builtin_step_fields_without_frontend_kind_branches():
     from app.services.workflow_node_registry import node_registry_payload
 
-    registry = node_registry_payload()
+    registry = node_registry_payload(schema_version=2)
     semantic = next(item for item in registry["nodes"] if item["kind"] == "semantic_retrieve")
 
     assert semantic["config_schema"]["step_id"]["type"] == "string"

@@ -3377,6 +3377,7 @@ def test_prepare_workbench_task_run_validates_required_inputs(tmp_path):
         assert "required input target_scope is missing" in str(exc)
     else:
         raise AssertionError("missing required input should fail task preparation")
+    assert not (tmp_path / "task_runs").exists()
 
 
 def test_prepare_workbench_task_run_rejects_provider_override_without_agent_step(

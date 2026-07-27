@@ -11,7 +11,7 @@ test("creates a workflow through the UI and uses the xyflow canvas with real mou
   test.setTimeout(90_000);
   const stamp = Date.now();
 
-  await page.goto("/workflows/new", { waitUntil: "domcontentloaded" });
+  await page.goto("/workflows/legacy/new", { waitUntil: "domcontentloaded" });
   await expect(page.getByTestId("workflow-wizard-ready")).toHaveAttribute("data-hydrated", "true");
   await page.getByPlaceholder("例如：源码流程与 SFMEA 分析").fill(`画布交互回归 ${stamp}`);
   await page.getByRole("button", { name: "保存并继续" }).click();
@@ -188,7 +188,7 @@ test("box-selects multiple canvas nodes and batch deletes them through the visib
   test.setTimeout(90_000);
   const stamp = Date.now();
 
-  await page.goto("/workflows/new", { waitUntil: "domcontentloaded" });
+  await page.goto("/workflows/legacy/new", { waitUntil: "domcontentloaded" });
   await expect(page.getByTestId("workflow-wizard-ready")).toHaveAttribute("data-hydrated", "true");
   await page.getByPlaceholder("例如：源码流程与 SFMEA 分析").fill(`多选交互回归 ${stamp}`);
   await page.getByRole("button", { name: "保存并继续" }).click();
@@ -260,7 +260,7 @@ test("box-selects multiple canvas nodes and batch deletes them through the visib
   await expect.poll(() => canvas.locator(".react-flow__node-workflowNode").count()).toBe(6);
 });
 
-test("opens a legacy preset as an editable V2 draft through the browser", async ({ page }) => {
+test("copies a read-only legacy preset directly to an editable V3 canvas", async ({ page }) => {
   test.setTimeout(90_000);
 
   await page.goto("/workflows/source_flow_sfmea_blackbox", { waitUntil: "domcontentloaded" });
@@ -269,11 +269,16 @@ test("opens a legacy preset as an editable V2 draft through the browser", async 
   await page.getByRole("button", { name: "另存为自定义工作流" }).click();
 
   const canvas = page.getByRole("region", { name: "工作流画布" });
-  await expect(canvas).toBeVisible();
+  await expect(page).toHaveURL(/\/workflows\/wf_[^/]+\/designer$/);
+  await expect(canvas).toBeVisible({ timeout: 20_000 });
   await expect(canvas.locator(".react-flow__node-workflowNode")).not.toHaveCount(0);
-  await canvas.locator("[data-testid='workflow-node-step_analyze_source_flow']").click();
+  await canvas.locator(".react-flow__node-workflowNode").filter({ hasText: "源码驱动测试分析" }).click();
   await expect(page.getByRole("complementary", { name: "节点属性" })).toBeVisible();
   await expect(page.getByLabel("分析目标")).toBeEditable();
+  await expect(page.getByTestId("workflow-wizard-ready")).toHaveCount(0);
+
+  await page.goto("/workflows/source_flow_sfmea_blackbox", { waitUntil: "domcontentloaded" });
+  await expect(page.getByRole("heading", { name: "内置工作流不可直接修改" })).toBeVisible();
 });
 
 async function drag(page: import("@playwright/test").Page, source: import("@playwright/test").Locator, target: import("@playwright/test").Locator) {

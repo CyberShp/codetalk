@@ -1035,6 +1035,7 @@ async def test_managed_agent_preflight_uses_frozen_runtime_snapshot(tmp_path, mo
                         "runtime_provider": "codex",
                         "command": ["frozen-codex", "exec"],
                         "prompt_transport": "codex_exec_json",
+                        "requires_network": False,
                     }
                 }
             }
@@ -1069,6 +1070,7 @@ async def test_managed_agent_preflight_uses_frozen_runtime_snapshot(tmp_path, mo
         "command": "frozen-codex",
         "args": ["exec"],
         "prompt_transport": "codex_exec_json",
+        "requires_network": False,
         "enabled": True,
         "env": {},
     }]

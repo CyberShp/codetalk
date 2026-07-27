@@ -164,9 +164,6 @@ test("binds directory and file to distinct typed ports and rejects invalid drag 
       .getByLabel("输入端口 design_doc_v2，类型 file")).toBeVisible();
     await expect(page.locator(".ct-v2-edge-label").filter({ hasText: "开发设计文档 · file → design_doc_v2 · file" })).toBeVisible();
 
-    await page.getByRole("button", { name: "验证" }).click();
-    await expect(page.getByText("验证通过", { exact: true })).toBeVisible();
-
     await dragPort(
       page,
       page.getByRole("article", { name: /开发设计文档 输入节点/ })
@@ -185,6 +182,10 @@ test("binds directory and file to distinct typed ports and rejects invalid drag 
     );
     await expect(page.locator(".ct-v2-connection-error")).toHaveText("不能连接：file 类型不能连接到 directory 输入");
     await expect(page.locator(".ct-v2-edge-label").filter({ hasText: "开发设计文档 · file → repo_path · directory" })).toHaveCount(0);
+
+    await page.getByRole("button", { name: "保存并继续" }).click();
+    await page.getByRole("button", { name: "验证" }).click();
+    await expect(page.getByText("验证通过", { exact: true })).toBeVisible();
   } finally {
     await request.post(`${backendBase}/api/workbench/workflows/${workflowId}/archive`);
   }

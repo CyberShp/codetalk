@@ -126,6 +126,10 @@ const externalAgentCustomProviders = buildExternalAgentProviders(
 );
 const backendEnv = {
   ...process.env,
+  // The backend keeps its designer fault control routes absent in normal
+  // deployments.  This isolated child process is the only place that enables
+  // them for browser failure-domain coverage.
+  CODETALK_E2E_TEST_SUPPORT: "1",
   DATA_DIR: isolatedDataDir,
   SQLITE_DB: isolatedSqliteDb,
   CORS_ORIGINS: corsOrigins,

@@ -4,22 +4,29 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import io
 import json
 import mimetypes
+import os
 import re
+import secrets
+import shutil
+import stat
 import sys
+import threading
 import uuid
 import zipfile
 from copy import deepcopy
-from dataclasses import asdict
-from datetime import datetime, timezone
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
+from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 from urllib.parse import quote
 
 from fastapi import APIRouter, Body, File, Form, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config import settings
@@ -87,6 +94,7 @@ from app.services.workflow_presets import (
 )
 from app.services.workflow_version_store import workflow_header_status
 from app.services.workflow_node_registry import node_registry_payload
+from app.services.workflow_authoring_factory import backend_commit_sha
 from app.services.workflow_run_status import (
     ARTIFACT_VALIDATION_STATUSES,
     GOVERNANCE_STATUSES,
@@ -113,6 +121,7 @@ _TASK_RUN_TERMINAL_STATUSES = {
     "timed_out",
 }
 _ACTIVE_TASK_RUN_IDS: set[str] = set()
+_DESIGNER_RESOURCE_FAULTS: dict[str, int] = {}
 
 
 class AnalysisRunCreate(BaseModel):
@@ -162,6 +171,10 @@ class AgentRunExecuteRequest(BaseModel):
 class TaskRunExecuteRequest(BaseModel):
     timeout_sec: int = Field(default=0, ge=0, le=3600)
     stop_on_error: bool = True
+
+
+class InputUploadReleaseRequest(BaseModel):
+    cleanup_token: str = Field(min_length=1, max_length=512)
 
 
 class ValidateMrArtifactsRequest(BaseModel):
@@ -330,6 +343,432 @@ def _input_uploads_dir() -> Path:
     root = _workbench_dir() / "input_uploads"
     root.mkdir(parents=True, exist_ok=True)
     return root
+
+
+_INPUT_UPLOAD_ID_PATTERN = re.compile(r"^input_[0-9a-f]{32}$")
+_INPUT_UPLOAD_LEASE_TTL_SECONDS_DEFAULT = 24 * 60 * 60
+_INPUT_UPLOAD_RECONCILE_LIMIT_DEFAULT = 64
+_INPUT_UPLOAD_SNAPSHOT_SCAN_LIMIT_DEFAULT = 128
+_INPUT_UPLOAD_RECONCILE_LOCK = threading.RLock()
+
+
+class _UploadReferenceStatus(str, Enum):
+    REFERENCED = "referenced"
+    UNREFERENCED = "unreferenced"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class _ExpiredUploadCandidate:
+    upload_id: str
+    upload_dir: Path
+    public_path: str
+
+
+@dataclass
+class _InputUploadReconcileCycle:
+    candidates: list[_ExpiredUploadCandidate]
+    snapshot_iterator: Iterator[Path]
+    task_root_mtime_ns: int
+    referenced_upload_ids: set[str] = field(default_factory=set)
+    uncertain: bool = False
+
+
+_INPUT_UPLOAD_RECONCILE_CYCLES: dict[str, _InputUploadReconcileCycle] = {}
+
+
+def _input_upload_dir(upload_id: str) -> Path:
+    if not _INPUT_UPLOAD_ID_PATTERN.fullmatch(upload_id):
+        raise HTTPException(status_code=404, detail="上传文件不存在")
+    root = _input_uploads_dir().resolve()
+    upload_dir = (root / upload_id).resolve()
+    if upload_dir.parent != root:
+        raise HTTPException(status_code=404, detail="上传文件不存在")
+    return upload_dir
+
+
+def _upload_lease_context(
+    *,
+    workflow_id: str,
+    workflow_version_id: str,
+    expected_revision: int | None,
+) -> dict[str, Any] | None:
+    supplied = bool(
+        workflow_id.strip()
+        or workflow_version_id.strip()
+        or expected_revision is not None
+    )
+    if not supplied:
+        return None
+    if not workflow_id.strip() or not workflow_version_id.strip() or expected_revision is None:
+        raise HTTPException(status_code=422, detail="试运行上传缺少工作流版本信息")
+
+    from app.services.workflow_version_store import WorkflowVersionStore
+
+    store = WorkflowVersionStore(_workbench_dir() / "workflows.db")
+    try:
+        version = store.get_version(workflow_version_id.strip())
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="工作流版本不存在") from exc
+    if version.workflow_id != workflow_id.strip():
+        raise HTTPException(status_code=404, detail="工作流版本不存在")
+    if version.state != "draft" or version.authoring_graph.get("schema_version") != 3:
+        raise HTTPException(
+            status_code=409,
+            detail="试运行上传只可绑定 V3 工作流草稿",
+        )
+    if version.draft_revision != expected_revision:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "stale_draft",
+                "message": "画布已被其他窗口更新。请刷新后重新选择文件。",
+                "draft_revision": version.draft_revision,
+            },
+        )
+    return {
+        "workflow_id": version.workflow_id,
+        "workflow_version_id": version.version_id,
+        "expected_revision": expected_revision,
+    }
+
+
+def _json_contains_upload_reference(
+    value: Any,
+    *,
+    upload_id: str,
+    public_path: str,
+) -> bool:
+    if isinstance(value, str):
+        return upload_id in value or bool(public_path and public_path in value)
+    if isinstance(value, dict):
+        return any(
+            _json_contains_upload_reference(
+                nested,
+                upload_id=upload_id,
+                public_path=public_path,
+            )
+            for nested in value.values()
+        )
+    if isinstance(value, list):
+        return any(
+            _json_contains_upload_reference(
+                nested,
+                upload_id=upload_id,
+                public_path=public_path,
+            )
+            for nested in value
+        )
+    return False
+
+
+def _task_root_mtime_ns(task_root: Path) -> int | None:
+    try:
+        return task_root.stat().st_mtime_ns
+    except OSError:
+        return None
+
+
+def _read_input_snapshot(snapshot_path: Path) -> tuple[_UploadReferenceStatus, Any]:
+    try:
+        payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except Exception:
+        # Missing, unreadable, concurrently replaced, and malformed snapshots
+        # are all uncertainty. This is a destructive cleanup boundary, so an
+        # unexpected decoder failure must retain data rather than escape after
+        # the scan iterator has advanced.
+        return _UploadReferenceStatus.UNKNOWN, None
+    if not isinstance(payload, dict):
+        return _UploadReferenceStatus.UNKNOWN, None
+    return _UploadReferenceStatus.UNREFERENCED, payload
+
+
+def _task_directory_status(task_dir: Path) -> _UploadReferenceStatus | None:
+    try:
+        mode = task_dir.stat().st_mode
+    except OSError:
+        return _UploadReferenceStatus.UNKNOWN
+    if not stat.S_ISDIR(mode):
+        return None
+    return _UploadReferenceStatus.UNREFERENCED
+
+
+def _upload_reference_status(upload_id: str, public_path: str) -> _UploadReferenceStatus:
+    task_root = _task_runs_dir()
+    started_mtime_ns = _task_root_mtime_ns(task_root)
+    if started_mtime_ns is None:
+        return _UploadReferenceStatus.UNKNOWN
+    scan_limit = _bounded_positive_env(
+        "CODETALK_INPUT_UPLOAD_SNAPSHOT_SCAN_LIMIT",
+        _INPUT_UPLOAD_SNAPSHOT_SCAN_LIMIT_DEFAULT,
+        maximum=4096,
+    )
+    try:
+        task_directories = iter(task_root.iterdir())
+    except OSError:
+        return _UploadReferenceStatus.UNKNOWN
+    exhausted = False
+    for _ in range(scan_limit):
+        try:
+            task_dir = next(task_directories)
+        except StopIteration:
+            exhausted = True
+            break
+        except OSError:
+            return _UploadReferenceStatus.UNKNOWN
+        directory_status = _task_directory_status(task_dir)
+        if directory_status is _UploadReferenceStatus.UNKNOWN:
+            return directory_status
+        if directory_status is None:
+            continue
+        status, payload = _read_input_snapshot(task_dir / "input_snapshot.json")
+        if status is _UploadReferenceStatus.UNKNOWN:
+            return status
+        if payload is not None:
+            try:
+                referenced = _json_contains_upload_reference(
+                    payload,
+                    upload_id=upload_id,
+                    public_path=public_path,
+                )
+            except Exception:
+                return _UploadReferenceStatus.UNKNOWN
+            if referenced:
+                return _UploadReferenceStatus.REFERENCED
+    if not exhausted:
+        return _UploadReferenceStatus.UNKNOWN
+    if _task_root_mtime_ns(task_root) != started_mtime_ns:
+        return _UploadReferenceStatus.UNKNOWN
+    return _UploadReferenceStatus.UNREFERENCED
+
+
+def _bounded_positive_env(name: str, default: int, *, maximum: int) -> int:
+    try:
+        value = int(os.environ.get(name, str(default)))
+    except ValueError:
+        return default
+    if value < 1:
+        return default
+    return min(value, maximum)
+
+
+def _input_upload_reconcile_queue_path() -> Path:
+    return _input_uploads_dir() / ".reconcile-queue.jsonl"
+
+
+def _input_upload_reconcile_cursor_path() -> Path:
+    return _input_uploads_dir() / ".reconcile-cursor.json"
+
+
+def _register_input_upload_for_reconciliation(upload_id: str) -> None:
+    """Append cleanup work only; task snapshots remain the sole reference truth."""
+    if not _INPUT_UPLOAD_ID_PATTERN.fullmatch(upload_id):
+        return
+    queue_path = _input_upload_reconcile_queue_path()
+    with _INPUT_UPLOAD_RECONCILE_LOCK:
+        try:
+            with queue_path.open("a", encoding="utf-8") as queue:
+                queue.write(f"{upload_id}\n")
+        except OSError:
+            # Registration failure may leak storage, but must never make an
+            # otherwise valid upload disappear or become unusable.
+            return
+
+
+def _read_reconcile_cursor(queue_size: int) -> int:
+    cursor_path = _input_upload_reconcile_cursor_path()
+    if not cursor_path.is_file():
+        return 0
+    try:
+        payload = json.loads(cursor_path.read_text(encoding="utf-8"))
+        offset = int(payload.get("offset") or 0)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        return 0
+    return offset if 0 <= offset <= queue_size else 0
+
+
+def _next_reconcile_upload_ids(limit: int) -> list[str]:
+    queue_path = _input_upload_reconcile_queue_path()
+    try:
+        queue_size = queue_path.stat().st_size
+    except OSError:
+        return []
+    offset = _read_reconcile_cursor(queue_size)
+    selected: list[str] = []
+    selected_set: set[str] = set()
+    scanned = 0
+    wrapped = False
+    try:
+        with queue_path.open("r", encoding="utf-8") as queue:
+            queue.seek(offset)
+            while scanned < limit:
+                line = queue.readline()
+                if not line:
+                    if wrapped or offset == 0:
+                        break
+                    queue.seek(0)
+                    wrapped = True
+                    continue
+                scanned += 1
+                upload_id = line.strip()
+                if (
+                    _INPUT_UPLOAD_ID_PATTERN.fullmatch(upload_id)
+                    and upload_id not in selected_set
+                ):
+                    selected.append(upload_id)
+                    selected_set.add(upload_id)
+            next_offset = queue.tell()
+    except (OSError, UnicodeError):
+        return []
+    try:
+        _write_json(
+            _input_upload_reconcile_cursor_path(),
+            {"offset": next_offset, "updated_at": datetime.now(timezone.utc).isoformat()},
+        )
+    except OSError:
+        return []
+    return selected
+
+
+def _expired_upload_candidates(limit: int) -> list[_ExpiredUploadCandidate]:
+    now = datetime.now(timezone.utc)
+    candidates: list[_ExpiredUploadCandidate] = []
+    for upload_id in _next_reconcile_upload_ids(limit):
+        try:
+            upload_dir = _input_upload_dir(upload_id)
+            metadata = json.loads(
+                (upload_dir / "upload_metadata.json").read_text(encoding="utf-8")
+            )
+            expires_at = datetime.fromisoformat(
+                str(metadata.get("expires_at") or "").replace("Z", "+00:00")
+            )
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            public_path = str(metadata.get("path") or "")
+            if expires_at <= now and public_path:
+                candidates.append(
+                    _ExpiredUploadCandidate(
+                        upload_id=upload_id,
+                        upload_dir=upload_dir,
+                        public_path=public_path,
+                    )
+                )
+        except (HTTPException, OSError, ValueError, TypeError, json.JSONDecodeError):
+            # Ambiguous metadata or filesystem state is retained.
+            continue
+    return candidates
+
+
+def _start_reconcile_cycle(
+    *,
+    root_key: str,
+    candidate_limit: int,
+) -> _InputUploadReconcileCycle | None:
+    candidates = _expired_upload_candidates(candidate_limit)
+    if not candidates:
+        return None
+    task_root = _task_runs_dir()
+    started_mtime_ns = _task_root_mtime_ns(task_root)
+    if started_mtime_ns is None:
+        return None
+    try:
+        snapshot_iterator = iter(task_root.iterdir())
+    except OSError:
+        return None
+    cycle = _InputUploadReconcileCycle(
+        candidates=candidates,
+        snapshot_iterator=snapshot_iterator,
+        task_root_mtime_ns=started_mtime_ns,
+    )
+    _INPUT_UPLOAD_RECONCILE_CYCLES[root_key] = cycle
+    return cycle
+
+
+def _advance_reconcile_snapshot_scan(
+    cycle: _InputUploadReconcileCycle,
+    *,
+    scan_limit: int,
+) -> bool:
+    for _ in range(scan_limit):
+        try:
+            task_dir = next(cycle.snapshot_iterator)
+        except StopIteration:
+            return True
+        except OSError:
+            cycle.uncertain = True
+            return True
+        directory_status = _task_directory_status(task_dir)
+        if directory_status is _UploadReferenceStatus.UNKNOWN:
+            cycle.uncertain = True
+            return True
+        if directory_status is None:
+            continue
+        status, payload = _read_input_snapshot(task_dir / "input_snapshot.json")
+        if status is _UploadReferenceStatus.UNKNOWN:
+            cycle.uncertain = True
+            return True
+        if payload is None:
+            continue
+        try:
+            for candidate in cycle.candidates:
+                if candidate.upload_id in cycle.referenced_upload_ids:
+                    continue
+                if _json_contains_upload_reference(
+                    payload,
+                    upload_id=candidate.upload_id,
+                    public_path=candidate.public_path,
+                ):
+                    cycle.referenced_upload_ids.add(candidate.upload_id)
+        except Exception:
+            cycle.uncertain = True
+            return True
+    return False
+
+
+def _reconcile_expired_input_uploads() -> int:
+    root = _input_uploads_dir()
+    candidate_limit = _bounded_positive_env(
+        "CODETALK_INPUT_UPLOAD_RECONCILE_LIMIT",
+        _INPUT_UPLOAD_RECONCILE_LIMIT_DEFAULT,
+        maximum=1024,
+    )
+    snapshot_scan_limit = _bounded_positive_env(
+        "CODETALK_INPUT_UPLOAD_SNAPSHOT_SCAN_LIMIT",
+        _INPUT_UPLOAD_SNAPSHOT_SCAN_LIMIT_DEFAULT,
+        maximum=4096,
+    )
+    root_key = str(root.resolve())
+    with _INPUT_UPLOAD_RECONCILE_LOCK:
+        cycle = _INPUT_UPLOAD_RECONCILE_CYCLES.get(root_key)
+        if cycle is None:
+            cycle = _start_reconcile_cycle(
+                root_key=root_key,
+                candidate_limit=candidate_limit,
+            )
+        if cycle is None:
+            return 0
+        completed = _advance_reconcile_snapshot_scan(
+            cycle,
+            scan_limit=snapshot_scan_limit,
+        )
+        if not completed:
+            return 0
+        _INPUT_UPLOAD_RECONCILE_CYCLES.pop(root_key, None)
+        if (
+            cycle.uncertain
+            or _task_root_mtime_ns(_task_runs_dir()) != cycle.task_root_mtime_ns
+        ):
+            return 0
+        removed = 0
+        for candidate in cycle.candidates:
+            if candidate.upload_id in cycle.referenced_upload_ids:
+                continue
+            try:
+                shutil.rmtree(candidate.upload_dir)
+                removed += 1
+            except OSError:
+                continue
+        return removed
 
 
 def _deployment_probes_dir() -> Path:
@@ -1919,10 +2358,13 @@ async def list_workflow_presets() -> dict[str, Any]:
 @router.get("/workflow-capabilities")
 async def get_workflow_capabilities() -> dict[str, Any]:
     """Return the declarative workflow surface available to user-defined tasks."""
-    return {
+    endpoint = "/api/workbench/workflow-capabilities"
+    try:
+        _raise_designer_resource_fault("capabilities")
+        payload = {
         "status": "ok",
         "input_types": sorted(ALLOWED_INPUT_TYPES),
-        "input_resolvers": ["agent_mcp", "local", "manual"],
+        "input_resolvers": ["agent_mcp", "local", "manual", "workspace"],
         "step_types": sorted(ALLOWED_STEP_TYPES),
         "output_types": [
             "json",
@@ -2042,13 +2484,24 @@ async def get_workflow_capabilities() -> dict[str, Any]:
             "raw_output": "stored for audit but never accepted as evidence without artifacts",
             "workflow_outputs": "collected from declared outputs and checked before acceptance",
         },
-    }
+        }
+        return _designer_resource_ready(payload, endpoint)
+    except Exception as exc:
+        return _designer_resource_unavailable(
+            "workflow_capabilities_unavailable", endpoint, exc
+        )
 
 
 @router.get("/node-registry")
-async def get_node_registry() -> dict[str, Any]:
+async def get_node_registry(schema_version: int = Query(3, ge=2, le=3)) -> dict[str, Any]:
     """Expose backend-owned node metadata for the workflow designer."""
-    return node_registry_payload()
+    endpoint = "/api/workbench/node-registry"
+    try:
+        _raise_designer_resource_fault("registry")
+        payload = node_registry_payload(schema_version=schema_version)
+        return _designer_resource_ready(payload, endpoint)
+    except Exception as exc:
+        return _designer_resource_unavailable("node_registry_unavailable", endpoint, exc)
 
 
 @router.get("/core-workflow-readiness")
@@ -2093,11 +2546,18 @@ async def install_builtin_workflow_preset(preset_id: str) -> dict[str, Any]:
 async def upload_workbench_input_file(
     file: UploadFile = File(...),
     input_id: str = Form(""),
+    workflow_id: str = Form(""),
+    workflow_version_id: str = Form(""),
+    expected_revision: int | None = Form(None),
 ) -> dict[str, Any]:
+    _reconcile_expired_input_uploads()
+    lease = _upload_lease_context(
+        workflow_id=workflow_id,
+        workflow_version_id=workflow_version_id,
+        expected_revision=expected_revision,
+    )
     filename = Path(file.filename or "input").name or "input"
     upload_id = f"input_{uuid.uuid4().hex}"
-    upload_dir = _input_uploads_dir() / upload_id
-    upload_dir.mkdir(parents=True, exist_ok=True)
     data = await file.read()
     max_bytes = settings.coverage_max_upload_mb * 1024 * 1024
     if len(data) > max_bytes:
@@ -2105,9 +2565,18 @@ async def upload_workbench_input_file(
             status_code=413,
             detail=f"input file exceeds {settings.coverage_max_upload_mb}MB limit",
         )
+    upload_dir = _input_upload_dir(upload_id)
+    upload_dir.mkdir(parents=True, exist_ok=False)
     destination = upload_dir / filename
     destination.write_bytes(data)
     public_path = _public_workbench_artifact_path(destination)
+    cleanup_token = secrets.token_urlsafe(32)
+    created_at = datetime.now(timezone.utc)
+    lease_ttl_seconds = _bounded_positive_env(
+        "CODETALK_INPUT_UPLOAD_LEASE_TTL_SECONDS",
+        _INPUT_UPLOAD_LEASE_TTL_SECONDS_DEFAULT,
+        maximum=30 * 24 * 60 * 60,
+    )
     metadata = {
         "kind": "workbench_input_upload",
         "upload_id": upload_id,
@@ -2118,30 +2587,90 @@ async def upload_workbench_input_file(
         "sha256": hashlib.sha256(data).hexdigest(),
         "path": public_path,
         "input_payload": {"path": public_path},
+        "lease": lease,
+        "created_at": created_at.isoformat(),
+        "expires_at": (created_at + timedelta(seconds=lease_ttl_seconds)).isoformat(),
+        "cleanup_token_sha256": hashlib.sha256(cleanup_token.encode("utf-8")).hexdigest(),
     }
     (upload_dir / "upload_metadata.json").write_text(
         json.dumps(metadata, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    return metadata
+    _register_input_upload_for_reconciliation(upload_id)
+    return {
+        **{key: value for key, value in metadata.items() if key != "cleanup_token_sha256"},
+        "cleanup_token": cleanup_token,
+    }
+
+
+@router.post("/input-files/{upload_id}/release")
+async def release_workbench_input_file(
+    upload_id: str,
+    payload: InputUploadReleaseRequest,
+) -> dict[str, Any]:
+    upload_dir = _input_upload_dir(upload_id)
+    metadata_path = upload_dir / "upload_metadata.json"
+    if not metadata_path.is_file():
+        raise HTTPException(status_code=404, detail="上传文件不存在")
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=409, detail="上传租约不可用，未删除文件") from exc
+    expected_digest = str(metadata.get("cleanup_token_sha256") or "")
+    supplied_digest = hashlib.sha256(payload.cleanup_token.encode("utf-8")).hexdigest()
+    if not expected_digest or not hmac.compare_digest(expected_digest, supplied_digest):
+        raise HTTPException(status_code=403, detail="上传清理凭证无效")
+
+    lease = metadata.get("lease")
+    if not isinstance(lease, dict):
+        raise HTTPException(status_code=409, detail="该上传不属于可回收的试运行租约")
+    from app.services.workflow_version_store import WorkflowVersionStore
+
+    try:
+        version = WorkflowVersionStore(_workbench_dir() / "workflows.db").get_version(
+            str(lease.get("workflow_version_id") or "")
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=409, detail="无法确认上传租约状态，未删除文件") from exc
+    if version.workflow_id != str(lease.get("workflow_id") or ""):
+        raise HTTPException(status_code=409, detail="无法确认上传租约状态，未删除文件")
+    if version.draft_revision == lease.get("expected_revision"):
+        raise HTTPException(status_code=409, detail="上传租约仍有效，未删除文件")
+
+    public_path = str(metadata.get("path") or "")
+    if not public_path:
+        raise HTTPException(status_code=409, detail="上传租约路径不可用，未删除文件")
+    reference_status = _upload_reference_status(upload_id, public_path)
+    if reference_status is _UploadReferenceStatus.REFERENCED:
+        raise HTTPException(status_code=409, detail="上传文件已被任务使用，不能删除")
+    if reference_status is _UploadReferenceStatus.UNKNOWN:
+        raise HTTPException(
+            status_code=409,
+            detail="无法确认上传文件是否已被任务使用，未删除文件",
+        )
+    shutil.rmtree(upload_dir)
+    return {"status": "released", "upload_id": upload_id}
 
 
 @router.get("/provider-capabilities")
 async def list_provider_capabilities() -> dict[str, Any]:
     """Return a side-effect-free capability matrix for Workbench Agent routing."""
-    await apply_persisted_agent_provider_settings()
-    providers = _codetalk_provider_matrix_items() + [
-        _agent_cli_provider_matrix_item(provider_id, spec)
-        for provider_id, spec in external_agent_provider_specs().items()
-    ]
-    providers.extend(
-        _agent_runtime_provider_matrix_item(runtime)
-        for runtime in list_agent_runtimes_sync(enabled=True)
-    )
-    providers.append(_builtin_llm_provider_matrix_item())
-    providers.append(_fast_context_provider_matrix_item())
-    providers.sort(key=lambda item: (str(item.get("owner")), str(item.get("provider"))))
-    return {
+    endpoint = "/api/workbench/provider-capabilities"
+    try:
+        _raise_designer_resource_fault("providers")
+        await apply_persisted_agent_provider_settings()
+        providers = _codetalk_provider_matrix_items() + [
+            _agent_cli_provider_matrix_item(provider_id, spec)
+            for provider_id, spec in external_agent_provider_specs().items()
+        ]
+        providers.extend(
+            _agent_runtime_provider_matrix_item(runtime)
+            for runtime in list_agent_runtimes_sync(enabled=True)
+        )
+        providers.append(_builtin_llm_provider_matrix_item())
+        providers.append(_fast_context_provider_matrix_item())
+        providers.sort(key=lambda item: (str(item.get("owner")), str(item.get("provider"))))
+        payload = {
         "status": "ok",
         "providers": providers,
         "notes": [
@@ -2150,7 +2679,74 @@ async def list_provider_capabilities() -> dict[str, Any]:
             "Unavailable providers are non-blocking for workflow preparation.",
             "CodeTalk-callable providers and Agent-owned providers have separate credential boundaries.",
         ],
+        }
+        return _designer_resource_ready(payload, endpoint)
+    except Exception as exc:
+        return _designer_resource_unavailable(
+            "provider_capabilities_unavailable", endpoint, exc
+        )
+
+
+@router.put("/test-support/workflow-designer-faults", status_code=204)
+async def configure_designer_resource_fault(payload: dict[str, Any]) -> Response:
+    """E2E-only fault fixture. It is absent from normal deployed runtimes."""
+    _require_e2e_test_support()
+    resource = str(payload.get("resource") or "")
+    status = int(payload.get("status") or 503)
+    if resource not in {"capabilities", "registry", "providers"} or status < 400:
+        raise HTTPException(status_code=422, detail="invalid designer resource fault")
+    _DESIGNER_RESOURCE_FAULTS[resource] = status
+    return Response(status_code=204)
+
+
+@router.delete("/test-support/workflow-designer-faults", status_code=204)
+async def clear_designer_resource_faults() -> Response:
+    _require_e2e_test_support()
+    _DESIGNER_RESOURCE_FAULTS.clear()
+    return Response(status_code=204)
+
+
+def _designer_resource_ready(payload: dict[str, Any], endpoint: str) -> dict[str, Any]:
+    response = dict(payload)
+    response["meta"] = {
+        "endpoint": endpoint,
+        "backend_commit_sha": _backend_commit_sha(),
+        "status": "ready",
     }
+    return response
+
+
+def _designer_resource_unavailable(
+    kind: str, endpoint: str, exc: Exception
+) -> JSONResponse:
+    return JSONResponse(
+        status_code=503,
+        content={
+            "error": {
+                "kind": kind,
+                "endpoint": endpoint,
+                "status": 503,
+                "retryable": True,
+                "backend_commit_sha": _backend_commit_sha(),
+                "message": str(exc) or "Designer resource is temporarily unavailable",
+            }
+        },
+    )
+
+
+def _backend_commit_sha() -> str:
+    return backend_commit_sha()
+
+
+def _require_e2e_test_support() -> None:
+    if os.environ.get("CODETALK_E2E_TEST_SUPPORT") != "1":
+        raise HTTPException(status_code=404, detail="Not found")
+
+
+def _raise_designer_resource_fault(resource: str) -> None:
+    status = _DESIGNER_RESOURCE_FAULTS.get(resource)
+    if status:
+        raise RuntimeError(f"isolated E2E fault configured ({status})")
 
 
 @router.get("/system-audit")
@@ -3011,6 +3607,7 @@ def _frozen_runtime_preflight_payload(
             "command": command_parts[0],
             "args": command_parts[1:],
             "prompt_transport": prompt_transport,
+            "requires_network": bool(provider_snapshot.get("requires_network", True)),
             "enabled": True,
             # Runtime secrets are intentionally not persisted in the task.
             # Agent-owned credentials remain in the process environment.
@@ -4409,6 +5006,9 @@ async def prepare_and_execute_task_run(payload: RunTaskRunRequest) -> dict[str, 
 
 def _workflow_response(payload: dict[str, Any]) -> dict[str, Any]:
     response = dict(payload)
+    graph = response.get("authoring_graph")
+    if isinstance(graph, dict) and graph.get("schema_version") == 1:
+        response["editor_mode"] = "read_only_legacy"
     response["audit"] = audit_workflow_definition(payload)
     return response
 
@@ -4430,6 +5030,13 @@ def _v2_workflow_compatibility_response(version_store: Any, header: Any) -> dict
         "authoring_graph": dict(version.authoring_graph or {}) if version else {},
         "v2": asdict(header),
     }
+    schema_version = response["authoring_graph"].get("schema_version")
+    if schema_version == 1:
+        response["editor_mode"] = "read_only_legacy"
+    elif schema_version == 2:
+        response["editor_mode"] = "legacy"
+    elif schema_version == 3:
+        response["editor_mode"] = "canvas"
     if definition:
         response.update(definition)
         response["authoring_graph"] = dict(version.authoring_graph or {})

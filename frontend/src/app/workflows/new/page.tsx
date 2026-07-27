@@ -1,6 +1,5 @@
-import { Suspense } from "react";
-import { WorkflowWizard } from "@/features/workflows/workflow-wizard/workflow-wizard";
+import { CanvasEntry } from "@/features/workflows/canvas-entry";
 
 export default function NewWorkflowPage() {
-  return <Suspense fallback={<div className="ct-v2-page-loading">正在打开工作流向导…</div>}><WorkflowWizard /></Suspense>;
+  return <CanvasEntry />;
 }

@@ -187,6 +187,63 @@ export class DuplicateWorkspaceError extends Error {
   }
 }
 
+/**
+ * Keeps the diagnostics returned by independently loaded workbench resources.
+ * Callers may still render the rest of the designer when one resource fails.
+ */
+export class ApiRequestError extends Error {
+  status: number;
+  endpoint: string;
+  retryable: boolean;
+  backendCommitSha: string;
+  draftRevision?: number;
+  errorCode?: string;
+
+  constructor(options: {
+    message: string;
+    status: number;
+    endpoint: string;
+    retryable?: boolean;
+    backendCommitSha?: string;
+    draftRevision?: number;
+    errorCode?: string;
+  }) {
+    super(options.message);
+    this.name = "ApiRequestError";
+    this.status = options.status;
+    this.endpoint = options.endpoint;
+    this.retryable = Boolean(options.retryable);
+    this.backendCommitSha = options.backendCommitSha ?? "unknown";
+    this.draftRevision = options.draftRevision;
+    this.errorCode = options.errorCode;
+  }
+}
+
+function extractErrorCode(body: string): string | undefined {
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    const detail = parsed.detail && typeof parsed.detail === "object"
+      ? parsed.detail as Record<string, unknown>
+      : parsed;
+    return typeof detail.code === "string" ? detail.code : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function extractDraftRevision(body: string): number | undefined {
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    const detail = parsed.detail && typeof parsed.detail === "object"
+      ? parsed.detail as Record<string, unknown>
+      : parsed;
+    const value = detail.draft_revision;
+    return typeof value === "number" && Number.isInteger(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function extractErrorMessage(body: string): string {
   const text = body.trim();
   if (!text) return "请求失败";
@@ -196,7 +253,13 @@ function extractErrorMessage(body: string): string {
     if (typeof parsed === "string") return parsed;
     if (parsed && typeof parsed === "object") {
       const record = parsed as Record<string, unknown>;
-      const detail = record.detail ?? record.message;
+      const nestedError = record.error && typeof record.error === "object"
+        ? record.error as Record<string, unknown>
+        : null;
+      const nestedDetail = record.detail && typeof record.detail === "object"
+        ? record.detail as Record<string, unknown>
+        : null;
+      const detail = nestedError?.message ?? nestedDetail?.message ?? record.detail ?? record.message;
       if (typeof detail === "string") return detail;
     }
   } catch {
@@ -262,7 +325,22 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
     if (!res.ok) {
       const body = await res.text().catch(() => "");
       const detail = extractErrorMessage(body);
-      lastError = new Error(friendlyErrorMessage(res.status, detail));
+      let diagnostics: { endpoint?: string; status?: number; retryable?: boolean; backend_commit_sha?: string } = {};
+      try {
+        const parsed = JSON.parse(body) as { error?: typeof diagnostics };
+        diagnostics = parsed.error ?? {};
+      } catch {
+        // Plain-text failures keep the local request path as their endpoint.
+      }
+      lastError = new ApiRequestError({
+        message: friendlyErrorMessage(res.status, detail),
+        status: diagnostics.status ?? res.status,
+        endpoint: diagnostics.endpoint ?? path,
+        retryable: diagnostics.retryable ?? isRetryable(res.status),
+        backendCommitSha: diagnostics.backend_commit_sha ?? res.headers.get("x-codetalk-commit") ?? "unknown",
+        draftRevision: extractDraftRevision(body),
+        errorCode: extractErrorCode(body),
+      });
       if (isRetryable(res.status) && attempt < MAX_RETRIES) {
         await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
         continue;
@@ -936,15 +1014,40 @@ export const api = {
         }),
       }),
 
-    uploadInputFile: (file: File, inputId: string) => {
+    uploadInputFile: (
+      file: File,
+      inputId: string,
+      lease?: { workflowId: string; workflowVersionId: string; expectedRevision: number },
+    ) => {
       const form = new FormData();
       form.append("file", file);
       form.append("input_id", inputId);
-      return requestForm<WorkbenchInputUploadResult>(
+      if (lease) {
+        form.append("workflow_id", lease.workflowId);
+        form.append("workflow_version_id", lease.workflowVersionId);
+        form.append("expected_revision", String(lease.expectedRevision));
+      }
+      return requestForm<WorkbenchInputUploadResult & {
+        cleanup_token: string;
+        lease?: {
+          workflow_id: string;
+          workflow_version_id: string;
+          expected_revision: number;
+        } | null;
+      }>(
         "/api/workbench/input-files/upload",
         form,
       );
     },
+
+    releaseInputFileUpload: (uploadId: string, cleanupToken: string) =>
+      request<{ status: "released"; upload_id: string }>(
+        `/api/workbench/input-files/${encodeURIComponent(uploadId)}/release`,
+        {
+          method: "POST",
+          body: JSON.stringify({ cleanup_token: cleanupToken }),
+        },
+      ),
 
     workflows: {
       presets: () =>

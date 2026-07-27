@@ -25,17 +25,18 @@ def ingest_workbench_inputs(
     inputs: dict[str, Any],
     artifact_dir: str | Path,
 ) -> dict[str, Any]:
-    root = Path(artifact_dir) / "inputs"
-    root.mkdir(parents=True, exist_ok=True)
     defs_by_id = {
         str(item.get("id")): item
         for item in input_definitions
         if isinstance(item, dict) and item.get("id")
     }
+    validate_workbench_inputs(
+        input_definitions=list(defs_by_id.values()),
+        inputs=inputs,
+    )
+    root = Path(artifact_dir) / "inputs"
+    root.mkdir(parents=True, exist_ok=True)
     snapshot: dict[str, Any] = {}
-    for input_id, definition in defs_by_id.items():
-        if bool(definition.get("required", False)) and _is_missing_input((inputs or {}).get(input_id)):
-            raise ValueError(f"required input {input_id} is missing")
     for input_id, value in (inputs or {}).items():
         input_key = str(input_id)
         definition = defs_by_id.get(input_key, {})
@@ -75,6 +76,128 @@ def ingest_workbench_inputs(
                 )
             )
     return snapshot
+
+
+def validate_workbench_inputs(
+    *,
+    input_definitions: list[dict[str, Any]],
+    inputs: dict[str, Any],
+) -> None:
+    """Validate deterministic input failures without creating run artifacts."""
+    defs_by_id = {
+        str(item.get("id")): item
+        for item in input_definitions
+        if isinstance(item, dict) and item.get("id")
+    }
+    supplied = dict(inputs or {})
+    for input_id, definition in defs_by_id.items():
+        if bool(definition.get("required", False)) and _is_missing_input(
+            supplied.get(input_id)
+        ):
+            raise ValueError(f"required input {input_id} is missing")
+
+    for input_id, value in supplied.items():
+        input_key = str(input_id)
+        definition = defs_by_id.get(input_key, {})
+        if definition and not bool(definition.get("required", False)) and _is_missing_input(value):
+            continue
+        input_type = str(definition.get("type") or "")
+        schema_value = value
+        if input_type in {"diff", "patch"} and _is_inline_patch_text(value):
+            schema_value = _preview_inline_file(input_key, value, suffix=".patch")
+        elif input_type in {"file", "coverage_report", "diff", "patch"}:
+            schema_value = _preview_file(input_key, value)
+        elif input_type == "file_set":
+            schema_value = _preview_file_set(input_key, value)
+        elif input_type == "directory":
+            _validate_directory(input_key, value)
+
+        schema_errors = _validate_input_schema(
+            value=schema_value,
+            schema=definition.get("schema") or definition.get("json_schema"),
+        )
+        if schema_errors:
+            raise ValueError(
+                "input {} schema_validation_failed: {}".format(
+                    input_key,
+                    "; ".join(schema_errors),
+                )
+            )
+
+
+def _validate_directory(input_id: str, value: Any) -> None:
+    path_text = str(value.get("path") if isinstance(value, dict) else value or "").strip()
+    if not path_text:
+        raise ValueError(f"directory input {input_id} is missing path")
+    source = _resolve_input_source(path_text)
+    if not source.exists() or not source.is_dir():
+        raise FileNotFoundError(path_text)
+
+
+def _preview_file_set(input_id: str, value: Any) -> dict[str, Any]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"file_set input {input_id} must be a list of file paths")
+    files = []
+    for index, item in enumerate(value):
+        preview = _preview_file(f"{input_id}_{index + 1}", item)
+        preview["file_set_index"] = index
+        files.append(preview)
+    if not files:
+        raise ValueError(f"file_set input {input_id} is missing files")
+    return {
+        "kind": "file_set",
+        "input_id": input_id,
+        "count": len(files),
+        "files": files,
+        "manifest_path": "",
+    }
+
+
+def _preview_file(input_id: str, value: Any) -> dict[str, Any]:
+    path_text = str(value.get("path") if isinstance(value, dict) else value or "").strip()
+    if not path_text:
+        raise ValueError(f"file input {input_id} is missing path")
+    source = _resolve_input_source(path_text)
+    if not source.exists() or not source.is_file():
+        raise FileNotFoundError(path_text)
+    data = source.read_bytes()
+    return {
+        "kind": "file",
+        "input_id": input_id,
+        "path": str(source),
+        "original_path": str(source),
+        "copied_path": str(source),
+        "filename": source.name,
+        "suffix": source.suffix.lower(),
+        "size_bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "parsed_text_path": "",
+        "chunks_path": "",
+        "parse_warnings": [],
+        "metadata_path": "",
+    }
+
+
+def _preview_inline_file(input_id: str, value: Any, *, suffix: str) -> dict[str, Any]:
+    text = _inline_text_value(value)
+    if not text:
+        raise ValueError(f"file input {input_id} is missing inline text")
+    data = text.encode("utf-8")
+    return {
+        "kind": "file",
+        "input_id": input_id,
+        "original_path": "",
+        "copied_path": "",
+        "filename": _safe_name(input_id) + suffix,
+        "suffix": suffix,
+        "size_bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "parsed_text_path": "",
+        "chunks_path": "",
+        "parse_warnings": [],
+        "inline_text": True,
+        "metadata_path": "",
+    }
 
 
 def _is_missing_input(value: Any) -> bool:

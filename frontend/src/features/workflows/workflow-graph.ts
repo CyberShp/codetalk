@@ -1,4 +1,5 @@
 import type {
+  AuthoringGraph,
   AuthoringGraphV2,
   WorkflowGraphEdge,
   WorkflowGraphNode,
@@ -210,7 +211,7 @@ export function edge(
   };
 }
 
-export function nodeKindLabel(kind: WorkflowNodeKind): string {
+export function nodeKindLabel(kind: string): string {
   return {
     input: "输入",
     output: "输出",
@@ -221,14 +222,15 @@ export function nodeKindLabel(kind: WorkflowNodeKind): string {
     evidence_validate: "证据校验",
     report_render: "报告渲染",
     artifact_export: "产物导出",
-  }[kind];
+  }[kind as WorkflowNodeKind] ?? kind;
 }
 
 export function inputPortIds(node: WorkflowGraphNode): string[] {
   return inputPortDefinitions(node).map((port) => port.id);
 }
 
-export function inputPortDefinitions(node: WorkflowGraphNode): Array<{ id: string; type: string; required?: boolean; collection?: boolean }> {
+export function inputPortDefinitions(node: WorkflowGraphNode): Array<WorkflowPortDefinition> {
+  if (node.ports?.inputs) return node.ports.inputs;
   if (node.kind === "output") {
     return [{ id: "value", type: String(node.config.type ?? "any"), required: Boolean(node.config.required) }];
   }
@@ -245,7 +247,8 @@ export function outputPortIds(node: WorkflowGraphNode): string[] {
   return outputPortDefinitions(node).map((port) => port.id);
 }
 
-export function outputPortDefinitions(node: WorkflowGraphNode): Array<{ id: string; type: string }> {
+export function outputPortDefinitions(node: WorkflowGraphNode): Array<WorkflowPortDefinition> {
+  if (node.ports?.outputs) return node.ports.outputs;
   if (node.kind === "input") {
     return [{ id: "value", type: String(node.config.type ?? "any") }];
   }
@@ -256,6 +259,24 @@ export function outputPortDefinitions(node: WorkflowGraphNode): Array<{ id: stri
   return dataPorts.some((port) => port.id === "done")
     ? dataPorts
     : [...dataPorts, { id: "done", type: "control" }];
+}
+
+/**
+ * V3 keeps opaque port IDs off the canvas.  These aliases preserve the
+ * familiar contract vocabulary until every backend registry ships labels.
+ */
+export function portDisplayLabel(node: WorkflowGraphNode, port: WorkflowPortDefinition, direction: "input" | "output", index = 0): string {
+  const raw = port.label?.trim() || "";
+  if (/^value$/i.test(raw)) return "value";
+  if (node.kind === "agent" && direction === "input" && index === 0 && /^source workspace$/i.test(raw)) return "repo_path";
+  if (node.kind === "agent" && direction === "output" && index === 0 && /^report$/i.test(raw)) return "report";
+  return raw || port.id;
+}
+
+export function portDisplayType(port: WorkflowPortDefinition): string {
+  // The current agent handler transports a generated report as an artifact;
+  // its user-facing contract is Markdown and must remain understandable.
+  return port.type === "artifact" ? "markdown" : port.type;
 }
 
 export type ConnectionValidation =
@@ -291,7 +312,7 @@ export function validateInputPortId(
 }
 
 export function validateConnection(
-  graph: AuthoringGraphV2,
+  graph: AuthoringGraph,
   sourceNodeId: string,
   sourcePortId: string,
   targetNodeId: string,
@@ -336,16 +357,18 @@ export function connectionLabel(
   const sourceNode = nodesById.get(workflowEdge.source.node_id);
   const targetNode = nodesById.get(workflowEdge.target.node_id);
   if (!sourceNode || !targetNode) return "";
-  const sourceType = outputPortDefinitions(sourceNode).find(
+  const sourcePort = outputPortDefinitions(sourceNode).find(
     (port) => port.id === workflowEdge.source.port_id,
-  )?.type ?? "any";
-  const targetType = inputPortDefinitions(targetNode).find(
+  );
+  const sourceType = sourcePort ? portDisplayType(sourcePort) : "any";
+  const targetPort = inputPortDefinitions(targetNode).find(
     (port) => port.id === workflowEdge.target.port_id,
-  )?.type ?? "any";
+  );
+  const targetType = targetPort ? portDisplayType(targetPort) : "any";
   const sourceLabel = sourceNode.kind === "input"
     ? sourceNode.label
-    : workflowEdge.source.port_id;
-  return `${sourceLabel} · ${sourceType} → ${workflowEdge.target.port_id} · ${targetType}`;
+    : sourcePort ? portDisplayLabel(sourceNode, sourcePort, "output") : workflowEdge.source.port_id;
+  return `${sourceLabel} · ${sourceType} → ${targetPort ? portDisplayLabel(targetNode, targetPort, "input") : workflowEdge.target.port_id} · ${targetType}`;
 }
 
 export function graphWithHeader(

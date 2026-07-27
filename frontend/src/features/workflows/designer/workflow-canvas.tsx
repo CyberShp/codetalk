@@ -34,6 +34,7 @@ import {
 } from "react";
 
 import type {
+  AuthoringGraph,
   WorkflowGraphNode,
   WorkflowNodeRegistry,
   WorkflowNodeRegistryEntry,
@@ -45,6 +46,8 @@ import {
   inputPortDefinitions,
   nodeKindLabel,
   outputPortDefinitions,
+  portDisplayLabel,
+  portDisplayType,
   validateConnection,
 } from "../workflow-graph";
 import {
@@ -52,12 +55,19 @@ import {
   type WorkflowFlowEdge,
   type WorkflowFlowNode,
 } from "../workflow-xyflow";
+import {
+  releaseCanvasNodePosition,
+  reserveCanvasNodePosition,
+  type CanvasPositionReservation,
+} from "./node-position-reservation";
 
 interface Props {
   state: WorkflowEditorState;
   dispatch: Dispatch<WorkflowEditorAction>;
   registry: WorkflowNodeRegistry;
   onSelectionChange?: (nodeId: string | null) => void;
+  onCreateNode?: (kind: string, position: { x: number; y: number }) => Promise<AuthoringGraph>;
+  onCreateEdge?: (payload: { source: { node_id: string; port_id: string }; target: { node_id: string; port_id: string } }) => Promise<AuthoringGraph>;
 }
 
 export function WorkflowCanvas(props: Props) {
@@ -68,13 +78,40 @@ export function WorkflowCanvas(props: Props) {
   );
 }
 
-function WorkflowCanvasSurface({ state, dispatch, registry, onSelectionChange }: Props) {
+function WorkflowCanvasSurface({ state, dispatch, registry, onSelectionChange, onCreateNode, onCreateEdge }: Props) {
   const nodeTypes = useMemo(() => ({ workflowNode: WorkflowNodeCard }), []);
   const edgeTypes = useMemo(() => ({ workflowEdge: WorkflowEdge }), []);
   const edgeSequence = useRef(0);
-  const allocatedNodesRef = useRef<WorkflowGraphNode[]>(state.present.nodes);
+  const committedNodesRef = useRef<WorkflowGraphNode[]>(state.present.nodes);
+  const positionReservationsRef = useRef<CanvasPositionReservation[]>([]);
+  const positionReservationSequenceRef = useRef(0);
+  const fitAfterServerInsertRef = useRef<string | null>(null);
+  const compactInitialFitRef = useRef(false);
+  // Server-issued identities make mutation order observable. Keep browser
+  // gestures in one queue so an older draft response can never overwrite a
+  // newer node or edge that the user just created.
+  const serverMutationQueueRef = useRef<Promise<void>>(Promise.resolve());
   const { screenToFlowPosition, fitView } = useReactFlow<WorkflowFlowNode, WorkflowFlowEdge>();
   const [connectionError, setConnectionError] = useState("");
+  const [compactViewport, setCompactViewport] = useState(false);
+  const [paletteQuery, setPaletteQuery] = useState("");
+
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 760px)");
+    const update = () => setCompactViewport(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+
+  const enqueueServerMutation = useCallback(<T,>(operation: () => Promise<T>): Promise<T> => {
+    const result = serverMutationQueueRef.current.then(operation, operation);
+    serverMutationQueueRef.current = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }, []);
 
   const isValidConnection = useCallback((connection: Connection | Edge) => {
     const sourcePortId = handlePortId(connection.sourceHandle, "out:");
@@ -106,32 +143,106 @@ function WorkflowCanvasSurface({ state, dispatch, registry, onSelectionChange }:
   }, [isValidConnection, state.present]);
   const [nodes, setNodes, onNodesChange] = useNodesState<WorkflowFlowNode>(flow.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState<WorkflowFlowEdge>(flow.edges);
+  const paletteGroups = useMemo(() => {
+    const query = paletteQuery.trim().toLocaleLowerCase();
+    const visible = registry.nodes.filter((definition) =>
+      !query || `${definition.ui.label} ${definition.ui.palette_label} ${definition.ui.description} ${definition.kind}`
+        .toLocaleLowerCase()
+        .includes(query),
+    );
+    return [
+      { label: "输入与交付", nodes: visible.filter((definition) => definition.kind === "input" || definition.kind === "output") },
+      { label: "执行与控制", nodes: visible.filter((definition) => definition.kind !== "input" && definition.kind !== "output") },
+    ].filter((group) => group.nodes.length > 0);
+  }, [paletteQuery, registry.nodes]);
 
   useEffect(() => {
     setNodes(flow.nodes);
     setEdges(flow.edges);
   }, [flow, setEdges, setNodes]);
 
-  // Palette double-clicks can arrive before React has committed the first
-  // insertion. Reserve the position synchronously so two quick adds never
-  // stack at the same coordinates and make the lower node unreachable.
   useEffect(() => {
-    allocatedNodesRef.current = state.present.nodes;
+    if (!compactViewport) {
+      compactInitialFitRef.current = false;
+      return;
+    }
+    if (compactInitialFitRef.current || flow.nodes.length === 0) return;
+    compactInitialFitRef.current = true;
+    window.requestAnimationFrame(() => void fitView({ padding: 0.1, minZoom: 0.4, maxZoom: 0.62, duration: 0 }));
+  }, [compactViewport, fitView, flow.nodes.length]);
+
+  useEffect(() => {
+    const insertedNodeId = fitAfterServerInsertRef.current;
+    if (!insertedNodeId) return;
+    fitAfterServerInsertRef.current = null;
+    if (!compactViewport) {
+      void fitView({ padding: 0.2, duration: 180 });
+      return;
+    }
+    const inserted = flow.nodes.find((node) => node.id === insertedNodeId);
+    const companion = flow.nodes.find((node) => node.data.node.kind === "agent");
+    const focusNodes = (flow.nodes.length <= 6 ? flow.nodes : [inserted, companion])
+      .filter((node) => Boolean(node))
+      .map((node) => ({ id: node!.id }));
+    void fitView({
+      nodes: focusNodes.length > 1 ? focusNodes : undefined,
+      padding: 0.1,
+      minZoom: 0.4,
+      maxZoom: 0.68,
+      duration: 180,
+    });
+  }, [compactViewport, fitView, flow.nodes]);
+
+  useEffect(() => {
+    committedNodesRef.current = state.present.nodes;
   }, [state.present.nodes]);
 
-  const addNode = useCallback((definition: WorkflowNodeRegistryEntry, position?: { x: number; y: number }) => {
-    const suggestedPosition = position ?? nextAvailableNodePosition(allocatedNodesRef.current);
-    const next = createNodeFromRegistry(
-      definition,
-      suggestedPosition.x,
-      suggestedPosition.y,
+  const addNode = useCallback(async (definition: WorkflowNodeRegistryEntry, position?: { x: number; y: number }) => {
+    positionReservationSequenceRef.current += 1;
+    const reservationId = `pending-node-${positionReservationSequenceRef.current}`;
+    const allocation = reserveCanvasNodePosition(
+      committedNodesRef.current,
+      positionReservationsRef.current,
+      reservationId,
+      position,
     );
-    allocatedNodesRef.current = [...allocatedNodesRef.current, next];
-    dispatch({ type: "add-node", node: next });
-    dispatch({ type: "select-node", nodeId: next.id });
-    onSelectionChange?.(next.id);
-    window.requestAnimationFrame(() => void fitView({ padding: 0.2, duration: 180 }));
-  }, [dispatch, fitView, onSelectionChange]);
+    positionReservationsRef.current = allocation.reservations;
+
+    try {
+      if (onCreateNode) {
+        const graph = await enqueueServerMutation(() => onCreateNode(definition.kind, allocation.reservation.position));
+        committedNodesRef.current = graph.nodes;
+        dispatch({ type: "replace", graph, markSaved: true });
+        const added = graph.nodes.at(-1);
+        if (added) {
+          dispatch({ type: "select-node", nodeId: added.id });
+          onSelectionChange?.(added.id);
+          fitAfterServerInsertRef.current = added.id;
+        }
+        setConnectionError("");
+        document.querySelector<HTMLElement>(".ct-v2-node-palette")?.classList.remove("is-mobile-open");
+        return;
+      }
+
+      const next = createNodeFromRegistry(
+        definition,
+        allocation.reservation.position.x,
+        allocation.reservation.position.y,
+      );
+      committedNodesRef.current = [...committedNodesRef.current, next];
+      dispatch({ type: "add-node", node: next });
+      dispatch({ type: "select-node", nodeId: next.id });
+      onSelectionChange?.(next.id);
+      window.requestAnimationFrame(() => void fitView({ padding: 0.2, duration: 180 }));
+    } catch (cause) {
+      setConnectionError(cause instanceof Error ? cause.message : "创建节点失败");
+    } finally {
+      positionReservationsRef.current = releaseCanvasNodePosition(
+        positionReservationsRef.current,
+        reservationId,
+      );
+    }
+  }, [dispatch, enqueueServerMutation, fitView, onCreateNode, onSelectionChange]);
 
   const onConnect: OnConnect = useCallback((connection) => {
     const sourcePortId = handlePortId(connection.sourceHandle, "out:");
@@ -140,6 +251,18 @@ function WorkflowCanvasSurface({ state, dispatch, registry, onSelectionChange }:
     const source = state.present.nodes.find((node) => node.id === connection.source);
     const target = state.present.nodes.find((node) => node.id === connection.target);
     if (!source || !target) return;
+    if (onCreateEdge) {
+      void enqueueServerMutation(() => onCreateEdge({
+          source: { node_id: source.id, port_id: sourcePortId },
+          target: { node_id: target.id, port_id: targetPortId },
+        })).then((graph) => {
+        dispatch({ type: "replace", graph, markSaved: true });
+        setConnectionError("");
+      }).catch((cause) => {
+        setConnectionError(cause instanceof Error ? cause.message : "创建连线失败");
+      });
+      return;
+    }
     edgeSequence.current += 1;
     dispatch({
       type: "add-edge",
@@ -151,7 +274,7 @@ function WorkflowCanvasSurface({ state, dispatch, registry, onSelectionChange }:
       },
     });
     setConnectionError("");
-  }, [dispatch, state.present.nodes]);
+  }, [dispatch, enqueueServerMutation, onCreateEdge, state.present.nodes]);
 
   const handleConnectEnd: OnConnectEnd = useCallback((_, connectionState) => {
     if (connectionState.isValid || !connectionState.fromNode || !connectionState.toNode) return;
@@ -193,38 +316,52 @@ function WorkflowCanvasSurface({ state, dispatch, registry, onSelectionChange }:
   }, [dispatch, onSelectionChange, state.selectedEdgeId, state.selectedNodeId, state.selectedNodeIds]);
 
   return (
-    <div className="ct-v2-canvas-shell">
+    <div className="ct-v2-canvas-shell" role="region" aria-label="工作流画布">
+      <button type="button" className="ct-v2-mobile-palette-toggle" data-testid="workflow-mobile-palette-toggle" aria-label="打开节点库" onClick={() => document.querySelector<HTMLElement>(".ct-v2-node-palette")?.classList.toggle("is-mobile-open")}>工具</button>
       <aside className="ct-v2-node-palette" aria-label="节点库">
         <div className="ct-v2-pane-heading">
           <strong>节点库</strong>
           <span>拖到画布，或双击添加</span>
         </div>
+        <input
+          className="ct-v2-palette-search"
+          aria-label="搜索节点"
+          value={paletteQuery}
+          onChange={(event) => setPaletteQuery(event.target.value)}
+          placeholder="搜索节点"
+        />
         <div className="ct-v2-palette-list">
-          {registry.nodes.map((definition) => (
-            <button
-              key={definition.kind}
-              type="button"
-              draggable
-              data-testid={`workflow-palette-${definition.kind}`}
-              onDragStart={(event) => {
-                event.dataTransfer.setData("application/x-codetalk-node", definition.kind);
-                event.dataTransfer.effectAllowed = "move";
-              }}
-              onDoubleClick={() => addNode(definition)}
-              className="ct-v2-palette-item"
-              title={`添加${definition.ui.label}节点`}
-            >
-              <span className="ct-v2-kind-mark" aria-hidden="true" />
-              <span>
-                <strong>{definition.ui.palette_label}</strong>
-                <small>{definition.ui.description}</small>
-              </span>
-            </button>
+          {paletteGroups.map((group) => (
+            <section key={group.label} className="ct-v2-palette-group" aria-label={group.label}>
+              <h3>{group.label}</h3>
+              {group.nodes.map((definition) => (
+                <button
+                  key={definition.kind}
+                  type="button"
+                  draggable
+                  data-testid={`workflow-palette-${definition.kind}`}
+                  onDragStart={(event) => {
+                    event.dataTransfer.setData("application/x-codetalk-node", definition.kind);
+                    event.dataTransfer.effectAllowed = "move";
+                  }}
+                  onDoubleClick={() => void addNode(definition)}
+                  className="ct-v2-palette-item"
+                  title={`添加${definition.ui.label}节点`}
+                >
+                  <span className="ct-v2-kind-mark" aria-hidden="true" />
+                  <span>
+                    <strong>{definition.ui.palette_label}</strong>
+                    <small>{definition.ui.description}</small>
+                  </span>
+                </button>
+              ))}
+            </section>
           ))}
+          {!paletteGroups.length && <p className="ct-v2-palette-empty">没有匹配的节点</p>}
         </div>
       </aside>
 
-      <section className="ct-v2-canvas-stage" aria-label="工作流画布">
+      <section className="ct-v2-canvas-stage" aria-label="画布编辑区">
         {connectionError && <div className="ct-v2-connection-error" role="alert">{connectionError}</div>}
         <div className="ct-v2-canvas-toolbar" aria-label="画布工具栏">
           <button type="button" onClick={() => dispatch({ type: "undo" })} disabled={!state.past.length} title="撤销">
@@ -299,7 +436,7 @@ function WorkflowCanvasSurface({ state, dispatch, registry, onSelectionChange }:
             const kind = event.dataTransfer.getData("application/x-codetalk-node");
             const definition = registry.nodes.find((item) => item.kind === kind);
             if (!definition) return;
-            addNode(definition, screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+            void addNode(definition, screenToFlowPosition({ x: event.clientX, y: event.clientY }));
           }}
           onDragOver={(event) => {
             event.preventDefault();
@@ -333,7 +470,7 @@ function WorkflowCanvasSurface({ state, dispatch, registry, onSelectionChange }:
           zoomOnScroll
           deleteKeyCode={["Backspace", "Delete"]}
           fitView
-          minZoom={0.35}
+          minZoom={compactViewport ? 0.4 : 0.35}
           maxZoom={1.7}
           defaultEdgeOptions={{ type: "workflowEdge" }}
         >
@@ -369,16 +506,16 @@ const WorkflowNodeCard = memo(({ data, selected }: NodeProps<WorkflowFlowNode>) 
         {node.config.required && <em>必需</em>}
       </div>
       <div className="ct-v2-flow-ports">
-        <div>{inputs.map((port) => (
+        <div>{inputs.map((port, index) => (
           <div className="ct-v2-flow-port is-input" key={`in-${port.id}`}>
-            <Handle className="ct-v2-port is-input" type="target" position={Position.Left} id={`in:${port.id}`} isValidConnection={data.canConnect} aria-label={`输入端口 ${port.id}，类型 ${port.type}`} title={`输入：${port.id} · ${port.type}`} />
-            <span>{port.id}<small>{port.type}</small></span>
+            <Handle className="ct-v2-port is-input" type="target" position={Position.Left} id={`in:${port.id}`} isValidConnection={data.canConnect} aria-label={`输入端口 ${portDisplayLabel(node, port, "input", index)}，类型 ${portDisplayType(port)}`} title={`输入：${portDisplayLabel(node, port, "input", index)} · ${portDisplayType(port)}`} />
+            <span>{portDisplayLabel(node, port, "input", index)}<small>{portDisplayType(port)}</small></span>
           </div>
         ))}</div>
-        <div>{outputs.map((port) => (
+        <div>{outputs.map((port, index) => (
           <div className="ct-v2-flow-port is-output" key={`out-${port.id}`}>
-            <span>{port.id}<small>{port.type}</small></span>
-            <Handle className="ct-v2-port is-output" type="source" position={Position.Right} id={`out:${port.id}`} aria-label={`输出端口 ${port.id}，类型 ${port.type}`} title={`输出：${port.id} · ${port.type}`} />
+            <span>{portDisplayLabel(node, port, "output", index)}<small>{portDisplayType(port)}</small></span>
+            <Handle className="ct-v2-port is-output" type="source" position={Position.Right} id={`out:${port.id}`} aria-label={`输出端口 ${portDisplayLabel(node, port, "output", index)}，类型 ${portDisplayType(port)}`} title={`输出：${portDisplayLabel(node, port, "output", index)} · ${portDisplayType(port)}`} />
           </div>
         ))}</div>
       </div>
@@ -386,22 +523,6 @@ const WorkflowNodeCard = memo(({ data, selected }: NodeProps<WorkflowFlowNode>) 
   );
 });
 WorkflowNodeCard.displayName = "WorkflowNodeCard";
-
-function nextAvailableNodePosition(nodes: WorkflowGraphNode[]): { x: number; y: number } {
-  // New cards must not land beneath an existing card. The grid keeps the
-  // insertion predictable while the flow remains pannable for larger graphs.
-  const columns = [80, 400, 720];
-  const rows = [140, 390, 640, 890, 1140];
-  for (const y of rows) {
-    for (const x of columns) {
-      const isFree = nodes.every((node) =>
-        Math.abs(node.position.x - x) >= 250 || Math.abs(node.position.y - y) >= 180,
-      );
-      if (isFree) return { x, y };
-    }
-  }
-  return { x: 80 + nodes.length * 40, y: 140 + nodes.length * 210 };
-}
 
 const WorkflowEdge = memo((props: EdgeProps<WorkflowFlowEdge>) => {
   const [path, labelX, labelY] = getBezierPath(props);
