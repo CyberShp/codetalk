@@ -12,7 +12,7 @@ from typing import Any
 
 # Bump when deterministic extraction semantics change so cached packs cannot
 # hide newly recognized source evidence from downstream flow quality gates.
-FLOW_EVIDENCE_VERSION = "flow-evidence-pack-v4"
+FLOW_EVIDENCE_VERSION = "flow-evidence-pack-v5"
 _FLOW_EVIDENCE_VERSION = FLOW_EVIDENCE_VERSION
 FLOW_OUTLINE_VERSION = "flow-outline-v3"
 _FLOW_OUTLINE_VERSION = FLOW_OUTLINE_VERSION
@@ -50,6 +50,10 @@ _ERROR_STATUS_PATTERN = re.compile(
 )
 _ERROR_CALLEE_PATTERN = re.compile(
     r"\b[A-Za-z_][A-Za-z0-9_]*(?:_err|_error|_fail)[A-Za-z0-9_]*\s*\(",
+    re.IGNORECASE,
+)
+_CALLBACK_ARGUMENT_PATTERN = re.compile(
+    r"\b([A-Za-z_][A-Za-z0-9_]*(?:complete|callback|handler|_cb))\b",
     re.IGNORECASE,
 )
 
@@ -303,8 +307,19 @@ def build_flow_evidence_pack(
 
 
 def build_flow_outline(flow_pack: dict[str, Any]) -> dict[str, Any]:
-    edges = [item for item in flow_pack.get("call_edges") or [] if isinstance(item, dict)]
-    entries = [item for item in flow_pack.get("entry_points") or [] if isinstance(item, dict)]
+    # Test helpers often reuse product symbol names for fuzzing or fixtures.
+    # They remain related-test evidence, but joining them to product nodes by
+    # bare symbol would fabricate an end-to-end runtime path.
+    edges = [
+        item
+        for item in flow_pack.get("call_edges") or []
+        if isinstance(item, dict) and not _is_test_path(str(item.get("file_path") or ""))
+    ]
+    entries = [
+        item
+        for item in flow_pack.get("entry_points") or []
+        if isinstance(item, dict) and not _is_test_path(str(item.get("file_path") or ""))
+    ]
     usable_edges: list[dict[str, Any]] = []
     edge_keys: set[tuple[str, str]] = set()
     for edge in edges:
@@ -1257,6 +1272,55 @@ def _discover_with_git_grep(
                             },
                         )
                     )
+                # A response path can receive its completion function as an
+                # argument rather than calling it directly. Record the
+                # verified callback handoff so the flow reaches a real
+                # completion endpoint without inventing a synchronous call.
+                for callback, callback_line in _function_local_callback_references(
+                    sanitized_lines,
+                    line_number=line_number,
+                    symbol=symbol,
+                ):
+                    callback_is_target_relevant = any(
+                        term in callback.lower() for term in primary_terms
+                    )
+                    if (
+                        callback in _CONTROL_WORDS
+                        or callback.isupper()
+                        or (
+                            project_prefixes
+                            and callback.lstrip("_").split("_", 1)[0]
+                            not in project_prefixes
+                            and not callback_is_target_relevant
+                        )
+                        or (
+                            primary_prefixes
+                            and callback.lstrip("_").split("_", 1)[0]
+                            not in primary_prefixes
+                            and not callback_is_target_relevant
+                        )
+                    ):
+                        continue
+                    if callback not in queued_symbols:
+                        queued_symbols.add(callback)
+                        symbols.appendleft(callback)
+                    edges.append(
+                        _evidence_node(
+                            evidence_id="",
+                            file_path=file_path,
+                            symbol=symbol,
+                            start_line=callback_line,
+                            end_line=callback_line,
+                            provider="git-grep",
+                            sha256=file_sha256,
+                            details={
+                                "from_symbol": symbol,
+                                "to_symbol": callback,
+                                "relation": "callback_reference",
+                                "matched_text": lines[callback_line - 1][:300],
+                            },
+                        )
+                    )
                 continue
             details = {
                 "from_symbol": caller or "unknown_caller",
@@ -1439,6 +1503,48 @@ def _function_local_calls(
         if opened and depth <= 0:
             break
     return calls
+
+
+def _function_local_callback_references(
+    lines: list[str],
+    *,
+    line_number: int,
+    symbol: str,
+) -> list[tuple[str, int]]:
+    """Return callback-like function identifiers passed by one C function.
+
+    The pattern is deliberately narrower than general identifier extraction:
+    it requires a completion/handler/callback naming signal on a line that
+    invokes another function. The resulting edge represents callback handoff,
+    not a fabricated synchronous invocation.
+    """
+    origin = min(max(0, line_number - 1), len(lines) - 1)
+    start = origin
+    for index in range(origin, max(-1, origin - 12), -1):
+        if _definition_symbol("\n".join(lines[index : index + 16])) == symbol:
+            start = index
+            break
+    callbacks: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    depth = 0
+    opened = False
+    for index in range(start, min(len(lines), start + 600)):
+        line = lines[index]
+        if "{" in line:
+            opened = True
+        if opened and _CALL_PATTERN.search(line):
+            for callback in _CALLBACK_ARGUMENT_PATTERN.findall(line):
+                lowered = callback.lower()
+                if lowered in {"callback", "handler", "complete"} or callback == symbol:
+                    continue
+                key = (callback, index + 1)
+                if key not in seen:
+                    seen.add(key)
+                    callbacks.append(key)
+        depth += line.count("{") - line.count("}")
+        if opened and depth <= 0:
+            break
+    return callbacks
 
 
 def _definition_symbol(line: str) -> str:

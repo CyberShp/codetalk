@@ -10279,7 +10279,7 @@ def test_flow_symbol_parser_accepts_split_c_definitions_but_rejects_control_macr
 
 def test_flow_evidence_version_changes_when_its_verified_edge_semantics_change():
     """A corrected deterministic artifact must not reuse the prior cache entry."""
-    assert FLOW_EVIDENCE_VERSION == "flow-evidence-pack-v4"
+    assert FLOW_EVIDENCE_VERSION == "flow-evidence-pack-v5"
 
 
 def test_flow_evidence_tracks_verified_callback_references_without_call_syntax(tmp_path):
@@ -10327,6 +10327,92 @@ def test_flow_evidence_tracks_verified_callback_references_without_call_syntax(t
         and edge.get("to_symbol") == "login_complete"
     )
     assert callback_edge["relation"] == "callback_reference"
+
+
+def test_flow_evidence_discovers_callback_argument_from_the_active_function(tmp_path):
+    """The completion callback need not be preselected as an evidence card."""
+    repo = tmp_path / "repo-callback-argument"
+    (repo / "lib" / "iscsi").mkdir(parents=True)
+    source = (
+        "static void\nlogin_complete(void) { }\n"
+        "static int\nresponse(void (*callback)(void)) { callback(); return 0; }\n"
+        "static int\npayload_login(void) { return response(login_complete); }\n"
+    )
+    path = repo / "lib" / "iscsi" / "login.c"
+    path.write_text(source, encoding="utf-8")
+    subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=CodeTalk Test", "-c", "user.email=codetalk@example.invalid", "commit", "-qm", "fixture"],
+        cwd=repo,
+        check=True,
+    )
+    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
+
+    pack = build_flow_evidence_pack(
+        {
+            "analysis_target": "iSCSI login",
+            "repo_revision": revision,
+            "source_scope": {"repo": str(repo), "source_files": ["lib/iscsi/login.c"]},
+            "evidence_cards": [{
+                "evidence_id": "SRC-PAYLOAD",
+                "file_path": "lib/iscsi/login.c",
+                "classification": "source",
+                "start_line": 5,
+                "end_line": 5,
+                "excerpt": "payload_login(void) { return response(login_complete); }",
+                "symbols": ["payload_login"],
+                "sha256": hashlib.sha256(source.encode()).hexdigest(),
+            }],
+        },
+        repo_path=str(repo),
+        max_files=2,
+    )
+
+    assert any(
+        edge.get("from_symbol") == "payload_login"
+        and edge.get("to_symbol") == "login_complete"
+        and edge.get("relation") == "callback_reference"
+        for edge in pack["call_edges"]
+    )
+
+
+def test_flow_outline_does_not_merge_test_helper_edges_into_product_main_path():
+    outline = build_flow_outline(
+        {
+            "analysis_target": "iSCSI login",
+            "entry_points": [{
+                "evidence_id": "ENTRY",
+                "file_path": "lib/iscsi/login.c",
+                "symbol": "login_start",
+            }],
+            "call_edges": [
+                {
+                    "evidence_id": "EDGE-01",
+                    "file_path": "lib/iscsi/login.c",
+                    "from_symbol": "login_start",
+                    "to_symbol": "login_dispatch",
+                },
+                {
+                    "evidence_id": "EDGE-02",
+                    "file_path": "lib/iscsi/login.c",
+                    "from_symbol": "login_dispatch",
+                    "to_symbol": "login_success",
+                },
+                {
+                    "evidence_id": "EDGE-TEST",
+                    "file_path": "test/iscsi_tgt/login_helper.c",
+                    "from_symbol": "login_dispatch",
+                    "to_symbol": "fixture_helper",
+                },
+            ],
+        }
+    )
+
+    assert [step["to_symbol"] for step in outline["main_flows"][0]["steps"]] == [
+        "login_dispatch",
+        "login_success",
+    ]
 
 
 def test_local_source_context_ignores_generic_product_terms_and_keeps_test_symbols(tmp_path):
