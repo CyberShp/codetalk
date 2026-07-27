@@ -9894,7 +9894,7 @@ def test_iscsi_professional_lint_accepts_explicit_c_bit_preservation(tmp_path):
     repo = tmp_path / "spdk"
     repo.mkdir()
     contract = build_test_activity_contract(
-        target="iSCSI Login CHAP error response black-box design",
+        target="SPDK iSCSI Login CHAP",
         repo_path=str(repo),
     )
     issues = _audit_professional_constraints(
@@ -9902,10 +9902,8 @@ def test_iscsi_professional_lint_accepts_explicit_c_bit_preservation(tmp_path):
             "scenario_name": "StatSN 在错误响应中递增",
             "expected_result": "Login Response 返回 Initiator Error；错误响应分支清除 T、CSG、NSG，"
             "不会清除 C bit；不得把 C bit 写成由该分支清除。",
-            "observability": [
-                "响应中 T、CSG、NSG 按错误分支清零；错误分支不会清除 C bit，"
-                "C bit 按请求与协议语义单独判读。"
-            ],
+            "mapped_test_dir": "test/iscsi_tgt/chap/",
+            "source_or_test_evidence": ["SRC-09:L1160-L1161"],
         }, ensure_ascii=False),
         contract,
         source_artifact="black_box_cases.json",

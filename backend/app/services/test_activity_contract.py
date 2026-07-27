@@ -395,6 +395,7 @@ PROFILE_REGISTRY: dict[str, dict[str, Any]] = {
                 "correction_patterns": [
                     r"(?:清除|清零|clear).{0,80}(?:t|csg|nsg).{0,120}(?:不清除|保留|preserve|does not clear).{0,20}\bc\b",
                     r"(?:清除|清零|clear).{0,80}(?:t|csg|nsg).{0,120}\bc\b.{0,30}(?:may\s+remain|remains?|可能保留|仍保留)",
+                    r"(?:不会|未|不).{0,12}(?:清除|clear).{0,20}\bc(?:\s*bit)?\b",
                 ],
             },
             {
@@ -6041,6 +6042,7 @@ def _matches_professional_correction(statement: str, constraint: dict[str, Any])
         "iscsi_login_error_c_flag_preserved": (
             r"(?:源码)?(?:未|不会|没有).{0,40}(?:清除|clear).{0,10}c(?:\s*bit)?"
             r".{0,100}(?:不能|不得|不可).{0,30}(?:写成|声称).{0,30}清除.{0,20}t/c/csg/nsg"
+            r"|(?:不会|未|不).{0,12}(?:清除|clear).{0,20}\bc(?:\s*bit)?\b"
         ),
         "iscsi_login_error_flags_cleared": (
             r"(?:认证失败|authentication failure|error response|错误响应|失败响应).{0,120}"
