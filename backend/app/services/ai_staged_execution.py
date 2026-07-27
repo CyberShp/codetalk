@@ -593,6 +593,13 @@ def _expand_verified_source_anchors(
         semantic_anchor_patterns.extend((
             "iscsi_op_login_store_incoming_params",
             "iscsi_bhs_login_get_cbit",
+        ))
+        # For an iSCSI Login delivery the named state/auth/response functions
+        # are the non-negotiable evidence set.  Keep the broader dispatcher
+        # chain for generic Login analysis, but do not let it consume the
+        # compact pack before those protocol anchors are present.
+        if not required_protocol_anchor_terms:
+            semantic_anchor_patterns.extend((
             # Keep the verified request-dispatch chain with the parameter
             # assembly slices.  Otherwise a compact pack can contain the
             # Login payload handler and its completion callback but omit the
@@ -601,7 +608,7 @@ def _expand_verified_source_anchors(
             "iscsi_read_pdu",
             "iscsi_pdu_hdr_op_login",
             "iscsi_pdu_payload_op_login",
-        ))
+            ))
     if required_protocol_anchor_terms:
         semantic_anchor_patterns.extend(sorted(required_protocol_anchor_terms))
 
@@ -659,6 +666,15 @@ def _expand_verified_source_anchors(
             ranked_matching_lines = sorted(
                 matching_lines,
                 key=lambda index: (
+                    # Named protocol anchors must point at their defining
+                    # implementation, not merely one of many call sites.
+                    # The latter often has no validation/error semantics and
+                    # cannot support an independently checked behavior claim.
+                    token in required_protocol_anchor_terms
+                    and _source_enclosing_c_function(
+                        source_text,
+                        anchor_line=index + 1,
+                    ).lower() == token,
                     sum(
                         pattern in "\n".join(
                             lines[max(0, index - 8) : min(len(lines), index + 9)]
@@ -680,6 +696,26 @@ def _expand_verified_source_anchors(
                 ),
                 reverse=True,
             )[:6]
+            if token in required_protocol_anchor_terms:
+                # Preserve the definition line even when a frequently-called
+                # symbol has enough call sites to fill the generic top-six.
+                # Ranking only call sites leaves no source slice capable of
+                # proving that function's response/error behavior.
+                definition_lines = [
+                    index
+                    for index in matching_lines
+                    if _source_enclosing_c_function(
+                        source_text,
+                        anchor_line=index + 1,
+                    ).lower() == token
+                    and re.search(
+                        rf"\b{re.escape(token)}\s*\(",
+                        lines[index],
+                    )
+                ]
+                ranked_matching_lines = list(
+                    dict.fromkeys([*definition_lines, *ranked_matching_lines])
+                )[:7]
             for line_index in ranked_matching_lines:
                 start_index = max(0, line_index - 8)
                 end_index = min(len(lines), line_index + 9)
@@ -774,6 +810,11 @@ def _expand_verified_source_anchors(
                             for anchor in required_protocol_anchor_terms
                         )
                     ),
+                    "_protocol_anchor_names": {
+                        anchor
+                        for anchor in required_protocol_anchor_terms
+                        if anchor in excerpt_lower
+                    },
                 })
 
     additional_per_path: dict[str, int] = {}
@@ -800,6 +841,78 @@ def _expand_verified_source_anchors(
             max(0, anchor_limit - len(files)),
         ),
     )
+    selected_protocol_anchors = {
+        anchor
+        for item in files
+        for anchor in required_protocol_anchor_terms
+        if anchor in str(item.get("excerpt") or "").lower()
+    }
+    def select_candidate(candidate: dict[str, Any]) -> None:
+        """Materialize one verified slice and retire its overlapping peers."""
+        nonlocal candidates, recent_referenced_symbols
+        candidate.pop("_information_value", None)
+        candidate.pop("_token_priority", None)
+        candidate.pop("_risk_signal_value", None)
+        candidate.pop("_specialization_penalty", None)
+        candidate.pop("_symbol_term_relevance", None)
+        candidate.pop("_semantic_anchor_value", None)
+        candidate.pop("_required_semantic_anchor", None)
+        candidate.pop("_mandatory_protocol_anchor", None)
+        candidate_protocol_anchors = candidate.pop("_protocol_anchor_names", set())
+        candidate["evidence_id"] = f"SRC-{len(files) + 1:02d}"
+        files.append(candidate)
+        selected_protocol_anchors.update(candidate_protocol_anchors)
+        additional_per_path[candidate["file_path"]] = (
+            additional_per_path.get(candidate["file_path"], 0) + 1
+        )
+        covered_terms.update(candidate.get("matched_terms") or [])
+        referenced_symbols.update(
+            _source_called_symbols(str(candidate.get("excerpt") or ""))
+        )
+        recent_referenced_symbols = _source_called_symbols(
+            str(candidate.get("excerpt") or "")
+        )
+        selected_symbols_by_path.setdefault(candidate["file_path"], set()).update(
+            str(symbol) for symbol in candidate.get("symbols") or []
+        )
+        candidates = [
+            value
+            for value in candidates
+            if not (
+                value["file_path"] == candidate["file_path"]
+                and not (
+                    value["end_line"] < candidate["start_line"]
+                    or value["start_line"] > candidate["end_line"]
+                )
+            )
+        ]
+
+    # A profile requirement is stronger than a relevance score.  Reserve the
+    # definitions for every missing Login semantic anchor before generic
+    # slices (dispatch, C-bit and call sites) compete for the finite budget.
+    for anchor in sorted(required_protocol_anchor_terms):
+        if anchor in selected_protocol_anchors or len(files) >= anchor_limit:
+            continue
+        eligible = [
+            value for value in candidates
+            if anchor in value["_protocol_anchor_names"]
+        ]
+        if not eligible:
+            continue
+        definition_candidates = [
+            value for value in eligible
+            if anchor in {str(symbol).lower() for symbol in value.get("symbols") or []}
+        ]
+        select_candidate(max(
+            definition_candidates or eligible,
+            key=lambda value: (
+                anchor in {
+                    str(symbol).lower()
+                    for symbol in value.get("symbols") or []
+                },
+                value["_risk_signal_value"],
+            ),
+        ))
     while candidates and len(files) < anchor_limit:
         # A compact iSCSI Login pack has five non-interchangeable semantic
         # anchors (authentication, phase, response, CSG handling and incoming
@@ -828,6 +941,14 @@ def _expand_verified_source_anchors(
             range(len(candidates)),
             key=lambda index: (
                 candidates[index]["classification"] == "source",
+                # A generic Login/C-bit snippet is useful only after the
+                # contract's named semantic chain is present.  Without this
+                # precedence a finite pack can spend its last slot on another
+                # continuation-bit slice and omit the response builder.
+                bool(
+                    candidates[index]["_protocol_anchor_names"]
+                    - selected_protocol_anchors
+                ),
                 candidates[index]["_mandatory_protocol_anchor"],
                 candidates[index]["_required_semantic_anchor"],
                 candidates[index]["_semantic_anchor_value"],
@@ -868,40 +989,7 @@ def _expand_verified_source_anchors(
             ),
         )
         candidate = candidates.pop(candidate_index)
-        candidate.pop("_information_value", None)
-        candidate.pop("_token_priority", None)
-        candidate.pop("_risk_signal_value", None)
-        candidate.pop("_specialization_penalty", None)
-        candidate.pop("_symbol_term_relevance", None)
-        candidate.pop("_semantic_anchor_value", None)
-        candidate.pop("_required_semantic_anchor", None)
-        candidate.pop("_mandatory_protocol_anchor", None)
-        candidate["evidence_id"] = f"SRC-{len(files) + 1:02d}"
-        files.append(candidate)
-        additional_per_path[candidate["file_path"]] = (
-            additional_per_path.get(candidate["file_path"], 0) + 1
-        )
-        covered_terms.update(candidate.get("matched_terms") or [])
-        referenced_symbols.update(
-            _source_called_symbols(str(candidate.get("excerpt") or ""))
-        )
-        recent_referenced_symbols = _source_called_symbols(
-            str(candidate.get("excerpt") or "")
-        )
-        selected_symbols_by_path.setdefault(candidate["file_path"], set()).update(
-            str(symbol) for symbol in candidate.get("symbols") or []
-        )
-        candidates = [
-            value
-            for value in candidates
-            if not (
-                value["file_path"] == candidate["file_path"]
-                and not (
-                    value["end_line"] < candidate["start_line"]
-                    or value["start_line"] > candidate["end_line"]
-                )
-            )
-        ]
+        select_candidate(candidate)
 
     compact = {**compact, "files": files}
     compact["verified_symbols"] = sorted(
