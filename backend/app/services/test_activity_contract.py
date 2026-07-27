@@ -3757,7 +3757,13 @@ def _audit_raw_pdu_runtime_evidence(*, root: Path, content: str) -> list[dict[st
     ):
         return []
     validation = _read_json(root / "raw_pdu_harness_validation.json")
-    if isinstance(validation, dict) and validation.get("status") == "passed":
+    if (
+        isinstance(validation, dict)
+        and validation.get("status") == "passed"
+        and validation.get("validation_scope") == "spdk_target_integration"
+        and validation.get("target_kind") == "spdk_iscsi_target"
+        and isinstance(validation.get("target_identity"), dict)
+    ):
         checks = {str(item) for item in validation.get("checks") or []}
         required = {
             "tcp_connect",
@@ -3771,7 +3777,7 @@ def _audit_raw_pdu_runtime_evidence(*, root: Path, content: str) -> list[dict[st
         _issue(
             "raw_pdu_runtime_validation_failed",
             "black_box_cases.json",
-            "raw-PDU harness 未通过本机回环 TCP 的真实 connect/sendall/recv 自检，不能标记为可执行。",
+            "raw-PDU harness 缺少连接真实 SPDK iSCSI target 的验证证据；本地回环自检只能证明 harness 本身，不能标记为可执行。",
             validation_layer="L3_executable",
             validation=validation if isinstance(validation, dict) else {},
         )

@@ -3811,7 +3811,7 @@ if __name__ == "__main__":
 
 
 def _materialize_and_validate_raw_pdu_harness(artifact_dir: Path) -> dict[str, Any]:
-    """Execute the deterministic harness self-test over a real loopback TCP socket."""
+    """Validate harness mechanics without misrepresenting a synthetic peer as SPDK."""
     artifact_root = artifact_dir.resolve()
     match = re.search(
         r"```python\s*\n([\s\S]*?)```",
@@ -3823,7 +3823,9 @@ def _materialize_and_validate_raw_pdu_harness(artifact_dir: Path) -> dict[str, A
     if match is None:
         result = {
             "status": "failed",
-            "validation_layer": "L3_executable",
+            "validation_layer": "harness_self_test",
+            "validation_scope": "synthetic_harness_self_test",
+            "target_kind": "simulated_loopback",
             "reason": "确定性 raw-PDU harness 缺少 Python 代码块",
         }
         _write_json(validation_path, result)
@@ -3853,8 +3855,10 @@ def _materialize_and_validate_raw_pdu_harness(artifact_dir: Path) -> dict[str, A
         passed = completed.returncode == 0 and "CODETALK_RAW_PDU_SELF_TEST_OK" in completed.stdout
         result = {
             "status": "passed" if passed else "failed",
-            "validation_layer": "L3_executable",
-            "transport": "tcp_loopback",
+            "validation_layer": "harness_self_test",
+            "validation_scope": "synthetic_harness_self_test",
+            "target_kind": "simulated_loopback",
+            "transport": "synthetic_loopback",
             "checks": [
                 "bhs_layout",
                 "chap_md5",
@@ -3873,8 +3877,10 @@ def _materialize_and_validate_raw_pdu_harness(artifact_dir: Path) -> dict[str, A
     except subprocess.TimeoutExpired:
         result = {
             "status": "failed",
-            "validation_layer": "L3_executable",
-            "transport": "tcp_loopback",
+            "validation_layer": "harness_self_test",
+            "validation_scope": "synthetic_harness_self_test",
+            "target_kind": "simulated_loopback",
+            "transport": "synthetic_loopback",
             "reason": "raw-PDU harness 自检超过 5 秒",
             "duration_ms": round((time.monotonic() - started) * 1000, 1),
             "harness": str(harness_path.relative_to(artifact_root)),

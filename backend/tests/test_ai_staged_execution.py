@@ -4626,7 +4626,9 @@ async def test_combined_report_is_deterministically_rendered_from_validated_stag
     assert result["provider_call_count"] == 0
     assert result["producer"] == "deterministic_combined_report"
     assert result["harness_validation"]["status"] == "passed"
-    assert result["harness_validation"]["transport"] == "tcp_loopback"
+    assert result["harness_validation"]["transport"] == "synthetic_loopback"
+    assert result["harness_validation"]["validation_scope"] == "synthetic_harness_self_test"
+    assert result["harness_validation"]["target_kind"] == "simulated_loopback"
     runtime_validation = json.loads(
         (tmp_path / "raw_pdu_harness_validation.json").read_text()
     )

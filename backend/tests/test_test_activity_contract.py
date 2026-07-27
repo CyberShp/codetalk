@@ -8706,7 +8706,7 @@ def test_bound_behavior_validation_details_exposes_a_scoped_field_patch():
     assert field_patch == {"detection": "仅观测状态响应。"}
 
 
-def test_staged_raw_pdu_report_requires_loopback_runtime_evidence(tmp_path):
+def test_staged_raw_pdu_report_requires_real_spdk_runtime_evidence(tmp_path):
     from app.services.test_activity_contract import _audit_raw_pdu_runtime_evidence
 
     (tmp_path / "staged_execution_result.json").write_text(
@@ -8724,6 +8724,30 @@ def test_staged_raw_pdu_report_requires_loopback_runtime_evidence(tmp_path):
         json.dumps(
             {
                 "status": "passed",
+                "validation_scope": "synthetic_harness_self_test",
+                "target_kind": "simulated_loopback",
+                "checks": [
+                    "tcp_connect",
+                    "first_pdu_sendall",
+                    "login_response_recv",
+                    "status_oracle",
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert [issue["code"] for issue in _audit_raw_pdu_runtime_evidence(
+        root=tmp_path,
+        content=content,
+    )] == ["raw_pdu_runtime_validation_failed"]
+
+    (tmp_path / "raw_pdu_harness_validation.json").write_text(
+        json.dumps(
+            {
+                "status": "passed",
+                "validation_scope": "spdk_target_integration",
+                "target_kind": "spdk_iscsi_target",
+                "target_identity": {"pid": 1234, "endpoint": "127.0.0.1:3260"},
                 "checks": [
                     "tcp_connect",
                     "first_pdu_sendall",
