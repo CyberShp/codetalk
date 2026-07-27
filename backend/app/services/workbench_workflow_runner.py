@@ -1479,6 +1479,9 @@ class WorkbenchWorkflowRunner:
             task_run.artifact_dir,
             profile_id=profile_id,
         )
+        _refresh_canonical_agent_combined_reports(
+            artifact_dir=Path(str(task_run.artifact_dir)),
+        )
         _refresh_source_delivery_governance_after_finalizing(
             artifact_dir=Path(str(task_run.artifact_dir)),
             plan={},
@@ -1532,6 +1535,9 @@ class WorkbenchWorkflowRunner:
             materialize_artifact_contract_v3_outputs(
                 task_run.artifact_dir,
                 profile_id=profile_id,
+            )
+            _refresh_canonical_agent_combined_reports(
+                artifact_dir=Path(str(task_run.artifact_dir)),
             )
             _refresh_source_delivery_governance_after_finalizing(
                 artifact_dir=Path(str(task_run.artifact_dir)),
@@ -7660,6 +7666,45 @@ def _refresh_reports_after_tombstones(
             output_contract=contract,
         )
         refreshed.append(artifact)
+    return refreshed
+
+
+def _refresh_canonical_agent_combined_reports(*, artifact_dir: Path) -> list[str]:
+    """Rebuild nested Agent reports from the same final JSON as deliveries.
+
+    A regular builtin stage writes its canonical rows below ``agent_runs``.
+    The task-level Artifact Contract renders user-facing root Markdown from
+    those rows, but the stage's ``report.md`` is also an auditable declared
+    output.  Leaving it as provider prose after a row-level repair creates a
+    second, stale factual representation.  Re-render it deterministically
+    from the nested canonical artifacts before the final audit.
+    """
+    refreshed: list[str] = []
+    agents_root = artifact_dir / "agent_runs"
+    if not agents_root.is_dir():
+        return refreshed
+    for report_path in sorted(agents_root.glob("*/report.md")):
+        stage_root = report_path.parent
+        plan = _read_json(stage_root / "staged_execution_plan.json")
+        if not isinstance(plan, dict):
+            continue
+        report_contract = next(
+            (
+                stage.get("output_contract")
+                for stage in plan.get("stages") or []
+                if isinstance(stage, dict)
+                and str(stage.get("artifact") or "") == "report.md"
+                and isinstance(stage.get("output_contract"), dict)
+            ),
+            {},
+        )
+        refresh_deterministic_combined_report(
+            artifact_dir=stage_root,
+            plan=plan,
+            artifact="report.md",
+            output_contract=report_contract,
+        )
+        refreshed.append(str(report_path.relative_to(artifact_dir)))
     return refreshed
 
 

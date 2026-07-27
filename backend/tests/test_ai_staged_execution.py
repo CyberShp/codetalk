@@ -13869,6 +13869,8 @@ def test_deterministic_quality_repair_resolves_rendered_headings_and_repairs_isc
 
     by_id = {row["case_id"]: row for row in repaired}
     assert "CSG=3" not in by_id["BB-01"]["expected_result"]
+    assert "CSG=3" not in " ".join(by_id["BB-01"]["observability"])
+    assert "CSG!=3" not in " ".join(by_id["BB-01"]["failure_diagnostics"])
     chap = " ".join(by_id["BB-07"]["steps"])
     assert "CHAP_N 为普通用户名字符串" in chap
     assert "CHAP_I 为十进制标识符" in chap

@@ -81,6 +81,46 @@ def test_final_quality_gate_includes_nested_black_box_case_details(tmp_path):
     }]
 
 
+def test_finalization_rebuilds_nested_agent_report_from_repaired_canonical_rows(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _refresh_canonical_agent_combined_reports,
+    )
+
+    nested = tmp_path / "agent_runs" / "analyze"
+    nested.mkdir(parents=True)
+    (nested / "staged_execution_plan.json").write_text(json.dumps({
+        "target": "iSCSI Login",
+        "repo_revision": "test-revision",
+        "stages": [{
+            "id": "report",
+            "artifact": "report.md",
+            "output_contract": {"min_black_box_cases": 1},
+        }],
+    }), encoding="utf-8")
+    (nested / "source_scope.json").write_text(json.dumps({"analysis_target": "iSCSI Login"}), encoding="utf-8")
+    (nested / "evidence_cards.json").write_text(json.dumps([{
+        "evidence_id": "SRC-01", "file_path": "lib/iscsi/iscsi.c",
+        "start_line": 1, "end_line": 2, "excerpt": "verified source",
+    }]), encoding="utf-8")
+    (nested / "sfmea.json").write_text(json.dumps([]), encoding="utf-8")
+    (nested / "black_box_cases.json").write_text(json.dumps([{
+        "case_id": "BB-01",
+        "scenario_name": "正常登录",
+        "steps": ["记录当前协商路径的 CSG。"],
+        "expected_result": "最终响应 T=1、NSG=3；CSG=0 和 CSG=1 都可能合法。",
+        "observability": ["不把 CSG=3 作为协议终态。"],
+    }]), encoding="utf-8")
+    (nested / "report.md").write_text("旧报告：CSG=3 是唯一终态", encoding="utf-8")
+
+    refreshed = _refresh_canonical_agent_combined_reports(artifact_dir=tmp_path)
+
+    report = (nested / "report.md").read_text(encoding="utf-8")
+    assert refreshed == ["agent_runs/analyze/report.md"]
+    assert "旧报告" not in report
+    assert "CSG=3 是唯一终态" not in report
+    assert "CSG=0 和 CSG=1 都可能合法" in report
+
+
 def test_source_driven_fact_tombstones_remove_only_explicitly_contradicted_rows(tmp_path):
     from app.services.workbench_workflow_runner import (
         _apply_source_driven_fact_tombstones,

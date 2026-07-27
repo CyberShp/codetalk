@@ -10626,7 +10626,22 @@ def _deterministic_quality_claim_repair(
                 "最终成功 Login Response 为 T=1、NSG=3；CSG 回显当前协商路径，"
                 "CSG=0 和 CSG=1 都可能合法，外部会话进入 Full Feature。"
             )
-            fields.extend([f"$[{index}].steps", f"$[{index}].expected_result"])
+            row["observability"] = [
+                "Login Response PDU 的 status_class 与 status_detail 字段为实际成功协商结果。",
+                "最终成功响应为 T=1、NSG=3；记录当前协商路径的 CSG，不把当前阶段误报为固定终态。",
+                "后续 SCSI 命令获得正常响应。",
+            ]
+            row["failure_diagnostics"] = [
+                "若 status_class/status_detail 非成功值，检查 target 配置与 initiator 参数。",
+                "若 T=0、NSG!=3 或 CSG 与当前协商路径不一致，保留 Login Request/Response PDU 并检查阶段迁移。",
+                "若后续命令无响应，检查 Full Feature Phase 进入条件。",
+            ]
+            fields.extend([
+                f"$[{index}].steps",
+                f"$[{index}].expected_result",
+                f"$[{index}].observability",
+                f"$[{index}].failure_diagnostics",
+            ])
 
     chap_wire_encoding_issues = [
         issue
