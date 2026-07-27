@@ -840,6 +840,41 @@ def test_professional_coverage_warning_blocks_deep_delivery():
     assert result["issues"][-1]["scenarios"] == ["错误 CHAP_R", "未知 CHAP 用户"]
 
 
+def test_source_driven_coverage_warning_is_visible_for_rapid_and_blocks_deep():
+    from app.services.workbench_workflow_runner import (
+        _apply_profile_coverage_to_quality_audit,
+    )
+
+    audit = {
+        "status": "deliverable",
+        "deliverable": True,
+        "score": 100,
+        "issue_count": 0,
+        "issues": [],
+        "quality_axes": {
+            "coverage_breadth": {"status": "passed", "score": 100},
+            "coverage_judge": {
+                "status": "warning",
+                "score": 80,
+                "warnings": ["branch_disposition.json:FLOW-COND-001:need_verify"],
+            },
+        },
+    }
+
+    rapid = _apply_profile_coverage_to_quality_audit(audit=audit, profile_id="rapid")
+    assert rapid["deliverable"] is True
+    assert rapid["status"] == "warning"
+    assert rapid["score"] == 80
+    assert rapid["quality_axes"]["coverage_judge"]["status"] == "warning"
+
+    deep = _apply_profile_coverage_to_quality_audit(audit=audit, profile_id="deep")
+    assert deep["deliverable"] is False
+    assert deep["status"] == "needs_rework"
+    assert deep["score"] == 80
+    assert deep["quality_axes"]["coverage_judge"]["status"] == "blocked"
+    assert deep["issues"][-1]["code"] == "source_driven_coverage_incomplete"
+
+
 def test_claim_evidence_ledger_blocks_delivery_with_a_repairable_issue():
     from app.services.workbench_workflow_runner import (
         _apply_claim_evidence_ledger_to_quality_audit,

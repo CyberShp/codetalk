@@ -4432,16 +4432,24 @@ def _apply_profile_coverage_to_quality_audit(
     result = dict(audit or {})
     axes = dict(result.get("quality_axes") or {})
     coverage = dict(axes.get("coverage_breadth") or {})
-    if str(coverage.get("status") or "") != "warning":
+    coverage_judge = dict(axes.get("coverage_judge") or {})
+    breadth_warning = str(coverage.get("status") or "") == "warning"
+    judge_warning = str(coverage_judge.get("status") or "") == "warning"
+    if not breadth_warning and not judge_warning:
         return result
 
-    score = coverage.get("score")
-    if isinstance(score, (int, float)):
+    coverage_scores = [
+        int(value)
+        for value in (coverage.get("score"), coverage_judge.get("score"))
+        if isinstance(value, (int, float))
+    ]
+    if coverage_scores:
         current_score = result.get("score")
-        if isinstance(current_score, (int, float)):
-            result["score"] = min(int(current_score), int(score))
-        else:
-            result["score"] = int(score)
+        result["score"] = min(
+            *(coverage_scores + [int(current_score)])
+            if isinstance(current_score, (int, float))
+            else coverage_scores
+        )
     profile = str(profile_id or "rapid").strip().lower()
     if profile != "deep":
         if result.get("deliverable") is True and result.get("status") == "deliverable":
@@ -4454,29 +4462,47 @@ def _apply_profile_coverage_to_quality_audit(
         if isinstance(item, dict)
     ]
     if not any(item.get("code") == "professional_coverage_incomplete" for item in issues):
-        issues.append(
-            {
-                "code": "professional_coverage_incomplete",
-                "severity": "blocking",
-                # Coverage is observed in the assembled report, but the
-                # editable source of truth is the structured black-box suite.
-                # Routing this to the report makes a repair describe missing
-                # cases without ever being allowed to add them.
-                "artifact": "black_box_cases.json",
-                "source_artifact": "完整分析报告.md",
-                "scenarios": [
-                    str(item).strip()
-                    for item in coverage.get("missing_scenarios") or []
-                    if str(item).strip()
-                ],
-                "message": (
-                    "深度型交付尚未覆盖必需的专业测试场景："
-                    + "；".join(str(item) for item in coverage.get("warnings") or [])
-                ),
-                "recommended_action": "从场景扩展阶段重试，补齐覆盖广度提示中的场景后再发布。",
-            }
-        )
-    axes["coverage_breadth"] = {**coverage, "status": "blocked"}
+        coverage_issue = {
+            "code": "professional_coverage_incomplete",
+            "severity": "blocking",
+            # Coverage is observed in the assembled report, but the
+            # editable source of truth is the structured black-box suite.
+            # Routing this to the report makes a repair describe missing
+            # cases without ever being allowed to add them.
+            "artifact": "black_box_cases.json",
+            "source_artifact": "完整分析报告.md",
+            "scenarios": [
+                str(item).strip()
+                for item in coverage.get("missing_scenarios") or []
+                if str(item).strip()
+            ],
+            "message": (
+                "深度型交付尚未覆盖必需的专业测试场景："
+                + "；".join(str(item) for item in coverage.get("warnings") or [])
+            ),
+            "recommended_action": "从场景扩展阶段重试，补齐覆盖广度提示中的场景后再发布。",
+        }
+        if breadth_warning:
+            issues.append(coverage_issue)
+        elif judge_warning:
+            issues.append(
+                {
+                    **coverage_issue,
+                    "code": "source_driven_coverage_incomplete",
+                    "source_artifact": "judge_report.json",
+                    "message": (
+                        "深度型交付仍有待核验的源码驱动覆盖项："
+                        + "；".join(
+                            str(item) for item in coverage_judge.get("warnings") or []
+                        )
+                    ),
+                    "recommended_action": "从场景扩展阶段重试，补齐待核验的条件、状态和资源覆盖后再发布。",
+                }
+            )
+    if breadth_warning:
+        axes["coverage_breadth"] = {**coverage, "status": "blocked"}
+    if judge_warning:
+        axes["coverage_judge"] = {**coverage_judge, "status": "blocked"}
     result.update(
         {
             "status": "needs_rework" if result.get("status") != "invalid" else "invalid",
