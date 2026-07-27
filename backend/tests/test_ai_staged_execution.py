@@ -1967,9 +1967,9 @@ def test_canonical_claim_evidence_is_materialized_from_evidence_id():
 
     assert canonicalized[0]["technical_claims"][0]["evidence"] == [catalog[0]]
     assert canonicalized[0]["technical_claims"][0]["statement"] == "Login accept is zero."
-    assert canonicalized[1]["technical_claims"][0]["evidence"] == [
-        {"evidence_id": "UNKNOWN", "quote": "fake"}
-    ]
+    # A non-canonical behavior assertion must not survive as a stale claim
+    # that later poisons the quality repair loop.
+    assert canonicalized[1]["technical_claims"] == []
 
 
 def test_regular_stage_output_limit_is_enforced_in_code():
@@ -7112,6 +7112,44 @@ def test_black_box_normalization_promotes_exact_declared_source_line_to_l1_claim
     assert claim["type"] == "source_anchor"
     assert claim["statement"] == "rc = iscsi_op_login_session_discovery_chap(conn);"
     assert claim["evidence"][0]["evidence_id"] == "FLOW-EDGE-008:L1889"
+
+
+def test_black_box_normalization_declares_all_retained_claim_evidence():
+    rows = [{
+        "case_id": "BB-10",
+        "source_or_test_evidence": ["lib/iscsi/conn.c:167"],
+        "technical_claims": [
+            {
+                "claim_id": "C-1",
+                "type": "source_anchor",
+                "statement": "conn->login_timer = register(...);",
+                "evidence": [{
+                    "evidence_id": "SRC-01:L167",
+                    "path": "lib/iscsi/conn.c",
+                    "lines": "L167",
+                    "quote": "conn->login_timer = register(...);",
+                }],
+            },
+            {
+                "claim_id": "C-2",
+                "type": "behavior_assertion",
+                "statement": "timeout uses the declared protocol constant.",
+                "evidence": [{
+                    "evidence_id": "SRC-02:L526",
+                    "path": "include/spdk/iscsi_spec.h",
+                    "lines": "L526",
+                    "quote": "#define ISCSI_LOGIN_AUTHENT_FAIL 0x01",
+                }],
+            },
+        ],
+    }]
+
+    normalized = _normalize_black_box_source_anchor_claims(rows, [])
+
+    assert any(
+        "include/spdk/iscsi_spec.h" in reference
+        for reference in normalized[0]["source_or_test_evidence"]
+    )
 
 
 def test_final_quality_repair_materializes_sfmea_deletions_without_tombstones(tmp_path):

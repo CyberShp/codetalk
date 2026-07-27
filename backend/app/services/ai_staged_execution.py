@@ -6878,10 +6878,27 @@ def _canonicalize_technical_claim_evidence(
         claims = row.get("technical_claims")
         if not isinstance(claims, list):
             continue
-        canonical_claims = [
-            claim for claim in claims if isinstance(claim, dict)
-        ][:2]
+        canonical_claims = []
+        for claim in (claim for claim in claims if isinstance(claim, dict)):
+            evidence_items = claim.get("evidence")
+            references = [
+                item for item in evidence_items or [] if isinstance(item, dict)
+            ]
+            # A generated technical claim is usable only when at least one
+            # cited literal resolves to the SHA-checked catalog. Keeping a
+            # stale raw reference forces every later repair to re-audit an
+            # assertion that cannot possibly become evidence-backed.
+            if references and not any(
+                canonical_for(str(item.get("evidence_id") or ""), item)
+                is not None
+                for item in references
+            ):
+                continue
+            canonical_claims.append(claim)
+            if len(canonical_claims) >= 2:
+                break
         if not canonical_claims:
+            row["technical_claims"] = []
             continue
         row["technical_claims"] = canonical_claims
         for claim in canonical_claims:
@@ -7008,11 +7025,14 @@ def _normalize_black_box_source_anchor_claims(
             for item in row.get("source_or_test_evidence") or []
             if str(item).strip()
         ]
-        for item in evidence:
-            path = str(item.get("path") or "").strip()
-            evidence_id = str(item.get("evidence_id") or "").strip()
-            if path and not any(path in value for value in declared):
-                declared.append(f"{path} ({evidence_id})" if evidence_id else path)
+        for claim in row["technical_claims"]:
+            for item in claim.get("evidence") or []:
+                if not isinstance(item, dict):
+                    continue
+                path = str(item.get("path") or "").strip()
+                evidence_id = str(item.get("evidence_id") or "").strip()
+                if path and not any(path in value for value in declared):
+                    declared.append(f"{path} ({evidence_id})" if evidence_id else path)
         row["source_or_test_evidence"] = declared
     return rendered
 
