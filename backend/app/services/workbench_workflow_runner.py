@@ -9091,13 +9091,11 @@ def _quality_feedback_from_audit(
         "flow_incomplete_for_delivery",
         "flow_missing_abnormal_paths",
         "flow_evidence_not_connected",
-        # These are verdicts about the available source-to-case mapping.  A
-        # second generation against the same frozen evidence cannot close them
-        # unless a separate coverage-expansion path supplies new bindings.
-        # Stop the expensive full black-box regeneration and preserve the
-        # actionable blocked targets instead of looping until the time budget.
+        # A judge verdict is not editable by the generator.  The companion
+        # ``source_driven_coverage_incomplete`` issue below is different: it
+        # carries frozen FLOW/STATE/RESOURCE targets which the black-box stage
+        # can bind explicitly without re-discovering source facts.
         "source_driven_coverage_judge_blocked",
-        "source_driven_coverage_incomplete",
         # A generator cannot make itself an independent auditor. Keep this
         # fail-closed finding in the audit, but still repair concrete delivery
         # defects reported alongside it.
@@ -9131,6 +9129,12 @@ def _quality_feedback_from_audit(
             # Older attempts stored this report-level profile gate before the
             # canonical repair target existed.  Preserve compatibility while
             # always repairing the actual structured test-case artifact.
+            artifact = "black_box_cases.json"
+        if code == "source_driven_coverage_incomplete":
+            # The target list is frozen in the audit and is supplied to the
+            # scoped black-box repair.  Mapping it through coverage_target_ids
+            # is an actual delivery change, unlike asking the model to invent
+            # a missing source path from the same prompt.
             artifact = "black_box_cases.json"
         is_repairable = code not in non_repairable_codes
         issue["repairable"] = is_repairable

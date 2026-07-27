@@ -304,6 +304,33 @@ def test_disposition_maps_flow_evidence_to_case_with_same_verified_symbol():
     assert branch["end_line"] == 112
 
 
+def test_disposition_maps_explicit_coverage_target_without_overloading_source_anchor():
+    """A case may carry a frozen flow target alongside its L1 source anchor."""
+    from app.services.source_driven_test_design import build_source_driven_test_design
+
+    cases = _cases() + [{
+        "case_id": "CASE-EXPLICIT-COVERAGE",
+        "test_dimension": "异常分支",
+        "scenario_name": "Login 状态分支",
+        # This remains the user-visible source provenance.  FLOW-* belongs in
+        # a separate machine mapping field and must not replace it.
+        "source_or_test_evidence": ["SRC-001:L112"],
+        "coverage_target_ids": ["FLOW-COND-001"],
+        "technical_claims": [],
+    }]
+    artifacts = build_source_driven_test_design(
+        source_pack=_source_pack(),
+        flow_pack=_flow_pack(),
+        flow_outline=_outline(),
+        sfmea=_sfmea(),
+        black_box_cases=cases,
+    )
+
+    branch = artifacts["branch_disposition.json"]["items"][0]
+    assert branch["disposition"] == "retain"
+    assert branch["covered_by"] == ["CASE-EXPLICIT-COVERAGE"]
+
+
 def test_refresh_rebuilds_dispositions_from_final_black_box_cases(tmp_path):
     from app.services.source_driven_test_design import (
         build_source_driven_test_design,

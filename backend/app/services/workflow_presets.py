@@ -226,6 +226,10 @@ BLACK_BOX_CASES_SCHEMA: dict[str, Any] = {
             "failure_diagnostics": {"type": "array", "items": {"type": "string"}},
             "mapped_test_dir": {"type": "string"},
             "source_or_test_evidence": {"type": "array", "items": {"type": "string"}},
+            "coverage_target_ids": {
+                "type": "array",
+                "items": {"type": "string", "minLength": 1},
+            },
             "technical_claims": TECHNICAL_CLAIMS_SCHEMA,
         },
         "additionalProperties": True,

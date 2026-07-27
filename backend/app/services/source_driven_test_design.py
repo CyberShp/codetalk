@@ -2429,7 +2429,15 @@ def _mapped_case_ids(
     direct = _dedupe(
         str(row.get("case_id") or "")
         for row in cases
-        if isinstance(row, dict) and wanted.intersection(_strings(row.get("source_or_test_evidence")))
+        if isinstance(row, dict)
+        and wanted.intersection(
+            _strings(
+                [
+                    *(row.get("source_or_test_evidence") or []),
+                    *(row.get("coverage_target_ids") or []),
+                ]
+            )
+        )
     )
     if direct or not isinstance(target, dict):
         return direct
