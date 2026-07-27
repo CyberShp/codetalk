@@ -2721,58 +2721,6 @@ def build_behavior_claim_validation_request(
             for claim in explicit
             if claim.get("validation_layer") == "L2_independent_behavior"
         )
-        # Exact source anchors establish only provenance.  The user-visible
-        # SFMEA/case fields can still make a broader, false assertion about
-        # behavior.  Submit that row-level assertion to L2 even when every
-        # explicit claim has been normalized to a deterministic source anchor.
-        claims_by_row: dict[str, list[dict[str, Any]]] = {}
-        for claim in explicit:
-            if isinstance(claim, dict):
-                claims_by_row.setdefault(str(claim.get("row_id") or ""), []).append(claim)
-        row_id_key = "sfmea_id" if artifact == "sfmea.json" else "case_id"
-        row_claim_type = (
-            "sfmea_row_behavior"
-            if artifact == "sfmea.json"
-            else "black_box_case_behavior"
-        )
-        for row_index, row in enumerate(rows, start=1):
-            if not isinstance(row, dict):
-                continue
-            row_id = str(row.get(row_id_key) or f"row-{row_index}").strip()
-            if not row_id:
-                continue
-            # A black-box contract may name public tools and measurements that
-            # are not implemented by the repository, but a source-bound row
-            # still asserts the expected product behaviour.  Submit that
-            # behaviour to L2; the auditor is instructed not to reject the
-            # test tooling merely because it is external.
-            if artifact == "black_box_cases.json" and not claims_by_row.get(row_id):
-                continue
-            evidence = _row_behavior_evidence(
-                row=row,
-                verified_files=verified_files,
-                explicit_claims=claims_by_row.get(row_id, []),
-            )
-            if not evidence:
-                continue
-            statement = _row_behavior_statement(artifact=artifact, row=row)
-            candidates.append(
-                {
-                    "claim_id": f"ROW:{artifact}:{row_id}",
-                    "type": row_claim_type,
-                    "artifact": artifact,
-                    "row_id": row_id,
-                    "statement": statement,
-                    "evidence": evidence,
-                    "binding": _behavior_claim_binding(
-                        claim_id=f"ROW:{artifact}:{row_id}",
-                        claim_type=row_claim_type,
-                        statement=statement,
-                        evidence=evidence,
-                    ),
-                    "validation_layer": "L2_independent_behavior",
-                }
-            )
 
     contexts: list[dict[str, Any]] = []
     context_index: dict[tuple[str, int, int, str], str] = {}

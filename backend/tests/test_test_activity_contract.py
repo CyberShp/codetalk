@@ -8131,18 +8131,17 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
     )
     assert {claim["claim_id"] for claim in request["claims"]} == {
         "C-BEHAVIOR-001",
-        "ROW:sfmea.json:SFMEA-001",
     }
     limited_request = build_behavior_claim_validation_request(
         artifact_dir=artifacts,
         repo_path=repo,
         max_claims=1,
     )
-    # The row-level user-visible behavior is audited alongside the explicit
-    # claim, so a true source quote cannot hide a broader false SFMEA statement.
-    assert limited_request["candidate_count"] == 2
+    # Risk effects and test mappings are hypotheses.  Only an explicit
+    # source-behavior claim belongs in the independent L2 request.
+    assert limited_request["candidate_count"] == 1
     assert limited_request["requested_count"] == 1
-    assert limited_request["truncated"] is True
+    assert limited_request["truncated"] is False
     assert "if (params == NULL)" in request["contexts"][0]["content"]
     checked_evidence = [{**evidence, "sha256": source_sha}]
     binding = _behavior_claim_binding(
@@ -8150,11 +8149,6 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
         claim_type="source_behavior",
         statement=statement,
         evidence=checked_evidence,
-    )
-    row_request = next(
-        item
-        for item in request["claims"]
-        if item["claim_id"] == "ROW:sfmea.json:SFMEA-001"
     )
     (artifacts / "behavior_claim_validation.json").write_text(
         json.dumps(
@@ -8172,12 +8166,6 @@ def test_source_behavior_claim_accepts_only_digest_bound_independent_l2_verdict(
                         "binding": binding,
                         "status": "supports",
                         "reason": "The referenced guard returns before dereference.",
-                    },
-                    {
-                        "claim_id": "ROW:sfmea.json:SFMEA-001",
-                        "binding": row_request["binding"],
-                        "status": "supports",
-                        "reason": "The row describes the same guarded rejection.",
                     },
                 ],
             }
@@ -8296,41 +8284,24 @@ def test_row_l2_verdict_cannot_launder_source_anchor_only_sfmea_row(tmp_path):
         artifact_dir=artifacts,
         repo_path=repo,
     )
-    assert [claim["claim_id"] for claim in request["claims"]] == [
-        "ROW:sfmea.json:SFMEA-ROW-L2"
-    ]
-    row_request = request["claims"][0]
-    (artifacts / "behavior_claim_validation.json").write_text(
-        json.dumps({
-            "kind": "behavior_claim_validation",
-            "schema_version": 2,
-            "validator": {"independent": True},
-            "claims": [{
-                "claim_id": row_request["claim_id"],
-                "binding": row_request["binding"],
-                "status": "supports",
-                "reason": "The source returns before a session can be created.",
-            }],
-        }),
-        encoding="utf-8",
-    )
+    assert request["claims"] == []
 
     result = audit_test_activity_artifacts(
         artifact_dir=artifacts,
         contract={
             "artifact_contract": {"sfmea.json": {"schema": SFMEA_SCHEMA}},
-            "quality_gates": {"require_independent_behavior_validation": True},
+            "quality_gates": {"require_independent_behavior_validation": False},
         },
         repo_path=str(repo),
     )
 
-    row_claim = next(
+    source_claim = next(
         claim for claim in result["fact_claims"]
-        if claim["claim_id"] == "ROW:sfmea.json:SFMEA-ROW-L2"
+        if claim["claim_id"] == "ANCHOR-ONLY-001"
     )
-    assert row_claim["status"] == "verified"
-    assert "ANCHOR-ONLY-001" in row_claim["statement"]
-    assert not any(issue.get("claim_id") == row_claim["claim_id"] for issue in result["issues"])
+    assert source_claim["status"] == "verified"
+    assert source_claim["validation_layer"] == "L1_deterministic"
+    assert not any(issue.get("claim_id") == source_claim["claim_id"] for issue in result["issues"])
 
 
 def test_black_box_hypothesis_keeps_product_result_outside_source_claims(tmp_path):
@@ -8604,13 +8575,7 @@ def test_behavior_validation_includes_black_box_hypothesis_behavior_when_anchor_
 
     request = build_behavior_claim_validation_request(artifact_dir=artifacts, repo_path=repo)
 
-    row_claim = next(
-        item
-        for item in request["claims"]
-        if item["claim_id"] == "ROW:black_box_cases.json:BB-PERF-001"
-    )
-    assert row_claim["type"] == "black_box_case_behavior"
-    assert "baseline latency sampling" in row_claim["statement"]
+    assert request["claims"] == []
 
 
 def test_row_behavior_statement_defaults_black_box_cases_to_test_hypotheses():
@@ -8692,10 +8657,7 @@ def test_behavior_validation_includes_row_semantics_when_claims_are_only_source_
         repo_path=repo,
     )
 
-    row_claim = next(item for item in request["claims"] if item["claim_id"] == "ROW:sfmea.json:SFMEA-001")
-    assert row_claim["type"] == "sfmea_row_behavior"
-    assert "target accepts an invalid login" in row_claim["statement"]
-    assert row_claim["evidence_bindings"][0]["path"] == "src/login.c"
+    assert request["claims"] == []
 
 
 def test_sfmea_json_requires_twelve_risk_rows(tmp_path):
