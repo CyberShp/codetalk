@@ -1750,6 +1750,7 @@ class TestAIConversationsAPI:
 
     async def test_source_id_review_places_current_evidence_after_stale_history(self):
         from app.services.ai_conversations import (
+            ContextReference,
             _build_agent_prompt,
             _build_prompt,
             _deterministic_source_evidence_reply,
@@ -1813,6 +1814,13 @@ class TestAIConversationsAPI:
         assert "test/iscsi_tgt/chap/chap_common.sh" in deterministic_reply
         assert "L82-L99" in deterministic_reply
         assert "config_chap_credentials_for_target" in deterministic_reply
+
+        object_reply = _deterministic_source_evidence_reply(
+            [ContextReference(**references[0])],
+            user_message,
+        )
+        assert object_reply is not None
+        assert "config_chap_credentials_for_target" in object_reply
 
     async def test_workflow_constraint_review_returns_frozen_protocol_fact(self):
         from app.services.ai_conversations import (
