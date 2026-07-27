@@ -162,6 +162,7 @@ def build_source_driven_test_design(
         flows=flows,
         flow_outline=flow_outline,
         flow_pack=flow_pack,
+        cases=black_box_cases,
     )
     branch_disposition = _branch_disposition_artifact(
         flow_pack=flow_pack,
@@ -1418,7 +1419,13 @@ def _model_applicability_artifact(*, flow_pack: dict[str, Any], states: dict[str
     }
 
 
-def _flow_cards_artifact(*, flows: dict[str, Any], flow_outline: dict[str, Any], flow_pack: dict[str, Any]) -> dict[str, Any]:
+def _flow_cards_artifact(
+    *,
+    flows: dict[str, Any],
+    flow_outline: dict[str, Any],
+    flow_pack: dict[str, Any],
+    cases: list[dict[str, Any]],
+) -> dict[str, Any]:
     branches = [dict(item) for item in flow_pack.get("conditions") or [] if isinstance(item, dict)]
     errors = [dict(item) for item in flow_pack.get("error_paths") or [] if isinstance(item, dict)]
     items = []
@@ -1470,6 +1477,16 @@ def _flow_cards_artifact(*, flows: dict[str, Any], flow_outline: dict[str, Any],
         ]
         normal_path = [str(item.get("action") or "") for item in steps]
         abnormal_paths = [str(item.get("text") or "") for item in related_errors[:12]]
+        related_evidence_rows = [*related_branches, *related_states, *related_cleanups, *related_errors]
+        case_ids = _dedupe(
+            case_id
+            for evidence_row in related_evidence_rows
+            for case_id in _mapped_case_ids(
+                cases,
+                [str(evidence_row.get("evidence_id") or "")],
+                target=evidence_row,
+            )
+        )
         status = str(row.get("status") or "PARTIAL")
         if normal_path and not abnormal_paths and status.upper() == "READY":
             status = "PARTIAL"
@@ -1495,7 +1512,7 @@ def _flow_cards_artifact(*, flows: dict[str, Any], flow_outline: dict[str, Any],
                 "priority": str(row.get("priority") or "P1"),
                 "status": status,
                 "sfmea_ids": [],
-                "case_ids": [],
+                "case_ids": case_ids,
             }
         )
     return _ledger("flow_cards", items, gaps=gaps)
@@ -1648,7 +1665,7 @@ def _branch_disposition_artifact(*, flow_pack: dict[str, Any], cases: list[dict[
         if not isinstance(row, dict):
             continue
         evidence_id = str(row.get("evidence_id") or f"BRANCH-{index:03d}")
-        case_ids = _mapped_case_ids(cases, [evidence_id])
+        case_ids = _mapped_case_ids(cases, [evidence_id], target=row)
         items.append(
             {
                 "id": evidence_id,
@@ -1668,7 +1685,7 @@ def _state_disposition_artifact(*, states: dict[str, Any], cases: list[dict[str,
         if not isinstance(row, dict):
             continue
         evidence = _strings(row.get("evidence_refs"))
-        case_ids = _mapped_case_ids(cases, evidence)
+        case_ids = _mapped_case_ids(cases, evidence, target=row)
         items.append(
             {
                 "id": str(row.get("id") or ""),
@@ -1693,7 +1710,7 @@ def _resource_disposition_artifact(*, resources: dict[str, Any], flow_pack: dict
             continue
         kind = str(row.get("kind") or "resource")
         evidence = _strings(row.get("evidence_refs"))
-        case_ids = _mapped_case_ids(cases, evidence)
+        case_ids = _mapped_case_ids(cases, evidence, target=row)
         capacity = bool(row.get("capacity_model_applicable"))
         wrap = bool(row.get("wraparound_applicable"))
         items.append(
@@ -1747,8 +1764,8 @@ def _error_propagation_artifact(flow_pack: dict[str, Any], cases: list[dict[str,
                 "external_observation": "返回码/协议响应、连接状态、日志、指标及后续请求结果",
                 "cleanup_refs": cleanups,
                 "recovery_refs": recoveries,
-                "disposition": "retain" if _mapped_case_ids(cases, [evidence_id]) else "need_verify",
-                "case_ids": _mapped_case_ids(cases, [evidence_id]),
+                "disposition": "retain" if _mapped_case_ids(cases, [evidence_id], target=row) else "need_verify",
+                "case_ids": _mapped_case_ids(cases, [evidence_id], target=row),
                 "evidence_refs": [evidence_id],
             }
         )
@@ -2262,13 +2279,63 @@ def _ledger(kind: str, items: list[dict[str, Any]], *, gaps: Any) -> dict[str, A
     }
 
 
-def _mapped_case_ids(cases: list[dict[str, Any]], evidence_refs: list[str]) -> list[str]:
+def _mapped_case_ids(
+    cases: list[dict[str, Any]],
+    evidence_refs: list[str],
+    *,
+    target: dict[str, Any] | None = None,
+) -> list[str]:
+    """Map a ledger item to a case by id or exact source-level provenance.
+
+    Flow extraction emits ``FLOW-*`` identifiers while generated cases cite
+    immutable ``SRC-*`` cards.  Requiring their opaque ids to be identical
+    makes a real source-backed case invisible to the branch/state/resource
+    ledgers.  A fallback match is allowed only for the same source file plus a
+    shared enclosing symbol or an overlapping source range; it is recorded by
+    the normal ``covered_by`` field and never relies on wording similarity.
+    """
     wanted = set(_strings(evidence_refs))
-    return _dedupe(
+    direct = _dedupe(
         str(row.get("case_id") or "")
         for row in cases
         if isinstance(row, dict) and wanted.intersection(_strings(row.get("source_or_test_evidence")))
     )
+    if direct or not isinstance(target, dict):
+        return direct
+    target_path = str(target.get("file_path") or "").strip()
+    target_symbols = {
+        str(value).strip()
+        for value in (target.get("symbol"), target.get("from_symbol"), target.get("to_symbol"))
+        if str(value or "").strip()
+    }
+    target_start = int(target.get("start_line") or 0)
+    target_end = max(target_start, int(target.get("end_line") or target_start))
+    if not target_path:
+        return []
+    mapped: list[str] = []
+    for case in cases:
+        if not isinstance(case, dict):
+            continue
+        for claim in case.get("technical_claims") or []:
+            if not isinstance(claim, dict):
+                continue
+            for evidence in claim.get("evidence") or []:
+                if not isinstance(evidence, dict) or str(evidence.get("path") or "").strip() != target_path:
+                    continue
+                symbol = str(evidence.get("symbol") or "").strip()
+                line_match = re.search(r"\d+", str(evidence.get("lines") or ""))
+                line = int(line_match.group(0)) if line_match else 0
+                symbol_match = bool(symbol and symbol in target_symbols)
+                range_match = bool(
+                    line and target_start and line <= target_end and line >= target_start
+                )
+                if symbol_match or range_match:
+                    mapped.append(str(case.get("case_id") or ""))
+                    break
+            else:
+                continue
+            break
+    return _dedupe(mapped)
 
 
 def _resource_label(kind: str) -> str:

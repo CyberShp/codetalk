@@ -269,6 +269,38 @@ def test_v2_builder_materializes_complete_inventory_dispositions_and_traceabilit
     assert artifacts["traceability_matrix.json"]["links"][0]["risk_ids"] == ["SFMEA-001"]
 
 
+def test_disposition_maps_flow_evidence_to_case_with_same_verified_symbol():
+    """FLOW ids and SRC ids may differ without losing exact source linkage."""
+    from app.services.source_driven_test_design import build_source_driven_test_design
+
+    cases = _cases() + [{
+        "case_id": "CASE-BRANCH",
+        "test_dimension": "异常分支",
+        "scenario_name": "Login 状态分支",
+        "source_or_test_evidence": ["SRC-001:L112"],
+        "technical_claims": [{
+            "claim_id": "TC-BRANCH",
+            "evidence": [{
+                "path": "lib/iscsi/iscsi.c",
+                "symbol": "iscsi_pdu_payload_op_login",
+                "lines": "L112",
+                "quote": "if (conn->state == EXITING)",
+            }],
+        }],
+    }]
+    artifacts = build_source_driven_test_design(
+        source_pack=_source_pack(),
+        flow_pack=_flow_pack(),
+        flow_outline=_outline(),
+        sfmea=_sfmea(),
+        black_box_cases=cases,
+    )
+
+    branch = artifacts["branch_disposition.json"]["items"][0]
+    assert branch["disposition"] == "retain"
+    assert branch["covered_by"] == ["CASE-BRANCH"]
+
+
 def test_judge_never_reports_ready_or_fact_score_100_when_facts_are_not_checked():
     from app.services.source_driven_test_design import build_judge_report
 
