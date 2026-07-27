@@ -696,10 +696,7 @@ def _expand_verified_source_anchors(
         # session append and capacity check are concrete implementation facts
         # needed for a defensible MCS/TSIH black-box design.
         if "mcs" in token_set:
-            required_protocol_anchor_terms.update({
-                "append_iscsi_sess",
-                "sess->connections >= sess->maxconnections",
-            })
+            required_protocol_anchor_terms.add("append_iscsi_sess")
         tokens.extend((
             "cbit",
             "c-bit",
@@ -1074,12 +1071,11 @@ def _expand_verified_source_anchors(
             max(0, anchor_limit - len(files)),
         ),
     )
-    selected_protocol_anchors = {
-        anchor
-        for item in files
-        for anchor in required_protocol_anchor_terms
-        if anchor in str(item.get("excerpt") or "").lower()
-    }
+    # Keep this in lockstep with ``present_protocol_anchors`` above. A
+    # function-window projection can retain a verified symbol even when its
+    # textual excerpt has been compacted; treating it as missing spends a
+    # scarce slot on a duplicate and can evict the Login payload handler.
+    selected_protocol_anchors = set(present_protocol_anchors)
     def select_candidate(candidate: dict[str, Any]) -> None:
         """Materialize one verified slice and retire its overlapping peers."""
         nonlocal candidates, recent_referenced_symbols
