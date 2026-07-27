@@ -819,6 +819,79 @@ def test_coverage_binding_patch_updates_only_existing_cases_and_requires_all_tar
             [{"case_id": "BC-001", "coverage_target_ids": ["COV-001"]}],
             required_target_ids=["FLOW-COND-001"],
         )
+    with pytest.raises(ValueError, match="coverage_binding_case_unbound"):
+        _apply_black_box_coverage_binding_patch(
+            base,
+            [{"case_id": "BC-001", "coverage_target_ids": ["FLOW-COND-001"]}],
+            required_target_ids=["FLOW-COND-001"],
+        )
+
+
+@pytest.mark.asyncio
+async def test_coverage_binding_patch_retries_empty_reasoner_with_fast_client(tmp_path):
+    from app.services.ai_staged_execution import (
+        _execute_black_box_coverage_binding_patch_stage,
+    )
+
+    class EmptyReasoner:
+        _model = "deepseek-reasoner"
+
+        async def complete(self, messages, max_tokens=4096, temperature=0.2):
+            raise ValueError(
+                "LLM returned empty or too-short response (len=0, model=deepseek-reasoner)"
+            )
+
+    class FastClient:
+        _model = "deepseek-chat"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def complete(self, messages, max_tokens=4096, temperature=0.2):
+            self.calls += 1
+            return LLMResponse(
+                content=json.dumps([
+                    {"case_id": "BC-001", "coverage_target_ids": ["FLOW-COND-001"]},
+                    {"case_id": "BC-002", "coverage_target_ids": ["RESOURCE-CMD"]},
+                ]),
+                model=self._model,
+                usage={},
+                truncated=False,
+            )
+
+    stage_dir = tmp_path / "stage"
+    stage_dir.mkdir()
+    output_path = tmp_path / "black_box_cases.json"
+    fast = FastClient()
+    result = await _execute_black_box_coverage_binding_patch_stage(
+        llm=EmptyReasoner(),
+        fallback_llm=fast,
+        stage={"id": "black_box_cases", "artifact": "black_box_cases.json"},
+        stage_dir=stage_dir,
+        output_path=output_path,
+        current_artifact_seed=json.dumps([
+            {"case_id": "BC-001", "scenario_name": "正常登录"},
+            {"case_id": "BC-002", "scenario_name": "资源耗尽"},
+        ]),
+        binding_contract={
+            "required_target_ids": ["FLOW-COND-001", "RESOURCE-CMD"],
+        },
+        quality_feedback={"issues": []},
+        policy=stage_execution_policy(
+            stage={"id": "black_box_cases", "max_tokens": 1600},
+            global_max_tokens=1600,
+            overrides={"provider_timeout_seconds": 5, "total_timeout_seconds": 5},
+        ),
+        is_cancelled=None,
+        on_progress=None,
+        provider_capacity=_ProcessProviderCapacity(1),
+        prompt_characters_before_compaction=999,
+    )
+
+    assert fast.calls == 1
+    assert result["status"] == "completed"
+    assert result["model"] == "deepseek-chat"
+    assert json.loads(output_path.read_text(encoding="utf-8"))[1]["coverage_target_ids"] == ["RESOURCE-CMD"]
 
 
 @pytest.mark.asyncio

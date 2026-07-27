@@ -5101,6 +5101,7 @@ async def _execute_regular_stage(
     ):
         return await _execute_black_box_coverage_binding_patch_stage(
             llm=stage_llm,
+            fallback_llm=auxiliary_llm,
             stage=stage,
             stage_dir=stage_dir,
             output_path=output_path,
@@ -13867,6 +13868,9 @@ def _apply_black_box_coverage_binding_patch(
     missing = sorted(allowed - covered)
     if missing:
         raise ValueError("coverage_binding_incomplete:" + ",".join(missing))
+    unbound_cases = sorted(set(base_by_id) - set(patches))
+    if unbound_cases:
+        raise ValueError("coverage_binding_case_unbound:" + ",".join(unbound_cases))
     return [
         {**item, "coverage_target_ids": patches[row_id]}
         if isinstance(item, dict) and (row_id := _json_array_row_id(item)) in patches
@@ -13878,6 +13882,7 @@ def _apply_black_box_coverage_binding_patch(
 async def _execute_black_box_coverage_binding_patch_stage(
     *,
     llm: Any,
+    fallback_llm: Any,
     stage: dict[str, Any],
     stage_dir: Path,
     output_path: Path,
@@ -13931,7 +13936,7 @@ async def _execute_black_box_coverage_binding_patch_stage(
         "TASK: Bind frozen source-coverage targets to already accepted black-box cases.",
         "Return only a JSON array. Each item must be exactly {case_id, coverage_target_ids}.",
         "Use only case_id values in CASES and only target IDs in TARGETS.",
-        "Every TARGETS.id must appear at least once across the entire array. Do not add cases, rewrite test steps, invent COV-* IDs, or use a target unless the named external scenario actually exercises it.",
+        "Return exactly one item for every CASES.case_id. Every TARGETS.id must appear at least once across the entire array. Do not add cases, rewrite test steps, invent COV-* IDs, or use a target unless the named external scenario actually exercises it.",
         "TARGETS:",
         json.dumps(target_details or [{"id": value} for value in target_ids], ensure_ascii=False),
         "CASES:",
@@ -13955,15 +13960,32 @@ async def _execute_black_box_coverage_binding_patch_stage(
     detached: list[asyncio.Task[Any]] = []
     try:
         provider_started = time.monotonic()
-        response = await _complete_with_cancellation(
-            llm=llm,
-            prompt=prompt,
-            max_tokens=min(2400, policy.max_tokens),
-            is_cancelled=is_cancelled,
-            timeout_seconds=min(180.0, policy.provider_timeout_seconds),
-            single_attempt=True,
-            on_detached_task=detached.append,
-        )
+        try:
+            response = await _complete_with_cancellation(
+                llm=llm,
+                prompt=prompt,
+                max_tokens=min(2400, policy.max_tokens),
+                is_cancelled=is_cancelled,
+                timeout_seconds=min(180.0, policy.provider_timeout_seconds),
+                single_attempt=True,
+                on_detached_task=detached.append,
+            )
+        except ValueError as exc:
+            # Some reasoning endpoints return an empty final message for a
+            # tiny structured mapping request. This is transport/provider
+            # behavior, not a reason to restart the entire accepted test
+            # design. Retry once with the configured fast JSON-capable client.
+            if fallback_llm is llm or "empty or too-short response" not in str(exc):
+                raise
+            response = await _complete_with_cancellation(
+                llm=fallback_llm,
+                prompt=prompt,
+                max_tokens=min(2400, policy.max_tokens),
+                is_cancelled=is_cancelled,
+                timeout_seconds=min(120.0, policy.provider_timeout_seconds),
+                single_attempt=True,
+                on_detached_task=detached.append,
+            )
         provider_wait_ms = round((time.monotonic() - provider_started) * 1000, 1)
         content = str(getattr(response, "content", "") or "").strip()
         _write_text(stage_dir / "coverage_binding_patch_raw_output.txt", content)
