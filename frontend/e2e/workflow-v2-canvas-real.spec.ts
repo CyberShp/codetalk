@@ -46,6 +46,10 @@ test("creates a workflow through the UI and uses the xyflow canvas with real mou
   await canvas.scrollIntoViewIfNeeded();
 
   const firstNode = canvas.locator(".react-flow__node-workflowNode").first();
+  const movedNodeTestId = await firstNode.locator("article").getAttribute("data-testid");
+  expect(movedNodeTestId).toBeTruthy();
+  if (!movedNodeTestId) return;
+  const movedNode = canvas.getByTestId(movedNodeTestId);
   const nodeBefore = await firstNode.boundingBox();
   expect(nodeBefore).not.toBeNull();
   if (!nodeBefore) return;
@@ -53,14 +57,33 @@ test("creates a workflow through the UI and uses the xyflow canvas with real mou
   const dragBox = await dragHandle.boundingBox();
   expect(dragBox).not.toBeNull();
   if (!dragBox) return;
+  const moveSave = waitForDraftSave(page);
   await page.mouse.move(dragBox.x + 42, dragBox.y + 20);
   await page.mouse.down({ button: "left" });
   await page.mouse.move(dragBox.x + 118, dragBox.y + 52, { steps: 10 });
   await page.mouse.up({ button: "left" });
   await expect.poll(async () => (await firstNode.boundingBox())?.x ?? 0).toBeGreaterThan(nodeBefore.x + 50);
+  const movedPosition = await flowNodePosition(movedNode);
+  await moveSave;
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(canvas).toBeVisible();
+  const restoredMovedNode = canvas.getByTestId(movedNodeTestId);
+  await expect(restoredMovedNode).toBeVisible();
+  await expect.poll(() => flowNodePosition(restoredMovedNode)).toEqual(movedPosition);
 
   const beforeAdd = await canvas.locator(".react-flow__node-workflowNode").count();
-  await canvasShell.getByTestId("workflow-palette-input").dblclick();
+  const paletteInput = canvasShell.getByTestId("workflow-palette-input");
+  const dropSurface = canvas.locator(".react-flow__pane");
+  await expect(dropSurface).toBeVisible();
+  const dropBox = await dropSurface.boundingBox();
+  expect(dropBox).not.toBeNull();
+  if (!dropBox) return;
+  await paletteInput.dragTo(dropSurface, {
+    targetPosition: {
+      x: Math.round(dropBox.width * 0.36),
+      y: Math.round(dropBox.height * 0.7),
+    },
+  });
   await expect.poll(() => canvas.locator(".react-flow__node-workflowNode").count()).toBe(beforeAdd + 1);
   const designDocNode = canvas.locator(".react-flow__node-workflowNode").last();
   const designDocTestId = await designDocNode.locator("article").getAttribute("data-testid");
@@ -146,6 +169,19 @@ test("creates a workflow through the UI and uses the xyflow canvas with real mou
   await expect.poll(() => canvas.locator(".react-flow__node-workflowNode").count()).toBe(beforeAdd + 2);
   await canvas.getByTitle("重做").click();
   await expect.poll(() => canvas.locator(".react-flow__node-workflowNode").count()).toBe(beforeAdd + 1);
+
+  // The design document owns the persisted file -> design_doc edge. Deleting
+  // it must survive a save and reload, including removal of that edge.
+  await designDoc.click();
+  const deleteSave = waitForDraftSave(page);
+  await page.keyboard.press("Delete");
+  await expect(designDoc).toHaveCount(0);
+  await expect(designDocEdge).toHaveCount(0);
+  await deleteSave;
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(canvas).toBeVisible();
+  await expect(canvas.getByTestId(designDocTestId!)).toHaveCount(0);
+  await expect(canvas.getByText("开发设计文档 · file → design_doc · file", { exact: true })).toHaveCount(0);
 });
 
 test("box-selects multiple canvas nodes and batch deletes them through the visible toolbar", async ({ page }) => {
@@ -252,4 +288,19 @@ async function drag(page: import("@playwright/test").Page, source: import("@play
   await page.mouse.down({ button: "left" });
   await page.mouse.move(targetBox.x + targetBox.width / 2, targetBox.y + targetBox.height / 2, { steps: 12 });
   await page.mouse.up({ button: "left" });
+}
+
+async function waitForDraftSave(page: import("@playwright/test").Page) {
+  const response = await page.waitForResponse((candidate) => {
+    if (candidate.request().method() !== "PUT") return false;
+    return /^\/api\/workbench\/workflows\/[^/]+\/versions\/[^/]+$/.test(new URL(candidate.url()).pathname);
+  });
+  expect(response.ok()).toBeTruthy();
+}
+
+async function flowNodePosition(node: import("@playwright/test").Locator) {
+  const style = await node.locator("xpath=..").getAttribute("style");
+  const match = style?.match(/translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)/);
+  expect(match, `expected XYFlow node position in inline style: ${style}`).not.toBeNull();
+  return { x: Number(match![1]), y: Number(match![2]) };
 }

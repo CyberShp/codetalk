@@ -89,53 +89,196 @@ def _phase0_fixture(name: str) -> dict:
     return json.loads((_PHASE0_FIXTURE_DIR / name).read_text(encoding="utf-8"))
 
 
+def _insert_phase0_published_version(db_path: Path, fixture: dict) -> tuple[str, ...]:
+    """Insert frozen rows without invoking today's compiler or publisher."""
+    header = fixture["workflow_header"]
+    version = fixture["workflow_version"]
+    serialized = tuple(
+        json.dumps(version[field], ensure_ascii=False, sort_keys=True)
+        for field in ("authoring_graph", "compiled_definition", "compiled_plan", "validation")
+    )
+    with sqlite3.connect(db_path) as db:
+        db.execute(
+            """
+            INSERT INTO workflow_headers(
+                workflow_id, name, description, status, published_version_id,
+                current_draft_version_id, created_at, updated_at, archived_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            tuple(header[field] for field in (
+                "workflow_id", "name", "description", "status", "published_version_id",
+                "current_draft_version_id", "created_at", "updated_at", "archived_at",
+            )),
+        )
+        db.execute(
+            """
+            INSERT INTO workflow_versions(
+                version_id, workflow_id, version_number, state, authoring_graph_json,
+                compiled_definition_json, compiled_plan_json, validation_json,
+                based_on_version_id, created_at, updated_at, published_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                version["version_id"], version["workflow_id"], version["version_number"],
+                version["state"], *serialized, version["based_on_version_id"],
+                version["created_at"], version["updated_at"], version["published_at"],
+            ),
+        )
+    return serialized
+
+
 def test_phase0_published_v1_and_v2_workflow_fixtures_remain_loadable(tmp_path):
-    """Freeze published-version compatibility before the Phase 1 migration."""
-    from app.services.workflow_dsl import WorkflowStore
-    from app.services.workflow_graph import compile_workflow_graph, validate_workflow_graph
+    """Load frozen published rows without regenerating either historical version."""
     from app.services.workflow_version_store import WorkflowVersionStore
 
-    v1 = _phase0_fixture("v1-published-workflow.json")["published_workflow"]
-    v2 = _phase0_fixture("v2-published-workflow.json")["authoring_graph"]
     db_path = tmp_path / "workflows.db"
-
-    WorkflowStore(db_path).save_workflow(v1)
     store = WorkflowVersionStore(db_path)
     store.initialize_and_migrate()
-    legacy = store.get_workflow(v1["id"])
-    legacy_version = store.get_version(legacy.published_version_id)
-    assert legacy_version.state == "published"
-    assert legacy_version.compiled_definition["version"] == v1["version"]
-    assert legacy_version.compiled_plan["compatibility_mode"] == "legacy_sequential"
 
-    capabilities = {"providers": {"builtin-llm": {"available": True, "mcp_profiles": []}}, "skills": []}
-    assert validate_workflow_graph(v2, capabilities=capabilities) == {
-        "valid": True,
-        "errors": [],
-        "warnings": [],
+    fixtures = [
+        _phase0_fixture("v1-published-workflow.json"),
+        _phase0_fixture("v2-published-workflow.json"),
+    ]
+    frozen_json_by_version = {
+        fixture["workflow_version"]["version_id"]: _insert_phase0_published_version(
+            db_path, fixture
+        )
+        for fixture in fixtures
     }
-    header, draft = store.create_workflow(
-        workflow_id=v2["workflow_id"],
-        name=v2["name"],
-        description=v2["description"],
-        authoring_graph=v2,
+
+    for fixture in fixtures:
+        expected_header = fixture["workflow_header"]
+        expected_version = fixture["workflow_version"]
+        header = store.get_workflow(expected_header["workflow_id"])
+        version = store.get_version(expected_version["version_id"])
+
+        assert asdict(header) == expected_header
+        assert asdict(version) == expected_version
+
+        with sqlite3.connect(db_path) as db:
+            raw = db.execute(
+                """
+                SELECT authoring_graph_json, compiled_definition_json,
+                       compiled_plan_json, validation_json
+                FROM workflow_versions WHERE version_id = ?
+                """,
+                (expected_version["version_id"],),
+            ).fetchone()
+        assert raw == frozen_json_by_version[expected_version["version_id"]]
+
+
+@pytest.mark.asyncio
+async def test_phase0_task_detail_aggregates_frozen_historical_task_attempt_and_version(
+    tmp_path, monkeypatch
+):
+    """Read a frozen historical task through the public Task detail route.
+
+    This deliberately inserts the captured rows and attempt payload verbatim.
+    It must not compile or publish the historical workflows with today's code.
+    """
+    from app.api import workbench_v2_tasks
+    from app.services.workbench_task_run import WorkbenchTaskRunStore
+    from app.services.workbench_task_store import WorkbenchTaskStore
+    from app.services.workflow_version_store import WorkflowVersionStore
+
+    workflow_db = tmp_path / "workflows.db"
+    version_store = WorkflowVersionStore(workflow_db)
+    version_store.initialize_and_migrate()
+    fixtures = [
+        _phase0_fixture("v1-published-workflow.json"),
+        _phase0_fixture("v2-published-workflow.json"),
+    ]
+    for fixture in fixtures:
+        _insert_phase0_published_version(workflow_db, fixture)
+
+    task_attempt = _phase0_fixture("historical-task-attempt.json")
+    task = task_attempt["task"]
+    attempt = task_attempt["task_run"]
+    task_store = WorkbenchTaskStore(workflow_db)
+    task_store.initialize_and_migrate()
+    with sqlite3.connect(workflow_db) as db:
+        db.execute(
+            """
+            INSERT INTO workbench_tasks(
+                task_id, name, description, workspace_id, workflow_id,
+                workflow_version_id, lifecycle_status, execution_profile_id,
+                input_values_json, execution_overrides_json, output_overrides_json,
+                tags_json, last_run_id, created_at, updated_at, archived_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                task["task_id"], task["name"], task["description"], task["workspace_id"],
+                task["workflow_id"], task["workflow_version_id"], task["lifecycle_status"],
+                task["execution_profile_id"],
+                json.dumps(task["input_values"], ensure_ascii=False, sort_keys=True),
+                json.dumps(task["execution_overrides"], ensure_ascii=False, sort_keys=True),
+                json.dumps(task["output_overrides"], ensure_ascii=False, sort_keys=True),
+                json.dumps(task["tags"], ensure_ascii=False), task["last_run_id"],
+                task["created_at"], task["updated_at"], task["archived_at"],
+            ),
+        )
+
+    attempt_root = tmp_path / "task_runs"
+    attempt_dir = attempt_root / attempt["task_run_id"]
+    attempt_dir.mkdir(parents=True)
+    (attempt_dir / "task_run.json").write_text(
+        json.dumps(attempt, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
     )
-    compiled = compile_workflow_graph(
-        v2,
-        capabilities=capabilities,
-        workflow_version_id=draft.version_id,
-    )
-    published = store.publish_version(
-        draft.version_id,
-        authoring_graph=v2,
-        compiled_definition=compiled["compiled_definition"],
-        compiled_plan=compiled["compiled_plan"],
-        validation={"valid": True, "errors": [], "warnings": []},
-    )
-    assert store.get_workflow(header.workflow_id).published_version_id == published.version_id
-    assert published.state == "published"
-    assert published.authoring_graph == v2
-    assert published.compiled_plan["topological_order"] == ["analyze"]
+    run_store = WorkbenchTaskRunStore(attempt_root)
+
+    runtime_db = tmp_path / "runtime.db"
+    with sqlite3.connect(runtime_db) as db:
+        db.execute(
+            "CREATE TABLE workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, repo_path TEXT NOT NULL)"
+        )
+        db.execute(
+            "INSERT INTO workspaces(id, name, repo_path) VALUES (?, ?, ?)",
+            (task["workspace_id"], "Historical workspace", "/historical/repositories/example"),
+        )
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "sqlite_db", str(runtime_db))
+    monkeypatch.setattr(workbench_v2_tasks, "task_store", lambda: task_store)
+    monkeypatch.setattr(workbench_v2_tasks, "version_store", lambda: version_store)
+    monkeypatch.setattr(workbench_v2_tasks, "task_run_store", lambda: run_store)
+
+    app = FastAPI()
+    app.include_router(workbench_v2_tasks.router)
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.get(f"/api/workbench/tasks/{task['task_id']}")
+
+    assert response.status_code == 200
+    payload = response.json()
+    version = fixtures[0]["workflow_version"]
+    assert payload["task_id"] == task["task_id"]
+    assert payload["workflow_version_id"] == version["version_id"]
+    assert payload["last_run_id"] == attempt["task_run_id"]
+    assert payload["workflow_version"] == {
+        "version_id": version["version_id"],
+        "version_number": version["version_number"],
+        "compiled_definition": version["compiled_definition"],
+        "compiled_plan": version["compiled_plan"],
+    }
+    assert payload["runs"] == [
+        {
+            "task_run_id": attempt["task_run_id"],
+            "task_id": task["task_id"],
+            "attempt_number": attempt["attempt_number"],
+            "parent_task_run_id": attempt["parent_task_run_id"],
+            "workflow_id": task["workflow_id"],
+            "workspace_id": task["workspace_id"],
+            "execution_status": attempt["execution_status"],
+            "quality_status": attempt["quality_status"],
+            "delivery_status": attempt["delivery_status"],
+            "started_at": attempt["started_at"],
+            "completed_at": attempt["completed_at"],
+            "created_at": attempt["created_at"],
+        }
+    ]
+    assert version_store.get_version(fixtures[1]["workflow_version"]["version_id"]).state == "published"
 
 
 def test_workflow_version_migration_is_idempotent_and_preserves_legacy_table(tmp_path):

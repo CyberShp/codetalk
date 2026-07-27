@@ -1,73 +1,220 @@
 {
-  "fixture_schema_version": 1,
-  "authoring_graph": {
-    "schema_version": 2,
+  "fixture_schema_version": 2,
+  "captured_from_commit": "f783ff58",
+  "workflow_header": {
     "workflow_id": "phase0_v2_report",
     "name": "Phase 0 V2 Report",
     "description": "Published V2 compatibility fixture.",
-    "nodes": [
-      {
-        "id": "repo",
-        "kind": "input",
-        "label": "Repository",
-        "position": {"x": 0, "y": 100},
-        "config": {
-          "contract_id": "repo_path",
+    "status": "active",
+    "published_version_id": "wfv_phase0_v2_published",
+    "current_draft_version_id": null,
+    "created_at": "2026-07-21T10:00:00+00:00",
+    "updated_at": "2026-07-21T10:05:00+00:00",
+    "archived_at": null
+  },
+  "workflow_version": {
+    "version_id": "wfv_phase0_v2_published",
+    "workflow_id": "phase0_v2_report",
+    "version_number": 3,
+    "state": "published",
+    "authoring_graph": {
+      "schema_version": 2,
+      "workflow_id": "phase0_v2_report",
+      "name": "Phase 0 V2 Report",
+      "description": "Published V2 compatibility fixture.",
+      "nodes": [
+        {
+          "id": "repo",
+          "kind": "input",
+          "label": "Repository",
+          "position": {"x": 0, "y": 100},
+          "config": {
+            "contract_id": "repo_path",
+            "label": "Repository",
+            "type": "directory",
+            "required": true,
+            "resolver": "workspace",
+            "role": "source repository"
+          }
+        },
+        {
+          "id": "analyze",
+          "kind": "agent",
+          "label": "Analyze",
+          "position": {"x": 320, "y": 100},
+          "config": {
+            "step_id": "analyze",
+            "goal": "Analyze the source repository.",
+            "provider": "builtin-llm",
+            "mcp_profiles": [],
+            "skill_ids": [],
+            "required_artifacts": ["report.md"],
+            "input_ports": [{"id": "repo_path", "type": "directory", "required": true}],
+            "output_ports": [{"id": "report", "type": "markdown"}],
+            "timeout_sec": 900,
+            "failure_policy": "stop"
+          }
+        },
+        {
+          "id": "report",
+          "kind": "output",
+          "label": "Report",
+          "position": {"x": 640, "y": 100},
+          "config": {
+            "output_id": "report",
+            "label": "Report",
+            "type": "markdown",
+            "artifact": "report.md",
+            "required": true,
+            "source_node_id": "analyze",
+            "source_port_id": "report"
+          }
+        }
+      ],
+      "edges": [
+        {
+          "id": "repo-analyze",
+          "kind": "data",
+          "source": {"node_id": "repo", "port_id": "value"},
+          "target": {"node_id": "analyze", "port_id": "repo_path"}
+        },
+        {
+          "id": "analyze-report",
+          "kind": "data",
+          "source": {"node_id": "analyze", "port_id": "report"},
+          "target": {"node_id": "report", "port_id": "value"}
+        }
+      ],
+      "settings": {"stop_on_error": true, "max_parallelism": 1}
+    },
+    "compiled_definition": {
+      "id": "phase0_v2_report",
+      "name": "Phase 0 V2 Report",
+      "description": "Published V2 compatibility fixture.",
+      "version": 1,
+      "default_execution_profile": "rapid",
+      "execution_profiles": [
+        {
+          "id": "rapid",
+          "label": "速度型",
+          "delivery_class": "bounded_analysis",
+          "expected_duration_minutes": [8, 20],
+          "max_subagents": 1,
+          "stage_overrides": {"independent_judge": {"required": false}}
+        },
+        {
+          "id": "deep",
+          "label": "深度型",
+          "delivery_class": "full_test_delivery",
+          "expected_duration_minutes": [40, 90],
+          "max_subagents": 4,
+          "stage_overrides": {"independent_judge": {"required": true}}
+        }
+      ],
+      "inputs": [
+        {
+          "id": "repo_path",
           "label": "Repository",
           "type": "directory",
           "required": true,
           "resolver": "workspace",
           "role": "source repository"
         }
-      },
-      {
-        "id": "analyze",
-        "kind": "agent",
-        "label": "Analyze",
-        "position": {"x": 320, "y": 100},
-        "config": {
-          "step_id": "analyze",
-          "goal": "Analyze the source repository.",
+      ],
+      "steps": [
+        {
+          "id": "analyze",
+          "type": "agent_task",
           "provider": "builtin-llm",
+          "goal": "Analyze the source repository.",
+          "depends_on": [],
+          "mcp_profile": "",
           "mcp_profiles": [],
-          "skill_ids": [],
+          "skills": [],
+          "skill_instructions": [],
           "required_artifacts": ["report.md"],
-          "input_ports": [{"id": "repo_path", "type": "directory", "required": true}],
-          "output_ports": [{"id": "report", "type": "markdown"}],
+          "input_bindings": {
+            "repo_path": {"source_node_id": "repo_path", "source_port_id": "value"}
+          },
           "timeout_sec": 900,
+          "idle_timeout_sec": 0,
+          "retry_policy": {"max_attempts": 1, "backoff_seconds": 0},
           "failure_policy": "stop"
         }
-      },
-      {
-        "id": "report",
-        "kind": "output",
-        "label": "Report",
-        "position": {"x": 640, "y": 100},
-        "config": {
-          "output_id": "report",
+      ],
+      "outputs": [
+        {
+          "id": "report",
           "label": "Report",
           "type": "markdown",
+          "from": "analyze",
           "artifact": "report.md",
           "required": true,
-          "source_node_id": "analyze",
           "source_port_id": "report"
         }
-      }
-    ],
-    "edges": [
-      {
-        "id": "repo-analyze",
-        "kind": "data",
-        "source": {"node_id": "repo", "port_id": "value"},
-        "target": {"node_id": "analyze", "port_id": "repo_path"}
-      },
-      {
-        "id": "analyze-report",
-        "kind": "data",
-        "source": {"node_id": "analyze", "port_id": "report"},
-        "target": {"node_id": "report", "port_id": "value"}
-      }
-    ],
-    "settings": {"stop_on_error": true, "max_parallelism": 1}
+      ]
+    },
+    "compiled_plan": {
+      "plan_version": 1,
+      "workflow_version_id": "wfv_phase0_v2_published",
+      "topological_order": ["analyze"],
+      "max_parallelism": 1,
+      "stop_on_error": true,
+      "default_execution_profile": "rapid",
+      "execution_profiles": [
+        {
+          "id": "rapid",
+          "label": "速度型",
+          "delivery_class": "bounded_analysis",
+          "expected_duration_minutes": [8, 20],
+          "max_subagents": 1,
+          "stage_overrides": {"independent_judge": {"required": false}}
+        },
+        {
+          "id": "deep",
+          "label": "深度型",
+          "delivery_class": "full_test_delivery",
+          "expected_duration_minutes": [40, 90],
+          "max_subagents": 4,
+          "stage_overrides": {"independent_judge": {"required": true}}
+        }
+      ],
+      "nodes": [
+        {
+          "node_id": "analyze",
+          "graph_node_id": "analyze",
+          "type": "agent_task",
+          "provider": "builtin-llm",
+          "depends_on": [],
+          "mcp_profiles": [],
+          "skill_ids": [],
+          "input_ports": [{"id": "repo_path", "type": "directory", "required": true}],
+          "output_ports": [{"id": "report", "type": "markdown"}],
+          "resolved_input_bindings": {
+            "repo_path": {"source_node_id": "repo_path", "source_port_id": "value"}
+          },
+          "output_contracts": [
+            {
+              "id": "report",
+              "label": "Report",
+              "type": "markdown",
+              "from": "analyze",
+              "artifact": "report.md",
+              "required": true,
+              "source_port_id": "report"
+            }
+          ],
+          "timeout_sec": 900,
+          "idle_timeout_sec": 0,
+          "retry_policy": {"max_attempts": 1, "backoff_seconds": 0},
+          "failure_policy": "stop"
+        }
+      ]
+    },
+    "validation": {"valid": true, "errors": [], "warnings": []},
+    "based_on_version_id": null,
+    "created_at": "2026-07-21T10:00:00+00:00",
+    "updated_at": "2026-07-21T10:05:00+00:00",
+    "published_at": "2026-07-21T10:05:00+00:00"
   }
 }

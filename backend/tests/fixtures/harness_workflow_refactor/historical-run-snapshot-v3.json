@@ -3,10 +3,10 @@
   "snapshot_kind": "codetalk_run_snapshot",
   "created_at": "2026-07-27T00:00:00+00:00",
   "identity": {
-    "task_run_id": "task_phase0_historical",
+    "task_run_id": "task_run_phase0_historical",
     "task_id": "task-historical",
-    "attempt_number": 1,
-    "parent_task_run_id": "",
+    "attempt_number": 2,
+    "parent_task_run_id": "task_run_phase0_historical_attempt_1",
     "workflow_id": "phase0_legacy_report",
     "workflow_version": 7
   },

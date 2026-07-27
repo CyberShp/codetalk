@@ -1,28 +1,124 @@
 {
-  "fixture_schema_version": 1,
-  "published_workflow": {
-    "id": "phase0_legacy_report",
+  "fixture_schema_version": 2,
+  "captured_from_commit": "f783ff58",
+  "workflow_header": {
+    "workflow_id": "phase0_legacy_report",
     "name": "Phase 0 Legacy Report",
-    "version": 7,
-    "inputs": [
-      {"id": "subject", "type": "free_text", "required": true}
-    ],
-    "steps": [
-      {
-        "id": "analyze",
-        "type": "agent_task",
-        "provider": "builtin-llm",
-        "goal": "Summarize the supplied subject.",
-        "required_artifacts": ["report.md"]
+    "description": "",
+    "status": "active",
+    "published_version_id": "wfv_phase0_v1_published",
+    "current_draft_version_id": null,
+    "created_at": "2026-07-20T09:00:00+00:00",
+    "updated_at": "2026-07-20T09:00:00+00:00",
+    "archived_at": null
+  },
+  "workflow_version": {
+    "version_id": "wfv_phase0_v1_published",
+    "workflow_id": "phase0_legacy_report",
+    "version_number": 1,
+    "state": "published",
+    "authoring_graph": {
+      "schema_version": 1,
+      "workflow_id": "phase0_legacy_report",
+      "name": "Phase 0 Legacy Report",
+      "description": "",
+      "read_only": true,
+      "legacy_definition": {
+        "id": "phase0_legacy_report",
+        "name": "Phase 0 Legacy Report",
+        "version": 7,
+        "inputs": [
+          {"id": "subject", "type": "free_text", "required": true}
+        ],
+        "steps": [
+          {
+            "id": "analyze",
+            "type": "agent_task",
+            "provider": "builtin-llm",
+            "goal": "Summarize the supplied subject.",
+            "required_artifacts": ["report.md"]
+          }
+        ],
+        "outputs": [
+          {
+            "id": "report",
+            "type": "markdown",
+            "from": "analyze",
+            "artifact": "report.md"
+          }
+        ]
       }
-    ],
-    "outputs": [
-      {
-        "id": "report",
-        "type": "markdown",
-        "from": "analyze",
-        "artifact": "report.md"
-      }
-    ]
+    },
+    "compiled_definition": {
+      "id": "phase0_legacy_report",
+      "name": "Phase 0 Legacy Report",
+      "version": 7,
+      "inputs": [
+        {"id": "subject", "type": "free_text", "required": true}
+      ],
+      "steps": [
+        {
+          "id": "analyze",
+          "type": "agent_task",
+          "provider": "builtin-llm",
+          "goal": "Summarize the supplied subject.",
+          "required_artifacts": ["report.md"]
+        }
+      ],
+      "outputs": [
+        {
+          "id": "report",
+          "type": "markdown",
+          "from": "analyze",
+          "artifact": "report.md"
+        }
+      ]
+    },
+    "compiled_plan": {
+      "plan_version": 1,
+      "workflow_version_id": "wfv_phase0_v1_published",
+      "topological_order": ["analyze"],
+      "max_parallelism": 1,
+      "stop_on_error": true,
+      "compatibility_mode": "legacy_sequential",
+      "nodes": [
+        {
+          "node_id": "analyze",
+          "graph_node_id": "analyze",
+          "type": "agent_task",
+          "provider": "builtin-llm",
+          "depends_on": [],
+          "mcp_profiles": [],
+          "skill_ids": [],
+          "resolved_input_bindings": {},
+          "output_contracts": [
+            {
+              "id": "report",
+              "type": "markdown",
+              "from": "analyze",
+              "artifact": "report.md"
+            }
+          ],
+          "timeout_sec": 900,
+          "idle_timeout_sec": 0,
+          "retry_policy": {"max_attempts": 1, "backoff_seconds": 0},
+          "failure_policy": "stop"
+        }
+      ]
+    },
+    "validation": {
+      "valid": true,
+      "errors": [],
+      "warnings": [
+        {
+          "code": "legacy_graph_read_only",
+          "message": "Legacy workflow migrated without inventing typed graph dependencies."
+        }
+      ]
+    },
+    "based_on_version_id": null,
+    "created_at": "2026-07-20T09:00:00+00:00",
+    "updated_at": "2026-07-20T09:00:00+00:00",
+    "published_at": "2026-07-20T09:00:00+00:00"
   }
 }

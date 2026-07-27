@@ -2,24 +2,18 @@ import asyncio
 import json
 import hashlib
 import os
+import sqlite3
 import sys
 import threading
 import time
+from dataclasses import asdict
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "Phase 1 green condition: an ordinary workflow that declares only report.md "
-        "must not receive a test_activity_contract artifact or task-bundle entry."
-    ),
-)
-def test_phase0_ordinary_report_workflow_does_not_receive_implicit_test_activity_contract(tmp_path):
-    """Freeze the current implicit-governance defect without fixing it in Phase 0."""
+def _prepare_phase0_ordinary_report_run(tmp_path):
     from app.services.workflow_dsl import WorkflowStore
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer
 
@@ -42,8 +36,7 @@ def test_phase0_ordinary_report_workflow_does_not_receive_implicit_test_activity
             "artifact": "report.md",
         }],
     })
-
-    prepared = WorkbenchTaskRunPreparer(
+    return WorkbenchTaskRunPreparer(
         artifact_root=tmp_path / "task_runs",
         workflow_store=workflow_store,
     ).prepare(
@@ -53,44 +46,202 @@ def test_phase0_ordinary_report_workflow_does_not_receive_implicit_test_activity
         inputs={"subject": "summarize the module"},
     )
 
-    assert "test_activity_contract" not in prepared.task_bundle
-    assert not (Path(prepared.artifact_dir) / "test_activity_contract.json").exists()
+
+def test_phase0_ordinary_report_workflow_implicit_governance_defect_shape_is_stable(tmp_path):
+    """Prove the expected failure below is the known pollution, not setup noise."""
+    prepared = _prepare_phase0_ordinary_report_run(tmp_path)
+    contract_path = Path(prepared.artifact_dir) / "test_activity_contract.json"
+
+    assert isinstance(prepared.task_bundle["test_activity_contract"], dict)
+    assert contract_path.is_file()
+    assert json.loads(contract_path.read_text(encoding="utf-8"))["required_outputs"]
 
 
-def test_phase0_historical_run_snapshot_and_artifact_fixture_remain_verifiable(tmp_path):
-    """Freeze the V3 snapshot bytes and a published delivery manifest."""
-    from app.services.workbench_task_run import validate_run_snapshot_v3
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "Phase 1 green condition: an ordinary workflow that declares only report.md "
+        "must not receive a test_activity_contract artifact or task-bundle entry."
+    ),
+)
+def test_phase0_ordinary_report_workflow_does_not_receive_implicit_test_activity_contract(tmp_path):
+    """Freeze the current implicit-governance defect without fixing it in Phase 0."""
+    prepared = _prepare_phase0_ordinary_report_run(tmp_path)
+
+    pollution = (
+        "test_activity_contract" in prepared.task_bundle,
+        (Path(prepared.artifact_dir) / "test_activity_contract.json").exists(),
+    )
+    assert pollution == (False, False)
+
+
+def test_phase0_historical_run_snapshot_and_artifact_fixture_remain_verifiable(
+    tmp_path, monkeypatch
+):
+    """Load a frozen Task, Attempt, event stream, snapshot and delivery together."""
+    from app.services.workbench_artifact_manifest import build_task_artifact_manifest
+    from app.services.workbench_task_run import WorkbenchTaskRunStore, validate_run_snapshot_v3
+    from app.services.workbench_task_run_events import WorkbenchTaskRunEventStore
+    from app.services.workbench_task_store import WorkbenchTaskStore
 
     fixture_dir = Path(__file__).with_name("fixtures") / "harness_workflow_refactor"
     artifacts = json.loads((fixture_dir / "historical-artifacts.json").read_text(encoding="utf-8"))
     snapshot = json.loads((fixture_dir / "historical-run-snapshot-v3.json").read_text(encoding="utf-8"))
+    task_attempt = json.loads(
+        (fixture_dir / "historical-task-attempt.json").read_text(encoding="utf-8")
+    )
+    task_run_id = task_attempt["task_run"]["task_run_id"]
+    task_root = tmp_path / "task_runs" / task_run_id
+    task_root.mkdir(parents=True)
+    materialized_task_run = {
+        **task_attempt["task_run"],
+        # Historical absolute paths are deployment-specific. Relocation changes
+        # only this field; every frozen workflow/input/status value remains exact.
+        "artifact_dir": str(task_root),
+    }
 
     for relative_path, payload in artifacts["components"].items():
-        (tmp_path / relative_path).write_text(
+        (task_root / relative_path).write_text(
             json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
             encoding="utf-8",
         )
     for relative_path, content in artifacts["deliverables"].items():
-        (tmp_path / relative_path).write_text(content, encoding="utf-8")
-    (tmp_path / "task_artifact_manifest.json").write_text(
+        (task_root / relative_path).write_text(content, encoding="utf-8")
+    (task_root / "task_artifact_manifest.json").write_text(
         json.dumps(artifacts["artifact_manifest"], ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
-    (tmp_path / "run_snapshot_v3.json").write_text(
+    (task_root / "run_snapshot_v3.json").write_text(
         json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True),
         encoding="utf-8",
     )
+    (task_root / "task_run.json").write_text(
+        json.dumps(materialized_task_run, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    (task_root / "task_run_events.jsonl").write_text(
+        "".join(
+            f"{json.dumps(event, ensure_ascii=False, sort_keys=True)}\n"
+            for event in task_attempt["events"]
+        ),
+        encoding="utf-8",
+    )
+    raw_events = [
+        json.loads(line)
+        for line in (task_root / "task_run_events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert raw_events == task_attempt["events"]
+    assert [event["seq"] for event in raw_events] == [1, 2, 3]
+    assert [event["event_kind"] for event in raw_events] == [
+        "diagnostic", "status", "done"
+    ]
 
-    assert validate_run_snapshot_v3(tmp_path) == []
-    manifest = json.loads((tmp_path / "task_artifact_manifest.json").read_text(encoding="utf-8"))
+    task_db = tmp_path / "tasks.db"
+    task_store = WorkbenchTaskStore(task_db)
+    task_store.initialize_and_migrate()
+    task = task_attempt["task"]
+    with sqlite3.connect(task_db) as db:
+        db.execute(
+            """
+            INSERT INTO workbench_tasks(
+                task_id, name, description, workspace_id, workflow_id,
+                workflow_version_id, lifecycle_status, execution_profile_id,
+                input_values_json, execution_overrides_json, output_overrides_json,
+                tags_json, last_run_id, created_at, updated_at, archived_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                task["task_id"], task["name"], task["description"], task["workspace_id"],
+                task["workflow_id"], task["workflow_version_id"], task["lifecycle_status"],
+                task["execution_profile_id"],
+                json.dumps(task["input_values"], ensure_ascii=False, sort_keys=True),
+                json.dumps(task["execution_overrides"], ensure_ascii=False, sort_keys=True),
+                json.dumps(task["output_overrides"], ensure_ascii=False, sort_keys=True),
+                json.dumps(task["tags"], ensure_ascii=False), task["last_run_id"],
+                task["created_at"], task["updated_at"], task["archived_at"],
+            ),
+        )
+
+    assert asdict(task_store.get_task(task["task_id"])) == task
+    assert task_store.list_tasks(workspace_id="ws-phase0") == [task_store.get_task(task["task_id"])]
+
+    run_store = WorkbenchTaskRunStore(tmp_path / "task_runs")
+    loaded_run = run_store.load(task_run_id)
+    assert loaded_run.task_id == task["task_id"]
+    assert loaded_run.attempt_number == 2
+    assert loaded_run.parent_task_run_id == "task_run_phase0_historical_attempt_1"
+    assert loaded_run.execution_status == "completed"
+    assert run_store.list(task_id=task["task_id"])[0].task_run_id == task_run_id
+
+    event_store = WorkbenchTaskRunEventStore(tmp_path / "task_runs")
+    events = event_store.list_after(task_run_id)
+    assert [event["event_type"] for event in events] == [
+        "run_started", "node_completed", "run_completed"
+    ]
+    assert [event["event_id"] for event in events] == [1, 2, 3]
+    assert [event["seq"] for event in events] == [1, 2, 3]
+    assert [event["event_kind"] for event in events] == [
+        "diagnostic", "status", "done"
+    ]
+    assert [event["payload"] for event in events] == [
+        event["payload"] for event in task_attempt["events"]
+    ]
+    assert events[1]["payload"] == {"node_id": "analyze", "status": "completed"}
+    assert event_store.current_status(task_run_id) == "completed"
+    assert validate_run_snapshot_v3(task_root) == []
+    manifest = json.loads((task_root / "task_artifact_manifest.json").read_text(encoding="utf-8"))
     assert manifest["artifacts"] == [{
         "relative_path": "report.md",
         "kind": "delivery",
         "declared": True,
     }]
-    assert (tmp_path / "report.md").read_text(encoding="utf-8") == (
+    assert (task_root / "report.md").read_text(encoding="utf-8") == (
         "# Historical report\n\nFrozen Phase 0 delivery.\n"
     )
+    report_entry = next(
+        item for item in build_task_artifact_manifest(task_root)
+        if item["relative_path"] == "report.md"
+    )
+    assert report_entry["sha256"] == "070603d2e45da72183f1caab82ad11bdec776bcbad5bd8848be91c6fe4b365c3"
+    assert report_entry["size_bytes"] == 46
+
+    from app.api import agent_workbench as workbench_api
+
+    monkeypatch.setattr(workbench_api, "_task_runs_dir", lambda: tmp_path / "task_runs")
+    public_run = asyncio.run(workbench_api.get_task_run(task_run_id))
+    assert public_run["task_id"] == task["task_id"]
+    assert public_run["execution_status"] == "completed"
+    public_events = asyncio.run(
+        workbench_api.list_task_run_events(
+            task_run_id,
+            after_id=0,
+            before_id=None,
+            tail=False,
+            limit=200,
+        )
+    )
+    assert [event["event_type"] for event in public_events["items"]] == [
+        "run_started", "node_completed", "run_completed"
+    ]
+    assert [event["event_id"] for event in public_events["items"]] == [1, 2, 3]
+    assert [event["seq"] for event in public_events["items"]] == [1, 2, 3]
+    assert [event["event_kind"] for event in public_events["items"]] == [
+        "diagnostic", "status", "done"
+    ]
+    assert public_events["items"][1]["payload"] == {
+        "node_id": "analyze",
+        "status": "completed",
+    }
+    assert public_events["last_event_id"] == 3
+    assert public_events["latest_event_id"] == 3
+    public_artifacts = asyncio.run(workbench_api.list_task_run_artifacts(task_run_id))
+    assert any(
+        item["relative_path"] == "report.md"
+        for item in public_artifacts["artifacts"]
+    )
+    download = asyncio.run(workbench_api.download_task_run_artifact(task_run_id, "report.md"))
+    assert download.body == b"# Historical report\n\nFrozen Phase 0 delivery.\n"
 
 
 def test_phase0_scheduler_reuse_and_lifecycle_event_order_are_stable():
@@ -166,6 +317,113 @@ def test_phase0_agent_harness_pre_cancelled_run_is_terminal(tmp_path, monkeypatc
     )
     assert cancelled.status == "cancelled"
     assert cancelled.timed_out is False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Phase 0 process-group fixture is POSIX-specific")
+def test_phase0_agent_harness_cancels_running_process_group(tmp_path, monkeypatch):
+    """Cancel after spawn and prove the provider child cannot outlive the run."""
+    from app.config import settings
+    from app.services.agent_run_harness import AgentRunHarness
+
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
+    artifact_dir = tmp_path / "phase0-running-cancel"
+    parent_started = tmp_path / "parent-started.txt"
+    child_finished = tmp_path / "child-finished.txt"
+    script_path = tmp_path / "running_agent.py"
+    child_code = (
+        "import pathlib,time; time.sleep(0.8); "
+        f"pathlib.Path({str(child_finished)!r}).write_text('escaped', encoding='utf-8')"
+    )
+    script_path.write_text(
+        "import pathlib,subprocess,sys,time\n"
+        f"pathlib.Path({str(parent_started)!r}).write_text('started', encoding='utf-8')\n"
+        f"subprocess.Popen([sys.executable, '-c', {child_code!r}])\n"
+        "while True:\n"
+        "    print('working', flush=True)\n"
+        "    time.sleep(0.05)\n",
+        encoding="utf-8",
+    )
+    harness = AgentRunHarness(artifact_dir)
+    run = harness.create_run(
+        provider="local-python",
+        command=[sys.executable, str(script_path)],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "phase0"},
+        task_bundle={"task_id": "phase0-running-cancel"},
+        run_id="phase0-running-cancel",
+    )
+    cancel_after = time.monotonic() + 0.25
+    events = []
+
+    result = harness.execute_run(
+        run.run_id,
+        timeout_sec=5,
+        idle_timeout_sec=1,
+        is_cancelled=lambda: parent_started.exists() and time.monotonic() >= cancel_after,
+        event_sink=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    assert result.status == "cancelled"
+    assert result.timed_out is False
+    assert parent_started.is_file()
+    assert any(
+        kind == "tool_result" and payload.get("status") == "cancelled"
+        for kind, payload in events
+    )
+    runtime_events = [
+        json.loads(line)
+        for line in (artifact_dir / "runtime_events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert runtime_events[-1]["event"] == "agent_run_completed"
+    assert runtime_events[-1]["status"] == "cancelled"
+    time.sleep(1.0)
+    assert not child_finished.exists()
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "Harness hard-total-timeout green condition: timeout_sec must terminate a continuously "
+        "active provider at the configured wall-clock budget instead of extending to one hour."
+    ),
+)
+def test_phase0_agent_harness_enforces_total_timeout_during_continuous_output(
+    tmp_path, monkeypatch
+):
+    """Expose the current timeout/idle conflation without changing Harness behavior."""
+    from app.config import settings
+    from app.services.agent_run_harness import AgentRunHarness
+
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
+    artifact_dir = tmp_path / "phase0-total-timeout"
+    script_path = tmp_path / "continuous_agent.py"
+    script_path.write_text(
+        "import sys,time\n"
+        "sys.stdin.read()\n"
+        "for index in range(30):\n"
+        "    print(f'heartbeat {index}', flush=True)\n"
+        "    time.sleep(0.05)\n",
+        encoding="utf-8",
+    )
+    harness = AgentRunHarness(artifact_dir)
+    run = harness.create_run(
+        provider="local-python",
+        command=[sys.executable, str(script_path)],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "phase0"},
+        task_bundle={"task_id": "phase0-total-timeout"},
+        run_id="phase0-total-timeout",
+    )
+
+    result = harness.execute_run(
+        run.run_id,
+        timeout_sec=1,
+        idle_timeout_sec=5,
+    )
+
+    assert result.status == "timeout"
+    assert result.timed_out is True
 
 
 def test_workbench_staged_plan_preserves_profile_scenario_capacity():
