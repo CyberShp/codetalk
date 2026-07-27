@@ -1498,6 +1498,34 @@ class WorkbenchWorkflowRunner:
                     artifact_dir=Path(str(external_repair["artifact_dir"])),
                     snapshot=external_repair["snapshot"],
                 )
+                # A provider candidate is allowed to roll back, but the
+                # rollback must not resurrect a deterministic correction that
+                # was already proven against the pre-candidate audit.  Keep
+                # bounded L0/L1 fixes on the restored baseline before its L2
+                # verdict and the next repair decision are materialized.
+                restored_repairs = materialize_final_deterministic_quality_repairs(
+                    task_run.artifact_dir,
+                    quality_feedback=test_activity_quality,
+                )
+                if restored_repairs:
+                    for artifact, fields in restored_repairs.items():
+                        final_deterministic_repairs.setdefault(artifact, [])
+                        final_deterministic_repairs[artifact].extend(
+                            field
+                            for field in fields
+                            if field not in final_deterministic_repairs[artifact]
+                        )
+                    normalize_materialized_sfmea_risk_contract(
+                        artifact_dir=Path(str(task_run.artifact_dir)),
+                        plan={},
+                    )
+                    materialize_artifact_contract_v3_outputs(
+                        task_run.artifact_dir,
+                        profile_id=profile_id,
+                    )
+                    _refresh_canonical_agent_combined_reports(
+                        artifact_dir=Path(str(task_run.artifact_dir)),
+                    )
                 self._materialize_final_behavior_validation(
                     task_run=task_run,
                     step_results=step_results,

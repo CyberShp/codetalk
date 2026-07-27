@@ -10048,7 +10048,12 @@ def _deterministic_quality_claim_repair(
                 if (
                     claim_id in unsupported_behavior_claim_ids
                     and str(claim.get("type") or "").strip().lower()
-                    in {"behavior_assertion", "behavior_claim"}
+                    in {
+                        "behavior_assertion",
+                        "behavior_claim",
+                        "code_analysis",
+                        "code_behavior",
+                    }
                 ):
                     fields.append(
                         f"$[{row_index}].technical_claims[{claim_id}]._remove_unsupported"

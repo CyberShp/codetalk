@@ -4895,7 +4895,7 @@ def test_quality_repair_removes_a_claim_that_independent_validation_cannot_suppo
                 "technical_claims": [
                     {
                         "claim_id": "CLAIM-BB-013-B",
-                        "type": "behavior_assertion",
+                        "type": "code_behavior",
                         "statement": "参数顺序错误会被 target 拒绝。",
                         "evidence": [{"evidence_id": "SRC-LOGIN"}],
                     },
