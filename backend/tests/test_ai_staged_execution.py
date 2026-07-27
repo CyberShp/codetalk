@@ -846,9 +846,11 @@ async def test_coverage_binding_patch_retries_empty_reasoner_with_fast_client(tm
 
         def __init__(self) -> None:
             self.calls = 0
+            self.prompts: list[str] = []
 
         async def complete(self, messages, max_tokens=4096, temperature=0.2):
             self.calls += 1
+            self.prompts.append("\n".join(str(message.get("content") or "") for message in messages))
             return LLMResponse(
                 content=json.dumps([
                     {"case_id": "BC-001", "coverage_target_ids": ["FLOW-COND-001"]},
@@ -891,6 +893,8 @@ async def test_coverage_binding_patch_retries_empty_reasoner_with_fast_client(tm
     assert fast.calls == 1
     assert result["status"] == "completed"
     assert result["model"] == "deepseek-chat"
+    assert "只绑定该用例确实覆盖的目标，通常每个用例 1-3 个" in fast.prompts[0]
+    assert "不得把全部 TARGETS 重复绑定到每一个用例" in fast.prompts[0]
     assert json.loads(output_path.read_text(encoding="utf-8"))[1]["coverage_target_ids"] == ["RESOURCE-CMD"]
 
 

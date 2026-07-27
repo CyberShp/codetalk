@@ -13936,7 +13936,7 @@ async def _execute_black_box_coverage_binding_patch_stage(
         "TASK: Bind frozen source-coverage targets to already accepted black-box cases.",
         "Return only a JSON array. Each item must be exactly {case_id, coverage_target_ids}.",
         "Use only case_id values in CASES and only target IDs in TARGETS.",
-        "Return exactly one item for every CASES.case_id. Every TARGETS.id must appear at least once across the entire array. Do not add cases, rewrite test steps, invent COV-* IDs, or use a target unless the named external scenario actually exercises it.",
+        "Return exactly one item for every CASES.case_id. Every TARGETS.id must appear at least once across the entire array. 只绑定该用例确实覆盖的目标，通常每个用例 1-3 个；不得把全部 TARGETS 重复绑定到每一个用例。Do not add cases, rewrite test steps, invent COV-* IDs, or use a target unless the named external scenario actually exercises it.",
         "TARGETS:",
         json.dumps(target_details or [{"id": value} for value in target_ids], ensure_ascii=False),
         "CASES:",
