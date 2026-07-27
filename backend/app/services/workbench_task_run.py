@@ -232,6 +232,7 @@ class WorkbenchTaskRunPreparer:
             query: str,
             *,
             limit: int = 12,
+            min_source_files: int = 1,
             min_test_files: int = 2,
             evidence_hints: list[dict[str, Any]] | None = None,
             search_roots: list[str] | None = None,
@@ -252,6 +253,7 @@ class WorkbenchTaskRunPreparer:
                 str(repo_path or ""),
                 str(query or ""),
                 limit,
+                min_source_files,
                 min_test_files,
                 normalized_hints,
                 normalized_roots,
@@ -261,6 +263,7 @@ class WorkbenchTaskRunPreparer:
                     repo_path=repo_path,
                     query=query,
                     limit=limit,
+                    min_source_files=min_source_files,
                     min_test_files=min_test_files,
                     evidence_hints=evidence_hints,
                     search_roots=list(normalized_roots),
@@ -283,6 +286,13 @@ class WorkbenchTaskRunPreparer:
             ]
             or [2]
         )
+        task_source_context_min_source_files = max(
+            [
+                max(1, int(step.get("source_context_min_source_files") or 1))
+                for step in agent_source_steps
+            ]
+            or [1]
+        )
         task_source_evidence_hints = [
             dict(item)
             for step in agent_source_steps
@@ -298,6 +308,7 @@ class WorkbenchTaskRunPreparer:
         local_source_context = prepared_source_context(
             str(context_bundle.get("query") or ""),
             limit=task_source_context_limit,
+            min_source_files=task_source_context_min_source_files,
             min_test_files=task_source_context_min_test_files,
             evidence_hints=task_source_evidence_hints,
             search_roots=task_source_search_roots,
@@ -456,6 +467,9 @@ class WorkbenchTaskRunPreparer:
             step_local_source_context = prepared_source_context(
                 str(step_context_bundle.get("query") or ""),
                 limit=max(1, int(step.get("source_context_limit") or 12)),
+                min_source_files=max(
+                    1, int(step.get("source_context_min_source_files") or 1)
+                ),
                 min_test_files=max(
                     0, int(step.get("source_context_min_test_files") or 2)
                 ),
@@ -751,6 +765,7 @@ def build_local_source_context(
     repo_path: str,
     query: str,
     limit: int = 8,
+    min_source_files: int = 1,
     min_test_files: int = 2,
     max_candidates_to_read: int = 80,
     max_files_scanned: int = 5000,
@@ -982,9 +997,23 @@ def build_local_source_context(
             str(item.get("file_path") or ""),
         )
     )
-    required_files = [
+    required_candidates = [
         item for item in scored if bool(item.get("contract_required"))
     ]
+    # A hint can require several functions from the same central file.  The
+    # first bounded context is a *path breadth* contract, however: retaining
+    # all of those slices here would consume the source quota before parser,
+    # lifecycle and session implementations can enter the ledger. Additional
+    # same-file slices are expanded later from this SHA-validated selection.
+    required_files: list[dict[str, Any]] = []
+    required_paths: set[tuple[str, str]] = set()
+    for item in required_candidates:
+        classification = str(item.get("classification") or "source")
+        key = (classification, str(item.get("file_path") or ""))
+        if key in required_paths:
+            continue
+        required_paths.add(key)
+        required_files.append(item)
     required_slice_keys = {
         (
             str(item.get("file_path") or ""),
@@ -1006,6 +1035,11 @@ def build_local_source_context(
         for item in required_files
         if _local_source_classification(str(item.get("file_path") or "")) == "test"
     )
+    required_source_paths = {
+        str(item.get("file_path") or "")
+        for item in required_files
+        if _local_source_classification(str(item.get("file_path") or "")) == "source"
+    }
     selected_remaining = _select_source_and_test_evidence(
         [
             item
@@ -1015,8 +1049,17 @@ def build_local_source_context(
                 int(item.get("start_line") or 0),
                 int(item.get("end_line") or 0),
             ) not in required_slice_keys
+            # Same-file required slices are expanded deterministically after
+            # breadth selection. Do not let them displace an unrepresented
+            # source path in this first evidence ledger.
+            and (
+                _local_source_classification(str(item.get("file_path") or ""))
+                != "source"
+                or str(item.get("file_path") or "") not in required_source_paths
+            )
         ],
         limit=remaining_limit,
+        min_source_files=min_source_files,
         min_test_files=max(0, min_test_files - required_test_count),
         coverage_tokens=tokens,
     )
@@ -1195,6 +1238,7 @@ def _select_source_and_test_evidence(
     scored: list[dict[str, Any]],
     *,
     limit: int,
+    min_source_files: int = 1,
     min_test_files: int = 2,
     coverage_tokens: list[str] | None = None,
 ) -> list[dict[str, Any]]:
@@ -1366,6 +1410,67 @@ def _select_source_and_test_evidence(
             selected_paths.discard(str(selected[weakest_index].get("file_path") or ""))
             selected[weakest_index] = strongest
             selected_paths.add(str(strongest.get("file_path") or ""))
+
+    # A delivery contract counts independently reviewable paths, not just
+    # slices.  Keep detailed slices from a central implementation file for
+    # later expansion, but reserve distinct source/test files here so the
+    # evidence pack also covers parser, lifecycle, session and test behavior.
+    desired_source_paths = min(
+        max(0, int(min_source_files)),
+        max(0, selection_limit - min(max(0, int(min_test_files)), selection_limit)),
+    )
+    desired_test_paths = min(
+        max(0, int(min_test_files)),
+        max(0, selection_limit - desired_source_paths),
+    )
+
+    def candidate_rank(item: dict[str, Any]) -> tuple[int, int, int, int, str]:
+        return (
+            int(item.get("score") or 0),
+            implementation_bonus(item),
+            risk_evidence_bonus(item),
+            int(bool(item.get("evidence_hint"))),
+            str(item.get("file_path") or ""),
+        )
+
+    for required_class, desired_paths in (
+        ("source", desired_source_paths),
+        ("test", desired_test_paths),
+    ):
+        while True:
+            class_indexes = [
+                index
+                for index, item in enumerate(selected)
+                if str(item.get("classification") or "source") == required_class
+            ]
+            class_paths = {
+                str(selected[index].get("file_path") or "")
+                for index in class_indexes
+            }
+            if len(class_paths) >= desired_paths:
+                break
+            replacement_candidates = [
+                item
+                for item in eligible
+                if str(item.get("classification") or "source") == required_class
+                and str(item.get("file_path") or "") not in class_paths
+            ]
+            duplicate_indexes = [
+                index
+                for index in class_indexes
+                if sum(
+                    str(selected[other].get("file_path") or "")
+                    == str(selected[index].get("file_path") or "")
+                    for other in class_indexes
+                ) > 1
+            ]
+            if not replacement_candidates or not duplicate_indexes:
+                break
+            replace_index = min(
+                duplicate_indexes,
+                key=lambda index: candidate_rank(selected[index]),
+            )
+            selected[replace_index] = max(replacement_candidates, key=candidate_rank)
     selected.sort(
         key=lambda item: (-int(item.get("score") or 0), str(item.get("file_path") or ""))
     )
@@ -2504,6 +2609,7 @@ def build_executor_handoff_contract(
             for key, field in (
                 ("max_files", "source_analysis_max_files"),
                 ("max_evidence_anchors", "source_analysis_max_evidence_anchors"),
+                ("min_source_files", "source_analysis_min_source_files"),
                 ("min_test_files", "source_analysis_min_test_files"),
             )
             if step.get(field) is not None

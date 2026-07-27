@@ -55,6 +55,7 @@ from app.services.ai_staged_execution import (
     _render_deterministic_combined_report,
     _select_regular_stage_llm,
     _select_bounded_source_context_files,
+    _source_analysis_prompt_context,
     _source_enclosing_c_function,
     _salvage_truncated_json_array,
     _is_valid_json_artifact_seed,
@@ -8224,6 +8225,39 @@ def test_source_analysis_context_keeps_only_bounded_verified_inputs():
     assert "quality_retry" not in serialized
     assert "unrelated_history" not in serialized
     assert len(serialized) < 12000
+
+
+def test_source_analysis_prompt_projection_keeps_delivery_evidence_outside_prompt():
+    context = {
+        "files": [
+            {
+                "file_path": f"lib/iscsi/source_{index}.c",
+                "classification": "source",
+                "matched_terms": ["login"],
+                "symbols": [f"source_{index}"],
+            }
+            for index in range(6)
+        ]
+        + [
+            {
+                "file_path": f"test/iscsi/login_{index}.sh",
+                "classification": "test",
+                "matched_terms": ["login"],
+                "symbols": [f"test_{index}"],
+            }
+            for index in range(4)
+        ]
+    }
+
+    prompt_context = _source_analysis_prompt_context(context, max_files=6)
+
+    assert len(context["files"]) == 10
+    assert len(prompt_context["files"]) == 6
+    assert prompt_context["prompt_projection"] == {
+        "file_count": 6,
+        "full_evidence_file_count": 10,
+        "reason": "source_analysis_prompt_budget",
+    }
 
 
 def test_source_analysis_context_keeps_anchor_window_when_function_exceeds_budget(tmp_path):

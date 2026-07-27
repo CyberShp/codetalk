@@ -232,6 +232,7 @@ def build_source_analysis_context(
     max_files: int | None = None,
     excerpt_chars: int | None = None,
     max_evidence_anchors: int | None = None,
+    min_source_files: int | None = None,
     min_test_files: int | None = None,
 ) -> dict[str, Any]:
     """Project the full execution context into the source-analysis contract."""
@@ -241,6 +242,7 @@ def build_source_analysis_context(
         max_files=max_files,
         excerpt_chars=excerpt_chars,
         max_evidence_anchors=max_evidence_anchors,
+        min_source_files=min_source_files,
         min_test_files=min_test_files,
     )
 
@@ -252,6 +254,7 @@ def _project_source_analysis_context(
     max_files: int | None = None,
     excerpt_chars: int | None = None,
     max_evidence_anchors: int | None = None,
+    min_source_files: int | None = None,
     min_test_files: int | None = None,
 ) -> dict[str, Any]:
     materials = _source_input_material_summaries(staged_context)
@@ -262,6 +265,7 @@ def _project_source_analysis_context(
         max_files=max_files,
         excerpt_chars=excerpt_chars,
         max_evidence_anchors=max_evidence_anchors,
+        min_source_files=min_source_files,
         min_test_files=min_test_files,
         materials=materials,
         gitnexus_summary=gitnexus_summary,
@@ -302,6 +306,7 @@ def _project_source_analysis_context_from_memory(
     max_files: int | None = None,
     excerpt_chars: int | None = None,
     max_evidence_anchors: int | None = None,
+    min_source_files: int | None = None,
     min_test_files: int | None = None,
 ) -> dict[str, Any]:
     """Budget fallback that performs no filesystem reads or full MCP serialization."""
@@ -311,6 +316,7 @@ def _project_source_analysis_context_from_memory(
         max_files=max_files,
         excerpt_chars=excerpt_chars,
         max_evidence_anchors=max_evidence_anchors,
+        min_source_files=min_source_files,
         min_test_files=min_test_files,
         materials=_source_input_material_summaries(
             staged_context,
@@ -328,12 +334,17 @@ def _assemble_source_analysis_context(
     max_files: int | None,
     excerpt_chars: int | None,
     max_evidence_anchors: int | None,
+    min_source_files: int | None,
     min_test_files: int | None,
     materials: list[dict[str, str]],
     gitnexus_summary: str,
     cgc_summary: str,
 ) -> dict[str, Any]:
-    min_source_files, plan_min_test_files = _source_evidence_minimums(plan)
+    plan_min_source_files, plan_min_test_files = _source_evidence_minimums(plan)
+    required_source_files = max(
+        plan_min_source_files,
+        int(1 if min_source_files is None else min_source_files),
+    )
     required_test_files = max(
         plan_min_test_files,
         int(
@@ -342,7 +353,7 @@ def _assemble_source_analysis_context(
             else min_test_files
         ),
     )
-    required_file_count = min_source_files + required_test_files
+    required_file_count = required_source_files + required_test_files
     file_limit = max(
         1,
         int(max_files or settings.source_analysis_max_files),
@@ -364,7 +375,7 @@ def _assemble_source_analysis_context(
     selected_source_items = _select_bounded_source_context_files(
         source_context.get("files") or [],
         limit=evidence_limit,
-        min_source_files=min_source_files,
+        min_source_files=required_source_files,
         min_test_files=required_test_files,
         coverage_tokens=[
             str(token)
@@ -681,6 +692,14 @@ def _expand_verified_source_anchors(
             # statement about the timer lifecycle.
             "iscsi_pdu_payload_op_login",
         }
+        # Multi-connection Login is not covered by generic session prose. The
+        # session append and capacity check are concrete implementation facts
+        # needed for a defensible MCS/TSIH black-box design.
+        if "mcs" in token_set:
+            required_protocol_anchor_terms.update({
+                "append_iscsi_sess",
+                "sess->connections >= sess->maxconnections",
+            })
         tokens.extend((
             "cbit",
             "c-bit",
@@ -754,10 +773,27 @@ def _expand_verified_source_anchors(
     available_anchor_slots = max(0, anchor_limit - len(files))
     eviction_count = max(0, required_anchor_slots - available_anchor_slots)
     if eviction_count:
+        source_path_counts = {
+            path: sum(
+                str(candidate.get("file_path") or "") == path
+                and str(candidate.get("classification") or "") == "source"
+                for candidate in files
+            )
+            for path in {
+                str(candidate.get("file_path") or "")
+                for candidate in files
+                if str(candidate.get("classification") or "") == "source"
+            }
+        }
         evictable_indexes = [
             index
             for index, item in enumerate(files)
             if str(item.get("classification") or "") != "test"
+            # Keep the initial cross-file evidence ledger intact. Only a
+            # duplicate slice from the same source path may be displaced by
+            # additional semantic anchors; otherwise parameter, lifecycle or
+            # configuration evidence silently disappears from the final pack.
+            and source_path_counts.get(str(item.get("file_path") or ""), 0) > 1
             and not (
                 {
                     str(symbol).lower()
@@ -1055,7 +1091,17 @@ def _expand_verified_source_anchors(
     # A profile requirement is stronger than a relevance score.  Reserve the
     # definitions for every missing Login semantic anchor before generic
     # slices (dispatch, C-bit and call sites) compete for the finite budget.
-    for anchor in sorted(required_protocol_anchor_terms):
+    required_anchor_order = sorted(
+        required_protocol_anchor_terms,
+        key=lambda anchor: (
+            anchor not in {
+                "append_iscsi_sess",
+                "sess->connections >= sess->maxconnections",
+            },
+            anchor,
+        ),
+    )
+    for anchor in required_anchor_order:
         if anchor in selected_protocol_anchors or len(files) >= anchor_limit:
             continue
         eligible = [
@@ -1543,6 +1589,14 @@ def _source_evidence_minimums(plan: dict[str, Any]) -> tuple[int, int]:
     for stage in plan.get("stages") or []:
         if not isinstance(stage, dict):
             continue
+        min_source_files = max(
+            min_source_files,
+            int(
+                stage.get("source_context_min_source_files")
+                or stage.get("source_analysis_min_source_files")
+                or 0
+            ),
+        )
         if str(stage.get("id") or "").split("__", 1)[0] in {
             "sfmea",
             "black_box_cases",
@@ -2537,8 +2591,12 @@ def _staged_execution_profile(raw_profile: dict[str, Any] | None) -> dict[str, A
                 12,
                 int(requested_source_limits.get("max_evidence_anchors") or settings.source_analysis_max_evidence_anchors),
             ),
+            "min_source_files": min(
+                6,
+                max(1, int(requested_source_limits.get("min_source_files") or 1)),
+            ),
             "min_test_files": min(
-                3,
+                4,
                 int(requested_source_limits.get("min_test_files") or settings.source_analysis_min_test_files),
             ),
         }
@@ -2558,6 +2616,7 @@ def _staged_execution_profile(raw_profile: dict[str, Any] | None) -> dict[str, A
         "max_files": int(settings.source_analysis_max_files),
         "excerpt_chars": int(settings.source_analysis_excerpt_chars),
         "max_evidence_anchors": int(settings.source_analysis_max_evidence_anchors),
+        "min_source_files": 1,
         "min_test_files": int(settings.source_analysis_min_test_files),
     }
     return {
@@ -13747,6 +13806,7 @@ async def _execute_source_analysis_stage(
                 max_files=effective["max_files"],
                 excerpt_chars=effective["excerpt_chars"],
                 max_evidence_anchors=effective["max_evidence_anchors"],
+                min_source_files=effective["min_source_files"],
                 min_test_files=effective["min_test_files"],
             ),
             timeout=max(0.001, context_timeout),
@@ -13759,6 +13819,7 @@ async def _execute_source_analysis_stage(
             max_files=effective["max_files"],
             excerpt_chars=effective["excerpt_chars"],
             max_evidence_anchors=effective["max_evidence_anchors"],
+            min_source_files=effective["min_source_files"],
             min_test_files=effective["min_test_files"],
         )
     context_prepare_ms = round((time.monotonic() - context_started) * 1000, 1)
@@ -13831,7 +13892,15 @@ async def _execute_source_analysis_stage(
         )
         return {**result, "output_path": str(output_path)}
 
-    prompt = _source_analysis_prompt(stage=stage, compact_context=compact)
+    prompt_context = _source_analysis_prompt_context(
+        compact,
+        # The delivery ledger may require more paths than the Source Analysis
+        # model should receive. Keep this P0 prompt contract at six slices even
+        # when a formal workflow retains a ten-path evidence pack.
+        max_files=min(6, int(effective["max_files"])),
+    )
+    _write_json(stage_dir / "source_analysis_prompt_context.json", prompt_context)
+    prompt = _source_analysis_prompt(stage=stage, compact_context=prompt_context)
     _write_text(stage_dir / "stage_prompt.txt", prompt)
     prompt_tokens = BaseLLMClient.estimate_tokens(prompt)
     provider_wait_ms = 0.0
@@ -14330,6 +14399,7 @@ def _source_analysis_limits(overrides: dict[str, Any] | None) -> dict[str, Any]:
         "max_chinese_characters": settings.source_analysis_max_chinese_characters,
         "max_evidence_anchors": settings.source_analysis_max_evidence_anchors,
         "max_files": settings.source_analysis_max_files,
+        "min_source_files": 1,
         "min_test_files": settings.source_analysis_min_test_files,
         "excerpt_chars": settings.source_analysis_excerpt_chars,
         "context_timeout_seconds": settings.source_analysis_context_timeout_seconds,
@@ -14343,6 +14413,52 @@ def _source_analysis_limits(overrides: dict[str, Any] | None) -> dict[str, Any]:
             if key in overrides and overrides[key] is not None:
                 values[key] = overrides[key]
     return values
+
+
+def _source_analysis_prompt_context(
+    context: dict[str, Any],
+    *,
+    max_files: int,
+) -> dict[str, Any]:
+    """Keep the model prompt compact without shrinking the evidence ledger.
+
+    The deterministic evidence pack may retain the broader delivery contract
+    (for example six source paths plus four test paths). Source Analysis only
+    needs a small representative set to rank and summarize those facts; later
+    stages still receive the complete SHA-validated catalog.
+    """
+    bounded_limit = max(1, int(max_files))
+    selected = _select_bounded_source_context_files(
+        context.get("files") or [],
+        limit=bounded_limit,
+        min_source_files=max(1, bounded_limit - min(2, bounded_limit - 1)),
+        min_test_files=min(2, max(0, bounded_limit - 1)),
+        coverage_tokens=[
+            str(value)
+            for item in context.get("files") or []
+            if isinstance(item, dict)
+            for value in item.get("matched_terms") or []
+            if str(value).strip()
+        ],
+    )
+    return {
+        **context,
+        "files": selected,
+        "verified_symbols": sorted(
+            {
+                str(symbol)
+                for item in selected
+                if isinstance(item, dict)
+                for symbol in item.get("symbols") or []
+                if str(symbol).strip()
+            }
+        )[:64],
+        "prompt_projection": {
+            "file_count": len(selected),
+            "full_evidence_file_count": len(context.get("files") or []),
+            "reason": "source_analysis_prompt_budget",
+        },
+    }
 
 
 def _source_analysis_prompt(

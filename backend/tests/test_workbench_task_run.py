@@ -8611,6 +8611,71 @@ def test_source_selector_does_not_use_symbol_free_code_as_test_evidence():
     }
 
 
+def test_source_selector_reserves_distinct_source_paths_for_formal_delivery():
+    """A many-slice central file must not crowd out independent source files."""
+    import app.services.workbench_task_run as task_run_module
+
+    scored = [
+        {
+            "file_path": "lib/iscsi/iscsi.c",
+            "classification": "source",
+            "score": 100 - index,
+            "matched_terms": ["login"],
+            "symbols": [f"login_slice_{index}"],
+        }
+        for index in range(6)
+    ] + [
+        {
+            "file_path": path,
+            "classification": "source",
+            "score": 40 - index,
+            "matched_terms": ["login"],
+            "symbols": [symbol],
+        }
+        for index, (path, symbol) in enumerate(
+            [
+                ("lib/iscsi/param.c", "iscsi_parse_params"),
+                ("lib/iscsi/conn.c", "_iscsi_conn_destruct"),
+                ("lib/iscsi/tgt_node.c", "iscsi_check_chap_params"),
+                ("lib/iscsi/iscsi_subsystem.c", "append_iscsi_sess"),
+                ("include/spdk/iscsi_spec.h", "ISCSI_LOGIN_AUTHENT_FAIL"),
+            ]
+        )
+    ] + [
+        {
+            "file_path": f"test/iscsi/login_{index}.sh",
+            "classification": "test",
+            "score": 30 - index,
+            "matched_terms": ["login"],
+            "symbols": [f"login_test_{index}"],
+        }
+        for index in range(4)
+    ]
+
+    selected = task_run_module._select_source_and_test_evidence(
+        scored,
+        limit=10,
+        min_source_files=6,
+        min_test_files=4,
+        coverage_tokens=["login"],
+    )
+
+    source_paths = {
+        item["file_path"]
+        for item in selected
+        if item["classification"] == "source"
+    }
+    test_paths = {
+        item["file_path"]
+        for item in selected
+        if item["classification"] == "test"
+    }
+    assert len(source_paths) == 6
+    assert len(test_paths) == 4
+    assert "lib/iscsi/param.c" in source_paths
+    assert "lib/iscsi/conn.c" in source_paths
+
+
 def test_local_source_context_promotes_content_hits_already_present_in_git_candidates(
     tmp_path,
 ):
@@ -8883,6 +8948,7 @@ def test_prepare_uses_agent_source_context_budget_for_task_level_context(
             "repo_path": repo_path,
             "repo_revision": "fixture-revision",
             "requested_limit": kwargs.get("limit"),
+            "requested_min_source_files": kwargs.get("min_source_files"),
             "requested_min_test_files": kwargs.get("min_test_files"),
             "files": [],
         }
@@ -8901,6 +8967,7 @@ def test_prepare_uses_agent_source_context_budget_for_task_level_context(
                     "type": "agent_task",
                     "provider": "builtin-llm",
                     "source_context_limit": 44,
+                    "source_context_min_source_files": 7,
                     "source_context_min_test_files": 8,
                 }
             ],
@@ -8920,6 +8987,7 @@ def test_prepare_uses_agent_source_context_budget_for_task_level_context(
 
     assert len(calls) == 1
     assert calls[0]["limit"] == 44
+    assert calls[0]["min_source_files"] == 7
     assert calls[0]["min_test_files"] == 8
     assert prepared.task_bundle["local_source_context"]["requested_limit"] == 44
     agent_bundle = json.loads(
@@ -8931,6 +8999,7 @@ def test_prepare_uses_agent_source_context_budget_for_task_level_context(
         ).read_text(encoding="utf-8")
     )
     assert agent_bundle["local_source_context"]["requested_min_test_files"] == 8
+    assert agent_bundle["local_source_context"]["requested_min_source_files"] == 7
 
 
 def test_executor_handoff_carries_step_source_analysis_limits():
@@ -8947,6 +9016,7 @@ def test_executor_handoff_carries_step_source_analysis_limits():
             "type": "agent_task",
             "source_analysis_max_files": 18,
             "source_analysis_max_evidence_anchors": 18,
+            "source_analysis_min_source_files": 6,
             "source_analysis_min_test_files": 4,
         },
         step_id="analyze",
@@ -8959,6 +9029,7 @@ def test_executor_handoff_carries_step_source_analysis_limits():
     assert contract["source_analysis_limits"] == {
         "max_files": 18,
         "max_evidence_anchors": 18,
+        "min_source_files": 6,
         "min_test_files": 4,
     }
 

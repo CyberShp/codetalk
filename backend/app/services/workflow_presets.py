@@ -517,7 +517,7 @@ _BASIC_ISCSI_EVIDENCE_HINTS = [
     {"path": "lib/iscsi/iscsi.c", "term": "Set T/CSG/NSG to reserved if login error", "label": "error response flag clearing"},
     {"path": "lib/iscsi/iscsi.c", "term": "case ISCSI_FULL_FEATURE_PHASE", "label": "full-feature login request rejection"},
     {"path": "scripts/rpc.py", "term": "--max-connections-per-session", "label": "MCS target startup configuration"},
-    {"path": "lib/iscsi/param.c", "term": "iscsi_parse_params", "label": "C-bit parameter reassembly"},
+    {"path": "lib/iscsi/param.c", "term": "iscsi_parse_params", "label": "C-bit parameter reassembly", "contract_required": True},
     {"path": "lib/iscsi/iscsi.c", "term": "iscsi_op_login_session_normal", "label": "normal session and reinstatement semantics"},
     {"path": "lib/iscsi/conn.c", "term": "iscsi_conn_info_json", "label": "public connection RPC fields"},
     {"path": "lib/iscsi/param.c", "term": "iscsi_parse_param", "label": "bounded parameter parsing"},
@@ -622,7 +622,10 @@ def _basic_report_preset(*, include_design: bool, provider: str) -> dict[str, An
                     # test paths.  Fewer than ten file slots makes that
                     # contract impossible before the model starts.
                     "source_context_limit": 10,
+                    "source_context_min_source_files": 6,
                     "source_context_min_test_files": 4,
+                    "source_analysis_min_source_files": 6,
+                    "source_analysis_min_test_files": 4,
                     "source_analysis_max_files": 10,
                     "source_analysis_max_evidence_anchors": 12,
                     "source_context_search_roots": [

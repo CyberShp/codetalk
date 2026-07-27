@@ -158,7 +158,10 @@ def test_basic_report_workflow_presets_have_named_analysis_target_and_one_report
     assert "Occurrence" in source_step["goal"]
     assert {"流程", "SFMEA", "黑盒测试用例"}.issubset(set(source_step["report_sections"]))
     assert source_step["source_context_limit"] == 10
+    assert source_step["source_context_min_source_files"] == 6
     assert source_step["source_context_min_test_files"] == 4
+    assert source_step["source_analysis_min_source_files"] == 6
+    assert source_step["source_analysis_min_test_files"] == 4
     assert source_step["source_analysis_max_files"] == source_step["source_context_limit"]
     assert source_step["source_analysis_max_evidence_anchors"] == 12
     evidence_hints = source_step["source_evidence_hints"]
