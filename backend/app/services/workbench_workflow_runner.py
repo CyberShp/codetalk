@@ -4680,6 +4680,31 @@ def _apply_source_driven_judge_to_quality_audit(
                 "severity": "blocking",
             }
         )
+    coverage_warnings = list(coverage.get("warnings") or [])
+    coverage_targets = _source_driven_coverage_targets(
+        artifact_dir=artifact_dir,
+        warnings=coverage_warnings,
+    )
+    if coverage_targets and not any(
+        item.get("code") == "source_driven_coverage_incomplete" for item in issues
+    ):
+        # Materialize the frozen locators at the judge boundary. Quality retry
+        # consumes this audit directly, so waiting for a later profile view
+        # loses the executable repair contract on blocked verdicts.
+        issues.append(
+            {
+                "code": "source_driven_coverage_incomplete",
+                "severity": "blocking",
+                "artifact": "black_box_cases.json",
+                "source_artifact": "judge_report.json",
+                "coverage_targets": coverage_targets,
+                "message": (
+                    "源码驱动覆盖门禁存在待绑定目标："
+                    + "；".join(str(item) for item in coverage_warnings)
+                ),
+                "recommended_action": "将冻结的条件、状态和资源目标绑定到已有黑盒用例后重试。",
+            }
+        )
     # The judge is intentionally a compact delivery decision.  Preserve the
     # row-level independent-audit verdicts here so a repair turn can act on
     # the actual SFMEA/test-case row instead of repeatedly seeing only

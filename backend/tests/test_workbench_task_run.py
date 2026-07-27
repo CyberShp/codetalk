@@ -710,6 +710,20 @@ def test_source_driven_judge_normalizes_auditor_contradicts_verdict(tmp_path):
             "reason": "源码与该结论相反。",
         }]
     }), encoding="utf-8")
+    (tmp_path / "branch_disposition.json").write_text(json.dumps({"items": [{
+        "id": "FLOW-COND-003",
+        "condition": "if (conn->authenticated == false)",
+        "file_path": "lib/iscsi/conn.c",
+        "start_line": 430,
+        "end_line": 432,
+        "evidence_refs": ["FLOW-COND-003"],
+    }]}), encoding="utf-8")
+    judge = json.loads((tmp_path / "judge_report.json").read_text(encoding="utf-8"))
+    judge["axes"] = {"coverage_disposition": {
+        "status": "blocked",
+        "warnings": ["branch_disposition.json:FLOW-COND-003:need_verify"],
+    }}
+    (tmp_path / "judge_report.json").write_text(json.dumps(judge), encoding="utf-8")
 
     result = _apply_source_driven_judge_to_quality_audit(
         audit={"status": "deliverable", "deliverable": True, "issues": [], "quality_axes": {}},
@@ -718,6 +732,11 @@ def test_source_driven_judge_normalizes_auditor_contradicts_verdict(tmp_path):
 
     assert any(
         item["code"] == "behavior_claim_contradicted" and item["row_id"] == "SFMEA-11"
+        for item in result["issues"]
+    )
+    assert any(
+        item["code"] == "source_driven_coverage_incomplete"
+        and item["coverage_targets"][0]["id"] == "FLOW-COND-003"
         for item in result["issues"]
     )
 
