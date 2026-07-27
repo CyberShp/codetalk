@@ -8370,6 +8370,13 @@ def _normalize_black_box_delivery_contract(
     for index, row in enumerate(normalized):
         if not isinstance(row, dict):
             continue
+        # JSON-array continuations are asked to return only the missing rows.
+        # A provider may omit an optional-looking link field even though the
+        # delivery schema requires the explicit empty list for normal paths.
+        # Do not invent an SFMEA relationship here: the cross-artifact quality
+        # gate still rejects a risk-bearing case that remains unlinked.
+        if not isinstance(row.get("risk_ids"), list):
+            row["risk_ids"] = []
         for field in ("observability", "failure_diagnostics"):
             values = row.get(field)
             if not isinstance(values, list):

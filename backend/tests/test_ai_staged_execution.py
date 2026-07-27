@@ -3753,6 +3753,29 @@ def test_normalize_black_box_delivery_contract_removes_private_state_from_observ
     assert fields == ["$[0].observability[0]", "$[0].failure_diagnostics[0]"]
 
 
+def test_normalize_black_box_delivery_contract_repairs_missing_risk_ids_without_inventing_a_risk():
+    rendered, fields = _normalize_black_box_delivery_contract(
+        [
+            {
+                "case_id": "BB-CONTINUATION-01",
+                "scenario_name": "正常 iSCSI Login",
+                "test_dimension": "normal_path",
+                "steps": ["通过公开 initiator 发起 Login"],
+                "preconditions": ["目标服务已启动"],
+                "expected_result": "收到成功 Login 响应",
+                "observability": ["记录协议响应"],
+                "failure_diagnostics": ["保留 target 日志"],
+                "mapped_test_dir": "test/iscsi_tgt",
+                "source_or_test_evidence": ["SRC-01"],
+            }
+        ]
+    )
+
+    assert rendered[0]["risk_ids"] == []
+    assert fields == []
+    assert _validate_schema(rendered, BLACK_BOX_CASES_SCHEMA) == []
+
+
 def test_normalize_sfmea_risk_contract_marks_unsupported_defect_language_as_hypothesis():
     rendered, fields = _normalize_sfmea_risk_contract(
         [
