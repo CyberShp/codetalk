@@ -548,9 +548,27 @@ def _expand_verified_source_anchors(
     # supplied keyword, so add narrowly-scoped discovery tokens only when the
     # selected source context is already an iSCSI Login analysis.
     token_set = set(tokens)
+    required_protocol_anchor_terms: set[str] = set()
     if "iscsi" in token_set and "login" in token_set:
-        tokens.extend(("cbit", "c-bit", "partial_text_parameter"))
-        protocol_priority_terms.update(("cbit", "c-bit", "partial_text_parameter"))
+        required_protocol_anchor_terms = {
+            "iscsi_auth_params",
+            "iscsi_op_login_phase_none",
+            "iscsi_op_login_response",
+            "iscsi_op_login_rsp_handle_csg_bit",
+            "iscsi_op_login_store_incoming_params",
+        }
+        tokens.extend((
+            "cbit",
+            "c-bit",
+            "partial_text_parameter",
+            *sorted(required_protocol_anchor_terms),
+        ))
+        protocol_priority_terms.update((
+            "cbit",
+            "c-bit",
+            "partial_text_parameter",
+            *required_protocol_anchor_terms,
+        ))
     tokens = list(dict.fromkeys(tokens))
     tokens = sorted(
         tokens,
@@ -584,6 +602,8 @@ def _expand_verified_source_anchors(
             "iscsi_pdu_hdr_op_login",
             "iscsi_pdu_payload_op_login",
         ))
+    if required_protocol_anchor_terms:
+        semantic_anchor_patterns.extend(sorted(required_protocol_anchor_terms))
 
     selected_by_path: dict[str, dict[str, Any]] = {}
     existing_ranges: dict[str, list[tuple[int, int]]] = {}
@@ -749,6 +769,10 @@ def _expand_verified_source_anchors(
                     "_mandatory_protocol_anchor": (
                         "iscsi_bhs_login_get_cbit" in excerpt_lower
                         or "partial_text_parameter" in excerpt_lower
+                        or any(
+                            anchor in excerpt_lower
+                            for anchor in required_protocol_anchor_terms
+                        )
                     ),
                 })
 
@@ -766,12 +790,33 @@ def _expand_verified_source_anchors(
         "child", "propagate", "rollback", "cleanup", "release",
         "reconnect", "timeout", "race",
     }
+    # Calculate this once from the original available budget.  Recomputing it
+    # inside the loop shrinks the cap after every selected slice and again
+    # drops the fifth required Login anchor.
+    central_path_anchor_limit = max(
+        4,
+        min(
+            len(required_protocol_anchor_terms),
+            max(0, anchor_limit - len(files)),
+        ),
+    )
     while candidates and len(files) < anchor_limit:
+        # A compact iSCSI Login pack has five non-interchangeable semantic
+        # anchors (authentication, phase, response, CSG handling and incoming
+        # parameter assembly).  The general per-file diversity cap of four
+        # would silently discard one of them when the selected source context
+        # begins with a single iscsi.c slice.  Keep the overall evidence budget
+        # authoritative, but reserve enough room within that file for the
+        # protocol's required chain.
         candidates = [
             value
             for value in candidates
             if additional_per_path.get(value["file_path"], 0)
-            < (4 if value["file_path"] == central_path else 1)
+            < (
+                central_path_anchor_limit
+                if value["file_path"] == central_path
+                else 1
+            )
             and not (
                 set(value.get("symbols") or [])
                 & selected_symbols_by_path.get(value["file_path"], set())

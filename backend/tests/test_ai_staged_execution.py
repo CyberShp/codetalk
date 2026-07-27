@@ -8716,6 +8716,85 @@ def test_source_analysis_context_reserves_cbit_anchor_amid_login_helper_noise(tm
     assert "ISCSI_BHS_LOGIN_GET_CBIT" in excerpts
 
 
+def test_source_analysis_context_reserves_iscsi_login_semantic_anchors(tmp_path):
+    source = tmp_path / "lib" / "iscsi" / "iscsi.c"
+    source.parent.mkdir(parents=True)
+    source_text = "\n".join([
+        "static int iscsi_login_entry(void) { return 0; }",
+        "",
+        *([""] * 20),
+        "static int iscsi_auth_params(struct conn *conn)",
+        "{",
+        "    return conn != NULL ? 0 : -1;",
+        "}",
+        "",
+        *([""] * 20),
+        "static int iscsi_op_login_phase_none(struct conn *conn)",
+        "{",
+        "    return iscsi_auth_params(conn);",
+        "}",
+        "",
+        *([""] * 20),
+        "static void iscsi_op_login_response(struct conn *conn)",
+        "{",
+        "    conn->status = 0;",
+        "}",
+        "",
+        *([""] * 20),
+        "static int iscsi_op_login_rsp_handle_csg_bit(struct conn *conn)",
+        "{",
+        "    return iscsi_op_login_phase_none(conn);",
+        "}",
+        "",
+        *([""] * 20),
+        "static int iscsi_op_login_store_incoming_params(struct conn *conn)",
+        "{",
+        "    return iscsi_parse_params(&conn->params, NULL, 0,",
+        "        ISCSI_BHS_LOGIN_GET_CBIT(conn->flags), &conn->partial_parameter);",
+        "}",
+    ])
+    source.write_text(source_text, encoding="utf-8")
+    staged_context = {
+        "repo_path": str(tmp_path),
+        "source_context": {
+            "repo_path": str(tmp_path),
+            "repo_revision": "fixture",
+            "tokens": ["iscsi", "login"],
+            "files": [{
+                "file_path": "lib/iscsi/iscsi.c",
+                "classification": "source",
+                "start_line": 1,
+                "end_line": 1,
+                "excerpt": "static int iscsi_login_entry(void) { return 0; }",
+                "symbols": ["iscsi_login_entry"],
+                "matched_terms": ["iscsi", "login"],
+                "sha256": hashlib.sha256(source_text.encode()).hexdigest(),
+                "status": "validated_source_file",
+            }],
+        },
+    }
+
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "完整 iSCSI Login CHAP 状态机分析"},
+        staged_context=staged_context,
+        max_files=1,
+        excerpt_chars=500,
+        max_evidence_anchors=6,
+    )
+
+    symbols = {
+        symbol
+        for item in compact["files"]
+        for symbol in item.get("symbols") or []
+    }
+    assert {
+        "iscsi_auth_params",
+        "iscsi_op_login_phase_none",
+        "iscsi_op_login_response",
+        "iscsi_op_login_rsp_handle_csg_bit",
+    } <= symbols
+
+
 def test_source_analysis_context_does_not_fill_anchor_budget_with_help_text(
     tmp_path,
 ):
