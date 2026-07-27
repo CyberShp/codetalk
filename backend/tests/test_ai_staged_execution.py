@@ -796,7 +796,11 @@ def test_coverage_binding_patch_updates_only_existing_cases_and_requires_all_tar
     )
 
     base = [
-        {"case_id": "BC-001", "scenario_name": "正常登录"},
+        {
+            "case_id": "BC-001",
+            "scenario_name": "正常登录",
+            "coverage_target_ids": ["FLOW-COND-014", "FLOW-COND-015"],
+        },
         {"case_id": "BC-002", "scenario_name": "认证失败"},
     ]
     merged = _apply_black_box_coverage_binding_patch(
@@ -808,7 +812,11 @@ def test_coverage_binding_patch_updates_only_existing_cases_and_requires_all_tar
         required_target_ids=["FLOW-COND-001", "RESOURCE-CMD"],
     )
 
-    assert merged[0]["coverage_target_ids"] == ["FLOW-COND-001"]
+    assert merged[0]["coverage_target_ids"] == [
+        "FLOW-COND-014",
+        "FLOW-COND-015",
+        "FLOW-COND-001",
+    ]
     assert merged[1]["coverage_target_ids"] == ["RESOURCE-CMD"]
     partial = _apply_black_box_coverage_binding_patch(
         base,

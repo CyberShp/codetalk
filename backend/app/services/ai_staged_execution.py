@@ -14062,12 +14062,25 @@ def _apply_black_box_coverage_binding_patch(
     missing = sorted(allowed - covered)
     if missing:
         raise ValueError("coverage_binding_incomplete:" + ",".join(missing))
-    return [
-        {**item, "coverage_target_ids": patches[row_id]}
-        if isinstance(item, dict) and (row_id := _json_array_row_id(item)) in patches
-        else item
-        for item in base_items
-    ]
+    merged_items: list[Any] = []
+    for item in base_items:
+        if not isinstance(item, dict) or not (row_id := _json_array_row_id(item)) in patches:
+            merged_items.append(item)
+            continue
+        # A scoped repair adds coverage evidence for a previously unresolved
+        # target.  Replacing the accepted bindings would make unrelated
+        # conditions disappear, regress the audit, and force the caller to
+        # roll back this otherwise valid candidate.
+        existing = [
+            str(value).strip()
+            for value in item.get("coverage_target_ids") or []
+            if str(value).strip()
+        ]
+        merged_items.append({
+            **item,
+            "coverage_target_ids": list(dict.fromkeys([*existing, *patches[row_id]])),
+        })
+    return merged_items
 
 
 def _normalize_black_box_coverage_target_assignments(
