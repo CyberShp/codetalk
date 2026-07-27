@@ -161,8 +161,8 @@ Agent 或部署级流量捕获验收。
 | AC-UI-005 | verified | Thought summaries collapse by default and raw terminal diagnostics remain technical-only. |
 | AC-UI-006 | verified | Product-facing errors are Chinese/actionable with diagnostics behind disclosure. |
 | AC-UI-007 | verified for builtin | Cockpit displays frozen input, provider, skills/MCP, stage output, elapsed time, failure and artifact state. |
-| AC-LINK-001 | verified | Browser click creates a same-workspace AI thread from a completed run. |
-| AC-LINK-002 | verified | Result thread renders and downloads nine linked deliverables. |
+| AC-LINK-001 | verified | Browser click creates a same-workspace AI thread from a completed run. Attempt 13 clicked `围绕本次运行继续分析` and opened `conv_2e743dd6f7274a948465c1f5b4c53a29` for the same SPDK workspace. |
+| AC-LINK-002 | verified | Result thread renders and downloads nine linked deliverables. The Attempt 13 follow-up thread visibly reports `执行 completed · 质量 passed · 交付 complete` and `已旁挂交付件` before the user sends a question. |
 | AC-LINK-003 | verified for builtin | Follow-up context consumes attached artifacts and source context; repeat once for an uncached release artifact. |
 
 ## Performance
