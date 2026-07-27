@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Capture a bounded deployment evidence window. Run as an administrator while
-# a user starts one approved CodeTalk task in the browser.
+# a user starts one approved CodeTalk task in the browser.  The filter covers
+# DNS, clear-text HTTP, TLS over TCP and QUIC over UDP; a TCP-443-only capture
+# would miss a modern SDK or CLI that silently switches to QUIC.
 set -euo pipefail
 
 usage() {
@@ -19,6 +21,7 @@ interface=""
 output=""
 seconds=900
 label="workflow"
+capture_filter='udp port 53 or tcp port 53 or tcp port 80 or tcp port 443 or udp port 443'
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --interface) interface="${2:-}"; shift 2 ;;
@@ -63,20 +66,20 @@ capture_process_snapshot "$processes_before"
   echo "started_at=$started"
   echo "interface=$interface"
   echo "duration_seconds=$seconds"
-  echo "filter=(udp port 53 or tcp port 53 or tcp port 443)"
+  echo "filter=($capture_filter)"
   echo "network_configuration_changed=false"
   echo "process_snapshot_before=$(basename "$processes_before")"
   echo "process_snapshot_after=$(basename "$processes_after")"
   echo "operator_uid=$(id -u)"
   echo "host=$(hostname)"
-  echo "command=tcpdump -n -s 0 -i $interface -G $seconds -W 1 -w $pcap '(udp port 53 or tcp port 53 or tcp port 443)'"
+  echo "command=tcpdump -n -s 0 -i $interface -G $seconds -W 1 -w $pcap '$capture_filter'"
   echo "purpose=Capture one user-triggered approved-provider workflow; inspect DNS/SNI/firewall logs against the deployment allowlist."
   echo "non_claim=This pcap alone does not authorize a destination or prove SDK telemetry absence without matching process and gateway logs."
 } > "$manifest"
 
 echo "Capturing $seconds seconds on $interface. Run one browser workflow now."
 tcpdump -n -s 0 -i "$interface" -G "$seconds" -W 1 -w "$pcap" \
-  '(udp port 53 or tcp port 53 or tcp port 443)'
+  "$capture_filter"
 
 capture_process_snapshot "$processes_after"
 

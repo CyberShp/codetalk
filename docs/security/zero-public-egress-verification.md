@@ -90,7 +90,7 @@ this remaining deployment gate. An administrator starts it before a tester
 uses the browser to run one approved workflow, then preserves the generated
 pcap and manifest under `/Volumes/Media/codetalk-e2e-artifacts/`.
 
-The capture records DNS and HTTPS metadata only; it does not alter the
+The capture records DNS, clear-text HTTP, TCP TLS and UDP QUIC metadata; it does not alter the
 firewall, proxy, DNS, or CodeTalk settings. Review must correlate it with the
 service-account process list and egress-gateway log, and confirm:
 
@@ -100,6 +100,10 @@ service-account process list and egress-gateway log, and confirm:
    bypass destination appears; and
 3. a separately captured denied Agent/public-DNS probe has no successful
    outbound connection.
+
+The tcpdump filter explicitly includes UDP 443 as well as TCP 80/TCP 443.
+This prevents an SDK or CLI using QUIC from becoming invisible to a
+TCP-443-only release capture.
 
 The collector now writes `*-processes-before.txt` and
 `*-processes-after.txt` alongside the PCAP. These contain only matching

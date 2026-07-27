@@ -54,6 +54,8 @@ def test_capture_script_records_redacted_process_snapshot_without_changing_netwo
     snapshot = output / "contract-processes-before.txt"
     assert "process_snapshot_before=contract-processes-before.txt" in manifest
     assert "network_configuration_changed=false" in manifest
+    assert "udp port 443" in manifest
+    assert "tcp port 80" in manifest
     assert snapshot.is_file()
     assert "sk-very-secret-test-token" not in snapshot.read_text(encoding="utf-8")
     assert (output / "contract-egress.pcap").read_text(encoding="utf-8") == "pcap"
