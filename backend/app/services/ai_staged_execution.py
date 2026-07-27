@@ -13808,6 +13808,52 @@ def _apply_quality_feedback_field_patches(
     return result
 
 
+def _apply_black_box_coverage_binding_patch(
+    base_items: list[Any],
+    patch_items: list[Any],
+    *,
+    required_target_ids: Iterable[str],
+) -> list[Any]:
+    """Apply a narrow, fail-closed coverage binding patch to accepted cases.
+
+    Coverage repair must never replace an accepted test design with another
+    long model-generated array.  This helper accepts only existing ``case_id``
+    values and only the frozen target IDs emitted by the coverage judge.
+    """
+    allowed = {str(value).strip() for value in required_target_ids if str(value).strip()}
+    if not allowed:
+        raise ValueError("coverage_binding_targets_missing")
+    base_by_id = {
+        _json_array_row_id(item): item
+        for item in base_items
+        if isinstance(item, dict) and _json_array_row_id(item)
+    }
+    patches: dict[str, list[str]] = {}
+    for item in patch_items:
+        if not isinstance(item, dict):
+            raise ValueError("coverage_binding_patch_item_invalid")
+        case_id = str(item.get("case_id") or "").strip()
+        target_ids = [str(value).strip() for value in item.get("coverage_target_ids") or [] if str(value).strip()]
+        if not case_id or case_id not in base_by_id:
+            raise ValueError(f"coverage_binding_unknown_case:{case_id or '<empty>'}")
+        if not target_ids:
+            raise ValueError(f"coverage_binding_empty:{case_id}")
+        invalid = sorted(set(target_ids) - allowed)
+        if invalid:
+            raise ValueError("coverage_binding_unknown_target:" + ",".join(invalid))
+        patches[case_id] = list(dict.fromkeys(target_ids))
+    covered = {target for values in patches.values() for target in values}
+    missing = sorted(allowed - covered)
+    if missing:
+        raise ValueError("coverage_binding_incomplete:" + ",".join(missing))
+    return [
+        {**item, "coverage_target_ids": patches[row_id]}
+        if isinstance(item, dict) and (row_id := _json_array_row_id(item)) in patches
+        else item
+        for item in base_items
+    ]
+
+
 def _apply_sfmea_nonrisk_deletion_tombstones(
     rendered: list[Any],
     *,

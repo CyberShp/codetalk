@@ -789,6 +789,38 @@ def test_black_box_rules_require_aggregate_coverage_target_binding():
     assert "不得只新增少量用例后保留未绑定的旧用例" in rules
 
 
+def test_coverage_binding_patch_updates_only_existing_cases_and_requires_all_targets():
+    from app.services.ai_staged_execution import _apply_black_box_coverage_binding_patch
+
+    base = [
+        {"case_id": "BC-001", "scenario_name": "正常登录"},
+        {"case_id": "BC-002", "scenario_name": "认证失败"},
+    ]
+    merged = _apply_black_box_coverage_binding_patch(
+        base,
+        [
+            {"case_id": "BC-001", "coverage_target_ids": ["FLOW-COND-001"]},
+            {"case_id": "BC-002", "coverage_target_ids": ["RESOURCE-CMD"]},
+        ],
+        required_target_ids=["FLOW-COND-001", "RESOURCE-CMD"],
+    )
+
+    assert merged[0]["coverage_target_ids"] == ["FLOW-COND-001"]
+    assert merged[1]["coverage_target_ids"] == ["RESOURCE-CMD"]
+    with pytest.raises(ValueError, match="coverage_binding_incomplete"):
+        _apply_black_box_coverage_binding_patch(
+            base,
+            [{"case_id": "BC-001", "coverage_target_ids": ["FLOW-COND-001"]}],
+            required_target_ids=["FLOW-COND-001", "RESOURCE-CMD"],
+        )
+    with pytest.raises(ValueError, match="coverage_binding_unknown_target"):
+        _apply_black_box_coverage_binding_patch(
+            base,
+            [{"case_id": "BC-001", "coverage_target_ids": ["COV-001"]}],
+            required_target_ids=["FLOW-COND-001"],
+        )
+
+
 @pytest.mark.asyncio
 async def test_rapid_test_activity_materializes_required_stage_contract_artifacts(tmp_path):
     plan = build_staged_execution_plan(
