@@ -646,6 +646,12 @@ def _expand_verified_source_anchors(
         # protocol-specific ones, while test files remain untouched.
         for index in reversed(evictable_indexes[:eviction_count]):
             files.pop(index)
+        # The initial pack has stable SRC identifiers.  Once entries are
+        # evicted, compact them before appending replacements; otherwise a
+        # newly allocated `SRC-{len(files)+1}` can duplicate an identifier
+        # retained from the original sparse numbering and corrupt claim links.
+        for index, item in enumerate(files, start=1):
+            item["evidence_id"] = f"SRC-{index:02d}"
 
     selected_by_path: dict[str, dict[str, Any]] = {}
     existing_ranges: dict[str, list[tuple[int, int]]] = {}
