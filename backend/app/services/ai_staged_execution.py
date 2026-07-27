@@ -6399,6 +6399,10 @@ _MARKDOWN_REPO_PATH_PATTERN = re.compile(
     r"[A-Za-z0-9_.+@%/\-]+(?::L?\d+(?:-L?\d+)?)?"
 )
 
+_MARKDOWN_BARE_SOURCE_FILENAME_PATTERN = re.compile(
+    r"(?<![A-Za-z0-9_.+@%/\-])[A-Za-z0-9_.+@%\-]+\.(?:c|h|cc|cpp|hpp)(?![A-Za-z0-9_.+@%/\-])"
+)
+
 
 def _split_markdown_table_cells(line: str) -> list[str]:
     text = str(line or "").strip()
@@ -6602,6 +6606,9 @@ def _finalize_combined_markdown_report(
         if isinstance(item, dict) and str(item.get("file_path") or "").strip()
     ]
     allowed_paths = {str(item.get("file_path") or "").strip() for item in cards}
+    paths_by_basename: dict[str, list[str]] = {}
+    for path in allowed_paths:
+        paths_by_basename.setdefault(Path(path).name, []).append(path)
     removed: list[str] = []
 
     def replace_unverified(match: re.Match[str]) -> str:
@@ -6614,6 +6621,18 @@ def _finalize_combined_markdown_report(
         return f"待补证据（{Path(path).name} 未在已验证证据包中）"
 
     content = _repair_duplicated_markdown_table_prefixes(content)
+    # Providers often shorten a verified source reference to a bare filename.
+    # A bare name is not navigable or auditable, but it can be normalized
+    # safely when exactly one verified evidence card owns that filename.
+    def expand_unique_bare_filename(match: re.Match[str]) -> str:
+        filename = match.group(0)
+        candidates = paths_by_basename.get(filename, [])
+        return candidates[0] if len(candidates) == 1 else filename
+
+    content = _MARKDOWN_BARE_SOURCE_FILENAME_PATTERN.sub(
+        expand_unique_bare_filename,
+        content,
+    )
     finalized = _MARKDOWN_REPO_PATH_PATTERN.sub(replace_unverified, content).rstrip()
     index_lines = [
         "",
@@ -10286,7 +10305,7 @@ def _deterministic_quality_claim_repair(
     # hallucinated or truncated by the model. Evidence cards are authoritative,
     # so repair only the path when the claim already references a known card.
     # Do not invent a new anchor for claims that lack verified evidence.
-    if artifact_name == "black_box_cases.json" and isinstance(repaired, list):
+    if artifact_name in {"black_box_cases.json", "sfmea.json"} and isinstance(repaired, list):
         invalid_claim_ids = {
             str(issue.get("claim_id") or issue.get("field") or "").strip()
             for issue in issues
@@ -10360,14 +10379,18 @@ def _deterministic_quality_claim_repair(
                                 f"$[{row_index}].technical_claims[{claim_index}]"
                                 f".evidence[{evidence_index}].path"
                             )
-                    # A technical claim is part of a black-box row's public
-                    # test basis. Keep its already-verified evidence visible
-                    # on that row as well; otherwise the row-level contract
+                    # A technical claim must remain visible on the structured
+                    # row that owns it. Otherwise the row-level contract
                     # correctly rejects a hidden second source path even when
                     # the claim itself has a valid L1/L2 binding.
+                    evidence_field = (
+                        "source_or_test_evidence"
+                        if artifact_name == "black_box_cases.json"
+                        else "source_evidence"
+                    )
                     declared = [
                         str(value).strip()
-                        for value in row.get("source_or_test_evidence") or []
+                        for value in row.get(evidence_field) or []
                         if str(value).strip()
                     ]
                     for evidence in claim.get("evidence") or []:
@@ -10378,9 +10401,9 @@ def _deterministic_quality_claim_repair(
                         if not card or not evidence_id or evidence_id in declared:
                             continue
                         declared.append(evidence_id)
-                    if declared != list(row.get("source_or_test_evidence") or []):
-                        row["source_or_test_evidence"] = declared
-                        fields.append(f"$[{row_index}].source_or_test_evidence")
+                    if declared != list(row.get(evidence_field) or []):
+                        row[evidence_field] = declared
+                        fields.append(f"$[{row_index}].{evidence_field}")
 
     ambiguous_expected_result_ids = {
         str(issue.get("row_id") or issue.get("case_id") or "").strip()
@@ -10581,6 +10604,123 @@ def _deterministic_quality_claim_repair(
                 }
             )
             fields.append("$[+].chap_parameter_order_case")
+
+    if artifact_name == "black_box_cases.json" and isinstance(repaired, list):
+        existing_names = {
+            str(row.get("scenario_name") or "").strip()
+            for row in repaired
+            if isinstance(row, dict)
+        }
+        existing_ids = {
+            str(row.get("case_id") or "").strip()
+            for row in repaired
+            if isinstance(row, dict)
+        }
+
+        def next_case_id(seed: str) -> str:
+            candidate = seed
+            suffix = 2
+            while candidate in existing_ids:
+                candidate = f"{seed}-{suffix}"
+                suffix += 1
+            existing_ids.add(candidate)
+            return candidate
+
+        mutual_not_set_card = next(
+            (
+                card
+                for card in evidence_cards or []
+                if isinstance(card, dict)
+                and "chap_mutual_not_set" in str(card.get("file_path") or "")
+                and str(card.get("evidence_id") or "").strip()
+            ),
+            None,
+        )
+        if (
+            "Initiator 请求 Mutual 但 Target 禁止" in missing_professional_scenarios
+            and "Initiator 请求 Mutual 但 Target 禁止" not in existing_names
+            and isinstance(mutual_not_set_card, dict)
+        ):
+            repaired.append({
+                "case_id": next_case_id("BBC-MUTUAL-TARGET-DISABLED"),
+                "test_dimension": "invalid_input",
+                "scenario_name": "Initiator 请求 Mutual 但 Target 禁止",
+                "preconditions": [
+                    "SPDK iSCSI target 仅配置单向 CHAP，不启用 Mutual CHAP。",
+                    "公开 initiator 配置为请求 Mutual CHAP；使用隔离测试账号和网络。",
+                ],
+                "steps": [
+                    "发起 Login，并保存 Login Request/Response PDU、initiator 认证输出和 target 日志。",
+                    "以相同账号改为单向 CHAP 再次 Login，作为配置对照。",
+                ],
+                "expected_result": (
+                    "这是配置兼容性负向验证：记录 target 对 Mutual 请求的公开响应、"
+                    "连接状态和日志；不得将接受或拒绝预设为已证实源码事实。"
+                ),
+                "observability": [
+                    "Login Response 的 status_class、status_detail 和 Text 键。",
+                    "initiator 会话状态、target 日志及两组配置的差异。",
+                ],
+                "failure_diagnostics": [
+                    "保留两次请求/响应 PDU、认证配置快照和 target 日志，确认 Mutual 开关实际生效。",
+                ],
+                "mapped_test_dir": str(mutual_not_set_card.get("file_path") or ""),
+                "source_or_test_evidence": [str(mutual_not_set_card.get("evidence_id") or "")],
+                "technical_claims": [],
+                "oracle_basis": (
+                    "已验证测试脚本仅证明存在“initiator 配置双向认证、target 未设置”的测试环境；"
+                    "本用例的具体响应行为保持待验证。"
+                ),
+            })
+            fields.append("$[+].mutual_chap_target_disabled_case")
+
+        chap_config_card = next(
+            (
+                card
+                for card in evidence_cards or []
+                if isinstance(card, dict)
+                and "/chap/" in str(card.get("file_path") or "")
+                and str(card.get("evidence_id") or "").strip()
+            ),
+            None,
+        )
+        if (
+            "Mutual challenge 合法编码但语义错误" in missing_professional_scenarios
+            and "Mutual challenge 合法编码但语义错误" not in existing_names
+            and isinstance(chap_config_card, dict)
+        ):
+            repaired.append({
+                "case_id": next_case_id("BBC-MUTUAL-CHALLENGE-MISMATCH"),
+                "test_dimension": "invalid_input",
+                "scenario_name": "Mutual challenge 合法编码但语义错误",
+                "preconditions": [
+                    "SPDK iSCSI target 与公开 initiator 均启用 Mutual CHAP，并使用隔离测试凭据。",
+                    "raw-PDU 工具可生成格式合法、可被解析的 CHAP_C 和 CHAP_I。",
+                ],
+                "steps": [
+                    "发送编码合法的 Mutual CHAP_C/CHAP_I，但以不同于 target 配置的 mutual secret 计算 CHAP_R。",
+                    "保存 Login Response、initiator 认证结果、target 日志和抓包；再以匹配 secret 重复一次作为对照。",
+                ],
+                "expected_result": (
+                    "以 initiator 对错误 Mutual 认证响应的公开拒绝结果为 oracle；"
+                    "若行为不同，保留报文和配置并标记为待复核，不把编码合法误写为认证成功。"
+                ),
+                "observability": [
+                    "CHAP_C/CHAP_I/CHAP_R 的编码检查结果与 Login Response。",
+                    "initiator 认证结果、target 日志和对照组连接状态。",
+                ],
+                "failure_diagnostics": [
+                    "保留参与摘要计算的非敏感参数标识、PDU 和双方日志；不得在交付件写入 secret。",
+                ],
+                "mapped_test_dir": str(chap_config_card.get("file_path") or ""),
+                "source_or_test_evidence": [str(chap_config_card.get("evidence_id") or "")],
+                "technical_claims": [],
+                "oracle_basis": (
+                    "已验证 CHAP 测试配置用于建立可控凭据环境；"
+                    "challenge 编码合法性与错误 secret 的区别由外部 PDU 和 initiator 结果验证。"
+                ),
+            })
+            fields.append("$[+].mutual_chap_semantic_mismatch_case")
 
     mcs_capability_issues = [
         issue

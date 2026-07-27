@@ -4920,6 +4920,40 @@ def test_quality_repair_declares_existing_claim_evidence_on_its_black_box_row():
     assert "$[0].source_or_test_evidence" in fields
 
 
+def test_quality_repair_declares_existing_claim_evidence_on_its_sfmea_row():
+    from app.services.ai_staged_execution import _deterministic_quality_claim_repair
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        [{
+            "sfmea_id": "SFMEA-006",
+            "source_evidence": ["SRC-06:L526"],
+            "technical_claims": [{
+                "claim_id": "CLAIM-LOGIN-FLAG",
+                "type": "source_anchor",
+                "evidence": [{
+                    "evidence_id": "SRC-01:L818",
+                    "path": "lib/iscsi/iscsi.c",
+                }],
+            }],
+        }],
+        artifact="sfmea.json",
+        quality_feedback={"issues": [{
+            "artifact": "sfmea.json",
+            "code": "claim_evidence_not_declared_for_row",
+            "claim_id": "CLAIM-LOGIN-FLAG",
+        }]},
+        evidence_cards=[{
+            "evidence_id": "SRC-01",
+            "file_path": "lib/iscsi/iscsi.c",
+            "start_line": 818,
+            "end_line": 818,
+        }],
+    )
+
+    assert repaired[0]["source_evidence"] == ["SRC-06:L526", "SRC-01:L818"]
+    assert "$[0].source_evidence" in fields
+
+
 def test_quality_repair_removes_a_claim_that_independent_validation_cannot_support():
     """Never relabel an arbitrary card as proof for a rejected behaviour claim."""
     repaired, fields = _deterministic_quality_claim_repair(
@@ -5004,6 +5038,49 @@ def test_quality_repair_adds_a_bounded_chap_order_hypothesis_when_deep_coverage_
     assert repaired[0]["source_or_test_evidence"] == ["SRC-06"]
     assert "待验证" in repaired[0]["expected_result"]
     assert "$[+].chap_parameter_order_case" in fields
+
+
+def test_quality_repair_adds_missing_mutual_chap_negative_test_obligations():
+    from app.services.ai_staged_execution import _deterministic_quality_claim_repair
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        [],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "professional_coverage_incomplete",
+            "scenarios": [
+                "Initiator 请求 Mutual 但 Target 禁止",
+                "Mutual challenge 合法编码但语义错误",
+            ],
+        }]},
+        evidence_cards=[
+            {
+                "evidence_id": "TEST-CHAP-01",
+                "file_path": "test/iscsi_tgt/chap/chap_mutual_not_set.sh",
+                "classification": "test",
+                "start_line": 20,
+                "end_line": 36,
+                "excerpt": "configuring initiator with bidirectional authentication",
+                "symbols": ["chap_mutual_not_set.sh"],
+            },
+            {
+                "evidence_id": "TEST-CHAP-02",
+                "file_path": "test/iscsi_tgt/chap/chap_common.sh",
+                "classification": "test",
+                "start_line": 82,
+                "end_line": 99,
+                "excerpt": "config_chap_credentials_for_target",
+                "symbols": ["config_chap_credentials_for_target"],
+            },
+        ],
+    )
+
+    names = {row["scenario_name"] for row in repaired if isinstance(row, dict)}
+    assert "Initiator 请求 Mutual 但 Target 禁止" in names
+    assert "Mutual challenge 合法编码但语义错误" in names
+    assert "$[+].mutual_chap_target_disabled_case" in fields
+    assert "$[+].mutual_chap_semantic_mismatch_case" in fields
 
 
 def test_deterministic_iscsi_appendix_filters_login_responses_with_response_opcode():
@@ -7221,6 +7298,27 @@ def test_final_quality_repair_removes_report_only_missing_source_path(tmp_path):
 
     assert changed == {"report.md": ["render_repaired_structured_delivery"]}
     assert "lib/iscsi/chap.c" not in report.read_text(encoding="utf-8")
+
+
+def test_finalize_combined_report_expands_unique_verified_bare_source_filename():
+    source_pack = {
+        "evidence_cards": [{
+            "file_path": "include/spdk/iscsi_spec.h",
+            "start_line": 526,
+            "end_line": 526,
+            "classification": "source",
+            "sha256": "a" * 64,
+        }]
+    }
+    finalized, removed = _finalize_combined_markdown_report(
+        content="## 失败码\n\n参见 `iscsi_spec.h` 中的认证失败定义。\n",
+        source_pack=source_pack,
+        output_contract={"min_sfmea_rows": 1},
+    )
+
+    assert removed == []
+    assert "`include/spdk/iscsi_spec.h`" in finalized
+    assert "`iscsi_spec.h`" not in finalized
 
 
 def test_black_box_stage_fills_missing_technical_claims_from_verified_cards():
