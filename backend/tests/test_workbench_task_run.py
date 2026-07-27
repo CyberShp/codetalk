@@ -7998,6 +7998,38 @@ def test_local_source_context_includes_iscsi_login_cbit_protocol_anchor(tmp_path
     assert "cbit" in context["tokens"]
 
 
+def test_local_source_context_reserves_chap_auth_and_parameter_parser_definitions(tmp_path):
+    from app.services.workbench_task_run import build_local_source_context
+
+    iscsi = tmp_path / "lib" / "iscsi" / "iscsi.c"
+    iscsi.parent.mkdir(parents=True)
+    iscsi.write_text(
+        "static int iscsi_auth_params(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+    params = tmp_path / "lib" / "iscsi" / "param.c"
+    params.write_text(
+        "int iscsi_parse_params(void) { return 0; }\n",
+        encoding="utf-8",
+    )
+    test = tmp_path / "test" / "iscsi_tgt" / "chap.sh"
+    test.parent.mkdir(parents=True)
+    test.write_text("run_chap_login() { :; }\n", encoding="utf-8")
+
+    context = build_local_source_context(
+        repo_path=str(tmp_path),
+        query="分析 iSCSI Login CHAP 认证和重复参数异常",
+        limit=3,
+        min_test_files=1,
+    )
+
+    by_path = {item["file_path"]: item for item in context["files"]}
+    assert "lib/iscsi/iscsi.c" in by_path
+    assert "lib/iscsi/param.c" in by_path
+    assert "iscsi_auth_params" in by_path["lib/iscsi/iscsi.c"]["excerpt"]
+    assert "iscsi_parse_params" in by_path["lib/iscsi/param.c"]["excerpt"]
+
+
 def test_local_source_context_prefers_git_files_and_records_revision(tmp_path):
     import subprocess
 

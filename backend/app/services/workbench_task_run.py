@@ -789,6 +789,26 @@ def build_local_source_context(
         token for token in tokens
         if token in {"cbit", "partial_text_parameter"}
     }
+    # A Login + CHAP analysis cannot substantiate authentication or duplicate
+    # parameter behavior from call sites alone. Reserve the two implementation
+    # definitions as bounded, SHA-validated context so downstream black-box
+    # claims either cite the real behavior or remain explicit hypotheses.
+    protocol_evidence_hints: list[dict[str, Any]] = []
+    if {"iscsi", "login", "chap"}.issubset(set(tokens)):
+        protocol_evidence_hints = [
+            {
+                "path": "lib/iscsi/iscsi.c",
+                "term": "iscsi_auth_params",
+                "label": "iSCSI CHAP authentication implementation",
+                "contract_required": True,
+            },
+            {
+                "path": "lib/iscsi/param.c",
+                "term": "iscsi_parse_params",
+                "label": "iSCSI Login parameter parser implementation",
+                "contract_required": True,
+            },
+        ]
     base = {
         "provider": "local-source-search",
         "query": query[:2000],
@@ -894,7 +914,7 @@ def build_local_source_context(
     ]
     scored = _materialize_source_evidence_hints(
         root=root,
-        evidence_hints=evidence_hints,
+        evidence_hints=[*(evidence_hints or []), *protocol_evidence_hints],
         max_file_bytes=max_file_bytes,
         excerpt_radius=max(8, excerpt_radius),
     )
