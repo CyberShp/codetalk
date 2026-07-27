@@ -76,6 +76,11 @@ from app.services.input_consumption import (
 from app.services.workbench_artifact_manifest import write_task_artifact_manifest
 from app.services.workbench_task_run import BUILTIN_LLM_PROVIDER_ID
 from app.services.workbench_task_run import WorkbenchTaskRunStore, validate_run_snapshot_v3
+from app.services.workflow_run_status import (
+    derive_delivery_status,
+    legacy_delivery_status as _legacy_v3_delivery_status,
+    legacy_quality_status as _legacy_v3_quality_status,
+)
 
 
 def _now() -> str:
@@ -1080,6 +1085,14 @@ class WorkbenchWorkflowExecutionResult:
     started_at: str
     completed_at: str
     execution_status: str
+    artifact_validation_status: str = "not_requested"
+    governance_status: str = "not_requested"
+    delivery_status: str = "pending"
+    # The V3 delivery axis is intentionally distinct from the old three-value
+    # projection consumed by historical cockpit/API clients.
+    legacy_delivery_status: str = "none"
+    quality_status: str = "not_checked"
+    compiled_contract_version: int | None = None
     # This is copied from the prepared task bundle so execution.json remains a
     # self-contained, auditable explanation of the selected run policy.
     execution_profile: dict[str, Any] = field(default_factory=dict)
@@ -1114,6 +1127,31 @@ class WorkbenchWorkflowRunner:
         stop_on_error: bool = True,
     ) -> WorkbenchWorkflowExecutionResult:
         task_run = self.store.load(task_run_id)
+        contract_version = _frozen_compiled_contract_version(task_run)
+        if contract_version == 3:
+            return self._execute_v3_task_run(
+                task_run=task_run,
+                timeout_sec=timeout_sec,
+                stop_on_error=stop_on_error,
+            )
+        if contract_version is not None:
+            return self._finalize_unsupported_compiled_contract(
+                task_run=task_run,
+                contract_version=contract_version,
+            )
+        return self._execute_legacy_task_run(
+            task_run=task_run,
+            timeout_sec=timeout_sec,
+            stop_on_error=stop_on_error,
+        )
+
+    def _execute_legacy_task_run(
+        self,
+        *,
+        task_run: Any,
+        timeout_sec: int,
+        stop_on_error: bool,
+    ) -> WorkbenchWorkflowExecutionResult:
         # A V3 preparer records the immutable component index before the first
         # provider is launched.  Refuse a changed input/profile/policy rather
         # than executing a task that no longer matches the user's reviewed run.
@@ -1217,6 +1255,244 @@ class WorkbenchWorkflowRunner:
             started_at=started_at,
             step_results=step_results,
         )
+
+    def _execute_v3_task_run(
+        self,
+        *,
+        task_run: Any,
+        timeout_sec: int,
+        stop_on_error: bool,
+    ) -> WorkbenchWorkflowExecutionResult:
+        """Run only nodes frozen in a V3 compiled contract.
+
+        This is intentionally separate from ``_finalize_execution``.  The
+        legacy finalizer owns Test Activity and storage-test materialization;
+        invoking it for a V3 contract would make an undeclared artifact part of
+        the user's delivery contract.
+        """
+        started_at = _now()
+        compiled_definition, compiled_plan = _v3_frozen_contract(task_run)
+        declared_outputs = _v3_declared_outputs(compiled_definition)
+        plan_nodes = _v3_plan_nodes(compiled_plan)
+        plan_by_id = {str(node.get("node_id") or ""): node for node in plan_nodes}
+        ordered_ids = [str(item) for item in compiled_plan.get("topological_order") or []]
+        if not ordered_ids:
+            ordered_ids = [str(node.get("node_id") or "") for node in plan_nodes]
+
+        steps_by_id = {
+            str(step.get("id") or ""): step
+            for step in task_run.workflow_snapshot.get("steps") or []
+            if isinstance(step, dict) and str(step.get("id") or "")
+        }
+        agent_runs = {
+            str(item.get("step_id") or ""): item
+            for item in task_run.agent_runs
+            if isinstance(item, dict) and str(item.get("step_id") or "")
+        }
+        step_results: list[dict[str, Any]] = []
+        execution_results: list[dict[str, Any]] = []
+        validator_results: list[dict[str, Any]] = []
+        results_by_node: dict[str, dict[str, Any]] = {}
+
+        for node_id in ordered_ids:
+            node = plan_by_id.get(node_id)
+            if not isinstance(node, dict):
+                execution_results.append({
+                    "step_id": node_id,
+                    "type": "unknown",
+                    "status": "error",
+                    "error": "compiled_plan_node_missing",
+                })
+                break
+            if self._is_cancelled():
+                cancelled = _cancelled_step_result({"id": node_id, "type": str(node.get("type") or node.get("kind") or "")})
+                step_results.append(cancelled)
+                execution_results.append(cancelled)
+                break
+            kind = str(node.get("kind") or "")
+            handler_id = str(node.get("handler_id") or "")
+            if kind == "validator":
+                validator = self._execute_v3_validator(
+                    task_run=task_run,
+                    node=node,
+                    declared_outputs=declared_outputs,
+                    results_by_node=results_by_node,
+                )
+                step_results.append(validator)
+                validator_results.append(validator)
+                results_by_node[node_id] = validator
+                self._emit_step_finished(validator)
+                continue
+
+            step = steps_by_id.get(node_id)
+            if kind not in {"agent", "builtin_model"} or not step or str(node.get("type") or "") != "agent_task":
+                result = {
+                    "step_id": node_id,
+                    "type": str(node.get("type") or kind),
+                    "status": "error",
+                    "error": "v3_handler_not_implemented",
+                    "handler_id": handler_id,
+                }
+            else:
+                agent_run = agent_runs.get(node_id)
+                if not agent_run:
+                    result = {
+                        "step_id": node_id,
+                        "type": "agent_task",
+                        "status": "error",
+                        "error": "missing_agent_run",
+                    }
+                else:
+                    dependencies = {
+                        dependency_id: results_by_node[dependency_id]
+                        for dependency_id in node.get("depends_on") or []
+                        if dependency_id in results_by_node
+                    }
+                    resolved_inputs = _resolve_plan_node_inputs(
+                        plan_node=node,
+                        input_snapshot=task_run.input_snapshot,
+                        direct_dependency_outputs=dependencies,
+                    )
+                    self._emit_event(
+                        "step_started",
+                        _step_started_event_payload(task_run=task_run, step=step, agent_run=agent_run),
+                    )
+                    result = self._execute_agent_step(
+                        task_run_id=task_run.task_run_id,
+                        step=step,
+                        agent_run=agent_run,
+                        prior_step_results=list(dependencies.values()),
+                        resolved_inputs=resolved_inputs,
+                        timeout_sec=timeout_sec,
+                    )
+            step_results.append(result)
+            execution_results.append(result)
+            results_by_node[node_id] = result
+            self._emit_step_finished(result)
+            if stop_on_error and str(result.get("status") or "") not in {"completed", "completed_empty", "needs_review"}:
+                break
+
+        execution_status = _v3_execution_status(execution_results)
+        artifact_validation_status = _v3_artifact_validation_status(
+            validator_results=validator_results,
+            execution_status=execution_status,
+        )
+        governance_status = "not_requested"
+        delivery_status = derive_delivery_status(
+            execution_status=execution_status,
+            artifact_validation_status=artifact_validation_status,
+            governance_status=governance_status,
+        )
+        outputs = _v3_output_records(
+            task_run=task_run,
+            declared_outputs=declared_outputs,
+            results_by_node=results_by_node,
+            validate_schema=any(
+                str(item.get("handler_id") or "") == "json_schema"
+                for item in validator_results
+            ),
+            validate_exists=any(
+                str(item.get("handler_id") or "") in {"artifact_exists", "json_schema"}
+                for item in validator_results
+            ),
+        )
+        quality_status = _legacy_v3_quality_status(
+            execution_status=execution_status,
+            artifact_validation_status=artifact_validation_status,
+            governance_status=governance_status,
+        )
+        result = WorkbenchWorkflowExecutionResult(
+            task_run_id=task_run.task_run_id,
+            status="completed" if execution_status == "completed" else "cancelled" if execution_status == "cancelled" else "error",
+            started_at=started_at,
+            completed_at=_now(),
+            execution_status=execution_status,
+            artifact_validation_status=artifact_validation_status,
+            governance_status=governance_status,
+            delivery_status=delivery_status,
+            legacy_delivery_status=_legacy_v3_delivery_status(delivery_status=delivery_status),
+            quality_status=quality_status,
+            compiled_contract_version=3,
+            audit_summary={"v3": True, "validator_count": len(validator_results)},
+            rerun_plan={},
+            step_results=step_results,
+            outputs=outputs,
+            test_activity_quality={},
+        )
+        self._write_v3_execution_artifact(task_run.task_run_id, result)
+        self._emit_event("v3_status_updated", _v3_status_event_payload(result))
+        return result
+
+    def _finalize_unsupported_compiled_contract(
+        self,
+        *,
+        task_run: Any,
+        contract_version: Any,
+    ) -> WorkbenchWorkflowExecutionResult:
+        started_at = _now()
+        result = WorkbenchWorkflowExecutionResult(
+            task_run_id=task_run.task_run_id,
+            status="error",
+            started_at=started_at,
+            completed_at=_now(),
+            execution_status="failed",
+            artifact_validation_status="not_requested",
+            governance_status="not_requested",
+            delivery_status="blocked",
+            legacy_delivery_status="none",
+            quality_status="blocked",
+            compiled_contract_version=_int_or_none(contract_version),
+            step_results=[{
+                "step_id": "compiled_contract",
+                "type": "compiled_contract",
+                "status": "error",
+                "error": "unsupported_compiled_contract_version",
+                "compiled_contract_version": contract_version,
+            }],
+        )
+        self._write_v3_execution_artifact(task_run.task_run_id, result)
+        self._emit_event("v3_status_updated", _v3_status_event_payload(result))
+        return result
+
+    def _execute_v3_validator(
+        self,
+        *,
+        task_run: Any,
+        node: dict[str, Any],
+        declared_outputs: list[dict[str, Any]],
+        results_by_node: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        handler_id = str(node.get("handler_id") or "")
+        required_output_ids = [str(item) for item in node.get("required_outputs") or []]
+        if handler_id not in {"artifact_exists", "json_schema"}:
+            return {
+                "step_id": str(node.get("node_id") or ""),
+                "type": "validator",
+                "handler_id": handler_id,
+                "status": "error",
+                "error": "v3_validator_not_implemented",
+            }
+        selected = [
+            item for item in declared_outputs
+            if str(item.get("output_id") or "") in required_output_ids
+        ]
+        records = _v3_output_records(
+            task_run=task_run,
+            declared_outputs=selected,
+            results_by_node=results_by_node,
+            validate_schema=handler_id == "json_schema",
+            validate_exists=True,
+        )
+        failed = [item for item in records if item.get("status") in {"missing", "invalid"}]
+        return {
+            "step_id": str(node.get("node_id") or ""),
+            "type": "validator",
+            "handler_id": handler_id,
+            "status": "failed" if failed else "completed",
+            "required_outputs": required_output_ids,
+            "outputs": records,
+            "errors": [str(item.get("reason") or "") for item in failed],
+        }
 
     @staticmethod
     def _record_builtin_provider_readiness_if_applicable(task_run: Any) -> None:
@@ -4138,6 +4414,27 @@ class WorkbenchWorkflowRunner:
                 profile_id=profile_id,
             ),
         )
+        write_task_artifact_manifest(task_dir, task_run_id=result.task_run_id)
+
+    def _write_v3_execution_artifact(
+        self,
+        task_run_id: str,
+        result: WorkbenchWorkflowExecutionResult,
+    ) -> None:
+        """Persist V3 projections without invoking a legacy domain finalizer."""
+        task_dir = self.artifact_root / _safe_segment(task_run_id)
+        task_dir.mkdir(parents=True, exist_ok=True)
+        _write_json(task_dir / "workflow_execution.json", asdict(result))
+        _write_json(
+            task_dir / "workflow_outputs.json",
+            {
+                "task_run_id": result.task_run_id,
+                "status": result.status,
+                "outputs": result.outputs,
+                "compiled_contract_version": 3,
+            },
+        )
+        _write_json(task_dir / "task_rerun_plan.json", result.rerun_plan)
         write_task_artifact_manifest(task_dir, task_run_id=result.task_run_id)
 
 
@@ -9375,6 +9672,158 @@ def _artifact_context_key(artifact_name: str) -> str:
     return f"{stem}_{suffix}" if suffix else stem
 
 
+def _frozen_compiled_contract_version(task_run: Any) -> int | str | None:
+    """Read only the immutable definition/plan copied into this attempt."""
+    bundle = task_run.task_bundle if isinstance(task_run.task_bundle, dict) else {}
+    for candidate in (bundle.get("compiled_plan"), bundle.get("compiled_definition")):
+        if not isinstance(candidate, dict):
+            continue
+        value = candidate.get("compiled_contract_version")
+        if value is None or value == "":
+            continue
+        if isinstance(value, int) and not isinstance(value, bool):
+            return value
+        return str(value)
+    return None
+
+
+def _v3_frozen_contract(task_run: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    bundle = task_run.task_bundle if isinstance(task_run.task_bundle, dict) else {}
+    definition = bundle.get("compiled_definition")
+    plan = bundle.get("compiled_plan")
+    if not isinstance(definition, dict) or not isinstance(plan, dict):
+        raise ValueError("V3 run is missing its frozen compiled contract")
+    return definition, plan
+
+
+def _v3_declared_outputs(compiled_definition: dict[str, Any]) -> list[dict[str, Any]]:
+    declared = compiled_definition.get("declared_outputs")
+    if not isinstance(declared, list):
+        return []
+    return [dict(item) for item in declared if isinstance(item, dict) and str(item.get("output_id") or "")]
+
+
+def _v3_plan_nodes(compiled_plan: dict[str, Any]) -> list[dict[str, Any]]:
+    nodes = compiled_plan.get("nodes")
+    if not isinstance(nodes, list):
+        return []
+    return [dict(item) for item in nodes if isinstance(item, dict) and str(item.get("node_id") or "")]
+
+
+def _v3_execution_status(step_results: list[dict[str, Any]]) -> str:
+    statuses = {str(item.get("status") or "") for item in step_results}
+    if "cancelled" in statuses:
+        return "cancelled"
+    if statuses.intersection({"timed_out", "timeout"}):
+        return "timed_out"
+    if statuses.intersection({"error", "failed", "invalid", "blocked"}):
+        return "failed"
+    return "completed"
+
+
+def _v3_artifact_validation_status(
+    *,
+    validator_results: list[dict[str, Any]],
+    execution_status: str,
+) -> str:
+    if not validator_results:
+        return "not_requested"
+    if execution_status != "completed":
+        return "not_started"
+    statuses = {str(item.get("status") or "") for item in validator_results}
+    if statuses.intersection({"failed", "error", "invalid"}):
+        return "failed"
+    return "passed"
+
+
+def _v3_output_records(
+    *,
+    task_run: Any,
+    declared_outputs: list[dict[str, Any]],
+    results_by_node: dict[str, dict[str, Any]],
+    validate_schema: bool,
+    validate_exists: bool,
+) -> list[dict[str, Any]]:
+    """Inspect only declared outputs; extra provider files are never deliveries."""
+    records: list[dict[str, Any]] = []
+    for output in declared_outputs:
+        output_id = str(output.get("output_id") or "")
+        artifact = str(output.get("artifact") or "")
+        producer_id = str(output.get("producer_step_id") or "")
+        record: dict[str, Any] = {
+            "id": output_id,
+            "output_id": output_id,
+            "artifact": artifact,
+            "from": producer_id,
+            "required": bool(output.get("required", True)),
+            "status": "unvalidated" if not validate_exists else "missing",
+        }
+        producer = results_by_node.get(producer_id)
+        artifact_dir = Path(str((producer or {}).get("artifact_dir") or ""))
+        artifact_path = _resolve_artifact_path(artifact_dir, artifact) if artifact_dir and artifact else None
+        if not validate_exists:
+            if artifact_path is not None and artifact_path.is_file():
+                record.update({"path": _public_workflow_artifact_path(task_run=task_run, artifact_path=artifact_path)})
+            records.append(record)
+            continue
+        if not producer:
+            record["reason"] = "declared producer was not executed"
+            records.append(record)
+            continue
+        if artifact_path is None:
+            record.update({"status": "invalid", "reason": "artifact path is unsafe"})
+            records.append(record)
+            continue
+        if not artifact_path.is_file():
+            record.update({
+                "status": "missing",
+                "reason": "artifact file was not produced",
+                "path": _public_workflow_artifact_path(task_run=task_run, artifact_path=artifact_path),
+            })
+            records.append(record)
+            continue
+        data = artifact_path.read_bytes()
+        schema_errors = (
+            _validate_output_schema(output=output, data=data, artifact_path=artifact_path)
+            if validate_schema and isinstance(output.get("schema") or output.get("json_schema"), dict)
+            else []
+        )
+        if schema_errors:
+            record.update({
+                "status": "invalid",
+                "reason": "schema_validation_failed",
+                "schema_errors": schema_errors,
+                "path": _public_workflow_artifact_path(task_run=task_run, artifact_path=artifact_path),
+            })
+            records.append(record)
+            continue
+        record.update({
+            "status": "ok",
+            "path": _public_workflow_artifact_path(task_run=task_run, artifact_path=artifact_path),
+            "sha256": hashlib.sha256(data).hexdigest(),
+            "size_bytes": len(data),
+        })
+        records.append(record)
+    return records
+
+
+def _v3_status_event_payload(result: WorkbenchWorkflowExecutionResult) -> dict[str, Any]:
+    return {
+        "status": result.status,
+        "execution_status": result.execution_status,
+        "artifact_validation_status": result.artifact_validation_status,
+        "governance_status": result.governance_status,
+        "delivery_status": result.delivery_status,
+        "legacy_delivery_status": result.legacy_delivery_status,
+        "quality_status": result.quality_status,
+        "compiled_contract_version": result.compiled_contract_version,
+    }
+
+
+def _int_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) else None
+
+
 def _overall_status(step_results: list[dict[str, Any]]) -> str:
     actionable = [
         item for item in step_results
@@ -9450,11 +9899,14 @@ def _resolve_single_plan_node_input(
     if not isinstance(raw_binding, dict):
         raise ValueError(f"compiled binding is invalid for {target_port}")
     source_id = str(raw_binding.get("source_node_id") or "")
+    source_input_id = str(raw_binding.get("source_input_id") or source_id)
     source_port = str(raw_binding.get("source_port_id") or "")
-    if source_id in input_snapshot:
+    if source_input_id in input_snapshot:
         if source_port != "value":
-            raise ValueError(f"task input binding uses an invalid port: {source_id}.{source_port}")
-        return input_snapshot[source_id]
+            raise ValueError(
+                f"task input binding uses an invalid port: {source_id}.{source_port}"
+            )
+        return input_snapshot[source_input_id]
     source_outputs = direct_dependency_outputs.get(source_id)
     if not isinstance(source_outputs, dict) or source_port not in source_outputs:
         raise ValueError(f"compiled binding source output is missing: {source_id}.{source_port}")

@@ -20,6 +20,26 @@ _OUTPUT_TYPES = frozenset({
     "json", "markdown", "text", "patch", "diff", "test_cases", "scope_report",
     "test_design_mindmap",
 })
+_V3_COMPILED_CONTRACT_VERSION = 3
+
+
+def compiled_contract_version(compiled_definition: dict[str, Any]) -> int | None:
+    """Return the frozen contract version, retaining absent-version legacy runs.
+
+    Published legacy definitions predate the field.  A non-empty unknown value
+    is never silently treated as legacy because that could re-enable implicit
+    output behavior on a future contract.
+    """
+    raw = compiled_definition.get("compiled_contract_version")
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise TaskConfigurationError(
+            f"不支持的 compiled_contract_version：{raw!r}"
+        )
+    if raw != _V3_COMPILED_CONTRACT_VERSION:
+        raise TaskConfigurationError(f"不支持的 compiled_contract_version：{raw}")
+    return raw
 
 
 def compile_task_configuration(
@@ -31,6 +51,8 @@ def compile_task_configuration(
 ) -> dict[str, Any]:
     definition = copy.deepcopy(compiled_definition)
     plan = copy.deepcopy(compiled_plan)
+    contract_version = compiled_contract_version(definition)
+    is_v3 = contract_version == _V3_COMPILED_CONTRACT_VERSION
     steps = {str(item.get("id") or ""): item for item in definition.get("steps") or [] if isinstance(item, dict)}
     plan_nodes = {str(item.get("node_id") or ""): item for item in plan.get("nodes") or [] if isinstance(item, dict)}
 
@@ -68,9 +90,16 @@ def compile_task_configuration(
             if str(step_id) in plan_nodes:
                 plan_nodes[str(step_id)][field] = value
 
+    original_outputs = (
+        definition.get("declared_outputs")
+        if is_v3
+        else definition.get("outputs")
+    )
+    if is_v3 and not isinstance(original_outputs, list):
+        raise TaskConfigurationError("V3 declared_outputs 必须是数组")
     originals = {
         str(item.get("id") or ""): item
-        for item in definition.get("outputs") or []
+        for item in original_outputs or []
         if isinstance(item, dict)
     }
     raw_output_changes = output_overrides.get("outputs") if isinstance(output_overrides, dict) else {}
@@ -89,6 +118,13 @@ def compile_task_configuration(
         enabled = change.get("enabled", original.get("default_enabled", True))
         if original.get("required") and not enabled:
             raise TaskConfigurationError(f"必需输出不能关闭：{output_id}")
+        if is_v3:
+            unsupported = set(change) - {"enabled"}
+            if unsupported:
+                raise TaskConfigurationError(
+                    "V3 输出覆盖只允许选择已声明的可选输出；"
+                    f"{output_id} 不能覆盖 {', '.join(sorted(unsupported))}"
+                )
         if not enabled:
             continue
         output = copy.deepcopy(original)
@@ -111,6 +147,8 @@ def compile_task_configuration(
         custom = []
     if not isinstance(custom, list):
         raise TaskConfigurationError("custom_outputs 必须是数组")
+    if is_v3 and custom:
+        raise TaskConfigurationError("V3 工作流不允许 custom_outputs；输出必须来自 declared_outputs")
     for raw in custom:
         if not isinstance(raw, dict):
             raise TaskConfigurationError("任务专用输出必须是对象")
@@ -179,10 +217,11 @@ def compile_task_configuration(
             artifacts.add(artifact)
     for step_id, step in steps.items():
         required = []
-        for artifact in step.get("required_artifacts") or []:
-            next_artifact = artifact_renames.get((step_id, str(artifact)), str(artifact))
-            if next_artifact in artifacts or str(step.get("execution_mode") or "") == "staged":
-                required.append(next_artifact)
+        if not is_v3:
+            for artifact in step.get("required_artifacts") or []:
+                next_artifact = artifact_renames.get((step_id, str(artifact)), str(artifact))
+                if next_artifact in artifacts or str(step.get("execution_mode") or "") == "staged":
+                    required.append(next_artifact)
         for output in effective_outputs:
             if output.get("from") != step_id:
                 continue
@@ -193,6 +232,10 @@ def compile_task_configuration(
         step["required_artifacts"] = required
 
     definition["outputs"] = effective_outputs
+    if is_v3:
+        # Keep both compatibility and V3 views projected from the same selected
+        # declared subset.  No task-level field can create a new output truth.
+        definition["declared_outputs"] = copy.deepcopy(effective_outputs)
     for node in plan_nodes.values():
         node["output_contracts"] = [copy.deepcopy(item) for item in effective_outputs if item.get("from") == node.get("node_id")]
     return {"compiled_definition": definition, "compiled_plan": plan}

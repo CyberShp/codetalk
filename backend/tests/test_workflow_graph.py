@@ -1,5 +1,7 @@
 import copy
 
+import pytest
+
 
 def _capabilities() -> dict:
     return {
@@ -107,6 +109,109 @@ def _graph() -> dict:
     }
 
 
+def _v3_graph(*, handler_id: str = "agent") -> dict:
+    """Minimal V3 graph used only to verify graph-module schema dispatch."""
+    return {
+        "schema_version": 3,
+        "workflow_id": "v3_source_report",
+        "name": "V3 source report",
+        "description": "",
+        "nodes": [
+            {
+                "id": "input_repo",
+                "kind": "input",
+                "label": "Repository",
+                "position": {"x": 0, "y": 0},
+                "ports": {
+                    "inputs": [],
+                    "outputs": [{"id": "value", "type": "directory"}],
+                },
+                "config": {
+                    "input_id": "repo_path",
+                    "type": "directory",
+                    "required": True,
+                },
+            },
+            {
+                "id": "agent_report",
+                "kind": "agent",
+                "label": "Write report",
+                "position": {"x": 360, "y": 0},
+                "ports": {
+                    "inputs": [{"id": "repo", "type": "directory", "required": True}],
+                    "outputs": [{"id": "report", "type": "artifact", "required": True}],
+                },
+                "config": {
+                    "handler_id": handler_id,
+                    "handler_version": 1,
+                    "provider_ref": "provider_codex_default",
+                    "provider_capabilities_required": ["streaming", "cancellation"],
+                    "mcp_profiles": [],
+                    "skill_ids": [],
+                    "skill_instructions": [],
+                    "goal": "Read the repository and produce the declared report.",
+                    "prompt_template_version": 1,
+                    "prompt_template": "{{node_goal}}\n{{bound_inputs}}\n{{output_contract}}",
+                    "input_rendering": {
+                        "preserve_user_text_verbatim": True,
+                        "binding_order": ["repo"],
+                    },
+                    "timeout_sec": 1200,
+                    "idle_timeout_sec": 180,
+                    "retry_policy": {"max_attempts": 1, "backoff_seconds": 0},
+                    "failure_policy": "stop",
+                    "required_outputs": ["report"],
+                },
+            },
+            {
+                "id": "output_report",
+                "kind": "output",
+                "label": "Report",
+                "position": {"x": 720, "y": 0},
+                "ports": {
+                    "inputs": [{"id": "value", "type": "artifact", "required": True}],
+                    "outputs": [],
+                },
+                "config": {
+                    "output_id": "report",
+                    "artifact": "report.md",
+                    "media_type": "text/markdown",
+                    "required": True,
+                    "producer_step_id": "agent_report",
+                },
+            },
+        ],
+        "edges": [
+            {
+                "id": "repo-to-agent",
+                "kind": "data",
+                "source": {"node_id": "input_repo", "port_id": "value"},
+                "target": {"node_id": "agent_report", "port_id": "repo"},
+            },
+            {
+                "id": "agent-to-report",
+                "kind": "data",
+                "source": {"node_id": "agent_report", "port_id": "report"},
+                "target": {"node_id": "output_report", "port_id": "value"},
+            },
+        ],
+        "settings": {
+            "validation_profile": "artifact_only",
+            "stop_on_error": True,
+            "max_parallelism": 1,
+        },
+    }
+
+
+def _v3_capabilities() -> dict:
+    return {
+        "handlers": {
+            "agent": {"versions": [1]},
+            "artifact_exists": {"versions": [1]},
+        },
+    }
+
+
 def test_graph_validator_and_compiler_are_deterministic_for_shuffled_nodes():
     from app.services.workflow_graph import compile_workflow_graph, validate_workflow_graph
 
@@ -135,6 +240,116 @@ def test_graph_validator_and_compiler_are_deterministic_for_shuffled_nodes():
     assert render["resolved_input_bindings"] == {
         "analysis": {"source_node_id": "analyze", "source_port_id": "analysis"}
     }
+
+
+def test_schema_v2_keeps_the_existing_legacy_graph_compiler_contract():
+    """Schema 2 must not be upgraded or interpreted through the V3 contract."""
+    from app.services.workflow_graph import compile_workflow_graph, validate_workflow_graph
+
+    graph = _graph()
+    validation = validate_workflow_graph(graph, capabilities=_capabilities())
+    compiled = compile_workflow_graph(
+        graph,
+        capabilities=_capabilities(),
+        workflow_version_id="wfv_v2_legacy",
+        workflow_version_number=7,
+    )
+
+    assert validation == {"valid": True, "errors": [], "warnings": []}
+    assert compiled["compiled_definition"]["version"] == 7
+    assert compiled["compiled_definition"]["inputs"][0]["id"] == "repo_path"
+    assert compiled["compiled_plan"]["plan_version"] == 1
+    assert "compiled_contract_version" not in compiled["compiled_definition"]
+    assert "validation_profile" not in compiled["compiled_plan"]
+
+
+def test_schema_v3_validation_delegates_to_the_v3_contract_draft_semantics():
+    """V3 draft validation is authoritative in workflow_contract_v3, not V2 helpers."""
+    from app.services.workflow_contract_v3 import validate_workflow_contract_v3
+    from app.services.workflow_graph import validate_workflow_graph
+
+    graph = _v3_graph()
+    capabilities = _v3_capabilities()
+
+    assert validate_workflow_graph(graph, capabilities=capabilities) == validate_workflow_contract_v3(
+        graph,
+        capabilities=capabilities,
+        require_executable=False,
+    )
+
+
+def test_schema_v3_compile_delegates_to_the_v3_contract_executable_semantics():
+    """V3 compilation must request executable handlers and retain V3's output shape."""
+    from app.services.workflow_contract_v3 import compile_workflow_contract_v3
+    from app.services.workflow_graph import compile_workflow_graph
+
+    graph = _v3_graph()
+    capabilities = _v3_capabilities()
+
+    compiled = compile_workflow_graph(
+        graph,
+        capabilities=capabilities,
+        workflow_version_id="wfv_v3_dispatch",
+        workflow_version_number=4,
+    )
+    assert compiled == compile_workflow_contract_v3(
+        graph,
+        capabilities=capabilities,
+        workflow_version_id="wfv_v3_dispatch",
+        workflow_version_number=4,
+        require_executable=True,
+    )
+
+
+def test_schema_v3_unregistered_handler_warns_for_draft_but_fails_compile():
+    """A V3 draft can be saved, while a runnable workflow must fail closed."""
+    from app.services.workflow_graph import (
+        WorkflowGraphValidationError,
+        compile_workflow_graph,
+        validate_workflow_graph,
+    )
+
+    graph = _v3_graph(handler_id="handler_not_registered")
+    capabilities = _v3_capabilities()
+
+    validation = validate_workflow_graph(graph, capabilities=capabilities)
+    assert validation["valid"] is True
+    assert {item["code"] for item in validation["warnings"]} == {
+        "handler_unavailable_draft"
+    }
+
+    with pytest.raises(WorkflowGraphValidationError) as exc_info:
+        compile_workflow_graph(
+            graph,
+            capabilities=capabilities,
+            workflow_version_id="wfv_v3_handler_missing",
+        )
+    assert {item["code"] for item in exc_info.value.validation["errors"]} == {
+        "handler_unavailable"
+    }
+
+
+def test_unknown_graph_schema_fails_closed_without_v2_or_v3_inference():
+    from app.services.workflow_graph import WorkflowGraphValidationError, compile_workflow_graph, validate_workflow_graph
+
+    graph = _graph()
+    graph["schema_version"] = 99
+
+    validation = validate_workflow_graph(graph, capabilities=_capabilities())
+    assert validation["valid"] is False
+    assert validation["errors"] == [
+        {
+            "code": "schema_version_unsupported",
+            "message": "Unsupported authoring graph schema_version: 99",
+            "field": "schema_version",
+        }
+    ]
+    with pytest.raises(WorkflowGraphValidationError):
+        compile_workflow_graph(
+            graph,
+            capabilities=_capabilities(),
+            workflow_version_id="wfv_unknown_schema",
+        )
 
 
 def test_node_registry_is_the_authoritative_graph_kind_and_ui_schema_source():

@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
+from app.services.workflow_run_status import validate_status_axes
 
 
 _LOCK = threading.RLock()
@@ -203,6 +204,60 @@ class WorkbenchTaskRunEventStore:
                 raise KeyError(task_run_id)
             payload["quality_status"] = quality_status
             payload["delivery_status"] = delivery_status
+            _write_json(task_path, payload)
+            return payload
+
+    def mark_v3_outcomes(
+        self,
+        task_run_id: str,
+        *,
+        execution_status: str,
+        artifact_validation_status: str,
+        governance_status: str,
+        delivery_status: str,
+        quality_status: str,
+        legacy_delivery_status: str,
+    ) -> dict[str, Any]:
+        """Persist V3's four axes without changing the legacy caller contract.
+
+        ``delivery_status`` is the V3 public axis.  The old three-value value
+        survives under ``legacy_delivery_status`` for clients that have not yet
+        adopted four-axis rendering.
+        """
+        validate_status_axes(
+            execution_status=execution_status,
+            artifact_validation_status=artifact_validation_status,
+            governance_status=governance_status,
+            delivery_status=delivery_status,
+        )
+        if quality_status not in {"not_checked", "pending", "passed", "warning", "blocked"}:
+            raise ValueError(f"invalid quality status: {quality_status}")
+        if legacy_delivery_status not in {"none", "partial", "complete"}:
+            raise ValueError(f"invalid legacy delivery status: {legacy_delivery_status}")
+        with _LOCK:
+            task_path = self._task_path(task_run_id)
+            payload = _read_json(task_path)
+            if not isinstance(payload, dict):
+                raise KeyError(task_run_id)
+            payload.update({
+                "execution_status": execution_status,
+                "artifact_validation_status": artifact_validation_status,
+                "governance_status": governance_status,
+                "delivery_status": delivery_status,
+                "legacy_delivery_status": legacy_delivery_status,
+                "quality_status": quality_status,
+            })
+            runtime = dict(payload.get("runtime") or {})
+            runtime.update({
+                "execution_status": execution_status,
+                "artifact_validation_status": artifact_validation_status,
+                "governance_status": governance_status,
+                "delivery_status": delivery_status,
+                "legacy_delivery_status": legacy_delivery_status,
+                "quality_status": quality_status,
+                "updated_at": _now(),
+            })
+            payload["runtime"] = runtime
             _write_json(task_path, payload)
             return payload
 

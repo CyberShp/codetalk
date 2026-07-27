@@ -103,6 +103,57 @@ export interface AuthoringGraphV2 {
   };
 }
 
+export type ValidationProfile =
+  | "none"
+  | "artifact_only"
+  | "schema"
+  | "source_evidence"
+  | "storage_test_design"
+  | "formal_release";
+
+export interface DeclaredInput {
+  input_id: string;
+  label: string;
+  type: string;
+  required: boolean;
+  resolver?: "manual" | "workspace" | "local" | "agent_mcp";
+}
+
+export interface DeclaredOutput {
+  output_id: string;
+  label: string;
+  artifact: string;
+  media_type: string;
+  required: boolean;
+  schema: Record<string, unknown> | null;
+  producer_step_id: string;
+  /** Compatibility aliases retained by the V3 compiler for V2 consumers. */
+  id?: string;
+  type?: string;
+  from?: string;
+}
+
+export interface AuthoringGraphV3 {
+  schema_version: 3;
+  workflow_id: string;
+  name: string;
+  description: string;
+  nodes: WorkflowGraphV3Node[];
+  edges: WorkflowGraphEdge[];
+  settings: {
+    validation_profile: ValidationProfile;
+    stop_on_error: boolean;
+    max_parallelism: 1;
+  };
+}
+
+/** V3 can carry future node kinds while the Phase 1 V2 canvas remains unchanged. */
+export interface WorkflowGraphV3Node extends Omit<WorkflowGraphNode, "kind"> {
+  kind: string;
+}
+
+export type AuthoringGraph = AuthoringGraphV2 | AuthoringGraphV3;
+
 export interface WorkflowValidationIssue {
   code: string;
   message: string;
@@ -146,9 +197,35 @@ export interface CompiledWorkflowPlan {
   default_execution_profile?: WorkflowExecutionProfile["id"];
 }
 
+export interface CompiledWorkflowPlanV3 extends CompiledWorkflowPlan {
+  compiled_contract_version: 3;
+  settings: {
+    stop_on_error: boolean;
+    max_parallelism: number;
+    validation_profile: ValidationProfile;
+  };
+}
+
+export interface CompiledWorkflowContractV3 {
+  id: string;
+  name: string;
+  description: string;
+  version: number;
+  compiled_contract_version: 3;
+  validation_profile: ValidationProfile;
+  declared_inputs: DeclaredInput[];
+  declared_outputs: DeclaredOutput[];
+  nodes: Array<Record<string, unknown>>;
+  validators: Array<Record<string, unknown>>;
+  /** Compatibility projections consumed by the current task wizard. */
+  inputs: DeclaredInput[];
+  outputs: DeclaredOutput[];
+  steps: Array<Record<string, unknown>>;
+}
+
 export interface WorkflowCompileResult {
-  compiled_definition: Record<string, unknown>;
-  compiled_plan: CompiledWorkflowPlan;
+  compiled_definition: Record<string, unknown> | CompiledWorkflowContractV3;
+  compiled_plan: CompiledWorkflowPlan | CompiledWorkflowPlanV3;
   validation_result: WorkflowValidationResult;
 }
 
@@ -169,9 +246,9 @@ export interface WorkflowVersion {
   workflow_id: string;
   version_number: number;
   state: "draft" | "published" | "archived";
-  authoring_graph: AuthoringGraphV2 | Record<string, unknown>;
-  compiled_definition: Record<string, unknown> | null;
-  compiled_plan: CompiledWorkflowPlan | null;
+  authoring_graph: AuthoringGraph | Record<string, unknown>;
+  compiled_definition: (Record<string, unknown> | CompiledWorkflowContractV3) | null;
+  compiled_plan: (CompiledWorkflowPlan | CompiledWorkflowPlanV3) | null;
   validation: WorkflowValidationResult | null;
   based_on_version_id: string | null;
   created_at: string;
@@ -184,7 +261,7 @@ export interface WorkflowListItem {
   name: string;
   description?: string;
   version: number;
-  authoring_graph?: AuthoringGraphV2;
+  authoring_graph?: AuthoringGraph;
   v2?: WorkflowHeader;
   inputs?: unknown[];
   steps?: unknown[];
@@ -192,7 +269,7 @@ export interface WorkflowListItem {
 }
 
 export interface WorkflowDetail extends WorkflowListItem {
-  authoring_graph: AuthoringGraphV2;
+  authoring_graph: AuthoringGraph;
 }
 
 export interface WorkflowSkillCapability {

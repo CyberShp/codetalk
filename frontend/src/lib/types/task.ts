@@ -1,5 +1,28 @@
 export type WorkbenchTaskLifecycle = "draft" | "ready" | "archived";
 
+export type WorkbenchArtifactValidationStatus =
+  | "not_requested"
+  | "not_started"
+  | "running"
+  | "passed"
+  | "failed";
+
+export type WorkbenchGovernanceStatus =
+  | "not_requested"
+  | "running"
+  | "passed"
+  | "warning"
+  | "failed"
+  | "waived";
+
+export type WorkbenchDeliveryStatus =
+  | "none"
+  | "partial"
+  | "complete"
+  | "pending"
+  | "ready"
+  | "blocked";
+
 export interface WorkbenchRunSummary {
   task_run_id: string;
   task_id: string;
@@ -7,9 +30,13 @@ export interface WorkbenchRunSummary {
   parent_task_run_id: string;
   workflow_id: string;
   workspace_id: string;
+  compiled_contract_version?: number;
   execution_status: string;
+  /** Legacy V1/V2 quality projection. V3 exposes the two explicit axes below. */
   quality_status: string;
-  delivery_status: string;
+  artifact_validation_status?: WorkbenchArtifactValidationStatus;
+  governance_status?: WorkbenchGovernanceStatus;
+  delivery_status: WorkbenchDeliveryStatus;
   started_at: string;
   completed_at: string;
   created_at: string;

@@ -87,6 +87,13 @@ from app.services.workflow_presets import (
 )
 from app.services.workflow_version_store import workflow_header_status
 from app.services.workflow_node_registry import node_registry_payload
+from app.services.workflow_run_status import (
+    ARTIFACT_VALIDATION_STATUSES,
+    GOVERNANCE_STATUSES,
+    derive_delivery_status as derive_v3_delivery_status,
+    legacy_delivery_status as project_v3_legacy_delivery_status,
+    legacy_quality_status as project_v3_quality_status,
+)
 
 router = APIRouter(prefix="/api/workbench", tags=["agent-workbench"])
 
@@ -103,6 +110,7 @@ _TASK_RUN_TERMINAL_STATUSES = {
     "cancelled",
     "canceled",
     "interrupted",
+    "timed_out",
 }
 _ACTIVE_TASK_RUN_IDS: set[str] = set()
 
@@ -2580,6 +2588,14 @@ async def execute_task_run_workflow(
 
     try:
         event_store.mark_status(task_run_id, "queued")
+        _mark_task_run_lifecycle_outcomes(
+            event_store,
+            task_run_id,
+            execution_status="queued",
+            legacy_quality_status="pending",
+            legacy_delivery_status="none",
+            reset_validation=True,
+        )
         event_store.append(
             task_run_id,
             "queued",
@@ -2594,6 +2610,95 @@ async def execute_task_run_workflow(
     response.status_code = 202
     queued_task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     return _scheduled_task_run_response(task_run=queued_task_run, status="queued")
+
+
+def _frozen_contract_version(task_run: Any) -> Any:
+    """Return an explicitly frozen contract marker without coercing its type."""
+    bundle = task_run.task_bundle if isinstance(task_run.task_bundle, dict) else {}
+    snapshot = (
+        task_run.workflow_snapshot
+        if isinstance(task_run.workflow_snapshot, dict)
+        else {}
+    )
+    candidates = [
+        bundle.get("compiled_contract_version"),
+        snapshot.get("compiled_contract_version"),
+    ]
+    for key in ("compiled_definition", "compiled_plan"):
+        nested = bundle.get(key)
+        if isinstance(nested, dict):
+            candidates.append(nested.get("compiled_contract_version"))
+    return next(
+        (value for value in candidates if value is not None and value != ""),
+        None,
+    )
+
+
+def _task_run_has_frozen_contract(task_run_id: str) -> bool:
+    task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    return _frozen_contract_version(task_run) is not None
+
+
+def _mark_task_run_lifecycle_outcomes(
+    event_store: WorkbenchTaskRunEventStore,
+    task_run_id: str,
+    *,
+    execution_status: str,
+    legacy_quality_status: str,
+    legacy_delivery_status: str,
+    reset_validation: bool = False,
+) -> dict[str, Any]:
+    """Persist lifecycle outcomes through the frozen run's status model.
+
+    A frozen contract, including an unsupported version, must never be
+    projected through legacy Test Activity quality labels.  Keeping this
+    decision at the API lifecycle boundary prevents cancellation and preflight
+    failures from overwriting the Runner's four-axis model.
+    """
+    task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
+    if _frozen_contract_version(task_run) is None:
+        return event_store.mark_outcomes(
+            task_run_id,
+            quality_status=legacy_quality_status,
+            delivery_status=legacy_delivery_status,
+        )
+
+    artifact_status = str(task_run.artifact_validation_status or "")
+    governance_status = str(task_run.governance_status or "")
+    if reset_validation:
+        bundle = task_run.task_bundle if isinstance(task_run.task_bundle, dict) else {}
+        definition = bundle.get("compiled_definition")
+        profile = (
+            str(definition.get("validation_profile") or "artifact_only")
+            if isinstance(definition, dict)
+            else "artifact_only"
+        )
+        artifact_status = "not_requested" if profile == "none" else "not_started"
+        governance_status = "not_requested"
+    if artifact_status not in ARTIFACT_VALIDATION_STATUSES:
+        artifact_status = "not_started"
+    if governance_status not in GOVERNANCE_STATUSES:
+        governance_status = "not_requested"
+    delivery_status = derive_v3_delivery_status(
+        execution_status=execution_status,
+        artifact_validation_status=artifact_status,
+        governance_status=governance_status,
+    )
+    return event_store.mark_v3_outcomes(
+        task_run_id,
+        execution_status=execution_status,
+        artifact_validation_status=artifact_status,
+        governance_status=governance_status,
+        delivery_status=delivery_status,
+        quality_status=project_v3_quality_status(
+            execution_status=execution_status,
+            artifact_validation_status=artifact_status,
+            governance_status=governance_status,
+        ),
+        legacy_delivery_status=project_v3_legacy_delivery_status(
+            delivery_status=delivery_status
+        ),
+    )
 
 
 async def _execute_task_run_background(
@@ -2621,10 +2726,12 @@ async def _execute_task_run_background(
                 completed_at=datetime.now(timezone.utc).isoformat(),
                 error=message,
             )
-            event_store.mark_outcomes(
+            _mark_task_run_lifecycle_outcomes(
+                event_store,
                 task_run_id,
-                quality_status="blocked",
-                delivery_status="none",
+                execution_status="failed",
+                legacy_quality_status="blocked",
+                legacy_delivery_status="none",
             )
             event_store.append(
                 task_run_id,
@@ -2649,10 +2756,12 @@ async def _execute_task_run_background(
                 {"status": "cancelled", "ignored_before_start": True},
             )
             return
-        event_store.mark_outcomes(
+        _mark_task_run_lifecycle_outcomes(
+            event_store,
             task_run_id,
-            quality_status="pending",
-            delivery_status="none",
+            execution_status="running",
+            legacy_quality_status="pending",
+            legacy_delivery_status="none",
         )
         event_store.append(task_run_id, "running", {})
         result = await asyncio.to_thread(
@@ -2709,18 +2818,22 @@ async def _execute_task_run_background(
         # still unwinding. Persist a visible terminal state before preserving
         # cancellation semantics for the caller or service shutdown path.
         try:
+            frozen_contract = _task_run_has_frozen_contract(task_run_id)
+            terminal_status = "failed" if frozen_contract else "interrupted"
             updated, _ = event_store.mark_status_unless(
                 task_run_id,
-                "interrupted",
+                terminal_status,
                 blocked_statuses={"cancelled"},
                 completed_at=datetime.now(timezone.utc).isoformat(),
                 error="后台执行在完成前被中断；已保留诊断和已生成的文件。",
             )
             if updated:
-                event_store.mark_outcomes(
+                _mark_task_run_lifecycle_outcomes(
+                    event_store,
                     task_run_id,
-                    quality_status="blocked",
-                    delivery_status="none",
+                    execution_status=terminal_status,
+                    legacy_quality_status="blocked",
+                    legacy_delivery_status="none",
                 )
             event_store.append(
                 task_run_id,
@@ -2756,10 +2869,12 @@ async def _execute_task_run_background(
                         Path(failed_run.artifact_dir),
                     ),
                 )
-                event_store.mark_outcomes(
+                _mark_task_run_lifecycle_outcomes(
+                    event_store,
                     task_run_id,
-                    quality_status="blocked",
-                    delivery_status=delivery_status,
+                    execution_status="failed",
+                    legacy_quality_status="blocked",
+                    legacy_delivery_status=delivery_status,
                 )
             event_store.append(
                 task_run_id,
@@ -2915,7 +3030,7 @@ def _terminal_execution_status(result: dict[str, Any]) -> str:
         # contract. That terminal task state must never be shown as green.
         return "quality_blocked"
     explicit = str(result.get("execution_status") or "").strip().lower()
-    if explicit in {"completed", "partial", "failed", "cancelled", "interrupted"}:
+    if explicit in {"completed", "partial", "failed", "cancelled", "timed_out", "interrupted"}:
         return explicit
     legacy = str(result.get("status") or "completed").strip().lower()
     if legacy in {
@@ -2951,10 +3066,12 @@ async def cancel_task_run(task_run_id: str) -> dict[str, Any]:
         "cancelled",
         completed_at=datetime.now(timezone.utc).isoformat(),
     )
-    event_store.mark_outcomes(
+    _mark_task_run_lifecycle_outcomes(
+        event_store,
         task_run_id,
-        quality_status="not_checked",
-        delivery_status="none",
+        execution_status="cancelled",
+        legacy_quality_status="not_checked",
+        legacy_delivery_status="none",
     )
     event_store.append(
         task_run_id,
@@ -3098,6 +3215,21 @@ def _execute_task_run_with_closure(
     except KeyError:
         raise
     response = asdict(result)
+    uses_frozen_contract_status_model = response.get("compiled_contract_version") is not None
+    if uses_frozen_contract_status_model:
+        # Any frozen contract version, including an unsupported one rejected by
+        # the Runner, must never fall through to legacy acceptance.  Only an
+        # absent version selects the historical compatibility path.
+        WorkbenchTaskRunEventStore(_task_runs_dir()).mark_v3_outcomes(
+            task_run_id,
+            execution_status=str(response["execution_status"]),
+            artifact_validation_status=str(response["artifact_validation_status"]),
+            governance_status=str(response["governance_status"]),
+            delivery_status=str(response["delivery_status"]),
+            quality_status=str(response["quality_status"]),
+            legacy_delivery_status=str(response["legacy_delivery_status"]),
+        )
+        return response
     response["evidence_materialization"] = _materialize_task_run_outputs_if_available(
         task_run=task_run,
     )
@@ -3222,6 +3354,43 @@ def _reconcile_persisted_task_run_outcomes(task_run: Any) -> Any:
     execution = _read_json(task_dir / "workflow_execution.json")
     if not isinstance(execution, dict):
         return task_run
+    if execution.get("compiled_contract_version") not in {None, ""}:
+        from app.services.workflow_run_status import (
+            legacy_delivery_status as project_legacy_delivery_status,
+            legacy_quality_status,
+        )
+
+        execution_status = str(execution.get("execution_status") or task_run.execution_status)
+        artifact_status = str(
+            execution.get("artifact_validation_status")
+            or task_run.artifact_validation_status
+        )
+        governance_status = str(
+            execution.get("governance_status") or task_run.governance_status
+        )
+        delivery_status = str(execution.get("delivery_status") or task_run.delivery_status)
+        quality_status = str(
+            execution.get("quality_status")
+            or legacy_quality_status(
+                execution_status=execution_status,
+                artifact_validation_status=artifact_status,
+                governance_status=governance_status,
+            )
+        )
+        legacy_delivery = str(
+            execution.get("legacy_delivery_status")
+            or project_legacy_delivery_status(delivery_status=delivery_status)
+        )
+        WorkbenchTaskRunEventStore(_task_runs_dir()).mark_v3_outcomes(
+            task_run.task_run_id,
+            execution_status=execution_status,
+            artifact_validation_status=artifact_status,
+            governance_status=governance_status,
+            delivery_status=delivery_status,
+            quality_status=quality_status,
+            legacy_delivery_status=legacy_delivery,
+        )
+        return WorkbenchTaskRunStore(_task_runs_dir()).load(task_run.task_run_id)
     quality_status, delivery_status = _derive_task_run_outcomes(
         execution=execution,
         run_summary=_build_task_run_ui_summary(task_run, task_dir),
@@ -3719,6 +3888,13 @@ async def create_task_run_acceptance_audit(task_run_id: str) -> dict[str, Any]:
         task_run = WorkbenchTaskRunStore(_task_runs_dir()).load(task_run_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"Unknown task run: {task_run_id}")
+    frozen_contract_version = _frozen_contract_version(task_run)
+    if frozen_contract_version is not None:
+        return {
+            "status": "not_applicable",
+            "reason": "frozen_contract_uses_validation_profile",
+            "compiled_contract_version": frozen_contract_version,
+        }
     runtime_status = WorkbenchTaskRunEventStore(_task_runs_dir()).current_status(task_run_id)
     if runtime_status in {"queued", "running"} or task_run_id in _ACTIVE_TASK_RUN_IDS:
         raise HTTPException(

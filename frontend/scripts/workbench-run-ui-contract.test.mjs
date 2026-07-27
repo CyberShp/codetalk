@@ -10,6 +10,18 @@ const controllerSource = readFileSync(
   "utf8",
 );
 const globalStyles = readFileSync(join(root, "../src/app/globals.css"), "utf8");
+const runCockpitSource = readFileSync(
+  join(root, "../src/features/runs/run-cockpit-page.tsx"),
+  "utf8",
+);
+const taskWizardSource = readFileSync(
+  join(root, "../src/features/tasks/task-wizard.tsx"),
+  "utf8",
+);
+const taskDetailSource = readFileSync(
+  join(root, "../src/features/tasks/workbench-task-detail-page.tsx"),
+  "utf8",
+);
 const source = ["run-view.tsx", "workbench-controller.ts", "workbench-shared.tsx"]
   .map((name) =>
     readFileSync(join(root, "../src/app/workbench", name), "utf8"),
@@ -149,4 +161,17 @@ test("the run cockpit panel suppresses horizontal page scrolling", () => {
     globalStyles,
     /\.ct-workbench-shell \.ct-run-cockpit-panel\s*\{[\s\S]{0,100}overflow-x:\s*hidden/,
   );
+});
+
+test("the V3 cockpit rejects unsupported frozen contract versions without numeric coercion", () => {
+  assert.doesNotMatch(runCockpitSource, /Number\(record\.compiled_contract_version/);
+  assert.match(runCockpitSource, /typeof version !== "number" \|\| version !== 3/);
+  assert.match(runCockpitSource, /冻结契约版本不受支持/);
+});
+
+test("task authoring and summaries do not coerce unsupported contract versions into V3", () => {
+  assert.doesNotMatch(taskWizardSource, /Number\(definition\.compiled_contract_version\)/);
+  assert.doesNotMatch(taskDetailSource, /Number\(task\.workflow_version\?\.compiled_definition\?\.compiled_contract_version\)/);
+  assert.match(taskWizardSource, /definition\.compiled_contract_version === 3/);
+  assert.match(taskDetailSource, /compiled_contract_version === 3/);
 });

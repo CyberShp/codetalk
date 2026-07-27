@@ -17,12 +17,13 @@ from app.services.agent_runtimes import list_agent_runtimes_sync
 from app.services.evidence_memory import EvidenceMemoryStore
 from app.services.external_agent_discovery import external_agent_provider_specs
 from app.services.test_semantic_library import TestSemanticLibraryStore
-from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+from app.services.workbench_task_run import WorkbenchTaskRunPreparer, refresh_run_snapshot_v3
 from app.services.workflow_graph import (
     WorkflowGraphValidationError,
     compile_workflow_graph,
     validate_workflow_graph,
 )
+from app.services.workflow_handler_registry import workflow_handler_capability_snapshot
 from app.services.workflow_presets import reserved_builtin_workflow_ids
 from app.services.workflow_dsl import WorkflowStore
 from app.services.workflow_version_store import (
@@ -339,6 +340,7 @@ async def prepare_workflow_trial_run(
             status_code=422,
             detail=f"工作流输入不完整或无效：{exc}",
         ) from exc
+    prepared.task_bundle["compiled_definition"] = compiled["compiled_definition"]
     prepared.task_bundle["compiled_plan"] = compiled["compiled_plan"]
     prepared.task_bundle["workflow_version_id"] = version.version_id
     prepared.task_bundle["trial_run"] = True
@@ -352,6 +354,11 @@ async def prepare_workflow_trial_run(
         json.dumps(asdict(prepared), ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    (Path(prepared.artifact_dir) / "task_bundle.json").write_text(
+        json.dumps(prepared.task_bundle, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    refresh_run_snapshot_v3(prepared.artifact_dir)
     workflow_version_store().update_draft(
         version_id,
         authoring_graph=version.authoring_graph,
@@ -419,6 +426,7 @@ def _version_for_workflow(workflow_id: str, version_id: str):
 
 
 def _workflow_graph_capabilities() -> dict[str, Any]:
+    capabilities = workflow_handler_capability_snapshot()
     providers: dict[str, dict[str, Any]] = {
         "builtin-llm": {"available": True, "mcp_profiles": []},
     }
@@ -437,6 +445,7 @@ def _workflow_graph_capabilities() -> dict[str, Any]:
             "mcp_profiles": [mcp_profile] if mcp_profile else [],
         }
     return {
+        **capabilities,
         "providers": providers,
         "skills": [
             "artifact-contract",

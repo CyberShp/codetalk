@@ -55,12 +55,31 @@ class WorkflowGraphValidationError(ValueError):
 def validate_workflow_graph(
     graph: dict[str, Any], *, capabilities: dict[str, Any] | None = None
 ) -> dict[str, Any]:
-    errors: list[dict[str, Any]] = []
-    warnings: list[dict[str, Any]] = []
     if not isinstance(graph, dict):
         return _validation_result([_issue("graph_not_object", "Authoring graph must be an object")], [])
-    if graph.get("schema_version") != GRAPH_SCHEMA_VERSION:
-        errors.append(_issue("schema_version_invalid", "Authoring graph schema_version must be 2", field="schema_version"))
+    schema_version = graph.get("schema_version")
+    if schema_version == 3:
+        from app.services.workflow_contract_v3 import validate_workflow_contract_v3
+
+        return validate_workflow_contract_v3(
+            graph,
+            capabilities=capabilities,
+            require_executable=False,
+        )
+    if schema_version != GRAPH_SCHEMA_VERSION:
+        return _validation_result(
+            [
+                _issue(
+                    "schema_version_unsupported",
+                    f"Unsupported authoring graph schema_version: {schema_version}",
+                    field="schema_version",
+                )
+            ],
+            [],
+        )
+
+    errors: list[dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
     workflow_id = str(graph.get("workflow_id") or "").strip()
     if not _SAFE_ID.fullmatch(workflow_id):
         errors.append(_issue("workflow_id_invalid", "Workflow ID contains unsafe characters", field="workflow_id"))
@@ -206,6 +225,21 @@ def compile_workflow_graph(
     workflow_version_id: str,
     workflow_version_number: int = 1,
 ) -> dict[str, Any]:
+    if isinstance(graph, dict) and graph.get("schema_version") == 3:
+        from app.services.workflow_contract_v3 import compile_workflow_contract_v3
+
+        compiled = compile_workflow_contract_v3(
+            graph,
+            capabilities=capabilities,
+            workflow_version_id=workflow_version_id,
+            workflow_version_number=workflow_version_number,
+            require_executable=True,
+        )
+        validation = compiled["validation_result"]
+        if not validation["valid"]:
+            raise WorkflowGraphValidationError(validation)
+        return compiled
+
     validation = validate_workflow_graph(graph, capabilities=capabilities)
     if not validation["valid"]:
         raise WorkflowGraphValidationError(validation)

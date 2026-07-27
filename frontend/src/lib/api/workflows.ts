@@ -1,6 +1,6 @@
 import { request } from "@/lib/api";
 import type {
-  AuthoringGraphV2,
+  AuthoringGraph,
   WorkflowCapabilities,
   WorkflowCompileResult,
   WorkflowDetail,
@@ -24,7 +24,7 @@ export const workflowsApi = {
     id: string;
     name: string;
     description: string;
-    authoring_graph: AuthoringGraphV2;
+    authoring_graph: AuthoringGraph;
   }) =>
     request<WorkflowHeader>("/api/workbench/workflows", {
       method: "POST",
@@ -61,7 +61,7 @@ export const workflowsApi = {
   updateDraft: (
     workflowId: string,
     versionId: string,
-    authoringGraph: AuthoringGraphV2,
+    authoringGraph: AuthoringGraph,
   ) =>
     request<WorkflowVersion>(
       `${workflowPath(workflowId)}/versions/${encodeURIComponent(versionId)}`,

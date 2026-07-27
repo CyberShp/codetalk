@@ -30,8 +30,10 @@ import type {
 import { workbenchTasksApi } from "@/lib/api/workbench-tasks";
 import type { WorkbenchTask } from "@/lib/types/task";
 import {
+  taskArtifactValidationLabels,
   taskDeliveryLabels,
   taskExecutionLabels,
+  taskGovernanceLabels,
   taskQualityLabels,
   taskStatusLabel,
 } from "@/features/tasks/task-status";
@@ -178,6 +180,8 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
   const currentNode = summary?.current_node;
   const inspectedNode = summary?.nodes.find((item) => item.id === selectedNodeId) || currentNode;
   const status = statusOf(run);
+  const v3Axes = v3RunAxes(run);
+  const v3Contract = v3Axes !== null;
   const running = ["queued", "running", "prepared"].includes(status);
   const failed = ["failed", "error", "interrupted"].includes(status);
   const partial = status === "partial";
@@ -190,7 +194,8 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
   const kinds = [...new Set(events.map((item) => item.event_kind).filter(Boolean))];
   const publicArtifacts = artifacts.filter((item) => item.audience !== "diagnostic");
   const deliverables = publicArtifacts.filter((item) => item.audience === "deliverable");
-  const qualityBlocked = run.quality_status === "blocked";
+  const qualityBlocked = !v3Contract && run.quality_status === "blocked";
+  const deliveryBlocked = v3Contract ? v3Axes.delivery === "blocked" : qualityBlocked;
   const executionProfile = run.task_bundle?.execution_profile as Record<string, unknown> | undefined;
   const executionProfileId = typeof executionProfile?.id === "string" ? executionProfile.id : "";
   const executionProfileLabel = typeof executionProfile?.label === "string" ? executionProfile.label : executionProfileId;
@@ -266,8 +271,14 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
     <header className="ct-v2-run-header">
       <div className="ct-v2-run-identity"><Link href={`/tasks/${taskId}`} aria-label="返回任务"><ArrowLeft size={16} /></Link><div><span>Attempt {run.attempt_number || 1}{diagnosticTrial ? " · 节点诊断运行" : ""}</span><h1>{task.name}</h1>{diagnosticTrial && <small>仅验证此节点的真实执行链，不计入正式质量与交付。</small>}</div></div>
       <StatusBlock label="执行状态" value={taskStatusLabel(taskExecutionLabels, status)} tone={status} />
-      <StatusBlock label="质量状态" value={taskStatusLabel(taskQualityLabels, run.quality_status || "not_checked")} tone={run.quality_status || "not_checked"} />
-      <StatusBlock label="交付状态" value={taskStatusLabel(taskDeliveryLabels, run.delivery_status || "none")} tone={run.delivery_status || "none"} />
+      {v3Axes ? <>
+        <StatusBlock label="产物校验" value={taskStatusLabel(taskArtifactValidationLabels, v3Axes.artifactValidation)} tone={v3Axes.artifactValidation} />
+        <StatusBlock label="专业治理" value={taskStatusLabel(taskGovernanceLabels, v3Axes.governance)} tone={v3Axes.governance} />
+        <StatusBlock label="交付状态" value={taskStatusLabel(taskDeliveryLabels, v3Axes.delivery)} tone={v3Axes.delivery} />
+      </> : <>
+        <StatusBlock label="质量状态" value={taskStatusLabel(taskQualityLabels, run.quality_status || "not_checked")} tone={run.quality_status || "not_checked"} />
+        <StatusBlock label="交付状态" value={taskStatusLabel(taskDeliveryLabels, run.delivery_status || "none")} tone={run.delivery_status || "none"} />
+      </>}
       <div className="ct-v2-run-metric"><span>耗时</span><RunDuration start={run.started_at || run.runtime?.started_at} end={run.completed_at || run.runtime?.completed_at} active={running} /></div>
       {executionProfileId && <div className="ct-v2-run-metric"><span>执行档位</span><strong>{executionProfileLabel}</strong><small>{qualityReviewReuse ? "基于已验收产物的质量复核，不计入速度型完整运行耗时。" : <>{profileDuration.length === 2 ? `目标 ${profileDuration[0]}-${profileDuration[1]} 分钟` : "已冻结到本次运行"}{cachedStageIds.size ? ` · 跨运行缓存命中 ${cachedStageIds.size} 个阶段（${cachedReuseEvents.length} 次）` : " · 未命中跨运行缓存"}</>}</small></div>}
       <div className="ct-v2-run-metric"><span>当前节点</span><strong>{displayNodeName(currentNode?.label || currentNode?.id || "等待调度")}</strong></div>
@@ -277,6 +288,7 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
       </div>
     </header>
     {error && <div className="ct-v2-run-error" role="alert"><AlertTriangle size={15} />{error}<button aria-label="关闭错误" onClick={() => setError("")}><X size={14} /></button></div>}
+    {v3Axes?.unsupportedVersion && <div className="ct-v2-run-error" role="alert"><AlertTriangle size={15} />冻结契约版本不受支持：{v3Axes.unsupportedVersion}。本次运行已阻断，请升级 CodeTalk 后重试。</div>}
 
     <section className="ct-v2-run-workspace">
       <div className="ct-v2-run-main">
@@ -295,8 +307,8 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
 
     <section className="ct-v2-run-results">
       {failed && <FailurePanel summary={summary} onRetry={() => void retry()} busy={actionBusy} />}
-      <section className="ct-v2-run-deliverables"><header><div><h2>{qualityBlocked ? "受阻产物" : "交付件"}</h2><span>{qualityBlocked ? `${deliverables.length} 个待修复草稿` : `${deliverables.length} 个可交付文件`}</span></div></header><div>{deliverables.length ? <>{qualityBlocked && <p>质量门禁未通过：以下文件仅用于查看问题与辅助修复，尚不能作为正式交付。</p>}{deliverables.map((item) => <ArtifactRow key={item.relative_path} item={item} runId={runId} onOpen={openArtifact} />)}</> : <p>运行完成后，用户可下载的最终文件会显示在这里。</p>}</div></section>
-      <QualityPanel run={run} onRetry={() => void retry()} busy={actionBusy} />
+      <section className="ct-v2-run-deliverables"><header><div><h2>{deliveryBlocked ? "受阻产物" : "交付件"}</h2><span>{deliveryBlocked ? `${deliverables.length} 个待修复草稿` : `${deliverables.length} 个可交付文件`}</span></div></header><div>{deliverables.length ? <>{deliveryBlocked && <p>{v3Contract ? "声明产物未通过校验或被阻断：以下文件仅用于查看问题与辅助修复，尚不能作为正式交付。" : "质量门禁未通过：以下文件仅用于查看问题与辅助修复，尚不能作为正式交付。"}</p>}{deliverables.map((item) => <ArtifactRow key={item.relative_path} item={item} runId={runId} onOpen={openArtifact} />)}</> : <p>运行完成后，用户可下载的最终文件会显示在这里。</p>}</div></section>
+      {v3Axes ? <V3StatusPanel axes={v3Axes} /> : <QualityPanel run={run} onRetry={() => void retry()} busy={actionBusy} />}
       <InputConsumptionPanel ledger={run.input_consumption} />
       <details className="ct-v2-run-support"><summary>支撑文件与输入快照（{publicArtifacts.length - deliverables.length}）</summary>{publicArtifacts.filter((item) => item.audience !== "deliverable").map((item) => <ArtifactRow key={item.relative_path} item={item} runId={runId} onOpen={openArtifact} />)}</details>
     </section>
@@ -376,6 +388,8 @@ function MindmapRefs({ title, values }: { title: string; values: string[] }) {
 }
 
 function StatusBlock({ label, value, tone }: { label: string; value: string; tone: string }) { return <div className="ct-v2-run-status"><span>{label}</span><strong className={`is-${tone}`}>{value}</strong></div>; }
+function V3StatusPanel({ axes }: { axes: V3RunAxes }) { return <section className="ct-v2-run-quality" aria-label="V3 运行状态"><header><div><h2>运行状态</h2><strong>{taskStatusLabel(taskDeliveryLabels, axes.delivery)}</strong></div></header><div className="ct-v2-quality-axes"><V3StatusAxis label="执行" value={taskStatusLabel(taskExecutionLabels, axes.execution)} tone={axes.execution} /><V3StatusAxis label="产物校验" value={taskStatusLabel(taskArtifactValidationLabels, axes.artifactValidation)} tone={axes.artifactValidation} /><V3StatusAxis label="专业治理" value={taskStatusLabel(taskGovernanceLabels, axes.governance)} tone={axes.governance} /><V3StatusAxis label="交付" value={taskStatusLabel(taskDeliveryLabels, axes.delivery)} tone={axes.delivery} /></div><p>此运行按冻结的 V3 输出契约验收；未启用专业治理时显示“未请求”，不会作为质量失败。</p></section>; }
+function V3StatusAxis({ label, value, tone }: { label: string; value: string; tone: string }) { return <article className={`is-${tone}`}><span>{label}</span><strong>{value}</strong></article>; }
 function RunSummary({ summary, events, failed, partial, selectedNodeId, onSelectNode, onRetry, actionBusy }: { summary: PreparedWorkbenchTaskRun["run_ui_summary"]; events: WorkbenchTaskRunEvent[]; failed: boolean; partial: boolean; selectedNodeId: string; onSelectNode: (id: string) => void; onRetry: () => void; actionBusy: boolean }) { const recoveredNodes = summary?.nodes.filter((node) => node.recovered_from_partial) || []; const recovered = recoveredNodes.length > 0; const recoveredLabel = recoveredNodes.map((node) => displayNodeName(node.label || node.id)).join("、"); return <div className="ct-v2-run-summary"><section><h2>{failed ? "运行在节点处停止" : partial ? "运行保留了部分结果" : "节点进度"}</h2><div className="ct-v2-node-timeline">{(summary?.nodes || []).map((node) => { const nodeName = displayNodeName(node.label || node.id); return <button type="button" key={node.id} className={`is-${node.status || "prepared"} ${selectedNodeId === node.id ? "is-selected" : ""}`} onClick={() => onSelectNode(node.id)} aria-label={`查看节点 ${nodeName}`}><span>{node.status === "completed" || node.status === "success" ? <CheckCircle2 size={15} /> : node.status === "running" ? <Loader2 className="animate-spin" size={15} /> : node.status === "failed" || node.status === "error" || node.status === "interrupted" ? <AlertTriangle size={15} /> : <i />}</span><strong>{nodeName}</strong><small>{node.status_label}</small></button>; })}</div></section><StageProgressPanel events={events} stageProgress={summary?.test_activity_stage_progress} runPartial={partial} recovered={recovered} recoveredLabel={recoveredLabel} onRetry={onRetry} busy={actionBusy} /><section><h2>最新活动</h2>{events.slice(-8).reverse().map((item) => <EventRow key={item.event_id} item={item} compact />)}</section></div>; }
 
 function hasFlowEvidenceMetrics(payload: WorkbenchTaskRunEvent["payload"]) {
@@ -540,6 +554,27 @@ function lifecycleStatus(eventType: string, payload: WorkbenchTaskRunEvent["payl
   return "";
 }
 function statusOf(run: PreparedWorkbenchTaskRun) { return String(run.execution_status || run.runtime?.status || run.status || "prepared").toLowerCase(); }
+type V3RunAxes = { execution: string; artifactValidation: string; governance: string; delivery: string; unsupportedVersion?: string };
+function v3RunAxes(run: PreparedWorkbenchTaskRun): V3RunAxes | null {
+  const record = run as PreparedWorkbenchTaskRun & Record<string, unknown>;
+  const snapshot = record.workflow_snapshot as Record<string, unknown> | undefined;
+  const bundle = record.task_bundle as Record<string, unknown> | undefined;
+  const version = record.compiled_contract_version ?? snapshot?.compiled_contract_version ?? bundle?.compiled_contract_version;
+  if (version === undefined || version === null || version === "") return null;
+  if (typeof version !== "number" || version !== 3) return {
+    execution: statusOf(run),
+    artifactValidation: "failed",
+    governance: "not_requested",
+    delivery: "blocked",
+    unsupportedVersion: String(version),
+  };
+  return {
+    execution: statusOf(run),
+    artifactValidation: String(record.artifact_validation_status || "not_started"),
+    governance: String(record.governance_status || "not_requested"),
+    delivery: String(record.delivery_status || "pending"),
+  };
+}
 function eventNode(item: WorkbenchTaskRunEvent) { return String(item.payload.step_id || item.payload.node_id || item.payload.node_label || ""); }
 function eventMessage(item: WorkbenchTaskRunEvent) {
   const message = String(item.payload.user_message || item.payload.message || eventTypeLabel(item.event_type));

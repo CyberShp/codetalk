@@ -47,6 +47,85 @@ def _prepare_phase0_ordinary_report_run(tmp_path):
     )
 
 
+def _prepare_phase1_v3_ordinary_report_run(tmp_path):
+    from app.services.workflow_contract_v3 import compile_workflow_contract_v3
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    graph = {
+        "schema_version": 3,
+        "workflow_id": "ordinary_report_only_v3",
+        "name": "Ordinary report only V3",
+        "settings": {"validation_profile": "artifact_only"},
+        "nodes": [
+            {
+                "id": "subject-node",
+                "kind": "input",
+                "label": "Subject",
+                "ports": {"inputs": [], "outputs": [{"id": "value", "type": "long_text"}]},
+                "config": {"input_id": "subject", "type": "long_text", "required": True},
+            },
+            {
+                "id": "analyze",
+                "kind": "agent",
+                "label": "Analyze",
+                "ports": {
+                    "inputs": [{"id": "subject", "type": "long_text", "required": True}],
+                    "outputs": [{"id": "report", "type": "artifact", "required": True}],
+                },
+                "config": {"handler_id": "agent", "provider_ref": "builtin-llm"},
+            },
+            {
+                "id": "report-output",
+                "kind": "output",
+                "label": "Report",
+                "ports": {"inputs": [{"id": "value", "type": "artifact"}], "outputs": []},
+                "config": {
+                    "output_id": "report",
+                    "artifact": "report.md",
+                    "media_type": "text/markdown",
+                    "required": True,
+                },
+            },
+        ],
+        "edges": [
+            {
+                "id": "subject-analyze",
+                "kind": "data",
+                "source": {"node_id": "subject-node", "port_id": "value"},
+                "target": {"node_id": "analyze", "port_id": "subject"},
+            },
+            {
+                "id": "analyze-report",
+                "kind": "data",
+                "source": {"node_id": "analyze", "port_id": "report"},
+                "target": {"node_id": "report-output", "port_id": "value"},
+            },
+        ],
+    }
+    compiled = compile_workflow_contract_v3(
+        graph,
+        capabilities={
+            "handlers": {
+                "agent": {"versions": [1]},
+                "artifact_exists": {"versions": [1]},
+            }
+        },
+        workflow_version_id="wfv_phase1_v3_report",
+    )
+    workflow_store = WorkflowStore(tmp_path / "workflows-v3.db")
+    workflow_store.save_workflow(compiled["compiled_definition"])
+    return WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task-runs-v3",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="ordinary_report_only_v3",
+        workspace_id="ws-phase1",
+        repo_path=str(tmp_path),
+        inputs={"subject": "summarize the module"},
+    )
+
+
 def test_phase0_ordinary_report_workflow_implicit_governance_defect_shape_is_stable(tmp_path):
     """Prove the expected failure below is the known pollution, not setup noise."""
     prepared = _prepare_phase0_ordinary_report_run(tmp_path)
@@ -57,17 +136,9 @@ def test_phase0_ordinary_report_workflow_implicit_governance_defect_shape_is_sta
     assert json.loads(contract_path.read_text(encoding="utf-8"))["required_outputs"]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "Phase 1 green condition: an ordinary workflow that declares only report.md "
-        "must not receive a test_activity_contract artifact or task-bundle entry."
-    ),
-)
 def test_phase0_ordinary_report_workflow_does_not_receive_implicit_test_activity_contract(tmp_path):
-    """Freeze the current implicit-governance defect without fixing it in Phase 0."""
-    prepared = _prepare_phase0_ordinary_report_run(tmp_path)
+    """Phase 1 green: a V3 report-only workflow has no implicit governance."""
+    prepared = _prepare_phase1_v3_ordinary_report_run(tmp_path)
 
     pollution = (
         "test_activity_contract" in prepared.task_bundle,

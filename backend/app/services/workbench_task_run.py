@@ -39,6 +39,10 @@ from app.services.workbench_artifact_manifest import write_task_artifact_manifes
 from app.services.workbench_skills import resolve_workbench_skill_instructions
 from app.services.workbench_input_ingest import ingest_workbench_inputs
 from app.services.workflow_dsl import WorkflowStore
+from app.services.workbench_task_compile import (
+    TaskConfigurationError,
+    compiled_contract_version,
+)
 
 AGENT_RUNTIME_PROVIDER_PREFIX = "agent-runtime:"
 BUILTIN_LLM_PROVIDER_ID = "builtin-llm"
@@ -129,6 +133,8 @@ class PreparedWorkbenchTaskRun:
     parent_task_run_id: str = ""
     execution_status: str = "prepared"
     quality_status: str = "not_checked"
+    artifact_validation_status: str = "not_started"
+    governance_status: str = "not_requested"
     delivery_status: str = "none"
     started_at: str = ""
     completed_at: str = ""
@@ -166,6 +172,11 @@ class WorkbenchTaskRunPreparer:
         execution_profile_id: str = "",
     ) -> PreparedWorkbenchTaskRun:
         workflow_snapshot = self.workflow_store.freeze_workflow_snapshot(workflow_id)
+        try:
+            contract_version = compiled_contract_version(workflow_snapshot)
+        except TaskConfigurationError as exc:
+            raise ValueError(str(exc)) from exc
+        is_v3_contract = contract_version == 3
         execution_profile = resolve_execution_profile(
             workflow_snapshot,
             execution_profile_id=execution_profile_id,
@@ -175,10 +186,10 @@ class WorkbenchTaskRunPreparer:
             allowed_hosts=set(settings.intranet_allowed_hosts),
             allowed_cidrs=set(settings.intranet_allowed_cidrs),
         ).snapshot()
-        stage_specs = default_test_activity_stage_specs(
+        stage_specs = [] if is_v3_contract else default_test_activity_stage_specs(
             profile_id=str(execution_profile["id"])
         )
-        artifact_contract_v3 = default_artifact_contract_v3(
+        artifact_contract_v3 = {} if is_v3_contract else default_artifact_contract_v3(
             profile_id=str(execution_profile["id"])
         )
         has_agent_step = any(
@@ -348,35 +359,49 @@ class WorkbenchTaskRunPreparer:
             evidence_memory_configured=self.evidence_memory is not None,
             semantic_library_configured=self.semantic_library is not None,
         )
-        black_box_generation_policy = build_black_box_generation_policy(
-            context_bundle=context_bundle,
-        )
-        test_activity_contract = build_test_activity_contract(
-            target=_test_activity_target(
-                workflow_snapshot=workflow_snapshot,
-                input_snapshot=input_snapshot,
+        black_box_generation_policy = (
+            {} if is_v3_contract else build_black_box_generation_policy(
                 context_bundle=context_bundle,
-            ),
-            repo_path=repo_path,
-            workflow_outputs=_test_activity_requested_outputs(workflow_snapshot),
-            user_requirements=_test_activity_user_requirements(
-                workflow_snapshot=workflow_snapshot,
-                input_snapshot=input_snapshot,
-            ),
+            )
         )
-        workflow_contract["test_activity_contract"] = test_activity_contract
-        quality_readiness = build_behavior_claim_audit_readiness(
-            required=bool(
-                (test_activity_contract.get("quality_gates") or {}).get(
-                    "require_independent_behavior_validation"
-                )
-                and test_activity_contract.get("artifact_contract")
-            ),
-            generator_identities=[
-                str(item.get("provider") or "")
-                for item in workflow_contract.get("agent_steps") or []
-                if isinstance(item, dict)
-            ],
+        test_activity_contract: dict[str, Any] | None = None
+        if not is_v3_contract:
+            test_activity_contract = build_test_activity_contract(
+                target=_test_activity_target(
+                    workflow_snapshot=workflow_snapshot,
+                    input_snapshot=input_snapshot,
+                    context_bundle=context_bundle,
+                ),
+                repo_path=repo_path,
+                workflow_outputs=_test_activity_requested_outputs(workflow_snapshot),
+                user_requirements=_test_activity_user_requirements(
+                    workflow_snapshot=workflow_snapshot,
+                    input_snapshot=input_snapshot,
+                ),
+            )
+            workflow_contract["test_activity_contract"] = test_activity_contract
+        quality_readiness = (
+            {
+                "status": "not_required",
+                "required": False,
+                "mode": "v3_explicit_validation_profile",
+                "message": "V3 工作流未显式启用专业治理。",
+                "recommended_action": "",
+            }
+            if is_v3_contract
+            else build_behavior_claim_audit_readiness(
+                required=bool(
+                    (test_activity_contract.get("quality_gates") or {}).get(
+                        "require_independent_behavior_validation"
+                    )
+                    and test_activity_contract.get("artifact_contract")
+                ),
+                generator_identities=[
+                    str(item.get("provider") or "")
+                    for item in workflow_contract.get("agent_steps") or []
+                    if isinstance(item, dict)
+                ],
+            )
         )
         provider_readiness = build_provider_readiness_report(
             repo_path=repo_path,
@@ -393,10 +418,22 @@ class WorkbenchTaskRunPreparer:
             "attempt_number": max(0, int(attempt_number)),
             "parent_task_run_id": str(parent_task_run_id or ""),
             "workflow_id": workflow_id,
+            "compiled_contract_version": contract_version,
+            "validation_profile": str(workflow_snapshot.get("validation_profile") or ""),
+            "declared_inputs": [
+                dict(item) for item in workflow_snapshot.get("declared_inputs") or []
+                if isinstance(item, dict)
+            ],
+            "declared_outputs": [
+                dict(item) for item in workflow_snapshot.get("declared_outputs") or []
+                if isinstance(item, dict)
+            ],
+            "validators": [
+                dict(item) for item in workflow_snapshot.get("validators") or []
+                if isinstance(item, dict)
+            ],
             "execution_profile": execution_profile,
             "network_policy": network_policy,
-            "stage_specs": stage_specs,
-            "artifact_contract_v3": artifact_contract_v3,
             "input_consumption": input_consumption,
             "workspace_id": workspace_id,
             "repo_path": repo_path,
@@ -416,8 +453,6 @@ class WorkbenchTaskRunPreparer:
             "source_read_chain": context_artifacts["source_read_chain"],
             "evidence_consumption_trajectory": context_artifacts["evidence_consumption_trajectory"],
             "degraded_retrieval": context_artifacts["degraded_retrieval"],
-            "black_box_generation_policy": black_box_generation_policy,
-            "test_activity_contract": test_activity_contract,
             # The canonical V3 snapshot is materialized after every frozen
             # component is written.  Child harness envelopes receive the
             # stable path, never a mutable in-memory copy of the run state.
@@ -427,6 +462,18 @@ class WorkbenchTaskRunPreparer:
             "semantic_import_outputs_by_step": semantic_import_outputs_by_step,
             "created_at": _now(),
         }
+        if is_v3_contract:
+            # This is the exact immutable definition read from the task-local
+            # store.  The task API may later attach its matching compiled plan;
+            # neither is rebuilt from a mutable draft or live registry.
+            task_bundle["compiled_definition"] = json.loads(
+                json.dumps(workflow_snapshot, ensure_ascii=False)
+            )
+        if not is_v3_contract:
+            task_bundle["stage_specs"] = stage_specs
+            task_bundle["artifact_contract_v3"] = artifact_contract_v3
+            task_bundle["black_box_generation_policy"] = black_box_generation_policy
+            task_bundle["test_activity_contract"] = test_activity_contract
 
         agent_runs: list[dict[str, Any]] = []
         for step in workflow_snapshot.get("steps") or []:
@@ -506,23 +553,27 @@ class WorkbenchTaskRunPreparer:
                 evidence_memory_configured=self.evidence_memory is not None,
                 semantic_library_configured=self.semantic_library is not None,
             )
-            step_black_box_generation_policy = build_black_box_generation_policy(
-                context_bundle=step_context_bundle,
-            )
-            step_test_activity_contract = build_test_activity_contract(
-                target=_test_activity_target(
-                    workflow_snapshot=workflow_snapshot,
-                    input_snapshot=step_input_snapshot,
+            step_black_box_generation_policy = (
+                {} if is_v3_contract else build_black_box_generation_policy(
                     context_bundle=step_context_bundle,
-                ),
-                repo_path=repo_path,
-                workflow_outputs=_test_activity_requested_outputs(workflow_snapshot),
-                user_requirements=_test_activity_user_requirements(
-                    workflow_snapshot=workflow_snapshot,
-                    input_snapshot=step_input_snapshot,
-                ),
+                )
             )
-            step_workflow_contract["test_activity_contract"] = step_test_activity_contract
+            step_test_activity_contract: dict[str, Any] | None = None
+            if not is_v3_contract:
+                step_test_activity_contract = build_test_activity_contract(
+                    target=_test_activity_target(
+                        workflow_snapshot=workflow_snapshot,
+                        input_snapshot=step_input_snapshot,
+                        context_bundle=step_context_bundle,
+                    ),
+                    repo_path=repo_path,
+                    workflow_outputs=_test_activity_requested_outputs(workflow_snapshot),
+                    user_requirements=_test_activity_user_requirements(
+                        workflow_snapshot=workflow_snapshot,
+                        input_snapshot=step_input_snapshot,
+                    ),
+                )
+                step_workflow_contract["test_activity_contract"] = step_test_activity_contract
             execution_contract = build_executor_handoff_contract(
                 workflow_snapshot=workflow_snapshot,
                 workflow_contract=step_workflow_contract,
@@ -554,8 +605,6 @@ class WorkbenchTaskRunPreparer:
                 "source_read_chain": step_context_artifacts["source_read_chain"],
                 "evidence_consumption_trajectory": step_context_artifacts["evidence_consumption_trajectory"],
                 "degraded_retrieval": step_context_artifacts["degraded_retrieval"],
-                "black_box_generation_policy": step_black_box_generation_policy,
-                "test_activity_contract": step_test_activity_contract,
                 "step_id": step_id,
                 "goal": step.get("goal") or "",
                 "skills": [str(item) for item in step.get("skills") or []],
@@ -569,6 +618,9 @@ class WorkbenchTaskRunPreparer:
                 "mcp_profile": step.get("mcp_profile") or "",
                 "execution_contract": execution_contract,
             }
+            if not is_v3_contract:
+                step_bundle["black_box_generation_policy"] = step_black_box_generation_policy
+                step_bundle["test_activity_contract"] = step_test_activity_contract
             agent_run = AgentHarnessFacade(
                 artifact_dir / "agent_runs" / step_id
             ).prepare(
@@ -609,14 +661,26 @@ class WorkbenchTaskRunPreparer:
             task_id=str(task_id or ""),
             attempt_number=max(0, int(attempt_number)),
             parent_task_run_id=str(parent_task_run_id or ""),
+            execution_status="queued" if is_v3_contract else "prepared",
+            artifact_validation_status=(
+                "not_requested"
+                if is_v3_contract
+                and str(workflow_snapshot.get("validation_profile") or "") == "none"
+                else "not_started"
+            ),
+            governance_status="not_requested" if is_v3_contract else "not_started",
+            delivery_status="pending" if is_v3_contract else "none",
             agent_runs=agent_runs,
         )
         _write_json(artifact_dir / "task_run.json", asdict(result))
         _write_json(artifact_dir / "workflow_snapshot.json", workflow_snapshot)
+        if is_v3_contract:
+            _write_json(artifact_dir / "compiled_definition.json", workflow_snapshot)
         _write_json(artifact_dir / "execution_profile.json", execution_profile)
         _write_json(artifact_dir / "network_policy.json", network_policy)
-        _write_json(artifact_dir / "stage_specs.json", stage_specs)
-        _write_json(artifact_dir / "artifact_contract_v3.json", artifact_contract_v3)
+        if not is_v3_contract:
+            _write_json(artifact_dir / "stage_specs.json", stage_specs)
+            _write_json(artifact_dir / "artifact_contract_v3.json", artifact_contract_v3)
         _write_json(artifact_dir / "input_consumption.json", input_consumption)
         # Consumption events are appended while an Agent runs. Freeze the
         # prepared input ledger separately so retries validate the original
@@ -646,8 +710,9 @@ class WorkbenchTaskRunPreparer:
             context_artifacts["evidence_consumption_trajectory"],
         )
         _write_json(artifact_dir / "degraded_retrieval.json", context_artifacts["degraded_retrieval"])
-        _write_json(artifact_dir / "black_box_generation_policy.json", black_box_generation_policy)
-        _write_json(artifact_dir / "test_activity_contract.json", test_activity_contract)
+        if not is_v3_contract:
+            _write_json(artifact_dir / "black_box_generation_policy.json", black_box_generation_policy)
+            _write_json(artifact_dir / "test_activity_contract.json", test_activity_contract)
         _write_json(artifact_dir / "task_bundle.json", task_bundle)
         _write_json(
             artifact_dir / "run_snapshot_v3.json",
@@ -2589,7 +2654,7 @@ def build_executor_handoff_contract(
         if isinstance(workflow_contract.get("local_source_context"), dict)
         else {}
     )
-    return {
+    contract = {
         "contract_version": 1,
         "workflow": {
             "id": str(workflow_snapshot.get("id") or ""),
@@ -2634,7 +2699,6 @@ def build_executor_handoff_contract(
             )
             if step.get(field) is not None
         },
-        "test_activity_contract": dict(test_activity_contract or {}),
         "mcp": {
             "profile": str(step.get("mcp_profile") or ""),
             "availability": _mcp_execution_availability(
@@ -2680,6 +2744,12 @@ def build_executor_handoff_contract(
             ),
         },
     }
+    # Test Activity is a legacy specialist contract.  Its absence is meaningful
+    # for V3: an empty placeholder would still make downstream code infer that
+    # governance was requested.
+    if test_activity_contract is not None:
+        contract["test_activity_contract"] = dict(test_activity_contract)
+    return contract
 
 
 def _mcp_execution_availability(
@@ -4449,19 +4519,25 @@ def build_run_snapshot_v3(
     here and pinned to the bytes that were actually written before execution.
     Runtime status, retries and generated output deliberately stay outside it.
     """
+    is_v3_contract = _is_v3_compiled_contract(workflow_snapshot)
     component_paths = {
         "workflow_definition": "workflow_snapshot.json",
         "input_snapshot": "input_snapshot.json",
         "input_consumption": "input_consumption_snapshot.json",
         "execution_profile": "execution_profile.json",
         "network_policy": "network_policy.json",
-        "stage_specs": "stage_specs.json",
-        "artifact_contract": "artifact_contract_v3.json",
         "workflow_contract": "workflow_contract.json",
         "provider_capability": "provider_snapshot.json",
         "provider_readiness": "provider_readiness.json",
-        "quality_readiness": "quality_readiness.json",
     }
+    if is_v3_contract:
+        component_paths["v3_runtime_contract"] = "compiled_definition.json"
+    else:
+        component_paths.update({
+            "stage_specs": "stage_specs.json",
+            "artifact_contract": "artifact_contract_v3.json",
+            "quality_readiness": "quality_readiness.json",
+        })
     # The root task bundle is intentionally absent.  It is a compatibility
     # projection which receives scheduler/retry runtime state after prepare;
     # treating it as immutable made ordinary V2 attempts fail their own guard.
@@ -4512,6 +4588,8 @@ def refresh_run_snapshot_v3(artifact_dir: str | Path) -> dict[str, Any]:
         raise RuntimeError("cannot refresh V3 run snapshot without prepared task artifacts")
     if isinstance(task_bundle, dict) and isinstance(task_bundle.get("compiled_plan"), dict):
         _write_json(root / "compiled_plan.json", task_bundle["compiled_plan"])
+    if isinstance(task_bundle, dict) and isinstance(task_bundle.get("compiled_definition"), dict):
+        _write_json(root / "compiled_definition.json", task_bundle["compiled_definition"])
     prior_identity = existing.get("identity") if isinstance(existing, dict) else {}
     snapshot = build_run_snapshot_v3(
         artifact_dir=root,
@@ -4571,15 +4649,18 @@ def _read_json(path: Path) -> Any:
 
 def _prepared_task_run_from_payload(payload: dict[str, Any]) -> PreparedWorkbenchTaskRun:
     runtime = payload.get("runtime") if isinstance(payload.get("runtime"), dict) else {}
+    workflow_snapshot = dict(payload.get("workflow_snapshot") or {})
+    task_bundle = dict(payload.get("task_bundle") or {})
+    is_v3_contract = _is_v3_compiled_contract(workflow_snapshot, task_bundle=task_bundle)
     return PreparedWorkbenchTaskRun(
         task_run_id=str(payload["task_run_id"]),
         workflow_id=str(payload["workflow_id"]),
         workspace_id=str(payload["workspace_id"]),
         repo_path=str(payload["repo_path"]),
         artifact_dir=str(payload["artifact_dir"]),
-        workflow_snapshot=dict(payload.get("workflow_snapshot") or {}),
+        workflow_snapshot=workflow_snapshot,
         input_snapshot=dict(payload.get("input_snapshot") or {}),
-        task_bundle=dict(payload.get("task_bundle") or {}),
+        task_bundle=task_bundle,
         task_id=str(payload.get("task_id") or ""),
         attempt_number=max(0, int(payload.get("attempt_number") or 0)),
         parent_task_run_id=str(payload.get("parent_task_run_id") or ""),
@@ -4587,10 +4668,23 @@ def _prepared_task_run_from_payload(payload: dict[str, Any]) -> PreparedWorkbenc
             payload.get("execution_status")
             or payload.get("status")
             or runtime.get("status")
-            or "prepared"
+            or ("queued" if is_v3_contract else "prepared"),
+            v3=is_v3_contract,
         ),
         quality_status=_normalized_quality_status(payload.get("quality_status")),
-        delivery_status=_normalized_delivery_status(payload.get("delivery_status")),
+        artifact_validation_status=_normalized_artifact_validation_status(
+            payload.get("artifact_validation_status"),
+            default="not_started" if is_v3_contract else "not_checked",
+            v3=is_v3_contract,
+        ),
+        governance_status=_normalized_governance_status(
+            payload.get("governance_status"),
+            default="not_requested" if is_v3_contract else "not_started",
+            v3=is_v3_contract,
+        ),
+        delivery_status=_normalized_delivery_status(
+            payload.get("delivery_status"), v3=is_v3_contract
+        ),
         started_at=str(payload.get("started_at") or runtime.get("started_at") or ""),
         completed_at=str(payload.get("completed_at") or runtime.get("completed_at") or ""),
         agent_runs=[
@@ -4615,8 +4709,12 @@ def _normalized_quality_status(value: Any) -> str:
     return status if status in {"not_checked", "pending", "passed", "warning", "blocked"} else "not_checked"
 
 
-def _normalized_execution_status(value: Any) -> str:
+def _normalized_execution_status(value: Any, *, v3: bool = False) -> str:
     status = str(value or "").strip().lower()
+    if v3:
+        return status if status in {
+            "queued", "running", "waiting_for_input", "completed", "failed", "cancelled", "timed_out"
+        } else "queued"
     if status in {"completed_empty", "needs_review", "needs_rework", "ok", "ready", "success"}:
         return "completed"
     if status in {"invalid", "error"}:
@@ -4626,11 +4724,58 @@ def _normalized_execution_status(value: Any) -> str:
     } else "prepared"
 
 
-def _normalized_delivery_status(value: Any) -> str:
+def _normalized_delivery_status(value: Any, *, v3: bool = False) -> str:
     status = str(value or "").strip()
-    if status == "pending" or not status:
+    if v3:
+        return status if status in {"pending", "ready", "blocked"} else "pending"
+    if not status:
         return "none"
     return status if status in {"none", "partial", "complete"} else "none"
+
+
+def _normalized_artifact_validation_status(
+    value: Any, *, default: str, v3: bool = False
+) -> str:
+    status = str(value or "").strip()
+    if v3:
+        return status if status in {
+            "not_requested", "not_started", "running", "passed", "failed"
+        } else default
+    return status if status in {
+        "not_checked", "not_started", "pending", "passed", "warning", "blocked", "failed"
+    } else default
+
+
+def _normalized_governance_status(
+    value: Any, *, default: str, v3: bool = False
+) -> str:
+    status = str(value or "").strip()
+    if v3:
+        return status if status in {
+            "not_requested", "running", "passed", "warning", "failed", "waived"
+        } else default
+    return status if status in {
+        "not_requested", "not_started", "pending", "passed", "warning", "blocked", "failed"
+    } else default
+
+
+def _is_v3_compiled_contract(
+    workflow_snapshot: dict[str, Any], *, task_bundle: dict[str, Any] | None = None
+) -> bool:
+    bundle = task_bundle or {}
+    raw = bundle.get("compiled_contract_version")
+    if raw is None:
+        raw = workflow_snapshot.get("compiled_contract_version")
+    if raw is None:
+        for key in ("compiled_definition", "compiled_plan"):
+            candidate = bundle.get(key)
+            if isinstance(candidate, dict) and candidate.get("compiled_contract_version") is not None:
+                raw = candidate.get("compiled_contract_version")
+                break
+    # Any explicit frozen contract uses the V3 status axes, including unknown
+    # versions that the Runner will reject.  Treating an unsupported version as
+    # legacy would hide the fail-closed result behind old quality projections.
+    return raw is not None and raw != ""
 
 
 def _context_query_from_inputs(input_snapshot: dict[str, Any]) -> str:
