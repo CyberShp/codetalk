@@ -95,10 +95,9 @@ async def create_llm_client(
     if model_override:
         model = model_override
 
-    # The saved model configuration is an explicit inference approval. The
-    # client enforces the narrower request-path policy immediately before I/O;
-    # do not reject it here based on its resolved address or a duplicate host
-    # allow-list.
+    # A saved model selects an adapter/model, but never expands deployment
+    # egress policy. The client validates the configured endpoint against the
+    # deployment allow-list and narrow inference route immediately before I/O.
 
     proxy_url, ssl_cert, force_direct = _resolve_proxy(general)
 

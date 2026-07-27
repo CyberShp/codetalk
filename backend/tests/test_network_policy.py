@@ -158,7 +158,7 @@ def test_runtime_policy_blocks_official_model_endpoint_before_client_connection(
         require_runtime_url("https://api.openai.com/v1/chat/completions")
 
 
-def test_configured_model_inference_uses_the_narrow_saved_model_route(monkeypatch):
+def test_configured_model_inference_requires_deployment_host_approval(monkeypatch):
     from app.services.network_policy import (
         NetworkEgressBlocked,
         require_configured_model_request_url,
@@ -167,9 +167,20 @@ def test_configured_model_inference_uses_the_narrow_saved_model_route(monkeypatc
     monkeypatch.setattr("app.services.network_policy.settings.intranet_network_mode", True)
     monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_hosts", [])
 
+    with pytest.raises(NetworkEgressBlocked, match="host_not_allowlisted"):
+        require_configured_model_request_url("https://api.deepseek.com/v1/chat/completions")
+
+    monkeypatch.setattr(
+        "app.services.network_policy.settings.intranet_allowed_hosts",
+        ["api.deepseek.com"],
+    )
+    monkeypatch.setattr(
+        "app.services.network_policy.socket.getaddrinfo",
+        lambda *_args, **_kwargs: [(None, None, None, None, ("203.0.113.18", 443))],
+    )
     decision = require_configured_model_request_url("https://api.deepseek.com/v1/chat/completions")
     assert decision.allowed is True
-    assert decision.reason == "configured_and_approved_model_inference"
+    assert decision.reason == "approved_hostname"
 
     with pytest.raises(NetworkEgressBlocked, match="model_endpoint_path_forbidden"):
         require_configured_model_request_url("https://api.deepseek.com/v1/models")
