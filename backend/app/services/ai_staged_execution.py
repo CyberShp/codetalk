@@ -474,10 +474,23 @@ def _complete_verified_source_slices(
         symbol, function_start, function_end = span
         lines = source_text.splitlines()
         function_excerpt = "\n".join(lines[function_start - 1 : function_end])
-        if not function_excerpt or len(function_excerpt) > excerpt_limit:
+        if not function_excerpt:
             continue
-        item["start_line"] = function_start
-        item["end_line"] = function_end
+        excerpt_start = function_start
+        excerpt_end = function_end
+        if len(function_excerpt) > excerpt_limit:
+            bounded = _bounded_c_function_window(
+                lines,
+                function_start=function_start,
+                function_end=function_end,
+                anchor_line=anchor_line,
+                excerpt_limit=excerpt_limit,
+            )
+            if bounded is None:
+                continue
+            excerpt_start, excerpt_end, function_excerpt = bounded
+        item["start_line"] = excerpt_start
+        item["end_line"] = excerpt_end
         item["excerpt"] = function_excerpt
         item["symbols"] = list(
             dict.fromkeys([symbol, *[str(value) for value in item.get("symbols") or []]])
@@ -493,6 +506,36 @@ def _complete_verified_source_slices(
         }
     )[:64]
     return result
+
+
+def _bounded_c_function_window(
+    lines: list[str],
+    *,
+    function_start: int,
+    function_end: int,
+    anchor_line: int,
+    excerpt_limit: int,
+) -> tuple[int, int, str] | None:
+    """Keep the anchor and nearby branch outcome inside a bounded C slice."""
+    start = min(max(function_start, anchor_line), function_end)
+    end = start
+    selected = [lines[start - 1]]
+    # Prefer following statements: for error/state guards, the externally
+    # visible response is commonly immediately after the state mutation.
+    while end < function_end:
+        candidate = "\n".join([*selected, lines[end]])
+        if len(candidate) > excerpt_limit:
+            break
+        selected.append(lines[end])
+        end += 1
+    while start > function_start:
+        candidate = "\n".join([lines[start - 2], *selected])
+        if len(candidate) > excerpt_limit:
+            break
+        start -= 1
+        selected.insert(0, lines[start - 1])
+    excerpt = "\n".join(selected)
+    return (start, end, excerpt) if excerpt else None
 
 
 def _expand_verified_source_anchors(

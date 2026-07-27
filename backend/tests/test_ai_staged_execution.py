@@ -8038,6 +8038,52 @@ def test_source_analysis_context_keeps_only_bounded_verified_inputs():
     assert len(serialized) < 12000
 
 
+def test_source_analysis_context_keeps_anchor_window_when_function_exceeds_budget(tmp_path):
+    source = tmp_path / "lib" / "iscsi" / "login.c"
+    source.parent.mkdir(parents=True)
+    body = ["static int login_handler(void)", "{"]
+    body.extend(f"\tint filler_{index} = {index};" for index in range(120))
+    body.extend([
+        "\tconn->login_timer = NULL;",
+        "\treturn send_login_response(conn);",
+        "}",
+    ])
+    source_text = "\n".join(body) + "\n"
+    source.write_text(source_text, encoding="utf-8")
+    timer_line = next(
+        index + 1 for index, line in enumerate(body) if "login_timer = NULL" in line
+    )
+    context = {
+        "repo_path": str(tmp_path),
+        "source_context": {
+            "repo_path": str(tmp_path),
+            "files": [{
+                "file_path": "lib/iscsi/login.c",
+                "classification": "source",
+                "start_line": timer_line,
+                "end_line": timer_line,
+                "excerpt": "conn->login_timer = NULL;",
+                "symbols": ["login_handler"],
+                "matched_terms": ["login"],
+                "sha256": hashlib.sha256(source_text.encode()).hexdigest(),
+            }],
+        },
+    }
+
+    compact = build_source_analysis_context(
+        plan={"original_user_request": "分析 iSCSI login", "target": "iSCSI login"},
+        staged_context=context,
+        max_files=1,
+        excerpt_chars=300,
+        max_evidence_anchors=1,
+    )
+
+    excerpt = compact["files"][0]["excerpt"]
+    assert len(excerpt) <= 300
+    assert "conn->login_timer = NULL;" in excerpt
+    assert "send_login_response(conn);" in excerpt
+
+
 def test_source_analysis_context_adds_verified_anchors_within_selected_files(
     tmp_path,
 ):
