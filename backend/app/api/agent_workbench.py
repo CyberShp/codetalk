@@ -147,6 +147,7 @@ class AgentRunCreate(BaseModel):
     workflow_snapshot: dict[str, Any] = Field(default_factory=dict)
     task_bundle: dict[str, Any] = Field(default_factory=dict)
     mcp_profile: str = ""
+    requires_network: bool = True
 
 
 class RawOutputCreate(BaseModel):
@@ -2426,6 +2427,7 @@ async def create_agent_run(payload: AgentRunCreate) -> dict[str, Any]:
             workflow_snapshot=payload.workflow_snapshot,
             task_bundle=payload.task_bundle,
             mcp_profile=payload.mcp_profile,
+            requires_network=payload.requires_network,
         )
     )
     return asdict(run)

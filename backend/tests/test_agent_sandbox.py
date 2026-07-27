@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -43,8 +44,10 @@ def test_macos_sandbox_wraps_command_and_persists_audit(tmp_path):
 
     assert launch.status == "active"
     assert launch.wrapper[:2] == ["/usr/bin/sandbox-exec", "-f"]
-    profile_path = artifact_dir / "sandbox-profile.sb"
-    assert launch.wrapper[2] == str(profile_path)
+    profile_path = Path(launch.wrapper[2])
+    assert profile_path.exists()
+    assert artifact_dir.resolve() not in profile_path.resolve().parents
+    assert profile_path.stat().st_mode & 0o777 == 0o600
     profile = profile_path.read_text(encoding="utf-8")
     assert "(deny default)" in profile
     assert "(allow file-read*)\n" not in profile

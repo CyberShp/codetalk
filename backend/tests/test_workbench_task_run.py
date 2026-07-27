@@ -2323,6 +2323,7 @@ def test_agent_runtime_timeout_limits_are_frozen_into_task_run(tmp_path, monkeyp
             "prompt_transport": "codex_exec_json",
             "timeout_seconds": 900,
             "idle_complete_seconds": 5,
+            "requires_network": False,
             "enabled": True,
         } if runtime_id == "default-codex" else None,
     )
@@ -2362,6 +2363,7 @@ def test_agent_runtime_timeout_limits_are_frozen_into_task_run(tmp_path, monkeyp
     assert result.agent_runs[0]["timeout_seconds"] == 900
     assert result.agent_runs[0]["idle_timeout_seconds"] == 900
     assert result.agent_runs[0]["prompt_transport"] == "codex_exec_json"
+    assert result.agent_runs[0]["requires_network"] is False
     agent_run = json.loads(
         Path(
             result.artifact_dir,
@@ -2373,6 +2375,7 @@ def test_agent_runtime_timeout_limits_are_frozen_into_task_run(tmp_path, monkeyp
     assert agent_run["timeout_seconds"] == 900
     assert agent_run["idle_timeout_seconds"] == 900
     assert agent_run["prompt_transport"] == "codex_exec_json"
+    assert agent_run["requires_network"] is False
 
 
 def test_legacy_claude_provider_uses_enabled_managed_runtime(tmp_path, monkeypatch):

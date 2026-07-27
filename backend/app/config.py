@@ -84,6 +84,21 @@ class Settings(BaseSettings):
     external_agent_enforce_readonly_cli: bool = True
     external_agent_sandbox_mode: str = "auto"  # auto | required | off
     external_agent_sandbox_allow_network: bool = True
+    # Network policy V2 is deployment-owned.  ``network_mode`` is optional so
+    # existing deployments can keep their boolean setting during migration.
+    # The effective default remains intranet; ``intranet_network_mode`` is not
+    # a database field and is retained solely as a compatibility input.
+    network_policy_v2_enabled: bool = True
+    network_mode: Literal["developer", "intranet", "strict_compliance"] | None = None
+    egress_boundary: Literal[
+        "none", "approved_proxy_gateway", "deployment_egress_policy"
+    ] = "none"
+    approved_proxy_url: str = ""
+    approved_no_proxy: str = ""
+    approved_ca_bundle_path: str = ""
+    approved_proxy_config_id: str = ""
+    deployment_egress_policy_id: str = ""
+    strict_compliance_os_network_isolation_enabled: bool = False
     intranet_network_mode: bool = True
     intranet_network_policy_id: str = "corp-approved-v1"
     intranet_allowed_hosts: list[str] = Field(default_factory=list)
@@ -268,6 +283,13 @@ class Settings(BaseSettings):
         if not self.tool_repos_base_path:
             self.tool_repos_base_path = self.repos_base_path
         return self
+
+    @property
+    def effective_network_mode(self) -> Literal["developer", "intranet", "strict_compliance"]:
+        """Resolve the new deployment mode without rewriting legacy settings."""
+        if self.network_mode is not None:
+            return self.network_mode
+        return "intranet" if self.intranet_network_mode else "developer"
 
     @property
     def cors_origins_list(self) -> list[str]:

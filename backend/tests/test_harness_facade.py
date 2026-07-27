@@ -104,6 +104,23 @@ def test_agent_harness_facade_runs_local_adapter_and_collects_normalized_result(
     assert any(payload["harness_event_kind"] == "completed" for _, payload in events)
 
 
+def test_agent_harness_facade_freezes_explicit_offline_requirement(tmp_path):
+    import sys
+
+    from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
+
+    session = AgentHarnessFacade(tmp_path / "artifacts").prepare(HarnessRunRequest(
+        provider="offline-test-agent",
+        command=[sys.executable, "-c", "print('ready')"],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "workflow"},
+        task_bundle={"required_artifacts": []},
+        requires_network=False,
+    ))
+
+    assert session.requires_network is False
+
+
 def test_agent_harness_facade_keeps_product_contract_when_adapter_is_replaced(tmp_path):
     """An SDK adapter must not own CodeTalk's public result or artifact semantics."""
     from types import SimpleNamespace

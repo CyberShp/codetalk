@@ -41,7 +41,6 @@ async def test_managed_agent_probe_fails_closed_before_model_request_without_cer
 
     monkeypatch.setattr(agent_cli_bridge.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
     monkeypatch.setattr(agent_cli_bridge, "_probe_codex_model_in_runtime_sandbox", fake_model_probe)
-    monkeypatch.setattr(agent_cli_bridge, "agent_network_is_permitted", lambda: False)
     monkeypatch.setattr(agent_cli_bridge.settings, "intranet_network_mode", True)
 
     result = await agent_cli_bridge.probe_agent_runtime({
@@ -67,7 +66,6 @@ async def test_managed_agent_run_fails_before_process_spawn_without_certified_eg
         raise AssertionError("process must not start")
 
     monkeypatch.setattr(agent_cli_bridge.asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
-    monkeypatch.setattr(agent_cli_bridge, "agent_network_is_permitted", lambda: False)
     monkeypatch.setattr(agent_cli_bridge.settings, "intranet_network_mode", True)
 
     with pytest.raises(agent_cli_bridge.AgentRuntimeError, match="内网策略未批准 Agent 访问模型端点"):
@@ -105,6 +103,7 @@ async def test_intranet_stream_requires_os_sandbox_before_starting_agent(monkeyp
             "prompt_transport": "stdin",
             "output_mode": "plain",
             "completion_mode": "process_exit",
+            "requires_network": False,
         },
         prompt="检查内网 sandbox 传递",
         cwd=str(tmp_path),

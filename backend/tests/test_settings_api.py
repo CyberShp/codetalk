@@ -258,7 +258,7 @@ async def test_llm_connection_anthropic_success(client):
     mock_client.close = AsyncMock()
 
     with patch(
-        "app.llm.anthropic.AnthropicClient", return_value=mock_client
+        "app.llm.factory.AnthropicClient", return_value=mock_client
     ):
         response = await client.post("/api/settings/llm/test", json=_LLM)
 
@@ -275,7 +275,7 @@ async def test_llm_connection_openai_success(client):
 
     payload = {**_LLM, "api_type": "openai_compat"}
     with patch(
-        "app.llm.openai_compat.OpenAICompatClient", return_value=mock_client
+        "app.llm.factory.OpenAICompatClient", return_value=mock_client
     ):
         response = await client.post("/api/settings/llm/test", json=payload)
 
@@ -285,7 +285,7 @@ async def test_llm_connection_openai_success(client):
 
 async def test_llm_connection_failure(client):
     with patch(
-        "app.llm.anthropic.AnthropicClient",
+        "app.llm.factory.AnthropicClient",
         side_effect=ConnectionError("refused"),
     ):
         response = await client.post("/api/settings/llm/test", json=_LLM)
@@ -293,14 +293,15 @@ async def test_llm_connection_failure(client):
     assert response.status_code == 200
     data = response.json()
     assert data["success"] is False
-    assert "refused" in data["message"]
+    assert data["message"] == "模型连接失败。请检查模型配置或联系管理员。"
+    assert data["code"] == "model_connection_failed"
 
 
 async def test_llm_connection_failure_redacts_api_key_from_message(client):
     secret = "sk-settings-secret-123"
     payload = {**_LLM, "api_key": secret}
     with patch(
-        "app.llm.anthropic.AnthropicClient",
+        "app.llm.factory.AnthropicClient",
         side_effect=ConnectionError(
             f"request failed Authorization: Bearer {secret}; api_key={secret}"
         ),
@@ -310,9 +311,9 @@ async def test_llm_connection_failure_redacts_api_key_from_message(client):
     assert response.status_code == 200
     data = response.json()
     assert data["success"] is False
-    assert "request failed" in data["message"]
+    assert data["message"] == "模型连接失败。请检查模型配置或联系管理员。"
+    assert data["code"] == "model_connection_failed"
     assert secret not in data["message"]
-    assert "<redacted>" in data["message"]
 
 
 async def test_llm_connection_unknown_api_type(client):
@@ -320,10 +321,16 @@ async def test_llm_connection_unknown_api_type(client):
     response = await client.post("/api/settings/llm/test", json=payload)
     assert response.status_code == 200
     assert response.json()["success"] is False
-    assert "未知" in response.json()["message"]
+    assert response.json()["message"] == "不支持的模型接口类型。请在模型设置中选择受支持的接口类型。"
+    assert response.json()["code"] == "unsupported_api_type"
 
 
-async def test_llm_connection_uses_proxy_settings(client, db):
+async def test_llm_connection_uses_only_deployment_proxy_settings(client, db, monkeypatch):
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "approved_proxy_url", "http://deployment-proxy:8080")
+    monkeypatch.setattr(settings, "approved_proxy_config_id", "proxy-prod-1")
+    monkeypatch.setattr(settings, "approved_ca_bundle_path", "/etc/codetalk/corp-ca.pem")
     await client.put(
         "/api/settings/general",
         json={
@@ -340,14 +347,14 @@ async def test_llm_connection_uses_proxy_settings(client, db):
     mock_client.close = AsyncMock()
 
     with patch(
-        "app.llm.anthropic.AnthropicClient", return_value=mock_client
+        "app.llm.factory.AnthropicClient", return_value=mock_client
     ) as mock_cls:
         response = await client.post("/api/settings/llm/test", json=_LLM)
 
     assert response.status_code == 200
     call_kwargs = mock_cls.call_args[1]
-    assert call_kwargs["proxy_url"] == "http://proxy:8080"
-    assert call_kwargs["ssl_cert_path"] == "/path/to/cert.pem"
+    assert call_kwargs["proxy_url"] == "http://deployment-proxy:8080"
+    assert call_kwargs["ssl_cert_path"] == "/etc/codetalk/corp-ca.pem"
 
 
 # ---------------------------------------------------------------------------

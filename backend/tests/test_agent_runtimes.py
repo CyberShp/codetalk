@@ -59,6 +59,26 @@ async def _seed_workspace(
 
 
 class TestAgentRuntimes:
+    async def test_agent_runtime_persists_network_requirement_with_fail_closed_default(self, sqlite_db):
+        app = _test_app(sqlite_db)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            created = await client.post(
+                "/api/settings/agent-runtimes",
+                json={"name": "Network default", "command": sys.executable},
+            )
+
+            assert created.status_code == 201
+            runtime = created.json()
+            assert runtime["requires_network"] is True
+
+            updated = await client.put(
+                f"/api/settings/agent-runtimes/{runtime['id']}",
+                json={"requires_network": False},
+            )
+
+        assert updated.status_code == 200
+        assert updated.json()["requires_network"] is False
+
     async def test_crud_agent_runtime_keeps_command_and_args_separate(self, sqlite_db):
         app = _test_app(sqlite_db)
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -6412,7 +6432,9 @@ class TestAgentRuntimes:
             }
         )
 
-        assert result == {"success": True, "message": "opencode ok"}
+        assert result["success"] is True
+        assert result["message"] == "opencode ok"
+        assert "network_policy" in result
         assert captured["command"] == "C:/Users/me/AppData/Roaming/npm/opencode.cmd"
         assert captured["args"] == ["run", "--version"]
 
@@ -6489,10 +6511,9 @@ class TestAgentRuntimes:
             "prompt_transport": "codex_exec_json",
         })
 
-        assert result == {
-            "success": False,
-            "message": "Codex 可启动，但当前模型不受本机 CLI 支持。",
-        }
+        assert result["success"] is False
+        assert result["message"] == "Codex 可启动，但当前模型不受本机 CLI 支持。"
+        assert "network_policy" in result
 
     async def test_codex_readiness_probe_uses_an_isolated_codex_home(self, monkeypatch, tmp_path):
         from app.services import agent_cli_bridge
@@ -6783,7 +6804,9 @@ class TestAgentRuntimes:
             "prompt_transport": "claude_print_arg",
         })
 
-        assert result == {"success": False, "message": "wrapper readiness failed"}
+        assert result["success"] is False
+        assert result["message"] == "wrapper readiness failed"
+        assert "network_policy" in result
         assert captured["runtime"]["args"] == ["code"]
 
     async def test_claude_readiness_probe_rejects_success_without_expected_marker(self):

@@ -7,6 +7,7 @@ import type {
   LLMConfigCreate,
   LLMConfigUpdate,
   GeneralSettings,
+  DeploymentNetworkPolicy,
   AgentRuntime,
   AgentRuntimeCreate,
   AgentProviderSettings,
@@ -381,6 +382,9 @@ export const api = {
       }),
 
     getGeneral: () => request<GeneralSettings>("/api/settings/general"),
+
+    getNetworkPolicy: () =>
+      request<DeploymentNetworkPolicy>("/api/settings/network-policy"),
 
     updateGeneral: (data: GeneralSettings) =>
       request<GeneralSettings>("/api/settings/general", {

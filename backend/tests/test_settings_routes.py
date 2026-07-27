@@ -83,7 +83,7 @@ async def test_settings_llm_test_route_uses_current_client_contract(client):
     mock_client.health_check = AsyncMock(return_value=(True, "route connected"))
     mock_client.close = AsyncMock()
 
-    with patch("app.llm.openai_compat.OpenAICompatClient", return_value=mock_client) as mock_cls:
+    with patch("app.llm.factory.OpenAICompatClient", return_value=mock_client) as mock_cls:
         response = await client.post("/api/settings/llm/test", json=_CHAT_LLM)
 
     assert response.status_code == 200

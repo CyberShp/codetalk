@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator
 
@@ -14,13 +15,34 @@ from app.llm.base import (
     current_finish_reason,
 )
 from app.services.network_policy import (
-    require_configured_model_request_url,
+    NetworkEgressBlocked,
     require_runtime_model_request_url,
 )
 
 logger = logging.getLogger(__name__)
 
 _ANTHROPIC_VERSION = "2023-06-01"
+
+
+def _runtime_network_error(error: Exception) -> RuntimeError:
+    """Translate transport failures without copying sensitive endpoint details."""
+    if isinstance(error, NetworkEgressBlocked):
+        match = re.search(r"([a-z][a-z0-9_]+)$", str(error))
+        code = match.group(1) if match else "network_policy_blocked"
+        return RuntimeError(
+            "内网部署策略未批准该模型端点，请联系管理员配置批准的模型服务后重试。"
+            f"技术代码：{code}"
+        )
+    if isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 403:
+        return RuntimeError(
+            "模型服务拒绝访问，请检查部署批准的模型地址、代理和凭据。技术代码：http_403"
+        )
+    text = str(error).lower()
+    if isinstance(error, httpx.ProxyError) or "proxy" in text:
+        return RuntimeError("批准代理连接失败，请联系管理员检查部署代理配置。技术代码：approved_proxy_connection_failed")
+    if "certificate" in text or "cert_verify" in text or "ssl" in text:
+        return RuntimeError("企业 CA 证书校验失败，请联系管理员配置部署 CA 证书。技术代码：tls_ca_verification_failed")
+    return RuntimeError("模型连接失败，请检查模型配置或联系管理员。技术代码：model_connection_failed")
 
 
 class AnthropicClient(BaseLLMClient):
@@ -118,36 +140,37 @@ class AnthropicClient(BaseLLMClient):
         self._require_approved_model_endpoint(url)
         logger.info("Anthropic streaming call: model=%s", self._model)
 
-        async with self._client.stream("POST", url, headers=headers, json=payload) as resp:
-            resp.raise_for_status()
-            current_event: str | None = None
-            async for line in resp.aiter_lines():
-                if line.startswith("event: "):
-                    current_event = line[7:].strip()
-                elif line.startswith("data: ") and current_event == "content_block_delta":
-                    try:
-                        data = json.loads(line[6:])
-                        delta = data.get("delta", {})
-                        if delta.get("type") == "text_delta":
-                            text = delta.get("text", "")
-                            if text:
-                                yield text
-                    except json.JSONDecodeError:
-                        continue
-                elif line.startswith("data: ") and current_event == "message_delta":
-                    # Anthropic reports stop_reason on the message_delta event;
-                    # "max_tokens" is the equivalent of OpenAI's "length" (P1).
-                    try:
-                        data = json.loads(line[6:])
-                        stop = (data.get("delta") or {}).get("stop_reason")
-                        if stop:
-                            current_finish_reason.set(
-                                "length" if stop == "max_tokens" else str(stop)
-                            )
-                    except json.JSONDecodeError:
-                        continue
-                elif not line:
-                    current_event = None
+        try:
+            async with self._client.stream("POST", url, headers=headers, json=payload) as resp:
+                resp.raise_for_status()
+                current_event: str | None = None
+                async for line in resp.aiter_lines():
+                    if line.startswith("event: "):
+                        current_event = line[7:].strip()
+                    elif line.startswith("data: ") and current_event == "content_block_delta":
+                        try:
+                            data = json.loads(line[6:])
+                            delta = data.get("delta", {})
+                            if delta.get("type") == "text_delta":
+                                text = delta.get("text", "")
+                                if text:
+                                    yield text
+                        except json.JSONDecodeError:
+                            continue
+                    elif line.startswith("data: ") and current_event == "message_delta":
+                        try:
+                            data = json.loads(line[6:])
+                            stop = (data.get("delta") or {}).get("stop_reason")
+                            if stop:
+                                current_finish_reason.set(
+                                    "length" if stop == "max_tokens" else str(stop)
+                                )
+                        except json.JSONDecodeError:
+                            continue
+                    elif not line:
+                        current_event = None
+        except httpx.HTTPError as exc:
+            raise _runtime_network_error(exc) from exc
 
     async def _do_complete(
         self,
@@ -173,8 +196,11 @@ class AnthropicClient(BaseLLMClient):
         self._require_approved_model_endpoint(url)
         logger.info("Anthropic API call: model=%s, max_tokens=%d", self._model, max_tokens)
 
-        resp = await self._client.post(url, headers=headers, json=payload)
-        resp.raise_for_status()
+        try:
+            resp = await self._client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise _runtime_network_error(exc) from exc
         data = resp.json()
 
         block_types = [block.get("type", "unknown") for block in data.get("content", [])]
@@ -247,7 +273,7 @@ class AnthropicClient(BaseLLMClient):
                 return False, f"服务可达，但认证或接口失败 (HTTP {resp.status_code})"
             return False, f"服务端错误 (HTTP {resp.status_code})"
         except Exception as exc:
-            logger.warning("Anthropic health check failed: %s", exc)
+            logger.warning("Anthropic health check failed: %s", type(exc).__name__)
             return False, f"连接失败: {exc}"
 
     async def close(self) -> None:
@@ -256,7 +282,7 @@ class AnthropicClient(BaseLLMClient):
 
     def _require_approved_model_endpoint(self, url: str) -> None:
         if self._enforce_network_policy:
-            if self._configured_model_endpoint:
-                require_configured_model_request_url(url)
-            else:
+            try:
                 require_runtime_model_request_url(url)
+            except NetworkEgressBlocked as exc:
+                raise _runtime_network_error(exc) from exc

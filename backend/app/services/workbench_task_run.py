@@ -634,6 +634,7 @@ class WorkbenchTaskRunPreparer:
                     prompt_transport=prompt_transport,
                     timeout_seconds=runtime_limits.get("timeout_seconds"),
                     idle_timeout_seconds=runtime_limits.get("idle_timeout_seconds"),
+                    requires_network=bool(runtime_limits.get("requires_network", True)),
                     run_id=f"{task_run_id}_{step_id}",
                 )
             )
@@ -3206,6 +3207,7 @@ def _agent_task_runtime_limits(provider: str) -> dict[str, Any]:
     return {
         "timeout_seconds": timeout_seconds,
         "idle_timeout_seconds": idle_timeout_seconds,
+        "requires_network": bool(runtime.get("requires_network", True)),
     }
 
 
@@ -3269,6 +3271,7 @@ def _agent_runtime_provider_snapshot_item(runtime: dict[str, Any]) -> dict[str, 
         },
         "command_hint_env": "",
         "prompt_transport": str(runtime.get("prompt_transport") or "stdin"),
+        "requires_network": bool(runtime.get("requires_network", True)),
         "capabilities": _agent_runtime_provider_capabilities(runtime),
         "credential_boundary": (
             "用户在设置页配置的 Agent Runtime 持有自身 CLI、环境变量和可能的 MCP 凭证；"
@@ -3279,6 +3282,7 @@ def _agent_runtime_provider_snapshot_item(runtime: dict[str, Any]) -> dict[str, 
             "configured_command_text": " ".join(command),
             "fallback_command_texts": [],
             "prompt_transport": str(runtime.get("prompt_transport") or "stdin"),
+            "requires_network": bool(runtime.get("requires_network", True)),
             "startup_probe_endpoint": f"/api/settings/agent-runtimes/{runtime.get('id')}/probe",
             "runtime_id": str(runtime.get("id") or ""),
             "working_dir_mode": str(runtime.get("working_dir_mode") or "project"),

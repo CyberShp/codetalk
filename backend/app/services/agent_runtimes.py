@@ -100,8 +100,8 @@ class AgentRuntimeStore:
                     (id, name, provider, command, args_json, prompt_transport, output_mode,
                      working_dir_mode, fixed_working_dir, env_json, health_command,
                      timeout_seconds, completion_mode, idle_complete_seconds, sentinel_text,
-                     session_persistence, resume_args_json, mcp_profile, enabled, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     session_persistence, resume_args_json, mcp_profile, requires_network, enabled, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     rid,
@@ -122,6 +122,7 @@ class AgentRuntimeStore:
                     payload["session_persistence"],
                     _json_dumps(payload["resume_args"]),
                     payload["mcp_profile"],
+                    int(payload["requires_network"]),
                     int(payload["enabled"]),
                     now,
                     now,
@@ -217,6 +218,7 @@ class AgentRuntimeStore:
             "session_persistence",
             "resume_args",
             "mcp_profile",
+            "requires_network",
             "enabled",
         ):
             if key in data:
@@ -305,6 +307,8 @@ class AgentRuntimeStore:
                 raise ValueError("resume_args 必须包含 {session_id} 或 {resume_session_id} 占位符")
         if not partial or "mcp_profile" in result:
             result["mcp_profile"] = str(result.get("mcp_profile") or "").strip()
+        if not partial or "requires_network" in result:
+            result["requires_network"] = bool(result.get("requires_network", True))
         if not partial or "enabled" in result:
             result["enabled"] = bool(result.get("enabled", True))
 
@@ -387,6 +391,7 @@ def _runtime_from_row(row: aiosqlite.Row | sqlite3.Row) -> dict[str, Any]:
     data["sentinel_text"] = data.get("sentinel_text") or ""
     data["session_persistence"] = data.get("session_persistence") or "none"
     data["mcp_profile"] = data.get("mcp_profile") or ""
+    data["requires_network"] = bool(data.get("requires_network", 1))
     stored_provider = str(data.get("provider") or "").strip().lower()
     inferred_provider = _infer_provider(
         command=str(data.get("command") or ""),

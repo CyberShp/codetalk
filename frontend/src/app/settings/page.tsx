@@ -26,6 +26,7 @@ import type {
   AgentRuntimeCreate,
   AgentProviderSettings,
   ApiType,
+  DeploymentNetworkPolicy,
 } from "@/lib/types";
 
 const EMPTY_LLM_FORM: LLMConfigCreate = {
@@ -68,6 +69,7 @@ const EMPTY_AGENT_RUNTIME_FORM: AgentRuntimeCreate = {
   sentinel_text: "",
   session_persistence: "none",
   resume_args: [],
+  requires_network: true,
   enabled: true,
 };
 
@@ -76,6 +78,143 @@ const MANAGED_AGENT_TRANSPORTS = new Set<AgentRuntimeCreate["prompt_transport"]>
   "codex_exec_json",
   "opencode_run_arg",
 ]);
+
+const NETWORK_MODE_LABEL: Record<DeploymentNetworkPolicy["mode"], string> = {
+  developer: "开发模式",
+  intranet: "内网模式",
+  strict_compliance: "严格合规模式",
+};
+
+const NETWORK_MODE_DESCRIPTION: Record<DeploymentNetworkPolicy["mode"], string> = {
+  developer: "部署允许开发环境直连；遥测、远程追踪和 Hosted MCP 仍由系统禁用。",
+  intranet: "外部访问必须经过管理员批准的企业出站边界，用户配置不能绕过部署策略。",
+  strict_compliance: "仅允许由部署强制隔离的出站路径，未满足边界条件的执行器会被阻断。",
+};
+
+const NETWORK_BOUNDARY_LABEL: Record<DeploymentNetworkPolicy["boundary"], string> = {
+  none: "未配置批准出站边界",
+  approved_proxy_gateway: "已批准企业代理网关",
+  deployment_egress_policy: "部署出站策略",
+};
+
+function networkReasonLabel(reason: string | null) {
+  const normalized = String(reason || "").trim();
+  const labels: Record<string, string> = {
+    boundary_not_configured: "尚未配置批准的出站边界",
+    approved_proxy_not_configured: "企业代理尚未由管理员配置",
+    deployment_egress_policy_missing: "部署出站策略尚未配置",
+    strict_compliance_os_network_isolation_missing: "严格合规模式缺少操作系统网络隔离",
+    intranet_agent_egress_not_enforced: "部署尚未确认 Agent 的受控出站边界",
+    intranet_egress_boundary_required: "尚未配置批准的 Agent 出站边界",
+    approved_proxy_configuration_missing: "企业代理地址或配置 ID 不完整",
+    strict_compliance_os_isolation_required: "严格合规模式尚未启用操作系统网络隔离",
+    strict_compliance_egress_boundary_required: "严格合规模式尚未配置精细出站边界",
+    legacy_intranet_egress_not_certified: "旧版内网配置尚未认证 Agent 出站边界",
+    legacy_sandbox_network_disabled: "旧版沙箱配置已禁止 Agent 访问网络",
+  };
+  return labels[normalized] || "部署策略当前不允许 CLI Agent 访问模型端点";
+}
+
+function deploymentStatus(value: boolean, ready = "已配置", missing = "未配置") {
+  return value ? ready : missing;
+}
+
+function userFacingLlmTestResult(message: string) {
+  if (/运行时出站策略拒绝|host_not_allowlisted|direct_address_not_allowlisted/.test(message)) {
+    return "内网部署策略未批准该模型端点，请联系管理员配置批准的模型服务后重试。";
+  }
+  return message;
+}
+
+function DeploymentNetworkPolicyPanel({ policy, error }: {
+  policy: DeploymentNetworkPolicy | null;
+  error: string | null;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const mode = policy ? NETWORK_MODE_LABEL[policy.mode] : "状态未知";
+
+  return (
+    <section className="mb-6 rounded-xl border border-outline-variant/20 bg-surface-container" aria-label="部署网络策略">
+      <button
+        type="button"
+        onClick={() => setExpanded((value) => !value)}
+        aria-expanded={expanded}
+        className="flex w-full items-center justify-between gap-3 px-4 py-3 text-left"
+      >
+        <span>
+          <span className="flex items-center gap-2 text-sm font-semibold text-on-surface">
+            <ShieldCheck size={17} />
+            部署网络策略
+          </span>
+          <span className="mt-1 block text-xs text-on-surface-variant">
+            管理员部署配置，只读展示，不能由当前用户修改或伪造批准。
+          </span>
+        </span>
+        <span className="flex items-center gap-2 text-xs text-on-surface-variant">
+          {mode}
+          {expanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+        </span>
+      </button>
+
+      {expanded && (
+        <div data-testid="deployment-network-policy" className="border-t border-outline-variant/15 px-4 py-4">
+          {policy ? (
+            <div className="space-y-3 text-sm">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div>
+                  <p className="font-medium text-on-surface">{NETWORK_MODE_LABEL[policy.mode]}</p>
+                  <p className="mt-1 max-w-3xl text-xs leading-5 text-on-surface-variant">
+                    {NETWORK_MODE_DESCRIPTION[policy.mode]}
+                  </p>
+                </div>
+                <span className="rounded-full border border-outline-variant/20 bg-surface px-2.5 py-1 font-data text-[11px] text-on-surface-variant">
+                  策略 ID：{policy.policy_id || "未提供"}
+                </span>
+              </div>
+
+              <div className="grid gap-x-6 gap-y-3 border-t border-outline-variant/15 pt-3 sm:grid-cols-2 xl:grid-cols-3">
+                <PolicyStatus label="模型访问" value={policy.boundary === "none" ? "由批准 Provider Adapter 单独判断" : "由部署批准边界管理"} detail="CLI Agent 的网络状态不会把内置模型误报为不可用。" />
+                <PolicyStatus label="CLI Agent" value={policy.cli_network_ready ? "可使用批准网络路径" : "CLI Agent 已被部署策略阻断"} detail={policy.cli_network_ready ? "探测与实际运行使用同一部署策略。" : `${networkReasonLabel(policy.cli_block_reason)}。${policy.cli_remediation || "请联系管理员配置批准边界后重试。"}`} tone={policy.cli_network_ready ? "ok" : "warn"} />
+                <PolicyStatus label="企业代理" value={deploymentStatus(policy.approved_proxy_configured)} detail={policy.approved_proxy_configured ? `配置 ID：${policy.approved_proxy_config_id || "未提供"}` : "未显示代理地址或凭据。"} tone={policy.approved_proxy_configured ? "ok" : "neutral"} />
+                <PolicyStatus label="代理绕过规则" value={deploymentStatus(policy.approved_no_proxy)} detail="仅显示是否已由部署配置，不展示内部域名规则。" tone={policy.approved_no_proxy ? "ok" : "neutral"} />
+                <PolicyStatus label="CA 证书" value={deploymentStatus(policy.approved_ca_configured)} detail={policy.approved_ca_configured ? "已由部署注入，不展示证书路径。" : "如企业代理使用私有 CA，请联系管理员配置。"} tone={policy.approved_ca_configured ? "ok" : "neutral"} />
+                <PolicyStatus label="出站边界" value={NETWORK_BOUNDARY_LABEL[policy.boundary]} detail={policy.deployment_egress_policy_id ? `策略 ID：${policy.deployment_egress_policy_id}` : "未显示网络地址或规则内容。"} tone={policy.boundary === "none" ? "warn" : "ok"} />
+                <PolicyStatus label="遥测" value={policy.telemetry === "disabled" ? "已禁用" : "受部署策略管理"} detail="CodeTalk 不会自行向第三方发送遥测。" />
+                <PolicyStatus label="远程追踪" value={policy.remote_tracing === "disabled" ? "已禁用" : "受部署策略管理"} detail="不启用外部追踪服务。" />
+                <PolicyStatus label="Hosted MCP" value={policy.hosted_mcp === "forbidden" ? "已禁止" : "受部署策略管理"} detail="不连接第三方托管 MCP；本地 MCP 不受影响。" />
+              </div>
+              {policy.mode === "intranet" && (
+                <p className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-on-surface">
+                  内网模式下，下面的通用模型代理仅用于模型客户端配置，最终受部署批准策略约束。
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-sm text-on-surface">
+              无法读取部署网络策略。{error || "请确认后端服务与管理员部署配置后刷新。"}
+            </div>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function PolicyStatus({ label, value, detail, tone = "neutral" }: {
+  label: string;
+  value: string;
+  detail: string;
+  tone?: "ok" | "warn" | "neutral";
+}) {
+  const color = tone === "ok" ? "text-emerald-700" : tone === "warn" ? "text-amber-700" : "text-on-surface";
+  return (
+    <div className="min-w-0">
+      <p className="text-xs text-on-surface-variant">{label}</p>
+      <p className={`mt-1 text-sm font-medium ${color}`}>{value}</p>
+      <p className="mt-1 text-xs leading-5 text-on-surface-variant">{detail}</p>
+    </div>
+  );
+}
 
 const agentTransportLabel = (transport: AgentRuntimeCreate["prompt_transport"]) => {
   switch (transport) {
@@ -228,6 +367,9 @@ function AgentRuntimeCard({
           <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[11px] text-on-surface-variant">
             {agentOutputModeLabel(runtime.output_mode)}
           </span>
+          <span className="rounded-full bg-surface-container-high px-2 py-0.5 text-[11px] text-on-surface-variant">
+            {runtime.requires_network !== false ? "联网 Agent" : "离线 Agent"}
+          </span>
           {runtime.session_persistence === "resume_args" && (
             <span className="rounded-full bg-primary-container px-2 py-0.5 text-[11px] text-on-primary-container">
               自动续接会话
@@ -302,6 +444,8 @@ export default function SettingsPage() {
   const [showAgentAdvanced, setShowAgentAdvanced] = useState(false);
   const [showWorkbenchCliSettings, setShowWorkbenchCliSettings] = useState(false);
   const [showLlmSettings, setShowLlmSettings] = useState(false);
+  const [deploymentNetworkPolicy, setDeploymentNetworkPolicy] = useState<DeploymentNetworkPolicy | null>(null);
+  const [deploymentNetworkPolicyError, setDeploymentNetworkPolicyError] = useState<string | null>(null);
   const [customProvidersJson, setCustomProvidersJson] = useState("[]");
   const [savingAgentProviders, setSavingAgentProviders] = useState(false);
   const deletingAgentRuntimeRef = useRef<Set<string>>(new Set());
@@ -310,7 +454,7 @@ export default function SettingsPage() {
     setLoading(true);
     setError(null);
     try {
-      const [llmList, generalData, agentProviderData, runtimeData] = await Promise.all([
+      const [llmList, generalData, agentProviderData, runtimeData, networkPolicyResult] = await Promise.all([
         api.settings.listLLM(),
         api.settings.getGeneral().catch(
           () =>
@@ -327,11 +471,19 @@ export default function SettingsPage() {
           () => ({ ...DEFAULT_AGENT_PROVIDER_SETTINGS }) as AgentProviderSettings,
         ),
         api.settings.listAgentRuntimes().catch(() => ({ items: [] as AgentRuntime[] })),
+        api.settings.getNetworkPolicy()
+          .then((policy) => ({ policy, error: null as string | null }))
+          .catch((networkError: unknown) => ({
+            policy: null,
+            error: networkError instanceof Error ? networkError.message : "请检查后端部署配置。",
+          })),
       ]);
       setConfigs(llmList);
       setGeneral(generalData);
       setAgentProviders(agentProviderData);
       setAgentRuntimes(runtimeData.items);
+      setDeploymentNetworkPolicy(networkPolicyResult.policy);
+      setDeploymentNetworkPolicyError(networkPolicyResult.error);
       setCustomProvidersJson(JSON.stringify(agentProviderData.external_agent_custom_providers, null, 2));
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "加载设置失败");
@@ -448,9 +600,9 @@ export default function SettingsPage() {
     setTestResult(null);
     try {
       const result = await api.settings.testLLM(form);
-      setTestResult(result.message);
+      setTestResult(userFacingLlmTestResult(result.message));
     } catch (err: unknown) {
-      setTestResult(err instanceof Error ? err.message : "测试失败");
+      setTestResult(userFacingLlmTestResult(err instanceof Error ? err.message : "测试失败"));
     } finally {
       setTesting(false);
     }
@@ -648,6 +800,11 @@ export default function SettingsPage() {
         </div>
       )}
 
+      <DeploymentNetworkPolicyPanel
+        policy={deploymentNetworkPolicy}
+        error={deploymentNetworkPolicyError}
+      />
+
       <div className="mb-6 rounded-xl border border-outline-variant/20 bg-surface-container p-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
@@ -738,10 +895,11 @@ export default function SettingsPage() {
           <div className="rounded-xl border border-outline-variant/18 bg-surface/80 p-4">
             <div className="grid gap-3 lg:grid-cols-[1fr_1fr_1.25fr_auto]">
               <div>
-                <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                <label htmlFor="agent-runtime-name" className="mb-1 block text-xs font-medium text-on-surface-variant">
                   显示名称
                 </label>
                 <input
+                  id="agent-runtime-name"
                   value={agentRuntimeForm.name}
                   onChange={(event) => updateAgentRuntimeForm("name", event.target.value)}
                   placeholder="例如 Claude Code"
@@ -749,10 +907,11 @@ export default function SettingsPage() {
                 />
               </div>
               <div>
-                <label className="mb-1 block text-xs font-medium text-on-surface-variant">
+                <label htmlFor="agent-runtime-command" className="mb-1 block text-xs font-medium text-on-surface-variant">
                   命令
                 </label>
                 <input
+                  id="agent-runtime-command"
                   value={agentRuntimeForm.command}
                   onChange={(event) => updateAgentRuntimeForm("command", event.target.value)}
                   placeholder="ccr / opencode / nga"
@@ -857,6 +1016,25 @@ export default function SettingsPage() {
                     <option value="fixed">固定目录</option>
                     <option value="none">不设置</option>
                   </select>
+                </div>
+                <div>
+                  <label htmlFor="agent-runtime-network-access" className="mb-1 block text-xs font-medium text-on-surface-variant">
+                    网络访问方式
+                  </label>
+                  <select
+                    id="agent-runtime-network-access"
+                    value={agentRuntimeForm.requires_network ? "networked" : "offline"}
+                    onChange={(event) => updateAgentRuntimeForm("requires_network", event.target.value === "networked")}
+                    className="w-full rounded-lg border border-outline-variant/30 bg-surface px-3 py-2 text-sm text-on-surface focus:border-primary/50 focus:outline-none"
+                  >
+                    <option value="networked">联网 Agent（需要批准边界）</option>
+                    <option value="offline">离线 Agent（OS 网络隔离）</option>
+                  </select>
+                  <p className="mt-1 text-[11px] leading-4 text-on-surface-variant">
+                    {agentRuntimeForm.requires_network
+                      ? "联网 Agent 仅能使用管理员部署批准的网络边界。"
+                      : "离线 Agent 将被 OS 网络隔离，不能访问模型端点或其他网络服务。"}
+                  </p>
                 </div>
                 <div>
                   <label className="mb-1 block text-xs font-medium text-on-surface-variant">
@@ -1593,6 +1771,11 @@ export default function SettingsPage() {
 
         {showGeneral && (
           <div className="bg-surface-container rounded-xl border border-outline-variant/20 p-5 space-y-4">
+            {deploymentNetworkPolicy?.mode === "intranet" && (
+              <p className="rounded-lg border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-on-surface">
+                当前为内网模式。通用模型代理表单仍可配置，但最终受部署批准策略约束，不能用此处的地址绕过企业网关。
+              </p>
+            )}
             <div>
               <label className="block text-xs font-medium text-on-surface-variant mb-1">
                 代理模式

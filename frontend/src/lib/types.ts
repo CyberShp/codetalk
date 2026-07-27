@@ -110,6 +110,25 @@ export interface GeneralSettings {
   behavior_claim_audit_model_id: string;
 }
 
+/** Deployment-owned network posture. This is deliberately read-only in the UI. */
+export interface DeploymentNetworkPolicy {
+  mode: "developer" | "intranet" | "strict_compliance";
+  policy_id: string;
+  boundary: "none" | "approved_proxy_gateway" | "deployment_egress_policy";
+  approved_proxy_configured: boolean;
+  approved_proxy_config_id: string | null;
+  approved_no_proxy: boolean;
+  approved_ca_configured: boolean;
+  deployment_egress_policy_id: string | null;
+  telemetry: string;
+  remote_tracing: string;
+  hosted_mcp: string;
+  cli_network_ready: boolean;
+  cli_block_reason: string | null;
+  cli_remediation: string | null;
+  source: "deployment";
+}
+
 export type AgentRuntimePromptTransport =
   | "stdin"
   | "argv_last"
@@ -139,6 +158,8 @@ export interface AgentRuntime {
   sentinel_text: string;
   session_persistence: AgentRuntimeSessionPersistence;
   resume_args: string[];
+  /** Defaults to true for historical runtimes. Offline use is an explicit opt-in. */
+  requires_network: boolean;
   enabled: boolean;
   created_at: string;
   updated_at: string;

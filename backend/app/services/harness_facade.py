@@ -38,6 +38,7 @@ class HarnessRunRequest:
     prompt_transport: str = ""
     timeout_seconds: int | None = None
     idle_timeout_seconds: float | None = None
+    requires_network: bool = True
     run_id: str | None = None
     turn_id: str = "turn_1"
 
@@ -94,6 +95,7 @@ class LocalCliProviderAdapter:
             prompt_transport=request.prompt_transport,
             timeout_seconds=request.timeout_seconds,
             idle_timeout_seconds=request.idle_timeout_seconds,
+            requires_network=request.requires_network,
             run_id=request.run_id,
             turn_id=request.turn_id,
         )

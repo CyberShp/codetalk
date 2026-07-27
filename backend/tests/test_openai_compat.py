@@ -75,6 +75,25 @@ async def test_stream_complete_never_mixes_reasoning_content_into_user_answer():
     assert "".join(chunks) == "# iSCSI Login 报告\n正文。"
 
 
+async def test_stream_complete_translates_403_without_exposing_endpoint_details():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, request=request, text="gateway-secret")
+
+    client = OpenAICompatClient("https://secret-gateway.example", "test-key", "deepseek-chat")
+    await client._client.aclose()
+    client._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    try:
+        with pytest.raises(RuntimeError, match="模型服务拒绝访问") as exc_info:
+            async for _ in client.stream_complete([{"role": "user", "content": "hello"}]):
+                pass
+    finally:
+        await client.close()
+
+    assert "secret-gateway.example" not in str(exc_info.value)
+    assert "gateway-secret" not in str(exc_info.value)
+
+
 async def test_health_check_uses_only_the_configured_inference_route():
     requests: list[tuple[str, str]] = []
 

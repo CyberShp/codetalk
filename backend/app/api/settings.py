@@ -16,10 +16,96 @@ from app.services.agent_provider_settings import (
     read_agent_provider_settings_from_db,
 )
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
+from app.services.network_policy import (
+    NetworkEgressBlocked,
+    effective_network_mode,
+    resolve_agent_network_context,
+)
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/settings", tags=["设置管理"])
+
+
+def _deployment_network_policy_snapshot() -> dict[str, object]:
+    """Return a read-only, credential-free deployment policy summary."""
+    from app.config import settings
+
+    cli_context = resolve_agent_network_context(requires_network=True)
+    approved_proxy_config_id = str(settings.approved_proxy_config_id or "").strip()
+    approved_proxy_configured = bool(
+        approved_proxy_config_id and str(settings.approved_proxy_url or "").strip()
+    )
+    deployment_egress_policy_id = str(settings.deployment_egress_policy_id or "").strip()
+    return {
+        "mode": effective_network_mode(),
+        "policy_id": str(settings.intranet_network_policy_id or ""),
+        "boundary": cli_context.boundary,
+        "approved_proxy_configured": approved_proxy_configured,
+        "approved_proxy_config_id": approved_proxy_config_id or None,
+        "approved_no_proxy": bool(str(settings.approved_no_proxy or "").strip()),
+        "approved_ca_configured": bool(str(settings.approved_ca_bundle_path or "").strip()),
+        "deployment_egress_policy_id": deployment_egress_policy_id or None,
+        "telemetry": "disabled",
+        "remote_tracing": "disabled",
+        "hosted_mcp": "forbidden",
+        "cli_network_ready": cli_context.allowed,
+        "cli_block_reason": None if cli_context.allowed else cli_context.reason,
+        "cli_remediation": None if cli_context.allowed else cli_context.remediation,
+        "source": "deployment",
+    }
+
+
+def _llm_connection_failure_code(error: Exception | str) -> str:
+    """Return a stable, non-sensitive diagnostic code for a failed probe."""
+    raw = redact_agent_diagnostic_text(str(error))
+    normalized = raw.lower()
+    if "内网部署策略未批准" in raw:
+        return "network_policy_blocked"
+    if isinstance(error, NetworkEgressBlocked) or "出站策略拒绝" in raw:
+        technical = re.search(r"([a-z][a-z0-9_]+)$", raw)
+        return technical.group(1) if technical else "network_policy_blocked"
+    if "未知的 api_type" in raw:
+        return "unsupported_api_type"
+    if "403" in normalized:
+        return "http_403"
+    if any(marker in normalized for marker in ("certificate", "ssl", "cert_verify")):
+        return "tls_ca_verification_failed"
+    if "proxy" in normalized or "代理" in raw:
+        return "approved_proxy_connection_failed"
+    return "model_connection_failed"
+
+
+def _format_llm_connection_failure(error: Exception | str) -> str:
+    """Make probe errors actionable without echoing endpoint credentials."""
+    code = _llm_connection_failure_code(error)
+    if code in {
+        "host_not_allowlisted",
+        "direct_address_not_allowlisted",
+        "model_endpoint_path_forbidden",
+        "strict_compliance_network_disabled",
+        "network_policy_blocked",
+    }:
+        reason = {
+            "host_not_allowlisted": "模型地址未获管理员批准",
+            "direct_address_not_allowlisted": "模型地址未获管理员批准",
+            "model_endpoint_path_forbidden": "模型接口路径未获管理员批准",
+            "strict_compliance_network_disabled": "严格合规模式禁止此模型连接",
+            "network_policy_blocked": "模型地址未获管理员批准",
+        }[code]
+        return (
+            f"部署网络策略阻止模型连接：{reason}。"
+            "请联系管理员检查模型地址和部署出站边界。"
+        )
+    if code == "http_403":
+        return "模型服务拒绝访问。请检查部署批准的模型地址、代理和凭据。"
+    if code == "tls_ca_verification_failed":
+        return "企业 CA 证书校验失败。请联系管理员配置部署 CA 证书。"
+    if code == "approved_proxy_connection_failed":
+        return "批准代理连接失败。请联系管理员检查部署代理配置。"
+    if code == "unsupported_api_type":
+        return "不支持的模型接口类型。请在模型设置中选择受支持的接口类型。"
+    return "模型连接失败。请检查模型配置或联系管理员。"
 
 
 # --- LLM Config schemas ---
@@ -216,43 +302,44 @@ async def delete_llm_config(cfg_id: str, db: aiosqlite.Connection = Depends(get_
 async def test_llm_connection(
     data: LLMConfigCreate, db: aiosqlite.Connection = Depends(get_db)
 ):
-    """Test LLM connectivity using global proxy/SSL settings."""
-    from app.llm.anthropic import AnthropicClient
-    from app.llm.factory import _load_general_settings, _resolve_proxy
-    from app.llm.openai_compat import OpenAICompatClient
+    """Test the same deployment-authorized inference route used at runtime."""
+    from app.llm.factory import _create_runtime_llm_client, _load_general_settings
 
+    client = None
     try:
         general = await _load_general_settings(db)
-        proxy_url, ssl_cert, force_direct = _resolve_proxy(general)
-
-        kwargs = {
-            "base_url": data.base_url,
-            "api_key": data.api_key,
-            "model": data.model,
-            "proxy_url": proxy_url,
-            "ssl_cert_path": ssl_cert,
-            "force_direct": force_direct,
-            "enforce_network_policy": True,
-            "configured_model_endpoint": True,
-        }
-
-        if data.api_type == "anthropic":
-            client = AnthropicClient(**kwargs)
-        elif data.api_type == "openai_compat":
-            client = OpenAICompatClient(**kwargs)
-        else:
-            return {"success": False, "message": f"未知的 api_type: {data.api_type}"}
+        client = _create_runtime_llm_client(
+            api_type=data.api_type,
+            base_url=data.base_url,
+            api_key=data.api_key,
+            model=data.model,
+            general=general,
+        )
 
         success, message = await client.health_check()
-        await client.close()
-        return {"success": success, "message": message}
+        return {
+            "success": success,
+            "message": message if success else _format_llm_connection_failure(message),
+            **({} if success else {"code": _llm_connection_failure_code(message)}),
+        }
 
     except Exception as exc:
-        message = redact_agent_diagnostic_text(str(exc))
-        return {"success": False, "message": f"连接失败: {message}"}
+        return {
+            "success": False,
+            "message": _format_llm_connection_failure(exc),
+            "code": _llm_connection_failure_code(exc),
+        }
+    finally:
+        if client is not None:
+            await client.close()
 
 
 # --- General settings endpoints ---
+
+@router.get("/network-policy")
+async def get_deployment_network_policy():
+    """Expose a deployment-owned policy snapshot without mutable secrets."""
+    return _deployment_network_policy_snapshot()
 
 _GENERAL_KEYS = ("proxy_mode", "proxy_url", "ssl_cert_path",
                  "active_chat_model_id", "active_embedding_model_id",

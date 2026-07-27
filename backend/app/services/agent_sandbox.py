@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import stat
 import sys
 import tempfile
@@ -11,6 +12,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+from app.config import settings
 
 
 class AgentSandboxError(RuntimeError):
@@ -408,22 +411,48 @@ def prepare_agent_sandbox(
     mode = str(runtime.get("sandbox_mode") or "auto").strip().lower()
     if mode not in {"auto", "required", "off"}:
         raise AgentSandboxError(f"未知 Agent 隔离模式：{mode}")
+    platform = str(platform_name or sys.platform).lower()
+    network_context = runtime.get("network_context")
+    requires_network = bool(runtime.get("requires_network", True))
+    if network_context is not None and not bool(network_context.allowed):
+        raise AgentSandboxError(
+            f"Agent 网络策略拒绝：{network_context.reason}。{network_context.remediation}"
+        )
+    context_mode = str(getattr(network_context, "mode", "") or "")
+    context_boundary = str(getattr(network_context, "boundary", "") or "")
+    requires_os_network_isolation = bool(
+        getattr(network_context, "requires_os_network_isolation", False)
+    ) or not requires_network
     # A deployment that permits an Agent to reach an approved model endpoint
     # still needs an OS boundary.  Environment scrubbing and a deployment
     # firewall are complementary controls, not a justification for an
     # unsandboxed subprocess fallback.
-    intranet_requires_os_sandbox = bool(runtime.get("intranet_require_os_sandbox"))
+    intranet_requires_os_sandbox = (
+        bool(runtime.get("intranet_require_os_sandbox"))
+        or requires_os_network_isolation
+        or context_boundary == "approved_proxy_gateway"
+    )
     if intranet_requires_os_sandbox and mode == "off":
         raise AgentSandboxError(
             "内网 Agent 运行需要 OS 隔离，不能将 sandbox_mode 设为 off。"
         )
     if intranet_requires_os_sandbox:
         mode = "required"
-    platform = str(platform_name or sys.platform).lower()
     artifact_dir = artifact_dir.resolve()
     artifact_dir.mkdir(parents=True, exist_ok=True)
     workspace = Path(cwd).resolve() if cwd else None
     allow_network = bool(runtime.get("sandbox_allow_network", True))
+    allowed_network_targets: list[str] = []
+    if network_context is not None:
+        allow_network = requires_network
+        if allow_network and context_boundary == "approved_proxy_gateway":
+            target = str(getattr(network_context, "approved_proxy_target", "") or "")
+            if not platform.startswith("darwin"):
+                raise AgentSandboxError(
+                    "当前平台无法证明批准代理强制边界。"
+                    "请由管理员改用 deployment_egress_policy。"
+                )
+            allowed_network_targets = _resolve_approved_proxy_targets(target)
     extra_write_paths = _safe_extra_write_paths(runtime.get("sandbox_write_paths"))
     command = str(runtime.get("sandbox_command") or "").strip()
     runtime_read_paths, runtime_state_paths = _runtime_paths(runtime, command)
@@ -450,6 +479,7 @@ def prepare_agent_sandbox(
         "runtime_state_paths": [str(path) for path in runtime_state_paths],
         "write_paths": [str(path) for path in write_paths],
         "network": "outbound_allowed" if allow_network else "blocked",
+        "network_policy": network_context.snapshot() if network_context is not None else None,
         "subprocess": "allowed_and_inherited",
         "environment": "allowlisted_parent_plus_runtime_explicit",
     }
@@ -464,15 +494,23 @@ def prepare_agent_sandbox(
     if platform.startswith("darwin"):
         sandbox_exec = which("sandbox-exec")
         if sandbox_exec:
-            profile_path = artifact_dir / "sandbox-profile.sb"
+            profile_root = settings.ensure_runtime_temp_path() / "agent-sandbox-profiles"
+            profile_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+            profile_fd, profile_name = tempfile.mkstemp(
+                prefix="sandbox-", suffix=".sb", dir=profile_root
+            )
+            os.close(profile_fd)
+            profile_path = Path(profile_name)
             profile_path.write_text(
                 _macos_profile(
                     read_paths=read_paths,
                     write_paths=write_paths,
                     allow_network=allow_network,
+                    allowed_network_targets=allowed_network_targets,
                 ),
                 encoding="utf-8",
             )
+            profile_path.chmod(0o600)
             return _persist_launch(
                 artifact_dir,
                 status="active",
@@ -711,6 +749,7 @@ def _macos_profile(
     read_paths: list[Path],
     write_paths: list[Path],
     allow_network: bool,
+    allowed_network_targets: list[str] | None = None,
 ) -> str:
     lines = [
         "(version 1)",
@@ -728,13 +767,15 @@ def _macos_profile(
         '(allow file-write* (literal "/dev/null"))',
     ]
     if allow_network:
-        lines.append("(allow network-outbound)")
+        if allowed_network_targets:
+            for target in allowed_network_targets:
+                lines.append(f'(allow network-outbound (remote ip "{target}"))')
+        else:
+            lines.append("(allow network-outbound)")
     parent_literals: list[Path] = []
     for path in read_paths:
-        if not str(path).startswith("/Users/"):
-            continue
         parent = path.parent
-        while str(parent).startswith("/Users") and parent != Path("/"):
+        while parent != Path("/"):
             if parent not in parent_literals:
                 parent_literals.append(parent)
             parent = parent.parent
@@ -750,3 +791,52 @@ def _macos_profile(
 
 def _escape_profile_path(path: Path) -> str:
     return str(path).replace("\\", "\\\\").replace('"', '\\"')
+
+
+def _resolve_approved_proxy_targets(target: str) -> list[str]:
+    """Resolve a deployment-owned proxy target before compiling Seatbelt rules.
+
+    The resolved addresses live only in the ephemeral Seatbelt profile.  They
+    must never be copied to diagnostics or the persisted policy snapshot.
+    """
+    host, port = _proxy_target_host_port(target)
+    if not host or port is None:
+        raise AgentSandboxError("批准代理网关地址无效，无法生成 macOS 网络强制规则。")
+    try:
+        addresses = sorted({
+            item[4][0]
+            for item in socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+        })
+    except OSError as exc:
+        raise AgentSandboxError(
+            "无法解析批准代理网关，已拒绝启动 Agent。请检查管理员代理 DNS 配置。"
+        ) from exc
+    if not addresses:
+        raise AgentSandboxError(
+            "批准代理网关未解析到地址，已拒绝启动 Agent。请检查管理员代理 DNS 配置。"
+        )
+    # This macOS Seatbelt implementation accepts `localhost:port` for the
+    # loopback test case while rejecting textual loopback IPs. Remote gateways
+    # use the resolved address form and are never persisted outside the profile.
+    if host.lower().rstrip(".") == "localhost":
+        return [f"localhost:{port}"]
+    return [_seatbelt_remote_address(address, port) for address in addresses]
+
+
+def _proxy_target_host_port(target: str) -> tuple[str, int | None]:
+    value = str(target or "").strip()
+    if value.startswith("[") and "]:" in value:
+        host, _, port_text = value[1:].partition("]:")
+    else:
+        host, separator, port_text = value.rpartition(":")
+        if not separator:
+            return "", None
+    try:
+        port = int(port_text)
+    except ValueError:
+        return host, None
+    return host.lower().rstrip("."), port if 1 <= port <= 65535 else None
+
+
+def _seatbelt_remote_address(address: str, port: int) -> str:
+    return f"{address}:{port}"

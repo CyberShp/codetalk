@@ -252,3 +252,31 @@ def test_intranet_agent_network_fails_closed_until_deployment_policy_is_certifie
         True,
     )
     assert agent_network_is_permitted() is True
+
+
+def test_runtime_url_uses_v2_effective_mode_but_flag_off_preserves_legacy_decision(monkeypatch):
+    from app.services.network_policy import NetworkEgressBlocked, require_runtime_url
+
+    monkeypatch.setattr("app.services.network_policy.settings.network_policy_v2_enabled", True, raising=False)
+    monkeypatch.setattr("app.services.network_policy.settings.network_mode", "developer", raising=False)
+    developer = require_runtime_url("https://unapproved.example/v1")
+    assert developer.allowed is True
+    assert developer.reason == "developer_mode"
+
+    monkeypatch.setattr("app.services.network_policy.settings.network_policy_v2_enabled", False, raising=False)
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_network_mode", True)
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_hosts", [])
+    with pytest.raises(NetworkEgressBlocked, match="host_not_allowlisted"):
+        require_runtime_url("https://unapproved.example/v1")
+
+
+def test_developer_mode_never_admits_autonomous_update_or_tracing_hosts(monkeypatch):
+    from app.services.network_policy import NetworkEgressBlocked, require_runtime_url
+
+    monkeypatch.setattr("app.services.network_policy.settings.network_policy_v2_enabled", True, raising=False)
+    monkeypatch.setattr("app.services.network_policy.settings.network_mode", "developer", raising=False)
+
+    with pytest.raises(NetworkEgressBlocked, match="autonomous_service_forbidden"):
+        require_runtime_url("https://github.com/vendor/update")
+    with pytest.raises(NetworkEgressBlocked, match="autonomous_service_forbidden"):
+        require_runtime_url("https://trace.langchain.com/v1")

@@ -1,6 +1,7 @@
 """Shared test fixtures for the CodeTalk Lightweight backend."""
 
 from contextlib import asynccontextmanager
+from copy import deepcopy
 
 import aiosqlite
 import pytest
@@ -23,10 +24,19 @@ def _disable_external_agent_sandbox_for_legacy_test_doubles(monkeypatch):
     for the actual intranet policy opt in by setting the mode back to ``True``.
     """
     from app.config import settings
+    from app.services.agent_provider_settings import AGENT_PROVIDER_KEYS
+
+    provider_settings = {
+        key: deepcopy(getattr(settings, key))
+        for key in AGENT_PROVIDER_KEYS
+    }
 
     monkeypatch.setattr(settings, "external_agent_sandbox_mode", "off")
     monkeypatch.setattr(settings, "intranet_network_mode", False)
     monkeypatch.setattr(settings, "behavior_claim_audit_enabled", False)
+    yield
+    for key, value in provider_settings.items():
+        setattr(settings, key, value)
 
 
 @asynccontextmanager

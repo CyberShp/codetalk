@@ -6,6 +6,7 @@ Works with any endpoint that implements the /v1/chat/completions interface
 
 import json
 import logging
+import re
 import time
 from collections.abc import AsyncIterator
 
@@ -19,11 +20,32 @@ from app.llm.base import (
 )
 from app.llm.endpoint import normalize_openai_compat_base_url
 from app.services.network_policy import (
-    require_configured_model_request_url,
+    NetworkEgressBlocked,
     require_runtime_model_request_url,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _runtime_network_error(error: Exception) -> RuntimeError:
+    """Translate transport failures without copying sensitive endpoint details."""
+    if isinstance(error, NetworkEgressBlocked):
+        match = re.search(r"([a-z][a-z0-9_]+)$", str(error))
+        code = match.group(1) if match else "network_policy_blocked"
+        return RuntimeError(
+            "内网部署策略未批准该模型端点，请联系管理员配置批准的模型服务后重试。"
+            f"技术代码：{code}"
+        )
+    if isinstance(error, httpx.HTTPStatusError) and error.response.status_code == 403:
+        return RuntimeError(
+            "模型服务拒绝访问，请检查部署批准的模型地址、代理和凭据。技术代码：http_403"
+        )
+    text = str(error).lower()
+    if isinstance(error, httpx.ProxyError) or "proxy" in text:
+        return RuntimeError("批准代理连接失败，请联系管理员检查部署代理配置。技术代码：approved_proxy_connection_failed")
+    if "certificate" in text or "cert_verify" in text or "ssl" in text:
+        return RuntimeError("企业 CA 证书校验失败，请联系管理员配置部署 CA 证书。技术代码：tls_ca_verification_failed")
+    return RuntimeError("模型连接失败，请检查模型配置或联系管理员。技术代码：model_connection_failed")
 
 
 def _content_text(value: object) -> str:
@@ -161,57 +183,54 @@ class OpenAICompatClient(BaseLLMClient):
         self._require_approved_model_endpoint(url)
         logger.info("OpenAI-compat streaming call: model=%s", self._model)
 
-        async with self._client.stream("POST", url, headers=headers, json=payload) as resp:
-            resp.raise_for_status()
-            async for line in resp.aiter_lines():
-                if not line.startswith("data: "):
-                    continue
-                data = line[6:]
-                if data == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data)
-                except json.JSONDecodeError:
-                    continue
-                # Try several shapes that internal OpenAI-compatible
-                # providers use in the wild.  We yield whichever
-                # non-empty string we find first.
-                try:
-                    choice = chunk["choices"][0]
-                except (KeyError, IndexError):
-                    continue
-                # Record the provider's finish_reason so debug snapshots and the
-                # report generator can tell a truncated ("length") generation
-                # apart from a clean stop (P1).
-                fr = choice.get("finish_reason")
-                if fr:
-                    current_finish_reason.set(str(fr))
-                candidates = [
-                    (choice.get("delta") or {}).get("content"),
-                    (choice.get("delta") or {}).get("text"),
-                    choice.get("text"),
-                    choice.get("content"),
-                    (choice.get("message") or {}).get("content"),
-                ]
-                # Accept the first non-empty string candidate, but tolerate
-                # providers that return content as a list of segment dicts.
-                delta: str = ""
-                for cand in candidates:
-                    if isinstance(cand, str) and cand:
-                        delta = cand
+        try:
+            async with self._client.stream("POST", url, headers=headers, json=payload) as resp:
+                resp.raise_for_status()
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:]
+                    if data == "[DONE]":
                         break
-                    if isinstance(cand, list):
-                        parts = []
-                        for seg in cand:
-                            if isinstance(seg, dict):
-                                txt = seg.get("text") or seg.get("content")
-                                if txt:
-                                    parts.append(str(txt))
-                        if parts:
-                            delta = "".join(parts)
+                    try:
+                        chunk = json.loads(data)
+                    except json.JSONDecodeError:
+                        continue
+                    # Try several shapes that internal OpenAI-compatible
+                    # providers use in the wild. We yield the first useful value.
+                    try:
+                        choice = chunk["choices"][0]
+                    except (KeyError, IndexError):
+                        continue
+                    fr = choice.get("finish_reason")
+                    if fr:
+                        current_finish_reason.set(str(fr))
+                    candidates = [
+                        (choice.get("delta") or {}).get("content"),
+                        (choice.get("delta") or {}).get("text"),
+                        choice.get("text"),
+                        choice.get("content"),
+                        (choice.get("message") or {}).get("content"),
+                    ]
+                    delta: str = ""
+                    for cand in candidates:
+                        if isinstance(cand, str) and cand:
+                            delta = cand
                             break
-                if delta:
-                    yield delta
+                        if isinstance(cand, list):
+                            parts = []
+                            for seg in cand:
+                                if isinstance(seg, dict):
+                                    txt = seg.get("text") or seg.get("content")
+                                    if txt:
+                                        parts.append(str(txt))
+                            if parts:
+                                delta = "".join(parts)
+                                break
+                    if delta:
+                        yield delta
+        except httpx.HTTPError as exc:
+            raise _runtime_network_error(exc) from exc
 
     async def _do_complete(
         self,
@@ -239,8 +258,11 @@ class OpenAICompatClient(BaseLLMClient):
             max_tokens,
         )
 
-        resp = await self._client.post(url, headers=headers, json=payload)
-        resp.raise_for_status()
+        try:
+            resp = await self._client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise _runtime_network_error(exc) from exc
         data = resp.json()
 
         choices = data.get("choices", [])
@@ -313,7 +335,7 @@ class OpenAICompatClient(BaseLLMClient):
                 return False, f"服务可达，但聊天接口认证或配置失败 (HTTP {chat_resp.status_code})"
             return False, f"聊天接口服务端错误 (HTTP {chat_resp.status_code})"
         except Exception as exc:
-            logger.warning("OpenAI-compat health check failed: %s", exc)
+            logger.warning("OpenAI-compat health check failed: %s", type(exc).__name__)
             return False, f"连接失败: {exc}"
 
     async def close(self) -> None:
@@ -322,7 +344,7 @@ class OpenAICompatClient(BaseLLMClient):
 
     def _require_approved_model_endpoint(self, url: str) -> None:
         if self._enforce_network_policy:
-            if self._configured_model_endpoint:
-                require_configured_model_request_url(url)
-            else:
+            try:
                 require_runtime_model_request_url(url)
+            except NetworkEgressBlocked as exc:
+                raise _runtime_network_error(exc) from exc

@@ -120,7 +120,8 @@ async def test_llm_test_endpoint_unknown_api_type(e2e_client: AsyncClient):
     assert resp.status_code == 200
     body = resp.json()
     assert body["success"] is False
-    assert "unknown_provider" in body["message"]
+    assert body["message"] == "不支持的模型接口类型。请在模型设置中选择受支持的接口类型。"
+    assert body["code"] == "unsupported_api_type"
 
 
 async def test_llm_test_anthropic_unreachable(e2e_client: AsyncClient):

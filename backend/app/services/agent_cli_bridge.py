@@ -27,7 +27,10 @@ from app.services.agent_sandbox import (
     prepare_isolated_runtime_tmp,
     prepare_agent_sandbox,
 )
-from app.services.network_policy import agent_network_is_permitted, scrub_intranet_agent_environment
+from app.services.network_policy import (
+    resolve_agent_network_context,
+    scrub_intranet_agent_environment,
+)
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
 from app.services.agent_runtimes import MANAGED_PROVIDER_PROMPT_TRANSPORTS, validate_agent_command
 
@@ -42,6 +45,44 @@ class AgentRuntimeError(RuntimeError):
     pass
 
 
+def _runtime_requires_network(runtime: dict[str, Any]) -> bool:
+    return bool(runtime.get("requires_network", True))
+
+
+def _network_policy_error(context: Any) -> str:
+    return (
+        "内网策略未批准 Agent 访问模型端点："
+        f"Agent 网络策略拒绝：{context.reason}。{context.remediation}"
+    )
+
+
+def _probe_network_result(context: Any, **payload: Any) -> dict[str, Any]:
+    return {**payload, "network_policy": context.snapshot()}
+
+
+def _sandbox_runtime_with_network_context(
+    *,
+    runtime: dict[str, Any],
+    context: Any,
+    command: str,
+    read_paths: list[str],
+    **extra: Any,
+) -> dict[str, Any]:
+    return {
+        **runtime,
+        "sandbox_mode": runtime.get("sandbox_mode") or settings.external_agent_sandbox_mode,
+        "network_context": context,
+        "requires_network": _runtime_requires_network(runtime),
+        "intranet_require_os_sandbox": bool(context.requires_os_network_isolation),
+        "sandbox_write_paths": runtime.get(
+            "sandbox_write_paths", settings.external_agent_sandbox_write_paths
+        ),
+        "sandbox_command": command,
+        "sandbox_read_paths": read_paths,
+        **extra,
+    }
+
+
 async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
     """Run a lightweight command probe for the configured runtime."""
     command = str(runtime.get("command") or "").strip()
@@ -52,10 +93,19 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
     command = _resolve_agent_command(command)
     args = list(runtime.get("args") or [])
     probe_args = _probe_args(runtime, args)
-    env, owned_artifact_dir = _build_env_with_artifact_ownership(
-        runtime,
-        include_claude_auth=False,
+    raw_env, owned_artifact_dir = _build_env_with_artifact_ownership(runtime)
+    network_context = resolve_agent_network_context(
+        requires_network=_runtime_requires_network(runtime),
+        environment=raw_env,
     )
+    if not network_context.allowed:
+        _cleanup_owned_artifact_dir(owned_artifact_dir)
+        return {
+            "success": False,
+            "message": _network_policy_error(network_context),
+            "network_policy": network_context.snapshot(),
+        }
+    env = dict(network_context.sanitized_environment)
     probe_temp_dir = Path(env["CODETALK_AGENT_ARTIFACT_DIR"]).resolve()
     for temp_name in ("CODETALK_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
         env[temp_name] = str(probe_temp_dir)
@@ -66,9 +116,31 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
     proc: asyncio.subprocess.Process | None = None
     try:
         try:
+            sandbox = prepare_agent_sandbox(
+                runtime=_sandbox_runtime_with_network_context(
+                    runtime=runtime,
+                    context=network_context,
+                    command=command,
+                    read_paths=[
+                        *list(runtime.get("sandbox_read_paths") or []),
+                        *_command_runtime_read_paths(command),
+                    ],
+                ),
+                cwd=str(probe_temp_dir),
+                artifact_dir=probe_temp_dir,
+            )
+        except AgentSandboxError as exc:
+            return _probe_network_result(
+                network_context,
+                success=False,
+                message=str(exc),
+            )
+        probe_command = [command, *probe_args]
+        if sandbox.wrapper:
+            probe_command = [*sandbox.wrapper, *probe_command]
+        try:
             proc = await asyncio.create_subprocess_exec(
-                command,
-                *probe_args,
+                *probe_command,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=env,
@@ -77,39 +149,58 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
             try:
                 stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=8)
             except asyncio.TimeoutError:
-                return {"success": False, "message": "探测超时"}
+                return _probe_network_result(
+                    network_context,
+                    success=False,
+                    message="探测超时",
+                )
             except asyncio.CancelledError:
                 raise
         except FileNotFoundError:
-            return {"success": False, "message": await _missing_command_message(command)}
+            return _probe_network_result(
+                network_context,
+                success=False,
+                message=await _missing_command_message(command),
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            return {"success": False, "message": f"启动失败：{redact_agent_diagnostic_text(str(exc))}"}
+            return _probe_network_result(
+                network_context,
+                success=False,
+                message=f"启动失败：{redact_agent_diagnostic_text(str(exc))}",
+            )
         stdout_text = _decode(stdout).strip() if stdout else ""
         stderr_text = _decode(stderr).strip() if stderr else ""
         if proc.returncode == 0:
-            network_block = managed_agent_network_block_message(runtime)
-            if network_block:
-                return {"success": False, "message": network_block}
             if str(runtime.get("prompt_transport") or "") == "claude_print_arg":
                 auth_result = await _probe_claude_auth_in_runtime_sandbox(
                     runtime=runtime,
                     command=command,
+                    network_context=network_context,
                 )
                 if not auth_result["success"]:
-                    return auth_result
+                    return _probe_network_result(network_context, **auth_result)
             if str(runtime.get("prompt_transport") or "") == "codex_exec_json":
                 readiness_result = await _probe_codex_model_in_runtime_sandbox(
                     runtime=runtime,
                     command=command,
+                    network_context=network_context,
                 )
                 if not readiness_result["success"]:
-                    return readiness_result
-                return readiness_result
-            return {"success": True, "message": stdout_text or stderr_text or "执行器可启动"}
+                    return _probe_network_result(network_context, **readiness_result)
+                return _probe_network_result(network_context, **readiness_result)
+            return _probe_network_result(
+                network_context,
+                success=True,
+                message=stdout_text or stderr_text or "执行器可启动",
+            )
         message = stderr_text or stdout_text or f"命令退出码：{proc.returncode}"
-        return {"success": False, "message": redact_agent_diagnostic_text(message)}
+        return _probe_network_result(
+            network_context,
+            success=False,
+            message=redact_agent_diagnostic_text(message),
+        )
     finally:
         if proc is not None:
             await _terminate_process(proc, process_group=isolate_process_group)
@@ -117,36 +208,33 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _probe_claude_auth_in_runtime_sandbox(
-    *, runtime: dict[str, Any], command: str
+    *, runtime: dict[str, Any], command: str, network_context: Any | None = None
 ) -> dict[str, Any]:
     failure = {
         "success": False,
         "message": "Claude Code 可启动，但隔离环境无法读取登录状态，请重新登录或检查 Agent 隔离配置。",
     }
+    if network_context is None:
+        network_context = resolve_agent_network_context(
+            requires_network=_runtime_requires_network(runtime),
+            environment=_build_env(runtime),
+        )
     try:
         with tempfile.TemporaryDirectory(
             prefix="codetalk-claude-probe-",
             dir=settings.ensure_runtime_temp_path(),
         ) as temp_dir:
             artifact_dir = Path(temp_dir).resolve()
-            env = _build_env(runtime, artifact_dir_override=artifact_dir)
+            env = dict(network_context.sanitized_environment)
+            env["CODETALK_AGENT_ARTIFACT_DIR"] = str(artifact_dir)
             for temp_name in ("CODETALK_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
                 env[temp_name] = str(artifact_dir)
-            sandbox_runtime = {
-                **runtime,
-                "sandbox_mode": runtime.get("sandbox_mode") or settings.external_agent_sandbox_mode,
-                "sandbox_allow_network": runtime.get(
-                    "sandbox_allow_network",
-                    agent_network_is_permitted(),
-                ),
-                "intranet_require_os_sandbox": settings.intranet_network_mode,
-                "sandbox_write_paths": runtime.get(
-                    "sandbox_write_paths",
-                    settings.external_agent_sandbox_write_paths,
-                ),
-                "sandbox_command": command,
-                "sandbox_read_paths": _command_runtime_read_paths(command),
-            }
+            sandbox_runtime = _sandbox_runtime_with_network_context(
+                runtime=runtime,
+                context=network_context,
+                command=command,
+                read_paths=_command_runtime_read_paths(command),
+            )
             sandbox = prepare_agent_sandbox(
                 runtime=sandbox_runtime,
                 cwd=str(artifact_dir),
@@ -208,24 +296,26 @@ async def _probe_claude_auth_in_runtime_sandbox(
 
 
 async def _probe_codex_model_in_runtime_sandbox(
-    *, runtime: dict[str, Any], command: str
+    *, runtime: dict[str, Any], command: str, network_context: Any | None = None
 ) -> dict[str, Any]:
     """Verify that Codex can make a real request with the configured model."""
     failure = {
         "success": False,
         "message": "Codex 可启动，但真实模型请求失败。请检查登录状态、模型配置或网络。",
     }
+    if network_context is None:
+        network_context = resolve_agent_network_context(
+            requires_network=_runtime_requires_network(runtime),
+            environment=_build_env(runtime, include_claude_auth=False),
+        )
     try:
         with tempfile.TemporaryDirectory(
             prefix="codetalk-codex-probe-",
             dir=settings.ensure_runtime_temp_path(),
         ) as temp_dir:
             artifact_dir = Path(temp_dir).resolve()
-            env = _build_env(
-                runtime,
-                include_claude_auth=False,
-                artifact_dir_override=artifact_dir,
-            )
+            env = dict(network_context.sanitized_environment)
+            env["CODETALK_AGENT_ARTIFACT_DIR"] = str(artifact_dir)
             for temp_name in ("CODETALK_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
                 env[temp_name] = str(artifact_dir)
             codex_runtime_home, codex_runtime_read_targets = prepare_isolated_codex_home(
@@ -235,27 +325,18 @@ async def _probe_codex_model_in_runtime_sandbox(
             )
             if codex_runtime_home is not None:
                 env["CODEX_HOME"] = str(codex_runtime_home)
-            sandbox_runtime = {
-                **runtime,
-                "sandbox_mode": runtime.get("sandbox_mode") or settings.external_agent_sandbox_mode,
-                "sandbox_allow_network": runtime.get(
-                    "sandbox_allow_network",
-                    agent_network_is_permitted(),
-                ),
-                "intranet_require_os_sandbox": settings.intranet_network_mode,
-                "sandbox_write_paths": runtime.get(
-                    "sandbox_write_paths",
-                    settings.external_agent_sandbox_write_paths,
-                ),
-                "sandbox_command": command,
-                "sandbox_codex_home": str(codex_runtime_home) if codex_runtime_home else "",
-                "sandbox_read_paths": [
+            sandbox_runtime = _sandbox_runtime_with_network_context(
+                runtime=runtime,
+                context=network_context,
+                command=command,
+                read_paths=[
                     *list(runtime.get("sandbox_read_paths") or []),
                     *_command_runtime_read_paths(command),
                     *[str(path) for path in codex_runtime_read_targets],
                     *([str(Path(command).parent)] if Path(command).parent != Path(".") else []),
                 ],
-            }
+                sandbox_codex_home=str(codex_runtime_home) if codex_runtime_home else "",
+            )
             sandbox = prepare_agent_sandbox(
                 runtime=sandbox_runtime,
                 cwd=str(artifact_dir),
@@ -402,31 +483,6 @@ def _codex_readiness_result(text: str, *, returncode: int) -> dict[str, Any]:
     return {"success": True, "message": "Codex 已登录，真实模型请求可用"}
 
 
-def managed_agent_network_block_message(runtime: dict[str, Any]) -> str:
-    """Return a shared readiness failure before a managed Agent can egress."""
-    prompt_transport = str(runtime.get("prompt_transport") or "").strip()
-    provider = str(runtime.get("provider") or "").strip().lower()
-    command_name = Path(str(runtime.get("command") or "")).name.lower()
-    managed_command_names = {
-        "codex": {"codex", "codex.exe"},
-        "claude": {"claude", "claude.exe", "ccr", "ccr.cmd"},
-        "opencode": {"opencode", "opencode.cmd", "opencode.exe"},
-        "nga": {"nga", "nga.cmd", "nga.exe"},
-    }
-    if (
-        prompt_transport not in MANAGED_PROVIDER_PROMPT_TRANSPORTS
-        or provider not in {"codex", "claude", "opencode", "nga"}
-        or command_name not in managed_command_names[provider]
-        or not settings.intranet_network_mode
-        or agent_network_is_permitted()
-    ):
-        return ""
-    return (
-        "内网策略未批准 Agent 访问模型端点：当前部署没有可审计的 Agent 出口网关。"
-        "请使用内置模型的已批准 Provider Adapter，或由部署管理员配置受控出口并完成流量捕获验收后重试。"
-    )
-
-
 async def stream_agent_runtime(
     *,
     runtime: dict[str, Any],
@@ -452,10 +508,15 @@ async def stream_agent_runtime(
     ]
     args = _runtime_args(runtime, resume_session_id=resume_session_id)
     prompt_transport = str(runtime.get("prompt_transport") or "stdin")
-    network_block = managed_agent_network_block_message(runtime)
-    if network_block:
-        raise AgentRuntimeError(network_block)
-    env, owned_artifact_dir = _build_env_with_artifact_ownership(runtime)
+    raw_env, owned_artifact_dir = _build_env_with_artifact_ownership(runtime)
+    network_context = resolve_agent_network_context(
+        requires_network=_runtime_requires_network(runtime),
+        environment=raw_env,
+    )
+    if not network_context.allowed:
+        _cleanup_owned_artifact_dir(owned_artifact_dir)
+        raise AgentRuntimeError(_network_policy_error(network_context))
+    env = dict(network_context.sanitized_environment)
     artifact_dir = Path(env["CODETALK_AGENT_ARTIFACT_DIR"]).expanduser().resolve()
     artifact_dir.mkdir(parents=True, exist_ok=True)
     runtime_tmp_dir = prepare_isolated_runtime_tmp(artifact_dir)
@@ -509,26 +570,17 @@ async def stream_agent_runtime(
     process_kwargs: dict[str, Any] = {}
     if isolate_process_group:
         process_kwargs["start_new_session"] = True
-    sandbox_runtime = {
-        **runtime,
-        "sandbox_mode": runtime.get("sandbox_mode") or settings.external_agent_sandbox_mode,
-        "sandbox_allow_network": runtime.get(
-            "sandbox_allow_network",
-            agent_network_is_permitted(),
-        ),
-        "intranet_require_os_sandbox": settings.intranet_network_mode,
-        "sandbox_write_paths": runtime.get(
-            "sandbox_write_paths",
-            settings.external_agent_sandbox_write_paths,
-        ),
-        "sandbox_command": command,
-        "sandbox_read_paths": [
+    sandbox_runtime = _sandbox_runtime_with_network_context(
+        runtime=runtime,
+        context=network_context,
+        command=command,
+        read_paths=[
             *list(runtime.get("sandbox_read_paths") or []),
             *_command_runtime_read_paths(command),
             *_configured_runtime_read_paths(configured_runtime_args),
             *([prompt_file_path] if prompt_file_path else []),
         ],
-    }
+    )
     codex_runtime_home, codex_runtime_read_targets = prepare_isolated_codex_home(
         provider=str(runtime.get("name") or runtime.get("id") or ""),
         command=[command, *args],
