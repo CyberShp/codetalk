@@ -19,6 +19,8 @@ from typing import Any
 
 import httpx
 
+from app.utils.local_client import local_http_client
+
 from .base import (
     AnalysisRequest,
     BaseToolAdapter,
@@ -55,9 +57,7 @@ class SemgrepAdapter(BaseToolAdapter):
 
     async def health_check(self) -> ToolHealth:
         try:
-            async with httpx.AsyncClient(
-                base_url=self.base_url, timeout=10
-            ) as client:
+            async with local_http_client(self.base_url, timeout=10) as client:
                 resp = await client.get("/health")
                 resp.raise_for_status()
                 data = resp.json()
@@ -147,9 +147,7 @@ class SemgrepAdapter(BaseToolAdapter):
         self, path: str, baseline_commit: str
     ) -> dict:
         """Incremental scan — only new findings since baseline."""
-        async with httpx.AsyncClient(
-            base_url=self.base_url, timeout=600
-        ) as client:
+        async with local_http_client(self.base_url, timeout=600) as client:
             resp = await client.post(
                 "/scan/baseline",
                 json={
@@ -176,9 +174,7 @@ class SemgrepAdapter(BaseToolAdapter):
         self, path: str, rules_yaml: str
     ) -> dict:
         """Scan with user-provided YAML rules content."""
-        async with httpx.AsyncClient(
-            base_url=self.base_url, timeout=600
-        ) as client:
+        async with local_http_client(self.base_url, timeout=600) as client:
             resp = await client.post(
                 "/scan/inline-rules",
                 json={"path": path, "rules_yaml": rules_yaml},
@@ -209,9 +205,10 @@ class SemgrepAdapter(BaseToolAdapter):
         if severity:
             payload["severity"] = severity
 
-        async with httpx.AsyncClient(
-            base_url=self.base_url,
-            timeout=httpx.Timeout(600, connect=10),
+        async with local_http_client(
+            self.base_url,
+            timeout=600,
+            connect_timeout=10,
         ) as client:
             resp = await client.post("/scan", json=payload)
             resp.raise_for_status()

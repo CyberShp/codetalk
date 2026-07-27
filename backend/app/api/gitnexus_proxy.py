@@ -21,6 +21,7 @@ from pydantic import BaseModel
 import httpx
 
 from app.config import settings
+from app.utils.local_client import local_http_client
 
 router = APIRouter(prefix="/api/gitnexus", tags=["gitnexus"])
 
@@ -118,11 +119,7 @@ async def get_file_content(
         params["endLine"] = str(end_line)
 
     try:
-        async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url,
-            timeout=30,
-            trust_env=False,
-        ) as client:
+        async with local_http_client(settings.gitnexus_base_url, timeout=30) as client:
             resp = await client.get("/api/file", params=params)
             if resp.status_code == 404:
                 raise HTTPException(status_code=404, detail="File not found")
@@ -163,11 +160,7 @@ async def search_knowledge_graph(body: SearchRequest):
     }
 
     try:
-        async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url,
-            timeout=30,
-            trust_env=False,
-        ) as client:
+        async with local_http_client(settings.gitnexus_base_url, timeout=30) as client:
             resp = await client.post("/api/search", params=params, json=payload)
             resp.raise_for_status()
             return resp.json()
@@ -190,11 +183,7 @@ async def cypher_query(body: CypherRequest):
         params["repo"] = body.repo
 
     try:
-        async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url,
-            timeout=30,
-            trust_env=False,
-        ) as client:
+        async with local_http_client(settings.gitnexus_base_url, timeout=30) as client:
             resp = await client.post("/api/query", params=params, json={"cypher": body.cypher})
             resp.raise_for_status()
             return resp.json()
@@ -212,11 +201,7 @@ async def list_processes(repo: str | None = Query(None)):
         params["repo"] = repo
 
     try:
-        async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url,
-            timeout=30,
-            trust_env=False,
-        ) as client:
+        async with local_http_client(settings.gitnexus_base_url, timeout=30) as client:
             resp = await client.get("/api/processes", params=params)
             resp.raise_for_status()
             return resp.json()
@@ -237,11 +222,7 @@ async def get_process(
         params["repo"] = repo
 
     try:
-        async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url,
-            timeout=30,
-            trust_env=False,
-        ) as client:
+        async with local_http_client(settings.gitnexus_base_url, timeout=30) as client:
             resp = await client.get("/api/process", params=params)
             resp.raise_for_status()
             return resp.json()
@@ -259,11 +240,7 @@ async def list_clusters(repo: str | None = Query(None)):
         params["repo"] = repo
 
     try:
-        async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url,
-            timeout=30,
-            trust_env=False,
-        ) as client:
+        async with local_http_client(settings.gitnexus_base_url, timeout=30) as client:
             resp = await client.get("/api/clusters", params=params)
             resp.raise_for_status()
             return resp.json()
@@ -284,11 +261,7 @@ async def get_cluster(
         params["repo"] = repo
 
     try:
-        async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url,
-            timeout=30,
-            trust_env=False,
-        ) as client:
+        async with local_http_client(settings.gitnexus_base_url, timeout=30) as client:
             resp = await client.get("/api/cluster", params=params)
             resp.raise_for_status()
             return resp.json()
@@ -360,11 +333,7 @@ async def analyze_impact(body: ImpactRequest):
     # Execute all queries
     results: dict[str, list] = {d: [] for d in directions}
     try:
-        async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url,
-            timeout=60,
-            trust_env=False,
-        ) as client:
+        async with local_http_client(settings.gitnexus_base_url, timeout=60) as client:
             for direction, d, cypher in tasks:
                 resp = await client.post(
                     "/api/query",
@@ -408,11 +377,7 @@ async def grep_code(
         params["glob"] = glob
 
     try:
-        async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url,
-            timeout=30,
-            trust_env=False,
-        ) as client:
+        async with local_http_client(settings.gitnexus_base_url, timeout=30) as client:
             resp = await client.get("/api/grep", params=params)
             resp.raise_for_status()
             return resp.json()
@@ -432,11 +397,7 @@ async def list_repos(repo: str | None = Query(None)):
         params["repo"] = repo
 
     try:
-        async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url,
-            timeout=30,
-            trust_env=False,
-        ) as client:
+        async with local_http_client(settings.gitnexus_base_url, timeout=30) as client:
             resp = await client.get("/api/repos", params=params)
             resp.raise_for_status()
             return resp.json()

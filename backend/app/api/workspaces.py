@@ -23,6 +23,7 @@ from app.schemas.workspace_analysis import (
 )
 from app.services.external_agent_discovery import redact_agent_diagnostic_text
 from app.services.process_manager import ProcessManager
+from app.utils.local_client import local_http_client
 
 router = APIRouter(prefix="/api/workspaces", tags=["工作空间"])
 logger = logging.getLogger(__name__)
@@ -1245,10 +1246,9 @@ async def get_workspace_modules(
     repo_name = Path(tool_path).name
 
     try:
-        async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url,
+        async with local_http_client(
+            settings.gitnexus_base_url,
             timeout=15,
-            trust_env=False,
         ) as client:
             resp = await client.get("/api/clusters", params={"repo": repo_name})
             resp.raise_for_status()

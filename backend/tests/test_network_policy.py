@@ -158,6 +158,27 @@ def test_runtime_policy_blocks_official_model_endpoint_before_client_connection(
         require_runtime_url("https://api.openai.com/v1/chat/completions")
 
 
+def test_tool_client_rejects_unapproved_endpoint_before_http_client_creation(monkeypatch):
+    """Tool base URLs are subject to the same deployment-owned admission gate."""
+    from app.services.network_policy import NetworkEgressBlocked
+    from app.utils.local_client import local_http_client
+
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_network_mode", True)
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_hosts", [])
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_allowed_cidrs", [])
+
+    with pytest.raises(NetworkEgressBlocked, match="host_not_allowlisted"):
+        local_http_client("https://unapproved-tools.example/api")
+
+
+def test_tool_client_keeps_loopback_tool_service_available(monkeypatch):
+    from app.utils.local_client import local_http_client
+
+    monkeypatch.setattr("app.services.network_policy.settings.intranet_network_mode", True)
+    client = local_http_client("http://127.0.0.1:7100")
+    assert client.base_url.host == "127.0.0.1"
+
+
 def test_configured_model_inference_requires_deployment_host_approval(monkeypatch):
     from app.services.network_policy import (
         NetworkEgressBlocked,

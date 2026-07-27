@@ -20,6 +20,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
+from app.services.network_policy import require_runtime_url
 from app.models.component_config import ComponentConfig
 from app.schemas.component_config import (
     ComponentContract,
@@ -497,6 +498,7 @@ def _docker_client() -> httpx.AsyncClient:
     elif host.startswith("tcp://"):
         # Remote Docker Engine: tcp://host:port → http://host:port
         base = host.replace("tcp://", "http://", 1)
+        require_runtime_url(base)
         return httpx.AsyncClient(
             base_url=base,
             timeout=httpx.Timeout(60, connect=10),
@@ -504,6 +506,7 @@ def _docker_client() -> httpx.AsyncClient:
         )
     else:
         # Fallback: treat as URL directly
+        require_runtime_url(host)
         return httpx.AsyncClient(
             base_url=host,
             timeout=httpx.Timeout(60, connect=10),

@@ -13,6 +13,7 @@ from collections.abc import AsyncIterator
 import httpx
 
 from app.config import settings
+from app.utils.local_client import local_http_client
 from app.utils.repo_paths import to_tool_repo_path
 
 from .base import (
@@ -71,8 +72,10 @@ class CodeCompassAdapter(BaseToolAdapter):
 
     async def health_check(self) -> ToolHealth:
         try:
-            async with httpx.AsyncClient(
-                base_url=self.base_url, timeout=httpx.Timeout(5, connect=3), trust_env=False
+            async with local_http_client(
+                self.base_url,
+                timeout=5,
+                connect_timeout=3,
             ) as client:
                 resp = await client.get("/")
                 if resp.status_code < 500:
@@ -118,10 +121,10 @@ class CodeCompassAdapter(BaseToolAdapter):
             # Invoke parser via wrapper endpoint inside the container.
             # tool_repo_path is the container-visible path (e.g. /data/repos/<uuid>).
             try:
-                async with httpx.AsyncClient(
-                    base_url=self.base_url,
-                    timeout=httpx.Timeout(600, connect=10),
-                    trust_env=False,
+                async with local_http_client(
+                    self.base_url,
+                    timeout=600,
+                    connect_timeout=10,
                 ) as client:
                     resp = await client.post(
                         "/api/parse",
@@ -157,10 +160,10 @@ class CodeCompassAdapter(BaseToolAdapter):
         results: dict = {}
         project = self._current_workspace
 
-        async with httpx.AsyncClient(
-            base_url=self.base_url,
-            timeout=httpx.Timeout(60, connect=10),
-            trust_env=False,
+        async with local_http_client(
+            self.base_url,
+            timeout=60,
+            connect_timeout=10,
         ) as client:
             # 1. File list
             try:
@@ -232,8 +235,10 @@ class CodeCompassAdapter(BaseToolAdapter):
         """Get call graph for a specific function."""
         if not self._current_workspace:
             return {"error": "no project loaded"}
-        async with httpx.AsyncClient(
-            base_url=self.base_url, timeout=httpx.Timeout(30, connect=5), trust_env=False
+        async with local_http_client(
+            self.base_url,
+            timeout=30,
+            connect_timeout=5,
         ) as client:
             resp = await client.get(
                 f"/api/{self._current_workspace}/call-graph/{function_name}"
@@ -245,8 +250,10 @@ class CodeCompassAdapter(BaseToolAdapter):
         """Get pointer analysis results for a specific function."""
         if not self._current_workspace:
             return {"error": "no project loaded"}
-        async with httpx.AsyncClient(
-            base_url=self.base_url, timeout=httpx.Timeout(30, connect=5), trust_env=False
+        async with local_http_client(
+            self.base_url,
+            timeout=30,
+            connect_timeout=5,
         ) as client:
             resp = await client.get(
                 f"/api/{self._current_workspace}/pointer-analysis/{function_name}"
@@ -258,8 +265,10 @@ class CodeCompassAdapter(BaseToolAdapter):
         """Resolve function pointer / virtual call targets."""
         if not self._current_workspace:
             return {"error": "no project loaded"}
-        async with httpx.AsyncClient(
-            base_url=self.base_url, timeout=httpx.Timeout(30, connect=5), trust_env=False
+        async with local_http_client(
+            self.base_url,
+            timeout=30,
+            connect_timeout=5,
         ) as client:
             resp = await client.get(
                 f"/api/{self._current_workspace}/indirect-calls/{function_name}"
@@ -271,8 +280,10 @@ class CodeCompassAdapter(BaseToolAdapter):
         """Get pointer alias set for a variable at a specific location."""
         if not self._current_workspace:
             return {"error": "no project loaded"}
-        async with httpx.AsyncClient(
-            base_url=self.base_url, timeout=httpx.Timeout(30, connect=5), trust_env=False
+        async with local_http_client(
+            self.base_url,
+            timeout=30,
+            connect_timeout=5,
         ) as client:
             resp = await client.get(
                 f"/api/{self._current_workspace}/alias",

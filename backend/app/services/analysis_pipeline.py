@@ -41,6 +41,7 @@ from app.services.workspace_scope_resolver import (
     normalize_file_key,
     plan_analysis_units,
 )
+from app.utils.local_client import local_http_client
 from app.utils.repo_paths import to_tool_repo_path
 
 logger = logging.getLogger(__name__)
@@ -784,10 +785,10 @@ class AnalysisPipeline:
         except Exception as exc:
             logger.debug("GitNexus adapter cache check failed (non-fatal): %s", exc)
 
-        async with httpx.AsyncClient(
-            base_url=base_url,
-            timeout=httpx.Timeout(1800, connect=10),
-            trust_env=False,
+        async with local_http_client(
+            base_url,
+            timeout=1800,
+            connect_timeout=10,
         ) as client:
             # P0-002: even with a cold in-process cache, GitNexus itself may
             # already hold this repo's graph.  Probe /api/repos for the derived

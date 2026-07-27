@@ -18,6 +18,7 @@ from app.services.analysis_artifacts import (
     format_artifacts_for_report_qa,
     load_analysis_artifact_bundle,
 )
+from app.utils.local_client import local_http_client
 from app.utils.repo_paths import to_tool_repo_path
 
 logger = logging.getLogger(__name__)
@@ -133,10 +134,10 @@ async def _search_gitnexus(repo_path: str, query: str, module: str | None = None
         repo_name = Path(tool_path).name
         effective_query = f"[{module}] {query}" if module else query
 
-        async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url,
-            timeout=httpx.Timeout(15, connect=5),
-            trust_env=False,
+        async with local_http_client(
+            settings.gitnexus_base_url,
+            timeout=15,
+            connect_timeout=5,
         ) as client:
             resp = await client.post(
                 "/api/search",

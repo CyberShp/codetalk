@@ -34,6 +34,7 @@ from typing import Iterable
 import httpx
 
 from app.config import settings
+from app.utils.local_client import local_http_client
 from app.schemas.workspace_analysis import (
     LLMLimits,
     ResolvedAnalysisObject,
@@ -229,10 +230,9 @@ async def _read_snippet_from_gitnexus(
         {"repo": repo_name, "path": rel_path},
     ]
     try:
-        async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url,
+        async with local_http_client(
+            settings.gitnexus_base_url,
             timeout=10,
-            trust_env=False,
         ) as client:
             for params in param_sets:
                 resp = await client.get("/api/file", params=params)

@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from app.config import settings
+from app.utils.local_client import local_http_client
 
 logger = logging.getLogger(__name__)
 
@@ -32,10 +33,10 @@ class GitNexusClient:
     @property
     def client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                base_url=self._base_url,
-                timeout=httpx.Timeout(_QUERY_TIMEOUT, connect=10),
-                trust_env=False,
+            self._client = local_http_client(
+                self._base_url,
+                timeout=_QUERY_TIMEOUT,
+                connect_timeout=10,
             )
         return self._client
 

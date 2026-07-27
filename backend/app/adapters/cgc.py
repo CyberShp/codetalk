@@ -24,6 +24,7 @@ from typing import Callable
 import httpx
 
 from app.config import settings
+from app.utils.local_client import local_http_client
 from app.adapters.base import (
     AnalysisRequest,
     BaseToolAdapter,
@@ -101,10 +102,10 @@ class CGCClient:
     @property
     def client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                base_url=self._base_url,
-                timeout=httpx.Timeout(self._timeout, connect=5),
-                trust_env=False,
+            self._client = local_http_client(
+                self._base_url,
+                timeout=self._timeout,
+                connect_timeout=5,
             )
         return self._client
 

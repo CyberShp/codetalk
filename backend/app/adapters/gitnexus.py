@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 import httpx
 
 from app.config import settings
+from app.utils.local_client import local_http_client
 from app.utils.repo_paths import to_tool_repo_path
 
 from .base import (
@@ -386,10 +387,10 @@ class GitNexusAdapter(BaseToolAdapter):
     @property
     def client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(
-                base_url=self.base_url,
-                timeout=httpx.Timeout(60, connect=10),
-                trust_env=False,
+            self._client = local_http_client(
+                self.base_url,
+                timeout=60,
+                connect_timeout=10,
             )
         return self._client
 

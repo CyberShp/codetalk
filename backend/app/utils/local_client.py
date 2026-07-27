@@ -1,8 +1,10 @@
-"""Factory for httpx.AsyncClient configured for localhost-bound tool services.
+"""Factory for HTTP clients used by local or deployment-approved tool services.
 
-Local services (GitNexus, Joern, CodeCompass) all run on
-localhost.  They must not be routed through system proxies — trust_env=False
-is enforced here and cannot be overridden by callers.
+Local services (GitNexus, Joern, CodeCompass) normally run on localhost.
+Deployments may instead put one behind an approved internal endpoint.  Both
+forms must pass the same runtime egress admission check before an HTTP client
+is created; ``trust_env=False`` prevents a local request from being silently
+rerouted through an inherited proxy.
 
 Usage:
     async with local_http_client(settings.gitnexus_base_url, timeout=30) as client:
@@ -11,16 +13,21 @@ Usage:
 
 import httpx
 
+from app.services.network_policy import require_runtime_url
+
 
 def local_http_client(
     base_url: str,
     timeout: float = 30.0,
     connect_timeout: float = 5.0,
 ) -> httpx.AsyncClient:
-    """Return an AsyncClient for a localhost tool service.
+    """Return an AsyncClient for a deployment-approved tool service.
 
-    trust_env=False is always set — local services must not go through a proxy.
+    The admission check is deliberately here rather than at individual call
+    sites.  A custom GitNexus/CGC URL otherwise becomes an unaudited egress
+    path before the first request is issued.
     """
+    require_runtime_url(base_url)
     return httpx.AsyncClient(
         base_url=base_url,
         timeout=httpx.Timeout(timeout, connect=connect_timeout),

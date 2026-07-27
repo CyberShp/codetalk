@@ -59,6 +59,30 @@ egress policy. Those hosts may use non-RFC1918 addressing; approval is by hostna
 explicit CIDR. An approved model API is allowed only through the adapter's declared API routes;
 telemetry, tracing, updates, package registries and hosted MCP remain hard-denied.
 
+## Tool endpoint admission (2026-07-27)
+
+Tool-service traffic now has the same deployment-owned admission point as
+model inference. `local_http_client()` validates the configured endpoint before
+constructing an HTTP client and always disables inherited proxy settings. The
+GitNexus full/light adapters, CGC, Semgrep, CodeCompass, the workspace and
+chat GitNexus paths, evidence-card reads, and the GitNexus API proxy all use
+that factory. Remote Docker Engine TCP endpoints are checked as well; Unix
+socket Docker remains local IPC.
+
+Consequences for deployment:
+
+1. `localhost` and loopback services continue to work without an allow-list.
+2. A non-loopback GitNexus, CGC, Semgrep, CodeCompass or Docker endpoint must
+   be placed in `INTRANET_ALLOWED_HOSTS` or `INTRANET_ALLOWED_CIDRS` by the
+   deployment owner.
+3. A user-editable URL is never itself an egress permission. Rejection occurs
+   before a client is constructed, so it cannot fall through to DNS, a system
+   proxy, or an outbound socket.
+
+The automated policy and affected adapter regressions cover this behaviour;
+the administrator-owned PCAP procedure below is still required to close the
+deployment traffic-capture acceptance gate.
+
 ## Deployment capture procedure
 
 `scripts/capture-intranet-egress.sh` is the required evidence collector for

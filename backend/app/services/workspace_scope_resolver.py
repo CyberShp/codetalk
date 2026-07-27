@@ -35,6 +35,7 @@ import aiosqlite
 import httpx
 
 from app.config import settings
+from app.utils.local_client import local_http_client
 from app.schemas.workspace_analysis import (
     AnalysisObject,
     AnalysisPlan,
@@ -399,10 +400,9 @@ async def _fetch_live_gitnexus_graph_once(tool_path: str) -> tuple[dict | None, 
     repo_name = Path(tool_path).name
     repo_index_warning = ""
     try:
-        async with httpx.AsyncClient(
-            base_url=settings.gitnexus_base_url,
+        async with local_http_client(
+            settings.gitnexus_base_url,
             timeout=15,
-            trust_env=False,
         ) as client:
             # Disambiguate same-named repos by path so the preview doesn't show
             # evidence from the wrong repo (Round 4 P1).  Best-effort: GitNexus
