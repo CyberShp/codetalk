@@ -168,3 +168,41 @@ def test_agent_harness_facade_keeps_product_contract_when_adapter_is_replaced(tm
     assert result.provider_diagnostics == {"adapter": "isolated"}
     assert any(payload["harness_event_kind"] == "run_started" for _, payload in events)
     assert any(payload["harness_event_kind"] == "completed" for _, payload in events)
+
+
+def test_phase0_harness_rejects_path_escape_and_undeclared_artifacts(tmp_path):
+    """Freeze the artifact boundary before harness internals are refactored."""
+    from types import SimpleNamespace
+
+    from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
+
+    outside = tmp_path.parent / "phase0-outside.md"
+    outside.write_text("outside", encoding="utf-8")
+    artifact_dir = tmp_path / "artifacts"
+    artifact_dir.mkdir()
+    (artifact_dir / "report.md").write_text("declared", encoding="utf-8")
+    (artifact_dir / "undeclared.md").write_text("not declared", encoding="utf-8")
+
+    class CandidateAdapter:
+        def prepare(self, _request):
+            return SimpleNamespace(run_id="phase0-session")
+
+        def execute(self, *_args, **_kwargs):
+            raise AssertionError("artifact boundary must be checked before execution")
+
+        def record_raw_output(self, *_args, **_kwargs):
+            raise AssertionError("not used")
+
+        def collect_artifacts(self, _session_id):
+            return ["report.md", "undeclared.md", "../phase0-outside.md", str(outside)]
+
+    facade = AgentHarnessFacade(artifact_dir, adapter=CandidateAdapter())
+    session = facade.prepare(HarnessRunRequest(
+        provider="fixture-agent",
+        command=["fixture-agent"],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "phase0"},
+        task_bundle={"required_artifacts": ["report.md"]},
+    ))
+
+    assert facade.collect_artifacts(session.run_id) == ["report.md"]

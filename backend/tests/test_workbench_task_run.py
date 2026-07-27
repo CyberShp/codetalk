@@ -11,6 +11,163 @@ from types import SimpleNamespace
 import pytest
 
 
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Phase 1 green condition: an ordinary workflow that declares only report.md "
+        "must not receive a test_activity_contract artifact or task-bundle entry."
+    ),
+)
+def test_phase0_ordinary_report_workflow_does_not_receive_implicit_test_activity_contract(tmp_path):
+    """Freeze the current implicit-governance defect without fixing it in Phase 0."""
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workbench_task_run import WorkbenchTaskRunPreparer
+
+    workflow_store = WorkflowStore(tmp_path / "workflows.db")
+    workflow_store.save_workflow({
+        "id": "ordinary_report_only",
+        "name": "Ordinary report only",
+        "version": 1,
+        "inputs": [{"id": "subject", "type": "free_text"}],
+        "steps": [{
+            "id": "analyze",
+            "type": "agent_task",
+            "provider": "builtin-llm",
+            "required_artifacts": ["report.md"],
+        }],
+        "outputs": [{
+            "id": "report",
+            "type": "markdown",
+            "from": "analyze",
+            "artifact": "report.md",
+        }],
+    })
+
+    prepared = WorkbenchTaskRunPreparer(
+        artifact_root=tmp_path / "task_runs",
+        workflow_store=workflow_store,
+    ).prepare(
+        workflow_id="ordinary_report_only",
+        workspace_id="ws-phase0",
+        repo_path=str(tmp_path),
+        inputs={"subject": "summarize the module"},
+    )
+
+    assert "test_activity_contract" not in prepared.task_bundle
+    assert not (Path(prepared.artifact_dir) / "test_activity_contract.json").exists()
+
+
+def test_phase0_historical_run_snapshot_and_artifact_fixture_remain_verifiable(tmp_path):
+    """Freeze the V3 snapshot bytes and a published delivery manifest."""
+    from app.services.workbench_task_run import validate_run_snapshot_v3
+
+    fixture_dir = Path(__file__).with_name("fixtures") / "harness_workflow_refactor"
+    artifacts = json.loads((fixture_dir / "historical-artifacts.json").read_text(encoding="utf-8"))
+    snapshot = json.loads((fixture_dir / "historical-run-snapshot-v3.json").read_text(encoding="utf-8"))
+
+    for relative_path, payload in artifacts["components"].items():
+        (tmp_path / relative_path).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+            encoding="utf-8",
+        )
+    for relative_path, content in artifacts["deliverables"].items():
+        (tmp_path / relative_path).write_text(content, encoding="utf-8")
+    (tmp_path / "task_artifact_manifest.json").write_text(
+        json.dumps(artifacts["artifact_manifest"], ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    (tmp_path / "run_snapshot_v3.json").write_text(
+        json.dumps(snapshot, ensure_ascii=False, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+
+    assert validate_run_snapshot_v3(tmp_path) == []
+    manifest = json.loads((tmp_path / "task_artifact_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["artifacts"] == [{
+        "relative_path": "report.md",
+        "kind": "delivery",
+        "declared": True,
+    }]
+    assert (tmp_path / "report.md").read_text(encoding="utf-8") == (
+        "# Historical report\n\nFrozen Phase 0 delivery.\n"
+    )
+
+
+def test_phase0_scheduler_reuse_and_lifecycle_event_order_are_stable():
+    """Freeze retry reuse and the cockpit's essential event order."""
+    from app.services.workflow_scheduler import WorkflowDagScheduler
+
+    events: list[tuple[str, dict]] = []
+    plan = {
+        "plan_version": 1,
+        "workflow_version_id": "phase0",
+        "topological_order": ["source", "report"],
+        "max_parallelism": 1,
+        "nodes": [
+            {"node_id": "source", "type": "local_scope_discover", "depends_on": []},
+            {"node_id": "report", "type": "report_render", "depends_on": ["source"]},
+        ],
+    }
+    result = WorkflowDagScheduler(
+        event_sink=lambda kind, payload: events.append((kind, payload)),
+    ).run(
+        plan,
+        seed_results={
+            "source": {
+                "node_id": "source",
+                "status": "completed",
+                "validated_outputs": {"artifact": "source_scope.json"},
+                "reused_from_task_run_id": "parent-phase0",
+            }
+        },
+        execute_node=lambda node, dependencies: {
+            "node_id": node["node_id"],
+            "status": "completed",
+            "validated_outputs": {"artifact": "report.md"},
+            "direct_dependencies": dependencies,
+        },
+    )
+
+    assert result.status == "succeeded"
+    assert [kind for kind, _ in events] == [
+        "node_queued",
+        "node_reused",
+        "node_queued",
+        "node_started",
+        "node_completed",
+        "run_completed",
+    ]
+    assert events[1][1] == {"node_id": "source", "source_task_run_id": "parent-phase0"}
+    assert result.results_by_node["report"]["direct_dependencies"] == {
+        "source": {"artifact": "source_scope.json"}
+    }
+
+
+def test_phase0_agent_harness_pre_cancelled_run_is_terminal(tmp_path, monkeypatch):
+    """Freeze terminal cancellation without leaving a real child process behind."""
+    from app.config import settings
+    from app.services.agent_run_harness import AgentRunHarness
+
+    monkeypatch.setattr(settings, "intranet_network_mode", False)
+    harness = AgentRunHarness(tmp_path / "phase0-cancelled")
+    run = harness.create_run(
+        provider="local-python",
+        command=[sys.executable, "-c", "raise AssertionError('must not spawn')"],
+        cwd=str(tmp_path),
+        workflow_snapshot={"id": "phase0"},
+        task_bundle={"task_id": "phase0-cancelled"},
+        run_id="phase0-cancelled",
+    )
+    cancelled = harness.execute_run(
+        run.run_id,
+        timeout_sec=5,
+        idle_timeout_sec=1,
+        is_cancelled=lambda: True,
+    )
+    assert cancelled.status == "cancelled"
+    assert cancelled.timed_out is False
+
+
 def test_workbench_staged_plan_preserves_profile_scenario_capacity():
     from app.services.workbench_workflow_runner import _build_workbench_staged_plan
 

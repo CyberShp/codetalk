@@ -1,0 +1,29 @@
+{
+  "fixture_schema_version": 1,
+  "components": {
+    "workflow_snapshot.json": {"id": "phase0_legacy_report", "version": 7},
+    "input_snapshot.json": {"subject": "historical target"},
+    "input_consumption_snapshot.json": {"records": []},
+    "execution_profile.json": {"id": "rapid"},
+    "network_policy.json": {"mode": "controlled"},
+    "stage_specs.json": {"stages": []},
+    "artifact_contract_v3.json": {"version": "v3", "artifacts": ["report.md"]},
+    "workflow_contract.json": {"workflow_id": "phase0_legacy_report"},
+    "provider_snapshot.json": {"providers": []},
+    "provider_readiness.json": {"summary": {"status": "ready"}},
+    "quality_readiness.json": {"required": false}
+  },
+  "deliverables": {
+    "report.md": "# Historical report\n\nFrozen Phase 0 delivery.\n"
+  },
+  "artifact_manifest": {
+    "schema_version": 1,
+    "artifacts": [
+      {
+        "relative_path": "report.md",
+        "kind": "delivery",
+        "declared": true
+      }
+    ]
+  }
+}

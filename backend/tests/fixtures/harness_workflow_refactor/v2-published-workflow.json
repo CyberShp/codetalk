@@ -1,0 +1,73 @@
+{
+  "fixture_schema_version": 1,
+  "authoring_graph": {
+    "schema_version": 2,
+    "workflow_id": "phase0_v2_report",
+    "name": "Phase 0 V2 Report",
+    "description": "Published V2 compatibility fixture.",
+    "nodes": [
+      {
+        "id": "repo",
+        "kind": "input",
+        "label": "Repository",
+        "position": {"x": 0, "y": 100},
+        "config": {
+          "contract_id": "repo_path",
+          "label": "Repository",
+          "type": "directory",
+          "required": true,
+          "resolver": "workspace",
+          "role": "source repository"
+        }
+      },
+      {
+        "id": "analyze",
+        "kind": "agent",
+        "label": "Analyze",
+        "position": {"x": 320, "y": 100},
+        "config": {
+          "step_id": "analyze",
+          "goal": "Analyze the source repository.",
+          "provider": "builtin-llm",
+          "mcp_profiles": [],
+          "skill_ids": [],
+          "required_artifacts": ["report.md"],
+          "input_ports": [{"id": "repo_path", "type": "directory", "required": true}],
+          "output_ports": [{"id": "report", "type": "markdown"}],
+          "timeout_sec": 900,
+          "failure_policy": "stop"
+        }
+      },
+      {
+        "id": "report",
+        "kind": "output",
+        "label": "Report",
+        "position": {"x": 640, "y": 100},
+        "config": {
+          "output_id": "report",
+          "label": "Report",
+          "type": "markdown",
+          "artifact": "report.md",
+          "required": true,
+          "source_node_id": "analyze",
+          "source_port_id": "report"
+        }
+      }
+    ],
+    "edges": [
+      {
+        "id": "repo-analyze",
+        "kind": "data",
+        "source": {"node_id": "repo", "port_id": "value"},
+        "target": {"node_id": "analyze", "port_id": "repo_path"}
+      },
+      {
+        "id": "analyze-report",
+        "kind": "data",
+        "source": {"node_id": "analyze", "port_id": "report"},
+        "target": {"node_id": "report", "port_id": "value"}
+      }
+    ],
+    "settings": {"stop_on_error": true, "max_parallelism": 1}
+  }
+}

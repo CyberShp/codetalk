@@ -100,7 +100,31 @@ test("creates a workflow through the UI and uses the xyflow canvas with real mou
     designDoc.getByLabel("输出端口 value，类型 file"),
     canvas.getByTestId("workflow-node-analyze").getByLabel("输入端口 design_doc，类型 file"),
   );
+  const designDocEdge = canvas.getByText("开发设计文档 · file → design_doc · file", { exact: true });
+  await expect(designDocEdge).toBeVisible();
+
+  // Phase 0 compatibility freeze: this is the full human path, not an API
+  // shortcut. The edge must be deletable, reconnectable, and persisted by the
+  // existing designer before Phase 1 changes the workflow contract.
+  // The visible label sits above XYFlow's hit area. Select the rendered edge
+  // itself so this remains a real pointer interaction instead of forcing a
+  // click through the interaction path.
+  await canvas.locator(".react-flow__edge").last().click();
+  await page.keyboard.press("Delete");
+  await expect(designDocEdge).toHaveCount(0);
+  await drag(
+    page,
+    designDoc.getByLabel("输出端口 value，类型 file"),
+    canvas.getByTestId("workflow-node-analyze").getByLabel("输入端口 design_doc，类型 file"),
+  );
+  await expect(designDocEdge).toBeVisible();
+  await page.waitForTimeout(900);
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(canvas).toBeVisible();
   await expect(canvas.getByText("开发设计文档 · file → design_doc · file", { exact: true })).toBeVisible();
+  await canvas.scrollIntoViewIfNeeded();
+  await canvas.getByTitle("适应画布").click();
+  await page.waitForTimeout(250);
 
   await canvasShell.getByTestId("workflow-palette-agent").dblclick();
   await expect.poll(() => canvas.locator(".react-flow__node-workflowNode").count()).toBe(beforeAdd + 2);

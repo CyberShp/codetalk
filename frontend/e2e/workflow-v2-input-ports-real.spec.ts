@@ -9,9 +9,11 @@ assertCanMutatePublicRuntime({
   flowName: "Workflow V2 typed input ports real E2E",
 });
 
-async function dragPort(page: import("@playwright/test").Page, sourceLabel: string, targetLabel: string) {
-  const source = page.getByRole("button", { name: sourceLabel });
-  const target = page.getByRole("button", { name: targetLabel });
+async function dragPort(
+  page: import("@playwright/test").Page,
+  source: import("@playwright/test").Locator,
+  target: import("@playwright/test").Locator,
+) {
   await expect(source).toBeVisible();
   await expect(target).toBeVisible();
   const sourceBox = await source.boundingBox();
@@ -130,20 +132,24 @@ test("binds directory and file to distinct typed ports and rejects invalid drag 
     await secondName.fill("design_doc");
     await secondName.press("Enter");
     await page.getByLabel("输入端口 2 类型").selectOption("file");
-    await expect(page.getByRole("button", { name: "源码分析 输入端口 design_doc 类型 file" })).toBeVisible();
+    // XYFlow ports are node-local labelled elements, not native buttons.
+    await expect(page.getByRole("article", { name: /源码分析 Agent节点/ })
+      .getByLabel("输入端口 design_doc，类型 file")).toBeVisible();
 
     await page.getByRole("button", { name: "增加输入端口" }).click();
     await expect(page.getByLabel("输入端口 3 名称")).toBeVisible();
     await page.getByLabel("输入端口 3 名称").fill("repo_path");
     await page.getByLabel("输入端口 3 名称").press("Enter");
-    await expect(page.getByText("端口名称已存在", { exact: true })).toBeVisible();
+    await expect(page.locator(".ct-v2-port-id-error")).toHaveText("输入名称已存在");
     await page.getByRole("button", { name: /删除输入端口 input_3/ }).click();
     await expect(page.getByLabel("输入端口 3 名称")).toHaveCount(0);
 
     await dragPort(
       page,
-      "开发设计文档 输出端口 value 类型 file",
-      "源码分析 输入端口 design_doc 类型 file",
+      page.getByRole("article", { name: /开发设计文档 输入节点/ })
+        .getByLabel("输出端口 value，类型 file"),
+      page.getByRole("article", { name: /源码分析 Agent节点/ })
+        .getByLabel("输入端口 design_doc，类型 file"),
     );
     await expect(page.locator(".ct-v2-edge-label").filter({ hasText: "开发设计文档 · file → design_doc · file" })).toBeVisible();
 
@@ -154,7 +160,8 @@ test("binds directory and file to distinct typed ports and rejects invalid drag 
     await secondName.pressSequentially("design_doc_v2");
     await expect(secondName).toHaveValue("design_doc_v2");
     await secondName.press("Enter");
-    await expect(page.getByRole("button", { name: "源码分析 输入端口 design_doc_v2 类型 file" })).toBeVisible();
+    await expect(page.getByRole("article", { name: /源码分析 Agent节点/ })
+      .getByLabel("输入端口 design_doc_v2，类型 file")).toBeVisible();
     await expect(page.locator(".ct-v2-edge-label").filter({ hasText: "开发设计文档 · file → design_doc_v2 · file" })).toBeVisible();
 
     await page.getByRole("button", { name: "验证" }).click();
@@ -162,15 +169,19 @@ test("binds directory and file to distinct typed ports and rejects invalid drag 
 
     await dragPort(
       page,
-      "开发设计文档 输出端口 value 类型 file",
-      "源码分析 输入端口 repo_path 类型 directory",
+      page.getByRole("article", { name: /开发设计文档 输入节点/ })
+        .getByLabel("输出端口 value，类型 file"),
+      page.getByRole("article", { name: /源码分析 Agent节点/ })
+        .getByLabel("输入端口 repo_path，类型 directory"),
     );
     await expect(page.locator(".ct-v2-connection-error")).toHaveText("该输入已绑定");
 
     await dragPort(
       page,
-      "开发设计文档 输出端口 value 类型 file",
-      "类型校验目标 输入端口 repo_path 类型 directory",
+      page.getByRole("article", { name: /开发设计文档 输入节点/ })
+        .getByLabel("输出端口 value，类型 file"),
+      page.getByRole("article", { name: /类型校验目标 Agent节点/ })
+        .getByLabel("输入端口 repo_path，类型 directory"),
     );
     await expect(page.locator(".ct-v2-connection-error")).toHaveText("不能连接：file 类型不能连接到 directory 输入");
     await expect(page.locator(".ct-v2-edge-label").filter({ hasText: "开发设计文档 · file → repo_path · directory" })).toHaveCount(0);

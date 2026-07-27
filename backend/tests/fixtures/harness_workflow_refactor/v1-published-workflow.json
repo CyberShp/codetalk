@@ -1,0 +1,28 @@
+{
+  "fixture_schema_version": 1,
+  "published_workflow": {
+    "id": "phase0_legacy_report",
+    "name": "Phase 0 Legacy Report",
+    "version": 7,
+    "inputs": [
+      {"id": "subject", "type": "free_text", "required": true}
+    ],
+    "steps": [
+      {
+        "id": "analyze",
+        "type": "agent_task",
+        "provider": "builtin-llm",
+        "goal": "Summarize the supplied subject.",
+        "required_artifacts": ["report.md"]
+      }
+    ],
+    "outputs": [
+      {
+        "id": "report",
+        "type": "markdown",
+        "from": "analyze",
+        "artifact": "report.md"
+      }
+    ]
+  }
+}

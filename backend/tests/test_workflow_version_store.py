@@ -1,5 +1,7 @@
+import json
 import sqlite3
 from dataclasses import asdict
+from pathlib import Path
 
 import pytest
 from fastapi import FastAPI
@@ -78,6 +80,62 @@ def _workspace_graph() -> dict:
         }
     ]
     return graph
+
+
+_PHASE0_FIXTURE_DIR = Path(__file__).with_name("fixtures") / "harness_workflow_refactor"
+
+
+def _phase0_fixture(name: str) -> dict:
+    return json.loads((_PHASE0_FIXTURE_DIR / name).read_text(encoding="utf-8"))
+
+
+def test_phase0_published_v1_and_v2_workflow_fixtures_remain_loadable(tmp_path):
+    """Freeze published-version compatibility before the Phase 1 migration."""
+    from app.services.workflow_dsl import WorkflowStore
+    from app.services.workflow_graph import compile_workflow_graph, validate_workflow_graph
+    from app.services.workflow_version_store import WorkflowVersionStore
+
+    v1 = _phase0_fixture("v1-published-workflow.json")["published_workflow"]
+    v2 = _phase0_fixture("v2-published-workflow.json")["authoring_graph"]
+    db_path = tmp_path / "workflows.db"
+
+    WorkflowStore(db_path).save_workflow(v1)
+    store = WorkflowVersionStore(db_path)
+    store.initialize_and_migrate()
+    legacy = store.get_workflow(v1["id"])
+    legacy_version = store.get_version(legacy.published_version_id)
+    assert legacy_version.state == "published"
+    assert legacy_version.compiled_definition["version"] == v1["version"]
+    assert legacy_version.compiled_plan["compatibility_mode"] == "legacy_sequential"
+
+    capabilities = {"providers": {"builtin-llm": {"available": True, "mcp_profiles": []}}, "skills": []}
+    assert validate_workflow_graph(v2, capabilities=capabilities) == {
+        "valid": True,
+        "errors": [],
+        "warnings": [],
+    }
+    header, draft = store.create_workflow(
+        workflow_id=v2["workflow_id"],
+        name=v2["name"],
+        description=v2["description"],
+        authoring_graph=v2,
+    )
+    compiled = compile_workflow_graph(
+        v2,
+        capabilities=capabilities,
+        workflow_version_id=draft.version_id,
+    )
+    published = store.publish_version(
+        draft.version_id,
+        authoring_graph=v2,
+        compiled_definition=compiled["compiled_definition"],
+        compiled_plan=compiled["compiled_plan"],
+        validation={"valid": True, "errors": [], "warnings": []},
+    )
+    assert store.get_workflow(header.workflow_id).published_version_id == published.version_id
+    assert published.state == "published"
+    assert published.authoring_graph == v2
+    assert published.compiled_plan["topological_order"] == ["analyze"]
 
 
 def test_workflow_version_migration_is_idempotent_and_preserves_legacy_table(tmp_path):
