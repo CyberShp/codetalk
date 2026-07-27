@@ -900,6 +900,53 @@ def test_source_driven_coverage_warning_is_visible_for_rapid_and_blocks_deep(tmp
     }]
 
 
+def test_source_driven_coverage_judge_blocked_still_supplies_deep_binding_targets(tmp_path):
+    from app.services.workbench_workflow_runner import (
+        _apply_profile_coverage_to_quality_audit,
+    )
+
+    (tmp_path / "branch_disposition.json").write_text(
+        json.dumps({"items": [{
+            "id": "FLOW-COND-002",
+            "condition": "if (conn->login_phase != FULL_FEATURE)",
+            "file_path": "lib/iscsi/conn.c",
+            "start_line": 421,
+            "end_line": 424,
+            "evidence_refs": ["FLOW-COND-002"],
+        }]}),
+        encoding="utf-8",
+    )
+
+    result = _apply_profile_coverage_to_quality_audit(
+        audit={
+            "status": "needs_rework",
+            "deliverable": False,
+            "score": 10,
+            "issues": [{"code": "source_driven_coverage_judge_blocked"}],
+            "quality_axes": {
+                "coverage_breadth": {"status": "passed", "score": 100},
+                "coverage_judge": {
+                    "status": "blocked",
+                    "score": 10,
+                    "warnings": [
+                        "branch_disposition.json:FLOW-COND-002:need_verify"
+                    ],
+                },
+            },
+        },
+        profile_id="deep",
+        artifact_dir=tmp_path,
+    )
+
+    binding_issue = next(
+        item
+        for item in result["issues"]
+        if item["code"] == "source_driven_coverage_incomplete"
+    )
+    assert binding_issue["artifact"] == "black_box_cases.json"
+    assert binding_issue["coverage_targets"][0]["id"] == "FLOW-COND-002"
+
+
 def test_deep_profile_keeps_professional_and_source_coverage_blockers_together(tmp_path):
     from app.services.workbench_workflow_runner import (
         _apply_profile_coverage_to_quality_audit,

@@ -4438,8 +4438,16 @@ def _apply_profile_coverage_to_quality_audit(
     coverage = dict(axes.get("coverage_breadth") or {})
     coverage_judge = dict(axes.get("coverage_judge") or {})
     breadth_warning = str(coverage.get("status") or "") == "warning"
-    judge_warning = str(coverage_judge.get("status") or "") == "warning"
-    if not breadth_warning and not judge_warning:
+    judge_status = str(coverage_judge.get("status") or "")
+    # A blocked source-driven judge is still actionable when it names frozen
+    # FLOW/STATE/RESOURCE warnings.  Treating only ``warning`` as actionable
+    # drops those locators during a deep repair, leaving the runner to repeat
+    # a broad black-box generation without a binding contract.
+    judge_coverage_gap = (
+        judge_status in {"warning", "blocked"}
+        and bool(coverage_judge.get("warnings") or [])
+    )
+    if not breadth_warning and not judge_coverage_gap:
         return result
 
     coverage_scores = [
@@ -4489,7 +4497,7 @@ def _apply_profile_coverage_to_quality_audit(
         item.get("code") == "professional_coverage_incomplete" for item in issues
     ):
         issues.append(coverage_issue)
-    if judge_warning and not any(
+    if judge_coverage_gap and not any(
         item.get("code") == "source_driven_coverage_incomplete" for item in issues
     ):
         issues.append(
@@ -4512,7 +4520,7 @@ def _apply_profile_coverage_to_quality_audit(
         )
     if breadth_warning:
         axes["coverage_breadth"] = {**coverage, "status": "blocked"}
-    if judge_warning:
+    if judge_coverage_gap:
         axes["coverage_judge"] = {**coverage_judge, "status": "blocked"}
     result.update(
         {
