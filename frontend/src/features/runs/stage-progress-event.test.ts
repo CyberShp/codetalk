@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   formatStageAttemptLabel,
+  requiresRunSummaryRefresh,
   selectStageAttemptStart,
   selectStageProgressEvent,
 } from "./stage-progress-event.ts";
@@ -63,5 +64,26 @@ test("completed independent claim validation is not mislabeled as no model call"
       attempt_count: 0,
     }),
     "事实核验已完成",
+  );
+});
+
+test("stage state transitions refresh the cockpit summary but token deltas do not", () => {
+  assert.equal(
+    requiresRunSummaryRefresh({
+      payload: { kind: "stage_completed", stage_id: "sfmea", status: "completed" },
+    }),
+    true,
+  );
+  assert.equal(
+    requiresRunSummaryRefresh({
+      payload: { kind: "stage_provider_started", stage_id: "black_box_cases", status: "running" },
+    }),
+    true,
+  );
+  assert.equal(
+    requiresRunSummaryRefresh({
+      payload: { kind: "stage_output_delta", stage_id: "black_box_cases", status: "running" },
+    }),
+    false,
   );
 });

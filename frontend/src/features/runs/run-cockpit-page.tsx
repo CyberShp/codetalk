@@ -37,6 +37,7 @@ import {
 } from "@/features/tasks/task-status";
 import {
   formatStageAttemptLabel,
+  requiresRunSummaryRefresh,
   selectStageAttemptStart,
   selectStageProgressEvent,
 } from "@/features/runs/stage-progress-event";
@@ -128,7 +129,10 @@ export function RunCockpitPage({ taskId, runId }: { taskId: string; runId: strin
       lastEventId.current = Math.max(lastEventId.current, item.event_id);
       setEvents((current) => mergeEvents(current, [item]));
       setRun((current) => current ? applyLifecycleEvents(current, [item]) : current);
-      if (lifecycleEventTypes.has(item.event_type)) void refresh(true);
+      if (
+        lifecycleEventTypes.has(item.event_type) ||
+        requiresRunSummaryRefresh(item)
+      ) void refresh(true);
     };
     const onDone = () => { stream.close(); void refresh(true); };
     stream.addEventListener("task_run_event", onEvent as EventListener);
