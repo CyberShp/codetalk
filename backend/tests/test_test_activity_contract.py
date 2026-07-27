@@ -1681,6 +1681,37 @@ def test_black_box_delivery_gate_accepts_existing_test_directory(tmp_path):
     assert black_box_case_delivery_quality_gaps(case, repo_path=str(repo)) == []
 
 
+def test_black_box_delivery_gate_rejects_nonexistent_repository_test_mapping(tmp_path):
+    """A test-looking path is not evidence unless it exists in this repo."""
+    from app.services.test_activity_contract import black_box_case_delivery_quality_gaps
+
+    repo = tmp_path / "spdk"
+    (repo / "test" / "iscsi_tgt").mkdir(parents=True)
+    case = {
+        "steps": ["send a malformed public Login PDU and preserve the response"],
+        "expected_result": "the public response and target log record rejection",
+        "mapped_test_dir": "test/iscsi_tgt/not-a-real-suite",
+    }
+
+    assert "missing_test_directory_mapping" in black_box_case_delivery_quality_gaps(
+        case,
+        repo_path=str(repo),
+    )
+
+
+@pytest.mark.parametrize(
+    "step",
+    [
+        "通过 iscsi_pdu_payload_op_text 处理包含非法参数的 Text PDU",
+        "使用 spdk_iscsi_conn_destruct 清理连接后检查结果",
+    ],
+)
+def test_black_box_boundary_rejects_chinese_internal_function_workflow(step):
+    from app.services.test_activity_contract import _black_box_boundary_violation
+
+    assert _black_box_boundary_violation({"steps": [step]}) is True
+
+
 def test_black_box_delivery_gate_accepts_multiple_existing_test_mappings(tmp_path):
     from app.services.test_activity_contract import black_box_case_delivery_quality_gaps
 

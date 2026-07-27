@@ -75,7 +75,7 @@ def test_final_quality_gate_includes_nested_black_box_case_details(tmp_path):
         "invalid_cases": [{
             "case_id": "BC-09",
             "index": 0,
-            "reasons": ["vague_steps"],
+                "reasons": ["vague_steps", "missing_test_directory_mapping"],
             "title": "登录会话保持 24 小时不中断",
         }],
     }]

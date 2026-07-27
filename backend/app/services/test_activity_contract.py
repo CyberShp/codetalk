@@ -8145,6 +8145,7 @@ def _black_box_boundary_violation(row: dict[str, Any]) -> bool:
             r"\b(?:call|invoke)\s+(?:libnvmf|libnvme)[a-z0-9_]*\b|"
             r"调用\s*[a-z_][a-z0-9_]*\s*\(|"
             r"(?:调用|直接调用)\s*(?:libnvmf|libnvme)[a-z0-9_]*\b|"
+            r"(?:通过|使用|由)\s*(?:spdk|iscsi|nvmf|bdev|libnvmf|libnvme)_[a-z0-9_]*\b|"
             r"直接调用|调用内部函数|修改源码|private struct|internal function",
             text,
         )
@@ -8231,8 +8232,6 @@ def _is_verified_test_mapping(value: str, *, repo_path: str = "") -> bool:
         for part in relative.parts
     ):
         return False
-    if relative.parts[0].lower() in {"test", "tests", "spec", "specs"}:
-        return True
     if not repo_path:
         return False
     try:
