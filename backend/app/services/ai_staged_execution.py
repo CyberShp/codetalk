@@ -6674,6 +6674,12 @@ def _build_verified_claim_catalog(
                 continue
             if quote.startswith(("/*", "*", "//")):
                 continue
+            # Split C declarations and context-only local bindings are useful
+            # in an excerpt, but cannot establish a standalone technical
+            # claim.  Offering e.g. ``static void`` as an anchor lets a model
+            # attach an unrelated protocol conclusion to a real file/line.
+            if _is_non_fact_claim_fragment(quote):
+                continue
             line_number = start_line + offset
             # A compact evidence card normally represents one enclosing
             # function, while the selected literal is often an internal guard
@@ -6742,6 +6748,26 @@ def _build_verified_claim_catalog(
             if len(catalog) >= max_entries:
                 return catalog
     return catalog
+
+
+def _is_non_fact_claim_fragment(quote: str) -> bool:
+    """Return whether one excerpt line lacks a standalone verifiable fact."""
+    normalized = " ".join(str(quote or "").split())
+    if re.fullmatch(
+        r"(?:static|extern|inline|const|volatile|register|unsigned|signed|long|short|"
+        r"void|char|int|float|double|bool|size_t|ssize_t|u?int\d+_t)(?:\s+"
+        r"(?:static|extern|inline|const|volatile|register|unsigned|signed|long|short|"
+        r"void|char|int|float|double|bool|size_t|ssize_t|u?int\d+_t))*",
+        normalized,
+    ):
+        return True
+    return bool(
+        re.fullmatch(
+            r"(?:const\s+)?struct\s+[A-Za-z_]\w*\s*\*?\s*[A-Za-z_]\w*\s*="
+            r"\s*[^;]+;",
+            normalized,
+        )
+    )
 
 
 def _is_test_evidence_path(path: str) -> bool:

@@ -1778,6 +1778,36 @@ def test_verified_claim_catalog_keeps_single_card_enclosing_symbol_on_internal_l
     assert catalog[0]["quote"] == "if (cbit_enabled) {"
 
 
+def test_verified_claim_catalog_excludes_incomplete_declaration_fragments():
+    """A split C declaration is context, never a model-selectable fact."""
+    catalog = _build_verified_claim_catalog({
+        "evidence_cards": [{
+            "evidence_id": "SRC-03",
+            "file_path": "lib/iscsi/conn.c",
+            "classification": "source",
+            "start_line": 160,
+            "end_line": 168,
+            "symbols": ["iscsi_conn_start", "iscsi_conn_construct"],
+            "excerpt": (
+                "static void\n"
+                "iscsi_conn_start(void *ctx)\n"
+                "{\n"
+                "\tstruct spdk_iscsi_conn *conn = ctx;\n"
+                "\tiscsi_poll_group_add_conn(conn->pg, conn);\n"
+                "\tconn->login_timer = SPDK_POLLER_REGISTER(login_timeout, conn, 30);\n"
+                "}\n"
+            ),
+            "sha256": "c" * 64,
+        }],
+    })
+
+    quotes = {item["quote"] for item in catalog}
+    assert "static void" not in quotes
+    assert "struct spdk_iscsi_conn *conn = ctx;" not in quotes
+    assert "iscsi_conn_start(void *ctx)" in quotes
+    assert "conn->login_timer = SPDK_POLLER_REGISTER(login_timeout, conn, 30);" in quotes
+
+
 def test_black_box_prompt_exposes_only_materialized_sfmea_risk_ids(tmp_path):
     sfmea = tmp_path / "sfmea.json"
     sfmea.write_text(
