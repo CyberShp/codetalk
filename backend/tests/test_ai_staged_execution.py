@@ -7253,6 +7253,70 @@ def test_black_box_stage_fills_missing_technical_claims_from_verified_cards():
     }
 
 
+def test_black_box_stage_prefers_the_row_declared_evidence_card_for_anchor():
+    from app.services.ai_staged_execution import _materialize_missing_black_box_technical_claims
+
+    rows, _ = _materialize_missing_black_box_technical_claims(
+        [{
+            "case_id": "BB-02",
+            "source_or_test_evidence": ["SRC-02:L40-L41"],
+            "technical_claims": [],
+        }],
+        evidence_cards=[
+            {
+                "evidence_id": "SRC-01",
+                "file_path": "lib/iscsi/first.c",
+                "start_line": 10,
+                "end_line": 10,
+                "excerpt": "first verified anchor",
+                "symbols": ["first"],
+            },
+            {
+                "evidence_id": "SRC-02",
+                "file_path": "lib/iscsi/second.c",
+                "start_line": 40,
+                "end_line": 41,
+                "excerpt": "second verified anchor",
+                "symbols": ["second"],
+            },
+        ],
+    )
+
+    assert rows[0]["technical_claims"][0]["evidence"][0]["evidence_id"] == "SRC-02"
+    assert rows[0]["technical_claims"][0]["evidence"][0]["path"] == "lib/iscsi/second.c"
+
+
+def test_final_quality_repair_restores_source_anchor_after_removing_bad_black_box_claim(tmp_path):
+    from app.services.ai_staged_execution import materialize_final_deterministic_quality_repairs
+
+    (tmp_path / "evidence_cards.json").write_text(json.dumps([{
+        "evidence_id": "SRC-02",
+        "file_path": "lib/iscsi/login.c",
+        "start_line": 40,
+        "end_line": 40,
+        "excerpt": "return ISCSI_LOGIN_AUTHENT_FAIL;",
+        "symbols": ["login_error"],
+    }]), encoding="utf-8")
+    (tmp_path / "black_box_cases.json").write_text(json.dumps([{
+        "case_id": "BB-02",
+        "source_or_test_evidence": ["SRC-02:L40"],
+        "technical_claims": [],
+    }]), encoding="utf-8")
+
+    changed = materialize_final_deterministic_quality_repairs(
+        tmp_path,
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "row_source_claim_insufficient",
+            "row_id": "BB-02",
+        }]},
+    )
+
+    rows = json.loads((tmp_path / "black_box_cases.json").read_text(encoding="utf-8"))
+    assert "black_box_cases.json" in changed
+    assert rows[0]["technical_claims"][0]["evidence"][0]["evidence_id"] == "SRC-02"
+
+
 def test_deterministic_quality_repair_removes_unbound_raw_device_placeholder():
     from app.services.ai_staged_execution import _deterministic_quality_claim_repair
 

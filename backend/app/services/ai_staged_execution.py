@@ -8537,6 +8537,7 @@ def _materialize_missing_black_box_technical_claims(
     rendered: Any,
     *,
     evidence_cards: list[dict[str, Any]],
+    require_declared_evidence: bool = False,
 ) -> tuple[Any, list[str]]:
     """Bind incomplete black-box rows to literal, locally verified evidence.
 
@@ -8566,7 +8567,31 @@ def _materialize_missing_black_box_technical_claims(
         claims = row.get("technical_claims")
         if isinstance(claims, list) and claims:
             continue
-        card = cards[index % len(cards)]
+        declared_references = [
+            str(reference).strip()
+            for reference in [
+                *(row.get("source_or_test_evidence") or []),
+                *(row.get("source_evidence") or []),
+            ]
+            if str(reference).strip()
+        ]
+        declared_ids = {
+            reference.split(":", 1)[0].strip()
+            for reference in declared_references
+            if reference.split(":", 1)[0].strip()
+        }
+        matching_card = next(
+            (
+                candidate
+                for candidate in cards
+                if str(candidate.get("evidence_id") or "").strip() in declared_ids
+                or str(candidate.get("file_path") or "").strip() in declared_ids
+            ),
+            None,
+        )
+        if require_declared_evidence and matching_card is None:
+            continue
+        card = matching_card or cards[index % len(cards)]
         evidence_id = str(card.get("evidence_id") or "").strip()
         path = str(card.get("file_path") or "").strip()
         quote = str(card.get("excerpt") or "").strip()
@@ -13024,6 +13049,15 @@ def materialize_final_deterministic_quality_repairs(
             quality_feedback=quality_feedback,
             evidence_cards=evidence_cards,
         )
+        if artifact == "black_box_cases.json":
+            repaired, restored_anchor_fields = (
+                _materialize_missing_black_box_technical_claims(
+                    repaired,
+                    evidence_cards=evidence_cards,
+                    require_declared_evidence=True,
+                )
+            )
+            fields = [*fields, *restored_anchor_fields]
         if fields:
             if artifact == "sfmea.json":
                 repaired = _materialize_sfmea_tombstones(repaired)
