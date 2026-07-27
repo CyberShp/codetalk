@@ -468,12 +468,6 @@ def refresh_source_driven_delivery_governance(
         ) if (root / "agent_runs").is_dir() else []
         if candidates:
             root = candidates[0].parent
-    artifacts = {
-        name: payload
-        for name in SOURCE_DRIVEN_V2_ARTIFACTS
-        if name != "judge_report.json"
-        and (payload := _read_json_artifact(root / name)) is not None
-    }
     # The provider payload may be normalized after the first deterministic
     # pass (for example SFMEA IDs are canonicalized during quality repair).
     # Rebuild every SFMEA-derived ledger from those final bytes.  Keeping an
@@ -493,32 +487,76 @@ def refresh_source_driven_delivery_governance(
         if len(materialized_rows) != len(sfmea_rows):
             sfmea_rows = materialized_rows
             _write_json_artifact(root / "sfmea.json", sfmea_rows)
-    candidates = _read_json_artifact(root / "scenario_candidates.json")
-    if isinstance(sfmea_rows, list) and isinstance(candidates, dict):
-        artifacts["risk_register.json"] = _risk_register_artifact(
-            sfmea_rows,
-            candidates,
-        )
-        _write_json_artifact(
-            root / "risk_register.json",
-            artifacts["risk_register.json"],
-        )
-
-    # Rebuild traceability from those final bytes instead of carrying an early
-    # snapshot with pre-normalization IDs into the delivery verdict.
     cases = _read_json_artifact(root / "black_box_cases.json")
     cards = _read_json_artifact(root / "evidence_cards.json")
-    risks = artifacts.get("risk_register.json")
-    if isinstance(cases, list) and isinstance(cards, list) and isinstance(risks, dict):
-        artifacts["traceability_matrix.json"] = _traceability_artifact(
-            evidence_index=_evidence_index({"evidence_cards": cards}, {}),
-            risks=risks,
-            cases=cases,
+    source_pack = _read_json_artifact(root / "stages" / "source_analysis" / "source_evidence_pack.json")
+    if not isinstance(source_pack, dict) and isinstance(cards, list):
+        source_pack = {
+            "evidence_cards": cards,
+            "source_scope": _read_json_artifact(root / "source_scope.json") or {},
+        }
+    flow_pack = _read_json_artifact(root / "flow_evidence_pack.json")
+    flow_outline = _read_json_artifact(root / "flow_outline.json")
+    # The first deterministic governance pass occurs before black-box output
+    # is available. Rebuild every derived ledger from the final repaired
+    # SFMEA/case bytes, otherwise FLOW-* IDs and SRC-* citations can never be
+    # joined even though both point at the same verified source location.
+    rebuilt_full_governance = False
+    if (
+        isinstance(source_pack, dict)
+        and isinstance(flow_pack, dict)
+        and isinstance(flow_outline, dict)
+        and isinstance(sfmea_rows, list)
+        and isinstance(cases, list)
+    ):
+        rebuilt = build_source_driven_test_design(
+            source_pack=source_pack,
+            flow_pack=flow_pack,
+            flow_outline=flow_outline,
+            sfmea=sfmea_rows,
+            black_box_cases=cases,
         )
-        _write_json_artifact(
-            root / "traceability_matrix.json",
-            artifacts["traceability_matrix.json"],
-        )
+        artifacts = {
+            name: payload
+            for name, payload in rebuilt.items()
+            if name != "judge_report.json"
+        }
+        for name, payload in artifacts.items():
+            _write_json_artifact(root / name, payload)
+        rebuilt_full_governance = True
+    else:
+        artifacts = {
+            name: payload
+            for name in SOURCE_DRIVEN_V2_ARTIFACTS
+            if name != "judge_report.json"
+            and (payload := _read_json_artifact(root / name)) is not None
+        }
+    # Older/partial task directories do not necessarily retain the complete
+    # source-flow inputs required by the V3 rebuild. Keep their historical
+    # finalization useful by refreshing the two ledgers that can be proven
+    # directly from final SFMEA, cases and evidence cards.
+    if not rebuilt_full_governance:
+        candidates = _read_json_artifact(root / "scenario_candidates.json")
+        if isinstance(sfmea_rows, list) and isinstance(candidates, dict):
+            artifacts["risk_register.json"] = _risk_register_artifact(
+                sfmea_rows,
+                candidates,
+            )
+            _write_json_artifact(
+                root / "risk_register.json",
+                artifacts["risk_register.json"],
+            )
+        risks = artifacts.get("risk_register.json")
+        if isinstance(cases, list) and isinstance(cards, list) and isinstance(risks, dict):
+            artifacts["traceability_matrix.json"] = _traceability_artifact(
+                evidence_index=_evidence_index({"evidence_cards": cards}, {}),
+                risks=risks,
+                cases=cases,
+            )
+            _write_json_artifact(
+                root / "traceability_matrix.json",
+                artifacts["traceability_matrix.json"],
+            )
     fact_verification = _combined_final_fact_verification(root)
     judge = build_judge_report(
         artifacts=artifacts,

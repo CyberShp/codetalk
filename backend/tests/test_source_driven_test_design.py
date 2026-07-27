@@ -301,6 +301,54 @@ def test_disposition_maps_flow_evidence_to_case_with_same_verified_symbol():
     assert branch["covered_by"] == ["CASE-BRANCH"]
 
 
+def test_refresh_rebuilds_dispositions_from_final_black_box_cases(tmp_path):
+    from app.services.source_driven_test_design import (
+        build_source_driven_test_design,
+        refresh_source_driven_delivery_governance,
+    )
+
+    initial = build_source_driven_test_design(
+        source_pack=_source_pack(),
+        flow_pack=_flow_pack(),
+        flow_outline=_outline(),
+        sfmea=_sfmea(),
+        black_box_cases=_cases(),
+    )
+    for name, payload in initial.items():
+        (tmp_path / name).write_text(json.dumps(payload), encoding="utf-8")
+    source_stage = tmp_path / "stages" / "source_analysis"
+    source_stage.mkdir(parents=True)
+    (source_stage / "source_evidence_pack.json").write_text(
+        json.dumps(_source_pack()), encoding="utf-8"
+    )
+    (tmp_path / "flow_evidence_pack.json").write_text(
+        json.dumps(_flow_pack()), encoding="utf-8"
+    )
+    (tmp_path / "flow_outline.json").write_text(
+        json.dumps(_outline()), encoding="utf-8"
+    )
+    (tmp_path / "sfmea.json").write_text(json.dumps(_sfmea()), encoding="utf-8")
+    final_cases = _cases() + [{
+        "case_id": "CASE-FINAL-BRANCH",
+        "source_or_test_evidence": ["SRC-001:L112"],
+        "technical_claims": [{"claim_id": "TC-FINAL", "evidence": [{
+            "path": "lib/iscsi/iscsi.c",
+            "symbol": "iscsi_pdu_payload_op_login",
+            "lines": "L112",
+            "quote": "if (conn->state == EXITING)",
+        }]}],
+    }]
+    (tmp_path / "black_box_cases.json").write_text(
+        json.dumps(final_cases), encoding="utf-8"
+    )
+
+    refresh_source_driven_delivery_governance(tmp_path)
+
+    refreshed = json.loads((tmp_path / "branch_disposition.json").read_text())
+    assert refreshed["items"][0]["disposition"] == "retain"
+    assert refreshed["items"][0]["covered_by"] == ["CASE-FINAL-BRANCH"]
+
+
 def test_judge_never_reports_ready_or_fact_score_100_when_facts_are_not_checked():
     from app.services.source_driven_test_design import build_judge_report
 

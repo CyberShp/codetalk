@@ -12,7 +12,7 @@ from typing import Any
 
 # Bump when deterministic extraction semantics change so cached packs cannot
 # hide newly recognized source evidence from downstream flow quality gates.
-FLOW_EVIDENCE_VERSION = "flow-evidence-pack-v5"
+FLOW_EVIDENCE_VERSION = "flow-evidence-pack-v6"
 _FLOW_EVIDENCE_VERSION = FLOW_EVIDENCE_VERSION
 FLOW_OUTLINE_VERSION = "flow-outline-v3"
 _FLOW_OUTLINE_VERSION = FLOW_OUTLINE_VERSION
@@ -1627,7 +1627,28 @@ def _prioritize_flow_symbols(symbols: list[str], *, analysis_target: str) -> lis
         primary_score = sum(len(term) for term in primary_terms if term in lowered)
         supporting_score = sum(len(term) for term in target_terms if term in lowered)
         branch_penalty = 50 if re.search(r"(?:err|error|fail|timeout|reject)", lowered) else 0
-        return primary_score * 8 + supporting_score - branch_penalty
+        # iSCSI Login has a narrow ingress-to-payload chain.  These symbols
+        # are not extra topical helpers: without them a bounded grep walk can
+        # spend its entire edge budget on parameter utilities and never prove
+        # how a received Login PDU reaches its terminal state transition.
+        iscsi_login_chain = (
+            "iscsi_conn_start",
+            "iscsi_conn_sock_cb",
+            "iscsi_handle_incoming_pdus",
+            "iscsi_read_pdu",
+            "iscsi_pdu_payload_handle",
+            "iscsi_pdu_payload_op_login",
+            "iscsi_op_login_rsp_handle",
+            "iscsi_op_login_response",
+        )
+        chain_bonus = (
+            500
+            if "iscsi" in primary_terms
+            and "login" in primary_terms
+            and lowered in iscsi_login_chain
+            else 0
+        )
+        return chain_bonus + primary_score * 8 + supporting_score - branch_penalty
 
     # ``sorted`` is stable, preserving evidence-card order when relevance is
     # equal and preventing the ranker from inventing a source relationship.
