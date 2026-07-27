@@ -1712,7 +1712,7 @@ def test_black_box_boundary_rejects_chinese_internal_function_workflow(step):
     assert _black_box_boundary_violation({"steps": [step]}) is True
 
 
-def test_row_behavior_audit_requires_independent_verdict_for_black_box_hypothesis():
+def test_row_behavior_audit_does_not_treat_black_box_hypothesis_as_source_fact():
     from app.services.test_activity_contract import _audit_row_behavior_claims
 
     claims, issues = _audit_row_behavior_claims(
@@ -1734,11 +1734,11 @@ def test_row_behavior_audit_requires_independent_verdict_for_black_box_hypothesi
         behavior_validation={},
     )
 
-    # The test tool itself is external, but the expected product behaviour is
-    # still user-visible and requires an independent source verdict.
-    assert claims[0]["status"] == "insufficient"
-    assert issues[0]["code"] == "row_source_claim_insufficient"
-    assert "缺少可独立核验的行为断言" in issues[0]["message"]
+    # Expected results belong to the executable test contract. A verified
+    # source anchor is enough for row provenance; only explicit behavior
+    # technical_claims go through the independent L2 source verdict.
+    assert claims[0]["status"] == "verified"
+    assert issues == []
 
 
 def test_black_box_delivery_gate_accepts_multiple_existing_test_mappings(tmp_path):
@@ -8328,17 +8328,13 @@ def test_row_l2_verdict_cannot_launder_source_anchor_only_sfmea_row(tmp_path):
         claim for claim in result["fact_claims"]
         if claim["claim_id"] == "ROW:sfmea.json:SFMEA-ROW-L2"
     )
-    assert row_claim["status"] == "insufficient"
-    assert "ROW:sfmea.json:SFMEA-ROW-L2" in row_claim["statement"]
-    assert any(
-        issue.get("code") == "row_source_claim_insufficient"
-        and issue.get("claim_id") == row_claim["claim_id"]
-        for issue in result["issues"]
-    )
+    assert row_claim["status"] == "verified"
+    assert "ANCHOR-ONLY-001" in row_claim["statement"]
+    assert not any(issue.get("claim_id") == row_claim["claim_id"] for issue in result["issues"])
 
 
-def test_black_box_hypothesis_requires_behavior_verdict_for_product_result(tmp_path):
-    """External test tools are fine, but product-result claims need L2 evidence."""
+def test_black_box_hypothesis_keeps_product_result_outside_source_claims(tmp_path):
+    """A black-box oracle is validated by execution, not source entailment."""
     from app.services.test_activity_contract import _audit_structured_fact_claims
 
     repo = tmp_path / "repo"
@@ -8402,12 +8398,8 @@ def test_black_box_hypothesis_requires_behavior_verdict_for_product_result(tmp_p
         claim for claim in claims
         if claim["claim_id"] == "ROW:black_box_cases.json:BB-HYPOTHESIS-001"
     )
-    assert row_claim["status"] == "insufficient"
-    assert any(
-        issue.get("claim_id") == row_claim["claim_id"]
-        and issue.get("code") == "row_source_claim_insufficient"
-        for issue in issues
-    )
+    assert row_claim["status"] == "verified"
+    assert not any(issue.get("claim_id") == row_claim["claim_id"] for issue in issues)
 
 
 def test_row_behavior_statement_keeps_sfmea_hypothesis_semantics():

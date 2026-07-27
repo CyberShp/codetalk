@@ -2535,72 +2535,21 @@ def _audit_row_behavior_claims(
             }
         ]
         behavior_claims = list(explicit_behavior_claims)
-        # A literal source anchor establishes provenance only.  It must not
-        # become a substitute for the behaviour assertion represented by the
-        # user-visible SFMEA/test-case fields.  Without at least one explicit
-        # behaviour assertion the independent auditor has no bounded claim to
-        # verify, and an arbitrary auto-bound card can otherwise launder a
-        # false protocol outcome into a green quality score.
-        requires_explicit_behavior_assertion = True
-        row_behavior_claims: list[dict[str, Any]] = []
         evidence = _row_behavior_evidence(
             row=row,
             verified_files=verified_files,
             explicit_claims=row_claims,
         )
         claim_id = f"ROW:{artifact}:{row_id}"
-        # Each visible SFMEA or black-box row can make a source-behaviour
-        # assertion, even when it is labelled as a test hypothesis.  A
-        # hypothesis may propose a test tool or a measurement that is not in
-        # source, but it cannot use that label to assert an unsupported result
-        # such as a protocol status, missing guard, or resource leak.  The L2
-        # auditor distinguishes those two cases from the compact row payload.
-        requires_row_behavior = True
-        if requires_row_behavior and evidence:
-            row_claim_type = (
-                "sfmea_row_behavior"
-                if artifact == "sfmea.json"
-                else "black_box_case_behavior"
-            )
-            row_statement = _row_behavior_statement(artifact=artifact, row=row)
-            row_binding = _behavior_claim_binding(
-                claim_id=claim_id,
-                claim_type=row_claim_type,
-                statement=row_statement,
-                evidence=evidence,
-            )
-            l2_status, l2_reason = _bound_behavior_validation_status(
-                validation=behavior_validation,
-                claim_id=claim_id,
-                binding=row_binding,
-            )
-            row_behavior_claims.append(
-                {
-                    "claim_id": claim_id,
-                    "type": row_claim_type,
-                    "status": (
-                        "verified"
-                        if l2_status == "supports"
-                        else "contradicted"
-                        if l2_status == "contradicts"
-                        else "insufficient"
-                    ),
-                    "reason": l2_reason,
-                    "binding": row_binding,
-                }
-            )
-        behavior_claims.extend(row_behavior_claims)
-        all_claims = [*row_claims, *row_behavior_claims]
+        # Do not turn the entire visible row into an implementation claim.
+        # SFMEA effects and black-box expected results are intentionally
+        # hypotheses/test oracles; only explicit technical_claims are facts
+        # eligible for L1/L2 source entailment.
+        all_claims = list(row_claims)
         failed_claims = [claim for claim in all_claims if claim.get("status") != "verified"]
         if not row_claims or not evidence:
             status = "insufficient"
             reason = "该条目没有可供事实核验的技术断言或已验证源码证据"
-        elif requires_explicit_behavior_assertion and not explicit_behavior_claims:
-            status = "insufficient"
-            reason = "该条目只有来源锚点，缺少可独立核验的行为断言"
-        elif requires_row_behavior and not behavior_claims:
-            status = "insufficient"
-            reason = "该条目只有 L1 来源锚点，缺少独立核验的行为断言"
         elif any(claim.get("status") == "contradicted" for claim in failed_claims):
             status = "contradicted"
             reason = "该条目包含与源码矛盾的技术断言"
