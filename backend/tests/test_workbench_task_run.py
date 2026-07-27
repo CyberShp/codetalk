@@ -7048,6 +7048,34 @@ def test_quality_repair_keeps_a_blocked_candidate_with_far_fewer_issues():
     assert _quality_repair_regressed(before=before, after=after) is False
 
 
+def test_quality_repair_stalls_after_a_rolled_back_candidate_makes_no_progress():
+    from app.services.workbench_workflow_runner import _quality_repair_stalled
+
+    before = {
+        "status": "needs_rework",
+        "score": 42,
+        "issue_count": 3,
+        "issues": [
+            {"code": "source_claim_contradicted", "artifact": "sfmea.json"},
+            {"code": "artifact_contract_v3_missing", "artifact": "report.md"},
+            {"code": "professional_coverage_incomplete", "artifact": "black_box_cases.json"},
+        ],
+    }
+
+    assert _quality_repair_stalled(
+        before=before,
+        after=dict(before),
+        candidate_regressed=True,
+        salvaged_rows={},
+    ) is True
+    assert _quality_repair_stalled(
+        before=before,
+        after={**before, "issue_count": 2},
+        candidate_regressed=False,
+        salvaged_rows={"sfmea.json": ["SFMEA-01"]},
+    ) is False
+
+
 def test_final_contradiction_tombstones_remove_only_proven_contradicted_rows(tmp_path):
     from app.services.workbench_workflow_runner import (
         _apply_final_contradiction_tombstones,

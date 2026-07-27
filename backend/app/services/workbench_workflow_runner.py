@@ -706,6 +706,54 @@ def _quality_repair_regressed(
     return int(after.get("score") or 0) < int(before.get("score") or 0)
 
 
+def _quality_audit_signature(audit: dict[str, Any]) -> tuple[Any, ...]:
+    """Return the user-relevant part of an audit for repair convergence.
+
+    Audits carry timestamps and diagnostic details that naturally change between
+    passes.  Those fields must not trick the repair loop into treating an
+    already-restored result as fresh progress.
+    """
+    issues = audit.get("issues") if isinstance(audit.get("issues"), list) else []
+    issue_signature = tuple(
+        sorted(
+            (
+                str(item.get("code") or ""),
+                str(item.get("artifact") or ""),
+                str(item.get("field") or ""),
+                str(item.get("message") or ""),
+            )
+            for item in issues
+            if isinstance(item, dict)
+        )
+    )
+    return (
+        str(audit.get("status") or ""),
+        int(audit.get("score") or 0),
+        int(audit.get("issue_count") or 0),
+        issue_signature,
+    )
+
+
+def _quality_repair_stalled(
+    *,
+    before: dict[str, Any],
+    after: dict[str, Any],
+    candidate_regressed: bool,
+    salvaged_rows: dict[str, list[str]],
+) -> bool:
+    """Stop model retries when rollback restored exactly the same quality gap.
+
+    A rejected candidate plus no row-level salvage means the canonical bytes
+    remain unchanged. Repeating the same provider repair cannot be justified
+    without new source evidence or a different execution strategy.
+    """
+    return (
+        candidate_regressed
+        and not salvaged_rows
+        and _quality_audit_signature(before) == _quality_audit_signature(after)
+    )
+
+
 def _should_apply_final_deterministic_repairs(
     *,
     repair_history: list[dict[str, Any]],
@@ -3118,6 +3166,29 @@ class WorkbenchWorkflowRunner:
                                         ),
                                     },
                                 )
+                                if _quality_repair_stalled(
+                                    before=audit,
+                                    after=audit_after,
+                                    candidate_regressed=regressed,
+                                    salvaged_rows=salvaged_rows,
+                                ):
+                                    quality_repair_stop_reason = (
+                                        "no_progress_after_rollback"
+                                    )
+                                    self._emit_event(
+                                        "quality_repair_skipped",
+                                        {
+                                            "step_id": step_id,
+                                            "provider": BUILTIN_LLM_PROVIDER_ID,
+                                            "attempt": repair_attempt,
+                                            "reason": quality_repair_stop_reason,
+                                            "user_message": (
+                                                "本轮修复已回滚且未改善任何质量问题，"
+                                                "已停止重复模型调用并保留可诊断的阻断结论。"
+                                            ),
+                                        },
+                                    )
+                                    break
                                 if str(audit_after.get("status") or "") not in {
                                     "needs_rework",
                                     "invalid",
