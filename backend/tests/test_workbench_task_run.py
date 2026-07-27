@@ -6520,6 +6520,58 @@ def test_each_quality_repair_attempt_only_bypasses_its_current_failed_artifacts(
     assert "black_box_cases.json" not in second["cache_bypass_artifacts"]
 
 
+def test_source_coverage_repair_requires_a_binding_on_every_black_box_case():
+    from app.services.workbench_workflow_runner import (
+        _apply_quality_feedback_to_staged_plan,
+    )
+
+    plan = {
+        "required_outputs": ["black_box_cases.json"],
+        "stages": [
+            {
+                "id": "black_box_cases",
+                "artifact": "black_box_cases.json",
+                "depends_on": [],
+                "output_contract": {
+                    "schema": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "required": ["case_id"],
+                            "properties": {"case_id": {"type": "string"}},
+                        },
+                    }
+                },
+            }
+        ],
+    }
+
+    repaired = _apply_quality_feedback_to_staged_plan(
+        plan,
+        {
+            "affected_artifacts": ["black_box_cases.json"],
+            "issues": [
+                {
+                    "code": "source_driven_coverage_incomplete",
+                    "coverage_targets": [
+                        {"id": "FLOW-COND-002"},
+                        {"id": "RESOURCE-CMD"},
+                    ],
+                }
+            ],
+        },
+    )
+
+    stage = repaired["stages"][0]
+    item_schema = stage["output_contract"]["schema"]["items"]
+    assert "coverage_target_ids" in item_schema["required"]
+    assert item_schema["properties"]["coverage_target_ids"]["minItems"] == 1
+    assert stage["coverage_target_binding_contract"]["required_target_ids"] == [
+        "FLOW-COND-002",
+        "RESOURCE-CMD",
+    ]
+
+
 def test_in_run_quality_repair_drops_task_level_retry_invalidations():
     from app.services.workbench_workflow_runner import (
         _apply_quality_feedback_to_staged_plan,

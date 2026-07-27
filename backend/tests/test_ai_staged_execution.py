@@ -782,6 +782,13 @@ def test_plan_compiles_dependency_order_and_declared_outputs():
     assert source_stage["output_limits"]["max_evidence_anchors"] == 12
 
 
+def test_black_box_rules_require_aggregate_coverage_target_binding():
+    rules = "\n".join(_stage_format_rules("black_box_cases", "black_box_cases.json"))
+
+    assert "每一个 coverage_targets.id 至少出现一次" in rules
+    assert "不得只新增少量用例后保留未绑定的旧用例" in rules
+
+
 @pytest.mark.asyncio
 async def test_rapid_test_activity_materializes_required_stage_contract_artifacts(tmp_path):
     plan = build_staged_execution_plan(
