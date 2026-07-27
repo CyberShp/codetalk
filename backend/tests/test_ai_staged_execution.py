@@ -8866,6 +8866,13 @@ def test_source_analysis_context_reserves_iscsi_login_semantic_anchors(tmp_path)
         "    return iscsi_parse_params(&conn->params, NULL, 0,",
         "        ISCSI_BHS_LOGIN_GET_CBIT(conn->flags), &conn->partial_parameter);",
         "}",
+        "",
+        *( [""] * 20 ),
+        "static void iscsi_pdu_payload_op_login(struct conn *conn)",
+        "{",
+        "    conn->login_timer = NULL;",
+        "    iscsi_op_login_response(conn);",
+        "}",
     ])
     source.write_text(source_text, encoding="utf-8")
     staged_context = {
@@ -8893,7 +8900,7 @@ def test_source_analysis_context_reserves_iscsi_login_semantic_anchors(tmp_path)
         staged_context=staged_context,
         max_files=1,
         excerpt_chars=500,
-        max_evidence_anchors=6,
+        max_evidence_anchors=7,
     )
 
     symbols = {
@@ -8906,6 +8913,7 @@ def test_source_analysis_context_reserves_iscsi_login_semantic_anchors(tmp_path)
         "iscsi_op_login_phase_none",
         "iscsi_op_login_response",
         "iscsi_op_login_rsp_handle_csg_bit",
+        "iscsi_pdu_payload_op_login",
     } <= symbols
 
 

@@ -56,7 +56,7 @@ _CANCELLATION_POLL_INTERVAL = 0.1
 _SOURCE_EVIDENCE_PACK_VERSION = "source-evidence-pack-v1"
 # Bump when deterministic evidence excerpts change.  A checksum-valid cache
 # from a previous selector can still contain an incomplete function fragment.
-_SOURCE_ANALYSIS_CACHE_VERSION = "source-analysis-cache-v4"
+_SOURCE_ANALYSIS_CACHE_VERSION = "source-analysis-cache-v5"
 _FLOW_DETERMINISTIC_STAGES = {"flow_evidence_pack", "flow_outline"}
 _SOURCE_DRIVEN_STAGE_GROUPS = {
     "breadth_inventory": {
@@ -601,6 +601,12 @@ def _expand_verified_source_anchors(
             "iscsi_op_login_response",
             "iscsi_op_login_rsp_handle_csg_bit",
             "iscsi_op_login_store_incoming_params",
+            # This is where the first Login payload transitions out of the
+            # connection-start timeout regime.  It must be present whenever
+            # the workflow asks for timeout, recovery, or resource behavior;
+            # otherwise later SFMEA repair cannot make a source-verifiable
+            # statement about the timer lifecycle.
+            "iscsi_pdu_payload_op_login",
         }
         tokens.extend((
             "cbit",

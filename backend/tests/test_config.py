@@ -61,10 +61,10 @@ def test_behavior_claim_audit_defaults_to_bounded_parallel_medium_reasoning(monk
     assert audit.behavior_claim_audit_heartbeat_seconds == 10.0
 
 
-def test_source_analysis_cache_schema_tracks_relevance_v8(monkeypatch):
+def test_source_analysis_cache_schema_tracks_relevance_v9(monkeypatch):
     monkeypatch.delenv("SOURCE_ANALYSIS_SCHEMA_VERSION", raising=False)
 
-    assert Settings(_env_file=None).source_analysis_schema_version == "source-evidence-pack-v8"
+    assert Settings(_env_file=None).source_analysis_schema_version == "source-evidence-pack-v9"
 
 
 def test_runtime_temp_directory_defaults_to_data_directory(monkeypatch, tmp_path):

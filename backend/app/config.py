@@ -164,7 +164,7 @@ class Settings(BaseSettings):
     source_analysis_cache_enabled: bool = True
     # Bump whenever deterministic evidence ranking/selection semantics change so
     # old but checksum-valid packs cannot preserve obsolete relevance mistakes.
-    source_analysis_schema_version: str = "source-evidence-pack-v8"
+    source_analysis_schema_version: str = "source-evidence-pack-v9"
     # Keep provider work below the 20-minute product SLA and reserve time for
     # cancellation, final governance refresh, and task-state persistence.
     staged_workflow_timeout_seconds: int = Field(default=1180, ge=60, le=1200)
