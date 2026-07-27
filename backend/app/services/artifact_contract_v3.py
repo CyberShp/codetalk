@@ -177,7 +177,13 @@ def materialize_artifact_contract_v3_outputs(
         written.append("开发给测试讲代码.md")
         _write_markdown(
             root / "流程状态资源与异常传播.md",
-            ["# 流程、状态、资源与异常传播", "\n## 已建模流程", *_flow_lines(flow_cards)],
+            _flow_state_resource_delivery_lines(
+                flow_cards=flow_cards,
+                branches=branches,
+                states=states,
+                resources=resources,
+                error_chains=error_chains,
+            ),
         )
         written.append("流程状态资源与异常传播.md")
     if sfmea:
@@ -668,6 +674,43 @@ def _flow_lines(flow_cards: list[dict[str, Any]]) -> list[str]:
         label = f"[{flow_id}] " if flow_id else ""
         result.append(f"- {label}**{title}**{f'：{detail}' if detail else ''}")
     return result or ["- 未形成可交付的流程卡片。"]
+
+
+def _flow_state_resource_delivery_lines(
+    *,
+    flow_cards: list[dict[str, Any]],
+    branches: list[dict[str, Any]],
+    states: list[dict[str, Any]],
+    resources: list[dict[str, Any]],
+    error_chains: list[dict[str, Any]],
+) -> list[str]:
+    """Render the deep delivery from all governed flow ledgers.
+
+    ``flow_cards.json`` is intentionally compact: it is the alignment source
+    for the main flow identity, not the complete deep-analysis narrative.  A
+    previous projection used it as the whole delivery and silently reduced a
+    rich deep run to one heading and one bullet.  The companion ledgers are
+    already verified stage outputs, so including them here is deterministic
+    and makes the named tester-facing deliverable match its promise.
+    """
+    primary_flow = flow_cards[0] if flow_cards else {}
+    return [
+        "# 流程、状态、资源与异常传播",
+        "\n本交付件由已验证流程卡、分支处置、状态迁移、资源生命周期和异常传播台账生成；"
+        "标为待验证的条目不是源码已证实缺陷。",
+        "\n## 已建模流程",
+        *_flow_lines(flow_cards),
+        "\n## 分支与异常触发",
+        *_branch_lines(branches, _string_values(primary_flow.get("abnormal_paths"))),
+        "\n## 状态迁移",
+        *_state_lines(states),
+        "\n## 资源生命周期与耗尽边界",
+        *_resource_lines(resources),
+        "\n## 超时、重试与恢复",
+        *_timeout_recovery_lines(primary_flow, error_chains),
+        "\n## 异常传播与外部观测",
+        *_error_chain_lines(error_chains),
+    ]
 
 
 def _developer_explanation_lines(

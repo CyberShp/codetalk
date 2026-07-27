@@ -492,6 +492,31 @@ def test_deep_contract_materializes_named_deliverables_only_from_real_stage_outp
     assert "当前证据未直接覆盖" in explanation
 
 
+def test_deep_flow_state_resource_delivery_includes_all_governed_ledgers(tmp_path):
+    import json
+
+    from app.services.artifact_contract_v3 import materialize_artifact_contract_v3_outputs
+
+    (tmp_path / "source_scope.json").write_text(json.dumps({"analysis_target": "iSCSI login"}), encoding="utf-8")
+    (tmp_path / "evidence_cards.json").write_text(json.dumps([{"evidence_id": "SRC-01", "file_path": "lib/iscsi/login.c"}]), encoding="utf-8")
+    (tmp_path / "flow_cards.json").write_text(json.dumps({"items": [{"flow_id": "FLOW-LOGIN-01", "title": "登录流程", "abnormal_paths": ["认证失败"]}]}), encoding="utf-8")
+    (tmp_path / "sfmea.json").write_text(json.dumps([{"sfmea_id": "SFMEA-01", "failure_mode": "认证失败"}]), encoding="utf-8")
+    (tmp_path / "black_box_cases.json").write_text(json.dumps([{"case_id": "BB-01", "title": "错误凭据"}]), encoding="utf-8")
+    (tmp_path / "branch_disposition.json").write_text(json.dumps({"items": [{"condition": "认证失败", "disposition": "need_verify"}]}), encoding="utf-8")
+    (tmp_path / "state_transition_disposition.json").write_text(json.dumps({"items": [{"state": "LOGIN", "transitions": [{"text": "认证通过后进入 FULL_FEATURE"}]}]}), encoding="utf-8")
+    (tmp_path / "resource_lifecycle_disposition.json").write_text(json.dumps({"items": [{"name": "连接资源", "allocation": "建立连接时申请", "normal_release": "注销时释放"}]}), encoding="utf-8")
+    (tmp_path / "error_propagation_chains.json").write_text(json.dumps({"items": [{"trigger": "认证失败", "downstream_effect": "返回公开登录拒绝响应"}]}), encoding="utf-8")
+
+    materialize_artifact_contract_v3_outputs(tmp_path, profile_id="deep")
+
+    delivery = (tmp_path / "流程状态资源与异常传播.md").read_text(encoding="utf-8")
+    for heading in ("分支与异常触发", "状态迁移", "资源生命周期与耗尽边界", "超时、重试与恢复", "异常传播与外部观测"):
+        assert heading in delivery
+    assert "认证通过后进入 FULL_FEATURE" in delivery
+    assert "建立连接时申请" in delivery
+    assert "返回公开登录拒绝响应" in delivery
+
+
 def test_deep_contract_materializes_task_deliverables_from_nested_agent_stage_outputs(tmp_path):
     """Stage quality gates audit the task root before final task collection."""
     import json
