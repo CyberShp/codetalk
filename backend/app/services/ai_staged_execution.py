@@ -5093,6 +5093,27 @@ async def _execute_regular_stage(
         prompt_characters = len(prompt)
         prompt_estimated_tokens = BaseLLMClient.estimate_tokens(prompt)
 
+    binding_contract = stage.get("coverage_target_binding_contract")
+    if (
+        base_stage_id == "black_box_cases"
+        and current_artifact_seed.strip()
+        and isinstance(binding_contract, dict)
+    ):
+        return await _execute_black_box_coverage_binding_patch_stage(
+            llm=stage_llm,
+            stage=stage,
+            stage_dir=stage_dir,
+            output_path=output_path,
+            current_artifact_seed=current_artifact_seed,
+            binding_contract=binding_contract,
+            quality_feedback=quality_feedback if isinstance(quality_feedback, dict) else {},
+            policy=policy,
+            is_cancelled=is_cancelled,
+            on_progress=on_progress,
+            provider_capacity=provider_capacity,
+            prompt_characters_before_compaction=prompt_characters_before_compaction,
+        )
+
     await _emit_progress(
         on_progress,
         {
@@ -13852,6 +13873,148 @@ def _apply_black_box_coverage_binding_patch(
         else item
         for item in base_items
     ]
+
+
+async def _execute_black_box_coverage_binding_patch_stage(
+    *,
+    llm: Any,
+    stage: dict[str, Any],
+    stage_dir: Path,
+    output_path: Path,
+    current_artifact_seed: str,
+    binding_contract: dict[str, Any],
+    quality_feedback: dict[str, Any],
+    policy: StageExecutionPolicy,
+    is_cancelled: CancellationCallback | None,
+    on_progress: ProgressCallback | None,
+    provider_capacity: _ProcessProviderCapacity,
+    prompt_characters_before_compaction: int,
+) -> dict[str, Any]:
+    """Ask for a bounded case-to-target map instead of regenerating cases."""
+    started = time.monotonic()
+    stage_id = str(stage.get("id") or "black_box_cases")
+    artifact = str(stage.get("artifact") or "black_box_cases.json")
+    base_items = _json_array_items(current_artifact_seed)
+    target_ids = [
+        str(value).strip()
+        for value in binding_contract.get("required_target_ids") or []
+        if str(value).strip()
+    ]
+    if not base_items or not target_ids:
+        raise ValueError("coverage_binding_patch_precondition_missing")
+    target_details: list[dict[str, Any]] = []
+    if isinstance(quality_feedback, dict):
+        for issue in quality_feedback.get("issues") or []:
+            if not isinstance(issue, dict):
+                continue
+            if str(issue.get("code") or "") != "source_driven_coverage_incomplete":
+                continue
+            for target in issue.get("coverage_targets") or []:
+                if isinstance(target, dict) and str(target.get("id") or "").strip() in target_ids:
+                    target_details.append({
+                        key: target.get(key)
+                        for key in ("id", "condition", "file_path", "start_line", "end_line", "evidence_refs")
+                    })
+    case_summaries = [
+        {
+            "case_id": _json_array_row_id(item),
+            "scenario_name": str(item.get("scenario_name") or "")[:300],
+            "preconditions": [str(value)[:160] for value in item.get("preconditions") or []][:3],
+            "steps": [str(value)[:180] for value in item.get("steps") or []][:3],
+            "expected_result": str(item.get("expected_result") or "")[:260],
+            "observability": [str(value)[:160] for value in item.get("observability") or []][:3],
+        }
+        for item in base_items
+        if isinstance(item, dict) and _json_array_row_id(item)
+    ]
+    prompt = "\n".join([
+        "TASK: Bind frozen source-coverage targets to already accepted black-box cases.",
+        "Return only a JSON array. Each item must be exactly {case_id, coverage_target_ids}.",
+        "Use only case_id values in CASES and only target IDs in TARGETS.",
+        "Every TARGETS.id must appear at least once across the entire array. Do not add cases, rewrite test steps, invent COV-* IDs, or use a target unless the named external scenario actually exercises it.",
+        "TARGETS:",
+        json.dumps(target_details or [{"id": value} for value in target_ids], ensure_ascii=False),
+        "CASES:",
+        json.dumps(case_summaries, ensure_ascii=False),
+    ])
+    _write_text(stage_dir / "coverage_binding_patch_prompt.txt", prompt)
+    await _emit_progress(on_progress, {
+        "event_type": "coverage_binding_patch_started",
+        "stage_id": stage_id,
+        "status": "running",
+        "artifact": artifact,
+        "target_count": len(target_ids),
+        "user_message": "正在将冻结的源码覆盖目标逐项绑定到已有黑盒用例",
+    })
+    queue_started = time.monotonic()
+    acquired = await provider_capacity.acquire(
+        min(policy.total_timeout_seconds, 180.0), is_cancelled=is_cancelled
+    )
+    if not acquired:
+        raise RuntimeError("coverage_binding_provider_capacity_timeout")
+    detached: list[asyncio.Task[Any]] = []
+    try:
+        provider_started = time.monotonic()
+        response = await _complete_with_cancellation(
+            llm=llm,
+            prompt=prompt,
+            max_tokens=min(2400, policy.max_tokens),
+            is_cancelled=is_cancelled,
+            timeout_seconds=min(180.0, policy.provider_timeout_seconds),
+            single_attempt=True,
+            on_detached_task=detached.append,
+        )
+        provider_wait_ms = round((time.monotonic() - provider_started) * 1000, 1)
+        content = str(getattr(response, "content", "") or "").strip()
+        _write_text(stage_dir / "coverage_binding_patch_raw_output.txt", content)
+        patch_items = _render_stage_artifact(content, "coverage_binding_patch.json")
+        if not isinstance(patch_items, list):
+            raise ValueError("coverage_binding_patch_not_array")
+        merged = _apply_black_box_coverage_binding_patch(
+            base_items,
+            patch_items,
+            required_target_ids=target_ids,
+        )
+        _write_json(stage_dir / "coverage_binding_patch.json", patch_items)
+        _write_json(output_path, merged)
+        duration_ms = round((time.monotonic() - started) * 1000, 1)
+        result = {
+            "stage_id": stage_id,
+            "status": "completed",
+            "artifact": artifact,
+            "attempts": 1,
+            "attempt_count": 1,
+            "full_retry_performed": False,
+            "provider_call_count": 1,
+            "queue_wait_ms": round((provider_started - queue_started) * 1000, 1),
+            "provider_wait_ms": provider_wait_ms,
+            "time_to_first_token_ms": provider_wait_ms,
+            "generation_ms": provider_wait_ms,
+            "validation_ms": round((time.monotonic() - provider_started) * 1000, 1),
+            "total_duration_ms": duration_ms,
+            "duration_ms": duration_ms,
+            "finish_reason": "coverage_binding_patch",
+            "prompt_characters": len(prompt),
+            "prompt_characters_before_compaction": prompt_characters_before_compaction,
+            "prompt_estimated_tokens": BaseLLMClient.estimate_tokens(prompt),
+            "output_tokens": BaseLLMClient.estimate_tokens(content),
+            "size_bytes": output_path.stat().st_size,
+            "model": str(getattr(response, "model", "") or getattr(llm, "_model", "")),
+            "coverage_target_count": len(target_ids),
+            "cache_status": "disabled",
+        }
+        _write_json(stage_dir / "stage_result.json", result)
+        await _emit_progress(on_progress, {
+            "event_type": "coverage_binding_patch_completed",
+            "stage_id": stage_id,
+            "status": "completed",
+            "artifact": artifact,
+            "target_count": len(target_ids),
+            "user_message": "已完成源码覆盖目标与黑盒用例的定向绑定",
+        })
+        return {**result, "output_path": str(output_path)}
+    finally:
+        provider_capacity.release_after(detached)
 
 
 def _apply_sfmea_nonrisk_deletion_tombstones(
