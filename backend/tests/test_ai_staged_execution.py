@@ -13822,6 +13822,64 @@ def test_deterministic_quality_repair_corrects_final_login_response_stage_bits()
     assert "$[0].expected_result" in fields
 
 
+def test_deterministic_quality_repair_resolves_rendered_headings_and_repairs_iscsi_cases():
+    """Task-level audits name rendered headings, not always stable JSON ids."""
+    repaired, fields = _deterministic_quality_claim_repair(
+        [
+            {
+                "case_id": "BB-01",
+                "scenario_name": "正常登录进入 Full Feature Phase",
+                "steps": ["最终响应 CSG=3、NSG=3、T=1"],
+                "expected_result": "Login Response 最终 CSG=3、NSG=3、T=1",
+            },
+            {
+                "case_id": "BB-07",
+                "scenario_name": "Authorization Failure",
+                "steps": ["CHAP_N、CHAP_I、CHAP_R 全部使用 base64 编码"],
+                "expected_result": "返回 Authorization Failure",
+            },
+            {
+                "case_id": "BB-23",
+                "scenario_name": "登录超时后连接关闭",
+                "expected_result": "首个 Login PDU 后 30 秒 login_timer 必然关闭连接",
+            },
+        ],
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [
+            {
+                "artifact": "black_box_cases.json",
+                "code": "professional_fact_conflict",
+                "constraint_id": "iscsi_login_response_stage_bits",
+                "section_heading": "BB-01 正常登录进入 Full Feature Phase",
+            },
+            {
+                "artifact": "black_box_cases.json",
+                "code": "professional_fact_conflict",
+                "constraint_id": "iscsi_chap_wire_encoding",
+                "section_heading": "BB-07 Authorization Failure",
+            },
+            {
+                "artifact": "black_box_cases.json",
+                "code": "black_box_evidence_contradiction",
+                "constraint_id": "iscsi_login_timer_after_first_pdu",
+                "scenario": "BB-23 登录超时后连接关闭",
+            },
+        ]},
+    )
+
+    by_id = {row["case_id"]: row for row in repaired}
+    assert "CSG=3" not in by_id["BB-01"]["expected_result"]
+    chap = " ".join(by_id["BB-07"]["steps"])
+    assert "CHAP_N 为普通用户名字符串" in chap
+    assert "CHAP_I 为十进制标识符" in chap
+    assert "CHAP_R/CHAP_C" in chap
+    assert "不会保证首个 Login PDU 后 30 秒" in by_id["BB-23"]["expected_result"]
+    assert "资源残留" in by_id["BB-23"]["expected_result"]
+    assert "$[0].expected_result" in fields
+    assert "$[1].steps" in fields
+    assert "$[2].expected_result" in fields
+
+
 def test_final_quality_repair_corrects_first_login_pdu_timer_strategy(tmp_path):
     strategy_path = tmp_path / "test_strategy.md"
     strategy_path.write_text(

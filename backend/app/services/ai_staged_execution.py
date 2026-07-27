@@ -8835,28 +8835,38 @@ def _quality_repair_row_ids(
             row_id = str(issue.get(key) or "").strip()
             if row_id:
                 row_ids.add(row_id)
-        scenario = str(issue.get("scenario") or "").strip()
-        if scenario and base_items:
+        # Structured audits normally carry a stable row id.  Rendered report
+        # audits instead point at a human-facing section heading (for example
+        # ``BB-07 Authorization Failure``).  Treat that heading as the same
+        # precise locator after removing only a display prefix; do not infer a
+        # target from arbitrary free prose.
+        scenario_values = [
+            str(issue.get(key) or "").strip()
+            for key in ("scenario", "section_heading", "title")
+            if str(issue.get(key) or "").strip()
+        ]
+        if scenario_values and base_items:
             # Final report audits refer to a user-facing case title, while the
             # structured artifact owns stable BC-/BBC- identifiers. Resolve
             # only exact normalized titles; TC/BC display prefixes are labels,
             # not a second identifier namespace.
-            normalized_scenario = re.sub(
-                r"^(?:tc|bc|bbc)-\d+\s*[-:：.]?\s*", "", scenario,
-                flags=re.IGNORECASE,
-            ).strip().casefold()
-            for item in base_items:
-                if not isinstance(item, dict):
-                    continue
-                candidate = str(item.get("scenario_name") or "").strip()
-                normalized_candidate = re.sub(
-                    r"^(?:tc|bc|bbc)-\d+\s*[-:：.]?\s*", "", candidate,
+            for scenario in scenario_values:
+                normalized_scenario = re.sub(
+                    r"^(?:tc|bc|bbc|bb)-\d+\s*[-:：.]?\s*", "", scenario,
                     flags=re.IGNORECASE,
                 ).strip().casefold()
-                if normalized_scenario and normalized_scenario == normalized_candidate:
-                    row_id = _json_array_row_id(item)
-                    if row_id:
-                        row_ids.add(row_id)
+                for item in base_items:
+                    if not isinstance(item, dict):
+                        continue
+                    candidate = str(item.get("scenario_name") or "").strip()
+                    normalized_candidate = re.sub(
+                        r"^(?:tc|bc|bbc|bb)-\d+\s*[-:：.]?\s*", "", candidate,
+                        flags=re.IGNORECASE,
+                    ).strip().casefold()
+                    if normalized_scenario and normalized_scenario == normalized_candidate:
+                        row_id = _json_array_row_id(item)
+                        if row_id:
+                            row_ids.add(row_id)
         if not any(
             str(issue.get(key) or "").strip()
             for key in ("row_id", "case_id", "sfmea_id", "risk_id")
@@ -10582,8 +10592,8 @@ def _deterministic_quality_claim_repair(
                 for field in ("preconditions", "expected_result", "observability")
             )
 
-    final_login_stage_case_ids = {
-        str(issue.get("row_id") or "").strip()
+    final_login_stage_issues = [
+        issue
         for issue in issues
         if str(issue.get("code") or "") == "professional_fact_conflict"
         and str(issue.get("constraint_id") or "")
@@ -10591,8 +10601,12 @@ def _deterministic_quality_claim_repair(
             "iscsi_final_login_stage_alternatives",
             "iscsi_login_response_stage_bits",
         }
-        and str(issue.get("row_id") or "").strip()
-    }
+    ]
+    final_login_stage_case_ids = _quality_repair_row_ids(
+        artifact=artifact_name,
+        quality_feedback={"issues": final_login_stage_issues},
+        base_items=repaired if isinstance(repaired, list) else None,
+    )
     if (
         final_login_stage_case_ids
         and artifact_name == "black_box_cases.json"
@@ -10613,6 +10627,47 @@ def _deterministic_quality_claim_repair(
                 "CSG=0 和 CSG=1 都可能合法，外部会话进入 Full Feature。"
             )
             fields.extend([f"$[{index}].steps", f"$[{index}].expected_result"])
+
+    chap_wire_encoding_issues = [
+        issue
+        for issue in issues
+        if str(issue.get("code") or "") == "professional_fact_conflict"
+        and str(issue.get("constraint_id") or "") == "iscsi_chap_wire_encoding"
+    ]
+    chap_wire_encoding_case_ids = _quality_repair_row_ids(
+        artifact=artifact_name,
+        quality_feedback={"issues": chap_wire_encoding_issues},
+        base_items=repaired if isinstance(repaired, list) else None,
+    )
+    if (
+        chap_wire_encoding_case_ids
+        and artifact_name == "black_box_cases.json"
+        and isinstance(repaired, list)
+    ):
+        for index, row in enumerate(repaired):
+            if not isinstance(row, dict):
+                continue
+            if str(row.get("case_id") or "").strip() not in chap_wire_encoding_case_ids:
+                continue
+            row["steps"] = [
+                "配置授权失败的 CHAP 场景并由公开 initiator 发起 Login，保留请求与响应 PDU。",
+                "构造参数时 CHAP_N 为普通用户名字符串、CHAP_I 为十进制标识符；仅 CHAP_R/CHAP_C 使用协议允许的 0x/0b 编码。",
+                "记录 Login Response 的 status_class/status_detail、initiator 输出和 target 日志。",
+            ]
+            row["expected_result"] = (
+                "认证/授权失败以实际返回的公开 Login Response 状态为准；"
+                "参数编码遵守 CHAP_N 普通字符串、CHAP_I 十进制标识符、"
+                "仅 CHAP_R/CHAP_C 支持 0x/0b 前缀的规则。"
+            )
+            row["observability"] = [
+                "保留 CHAP 参数名称与格式、Login Response status_class/status_detail、initiator 输出和 target 日志。",
+                "不得把 CHAP_N、CHAP_I 或 CHAP_R 笼统标为 base64 编码。",
+            ]
+            fields.extend([
+                f"$[{index}].steps",
+                f"$[{index}].expected_result",
+                f"$[{index}].observability",
+            ])
 
     boundary_case_ids = {
         str(issue.get("row_id") or "").strip()
