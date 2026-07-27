@@ -11277,14 +11277,32 @@ def _deterministic_quality_claim_repair(
         and artifact_name == "black_box_cases.json"
         and isinstance(repaired, list)
     ):
+        target_ids = _quality_repair_row_ids(
+            artifact=artifact_name,
+            quality_feedback={"issues": [
+                issue
+                for issue in issues
+                if str(issue.get("constraint_id") or "")
+                == "iscsi_chap_request_response_flags"
+            ]},
+            base_items=repaired,
+        )
         for index, row in enumerate(repaired):
             if not isinstance(row, dict):
                 continue
+            row_id = str(row.get("case_id") or "").strip()
             context = " ".join(
                 str(row.get(key) or "")
                 for key in ("scenario_name", "steps", "expected_result", "observability")
             ).lower()
-            if "chap" not in context:
+            # A rendered report can identify its affected case by the display
+            # heading even when the model omitted the word "CHAP" from that
+            # particular row.  Prefer the stable resolved target; retain the
+            # lexical fallback only when the audit has no row locator.
+            if target_ids:
+                if row_id not in target_ids:
+                    continue
+            elif "chap" not in context:
                 continue
             row["steps"] = [
                 "由公开 initiator 发起 CHAP Login 的首轮安全协商请求（T=0），抓取对应 Login Response。",

@@ -5964,6 +5964,31 @@ def test_deterministic_quality_claim_repair_corrects_black_box_flags_and_thresho
     assert "50 ms" not in repaired[1]["expected_result"]
 
 
+def test_deterministic_quality_repair_uses_report_heading_for_chap_flag_case_without_chap_label():
+    payload = [{
+        "case_id": "BB-001",
+        "scenario_name": "正常登录成功进入 Full Feature Phase",
+        "steps": ["Login Request CSG=0, T=0；第二个 Login Request CSG=1, T=0。"],
+        "expected_result": "最终 Login Response T=1。",
+        "observability": [],
+    }]
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        payload,
+        artifact="black_box_cases.json",
+        quality_feedback={"issues": [{
+            "artifact": "black_box_cases.json",
+            "code": "professional_fact_conflict",
+            "constraint_id": "iscsi_chap_request_response_flags",
+            "section_heading": "BB-001 正常登录成功进入 Full Feature Phase",
+        }]},
+    )
+
+    assert fields == ["$[0].steps", "$[0].expected_result"]
+    assert "CHAP Login 的首轮安全协商请求（T=0）" in repaired[0]["steps"][0]
+    assert "CSG 由当前协商路径决定" in repaired[0]["expected_result"]
+
+
 def test_deterministic_quality_claim_repair_resolves_black_box_flag_audit_section_heading():
     payload = [{
         "case_id": "BB-002",

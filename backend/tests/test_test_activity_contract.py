@@ -9854,3 +9854,32 @@ def test_iscsi_professional_lint_accepts_post_login_text_scope_and_zeroed_error_
     ids = {issue.get("constraint_id") for issue in issues}
     assert "iscsi_login_negotiation_transport" not in ids
     assert "iscsi_login_error_flags_cleared" not in ids
+
+
+def test_iscsi_professional_lint_accepts_explicit_error_flag_prohibition_and_valid_final_transition(tmp_path):
+    """A corrective oracle must not be reclassified as the bad protocol claim."""
+    from app.services.test_activity_contract import (
+        _audit_professional_constraints,
+        build_test_activity_contract,
+    )
+
+    repo = tmp_path / "spdk"
+    repo.mkdir()
+    contract = build_test_activity_contract(
+        target="iSCSI Login CHAP black-box design",
+        repo_path=str(repo),
+    )
+    issues = _audit_professional_constraints(
+        "认证失败的非成功 Login Response 清除 T、CSG、NSG；不得保留 T=1 或阶段迁移位。\n"
+        "首轮 CHAP Login Response 保持 T=0；最终进入 Full Feature 的请求和成功响应使用 "
+        "T=1、NSG=3，CSG 由当前协商路径决定。",
+        contract,
+    )
+
+    blocked = {
+        issue.get("constraint_id")
+        for issue in issues
+        if issue.get("code") == "professional_fact_conflict"
+    }
+    assert "iscsi_login_error_flags_cleared" not in blocked
+    assert "iscsi_chap_request_response_flags" not in blocked
