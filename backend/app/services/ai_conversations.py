@@ -6229,6 +6229,12 @@ async def _workbench_task_refs(
         "verified_fact_ledger.json",
         "agent_runs/analyze/evidence_cards.json",
     ]
+    constraint_review = any(
+        marker in str(user_message or "").lower()
+        for marker in ("质量约束", "按约束", "复核")
+    )
+    if constraint_review:
+        priority_candidates.insert(0, "test_activity_contract.json")
     diagnostic_candidates = [
         "agent_runs/analyze/flow_evidence_pack.json",
         "task_artifact_manifest.json",
