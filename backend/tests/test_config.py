@@ -2,6 +2,7 @@ import os
 
 import pytest
 import tempfile
+from pathlib import Path
 
 from app.config import Settings, configure_runtime_temp_environment
 
@@ -13,6 +14,27 @@ def test_default_cors_origins_exclude_retired_frontend_ports():
     assert "http://127.0.0.1:3003" in origins
     assert "http://localhost:3205" not in origins
     assert "http://127.0.0.1:3205" not in origins
+
+
+def test_default_runtime_paths_are_absolute_and_do_not_depend_on_cwd(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+
+    configured = Settings(_env_file=None)
+
+    assert configured.data_path.is_absolute()
+    assert Path(configured.sqlite_db).is_absolute()
+    assert configured.data_path.name == "data"
+
+
+def test_data_directory_override_keeps_default_sqlite_with_runtime_artifacts(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "media-runtime"
+    monkeypatch.setenv("CODETALK_DATA_DIR", str(runtime_root))
+    monkeypatch.delenv("CODETALK_SQLITE_DB", raising=False)
+
+    configured = Settings(_env_file=None)
+
+    assert configured.data_path == runtime_root.resolve()
+    assert Path(configured.sqlite_db) == runtime_root.resolve() / "codetalk.db"
 
 
 def test_versioned_workbench_is_enabled_by_default_and_rejects_legacy_rollback(monkeypatch):

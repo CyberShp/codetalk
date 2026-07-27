@@ -6338,6 +6338,39 @@ def test_quality_feedback_marks_missing_verified_flow_paths_as_non_repairable():
     assert feedback["blocked_reasons"] == ["flow_incomplete_for_delivery"]
 
 
+def test_quality_feedback_stops_repeating_frozen_source_coverage_gaps():
+    from app.services.workbench_workflow_runner import _quality_feedback_from_audit
+
+    feedback = _quality_feedback_from_audit(
+        {
+            "status": "needs_rework",
+            "issues": [
+                {
+                    "code": "source_driven_coverage_judge_blocked",
+                    "artifact": "judge_report.json",
+                    "message": "源码驱动覆盖门禁未通过：facts:blocked",
+                },
+                {
+                    "code": "source_driven_coverage_incomplete",
+                    "artifact": "black_box_cases.json",
+                    "coverage_targets": [{"id": "FLOW-COND-002"}],
+                    "message": "仍有待核验覆盖项",
+                },
+            ],
+        },
+        required_artifacts=["report.md", "black_box_cases.json"],
+        quality_artifact="quality.json",
+    )
+
+    assert feedback["affected_artifacts"] == []
+    assert feedback["repairable_issue_count"] == 0
+    assert feedback["non_repairable_issue_count"] == 2
+    assert feedback["blocked_reasons"] == [
+        "source_driven_coverage_judge_blocked",
+        "source_driven_coverage_incomplete",
+    ]
+
+
 def test_quality_feedback_routes_transient_sfmea_contract_floor_to_repair():
     from app.services.workbench_workflow_runner import _quality_feedback_from_audit
 

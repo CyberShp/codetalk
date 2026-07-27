@@ -7,6 +7,8 @@ from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _CL100K_BPE = "9b5ad71b2ce5302211f9c61530b329a4922fc6a4"
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_DEFAULT_DATA_DIR = _PROJECT_ROOT / "data"
 
 
 class Settings(BaseSettings):
@@ -14,10 +16,16 @@ class Settings(BaseSettings):
         env_file=(".env", ".env.local"),
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     # Data storage root — all runtime files live here
-    data_dir: str = "data"
+    # Keep runtime state independent of the process working directory.  The
+    # deployment entrypoint, tests and manual uvicorn starts may use different
+    # cwd values; a relative default silently creates split task histories.
+    data_dir: str = Field(
+        default=str(_DEFAULT_DATA_DIR), validation_alias="CODETALK_DATA_DIR"
+    )
 
     # Runtime scratch root. Keep temporary files beside persistent runtime data
     # by default so large Agent/LLM payloads do not spill onto the system disk.
@@ -25,7 +33,7 @@ class Settings(BaseSettings):
     runtime_temp_dir: str = Field(default="", validation_alias="CODETALK_TEMP_DIR")
 
     # SQLite database path
-    sqlite_db: str = "data/codetalk.db"
+    sqlite_db: str = Field(default="", validation_alias="CODETALK_SQLITE_DB")
 
     # Public local API port. Keep this aligned with the frontend dev and E2E
     # defaults so logs and generated URLs do not point at stale runtimes.
@@ -246,6 +254,14 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def _resolve_repos_paths(self) -> "Settings":
+        data_root = Path(self.data_dir).expanduser().resolve()
+        self.data_dir = str(data_root)
+        # The default database belongs to the selected runtime data root. A
+        # deployment may still provide CODETALK_SQLITE_DB explicitly, but an
+        # ordinary CODETALK_DATA_DIR override cannot split configuration from
+        # task artifacts.
+        if "sqlite_db" not in self.model_fields_set:
+            self.sqlite_db = str(data_root / "codetalk.db")
         if not self.repos_base_path:
             from app.utils.repo_paths import default_repos_base_path
             self.repos_base_path = default_repos_base_path(Path(__file__).parent.parent.parent)

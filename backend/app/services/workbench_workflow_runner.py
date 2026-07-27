@@ -9091,6 +9091,13 @@ def _quality_feedback_from_audit(
         "flow_incomplete_for_delivery",
         "flow_missing_abnormal_paths",
         "flow_evidence_not_connected",
+        # These are verdicts about the available source-to-case mapping.  A
+        # second generation against the same frozen evidence cannot close them
+        # unless a separate coverage-expansion path supplies new bindings.
+        # Stop the expensive full black-box regeneration and preserve the
+        # actionable blocked targets instead of looping until the time budget.
+        "source_driven_coverage_judge_blocked",
+        "source_driven_coverage_incomplete",
         # A generator cannot make itself an independent auditor. Keep this
         # fail-closed finding in the audit, but still repair concrete delivery
         # defects reported alongside it.
