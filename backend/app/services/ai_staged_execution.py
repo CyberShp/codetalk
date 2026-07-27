@@ -3781,6 +3781,11 @@ def _render_deterministic_combined_report(
         if not re.match(r"(?i)^(?:BB|TC|CASE|用例)[-_ ]?\d+", case_id):
             case_id = f"TC-{index:02d}"
         scenario = str(row.get("scenario_name") or "未命名场景").strip()
+        claim_statements = [
+            str(claim.get("statement") or "").strip()
+            for claim in row.get("technical_claims") or []
+            if isinstance(claim, dict) and str(claim.get("statement") or "").strip()
+        ]
         lines.extend(
             [
                 f"### {case_id} {scenario}",
@@ -3793,6 +3798,11 @@ def _render_deterministic_combined_report(
                 f"- 失败诊断：{_markdown_list_value(row.get('failure_diagnostics'))}",
                 f"- 测试映射：{_markdown_list_value(row.get('mapped_test_dir'))}",
                 f"- 证据：{_markdown_list_value(row.get('source_or_test_evidence'))}",
+                *(
+                    [f"- 源码断言：{'；'.join(claim_statements)}"]
+                    if claim_statements
+                    else []
+                ),
                 "",
             ]
         )
@@ -9998,6 +10008,8 @@ def _deterministic_quality_claim_repair(
         "source_claim_insufficient",
         "row_source_claim_insufficient",
         "evidence_path_not_found",
+        "claim_evidence_not_declared_for_row",
+        "professional_coverage_incomplete",
     }
     if not issue_codes or not (issue_codes & supported_codes):
         return repaired, []
@@ -10135,6 +10147,27 @@ def _deterministic_quality_claim_repair(
                                 f"$[{row_index}].technical_claims[{claim_index}]"
                                 f".evidence[{evidence_index}].path"
                             )
+                    # A technical claim is part of a black-box row's public
+                    # test basis. Keep its already-verified evidence visible
+                    # on that row as well; otherwise the row-level contract
+                    # correctly rejects a hidden second source path even when
+                    # the claim itself has a valid L1/L2 binding.
+                    declared = [
+                        str(value).strip()
+                        for value in row.get("source_or_test_evidence") or []
+                        if str(value).strip()
+                    ]
+                    for evidence in claim.get("evidence") or []:
+                        if not isinstance(evidence, dict):
+                            continue
+                        evidence_id = str(evidence.get("evidence_id") or "").strip()
+                        card = cards_by_id.get(evidence_id.split(":", 1)[0])
+                        if not card or not evidence_id or evidence_id in declared:
+                            continue
+                        declared.append(evidence_id)
+                    if declared != list(row.get("source_or_test_evidence") or []):
+                        row["source_or_test_evidence"] = declared
+                        fields.append(f"$[{row_index}].source_or_test_evidence")
 
     ambiguous_expected_result_ids = {
         str(issue.get("row_id") or issue.get("case_id") or "").strip()
@@ -10266,6 +10299,72 @@ def _deterministic_quality_claim_repair(
                 f"$[{index}].observability",
                 f"$[{index}].failure_diagnostics",
             ])
+
+    missing_professional_scenarios = {
+        str(scenario).strip()
+        for issue in issues
+        if str(issue.get("code") or "") == "professional_coverage_incomplete"
+        for scenario in issue.get("scenarios") or []
+        if str(scenario).strip()
+    }
+    if (
+        artifact_name == "black_box_cases.json"
+        and isinstance(repaired, list)
+        and "CHAP 参数顺序错误" in missing_professional_scenarios
+        and not any(
+            isinstance(row, dict)
+            and "chap" in str(row.get("scenario_name") or "").lower()
+            and any(token in str(row.get("scenario_name") or "") for token in ("顺序", "次序", "order"))
+            for row in repaired
+        )
+    ):
+        chap_card = next(
+            (
+                card
+                for card in evidence_cards or []
+                if isinstance(card, dict)
+                and "/chap/" in str(card.get("file_path") or "")
+                and str(card.get("evidence_id") or "").strip()
+            ),
+            None,
+        )
+        if isinstance(chap_card, dict):
+            evidence_id = str(chap_card.get("evidence_id") or "").strip()
+            repaired.append(
+                {
+                    "case_id": "BBC-CHAP-ORDER",
+                    "test_dimension": "invalid_input",
+                    "scenario_name": "CHAP 参数顺序错误",
+                    "preconditions": [
+                        "SPDK iSCSI target 已启动，并按已验证 CHAP 测试配置准备认证凭据。",
+                        "使用可控制 Login Text 键值顺序的 raw-PDU 测试工具。",
+                    ],
+                    "steps": [
+                        "先发送 CHAP_N/CHAP_R，再发送应先协商的 CHAP_A，保留完整 Login Request/Response PDU。",
+                        "使用同一 target 与凭据按正常顺序重复一次，作为对照组。",
+                    ],
+                    "expected_result": (
+                        "该顺序属于待验证的协议兼容性边界：记录 Login Response 的 status_class、"
+                        "status_detail、Text 键和连接状态；不得预设 target 必然接受或拒绝。"
+                    ),
+                    "observability": [
+                        "两组 Login PDU、target 日志、TCP 连接状态和认证结果。",
+                        "正常顺序与异常顺序的公开响应差异。",
+                    ],
+                    "failure_diagnostics": [
+                        "若两组均成功，记录为兼容性行为并补充协议/源码复核。",
+                        "若仅异常顺序失败，保留 status 字段和日志，形成可复现负向用例。",
+                    ],
+                    "mapped_test_dir": str(chap_card.get("file_path") or ""),
+                    "source_or_test_evidence": [evidence_id],
+                    "technical_claims": [],
+                    "oracle_basis": (
+                        "已验证 CHAP 测试配置仅用于建立可控认证环境；"
+                        "参数顺序的具体 target 行为作为本用例待验证输出，不提升为源码事实。"
+                    ),
+                }
+            )
+            fields.append("$[+].chap_parameter_order_case")
 
     mcs_capability_issues = [
         issue

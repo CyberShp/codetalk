@@ -1424,6 +1424,14 @@ class WorkbenchWorkflowRunner:
             task_run=task_run,
             step_results=step_results,
         )
+        # The source-driven judge combines L1 bindings with the independent
+        # L2 behavior verdict. Rebuild it only after the final validation
+        # snapshot is materialized; rebuilding before this point leaves a
+        # stale L1-only ``facts:blocked`` verdict beside a verified ledger.
+        _refresh_source_delivery_governance_after_finalizing(
+            artifact_dir=Path(str(task_run.artifact_dir)),
+            plan={},
+        )
         test_activity_quality = self.audit_test_activity_quality(task_run=task_run)
         final_deterministic_repairs: dict[str, list[str]] = {}
         # One repair can reveal the next deterministic contract mismatch (for
@@ -1594,6 +1602,10 @@ class WorkbenchWorkflowRunner:
             self._materialize_final_behavior_validation(
                 task_run=task_run,
                 step_results=step_results,
+            )
+            _refresh_source_delivery_governance_after_finalizing(
+                artifact_dir=Path(str(task_run.artifact_dir)),
+                plan={},
             )
             final_quality_audit = self.audit_test_activity_quality(task_run=task_run)
         if isinstance(test_activity_quality.get("external_agent_quality_repair"), dict):

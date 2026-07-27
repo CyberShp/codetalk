@@ -457,7 +457,8 @@ def refresh_source_driven_delivery_governance(
     disk at the end of the lifecycle instead of trusting the earlier snapshot.
     """
 
-    root = Path(artifact_dir)
+    owner_root = Path(artifact_dir)
+    root = owner_root
     if not (root / "evidence_cards.json").is_file():
         # Task-level callers own the task root, while a staged agent owns the
         # canonical source-driven artifacts below agent_runs/<step>.
@@ -557,7 +558,14 @@ def refresh_source_driven_delivery_governance(
                 root / "traceability_matrix.json",
                 artifacts["traceability_matrix.json"],
             )
-    fact_verification = _combined_final_fact_verification(root)
+    fact_verification = _fact_verification_from_task_claim_ledger(
+        _read_json_artifact(owner_root / "claim_evidence_ledger.json")
+    ) or _combined_final_fact_verification(
+        root,
+        behavior_override=_read_json_artifact(
+            owner_root / "behavior_claim_validation.json"
+        ),
+    )
     judge = build_judge_report(
         artifacts=artifacts,
         fact_verification=fact_verification,
@@ -580,7 +588,57 @@ def refresh_source_driven_delivery_governance(
     return judge
 
 
-def _combined_final_fact_verification(root: Path) -> dict[str, Any]:
+def _fact_verification_from_task_claim_ledger(
+    ledger: Any,
+) -> dict[str, Any] | None:
+    """Use the task-owned V3 ledger when staged artifacts are nested.
+
+    The ledger is the final L1/L2 join produced after all task-level repairs.
+    Reverting to a nested Agent's historical validator would split the same
+    delivery across two fact authorities and can incorrectly re-block a
+    verified result.
+    """
+    if not isinstance(ledger, dict):
+        return None
+    summary = ledger.get("summary")
+    claims = ledger.get("claims")
+    if not isinstance(summary, dict) or not isinstance(claims, list):
+        return None
+    total = int(summary.get("total") or 0)
+    if total <= 0:
+        return None
+    normalized_claims = [
+        {
+            **item,
+            "status": str(item.get("verification_status") or "insufficient"),
+            "validation_layer": "task_claim_evidence_ledger_v3",
+        }
+        for item in claims
+        if isinstance(item, dict)
+    ]
+    verified = sum(item["status"] == "verified" for item in normalized_claims)
+    contradicted = sum(item["status"] == "contradicted" for item in normalized_claims)
+    insufficient = max(0, total - verified - contradicted)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": "final_fact_verification",
+        "status": "passed" if verified == total else "blocked",
+        "total": total,
+        "verified": verified,
+        "contradicted": contradicted,
+        "insufficient": insufficient,
+        "pass_rate": round(verified * 100 / total),
+        "behavior_validator_independent": True,
+        "behavior_validator_not_required": False,
+        "claims": normalized_claims,
+    }
+
+
+def _combined_final_fact_verification(
+    root: Path,
+    *,
+    behavior_override: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     deterministic_claims: list[dict[str, Any]] = []
     # Quality repair can replace individual rows after the staged L1 snapshot
     # was written. Rebuild L1 from the delivery bytes whenever those canonical
@@ -608,7 +666,11 @@ def _combined_final_fact_verification(root: Path) -> dict[str, Any]:
                     {**item, "validation_layer": "L1_deterministic_binding"}
                 )
 
-    behavior = _read_json_artifact(root / "behavior_claim_validation.json")
+    behavior = (
+        behavior_override
+        if isinstance(behavior_override, dict)
+        else _read_json_artifact(root / "behavior_claim_validation.json")
+    )
     behavior_is_independent = bool(
         isinstance(behavior, dict)
         and str(behavior.get("status") or "") == "completed"

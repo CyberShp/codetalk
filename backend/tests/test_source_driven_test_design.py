@@ -1227,6 +1227,77 @@ def test_final_behavior_validation_refreshes_judge_and_existing_mindmap(tmp_path
     assert "test-design-mindmap-v1" in (tmp_path / MINDMAP_ARTIFACTS[2]).read_text(encoding="utf-8")
 
 
+def test_task_root_behavior_validation_overrides_stale_nested_agent_snapshot(tmp_path):
+    from app.services.source_driven_test_design import (
+        build_source_driven_test_design,
+        refresh_source_driven_delivery_governance,
+    )
+
+    artifacts = build_source_driven_test_design(
+        source_pack=_source_pack(),
+        flow_pack=_flow_pack(),
+        flow_outline=_outline(),
+        sfmea=_sfmea(),
+        black_box_cases=_cases(),
+        fact_verification={"status": "not_checked", "total": 0},
+    )
+    nested = tmp_path / "agent_runs" / "analyze"
+    nested.mkdir(parents=True)
+    for disposition_name in (
+        "branch_disposition.json",
+        "state_transition_disposition.json",
+        "resource_lifecycle_disposition.json",
+    ):
+        for row in artifacts[disposition_name]["items"]:
+            row["disposition"] = "retain"
+            row["covered_by"] = ["CASE-001"]
+    for name, payload in artifacts.items():
+        (nested / name).write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    (tmp_path / "behavior_claim_validation.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "validator": {"independent": True},
+                "claims": [{"claim_id": "ROW:sfmea.json:SFMEA-001", "status": "supports"}],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (nested / "behavior_claim_validation.json").write_text(
+        json.dumps(
+            {
+                "status": "completed",
+                "validator": {"independent": True},
+                "claims": [],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "claim_evidence_ledger.json").write_text(
+        json.dumps(
+            {
+                "status": "passed",
+                "summary": {"total": 1, "verified": 1, "contradicted": 0, "insufficient": 0},
+                "claims": [
+                    {
+                        "claim_id": "ROW:sfmea.json:SFMEA-001",
+                        "verification_status": "verified",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    refreshed = refresh_source_driven_delivery_governance(tmp_path)
+
+    assert refreshed["axes"]["facts"]["status"] == "passed"
+    assert refreshed["axes"]["facts"]["verified"] == 1
+
+
 def test_final_behavior_validation_is_fail_closed_when_validator_is_not_independent(tmp_path):
     from app.services.source_driven_test_design import (
         build_source_driven_test_design,

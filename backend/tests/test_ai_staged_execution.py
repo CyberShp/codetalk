@@ -4813,6 +4813,112 @@ def test_combined_report_preserves_sfmea_ids_for_quality_repair_targeting():
     assert duplicates[0]["risk_ids"] == ["SFMEA-20", "SFMEA-09"]
 
 
+def test_combined_report_keeps_black_box_technical_claims_visible_to_testers():
+    from app.services.ai_staged_execution import _render_deterministic_combined_report
+
+    report = _render_deterministic_combined_report(
+        plan={"original_user_request": "完整分析 iSCSI login"},
+        source_pack={"repo_revision": "abc123", "evidence_cards": []},
+        business_flow="主流程。",
+        sfmea=[],
+        black_box_cases=[
+            {
+                "case_id": "BB-009",
+                "scenario_name": "首 payload 后 timer 注销",
+                "technical_claims": [
+                    {
+                        "claim_id": "CLAIM-TIMER-001",
+                        "statement": "SPDK 在首个 Login payload 中注销 login_timer。",
+                    }
+                ],
+            }
+        ],
+    )
+
+    assert "源码断言：SPDK 在首个 Login payload 中注销 login_timer。" in report
+
+
+def test_quality_repair_declares_existing_claim_evidence_on_its_black_box_row():
+    from app.services.ai_staged_execution import _deterministic_quality_claim_repair
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        [
+            {
+                "case_id": "BB-037",
+                "source_or_test_evidence": ["SRC-06:L82"],
+                "technical_claims": [
+                    {
+                        "claim_id": "CLAIM-MUT-NOPROV-BEH",
+                        "type": "behavior_assertion",
+                        "evidence": [
+                            {
+                                "evidence_id": "SRC-03:L526",
+                                "path": "include/spdk/iscsi_spec.h",
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+        artifact="black_box_cases.json",
+        quality_feedback={
+            "issues": [
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "claim_evidence_not_declared_for_row",
+                    "claim_id": "CLAIM-MUT-NOPROV-BEH",
+                }
+            ]
+        },
+        evidence_cards=[
+            {
+                "evidence_id": "SRC-03",
+                "file_path": "include/spdk/iscsi_spec.h",
+                "start_line": 500,
+                "end_line": 540,
+            }
+        ],
+    )
+
+    assert repaired[0]["source_or_test_evidence"] == ["SRC-06:L82", "SRC-03:L526"]
+    assert "$[0].source_or_test_evidence" in fields
+
+
+def test_quality_repair_adds_a_bounded_chap_order_hypothesis_when_deep_coverage_requires_it():
+    from app.services.ai_staged_execution import _deterministic_quality_claim_repair
+
+    repaired, fields = _deterministic_quality_claim_repair(
+        [],
+        artifact="black_box_cases.json",
+        quality_feedback={
+            "issues": [
+                {
+                    "artifact": "black_box_cases.json",
+                    "code": "professional_coverage_incomplete",
+                    "scenarios": ["CHAP 参数顺序错误"],
+                }
+            ]
+        },
+        evidence_cards=[
+            {
+                "evidence_id": "SRC-06",
+                "file_path": "test/iscsi_tgt/chap/chap_common.sh",
+                "start_line": 82,
+                "end_line": 99,
+                "excerpt": "function config_chap_credentials_for_target() {",
+                "symbols": ["config_chap_credentials_for_target"],
+            }
+        ],
+    )
+
+    assert repaired[0]["case_id"] == "BBC-CHAP-ORDER"
+    assert repaired[0]["scenario_name"] == "CHAP 参数顺序错误"
+    assert repaired[0]["technical_claims"] == []
+    assert repaired[0]["source_or_test_evidence"] == ["SRC-06"]
+    assert "待验证" in repaired[0]["expected_result"]
+    assert "$[+].chap_parameter_order_case" in fields
+
+
 def test_deterministic_iscsi_appendix_filters_login_responses_with_response_opcode():
     from app.services.ai_staged_execution import _render_deterministic_combined_report
 
@@ -6311,7 +6417,10 @@ def test_final_quality_repair_rebinds_claim_path_to_verified_evidence_card(tmp_p
 
     repaired = json.loads(target.read_text(encoding="utf-8"))
     assert changed == {
-        "black_box_cases.json": ["$[0].technical_claims[0].evidence[0].path"]
+        "black_box_cases.json": [
+            "$[0].technical_claims[0].evidence[0].path",
+            "$[0].source_or_test_evidence",
+        ]
     }
     assert repaired[0]["technical_claims"][0]["evidence"][0]["path"] == (
         "test/unit/lib/iscsi/iscsi.c/iscsi_ut.c"
@@ -6355,7 +6464,12 @@ def test_final_quality_repair_replaces_contradicted_claim_with_verified_anchor(t
 
     repaired = json.loads(target.read_text(encoding="utf-8"))
     claim = repaired[0]["technical_claims"][0]
-    assert changed == {"black_box_cases.json": ["$[0].technical_claims[0]"]}
+    assert changed == {
+        "black_box_cases.json": [
+            "$[0].technical_claims[0]",
+            "$[0].source_or_test_evidence",
+        ]
+    }
     assert claim["type"] == "source_anchor"
     assert claim["statement"] == "rc = iscsi_op_login_session_discovery_chap(conn);"
     assert claim["evidence"][0]["path"] == "lib/iscsi/iscsi.c"
