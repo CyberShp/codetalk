@@ -9318,13 +9318,13 @@ def _apply_quality_feedback_to_staged_plan(
         artifact = str(stage.get("artifact") or "").strip()
         if artifact and artifact not in bypass:
             bypass.append(artifact)
-    # Source-driven coverage repair is an aggregate contract: every retained
-    # black-box case must declare the frozen FLOW/STATE/RESOURCE target it
-    # exercises, and the coverage judge then checks that all targets appear
-    # across the complete set.  Previously the field was merely optional, so
-    # a repair could add two new cases while silently leaving the prior cases
-    # unbound.  Keep the published workflow snapshot immutable; this is only
-    # a runtime schema tightening for the scoped repair plan.
+    # Source-driven coverage repair is an aggregate contract: every frozen
+    # FLOW/STATE/RESOURCE target must be bound to one retained black-box case.
+    # A black-box case can deliberately test a higher-level external behavior
+    # without being the evidence carrier for a specific source target, so the
+    # per-case output schema must remain unchanged.  Keep the published
+    # workflow snapshot immutable; the runtime binding contract below is the
+    # only scoped repair constraint.
     coverage_targets = [
         target
         for issue in feedback.get("issues") or []
@@ -9337,32 +9337,13 @@ def _apply_quality_feedback_to_staged_plan(
         for stage in stage_by_id.values():
             if Path(str(stage.get("artifact") or "")).name != "black_box_cases.json":
                 continue
-            output_contract = stage.get("output_contract")
-            if not isinstance(output_contract, dict):
-                continue
-            schema = output_contract.get("schema")
-            if not isinstance(schema, dict):
-                continue
-            item_schema = schema.get("items")
-            if not isinstance(item_schema, dict):
-                continue
-            required = item_schema.setdefault("required", [])
-            if isinstance(required, list) and "coverage_target_ids" not in required:
-                required.append("coverage_target_ids")
-            properties = item_schema.setdefault("properties", {})
-            if isinstance(properties, dict):
-                properties["coverage_target_ids"] = {
-                    "type": "array",
-                    "minItems": 1,
-                    "items": {"type": "string", "minLength": 1},
-                }
             stage["coverage_target_binding_contract"] = {
                 "required_target_ids": sorted(
                     {str(target.get("id") or "").strip() for target in coverage_targets}
                 ),
                 "instruction": (
                     "全部 required_target_ids 必须在整个黑盒用例数组的 "
-                    "coverage_target_ids 中至少出现一次；不得只新增少量用例后保留未绑定的旧用例。"
+                    "coverage_target_ids 中至少出现一次；未承载特定源码目标的用例不要求新增该字段。"
                 ),
             }
     repaired["cache_bypass_artifacts"] = bypass

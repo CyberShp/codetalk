@@ -6586,7 +6586,7 @@ def test_each_quality_repair_attempt_only_bypasses_its_current_failed_artifacts(
     assert "black_box_cases.json" not in second["cache_bypass_artifacts"]
 
 
-def test_source_coverage_repair_requires_a_binding_on_every_black_box_case():
+def test_source_coverage_repair_requires_aggregate_target_bindings_only():
     from app.services.workbench_workflow_runner import (
         _apply_quality_feedback_to_staged_plan,
     )
@@ -6630,8 +6630,8 @@ def test_source_coverage_repair_requires_a_binding_on_every_black_box_case():
 
     stage = repaired["stages"][0]
     item_schema = stage["output_contract"]["schema"]["items"]
-    assert "coverage_target_ids" in item_schema["required"]
-    assert item_schema["properties"]["coverage_target_ids"]["minItems"] == 1
+    assert "coverage_target_ids" not in item_schema["required"]
+    assert "coverage_target_ids" not in item_schema["properties"]
     assert stage["coverage_target_binding_contract"]["required_target_ids"] == [
         "FLOW-COND-002",
         "RESOURCE-CMD",
