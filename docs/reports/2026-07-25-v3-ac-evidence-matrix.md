@@ -127,6 +127,17 @@ Agent 或部署级流量捕获验收。
 `/Volumes/Media/codetalk-e2e-artifacts/20260727-attempt13/quality-pass.png`。
 这证明定向修复可在真实交付字节上收敛；不替代外部 Agent、部署级抓包或 40--90 分钟深度性能验收。
 
+### 覆盖处置警告不再伪装为全绿（2026-07-27）
+
+后续复核发现上述 Attempt 13 的 `judge_report.json` 仍包含 46 条
+`need_verify` 覆盖处置项，`coverage_judge` 实际为 `READY_WITH_WARNINGS / 80`。
+旧汇总仅依据 `coverage_breadth` 决定顶层状态，因此会把这类已被独立覆盖审查标记的缺口
+显示为 `deliverable / 100`。`7c36a049` 现将两个覆盖轴共同纳入最终状态：速度型为
+`warning / 80 / 受限交付`，深度型为 `needs_rework / 80` 并给出
+`source_driven_coverage_incomplete` 的定向修复项。以同一冻结审计字节重算已验证该结果。
+因此 Attempt 13 仅保留为“真实浏览器定向修复与交付链”证据，不再作为深度质量通过或
+独立准确度验收依据。
+
 ### 基础对照 B：设计文档输入与 Flash（2026-07-26）
 
 `task_run_055485884aae4a819a21c9b21ef684d2` 通过真实浏览器完成设置、工作空间、
