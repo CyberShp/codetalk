@@ -49,6 +49,7 @@ from app.services.workflow_authoring_factory import (
     new_workflow_id,
 )
 from app.services.workflow_node_registry import executable_node_definition
+from app.services.provider_adapters.registry import provider_capability_names
 
 
 router = APIRouter(prefix="/api/workbench", tags=["workbench-v2-workflows"])
@@ -982,22 +983,34 @@ def _backend_commit_sha() -> str:
 def _workflow_graph_capabilities() -> dict[str, Any]:
     capabilities = workflow_handler_capability_snapshot()
     providers: dict[str, dict[str, Any]] = {
-        "builtin-llm": {"available": True, "mcp_profiles": []},
+        "builtin-llm": {
+            "available": True,
+            "mcp_profiles": [],
+            "capabilities": provider_capability_names(provider="builtin-llm"),
+        },
     }
     for provider_id, spec in external_agent_provider_specs().items():
-        providers[provider_id] = {
+        provider = {
             "available": bool(spec.command),
             "mcp_profiles": sorted(str(item) for item in spec.mcp_profiles),
         }
+        provider.update(_capabilities_for_prompt_transport(spec.prompt_transport))
+        providers[provider_id] = provider
     for runtime in list_agent_runtimes_sync(enabled=True):
         runtime_id = str(runtime.get("id") or "").strip()
         if not runtime_id:
             continue
         mcp_profile = str(runtime.get("mcp_profile") or "").strip()
-        providers[f"agent-runtime:{runtime_id}"] = {
+        provider = {
             "available": bool(str(runtime.get("command") or "").strip()),
             "mcp_profiles": [mcp_profile] if mcp_profile else [],
         }
+        provider.update(
+            _capabilities_for_prompt_transport(
+                str(runtime.get("prompt_transport") or "")
+            )
+        )
+        providers[f"agent-runtime:{runtime_id}"] = provider
     return {
         **capabilities,
         "providers": providers,
@@ -1014,6 +1027,16 @@ def _workflow_graph_capabilities() -> dict[str, Any]:
             "test-strategy-planning",
         ],
     }
+
+
+def _capabilities_for_prompt_transport(prompt_transport: str) -> dict[str, list[str]]:
+    """Expose only capabilities tied to a known CodeTalk adapter contract.
+
+    Custom and legacy runtimes may remain available for compatibility, but the
+    compiler must not infer that they provide a capability from a command name.
+    """
+    declared = provider_capability_names(prompt_transport=prompt_transport)
+    return {"capabilities": declared} if declared is not None else {}
 
 
 def _resolve_workspace(workspace_id: str) -> dict[str, Any]:

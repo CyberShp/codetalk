@@ -6,6 +6,27 @@ from app.llm.factory import (
 )
 
 
+def test_factory_builds_builtin_adapter_with_injected_dependencies(tmp_path):
+    from app.llm.factory import create_builtin_model_adapter
+    from app.services.provider_adapters.builtin_model import BuiltinModelAdapter
+
+    async def client_factory():
+        return object()
+
+    def execute_callable(**_kwargs):
+        return {"status": "completed"}
+
+    adapter = create_builtin_model_adapter(
+        tmp_path,
+        client_factory=client_factory,
+        execute_callable=execute_callable,
+    )
+
+    assert isinstance(adapter, BuiltinModelAdapter)
+    assert adapter.client_factory is client_factory
+    assert adapter.execute_callable is execute_callable
+
+
 def test_auto_source_analysis_routes_official_deepseek_reasoner_to_chat():
     assert _automatic_source_analysis_model(
         api_type="openai_compat",

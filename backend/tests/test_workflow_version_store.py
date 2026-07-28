@@ -1084,6 +1084,88 @@ def test_workflow_graph_capabilities_include_configured_agent_runtimes(monkeypat
     }
 
 
+@pytest.mark.parametrize("required_capability", ["mcp", "streaming"])
+@pytest.mark.asyncio
+async def test_v3_publish_rejects_unsupported_builtin_adapter_capability_before_persist(
+    tmp_path, monkeypatch, required_capability
+):
+    """Publish must reject an impossible V3 Adapter contract before it is frozen."""
+    from app.api import agent_workbench, workbench_v2_workflows
+    from app.config import settings
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    sqlite_db = data_dir / "codetalk.db"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    with sqlite3.connect(sqlite_db) as db:
+        db.execute(
+            "CREATE TABLE workspaces (id TEXT PRIMARY KEY, name TEXT, repo_path TEXT)"
+        )
+        db.execute(
+            "INSERT INTO workspaces (id, name, repo_path) VALUES (?, ?, ?)",
+            ("ws-capability", "Capability repository", str(repo)),
+        )
+    monkeypatch.setattr(settings, "data_dir", str(data_dir))
+    monkeypatch.setattr(settings, "sqlite_db", str(sqlite_db))
+    monkeypatch.setattr(settings, "workbench_v2_enabled", True)
+    app = FastAPI()
+    app.include_router(agent_workbench.router)
+    app.include_router(workbench_v2_workflows.router)
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        created = await client.post(
+            "/api/workbench/workflows/new",
+            json={"template": "free_source_analysis", "name": "Capability gate"},
+        )
+        assert created.status_code == 201
+        workflow_id = created.json()["workflow"]["workflow_id"]
+        draft = created.json()["draft"]
+        graph = deepcopy(draft["authoring_graph"])
+        agent = next(node for node in graph["nodes"] if node["kind"] == "agent")
+        agent["config"]["provider_capabilities_required"] = [required_capability]
+        updated = await client.put(
+            f"/api/workbench/workflows/{workflow_id}/versions/{draft['version_id']}",
+            json={
+                "authoring_graph": graph,
+                "expected_revision": draft["draft_revision"],
+            },
+        )
+        assert updated.status_code == 200
+
+        trial = await client.post(
+            f"/api/workbench/workflows/{workflow_id}/versions/{draft['version_id']}/test-run",
+            json={
+                "workspace_id": "ws-capability",
+                "inputs": {},
+                "expected_revision": updated.json()["draft_revision"],
+            },
+        )
+        published = await client.post(
+            f"/api/workbench/workflows/{workflow_id}/versions/{draft['version_id']}/publish",
+            json={"expected_revision": updated.json()["draft_revision"]},
+        )
+        reloaded = await client.get(
+            f"/api/workbench/workflows/{workflow_id}/versions/{draft['version_id']}"
+        )
+
+    assert trial.status_code == 422
+    assert published.status_code == 422
+    for response in (trial, published):
+        issue = next(
+            item
+            for item in response.json()["detail"]["errors"]
+            if item["code"] == "provider_capabilities_unsupported"
+        )
+        assert issue["provider"] == "builtin-llm"
+        assert issue["missing_capabilities"] == [required_capability]
+        assert "不支持" in issue["message"]
+        assert "设置" in issue["message"]
+    assert reloaded.json()["state"] == "draft"
+
+
 @pytest.mark.asyncio
 async def test_builtin_workflow_is_read_only_across_all_v2_mutation_routes(
     tmp_path, monkeypatch

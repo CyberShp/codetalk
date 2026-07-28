@@ -6598,6 +6598,76 @@ class TestAgentRuntimes:
         assert "--ignore-rules" in captured["command"]
         assert "--skip-git-repo-check" in captured["command"]
 
+    async def test_codex_readiness_probe_preserves_configured_wrapper_read_paths(
+        self, monkeypatch, tmp_path
+    ):
+        from app.services import agent_cli_bridge
+
+        wrapper = tmp_path / "configured-codex-wrapper.py"
+        wrapper.write_text("print('wrapper')\n", encoding="utf-8")
+        captured: dict[str, object] = {}
+
+        class FakeStdin:
+            def write(self, _data):
+                return None
+
+            async def drain(self):
+                return None
+
+            def close(self):
+                return None
+
+        class FakeProbeProcess:
+            returncode = 0
+            stdin = FakeStdin()
+
+            async def communicate(self):
+                return (
+                    b'{"type":"item.completed","item":{"type":"agent_message","text":"CODETALK_PROBE_OK"}}\n'
+                    b'{"type":"turn.completed"}',
+                    b"",
+                )
+
+        async def fake_create_subprocess_exec(*_args, **_kwargs):
+            return FakeProbeProcess()
+
+        def fake_prepare_agent_sandbox(**kwargs):
+            captured["runtime"] = kwargs["runtime"]
+            return type("Sandbox", (), {"wrapper": []})()
+
+        monkeypatch.setattr(
+            agent_cli_bridge.asyncio,
+            "create_subprocess_exec",
+            fake_create_subprocess_exec,
+        )
+        monkeypatch.setattr(
+            agent_cli_bridge,
+            "prepare_agent_sandbox",
+            fake_prepare_agent_sandbox,
+        )
+        monkeypatch.setattr(
+            agent_cli_bridge,
+            "prepare_isolated_codex_home",
+            lambda **_kwargs: (None, []),
+        )
+        monkeypatch.setattr(
+            type(agent_cli_bridge.settings),
+            "ensure_runtime_temp_path",
+            lambda _settings: tmp_path,
+        )
+
+        result = await agent_cli_bridge._probe_codex_model_in_runtime_sandbox(
+            runtime={
+                "name": "Configured Codex wrapper",
+                "args": [str(wrapper)],
+                "prompt_transport": "codex_exec_json",
+            },
+            command="python3.11",
+        )
+
+        assert result["success"] is True
+        assert str(wrapper.resolve()) in captured["runtime"]["sandbox_read_paths"]
+
     @pytest.mark.skipif(os.name == "nt", reason="POSIX process-group assertion")
     async def test_cancelled_runtime_probe_terminates_its_process_group(self, monkeypatch):
         from app.services import agent_cli_bridge

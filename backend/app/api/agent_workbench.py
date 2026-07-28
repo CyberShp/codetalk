@@ -7,6 +7,7 @@ import hashlib
 import hmac
 import io
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -15,6 +16,7 @@ import shutil
 import stat
 import sys
 import threading
+import traceback
 import uuid
 import zipfile
 from copy import deepcopy
@@ -84,6 +86,7 @@ from app.services.workflow_dsl import (
     audit_workflow_definition,
     validate_workflow_definition,
 )
+
 from app.services.workflow_presets import (
     active_builtin_workflow_presets,
     canonical_builtin_workflow_preset_id,
@@ -102,6 +105,8 @@ from app.services.workflow_run_status import (
     legacy_delivery_status as project_v3_legacy_delivery_status,
     legacy_quality_status as project_v3_quality_status,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/workbench", tags=["agent-workbench"])
 
@@ -3450,6 +3455,14 @@ async def _execute_task_run_background(
         raise
     except Exception as exc:  # pragma: no cover - defensive path is covered through API state.
         redacted = redact_agent_diagnostic_text(str(exc))
+        redacted_traceback = redact_agent_diagnostic_text(
+            "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        )
+        logger.error(
+            "Task Run %s background execution failed\n%s",
+            task_run_id,
+            redacted_traceback,
+        )
         try:
             updated, _ = event_store.mark_status_unless(
                 task_run_id,
@@ -8260,7 +8273,11 @@ def _build_task_acceptance_audit(task_run: Any) -> dict[str, Any]:
                 description="CodeTalk-validated source slices injected into the next turn",
                 severity="required",
             ))
-        for turn_index in range(1, turn_count + 1):
+        # Builtin complete() has no CLI launch envelope or per-turn stdout.
+        # Requiring those files would make an honestly non-streaming provider
+        # fail acceptance despite valid declared artifacts.
+        builtin_turn_count = 0 if is_builtin_llm_run else turn_count
+        for turn_index in range(1, builtin_turn_count + 1):
             turn_base = f"{base}/turns/turn_{turn_index}"
             for suffix, description in [
                 ("task_bundle.json", "per-turn Agent task bundle"),

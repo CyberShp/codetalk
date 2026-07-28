@@ -169,6 +169,110 @@ def test_draft_warns_for_unknown_handlers_but_executable_contract_fails_closed()
     assert any(issue["code"] == "handler_unavailable" for issue in unavailable["errors"])
 
 
+def test_v3_executable_contract_rejects_required_provider_capability_that_adapter_lacks():
+    """A publish/preflight capability snapshot must not silently drop requirements."""
+    from app.services.workflow_contract_v3 import compile_workflow_contract_v3
+
+    graph = _graph()
+    graph["nodes"][1]["config"].update({
+        "provider_ref": "builtin-llm",
+        "provider_capabilities_required": ["mcp", "streaming"],
+        "mcp_profiles": [],
+    })
+    capabilities = _capabilities()
+    capabilities["providers"] = {
+        "builtin-llm": {
+            "available": True,
+            "capabilities": ["cancellation", "streaming"],
+        },
+    }
+
+    compiled = compile_workflow_contract_v3(
+        graph,
+        capabilities=capabilities,
+        workflow_version_id="wfv_provider_capability_rejected",
+        require_executable=True,
+    )
+
+    assert compiled["compiled_definition"] is None
+    issue = next(
+        item
+        for item in compiled["validation_result"]["errors"]
+        if item["code"] == "provider_capabilities_unsupported"
+    )
+    assert issue["node_id"] == "analyze"
+    assert issue["field"] == "provider_capabilities_required"
+    assert issue["provider"] == "builtin-llm"
+    assert issue["missing_capabilities"] == ["mcp"]
+    assert "不支持" in issue["message"]
+    assert "调整" in issue["message"]
+
+
+def test_v3_executable_contract_rejects_unknown_legacy_provider_capabilities_without_guessing():
+    from app.services.workflow_contract_v3 import compile_workflow_contract_v3
+
+    graph = _graph()
+    graph["nodes"][1]["config"].update({
+        "provider_ref": "custom-enterprise-agent",
+        "provider_capabilities_required": ["streaming"],
+        "mcp_profiles": [],
+    })
+    capabilities = _capabilities()
+    capabilities["providers"] = {
+        "custom-enterprise-agent": {"available": True},
+    }
+
+    compiled = compile_workflow_contract_v3(
+        graph,
+        capabilities=capabilities,
+        workflow_version_id="wfv_provider_capability_unknown",
+        require_executable=True,
+    )
+
+    issue = next(
+        item
+        for item in compiled["validation_result"]["errors"]
+        if item["code"] == "provider_capabilities_unknown"
+    )
+    assert issue["node_id"] == "analyze"
+    assert issue["provider"] == "custom-enterprise-agent"
+    assert issue["required_capabilities"] == ["streaming"]
+    assert "无法确认" in issue["message"]
+    assert "设置" in issue["message"]
+
+
+def test_v3_executable_contract_rejects_unknown_provider_even_without_requested_capabilities():
+    from app.services.workflow_contract_v3 import compile_workflow_contract_v3
+
+    graph = _graph()
+    graph["nodes"][1]["config"].update({
+        "provider_ref": "agent-runtime:custom-stdin",
+        "provider_capabilities_required": [],
+        "mcp_profiles": [],
+    })
+    capabilities = _capabilities()
+    capabilities["providers"] = {
+        "agent-runtime:custom-stdin": {"available": True},
+    }
+
+    compiled = compile_workflow_contract_v3(
+        graph,
+        capabilities=capabilities,
+        workflow_version_id="wfv_unknown_provider_without_requirements",
+        require_executable=True,
+    )
+
+    assert compiled["compiled_definition"] is None
+    issue = next(
+        item
+        for item in compiled["validation_result"]["errors"]
+        if item["code"] == "provider_capabilities_unknown"
+    )
+    assert issue["provider"] == "agent-runtime:custom-stdin"
+    assert issue["required_capabilities"] == []
+    assert "受支持的执行器" in issue["message"]
+
+
 def test_compiled_contract_freezes_execution_fields_and_is_deterministic():
     from app.services.workflow_contract_v3 import compile_workflow_contract_v3
 

@@ -24,6 +24,24 @@ AGENT_INVOCATION_TYPED_EVENTS = (
 )
 
 
+def build_agent_invocation_contract(
+    *,
+    rendered_input: str,
+    declared_outputs: list[dict[str, Any]],
+    provider_config: dict[str, Any],
+) -> dict[str, Any]:
+    """Build the domain-neutral payload sent across the Provider boundary."""
+
+    return {
+        "contract_version": 2,
+        "rendered_input": str(rendered_input),
+        "declared_outputs": [
+            dict(item) for item in declared_outputs if isinstance(item, dict)
+        ],
+        "provider_config": dict(provider_config),
+    }
+
+
 def agent_invocation_typed_events() -> list[str]:
     return list(AGENT_INVOCATION_TYPED_EVENTS)
 
@@ -69,19 +87,9 @@ def agent_invocation_artifact_event_payload(
         if isinstance(manifest.get("execution_contract"), dict)
         else {}
     )
-    test_activity_contract = (
-        manifest.get("test_activity_contract")
-        if isinstance(manifest.get("test_activity_contract"), dict)
-        else {}
-    )
-    artifact_contract = (
-        manifest.get("artifact_contract")
-        if isinstance(manifest.get("artifact_contract"), dict)
-        else {}
-    )
-    test_activity_contract = (
-        manifest.get("test_activity_contract")
-        if isinstance(manifest.get("test_activity_contract"), dict)
+    invocation_contract = (
+        manifest.get("invocation_contract")
+        if isinstance(manifest.get("invocation_contract"), dict)
         else {}
     )
     repo_path = str(manifest.get("repo_path") or manifest.get("cwd") or "")
@@ -107,14 +115,16 @@ def agent_invocation_artifact_event_payload(
             "mode": str(session.get("mode") or ""),
         },
         "execution_contract": _public_execution_contract_event_payload(execution_contract),
-        "test_activity_contract": _public_test_activity_contract_event_payload(
-            test_activity_contract
-        ),
-        "artifact_contract": _public_artifact_contract_event_payload(
-            artifact_contract,
-            required_outputs=test_activity_contract.get("required_outputs"),
-        ),
     }
+    if invocation_contract:
+        payload["invocation_contract"] = _public_invocation_contract_event_payload(
+            invocation_contract
+        )
+    from app.services.legacy_workbench_harness_contract import (
+        legacy_invocation_artifact_event_fields,
+    )
+
+    payload.update(legacy_invocation_artifact_event_fields(manifest))
     if extra:
         payload.update(extra)
     return payload
@@ -150,11 +160,21 @@ def agent_invocation_capability_manifest(manifest: dict[str, Any]) -> dict[str, 
         if isinstance(manifest.get("artifact_contract"), dict)
         else {}
     )
-    test_activity_contract = (
-        manifest.get("test_activity_contract")
-        if isinstance(manifest.get("test_activity_contract"), dict)
+    invocation_contract = (
+        manifest.get("invocation_contract")
+        if isinstance(manifest.get("invocation_contract"), dict)
         else {}
     )
+    invocation_outputs = _list_like(invocation_contract.get("declared_outputs"))
+    invocation_required_artifacts = [
+        str(item.get("artifact") or "")
+        for item in invocation_outputs
+        if isinstance(item, dict)
+        and item.get("required") is not False
+        and str(item.get("artifact") or "").strip()
+    ]
+    from app.services.legacy_workbench_harness_contract import legacy_required_outputs
+
     capability_status = _capability_status(mcp_contract)
     return {
         "schema_version": 1,
@@ -203,10 +223,13 @@ def agent_invocation_capability_manifest(manifest: dict[str, Any]) -> dict[str, 
                 outputs.get("required_artifacts")
                 or artifact_contract.get("required_artifacts")
                 or artifact_contract.get("required_outputs")
-                or test_activity_contract.get("required_outputs")
+                or invocation_required_artifacts
+                or legacy_required_outputs(manifest)
                 or []
             ),
-            "declared_output_count": len(_list_like(outputs.get("declared_outputs"))),
+            "declared_output_count": len(
+                _list_like(outputs.get("declared_outputs")) or invocation_outputs
+            ),
             "expected_schema_count": len(_list_like(outputs.get("expected_output_schemas"))),
             "artifact_dir": str(manifest.get("artifact_dir") or ""),
         },
@@ -258,6 +281,30 @@ def _public_execution_contract_event_payload(
             "reason": str(mcp.get("reason") or ""),
         }
     return payload
+
+
+def _public_invocation_contract_event_payload(
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    provider = (
+        contract.get("provider_config")
+        if isinstance(contract.get("provider_config"), dict)
+        else {}
+    )
+    return {
+        "contract_version": contract.get("contract_version"),
+        "rendered_input_characters": len(str(contract.get("rendered_input") or "")),
+        "declared_outputs": [
+            {
+                key: item[key]
+                for key in ("output_id", "artifact", "media_type", "required")
+                if key in item
+            }
+            for item in contract.get("declared_outputs") or []
+            if isinstance(item, dict)
+        ],
+        "provider": str(provider.get("provider") or ""),
+    }
 
 
 def _capability_status(mcp_contract: dict[str, Any]) -> str:
@@ -314,54 +361,6 @@ def _public_execution_outputs_event_payload(execution_contract: dict[str, Any]) 
         if isinstance(item, dict)
     ]
     return {"user_requested_outputs": requested} if requested else {}
-
-
-def _public_test_activity_contract_event_payload(contract: dict[str, Any]) -> dict[str, Any]:
-    if not contract:
-        return {}
-    return {
-        "target": str(contract.get("target") or ""),
-        "domain_profiles": [
-            str(item) for item in contract.get("domain_profiles") or [] if str(item).strip()
-        ],
-        "required_outputs": [
-            str(item) for item in contract.get("required_outputs") or [] if str(item).strip()
-        ],
-    }
-
-
-def _public_artifact_contract_event_payload(
-    contract: dict[str, Any],
-    *,
-    required_outputs: Any = None,
-) -> dict[str, Any]:
-    outputs = [
-        str(item)
-        for item in (
-            contract.get("required_outputs")
-            or contract.get("required_artifacts")
-            or required_outputs
-            or []
-        )
-        if str(item).strip()
-    ]
-    template_source = (
-        contract.get("artifact_contract")
-        if isinstance(contract.get("artifact_contract"), dict)
-        else contract
-    )
-    if not contract and not outputs:
-        return {}
-    return {
-        "required_outputs": outputs,
-        "templates": sorted(
-            str(key)
-            for key in template_source.keys()
-            if str(key).strip() and isinstance(template_source, dict)
-        ),
-        "artifact_dir_policy": str(contract.get("artifact_dir_policy") or ""),
-        "download_delivery": bool(contract.get("download_delivery")),
-    }
 
 
 def _public_path_name(path: str) -> str:

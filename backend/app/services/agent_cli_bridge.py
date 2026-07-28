@@ -39,10 +39,16 @@ AGENT_ANSWER_DELTA_PREFIX = "__CODETALK_AGENT_ANSWER_DELTA__:"
 CHAT_TOOL_CALL_STATE_KEY = "__codetalk_chat_tool_calls__"
 AGENT_STREAM_RECORD_LIMIT = 16 * 1024 * 1024
 MAX_AGENT_ARG_PROMPT_BYTES = 24_000
+_PROCESS_CLEANUP_TIMEOUT_SECONDS = 2.0
+_PROCESS_CLEANUP_POLL_SECONDS = 0.02
 
 
 class AgentRuntimeError(RuntimeError):
     pass
+
+
+def _isolate_agent_process_group() -> bool:
+    return os.name != "nt"
 
 
 def _runtime_requires_network(runtime: dict[str, Any]) -> bool:
@@ -109,7 +115,7 @@ async def probe_agent_runtime(runtime: dict[str, Any]) -> dict[str, Any]:
     probe_temp_dir = Path(env["CODETALK_AGENT_ARTIFACT_DIR"]).resolve()
     for temp_name in ("CODETALK_TEMP_DIR", "TMPDIR", "TMP", "TEMP"):
         env[temp_name] = str(probe_temp_dir)
-    isolate_process_group = os.name != "nt"
+    isolate_process_group = _isolate_agent_process_group()
     process_kwargs: dict[str, Any] = {}
     if isolate_process_group:
         process_kwargs["start_new_session"] = True
@@ -255,7 +261,7 @@ async def _probe_claude_auth_in_runtime_sandbox(
             readiness_command = [command, *readiness_args]
             if sandbox.wrapper:
                 readiness_command = [*sandbox.wrapper, *readiness_command]
-            isolate_process_group = os.name != "nt"
+            isolate_process_group = _isolate_agent_process_group()
             process_kwargs: dict[str, Any] = {}
             if isolate_process_group:
                 process_kwargs["start_new_session"] = True
@@ -333,6 +339,9 @@ async def _probe_codex_model_in_runtime_sandbox(
                 read_paths=[
                     *list(runtime.get("sandbox_read_paths") or []),
                     *_command_runtime_read_paths(command),
+                    *_configured_runtime_read_paths(
+                        _runtime_args(runtime, resume_session_id=None)
+                    ),
                     *[str(path) for path in codex_runtime_read_targets],
                     *([str(Path(command).parent)] if Path(command).parent != Path(".") else []),
                 ],
@@ -357,7 +366,7 @@ async def _probe_codex_model_in_runtime_sandbox(
             readiness_command = [command, *readiness_args]
             if sandbox.wrapper:
                 readiness_command = [*sandbox.wrapper, *readiness_command]
-            isolate_process_group = os.name != "nt"
+            isolate_process_group = _isolate_agent_process_group()
             process_kwargs: dict[str, Any] = {}
             if isolate_process_group:
                 process_kwargs["start_new_session"] = True
@@ -567,7 +576,7 @@ async def stream_agent_runtime(
         raise AgentRuntimeError(f"不支持的 prompt_transport: {prompt_transport}")
     timeout = int(runtime.get("timeout_seconds") or 120)
     hard_timeout = max(3600, timeout * 4)
-    isolate_process_group = os.name != "nt"
+    isolate_process_group = _isolate_agent_process_group()
     process_kwargs: dict[str, Any] = {}
     if isolate_process_group:
         process_kwargs["start_new_session"] = True
@@ -651,6 +660,7 @@ async def stream_agent_runtime(
     stderr_chunks: list[str] = []
     completed_by_policy = False
     cancelled_by_request = False
+    cancellation_cleanup_error: AgentRuntimeError | None = None
     saw_stdout_output = False
     activity_queue: asyncio.Queue[None] = asyncio.Queue(maxsize=1)
 
@@ -685,19 +695,25 @@ async def stream_agent_runtime(
     stderr_task = asyncio.create_task(_drain_stderr())
     cancel_task: asyncio.Task[None] | None = None
     if is_cancelled is not None:
+        stream_task = asyncio.current_task()
 
         async def _watch_cancel() -> None:
-            nonlocal cancelled_by_request
+            nonlocal cancellation_cleanup_error, cancelled_by_request
             while proc.returncode is None:
                 try:
                     result = is_cancelled()
                     if asyncio.iscoroutine(result):
                         result = await result
-                    if result:
-                        cancelled_by_request = True
-                        await _terminate_process(proc, process_group=isolate_process_group)
-                        return
                 except Exception:
+                    return
+                if result:
+                    cancelled_by_request = True
+                    try:
+                        await _terminate_process(proc, process_group=isolate_process_group)
+                    except AgentRuntimeError as exc:
+                        cancellation_cleanup_error = exc
+                        if stream_task is not None:
+                            stream_task.cancel()
                     return
                 await asyncio.sleep(0.1)
 
@@ -737,6 +753,10 @@ async def stream_agent_runtime(
                     await _terminate_process(proc, process_group=isolate_process_group)
             return_code = await proc.wait()
             await stderr_task
+    except asyncio.CancelledError:
+        if cancellation_cleanup_error is not None:
+            raise cancellation_cleanup_error
+        raise
     except TimeoutError as exc:
         await _terminate_process(proc, process_group=isolate_process_group)
         stderr_task.cancel()
@@ -1064,50 +1084,137 @@ async def _terminate_process(
     *,
     process_group: bool = False,
 ) -> None:
+    async def wait_for_process_exit(*, require_wait: bool = False) -> bool:
+        if proc.returncode is not None and not require_wait:
+            return True
+        try:
+            return_code = await asyncio.wait_for(
+                proc.wait(),
+                timeout=_PROCESS_CLEANUP_TIMEOUT_SECONDS,
+            )
+        except ProcessLookupError:
+            return True
+        except TimeoutError:
+            return proc.returncode is not None
+        return proc.returncode is not None or return_code is not None
+
+    async def wait_for_process_group_exit(process_group_id: int) -> bool:
+        deadline = (
+            asyncio.get_running_loop().time() + _PROCESS_CLEANUP_TIMEOUT_SECONDS
+        )
+        while _process_group_exists(process_group_id):
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return False
+            await asyncio.sleep(min(_PROCESS_CLEANUP_POLL_SECONDS, remaining))
+        return True
+
+    async def force_kill_active_process() -> None:
+        if proc.returncode is not None:
+            return
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            if await wait_for_process_exit():
+                return
+            raise AgentRuntimeError(
+                "无法确认执行器进程已经退出；已停止当前运行以避免遗留进程。"
+            )
+        except OSError as exc:
+            if proc.returncode is not None:
+                return
+            raise AgentRuntimeError(
+                "无法安全终止执行器进程；操作系统拒绝强制终止请求。"
+            ) from exc
+        if not await wait_for_process_exit(require_wait=True):
+            raise AgentRuntimeError(
+                "无法安全终止执行器进程；强制终止后进程仍未退出。"
+            )
+
+    async def terminate_direct_process() -> None:
+        if proc.returncode is not None:
+            return
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            if await wait_for_process_exit():
+                return
+            raise AgentRuntimeError(
+                "无法确认执行器进程已经退出；已停止当前运行以避免遗留进程。"
+            )
+        except OSError:
+            if proc.returncode is not None:
+                return
+            await force_kill_active_process()
+            return
+        if await wait_for_process_exit():
+            return
+        await force_kill_active_process()
+
     if process_group and os.name != "nt":
         process_group_id = int(getattr(proc, "pid", 0) or 0)
         if process_group_id <= 0:
+            await terminate_direct_process()
             return
         if proc.returncode is not None and not _process_group_exists(process_group_id):
             return
         try:
             os.killpg(process_group_id, signal.SIGTERM)
         except ProcessLookupError:
-            if proc.returncode is None:
-                await proc.wait()
+            if proc.returncode is None and not await wait_for_process_exit():
+                await force_kill_active_process()
+            return
+        except OSError:
+            # The group leader may have exited between the existence probe and
+            # SIGTERM. macOS can report EPERM for that transition window; a
+            # completed provider must not be converted into a failed Task Run.
+            if proc.returncode is not None and not _process_group_exists(
+                process_group_id
+            ):
+                return
+            await terminate_direct_process()
+            if _process_group_exists(process_group_id):
+                raise AgentRuntimeError(
+                    "无法安全终止执行器进程组；操作系统拒绝终止请求，"
+                    "且仍无法确认子进程已经退出。"
+                )
             return
 
-        deadline = asyncio.get_running_loop().time() + 2
-        if proc.returncode is None:
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(proc.wait()),
-                    timeout=max(0.001, deadline - asyncio.get_running_loop().time()),
-                )
-            except TimeoutError:
-                pass
-        while (
-            _process_group_exists(process_group_id)
-            and asyncio.get_running_loop().time() < deadline
-        ):
-            await asyncio.sleep(0.02)
-        if _process_group_exists(process_group_id):
+        process_exited = await wait_for_process_exit()
+        group_exited = await wait_for_process_group_exit(process_group_id)
+        if group_exited and process_exited:
+            return
+        if not group_exited:
             try:
                 os.killpg(process_group_id, signal.SIGKILL)
-            except OSError:
-                pass
+            except ProcessLookupError:
+                group_exited = True
+            except OSError as exc:
+                if not _process_group_exists(process_group_id):
+                    group_exited = True
+                else:
+                    if proc.returncode is None:
+                        try:
+                            await force_kill_active_process()
+                        except AgentRuntimeError:
+                            pass
+                    raise AgentRuntimeError(
+                        "无法安全终止执行器进程组；操作系统拒绝强制终止请求。"
+                    ) from exc
+            else:
+                group_exited = await wait_for_process_group_exit(process_group_id)
         if proc.returncode is None:
-            await proc.wait()
+            process_exited = await wait_for_process_exit()
+        if not process_exited:
+            await force_kill_active_process()
+            process_exited = True
+        if not group_exited or not process_exited:
+            raise AgentRuntimeError(
+                "无法安全终止执行器进程组；有界清理后仍检测到活动进程。"
+            )
         return
 
-    if proc.returncode is not None:
-        return
-    proc.terminate()
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=2)
-    except TimeoutError:
-        proc.kill()
-        await proc.wait()
+    await terminate_direct_process()
 
 
 def _process_group_exists(process_group_id: int) -> bool:

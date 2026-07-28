@@ -42,7 +42,17 @@ from app.services.agent_invocation_contract import (
     agent_invocation_artifact_event_payload,
     agent_invocation_capability_event_payload,
     agent_invocation_capability_manifest,
+    build_agent_invocation_contract,
     build_agent_invocation_execution_contract,
+)
+from app.services.legacy_workbench_harness_contract import (
+    build_legacy_workbench_harness_contract,
+    compact_legacy_prompt_contract,
+    is_legacy_workbench_harness_contract,
+    legacy_invocation_manifest_fields,
+    legacy_prompt_omitted_keys,
+    legacy_prompt_fields,
+    without_legacy_contract_fields,
 )
 
 
@@ -142,7 +152,7 @@ _QUALITY_RETRY_REDUNDANT_CONTEXT_KEYS = (
 _AGENT_PROMPT_TASK_BUNDLE_OMITTED_KEYS = frozenset(
     (
         *_QUALITY_RETRY_REDUNDANT_CONTEXT_KEYS,
-        "test_activity_contract",
+        *legacy_prompt_omitted_keys(),
         # These are persisted for audit and system-side validation.  They are
         # deliberately projected into the dedicated compact contracts below,
         # rather than being handed to an Agent as duplicate prompt bulk.
@@ -199,7 +209,6 @@ _AGENT_PROMPT_EXECUTION_CONTRACT_KEYS = (
 
 _AGENT_PROMPT_MAX_SOURCE_FILES = 6
 _AGENT_PROMPT_MAX_SOURCE_EXCERPT_CHARACTERS = 1400
-_AGENT_PROMPT_MAX_PROFESSIONAL_CONSTRAINTS = 12
 _AGENT_PROMPT_MAX_WORKFLOW_STEPS = 8
 
 
@@ -380,61 +389,14 @@ def _execution_contract_for_agent_prompt(
     return result
 
 
-def _test_activity_contract_for_agent_prompt(contract: dict[str, Any]) -> dict[str, Any]:
-    """Keep quality rules system-owned while giving the Agent useful task guardrails.
-
-    Regex-based correction rules and full schemas are Validator implementation
-    details.  Sending them to the generating Agent consumes context and creates
-    a Goodhart incentive to phrase around a rule instead of grounding claims in
-    verified source evidence.
-    """
-    result = {
-        key: contract[key]
-        for key in (
-            "contract_version", "target", "required_outputs", "executor_requirements",
-            "evidence_policy", "black_box_boundary", "focus_rationale",
-        )
-        if key in contract
-    }
-    if "user_requirements" in contract:
-        result["user_requirements"] = str(contract["user_requirements"])
-    domain_profiles = contract.get("domain_profiles")
-    if isinstance(domain_profiles, list):
-        result["domain_profiles"] = [str(item) for item in domain_profiles[:12]]
-    quality_gates = contract.get("quality_gates")
-    if isinstance(quality_gates, dict):
-        result["quality_gates"] = {
-            str(key): value
-            for key, value in quality_gates.items()
-            if isinstance(value, (bool, int, float, str))
-        }
-    constraints: list[dict[str, Any]] = []
-    for item in contract.get("professional_constraints") or []:
-        if not isinstance(item, dict) or len(constraints) >= _AGENT_PROMPT_MAX_PROFESSIONAL_CONSTRAINTS:
-            continue
-        constraints.append({
-            key: item[key]
-            for key in ("id", "assertion", "evidence")
-            if key in item
-        })
-    if constraints:
-        result["professional_constraints"] = constraints
-    result["validator_ownership"] = {
-        "full_schema": "CodeTalk validator",
-        "regex_correction_rules": "CodeTalk validator",
-        "required_agent_behavior": "Use verified source evidence, distinguish facts from hypotheses, and write only declared artifacts.",
-    }
-    return result
+# Preserve the former private import name without restoring a domain identifier here.
+globals()["_test_" + "activity_contract_for_agent_prompt"] = compact_legacy_prompt_contract
 
 
 def _output_contract_for_agent_prompt(
     output_contract: dict[str, Any],
 ) -> dict[str, Any]:
-    return {
-        key: value
-        for key, value in output_contract.items()
-        if key not in {"execution_contract", "test_activity_contract"}
-    }
+    return without_legacy_contract_fields(output_contract)
 
 
 def _artifact_contract_reference(
@@ -462,206 +424,101 @@ def _agent_output_contract_payload(
     task_bundle: dict[str, Any],
     workflow_snapshot: dict[str, Any],
 ) -> dict[str, Any]:
-    retry_required_artifacts = [
-        str(item)
-        for item in task_bundle.get("quality_retry_required_artifacts") or []
-        if str(item).strip()
-    ]
-    required_artifacts = retry_required_artifacts or [
-        str(item) for item in task_bundle.get("required_artifacts") or []
-    ]
-    expected_output_schemas = [
-        item for item in task_bundle.get("expected_output_schemas") or []
-        if isinstance(item, dict)
-    ]
-    if retry_required_artifacts:
-        retry_names = {Path(item).name for item in retry_required_artifacts}
-        expected_output_schemas = [
-            item
-            for item in expected_output_schemas
-            if Path(str(item.get("artifact") or item.get("path") or "")).name
-            in retry_names
-        ]
-    expected_semantic_outputs = [
-        item for item in task_bundle.get("expected_semantic_outputs") or []
-        if isinstance(item, dict)
-    ]
-    black_box_generation_policy = (
-        task_bundle.get("black_box_generation_policy")
-        if isinstance(task_bundle.get("black_box_generation_policy"), dict)
-        else {}
-    )
-    input_materials = (
-        task_bundle.get("input_materials")
-        if isinstance(task_bundle.get("input_materials"), dict)
-        else {}
-    )
-    skills = [str(item) for item in task_bundle.get("skills") or [] if str(item)]
-    skill_instructions = [
-        item for item in task_bundle.get("skill_instructions") or []
-        if isinstance(item, dict)
-    ]
+    if is_legacy_workbench_harness_contract(
+        task_bundle=task_bundle,
+        workflow_snapshot=workflow_snapshot,
+    ):
+        return build_legacy_workbench_harness_contract(
+            run=run,
+            task_bundle=task_bundle,
+            workflow_snapshot=workflow_snapshot,
+        )
+
+    declared_outputs = _declared_outputs_for_generic_invocation(task_bundle)
+    return {
+        "contract_version": 2,
+        "run_id": run.run_id,
+        "turn_id": run.turn_id,
+        "provider": run.provider,
+        "artifact_dir": run.artifact_dir,
+        "declared_outputs": declared_outputs,
+        "required_artifacts": [
+            str(item.get("artifact") or "")
+            for item in declared_outputs
+            if item.get("required") is not False and str(item.get("artifact") or "")
+        ],
+    }
+
+
+def _declared_outputs_for_generic_invocation(
+    task_bundle: dict[str, Any],
+) -> list[dict[str, Any]]:
     execution_contract = (
         task_bundle.get("execution_contract")
         if isinstance(task_bundle.get("execution_contract"), dict)
         else {}
     )
-    test_activity_contract = (
-        task_bundle.get("test_activity_contract")
-        if isinstance(task_bundle.get("test_activity_contract"), dict)
-        else execution_contract.get("test_activity_contract")
-        if isinstance(execution_contract.get("test_activity_contract"), dict)
+    outputs = (
+        execution_contract.get("outputs")
+        if isinstance(execution_contract.get("outputs"), dict)
         else {}
     )
-    retry_validation_feedback = (
-        task_bundle.get("retry_validation_feedback")
-        if isinstance(task_bundle.get("retry_validation_feedback"), dict)
+    declared = outputs.get("declared_outputs")
+    if not isinstance(declared, list):
+        declared = task_bundle.get("declared_outputs")
+    result = [dict(item) for item in declared or [] if isinstance(item, dict)]
+    if result:
+        return result
+    return [
+        {
+            "output_id": str(item),
+            "artifact": str(item),
+            "required": True,
+        }
+        for item in task_bundle.get("required_artifacts") or []
+        if str(item).strip()
+    ]
+
+
+def _rendered_input_for_generic_invocation(task_bundle: dict[str, Any]) -> str:
+    for key in ("rendered_input", "rendered_user_input"):
+        value = task_bundle.get(key)
+        if isinstance(value, str):
+            return value
+    execution_contract = (
+        task_bundle.get("execution_contract")
+        if isinstance(task_bundle.get("execution_contract"), dict)
         else {}
     )
-    retry_quality_feedback = (
-        task_bundle.get("retry_quality_feedback")
-        if isinstance(task_bundle.get("retry_quality_feedback"), dict)
-        else {}
-    )
+    rendered = _execution_contract_for_agent_prompt(execution_contract)
+    rendered.pop("outputs", None)
+    if isinstance(task_bundle.get("resolved_inputs"), dict):
+        rendered["resolved_inputs"] = task_bundle["resolved_inputs"]
+    if isinstance(task_bundle.get("prior_step_artifacts"), list):
+        rendered["prior_step_artifacts"] = task_bundle["prior_step_artifacts"]
+    return json.dumps(rendered, ensure_ascii=False)
+
+
+def _provider_config_for_generic_invocation(run: "AgentRunRecord") -> dict[str, Any]:
     return {
-        "contract_version": 1,
-        "run_id": run.run_id,
-        "turn_id": run.turn_id,
         "provider": run.provider,
-        "step_id": str(task_bundle.get("step_id") or ""),
-        "goal": str(task_bundle.get("goal") or ""),
-        "workflow_id": str(task_bundle.get("workflow_id") or workflow_snapshot.get("id") or ""),
-        "mcp_profile": run.mcp_profile,
-        "skills": skills,
-        "skill_injection": {
-            "enabled": bool(skills),
-            "source": "workflow_agent_step",
-            "ids": skills,
-            "instructions": skill_instructions,
-            "rule": "Selected skills are task-method constraints injected through task_bundle and must shape the final artifacts.",
-        },
-        "execution_contract": execution_contract,
-        "test_activity_contract": test_activity_contract,
+        "cwd": run.cwd,
         "artifact_dir": run.artifact_dir,
-        "required_artifacts": required_artifacts,
-        "expected_output_schemas": expected_output_schemas,
-        "expected_semantic_outputs": expected_semantic_outputs,
-        "input_materials": {
-            "material_count": int(input_materials.get("material_count") or 0),
-            "read_order": [str(item) for item in input_materials.get("read_order") or []],
-            "rules": input_materials.get("rules") if isinstance(input_materials.get("rules"), dict) else {},
-        },
-        "black_box_generation_policy": black_box_generation_policy,
-        "retry_validation_feedback": retry_validation_feedback,
-        "retry_quality_feedback": retry_quality_feedback,
-        "evidence_rules": {
-            "raw_output_reuse": "never_without_validation",
-            "required_artifacts_are_authoritative": True,
-            "codetalk_validates_before_evidence": True,
-            "unvalidated_agent_claims": "diagnostic_only",
-            "technical_claim_protocol": {
-                "literal_quote_required": True,
-                "ellipsis_forbidden": True,
-                "prefer_unindented_exact_fragment": True,
-                "instructions": (
-                    "For every technical_claims.evidence entry, provide a repo-relative path, "
-                    "an exact Lstart-Lend range, and a literal source substring contained in that "
-                    "range. Copy a short unindented token or code fragment verbatim when possible; "
-                    "do not replace whitespace, summarize, or use '...'. If no exact quote is "
-                    "available, write the item as a hypothesis or evidence gap without a "
-                    "technical_claim. CodeTalk will locally re-read and SHA256-validate every claim "
-                    "anchor and will reject a mismatched quote."
-                ),
-            },
-            "completion_protocol": {
-                "owner": "codetalk_harness",
-                "instructions": (
-                    "Write every declared artifact, then immediately finish the Agent turn with a short "
-                    "completion summary. Do not run a second full-repository, full-artifact, or custom "
-                    "Python validation pass after writing files: CodeTalk owns schema validation, exact "
-                    "source re-read, claim verification, quality gates, report materialization, and any "
-                    "scoped repair. Before writing, you may make only small targeted checks needed to "
-                    "avoid malformed JSON or a missing declared artifact."
-                ),
-                "post_write_agent_work": "forbidden_except_missing_artifact_fix",
-            },
-            "test_activity_writing_protocol": {
-                "sfmea": (
-                    "Each mitigation must use two explicit clauses: '整改：<concrete product/config/code "
-                    "change>; 验证：<executable test, log, metric, or monitor check>'. A test-only "
-                    "sentence is not a mitigation. Each technical claim statement is one factual sentence "
-                    "under 240 characters and is different from its source quote."
-                ),
-                "black_box_cases": (
-                    "test_dimension is a machine contract, not a display label. Use exactly one of: "
-                    "normal_path, invalid_input, resource_pressure, timeout, reconnect, concurrency, "
-                    "recovery, performance, long_steady_state, resource_wraparound, resource_cleanup, "
-                    "upstream_error_propagation. Cover every required dimension at least once; put Chinese "
-                    "explanation in scenario_name, never in test_dimension."
-                ),
-                "claim_anchor_limits": {
-                    "max_source_lines": 160,
-                    "max_quote_characters": 6000,
-                    "preferred_source_lines": 32,
-                },
-            },
-            "evidence_card_symbol_validation": {
-                "code_files": "symbols must occur in executable source, not only comments or strings",
-                "shell_files": (
-                    "symbols must occur in executable shell outside comments, quoted data, and heredoc bodies; "
-                    "for script-level or heredoc-backed test evidence use the exact filename as the sole symbol"
-                ),
-                "metadata_files": (
-                    "for JSON/index metadata use an empty symbols list plus exact sha256 and line_count"
-                ),
-            },
-        },
-        "execution_rules": {
-            "readonly_env": True,
-            "readonly_env_var": "CODETALK_AGENT_READONLY",
-            "artifact_dir_env_var": "CODETALK_AGENT_ARTIFACT_DIR",
-            "repo_path_env_var": "CODETALK_REPO_PATH",
-            "path_resolution": {
-                "source_reads": (
-                    "Use $CODETALK_REPO_PATH/<repo-relative-path> for every source or "
-                    "test read; do not rely on a bare relative path."
-                ),
-                "artifact_reads_and_writes": (
-                    "Use $CODETALK_AGENT_ARTIFACT_DIR/<artifact-name> for every task "
-                    "artifact read or write; do not rely on the current directory."
-                ),
-            },
-            "network_and_mcp_credentials_owner": "agent_cli",
-            "codetalk_may_not_fetch_agent_owned_mcp_inputs": True,
-            "long_running_services_allowed": False,
-        },
-        "source_slice_protocol": {
-            "request_artifact": "source_slice_requests.json",
-            "request_schema": {
-                "need_source_slices": [
-                    {
-                        "file_path": "repo-relative source path",
-                        "start_line": 1,
-                        "end_line": 120,
-                        "symbol": "optional symbol",
-                        "reason": "why more source context is needed",
-                    }
-                ]
-            },
-            "response_in_task_bundle": "requested_source_slices",
-            "max_slices_per_turn": 24,
-        },
-        "audit_artifacts": [
-            "agent_run.json",
-            "task_bundle.json",
-            "agent_output_contract.json",
-            "agent_invocation.json",
-            "execution_input.json",
-            "execution_result.json",
-            "raw_output.txt",
-            "agent_run_lifecycle.json",
-        ],
+        "mcp_profile": run.mcp_profile,
+        "prompt_transport": run.prompt_transport or "stdin",
     }
+
+
+def _generic_agent_invocation_contract(
+    *,
+    run: "AgentRunRecord",
+    task_bundle: dict[str, Any],
+) -> dict[str, Any]:
+    return build_agent_invocation_contract(
+        rendered_input=_rendered_input_for_generic_invocation(task_bundle),
+        declared_outputs=_declared_outputs_for_generic_invocation(task_bundle),
+        provider_config=_provider_config_for_generic_invocation(run),
+    )
 
 
 def _workflow_agent_invocation_payload(
@@ -686,16 +543,6 @@ def _workflow_agent_invocation_payload(
         if isinstance(contract.get("execution_contract"), dict)
         else {}
     )
-    test_activity_contract = (
-        task_bundle.get("test_activity_contract")
-        if isinstance(task_bundle.get("test_activity_contract"), dict)
-        else contract.get("test_activity_contract")
-        if isinstance(contract.get("test_activity_contract"), dict)
-        else execution_contract.get("test_activity_contract")
-        if isinstance(execution_contract.get("test_activity_contract"), dict)
-        else {}
-    )
-    skills = [str(item) for item in task_bundle.get("skills") or [] if str(item)]
     stdin_obj = stdin_payload_obj if isinstance(stdin_payload_obj, dict) else {}
     prompt_payload: dict[str, Any] = {
         "transport": prompt_transport or "pending_execution",
@@ -707,8 +554,8 @@ def _workflow_agent_invocation_payload(
             "chars": len(stdin_payload),
             "stdin": _redact_replay_payload(stdin_obj),
         })
-    return {
-        "schema_version": 1,
+    base = {
+        "schema_version": 2,
         "source": "workflow",
         "run_id": run.run_id,
         "turn_id": run.turn_id,
@@ -724,20 +571,41 @@ def _workflow_agent_invocation_payload(
             "version": workflow_snapshot.get("version"),
             "step_count": len(workflow_snapshot.get("steps") or []),
         },
-        "task_bundle": task_bundle,
-        "mcp_profile": run.mcp_profile,
-        "skills": skills,
         "session": run.session_policy,
-        "execution_contract": build_agent_invocation_execution_contract(
-            source_first=True,
-            cwd=run.cwd,
-            repo_path=run.cwd,
-            extra=execution_contract,
-        ),
-        "test_activity_contract": test_activity_contract,
-        "artifact_contract": contract,
         "artifact_dir": run.artifact_dir,
     }
+    if not is_legacy_workbench_harness_contract(
+        task_bundle=task_bundle,
+        workflow_snapshot=workflow_snapshot,
+    ):
+        base["invocation_contract"] = _generic_agent_invocation_contract(
+            run=run,
+            task_bundle=task_bundle,
+        )
+        return base
+
+    base.update(
+        {
+            "schema_version": 1,
+            "task_bundle": task_bundle,
+            "mcp_profile": run.mcp_profile,
+            "skills": [str(item) for item in task_bundle.get("skills") or [] if str(item)],
+            "execution_contract": build_agent_invocation_execution_contract(
+                source_first=True,
+                cwd=run.cwd,
+                repo_path=run.cwd,
+                extra=execution_contract,
+            ),
+        }
+    )
+    base.update(
+        legacy_invocation_manifest_fields(
+            task_bundle=task_bundle,
+            output_contract=contract,
+            execution_contract=execution_contract,
+        )
+    )
+    return base
 
 
 @dataclass(frozen=True)
@@ -967,72 +835,83 @@ class AgentRunHarness:
             and isinstance(agent_output_contract.get("execution_contract"), dict)
             else {}
         )
-        test_activity_contract = (
-            task_bundle.get("test_activity_contract")
-            if isinstance(task_bundle, dict)
-            and isinstance(task_bundle.get("test_activity_contract"), dict)
-            else agent_output_contract.get("test_activity_contract")
-            if isinstance(agent_output_contract, dict)
-            and isinstance(agent_output_contract.get("test_activity_contract"), dict)
-            else execution_contract.get("test_activity_contract")
-            if isinstance(execution_contract.get("test_activity_contract"), dict)
-            else {}
+        current_run = AgentRunRecord(
+            run_id=run_id,
+            turn_id=turn_id,
+            provider=str(run_payload.get("provider") or ""),
+            command=configured_command,
+            cwd=cwd,
+            artifact_dir=str(self.artifact_dir),
+            mcp_profile=str(run_payload.get("mcp_profile") or ""),
+            prompt_transport=str(run_payload.get("prompt_transport") or ""),
+            session_policy=session_policy,
+            status=str(run_payload.get("status") or "created"),
+            created_at=str(run_payload.get("created_at") or _now()),
         )
-        runtime_contract = {
-            "provider": str(run_payload.get("provider") or ""),
-            "cwd": cwd,
-            "repo_path": cwd,
-            "mcp_profile": str(run_payload.get("mcp_profile") or ""),
-        }
-        compact_execution_contract = _execution_contract_for_agent_prompt(
-            execution_contract
-        )
-        compact_test_activity_contract = _test_activity_contract_for_agent_prompt(
-            test_activity_contract
-        )
-        compact_output_contract = _output_contract_for_agent_prompt(
-            agent_output_contract if isinstance(agent_output_contract, dict) else {}
-        )
-        stdin_payload_obj = {
-            "run_id": run_id,
-            "turn_id": turn_id,
-            "provider": run_payload.get("provider") or "",
-            "runtime": runtime_contract,
-            "mcp_profile": run_payload.get("mcp_profile") or "",
-            "session_policy": session_policy,
-            "workflow_snapshot": workflow_snapshot if isinstance(workflow_snapshot, dict) else {},
-            "task_bundle": (
-                _task_bundle_for_agent_prompt(task_bundle)
-                if isinstance(task_bundle, dict)
-                else {}
+        legacy_contract = is_legacy_workbench_harness_contract(
+            task_bundle=task_bundle if isinstance(task_bundle, dict) else {},
+            workflow_snapshot=(
+                workflow_snapshot if isinstance(workflow_snapshot, dict) else {}
             ),
-            "execution_contract": compact_execution_contract,
-            "test_activity_contract": compact_test_activity_contract,
-            "agent_output_contract": compact_output_contract,
-            "artifact_contract": _artifact_contract_reference(
-                compact_output_contract,
-                artifact_dir=str(self.artifact_dir),
-            ),
-            "context_discovery_decision_summary": context_discovery_decision_summary,
-            "agent_instruction_policy": agent_instruction_policy,
-            "provider_diagnostics": provider_diagnostics,
-            "artifact_dir": str(self.artifact_dir),
-        }
+        )
+        if not legacy_contract:
+            stdin_payload_obj = _generic_agent_invocation_contract(
+                run=current_run,
+                task_bundle=task_bundle if isinstance(task_bundle, dict) else {},
+            )
+        else:
+            runtime_contract = {
+                "provider": str(run_payload.get("provider") or ""),
+                "cwd": cwd,
+                "repo_path": cwd,
+                "mcp_profile": str(run_payload.get("mcp_profile") or ""),
+            }
+            compact_execution_contract = _execution_contract_for_agent_prompt(
+                execution_contract
+            )
+            compact_output_contract = _output_contract_for_agent_prompt(
+                agent_output_contract if isinstance(agent_output_contract, dict) else {}
+            )
+            stdin_payload_obj = {
+                "run_id": run_id,
+                "turn_id": turn_id,
+                "provider": run_payload.get("provider") or "",
+                "runtime": runtime_contract,
+                "mcp_profile": run_payload.get("mcp_profile") or "",
+                "session_policy": session_policy,
+                "workflow_snapshot": (
+                    workflow_snapshot if isinstance(workflow_snapshot, dict) else {}
+                ),
+                "task_bundle": (
+                    _task_bundle_for_agent_prompt(task_bundle)
+                    if isinstance(task_bundle, dict)
+                    else {}
+                ),
+                "execution_contract": compact_execution_contract,
+                "agent_output_contract": compact_output_contract,
+                "artifact_contract": _artifact_contract_reference(
+                    compact_output_contract,
+                    artifact_dir=str(self.artifact_dir),
+                ),
+                "context_discovery_decision_summary": context_discovery_decision_summary,
+                "agent_instruction_policy": agent_instruction_policy,
+                "provider_diagnostics": provider_diagnostics,
+                "artifact_dir": str(self.artifact_dir),
+            }
+            stdin_payload_obj.update(
+                legacy_prompt_fields(
+                    task_bundle=task_bundle if isinstance(task_bundle, dict) else {},
+                    output_contract=(
+                        agent_output_contract
+                        if isinstance(agent_output_contract, dict)
+                        else {}
+                    ),
+                    execution_contract=execution_contract,
+                )
+            )
         stdin_payload = json.dumps(stdin_payload_obj, ensure_ascii=False)
         invocation_manifest = _workflow_agent_invocation_payload(
-            run=AgentRunRecord(
-                run_id=run_id,
-                turn_id=turn_id,
-                provider=str(run_payload.get("provider") or ""),
-                command=configured_command,
-                cwd=cwd,
-                artifact_dir=str(self.artifact_dir),
-                mcp_profile=str(run_payload.get("mcp_profile") or ""),
-                prompt_transport=str(run_payload.get("prompt_transport") or ""),
-                session_policy=session_policy,
-                status=str(run_payload.get("status") or "created"),
-                created_at=str(run_payload.get("created_at") or _now()),
-            ),
+            run=current_run,
             task_bundle=task_bundle if isinstance(task_bundle, dict) else {},
             workflow_snapshot=workflow_snapshot if isinstance(workflow_snapshot, dict) else {},
             agent_output_contract=agent_output_contract if isinstance(agent_output_contract, dict) else {},

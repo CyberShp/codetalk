@@ -116,15 +116,20 @@ test("runs a V3 report-only workflow through the task wizard without ghost deliv
     const agentStatePayload = await agentStateResponse.json() as { content: string };
     expect((JSON.parse(agentStatePayload.content) as { requires_network: boolean }).requires_network).toBe(false);
 
-    const networkPolicyResponse = await request.get(
-      `${backendBase}/api/workbench/task-runs/${runId}/artifacts/content/agent_runs/${createdWorkflow.agentNodeId}/network_policy.json`,
+    const sandboxPolicyResponse = await request.get(
+      `${backendBase}/api/workbench/task-runs/${runId}/artifacts/content/agent_runs/${createdWorkflow.agentNodeId}/sandbox_policy.json`,
     );
-    expect(networkPolicyResponse.ok()).toBeTruthy();
-    const networkPolicyPayload = await networkPolicyResponse.json() as { content: string };
-    expect(JSON.parse(networkPolicyPayload.content)).toMatchObject({
+    expect(sandboxPolicyResponse.ok()).toBeTruthy();
+    const sandboxPolicyPayload = await sandboxPolicyResponse.json() as { content: string };
+    const sandboxPolicy = JSON.parse(sandboxPolicyPayload.content) as {
+      network_policy: { allowed: boolean; reason: string };
+      read_paths: string[];
+    };
+    expect(sandboxPolicy.network_policy).toMatchObject({
       allowed: true,
       reason: "offline_agent_allowed",
     });
+    expect(sandboxPolicy.read_paths.some((value) => value.endsWith("/parsed_text.txt"))).toBeTruthy();
 
     const evidenceDir = process.env.CODETALK_E2E_ARTIFACT_DIR || "/Volumes/Media/codetalk-e2e-artifacts";
     fs.mkdirSync(evidenceDir, { recursive: true });
@@ -152,8 +157,14 @@ async function configureReportOnlyProvider(request: APIRequestContext, stamp: nu
     "import json, os, sys",
     "from pathlib import Path",
     "if '--version' in sys.argv: print('report-only-provider 1.0'); raise SystemExit(0)",
-    "payload = json.load(sys.stdin)",
-    "resolved_inputs = payload.get('task_bundle', {}).get('resolved_inputs', {})",
+    "stdin_text = sys.stdin.read()",
+    "if 'CODETALK_PROBE_OK' in stdin_text:",
+    "    print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'CODETALK_PROBE_OK'}}))",
+    "    print(json.dumps({'type': 'turn.completed'}))",
+    "    raise SystemExit(0)",
+    "payload = json.loads(stdin_text)",
+    "rendered = json.loads(payload.get('rendered_input') or '{}')",
+    "resolved_inputs = rendered.get('resolved_inputs', {})",
     "design_doc = next((value for value in resolved_inputs.values() if isinstance(value, dict) and str(value.get('original_name') or value.get('path') or value.get('copied_path') or '').endswith('design-doc.md')), {})",
     "design_doc_path = Path(design_doc if isinstance(design_doc, str) else design_doc.get('parsed_text_path') or design_doc.get('copied_path') or design_doc.get('path', ''))",
     "if not design_doc_path.is_absolute(): design_doc_path = Path(payload.get('runtime', {}).get('cwd', '.')) / design_doc_path",
@@ -163,7 +174,8 @@ async function configureReportOnlyProvider(request: APIRequestContext, stamp: nu
     "received = {'resolved_inputs': resolved_inputs, 'design_doc_text': design_doc_text}",
     "(artifact_dir / 'received_inputs.json').write_text(json.dumps(received, ensure_ascii=False), encoding='utf-8')",
     "(artifact_dir / 'report.md').write_text('# Source analysis report\\n\\nOnly the declared report artifact was produced.\\n', encoding='utf-8')",
-    "print('report-only provider completed')",
+    "print(json.dumps({'type': 'item.completed', 'item': {'type': 'agent_message', 'text': 'report-only provider completed'}}))",
+    "print(json.dumps({'type': 'turn.completed'}))",
     "",
   ].join("\n"), "utf8");
   fs.chmodSync(script, 0o755);
@@ -171,11 +183,11 @@ async function configureReportOnlyProvider(request: APIRequestContext, stamp: nu
   const runtimeResponse = await request.post(`${backendBase}/api/settings/agent-runtimes`, {
     data: {
       name: `V3 report-only E2E runtime ${stamp}`,
-      provider: "custom",
+      provider: "codex",
       command: "python3.11",
       args: [script],
-      prompt_transport: "stdin",
-      output_mode: "plain",
+      prompt_transport: "codex_exec_json",
+      output_mode: "stream_json",
       working_dir_mode: "project",
       timeout_seconds: 60,
       completion_mode: "process_exit",

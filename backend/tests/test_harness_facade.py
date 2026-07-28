@@ -223,3 +223,60 @@ def test_phase0_harness_rejects_path_escape_and_undeclared_artifacts(tmp_path):
     ))
 
     assert facade.collect_artifacts(session.run_id) == ["report.md"]
+
+
+def test_facade_execute_returns_structured_unsupported_without_lifecycle_events(tmp_path):
+    """An Adapter may decline a run before a Provider execution exists."""
+    from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
+    from app.services.provider_adapters.contracts import (
+        ProviderCapabilities,
+        ProviderSession,
+        ProviderUnsupported,
+    )
+
+    class UnsupportedRunAdapter:
+        def capabilities(self):
+            return ProviderCapabilities(
+                streaming=False,
+                tool_call=False,
+                session_resume=False,
+                structured_output=False,
+                mcp=False,
+                skills=False,
+                cancellation=False,
+            )
+
+        def prepare(self, request):
+            return ProviderSession(session_id="unsupported-run", provider=request.provider)
+
+        def execute(self, _session, **_kwargs):
+            return ProviderUnsupported(
+                operation="run",
+                capability="provider_execution",
+                message="执行器当前不可运行",
+            )
+
+        def collect_artifacts(self, _session):
+            raise AssertionError("unsupported runs must not enter artifact collection")
+
+    facade = AgentHarnessFacade(tmp_path, adapter=UnsupportedRunAdapter())
+    session = facade.prepare(
+        HarnessRunRequest(
+            provider="unavailable-provider",
+            command=[],
+            cwd=str(tmp_path),
+            workflow_snapshot={"id": "workflow-v3"},
+            task_bundle={"required_artifacts": []},
+        )
+    )
+    events: list[tuple[str, dict]] = []
+
+    result = facade.execute(
+        session,
+        event_sink=lambda kind, payload: events.append((kind, payload)),
+    )
+
+    assert isinstance(result, ProviderUnsupported)
+    assert result.operation == "run"
+    assert result.code == "unsupported_capability"
+    assert events == []

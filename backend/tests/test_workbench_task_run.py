@@ -2778,6 +2778,9 @@ def test_workbench_runner_builtin_llm_uses_handoff_contract_and_writes_outputs(
     assert "错误 CHAP 凭据" in (agent_dir / "black_box_cases.md").read_text(
         encoding="utf-8"
     )
+    assert json.loads((agent_dir / "agent_run.json").read_text(encoding="utf-8"))[
+        "status"
+    ] == "completed"
     messages = captured["messages"]
     assert isinstance(messages, list)
     llm_request = json.loads(messages[1]["content"])

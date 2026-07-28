@@ -3,6 +3,7 @@
 import json
 import logging
 import sqlite3
+from os import PathLike
 
 import aiosqlite
 
@@ -181,6 +182,26 @@ async def create_llm_client_from_active() -> BaseLLMClient:
         raise ValueError("未配置活跃的聊天模型，请先在设置中选择 LLM 模型")
 
     return await create_llm_client(row["value"])
+
+
+def create_builtin_model_adapter(
+    artifact_dir: str | PathLike[str],
+    *,
+    client_factory=None,
+    execute_callable=None,
+):
+    """Create the domain-neutral adapter around the existing active model path.
+
+    Dependencies stay injectable so tests and offline deployments can supply a
+    local callable without loading an SDK or contacting a model endpoint.
+    """
+    from app.services.provider_adapters.builtin_model import BuiltinModelAdapter
+
+    return BuiltinModelAdapter(
+        artifact_dir,
+        client_factory=client_factory or create_llm_client_from_active,
+        execute_callable=execute_callable,
+    )
 
 
 async def create_behavior_claim_audit_llm_client(

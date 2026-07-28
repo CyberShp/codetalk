@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import sqlite3
 from types import SimpleNamespace
 
@@ -877,7 +878,11 @@ def test_retry_seed_results_reuse_only_successful_nodes_before_failure(tmp_path)
 
 
 @pytest.mark.asyncio
-async def test_background_exception_finishes_quality_in_blocked_state(tmp_path, monkeypatch):
+async def test_background_exception_logs_only_redacted_traceback(
+    tmp_path,
+    monkeypatch,
+    caplog,
+):
     from app.api import agent_workbench
     from app.config import settings
     from app.services.workbench_task_run import WorkbenchTaskRunPreparer, WorkbenchTaskRunStore
@@ -900,10 +905,15 @@ async def test_background_exception_finishes_quality_in_blocked_state(tmp_path, 
         inputs={"target": "lib/nvmf"},
     )
 
+    secret = "backgroundBearerSecret1234567890"
+
     def fail_execution(**_kwargs):
-        raise RuntimeError("provider transport crashed")
+        raise RuntimeError(
+            f"provider transport crashed Authorization: Bearer {secret}"
+        )
 
     monkeypatch.setattr(agent_workbench, "_execute_task_run_with_closure", fail_execution)
+    caplog.set_level(logging.ERROR, logger="app.api.agent_workbench")
     await agent_workbench._execute_task_run_background(
         task_run_id=prepared.task_run_id,
         payload=agent_workbench.TaskRunExecuteRequest(),
@@ -913,6 +923,10 @@ async def test_background_exception_finishes_quality_in_blocked_state(tmp_path, 
     assert failed.execution_status == "failed"
     assert failed.quality_status == "blocked"
     assert failed.delivery_status == "none"
+    assert "Traceback (most recent call last)" in caplog.text
+    assert "Authorization: Bearer <redacted>" in caplog.text
+    assert secret not in caplog.text
+    assert all(secret not in str(record.exc_text or "") for record in caplog.records)
 
 
 @pytest.mark.asyncio

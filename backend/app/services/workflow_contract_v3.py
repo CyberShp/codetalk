@@ -63,6 +63,14 @@ def validate_workflow_contract_v3(
     outputs = _declared_outputs(nodes, edges, errors)
     _validate_explicit_validators(nodes, {item["output_id"] for item in outputs}, errors)
 
+    _validate_provider_capability_requirements(
+        nodes,
+        capabilities,
+        errors,
+        warnings,
+        require_executable=require_executable,
+    )
+
     requested_handlers = _requested_handlers(nodes, outputs, profile)
     available = _handler_capabilities(capabilities)
     for handler_id, handler_version, node_id in requested_handlers:
@@ -432,6 +440,114 @@ def _validate_explicit_validators(nodes: dict[str, dict[str, Any]], declared: se
             continue
         for output_id in sorted({str(item) for item in required_outputs} - declared):
             errors.append(_issue("validator_output_not_declared", f"Validator requires undeclared output: {output_id}", node_id=node_id, field="required_outputs", output_id=output_id))
+
+
+def _validate_provider_capability_requirements(
+    nodes: dict[str, dict[str, Any]],
+    capabilities: dict[str, Any] | None,
+    errors: list[dict[str, Any]],
+    warnings: list[dict[str, Any]],
+    *,
+    require_executable: bool,
+) -> None:
+    """Fail closed when a publish/preflight snapshot cannot satisfy an Agent node.
+
+    The compiler deliberately consumes a detached capability snapshot.  It must
+    not instantiate adapters or guess that an arbitrary legacy/custom command
+    supports a capability merely because it is configured as available.
+    """
+    providers = _provider_capability_snapshot(capabilities)
+    if providers is None:
+        # Pure/offline compiler callers may intentionally omit runtime
+        # capabilities. Publish and trial-run routes always supply this snapshot.
+        return
+    for node_id, node in sorted(nodes.items()):
+        if node.get("kind") not in {"agent", "builtin_model"}:
+            continue
+        config = _config(node)
+        required = sorted(set(_strings(config.get("provider_capabilities_required"))))
+        provider = str(config.get("provider_ref") or config.get("provider") or "").strip()
+        entry = providers.get(provider)
+        available = _declared_provider_capabilities(entry)
+        if available is None:
+            capability_suffix = (
+                f"：{', '.join(required)}" if required else ""
+            )
+            _provider_capability_issue(
+                errors,
+                warnings,
+                require_executable=require_executable,
+                code="provider_capabilities_unknown",
+                message=(
+                    f"无法确认执行器“{provider or '未选择'}”的能力{capability_suffix}。"
+                    "自定义或旧执行器不会被猜测为支持；请在设置中完成能力探测，"
+                    "或选择受支持的执行器后重新发布。"
+                ),
+                node_id=node_id,
+                provider=provider,
+                required_capabilities=required,
+            )
+            continue
+        if not required:
+            continue
+        missing = sorted(set(required) - available)
+        if missing:
+            _provider_capability_issue(
+                errors,
+                warnings,
+                require_executable=require_executable,
+                code="provider_capabilities_unsupported",
+                message=(
+                    f"执行器“{provider}”不支持所需能力：{', '.join(missing)}。"
+                    "请调整 Agent 节点的能力要求，或在设置中选择支持这些能力的执行器后重新发布。"
+                ),
+                node_id=node_id,
+                provider=provider,
+                required_capabilities=required,
+                missing_capabilities=missing,
+            )
+
+
+def _provider_capability_snapshot(capabilities: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(capabilities, dict):
+        return None
+    providers = capabilities.get("providers")
+    return providers if isinstance(providers, dict) else None
+
+
+def _declared_provider_capabilities(entry: Any) -> set[str] | None:
+    if not isinstance(entry, dict):
+        return None
+    declared = entry.get("capabilities")
+    if isinstance(declared, dict):
+        return {str(name) for name, enabled in declared.items() if enabled is True}
+    if isinstance(declared, (list, tuple, set)):
+        return {str(item) for item in declared if str(item).strip()}
+    return None
+
+
+def _provider_capability_issue(
+    errors: list[dict[str, Any]],
+    warnings: list[dict[str, Any]],
+    *,
+    require_executable: bool,
+    code: str,
+    message: str,
+    node_id: str,
+    provider: str,
+    required_capabilities: list[str],
+    missing_capabilities: list[str] | None = None,
+) -> None:
+    issue = _issue(
+        code if require_executable else f"{code}_draft",
+        message,
+        node_id=node_id,
+        field="provider_capabilities_required",
+        provider=provider,
+        required_capabilities=required_capabilities,
+        missing_capabilities=missing_capabilities,
+    )
+    (errors if require_executable else warnings).append(issue)
 
 
 def _requested_handlers(nodes: dict[str, dict[str, Any]], outputs: list[dict[str, Any]], profile: str) -> list[tuple[str, int, str | None]]:

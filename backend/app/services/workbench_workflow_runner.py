@@ -16,7 +16,7 @@ import time
 import tokenize
 import traceback
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -42,9 +42,22 @@ from app.services.ai_staged_execution import (
     normalize_materialized_sfmea_risk_contract,
     refresh_deterministic_combined_report,
 )
-from app.services.agent_run_harness import ArtifactValidationHarness
+from app.services.agent_run_harness import (
+    AgentRunRecord,
+    ArtifactValidationResult,
+    ArtifactValidationHarness,
+    _generic_agent_invocation_contract,
+)
 from app.services.ai_thread_artifacts import ArtifactContractError
-from app.services.harness_facade import AgentHarnessFacade
+from app.services.harness_facade import AgentHarnessFacade, HarnessRunRequest
+from app.services.provider_adapters.contracts import ProviderUnsupported
+from app.services.legacy_workbench_harness_contract import (
+    is_legacy_workbench_harness_contract,
+)
+from app.services.provider_adapters.registry import (
+    create_provider_adapter,
+    missing_provider_capabilities,
+)
 from app.services.artifact_contract_v3 import (
     enrich_external_agent_claim_bindings,
     materialize_artifact_contract_v3_outputs,
@@ -81,6 +94,19 @@ from app.services.workflow_run_status import (
     legacy_delivery_status as _legacy_v3_delivery_status,
     legacy_quality_status as _legacy_v3_quality_status,
 )
+
+
+_BUILTIN_HARNESS_INTERNAL_ARTIFACTS = [
+    "builtin_llm_execution_input.json",
+    "staged_execution_context.json",
+    "staged_execution_plan.json",
+    "staged_execution_result.json",
+    "test_activity_stage_progress.json",
+    "source_analysis.md",
+    "builtin_llm_failure.json",
+    "raw_output.txt",
+    "execution_result.json",
+]
 
 
 def _now() -> str:
@@ -2457,15 +2483,6 @@ class WorkbenchWorkflowRunner:
             prior_step_results=prior_step_results,
             resolved_inputs=resolved_inputs,
         )
-        if provider == BUILTIN_LLM_PROVIDER_ID:
-            return self._execute_builtin_llm_step(
-                step=step,
-                agent_run=agent_run,
-                artifact_dir=artifact_dir,
-                run_payload=run_payload if isinstance(run_payload, dict) else {},
-                run_id=run_id,
-                timeout_sec=timeout_sec,
-            )
 
         quality_retry_bundle = _read_json(artifact_dir / "task_bundle.json")
         quality_retry_feedback = (
@@ -2504,22 +2521,117 @@ class WorkbenchWorkflowRunner:
                 },
             )
 
-        execution = AgentHarnessFacade(artifact_dir).execute(
-            run_id,
-            timeout_sec=_effective_agent_timeout_sec(
-                requested_timeout_sec=timeout_sec,
-                agent_run=agent_run,
-                run_payload=run_payload if isinstance(run_payload, dict) else {},
-            ),
-            idle_timeout_sec=_effective_agent_idle_timeout_sec(
-                agent_run=agent_run,
-                run_payload=run_payload if isinstance(run_payload, dict) else {},
-            ),
-            is_cancelled=self._is_cancelled,
-            event_sink=emit_agent_event,
+        effective_timeout = _effective_agent_timeout_sec(
+            requested_timeout_sec=timeout_sec,
+            agent_run=agent_run,
+            run_payload=run_payload if isinstance(run_payload, dict) else {},
         )
+        effective_idle_timeout = _effective_agent_idle_timeout_sec(
+            agent_run=agent_run,
+            run_payload=run_payload if isinstance(run_payload, dict) else {},
+        )
+
+        def execute_provider_turn():
+            facade, facade_session_id, missing_capabilities = (
+                self._prepare_provider_facade_for_step(
+                    step=step,
+                    agent_run=agent_run,
+                    artifact_dir=artifact_dir,
+                    run_payload=run_payload if isinstance(run_payload, dict) else {},
+                    run_id=run_id,
+                    timeout_sec=effective_timeout,
+                    idle_timeout_sec=effective_idle_timeout,
+                )
+            )
+            if missing_capabilities:
+                raise ValueError(
+                    "missing_provider_capabilities: "
+                    + ", ".join(missing_capabilities)
+                )
+            return facade.execute(
+                facade_session_id,
+                timeout_sec=effective_timeout,
+                idle_timeout_sec=effective_idle_timeout,
+                is_cancelled=self._is_cancelled,
+                event_sink=emit_agent_event,
+            )
+
+        def unsupported_step_result(
+            unsupported: ProviderUnsupported,
+            *,
+            continuing: bool = False,
+        ) -> dict[str, Any]:
+            message = unsupported.message.rstrip("。.!！")
+            action = "继续" if continuing else "执行"
+            return {
+                "step_id": step_id,
+                "type": "agent_task",
+                "status": "error",
+                "error": "provider_unsupported",
+                "provider": provider,
+                "unsupported": {
+                    "operation": unsupported.operation,
+                    "capability": unsupported.capability,
+                    "code": unsupported.code,
+                },
+                "missing_capabilities": (
+                    [unsupported.capability] if unsupported.capability else []
+                ),
+                "user_message": (
+                    f"所选执行器无法{action}当前节点：{message}。"
+                    "请在设置中检查执行器能力，或改用支持该能力的执行器后重试。"
+                ),
+            }
+
+        try:
+            execution = execute_provider_turn()
+        except ValueError as exc:
+            message = str(exc)
+            if message.startswith("unsupported_provider_adapter:"):
+                unsupported_provider = message.split(":", 1)[-1].strip() or provider
+                return {
+                    "step_id": step_id,
+                    "type": "agent_task",
+                    "status": "error",
+                    "error": "unsupported_provider_adapter",
+                    "provider": unsupported_provider,
+                    "user_message": (
+                        f"执行器“{unsupported_provider}”不受 V3 Harness 支持。"
+                        "请在设置中选择内置模型、Codex、Claude Code 或 OpenCode，"
+                        "然后重新发布工作流。"
+                    ),
+                }
+            if not message.startswith("missing_provider_capabilities:"):
+                raise
+            missing = [
+                item.strip()
+                for item in message.split(":", 1)[-1].split(",")
+                if item.strip()
+            ]
+            return {
+                "step_id": step_id,
+                "type": "agent_task",
+                "status": "error",
+                "error": "missing_provider_capabilities",
+                "provider": provider,
+                "missing_capabilities": missing,
+                "user_message": (
+                    "所选执行器不具备此节点要求的能力：" + "、".join(missing)
+                ),
+            }
+        if isinstance(execution, ProviderUnsupported):
+            return unsupported_step_result(execution)
+        if provider == BUILTIN_LLM_PROVIDER_ID and execution.status == "completed":
+            _promote_builtin_session_status(
+                agent_artifact_dir=artifact_dir,
+                task_root=task_root,
+            )
         executions = [asdict(execution)]
-        turn_artifacts = [_snapshot_agent_turn_artifacts(artifact_dir, turn_id="turn_1")]
+        turn_artifacts = (
+            []
+            if provider == BUILTIN_LLM_PROVIDER_ID
+            else [_snapshot_agent_turn_artifacts(artifact_dir, turn_id="turn_1")]
+        )
         source_slice_requests = _agent_source_slice_requests(artifact_dir)
         injected_source_slices: list[dict[str, Any]] = []
         source_slice_warnings: list[str] = []
@@ -2535,22 +2647,23 @@ class WorkbenchWorkflowRunner:
                 warnings=source_slice_warnings,
             )
             _set_agent_turn_id(artifact_dir=artifact_dir, turn_id="turn_2")
-            execution = AgentHarnessFacade(artifact_dir).execute(
-                run_id,
-                timeout_sec=_effective_agent_timeout_sec(
-                    requested_timeout_sec=timeout_sec,
-                    agent_run=agent_run,
-                    run_payload=run_payload if isinstance(run_payload, dict) else {},
-                ),
-                idle_timeout_sec=_effective_agent_idle_timeout_sec(
-                    agent_run=agent_run,
-                    run_payload=run_payload if isinstance(run_payload, dict) else {},
-                ),
-                is_cancelled=self._is_cancelled,
-                event_sink=emit_agent_event,
-            )
+            execution = execute_provider_turn()
+            if isinstance(execution, ProviderUnsupported):
+                return unsupported_step_result(execution, continuing=True)
             executions.append(asdict(execution))
-            turn_artifacts.append(_snapshot_agent_turn_artifacts(artifact_dir, turn_id="turn_2"))
+            if provider != BUILTIN_LLM_PROVIDER_ID:
+                turn_artifacts.append(
+                    _snapshot_agent_turn_artifacts(artifact_dir, turn_id="turn_2")
+                )
+        if provider == BUILTIN_LLM_PROVIDER_ID:
+            builtin_stage_progress = _read_json(
+                artifact_dir / "test_activity_stage_progress.json"
+            )
+            if isinstance(builtin_stage_progress, dict):
+                _write_json(
+                    task_root / "test_activity_stage_progress.json",
+                    builtin_stage_progress,
+                )
         _restore_protected_artifacts(artifact_dir, protected_artifact_snapshot)
         required_artifacts = [
             str(item)
@@ -2560,7 +2673,11 @@ class WorkbenchWorkflowRunner:
                 or []
             )
         ]
-        validation = _validate_step_artifacts(artifact_dir, required_artifacts)
+        validation = _validate_step_artifacts(
+            artifact_dir,
+            required_artifacts,
+            candidate_artifacts=list(execution.artifacts),
+        )
         if validation.status == "ok":
             record_external_agent_artifact_consumption(
                 task_root / "input_consumption.json",
@@ -2631,22 +2748,211 @@ class WorkbenchWorkflowRunner:
             failure_recovery["retry_context_artifact"] = "failure_retry_context.json"
             step_payload["failure_recovery"] = failure_recovery
             _write_json(artifact_dir / "failure_recovery.json", failure_recovery)
-        lifecycle = _agent_run_lifecycle_summary(
-            step_id=step_id,
-            status=status,
-            artifact_dir=artifact_dir,
-            executions=executions,
-            turn_artifacts=turn_artifacts,
-            validation=asdict(validation),
-            required_artifacts=required_artifacts,
-            source_slice_requests=source_slice_requests,
-            injected_source_slices=injected_source_slices,
-            failure_recovery=failure_recovery,
-            artifact_recovery=artifact_recovery,
+        builtin_lifecycle = (
+            _read_json(artifact_dir / "agent_run_lifecycle.json")
+            if provider == BUILTIN_LLM_PROVIDER_ID
+            else None
         )
+        lifecycle = (
+            builtin_lifecycle
+            if isinstance(builtin_lifecycle, dict)
+            else _agent_run_lifecycle_summary(
+                step_id=step_id,
+                status=status,
+                artifact_dir=artifact_dir,
+                executions=executions,
+                turn_artifacts=turn_artifacts,
+                validation=asdict(validation),
+                required_artifacts=required_artifacts,
+                source_slice_requests=source_slice_requests,
+                injected_source_slices=injected_source_slices,
+                failure_recovery=failure_recovery,
+                artifact_recovery=artifact_recovery,
+            )
+        )
+        if provider == BUILTIN_LLM_PROVIDER_ID:
+            lifecycle = {**lifecycle, "turn_count": 0, "turn_artifacts": []}
         step_payload["lifecycle"] = lifecycle
         _write_json(artifact_dir / "agent_run_lifecycle.json", lifecycle)
+        if provider == BUILTIN_LLM_PROVIDER_ID:
+            _write_json(
+                artifact_dir / "agent_run.json",
+                {
+                    **(run_payload if isinstance(run_payload, dict) else {}),
+                    "status": execution.status,
+                    "completed_at": execution.completed_at,
+                    "duration_ms": execution.duration_ms,
+                },
+            )
         return step_payload
+
+    def _prepare_provider_facade_for_step(
+        self,
+        *,
+        step: dict[str, Any],
+        agent_run: dict[str, Any],
+        artifact_dir: Path,
+        run_payload: dict[str, Any],
+        run_id: str,
+        timeout_sec: int,
+        idle_timeout_sec: float | None,
+    ) -> tuple[AgentHarnessFacade, str, list[str]]:
+        """Rehydrate one frozen run at the provider-neutral execution boundary."""
+
+        task_bundle = _read_json(artifact_dir / "task_bundle.json")
+        workflow_snapshot = _read_json(artifact_dir / "workflow_snapshot.json")
+        if not isinstance(task_bundle, dict):
+            task_bundle = {}
+        if not isinstance(workflow_snapshot, dict):
+            workflow_snapshot = {}
+        provider = str(
+            agent_run.get("provider")
+            or run_payload.get("provider")
+            or step.get("provider")
+            or ""
+        )
+        required_artifacts = [
+            str(item)
+            for item in (
+                step.get("required_artifacts")
+                or agent_run.get("required_artifacts")
+                or task_bundle.get("required_artifacts")
+                or []
+            )
+            if str(item).strip()
+        ]
+        prompt_transport = str(
+            run_payload.get("prompt_transport")
+            or agent_run.get("prompt_transport")
+            or ("builtin_llm" if provider == BUILTIN_LLM_PROVIDER_ID else "")
+        )
+        run_record = AgentRunRecord(
+            run_id=run_id,
+            turn_id=str(run_payload.get("turn_id") or "turn_1"),
+            provider=provider,
+            command=[str(item) for item in run_payload.get("command") or []],
+            cwd=str(run_payload.get("cwd") or ""),
+            artifact_dir=str(artifact_dir),
+            mcp_profile=str(
+                run_payload.get("mcp_profile")
+                or agent_run.get("mcp_profile")
+                or step.get("mcp_profile")
+                or ""
+            ),
+            prompt_transport=prompt_transport,
+            timeout_seconds=timeout_sec,
+            idle_timeout_seconds=idle_timeout_sec,
+            requires_network=bool(run_payload.get("requires_network", True)),
+            session_policy=(
+                dict(run_payload.get("session_policy"))
+                if isinstance(run_payload.get("session_policy"), dict)
+                else {}
+            ),
+            status=str(run_payload.get("status") or "created"),
+            created_at=str(run_payload.get("created_at") or _now()),
+        )
+        legacy_contract = is_legacy_workbench_harness_contract(
+            task_bundle=task_bundle,
+            workflow_snapshot=workflow_snapshot,
+        )
+        request_bundle = dict(task_bundle)
+        request_bundle["required_artifacts"] = required_artifacts
+        if provider == BUILTIN_LLM_PROVIDER_ID:
+            request_bundle["harness_internal_artifacts"] = list(
+                _BUILTIN_HARNESS_INTERNAL_ARTIFACTS
+            )
+            request_bundle["harness_internal_prefixes"] = ["stages/"]
+        if not legacy_contract:
+            request_bundle["rendered_user_input"] = json.dumps(
+                _generic_agent_invocation_contract(
+                    run=run_record,
+                    task_bundle=request_bundle,
+                ),
+                ensure_ascii=False,
+            )
+
+        def execute_builtin_model(**kwargs: Any) -> dict[str, Any]:
+            session = kwargs.get("session")
+            session_artifact_dir = Path(str(getattr(session, "artifact_dir", "") or ""))
+            _seed_builtin_session_directory(
+                source_artifact_dir=artifact_dir,
+                session_artifact_dir=session_artifact_dir,
+            )
+            result = self._execute_builtin_llm_step(
+                step=step,
+                agent_run=agent_run,
+                artifact_dir=session_artifact_dir,
+                run_payload=run_payload,
+                run_id=run_id,
+                timeout_sec=timeout_sec,
+                event_sink=kwargs.get("event_sink"),
+            )
+            execution = (
+                dict(result.get("execution"))
+                if isinstance(result.get("execution"), dict)
+                else {}
+            )
+            validation = (
+                result.get("validation")
+                if isinstance(result.get("validation"), dict)
+                else {}
+            )
+            candidates = result.get("artifacts")
+            if not isinstance(candidates, list):
+                candidates = validation.get("accepted_artifacts")
+            return {
+                **execution,
+                "status": str(execution.get("status") or result.get("status") or "error"),
+                "exit_code": execution.get("exit_code", result.get("exit_code")),
+                "error": str(execution.get("error") or result.get("error") or ""),
+                "artifacts": [str(item) for item in candidates or []],
+                "provider_diagnostics": dict(
+                    execution.get("provider_diagnostics")
+                    if isinstance(execution.get("provider_diagnostics"), dict)
+                    else result.get("provider_diagnostics")
+                    if isinstance(result.get("provider_diagnostics"), dict)
+                    else {}
+                ),
+            }
+
+        adapter = create_provider_adapter(
+            provider=provider,
+            prompt_transport=prompt_transport,
+            artifact_dir=artifact_dir,
+            builtin_execute_callable=(
+                execute_builtin_model if provider == BUILTIN_LLM_PROVIDER_ID else None
+            ),
+        )
+        if adapter is None:
+            if not legacy_contract:
+                raise ValueError(f"unsupported_provider_adapter: {provider}")
+            return AgentHarnessFacade(artifact_dir), run_id, []
+        if legacy_contract and provider != BUILTIN_LLM_PROVIDER_ID:
+            return AgentHarnessFacade(artifact_dir), run_id, []
+
+        missing = missing_provider_capabilities(
+            adapter,
+            step.get("provider_capabilities_required")
+            if isinstance(step.get("provider_capabilities_required"), list)
+            else [],
+        )
+        facade = AgentHarnessFacade(artifact_dir, adapter=adapter)
+        request = HarnessRunRequest(
+            provider=provider,
+            command=run_record.command,
+            cwd=run_record.cwd,
+            workflow_snapshot=workflow_snapshot,
+            task_bundle=request_bundle,
+            mcp_profile=run_record.mcp_profile,
+            prompt_transport=prompt_transport,
+            timeout_seconds=timeout_sec,
+            idle_timeout_seconds=idle_timeout_sec,
+            requires_network=run_record.requires_network,
+            run_id=run_id,
+            turn_id=run_record.turn_id,
+        )
+        session = facade.prepare(request)
+        return facade, session.session_id, missing
 
     def _execute_builtin_llm_step(
         self,
@@ -2657,8 +2963,10 @@ class WorkbenchWorkflowRunner:
         run_payload: dict[str, Any],
         run_id: str,
         timeout_sec: int,
+        event_sink: Callable[[str, dict[str, Any]], None] | None = None,
     ) -> dict[str, Any]:
         step_id = str(step.get("id") or agent_run.get("step_id") or "")
+        emit_event = event_sink or self._emit_event
         task_bundle = _read_json(artifact_dir / "task_bundle.json")
         workflow_snapshot = _read_json(artifact_dir / "workflow_snapshot.json")
         output_contract = _read_json(artifact_dir / "agent_output_contract.json")
@@ -2739,7 +3047,10 @@ class WorkbenchWorkflowRunner:
             if str(step.get("execution_mode") or "") == "staged":
                 staged_task_run_id = str(task_bundle.get("task_run_id") or run_id)
                 try:
-                    staged_task_run = self.store.load(staged_task_run_id)
+                    staged_task_run = replace(
+                        self.store.load(staged_task_run_id),
+                        artifact_dir=str(artifact_dir),
+                    )
                 except KeyError:
                     staged_task_run = SimpleNamespace(
                         task_bundle=task_bundle,
@@ -2757,9 +3068,7 @@ class WorkbenchWorkflowRunner:
                     if isinstance(execution_profile, dict)
                     else "rapid"
                 )
-                task_root = self.artifact_root / _safe_segment(
-                    str(task_bundle.get("task_run_id") or run_id)
-                )
+                task_root = artifact_dir
                 live_stage_progress = TestActivityStageProgressTracker(
                     task_root,
                     profile_id=profile_id,
@@ -2820,7 +3129,7 @@ class WorkbenchWorkflowRunner:
                         )
                         if payload.get(key) not in (None, "")
                     }
-                    self._emit_event(
+                    emit_event(
                         "thinking",
                         {
                             "step_id": step_id,
@@ -2957,7 +3266,7 @@ class WorkbenchWorkflowRunner:
                             return {}
                         remaining_seconds = remaining_lifecycle_seconds()
                         if remaining_seconds <= 0:
-                            self._emit_event(
+                            emit_event(
                                 "behavior_claim_validation_skipped",
                                 {
                                     "step_id": step_id,
@@ -2987,7 +3296,7 @@ class WorkbenchWorkflowRunner:
                                             or "unknown"
                                         )
                                     ),
-                                    on_progress=lambda payload: self._emit_event(
+                                    on_progress=lambda payload: emit_event(
                                         "behavior_claim_validation_progress",
                                         {"step_id": step_id, **payload},
                                     ),
@@ -2996,7 +3305,7 @@ class WorkbenchWorkflowRunner:
                                 deadline=staged_lifecycle_deadline,
                             )
                         except asyncio.TimeoutError:
-                            self._emit_event(
+                            emit_event(
                                 "behavior_claim_validation_skipped",
                                 {
                                     "step_id": step_id,
@@ -3018,7 +3327,7 @@ class WorkbenchWorkflowRunner:
                             for item in validation.get("claims") or []
                             if isinstance(item, dict)
                         )
-                        self._emit_event(
+                        emit_event(
                             "behavior_claim_validation_completed",
                             {
                                 "step_id": step_id,
@@ -3165,7 +3474,7 @@ class WorkbenchWorkflowRunner:
                                     quality_repair_stop_reason = (
                                         "workflow_deadline_exceeded"
                                     )
-                                    self._emit_event(
+                                    emit_event(
                                         "quality_repair_skipped",
                                         {
                                             "step_id": step_id,
@@ -3202,7 +3511,7 @@ class WorkbenchWorkflowRunner:
                                     quality_repair_stop_reason = (
                                         "insufficient_remaining_time"
                                     )
-                                    self._emit_event(
+                                    emit_event(
                                         "quality_repair_skipped",
                                         {
                                             "step_id": step_id,
@@ -3238,7 +3547,7 @@ class WorkbenchWorkflowRunner:
                                         quality_repair_stop_reason = (
                                             "source_evidence_gap_requires_scope_change"
                                         )
-                                        self._emit_event(
+                                        emit_event(
                                             "quality_repair_skipped",
                                             {
                                                 "step_id": step_id,
@@ -3271,7 +3580,7 @@ class WorkbenchWorkflowRunner:
                                     artifact_dir=artifact_dir,
                                     destination=repair_dir / "stage_metrics_before.json",
                                 )
-                                self._emit_event(
+                                emit_event(
                                     "quality_repair_started",
                                     {
                                         "step_id": step_id,
@@ -3359,7 +3668,7 @@ class WorkbenchWorkflowRunner:
                                     quality_repair_stop_reason = (
                                         "workflow_deadline_exceeded"
                                     )
-                                    self._emit_event(
+                                    emit_event(
                                         "quality_repair_skipped",
                                         {
                                             "step_id": step_id,
@@ -3424,7 +3733,7 @@ class WorkbenchWorkflowRunner:
                                             salvaged_rows = {}
                                             audit_after = audit
                                     if regressed:
-                                        self._emit_event(
+                                        emit_event(
                                             "behavior_claim_validation_progress",
                                             {
                                                 "step_id": step_id,
@@ -3474,7 +3783,7 @@ class WorkbenchWorkflowRunner:
                                     "salvaged_rows": salvaged_rows,
                                 }
                                 repair_history.append(history_item)
-                                self._emit_event(
+                                emit_event(
                                     "quality_repair_completed",
                                     {
                                         "step_id": step_id,
@@ -3498,7 +3807,7 @@ class WorkbenchWorkflowRunner:
                                     salvaged_rows=salvaged_rows,
                                 ):
                                     quality_repair_stop_reason = "no_quality_progress"
-                                    self._emit_event(
+                                    emit_event(
                                         "quality_repair_skipped",
                                         {
                                             "step_id": step_id,
@@ -5921,12 +6230,65 @@ def _json_type_error(value: Any, expected_type: str, *, path: str = "$") -> str:
 def _validate_step_artifacts(
     artifact_dir: Path,
     required_artifacts: list[str],
+    *,
+    candidate_artifacts: list[str] | None = None,
 ):
     validator = ArtifactValidationHarness(artifact_dir)
     required = {str(item) for item in required_artifacts}
     if {"mr_snapshot.json", "diff.patch", "changed_files.json"}.issubset(required):
-        return validator.validate_mr_artifacts(required_artifacts=required_artifacts)
-    return validator.validate_required_artifacts(required_artifacts=required_artifacts)
+        validation = validator.validate_mr_artifacts(required_artifacts=required_artifacts)
+    else:
+        validation = validator.validate_required_artifacts(
+            required_artifacts=required_artifacts
+        )
+    if candidate_artifacts is None:
+        return validation
+
+    candidates = {str(item) for item in candidate_artifacts}
+    missing_candidates = [
+        artifact
+        for artifact in required_artifacts
+        if artifact not in candidates
+        and not any(
+            item.get("artifact") == artifact
+            for item in validation.rejected_artifacts
+        )
+    ]
+    if not missing_candidates:
+        return validation
+
+    missing_set = set(missing_candidates)
+    return ArtifactValidationResult(
+        status="invalid",
+        provenance_status="unverified_agent_claim",
+        accepted_artifacts=[
+            item for item in validation.accepted_artifacts if item not in missing_set
+        ],
+        rejected_artifacts=[
+            *validation.rejected_artifacts,
+            *[
+                {"artifact": item, "reason": "provider_did_not_report_artifact"}
+                for item in missing_candidates
+            ],
+        ],
+        accepted_artifact_details=[
+            item
+            for item in validation.accepted_artifact_details
+            if item.get("artifact") not in missing_set
+        ],
+        rejected_artifact_details=[
+            *validation.rejected_artifact_details,
+            *[
+                {
+                    "artifact": item,
+                    "reason": "provider_did_not_report_artifact",
+                    "path": str(artifact_dir / item),
+                }
+                for item in missing_candidates
+            ],
+        ],
+        warnings=list(validation.warnings),
+    )
 
 
 def _artifact_recovery_after_terminal_rejection(
@@ -11432,6 +11794,60 @@ def _workflow_output_enabled(output: dict[str, Any]) -> bool:
 def _workflow_enforces_artifact_contract_v3(workflow_snapshot: dict[str, Any]) -> bool:
     """Legacy workflows keep their published contract; V3 is explicit at publication."""
     return str(workflow_snapshot.get("artifact_contract_version") or "") == "v3"
+
+
+def _seed_builtin_session_directory(
+    *,
+    source_artifact_dir: Path,
+    session_artifact_dir: Path,
+) -> None:
+    """Freeze readable run inputs into the Builtin provider's isolated epoch."""
+
+    if not str(session_artifact_dir) or str(session_artifact_dir) == ".":
+        raise ValueError("builtin provider session artifact directory is missing")
+    source_root = source_artifact_dir.resolve()
+    staging_parent = (source_artifact_dir / ".builtin-model-staging").resolve()
+    session_root = session_artifact_dir.resolve()
+    try:
+        session_root.relative_to(staging_parent)
+    except ValueError as exc:
+        raise ValueError("builtin provider session artifact directory is unsafe") from exc
+    session_artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    for source in source_artifact_dir.rglob("*"):
+        relative = source.relative_to(source_artifact_dir)
+        if not relative.parts or relative.parts[0] == ".builtin-model-staging":
+            continue
+        if source.is_symlink() or not source.is_file():
+            continue
+        try:
+            source.resolve().relative_to(source_root)
+        except ValueError:
+            continue
+        target = session_artifact_dir / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+
+def _promote_builtin_session_status(
+    *,
+    agent_artifact_dir: Path,
+    task_root: Path,
+) -> None:
+    """Publish CodeTalk-owned status only after the Facade accepts the epoch."""
+
+    for name in ("test_activity_stage_progress.json", "input_consumption.json"):
+        source = agent_artifact_dir / name
+        if source.is_symlink() or not source.is_file():
+            continue
+        target = task_root / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+        try:
+            shutil.copy2(source, temporary)
+            temporary.replace(target)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _safe_segment(value: str) -> str:

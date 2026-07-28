@@ -1,5 +1,6 @@
 import asyncio
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -266,6 +267,355 @@ async def test_terminate_process_cleans_descendant_after_group_leader_exits(tmp_
                 os.kill(child_pid, 9)
             except ProcessLookupError:
                 pass
+
+
+async def test_terminate_process_ignores_group_signal_permission_race(monkeypatch):
+    from app.services import agent_cli_bridge
+
+    class ExitedProcess:
+        pid = 424242
+        returncode = 0
+
+        async def wait(self):
+            return self.returncode
+
+    group_probe_count = 0
+
+    def permission_race(_pid, sig):
+        nonlocal group_probe_count
+        if sig == 0:
+            group_probe_count += 1
+            if group_probe_count == 1:
+                return None
+            raise ProcessLookupError
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(agent_cli_bridge.os, "killpg", permission_race)
+
+    await _terminate_process(ExitedProcess(), process_group=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cleanup_origin", ["cancel", "timeout"])
+async def test_terminate_process_reports_unconfirmed_group_after_permission_error(
+    monkeypatch,
+    cleanup_origin,
+):
+    from app.services import agent_cli_bridge
+
+    class ActiveProcess:
+        pid = 424243
+        returncode = None
+
+        def __init__(self):
+            self.kill_calls = 0
+            self.wait_calls = 0
+
+        def terminate(self):
+            raise PermissionError(1, f"{cleanup_origin} terminate denied")
+
+        def kill(self):
+            self.kill_calls += 1
+            self.returncode = -9
+
+        async def wait(self):
+            self.wait_calls += 1
+            return self.returncode
+
+    def deny_group_signal(_pid, _sig):
+        raise PermissionError(1, f"{cleanup_origin} group signal denied")
+
+    proc = ActiveProcess()
+    monkeypatch.setattr(agent_cli_bridge.os, "killpg", deny_group_signal)
+
+    with pytest.raises(
+        agent_cli_bridge.AgentRuntimeError,
+        match="无法安全终止执行器进程组",
+    ):
+        await _terminate_process(proc, process_group=True)
+
+    assert proc.returncode == -9
+    assert proc.kill_calls == 1
+    assert proc.wait_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_reports_active_process_that_cannot_be_killed(monkeypatch):
+    from app.services import agent_cli_bridge
+
+    class UnstoppableProcess:
+        pid = 424244
+        returncode = None
+
+        def terminate(self):
+            raise PermissionError(1, "terminate denied")
+
+        def kill(self):
+            raise PermissionError(1, "kill denied")
+
+        async def wait(self):
+            return self.returncode
+
+    def deny_group_signal(_pid, _sig):
+        raise PermissionError(1, "group signal denied")
+
+    monkeypatch.setattr(agent_cli_bridge.os, "killpg", deny_group_signal)
+
+    with pytest.raises(
+        agent_cli_bridge.AgentRuntimeError,
+        match="无法安全终止执行器进程",
+    ):
+        await _terminate_process(UnstoppableProcess(), process_group=True)
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_direct_path_force_kills_after_terminate_permission_error():
+    class ActiveProcess:
+        returncode = None
+
+        def __init__(self):
+            self.kill_calls = 0
+            self.wait_calls = 0
+
+        def terminate(self):
+            raise PermissionError(1, "terminate denied")
+
+        def kill(self):
+            self.kill_calls += 1
+            self.returncode = -9
+
+        async def wait(self):
+            self.wait_calls += 1
+            return self.returncode
+
+    proc = ActiveProcess()
+
+    await _terminate_process(proc, process_group=False)
+
+    assert proc.kill_calls == 1
+    assert proc.wait_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_direct_path_reports_when_kill_is_denied():
+    from app.services import agent_cli_bridge
+
+    class UnstoppableProcess:
+        returncode = None
+
+        def terminate(self):
+            raise PermissionError(1, "terminate denied")
+
+        def kill(self):
+            raise PermissionError(1, "kill denied")
+
+        async def wait(self):
+            await asyncio.Event().wait()
+
+    with pytest.raises(
+        agent_cli_bridge.AgentRuntimeError,
+        match="无法安全终止执行器进程",
+    ):
+        await asyncio.wait_for(
+            _terminate_process(UnstoppableProcess(), process_group=False),
+            timeout=0.2,
+        )
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_group_reports_sigkill_denial_without_unbounded_wait(
+    monkeypatch,
+):
+    from app.services import agent_cli_bridge
+
+    class UnstoppableProcess:
+        pid = 424246
+        returncode = None
+
+        def kill(self):
+            self.returncode = -9
+
+        async def wait(self):
+            if self.returncode is None:
+                await asyncio.Event().wait()
+            return self.returncode
+
+    def group_signal(_pid, sig):
+        if sig == signal.SIGTERM or sig == 0:
+            return None
+        if sig == signal.SIGKILL:
+            raise PermissionError(1, "group kill denied")
+        raise AssertionError(f"unexpected signal: {sig}")
+
+    monkeypatch.setattr(agent_cli_bridge.os, "killpg", group_signal)
+    monkeypatch.setattr(
+        agent_cli_bridge,
+        "_PROCESS_CLEANUP_TIMEOUT_SECONDS",
+        0.02,
+        raising=False,
+    )
+
+    with pytest.raises(
+        agent_cli_bridge.AgentRuntimeError,
+        match="无法安全终止执行器进程",
+    ):
+        await asyncio.wait_for(
+            _terminate_process(UnstoppableProcess(), process_group=True),
+            timeout=0.2,
+        )
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_direct_path_ignores_process_lookup_exit_race():
+    class ExitedDuringTerminate:
+        returncode = None
+
+        def terminate(self):
+            self.returncode = 0
+            raise ProcessLookupError
+
+        def kill(self):
+            raise AssertionError("kill must not run after the process exited")
+
+        async def wait(self):
+            return self.returncode
+
+    await _terminate_process(ExitedDuringTerminate(), process_group=False)
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_group_ignores_process_lookup_exit_race(monkeypatch):
+    from app.services import agent_cli_bridge
+
+    class ExitedDuringGroupTerminate:
+        pid = 424247
+        returncode = None
+
+        async def wait(self):
+            return self.returncode
+
+    proc = ExitedDuringGroupTerminate()
+
+    def group_signal(_pid, sig):
+        if sig == signal.SIGTERM:
+            proc.returncode = 0
+            raise ProcessLookupError
+        raise AssertionError(f"unexpected signal: {sig}")
+
+    monkeypatch.setattr(agent_cli_bridge.os, "killpg", group_signal)
+
+    await _terminate_process(proc, process_group=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("use_process_group", [True, False])
+async def test_cancel_reports_process_cleanup_failure_without_waiting_for_hard_timeout(
+    monkeypatch,
+    tmp_path,
+    use_process_group,
+):
+    from app.services import agent_cli_bridge
+
+    kill_attempted = asyncio.Event()
+
+    class ClosedPipe:
+        async def read(self, _size=-1):
+            return b""
+
+    class ActiveProcess:
+        pid = 424245
+        returncode = None
+        stdin = None
+        stdout = ClosedPipe()
+        stderr = ClosedPipe()
+
+        def terminate(self):
+            raise PermissionError(1, "terminate denied")
+
+        def kill(self):
+            kill_attempted.set()
+            raise PermissionError(1, "kill denied")
+
+        async def wait(self):
+            while self.returncode is None:
+                await asyncio.sleep(0.01)
+            return self.returncode
+
+    proc = ActiveProcess()
+
+    process_kwargs: dict[str, object] = {}
+
+    async def fake_create_subprocess_exec(*_args, **kwargs):
+        process_kwargs.update(kwargs)
+        return proc
+
+    async def blocked_stdout(*_args, **_kwargs):
+        while proc.returncode is None:
+            await asyncio.sleep(0.01)
+        if False:
+            yield ""
+
+    def deny_group_signal(_pid, _sig):
+        if not use_process_group:
+            raise AssertionError("non-group cleanup must not call killpg")
+        raise PermissionError(1, "group signal denied")
+
+    monkeypatch.setattr(
+        agent_cli_bridge.asyncio,
+        "create_subprocess_exec",
+        fake_create_subprocess_exec,
+    )
+    monkeypatch.setattr(agent_cli_bridge, "_read_stdout", blocked_stdout)
+    monkeypatch.setattr(agent_cli_bridge.os, "killpg", deny_group_signal)
+    monkeypatch.setattr(
+        agent_cli_bridge,
+        "_isolate_agent_process_group",
+        lambda: use_process_group,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        agent_cli_bridge,
+        "prepare_agent_sandbox",
+        lambda **_kwargs: type(
+            "Sandbox",
+            (),
+            {"wrapper": [], "status": "active", "message": "isolated"},
+        )(),
+    )
+    monkeypatch.setattr(
+        agent_cli_bridge,
+        "prepare_isolated_codex_home",
+        lambda **_kwargs: (None, []),
+    )
+
+    async def consume_runtime():
+        async for _chunk in stream_agent_runtime(
+            runtime={
+                "command": sys.executable,
+                "prompt_transport": "argv_last",
+                "output_mode": "plain",
+                "timeout_seconds": 120,
+                "requires_network": False,
+                "env": {"CODETALK_AGENT_ARTIFACT_DIR": str(tmp_path / "artifacts")},
+            },
+            prompt="cancel me",
+            cwd=str(tmp_path),
+            is_cancelled=lambda: True,
+        ):
+            pass
+
+    task = asyncio.create_task(consume_runtime())
+    await asyncio.wait_for(kill_attempted.wait(), timeout=1)
+    done, _ = await asyncio.wait({task}, timeout=0.2)
+    completed_without_hard_timeout = task in done
+    if not completed_without_hard_timeout:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    assert completed_without_hard_timeout
+    assert ("start_new_session" in process_kwargs) is use_process_group
+    with pytest.raises(agent_cli_bridge.AgentRuntimeError, match="无法安全终止执行器进程"):
+        await task
 
 
 def test_build_env_does_not_leak_unrelated_parent_secrets(monkeypatch, tmp_path):
